@@ -69,3 +69,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0061](0061-taken-and-reserved-slugs-get-a-random-ending.md) | Taken and reserved slugs get a random ending, and instance admins reserve slugs |
 | [0062](0062-projects-choose-which-of-their-repositories-review-agents-review.md) | Projects choose which of their repositories review agents review |
 | [0063](0063-fctl-moves-linear-tickets-through-their-teams-workflow-as-sessions-work.md) | fctl moves Linear tickets through their team's workflow as sessions work |
+| [0064](0064-agents-call-people-what-they-choose-or-all-their-first-names.md) | Agents call people what they choose, or all their first names |

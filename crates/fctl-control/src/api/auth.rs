@@ -400,6 +400,11 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
             ));
         }
     };
+    // Older clients don't send it, which keeps it.
+    let preferred_name = match body.preferred_name.as_deref() {
+        Some(p) => validate::preferred_name(p)?,
+        None => user.preferred_name.clone(),
+    };
     // The primary address's commit email (Settings → Email addresses sets
     // the others').
     if let Some(e) = body.commit_email.as_deref() {
@@ -409,11 +414,12 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     }
     let mut statements = vec![q(
         &ctx.db,
-        "UPDATE users SET name = ?, given_name = ?, family_name = ?, updated_at = ? WHERE id = ?",
+        "UPDATE users SET name = ?, given_name = ?, family_name = ?, preferred_name = ?, updated_at = ? WHERE id = ?",
         &[
             s(&person.full),
             os(person.given.as_deref()),
             os(person.family.as_deref()),
+            os(preferred_name.as_deref()),
             n(ctx.now),
             s(&user.id),
         ],

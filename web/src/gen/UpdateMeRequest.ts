@@ -10,6 +10,11 @@ given_name?: string, family_name?: string,
  */
 name?: string, 
 /**
+ * What agents call you (`User.preferred_name`); an empty one leaves
+ * them your first names.
+ */
+preferred_name?: string, 
+/**
  * `""` removes your picture. `PUT /api/v1/me/avatar` uploads one: an
  * address is refused, unless it is the one you have.
  */

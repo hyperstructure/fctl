@@ -34,13 +34,18 @@ pub enum LinearAccountCmd {
 
 #[derive(Subcommand)]
 pub enum AccountCmd {
-    /// Change your profile: your picture, and the address commits credit
-    /// you with.
+    /// Change your profile: your picture, what agents call you, and the
+    /// address commits credit you with.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_email", "avatar"])),
-        after_help = "Examples:\n  fctl account set --avatar me.png\n  fctl account set --avatar none   # your initials\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you\n  fctl account set --for ada.lovelace@company.example --commit-email ada.lovelace@company.example"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_email", "avatar", "preferred_name"])),
+        after_help = "Examples:\n  fctl account set --avatar me.png\n  fctl account set --avatar none   # your initials\n  fctl account set --preferred-name \"Carl Oscar\"\n  fctl account set --preferred-name \"\"   # your first names\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you\n  fctl account set --for ada.lovelace@company.example --commit-email ada.lovelace@company.example"
     )]
     Set {
+        /// What agents call you, in your sessions, in the messages you send
+        /// them and in Linear, and what fctl's greetings use. "" leaves them
+        /// your first names, all of them.
+        #[arg(long, value_name = "NAME")]
+        preferred_name: Option<String>,
         /// Commits in the sessions you start credit you with this address, in
         /// a Co-authored-by trailer anyone who can read the repository sees.
         /// Use one your GitHub account has (its noreply address works), so
@@ -122,17 +127,29 @@ pub enum AccountCmd {
     },
 }
 
-/// `fctl account set`: the commit email first, then the picture.
+/// `fctl account set`: what agents call you, the commit email, then the
+/// picture.
 async fn set(
     api: &fctl_client::Api,
+    preferred_name: Option<String>,
     commit_email: Option<String>,
     address: Option<String>,
     avatar: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let committing = commit_email.is_some();
+    let changes_sessions = commit_email.is_some() || preferred_name.is_some();
     let mut said = Vec::new();
     let mut me = None;
+    if let Some(preferred_name) = preferred_name {
+        let m = api
+            .update_me(&UpdateMeRequest {
+                preferred_name: Some(preferred_name),
+                ..Default::default()
+            })
+            .await?;
+        said.push(agents_call_you(&m.user));
+        me = Some(m);
+    }
     if let Some(commit_email) = commit_email {
         let m = match &address {
             Some(address) => {
@@ -176,7 +193,7 @@ async fn set(
         me = Some(m);
     }
     let Some(me) = me else {
-        bail!("Say what to change: --avatar or --commit-email");
+        bail!("Say what to change: --avatar, --preferred-name or --commit-email");
     };
     if json {
         return style::print_json(&me);
@@ -187,13 +204,23 @@ async fn set(
     for line in &said {
         println!("{} {line}", style::accent("✓"));
     }
-    if committing {
+    if changes_sessions {
         println!(
             "{}",
             style::dim("Sessions take the change when they next start or resume.")
         );
     }
     Ok(())
+}
+
+/// What agents call you, as `fctl whoami` and `fctl account set` say it.
+pub fn agents_call_you(user: &fctl_proto::api::User) -> String {
+    match fctl_domain::validate::called(user.preferred_name.as_deref(), user.given_name.as_deref())
+    {
+        Some(name) => format!("Agents call you {name}"),
+        None => "Agents aren't told what to call you: `fctl account set --preferred-name NAME` tells them"
+            .to_owned(),
+    }
 }
 
 pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()> {
@@ -205,10 +232,11 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
         }
         AccountCmd::Passkeys(cmd) => super::passkeys::run(&api, cmd, json).await,
         AccountCmd::Set {
+            preferred_name,
             commit_email,
             address,
             avatar,
-        } => set(&api, commit_email, address, avatar, json).await,
+        } => set(&api, preferred_name, commit_email, address, avatar, json).await,
         AccountCmd::Emails => {
             let me = super::auth::account(&api).await?;
             if json {

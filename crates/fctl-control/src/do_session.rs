@@ -972,6 +972,7 @@ impl SessionObject {
                     kind: DeliveryKind::Message {
                         text: b.text.clone(),
                         author: None,
+                        author_called: None,
                         attachments: Vec::new(),
                     },
                 },
@@ -1241,6 +1242,7 @@ impl SessionObject {
                     kind: DeliveryKind::Message {
                         text: text.clone(),
                         author: None,
+                        author_called: None,
                         attachments: Vec::new(),
                     },
                 },
@@ -1752,20 +1754,24 @@ impl SessionObject {
             .env
             .d1("DB")
             .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
-        let role = match crate::auth::by_token_id(&db, token_id, now)
+        // What agents call them goes with their messages as it is now.
+        let (role, called) = match crate::auth::by_token_id(&db, token_id, now)
             .await
             .map_err(|e| e.0)?
         {
-            Some(h) if h.user.id == viewer.user.id.0 => crate::access::session_role_now(
-                &db,
-                &h.user,
-                &h.settings,
-                h.limits.as_ref(),
-                summary.id.as_str(),
-            )
-            .await
-            .map_err(|e| e.0)?,
-            _ => None,
+            Some(h) if h.user.id == viewer.user.id.0 => (
+                crate::access::session_role_now(
+                    &db,
+                    &h.user,
+                    &h.settings,
+                    h.limits.as_ref(),
+                    summary.id.as_str(),
+                )
+                .await
+                .map_err(|e| e.0)?,
+                h.user.called(),
+            ),
+            _ => (None, None),
         };
         let Some(role) = role else {
             let _ = ws.close(
@@ -1776,7 +1782,11 @@ impl SessionObject {
             return Ok(None);
         };
         let changed = role != viewer.role;
-        let viewer = ViewerIdentity { role, ..viewer };
+        let viewer = ViewerIdentity {
+            role,
+            called,
+            ..viewer
+        };
         info.viewer = Some(viewer.clone());
         info.checked_at = Some(now);
         let _ = ws.serialize_attachment(&*info);
@@ -1831,6 +1841,7 @@ impl SessionObject {
                 kind: DeliveryKind::Message {
                     text: text.clone(),
                     author: Some(author.clone()),
+                    author_called: viewer.called.clone(),
                     attachments: attachments.clone(),
                 },
             },

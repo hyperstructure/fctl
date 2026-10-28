@@ -366,6 +366,7 @@ pub async fn build(
             .and_then(|j| serde_json::from_str(j).ok())
             .unwrap_or_default(),
         author: row.creator_ref(),
+        author_called: called(db, &row.created_by).await?,
         claude_session_id: row.claude_session_id.clone(),
         resume: row.started_at.is_some(),
         model: row.model.clone(),
@@ -554,6 +555,9 @@ async fn review_spec(
         task: Some(row.prompt.clone()),
         task_attachments: Vec::new(),
         author: row.creator_ref(),
+        // Review agents write to the pull request's people, not to the
+        // owner whose Claude account they run on.
+        author_called: None,
         claude_session_id: row.claude_session_id.clone(),
         resume: row.started_at.is_some(),
         model: row.model.clone(),
@@ -611,6 +615,25 @@ async fn creator(
         commit_email
             .filter(|e| !e.is_empty())
             .map(|email| GitIdentity { name, email })
+    }))
+}
+
+/// What agents call the person `user_id` (`fctl_domain::validate::called`).
+async fn called(db: &D1Database, user_id: &str) -> AppResult<Option<String>> {
+    #[derive(serde::Deserialize)]
+    struct U {
+        preferred_name: Option<String>,
+        given_name: Option<String>,
+    }
+    let u: Option<U> = q(
+        db,
+        "SELECT preferred_name, given_name FROM users WHERE id = ?",
+        &[s(user_id)],
+    )?
+    .first()
+    .await?;
+    Ok(u.and_then(|u| {
+        fctl_domain::validate::called(u.preferred_name.as_deref(), u.given_name.as_deref())
     }))
 }
 

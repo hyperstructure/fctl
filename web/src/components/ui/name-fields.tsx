@@ -54,7 +54,17 @@ export function nameParts(user: { name: string; given_name?: string; family_name
     : { given: user.name.trim(), family: "" };
 }
 
-/** What greetings call someone: all their first names. */
+/** All of someone's first names. */
 export function firstNames(user: { name: string; given_name?: string; family_name?: string }) {
   return user.given_name ?? nameParts(user).given;
+}
+
+/** What agents and greetings call someone: the name they chose, or else all their first names. */
+export function calledName(user: {
+  name: string;
+  given_name?: string;
+  family_name?: string;
+  preferred_name?: string;
+}) {
+  return user.preferred_name?.trim() || firstNames(user);
 }

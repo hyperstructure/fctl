@@ -28,6 +28,9 @@ pub struct UserRow {
     pub given_name: Option<String>,
     #[serde(default)]
     pub family_name: Option<String>,
+    /// What they asked to be called, if they chose a name for it.
+    #[serde(default)]
+    pub preferred_name: Option<String>,
     pub avatar_url: Option<String>,
     pub password_hash: Option<String>,
     pub role: String,
@@ -137,6 +140,7 @@ impl UserRow {
             name: self.name.clone(),
             given_name: self.given_name.clone(),
             family_name: self.family_name.clone(),
+            preferred_name: self.preferred_name.clone(),
             avatar_url: self.avatar_url.clone(),
             role: self.role(),
             status: UserStatus::parse(&self.status).unwrap_or(UserStatus::Disabled),
@@ -158,6 +162,17 @@ impl UserRow {
             avatar_url: self.avatar_url.clone(),
         }
     }
+
+    /// What agents call them (`fctl_domain::validate::called`).
+    pub fn called(&self) -> Option<String> {
+        fctl_domain::validate::called(self.preferred_name.as_deref(), self.given_name.as_deref())
+    }
+
+    /// What fctl calls them where it writes to them by name: what agents
+    /// call them, or else their full name.
+    pub fn addressed(&self) -> String {
+        self.called().unwrap_or_else(|| self.name.clone())
+    }
 }
 
 /// The SELECT list for [`UserRow`], prefixed with a table alias.
@@ -168,6 +183,7 @@ pub fn user_columns(alias: &str) -> String {
         "name",
         "given_name",
         "family_name",
+        "preferred_name",
         "avatar_url",
         "password_hash",
         "role",

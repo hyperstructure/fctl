@@ -9,9 +9,15 @@ export type User = { id: UserId, email: string,
  */
 name: string, 
 /**
- * First names, all of them ("Carl Oscar"); what greetings use.
+ * First names, all of them ("Carl Oscar"): what greetings and agents
+ * call them, unless they chose `preferred_name`.
  */
-given_name?: string, family_name?: string, avatar_url?: string, role: InstanceRole, status: UserStatus, 
+given_name?: string, family_name?: string, 
+/**
+ * What they asked to be called ("Carl Oscar", "Bob"): agents call
+ * them this, and greetings use it. Absent: their first names.
+ */
+preferred_name?: string, avatar_url?: string, role: InstanceRole, status: UserStatus, 
 /**
  * Whether the account can sign in with a password.
  */

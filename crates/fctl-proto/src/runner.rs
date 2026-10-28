@@ -330,6 +330,11 @@ pub struct SessionSpec {
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
     pub task_attachments: Vec<Attachment>,
     pub author: UserRef,
+    /// What its agent calls `author`: the name they chose, or else their
+    /// first names (`fctl_domain::validate::called`). Absent when fctl knows
+    /// neither, and from older control planes; older hosts leave it out of
+    /// the agent's configuration, and their agents aren't told.
+    pub author_called: Option<String>,
     /// UUID passed to `claude --session-id` (or `--resume`).
     pub claude_session_id: String,
     /// Resume `claude_session_id` instead of starting a new conversation.

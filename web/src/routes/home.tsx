@@ -26,7 +26,7 @@ import {
 } from "@/components/session/start";
 import {
   Button,
-  firstNames,
+  calledName,
   GLCanvas,
   Select,
   Skeleton,
@@ -54,7 +54,7 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 function greeting(user: G.User) {
   const h = new Date().getHours();
   const part = h < 5 ? "Working late" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-  return `${part}, ${firstNames(user)}.`;
+  return `${part}, ${calledName(user)}.`;
 }
 
 /** Palette index in the scene: 0 neutral, 1 working, 2 waiting, 3 paused, 4 failed. */

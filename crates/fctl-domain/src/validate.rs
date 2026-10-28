@@ -166,6 +166,27 @@ pub fn person_name(
     })
 }
 
+/// What someone asked to be called (`User.preferred_name`): a [`name`], or
+/// `None` for an empty one, which leaves them their first names.
+pub fn preferred_name(input: &str) -> Result<Option<String>> {
+    if collapse_spaces(&plain(input)).is_empty() {
+        return Ok(None);
+    }
+    name("preferred_name", input).map(Some)
+}
+
+/// What agents call someone: the name they chose, or else their first
+/// names, all of them ("Carl Oscar"). `None` when fctl knows neither, as
+/// for an account an older client created with only a full name.
+pub fn called(preferred: Option<&str>, given: Option<&str>) -> Option<String> {
+    [preferred, given]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|n| !n.is_empty())
+        .map(str::to_owned)
+}
+
 /// Optional free text (descriptions): at most `max` characters.
 pub fn text(field: &str, input: &str, max: usize) -> Result<String> {
     let s = input.trim().to_owned();
@@ -778,6 +799,33 @@ mod tests {
         );
         assert!(person_name(None, None, None).is_err());
         assert!(person_name(Some("Ada"), Some(&"x".repeat(81)), None).is_err());
+    }
+
+    #[test]
+    fn preferred_names() {
+        assert_eq!(
+            preferred_name("  Carl \n Oscar ").ok(),
+            Some(Some("Carl Oscar".into()))
+        );
+        assert_eq!(preferred_name(" \u{202e} ").ok(), Some(None));
+        assert_eq!(
+            preferred_name(&"x".repeat(81)).map_err(|e| e.field),
+            Err(Some("preferred_name".into()))
+        );
+    }
+
+    #[test]
+    fn agents_call_people_what_they_chose_or_all_their_first_names() {
+        assert_eq!(called(Some("Bob"), Some("Robert")).as_deref(), Some("Bob"));
+        assert_eq!(
+            called(None, Some("Carl Oscar")).as_deref(),
+            Some("Carl Oscar")
+        );
+        assert_eq!(
+            called(Some(" "), Some("Carl Oscar")).as_deref(),
+            Some("Carl Oscar")
+        );
+        assert_eq!(called(None, None), None);
     }
 
     #[test]

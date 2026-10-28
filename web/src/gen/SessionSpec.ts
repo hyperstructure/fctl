@@ -38,6 +38,13 @@ task?: string,
  */
 task_attachments?: Array<Attachment>, author: UserRef, 
 /**
+ * What its agent calls `author`: the name they chose, or else their
+ * first names (`fctl_domain::validate::called`). Absent when fctl knows
+ * neither, and from older control planes; older hosts leave it out of
+ * the agent's configuration, and their agents aren't told.
+ */
+author_called?: string, 
+/**
  * UUID passed to `claude --session-id` (or `--resume`).
  */
 claude_session_id: string, 

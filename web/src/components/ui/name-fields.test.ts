@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstNames, nameParts } from "./name-fields";
+import { calledName, firstNames, nameParts } from "./name-fields";
 
 describe("names", () => {
   it("uses the stored first names in full", () => {
@@ -16,5 +16,12 @@ describe("names", () => {
 
   it("keeps a first name without a last name", () => {
     expect(nameParts({ name: "Cher", given_name: "Cher" })).toEqual({ given: "Cher", family: "" });
+  });
+
+  it("calls people what they chose, or all their first names", () => {
+    const user = { name: "Carl Oscar Aaro", given_name: "Carl Oscar", family_name: "Aaro" };
+    expect(calledName(user)).toBe("Carl Oscar");
+    expect(calledName({ ...user, preferred_name: "CO" })).toBe("CO");
+    expect(calledName({ ...user, preferred_name: " " })).toBe("Carl Oscar");
   });
 });
