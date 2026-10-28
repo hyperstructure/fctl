@@ -84,3 +84,31 @@ export function repoList(repos: G.RepoRef[]): string {
   if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]}`;
   return `${names[0]}, ${names[1]} and ${names.length - 2} more`;
 }
+
+/** `acme/web`. */
+export const repoName = (r: G.RepoRef) => `${r.owner}/${r.name}`;
+
+/** Whether `a` and `b` name the same repository: GitHub ignores case. */
+export const sameRepo = (a: G.RepoRef, b: G.RepoRef) =>
+  repoName(a).toLowerCase() === repoName(b).toLowerCase();
+
+/**
+ * The repositories a project's review agents review or skip (those its agents may write to), as its
+ * Repositories tab lists them: its primary repository first, then the others by name.
+ */
+export function reviewRepos(
+  agents: Pick<G.ReviewAgents, "repos" | "skipped_repos">,
+  primary?: G.RepoRef,
+): G.RepoRef[] {
+  const key = (r: G.RepoRef) => `${primary && sameRepo(r, primary) ? 0 : 1}${repoName(r).toLowerCase()}`;
+  return [...agents.repos, ...agents.skipped_repos].sort((a, b) =>
+    key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0,
+  );
+}
+
+/** Whether two lists of repositories (`owner/name`) are the same ones, in any order. */
+export function sameRepos(a: readonly string[], b: readonly string[]): boolean {
+  const x = new Set(a.map((r) => r.toLowerCase()));
+  const y = new Set(b.map((r) => r.toLowerCase()));
+  return x.size === y.size && [...x].every((r) => y.has(r));
+}

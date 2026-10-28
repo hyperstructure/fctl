@@ -54,7 +54,7 @@ pub enum ReviewCmd {
     /// how they review (the project's owners; the person they run for may
     /// turn them off).
     #[command(
-        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --mine\n  fctl review settings --off"
+        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --mine\n  fctl review settings --off"
     )]
     Settings {
         /// Turn them on, on your Claude subscription.
@@ -87,6 +87,12 @@ pub enum ReviewCmd {
         /// apps that opened pull requests lately.
         #[arg(long, value_name = "LIST", value_parser = bots_arg)]
         bots: Option<Bots>,
+        /// The repositories whose pull requests they don't review, in place
+        /// of those they skip: of those the project's agents may write to,
+        /// separated by commas (acme/shared-lib,docs), or `none` to review
+        /// all of them. Another project's review agents review them, say.
+        #[arg(long, value_name = "LIST", value_parser = repos_arg)]
+        skip_repos: Option<Repos>,
     },
     /// The apps that opened the newest pull requests in the project's
     /// repositories, and which of them start reviews by themselves; with a
@@ -152,6 +158,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             instructions,
             instructions_file,
             bots,
+            skip_repos,
         } => {
             let api = config::api(server)?;
             let project = super::sessions::project_or_default(args.project)?;
@@ -181,6 +188,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
                 effort: default(effort),
                 instructions,
                 bots: bots.map(|b| b.0),
+                skipped_repos: skip_repos.map(|r| r.0),
             };
             let changes = req != UpdateReviewAgentsRequest::default();
             let agents = if changes {
@@ -219,6 +227,28 @@ fn bots_arg(s: &str) -> std::result::Result<Bots, String> {
         })
         .collect::<std::result::Result<_, _>>()
         .map(Bots)
+}
+
+/// `--skip-repos`: the repositories, as people name them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Repos(Vec<String>);
+
+/// `--skip-repos`: repositories separated by commas, or `none`. The control
+/// plane knows which the project's agents may write to.
+fn repos_arg(s: &str) -> std::result::Result<Repos, String> {
+    if s.trim().eq_ignore_ascii_case("none") {
+        return Ok(Repos(Vec::new()));
+    }
+    let list: Vec<String> = s
+        .split(',')
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if list.is_empty() {
+        return Err("name the repositories, as acme/shared-lib,docs, or none".into());
+    }
+    Ok(Repos(list))
 }
 
 /// `fctl review bots [NAME]`.
@@ -444,15 +474,30 @@ fn print_settings(project: &str, a: &ReviewAgents) {
         "Effort",
         a.effort.clone().unwrap_or_else(|| "the project's".into()),
     );
-    let repos: Vec<String> = a.repos.iter().map(|r| r.full_name()).collect();
+    let names = |repos: &[fctl_proto::session::RepoRef]| {
+        repos
+            .iter()
+            .map(|r| r.full_name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     row(
         "Repositories",
-        if repos.is_empty() {
-            "none: link one the project's agents may write to".into()
-        } else {
-            repos.join(", ")
+        match (a.repos.is_empty(), a.skipped_repos.is_empty()) {
+            (false, _) => names(&a.repos),
+            (true, true) => "none: link one the project's agents may write to".into(),
+            (true, false) => "none: they skip every one".into(),
         },
     );
+    if !a.skipped_repos.is_empty() {
+        row(
+            "Skipped",
+            format!(
+                "{}: no review of their pull requests here",
+                names(&a.skipped_repos)
+            ),
+        );
+    }
     row(
         "Bots",
         if a.bots.is_empty() {
@@ -764,5 +809,27 @@ mod tests {
             bots_arg("renovate,https://github.com/mallory")
                 .is_err_and(|e| e.contains("“https://github.com/mallory”"))
         );
+    }
+
+    #[test]
+    fn skipped_repos_take_a_list_or_none() {
+        let set =
+            |list: &str| match Fctl::try_parse_from(["fctl", "settings", "--skip-repos", list])
+                .map(|f| f.review.cmd)
+            {
+                Ok(Some(ReviewCmd::Settings { skip_repos, .. })) => skip_repos,
+                _ => None,
+            };
+        assert_eq!(
+            set("acme/shared-lib, docs,,https://github.com/acme/api"),
+            Some(Repos(vec![
+                "acme/shared-lib".to_owned(),
+                "docs".to_owned(),
+                "https://github.com/acme/api".to_owned()
+            ]))
+        );
+        assert_eq!(set("none"), Some(Repos(Vec::new())));
+        assert_eq!(set(" None "), Some(Repos(Vec::new())));
+        assert_eq!(set(" , "), None);
     }
 }

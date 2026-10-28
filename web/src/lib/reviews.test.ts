@@ -8,6 +8,8 @@ import {
   repoList,
   reviewLook,
   reviewOutcome,
+  reviewRepos,
+  sameRepos,
   shortSha,
 } from "./reviews";
 
@@ -66,6 +68,20 @@ describe("reviews", () => {
     expect(repoList([repo("web"), repo("api")])).toBe("acme/web and acme/api");
     expect(repoList([repo("web"), repo("api"), repo("docs")])).toBe("acme/web, acme/api and acme/docs");
     expect(repoList([repo("a"), repo("b"), repo("c"), repo("d")])).toBe("acme/a, acme/b and 2 more");
+  });
+
+  it("list the repositories they review or skip as the project does", () => {
+    const repo = (name: string): G.RepoRef => ({ owner: "acme", name });
+    // The primary repository first, then the others by name, whether they're reviewed or skipped.
+    const agents = { repos: [repo("web"), repo("api"), repo("Docs")], skipped_repos: [repo("billing")] };
+    expect(reviewRepos(agents, repo("web")).map((r) => r.name)).toEqual(["web", "api", "billing", "Docs"]);
+    expect(
+      reviewRepos({ repos: [repo("web")], skipped_repos: [repo("api")] }, { owner: "ACME", name: "API" }),
+    ).toEqual([repo("api"), repo("web")]);
+    expect(reviewRepos({ repos: [], skipped_repos: [] })).toEqual([]);
+    expect(sameRepos(["acme/web", "acme/api"], ["acme/API", "acme/web"])).toBe(true);
+    expect(sameRepos(["acme/web"], ["acme/web", "acme/api"])).toBe(false);
+    expect(sameRepos([], [])).toBe(true);
   });
 
   it("are the owners' to turn on, and editors' to ask for", () => {

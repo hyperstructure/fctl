@@ -67,3 +67,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0059](0059-sessions-keep-the-images-their-agents-read-for-a-week.md) | Sessions keep the images their agents read for a week |
 | [0060](0060-agents-follow-rules-for-pull-requests-and-issues-that-projects-can-change.md) | Agents follow rules for pull requests and issues that projects can change |
 | [0061](0061-taken-and-reserved-slugs-get-a-random-ending.md) | Taken and reserved slugs get a random ending, and instance admins reserve slugs |
+| [0062](0062-projects-choose-which-of-their-repositories-review-agents-review.md) | Projects choose which of their repositories review agents review |

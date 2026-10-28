@@ -47,6 +47,9 @@ pub struct SettingsRow {
     /// The apps whose pull requests start reviews by themselves, as JSON.
     #[serde(default)]
     pub bots: Option<String>,
+    /// The repositories whose pull requests they don't review, as JSON.
+    #[serde(default)]
+    pub skipped_repos: Option<String>,
     pub updated_by: Option<String>,
     pub updater_name: Option<String>,
     pub updater_avatar: Option<String>,
@@ -86,7 +89,7 @@ pub async fn settings(db: &D1Database, project_id: &str) -> AppResult<Option<Set
     q(
         db,
         "SELECT r.enabled, r.operator_id, ou.name AS operator_name, ou.avatar_url AS operator_avatar, \
-         r.model, r.effort, r.instructions, r.bots, r.updated_by, uu.name AS updater_name, \
+         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.updated_by, uu.name AS updater_name, \
          uu.avatar_url AS updater_avatar, r.updated_at FROM project_reviews r \
          LEFT JOIN users ou ON ou.id = r.operator_id LEFT JOIN users uu ON uu.id = r.updated_by \
          WHERE r.project_id = ?",
@@ -364,9 +367,10 @@ pub async fn operator(
     Ok(Ok(Operator { user, credential }))
 }
 
-/// The repositories whose pull requests a project's review agents review:
-/// its primary repository and those it lists as read and write.
-pub async fn repos(db: &D1Database, project: &ProjectRow) -> AppResult<Vec<RepoRef>> {
+/// The repositories a project's agents may write to: its primary
+/// repository and those it lists as read and write. Its review agents
+/// review their pull requests, but those its owners skip ([`repos`]).
+pub async fn writable(db: &D1Database, project: &ProjectRow) -> AppResult<Vec<RepoRef>> {
     let mut repos: Vec<RepoRef> = project.repo().into_iter().collect();
     for g in crate::spec::grants(db, &project.id).await? {
         if g.access == RepoAccess::Write
@@ -379,21 +383,59 @@ pub async fn repos(db: &D1Database, project: &ProjectRow) -> AppResult<Vec<RepoR
     Ok(repos)
 }
 
+/// The repositories a project's agents may write to, as its review agents
+/// take them: the primary repository first.
+pub struct Repos {
+    /// Those whose pull requests they review.
+    pub reviewed: Vec<RepoRef>,
+    /// Those whose pull requests they don't, as the project's owners chose.
+    pub skipped: Vec<RepoRef>,
+}
+
+/// The repositories whose pull requests a project's review agents review
+/// with these settings (`None`: none yet), and those they skip.
+pub async fn repos(
+    db: &D1Database,
+    project: &ProjectRow,
+    conf: Option<&SettingsRow>,
+) -> AppResult<Repos> {
+    let skipped = rv::stored_skipped(conf.and_then(|c| c.skipped_repos.as_deref()));
+    let (reviewed, skipped) = rv::split_repos(&writable(db, project).await?, &skipped);
+    Ok(Repos { reviewed, skipped })
+}
+
+/// Takes `repo` off the repositories a project's review agents skip, as it
+/// stops being one its agents may write to (removed from the project, made
+/// read only, or no longer its primary repository): linked again, it is
+/// reviewed, as a new one is. For a batch with that change.
+pub fn unskip(db: &D1Database, project_id: &str, repo: &RepoRef) -> AppResult<crate::db::Query> {
+    q(
+        db,
+        "UPDATE project_reviews SET skipped_repos = (SELECT json_group_array(k.value) \
+         FROM json_each(project_reviews.skipped_repos) k WHERE lower(k.value) != ?2) \
+         WHERE project_id = ?1 AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(project_reviews.skipped_repos) \
+         THEN project_reviews.skipped_repos END) k WHERE lower(k.value) = ?2)",
+        &[s(project_id), s(&repo.full_name().to_ascii_lowercase())],
+    )
+}
+
 // ───────────────────────────── apps that start reviews ─────────────────────────────
 
-/// The apps that opened the newest pull requests in the project's
-/// repositories from their branches (`rv::bots_query`), through the
-/// installations its workspace connected; repositories it can't reach are
-/// left out.
+/// The apps that opened the newest pull requests in the repositories the
+/// project's review agents review, from their branches (`rv::bots_query`),
+/// through the installations its workspace connected; repositories it
+/// can't reach are left out.
 pub async fn seen_bots(ctx: &Ctx, project: &ProjectRow) -> AppResult<Vec<ReviewBot>> {
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
+    let conf = settings(&ctx.db, &project.id).await?;
     let mut by_installation: Vec<(u64, Vec<RepoRef>)> = Vec::new();
-    for repo in repos(&ctx.db, project)
+    for repo in repos(&ctx.db, project, conf.as_ref())
         .await?
+        .reviewed
         .into_iter()
         .take(rv::MAX_BOTS_REPOS)
     {
-        let inst = match reach(ctx, project, &repo).await {
+        let inst = match connected(ctx, project, &repo).await {
             Ok(inst) => inst,
             Err(e) => {
                 worker::console_log!(
@@ -428,8 +470,9 @@ pub async fn find_bot(ctx: &Ctx, project: &ProjectRow, name: &str) -> AppResult<
     };
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let mut why = None;
-    for repo in repos(&ctx.db, project).await? {
-        match reach(ctx, project, &repo).await {
+    // Any installation of the project's shows it, skipped repositories' too.
+    for repo in writable(&ctx.db, project).await? {
+        match connected(ctx, project, &repo).await {
             Ok(inst) => {
                 let slug = login.trim_end_matches("[bot]");
                 return Ok(gh.app(inst, slug).await?.as_ref().and_then(rv::app_found));
@@ -458,9 +501,15 @@ pub async fn problem(
             "This instance has no GitHub App, so nothing reviews pull requests. Its admins set one up (docs/self-hosting.md).".into(),
         ));
     };
-    if repos(db, project).await?.is_empty() {
+    let repos = repos(db, project, conf).await?;
+    if repos.reviewed.is_empty() && repos.skipped.is_empty() {
         return Ok(Some(
             "This project has no repository its agents may write to, whose pull requests they would review. Link one under Repositories.".into(),
+        ));
+    }
+    if repos.reviewed.is_empty() {
+        return Ok(Some(
+            "They skip each of this project's repositories, so no pull request gets a review. Its owners turn one back on under Settings.".into(),
         ));
     }
     if let Some(conf) = conf.filter(|c| c.enabled)
@@ -489,9 +538,10 @@ pub enum Started {
 }
 
 /// Starts the reviews a `pull_request` delivery asks for: one in each
-/// project whose review agents are on and whose agents may write to its
-/// repository, through the installation the project's workspace connected.
-/// Returns how many started.
+/// project whose review agents are on and review its repository (its
+/// agents may write to it, and its owners don't skip it), through the
+/// installation the project's workspace connected. Returns how many
+/// started.
 pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
     let Some((action, pr)) = rv::delivered(payload) else {
         return Ok(0);
@@ -523,12 +573,16 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         id: String,
     }
     let key = pr.repo.full_name().to_ascii_lowercase();
+    // Projects whose owners skip the repository leave its pull requests to
+    // the others: another project's review agents review them, say.
     let ids: Vec<Id> = q(
         &ctx.db,
         "SELECT p.id AS id FROM project_reviews r JOIN projects p ON p.id = r.project_id \
          WHERE r.enabled = 1 AND p.archived_at IS NULL AND (lower(p.repo_owner || '/' || p.repo_name) = ?1 \
          OR EXISTS (SELECT 1 FROM project_repos pr WHERE pr.project_id = p.id AND pr.access = 'write' \
-           AND lower(pr.owner || '/' || pr.name) = ?1)) ORDER BY p.created_at LIMIT 20",
+           AND lower(pr.owner || '/' || pr.name) = ?1)) \
+         AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(r.skipped_repos) THEN r.skipped_repos END) k \
+           WHERE lower(k.value) = ?1) ORDER BY p.created_at LIMIT 20",
         &[s(&key)],
     )?
     .all()
@@ -587,15 +641,35 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
 }
 
 /// The installation of the GitHub App through which `project` reaches
-/// `repo`: one its agents may write to, of an account its workspace
-/// connected, within the repositories the workspace may use.
+/// `repo` for a review: one whose pull requests its review agents review
+/// (its agents may write to it, and its owners don't skip it), of an
+/// account its workspace connected, within the repositories the workspace
+/// may use.
 pub async fn reach(ctx: &Ctx, project: &ProjectRow, repo: &RepoRef) -> AppResult<u64> {
-    if !repos(&ctx.db, project).await?.iter().any(|r| r.same(repo)) {
+    let conf = settings(&ctx.db, &project.id).await?;
+    let repos = repos(&ctx.db, project, conf.as_ref()).await?;
+    if let Some(r) = repos.skipped.iter().find(|r| r.same(repo)) {
+        return Err(AppError(ApiError::validation(
+            "pull_request",
+            format!(
+                "This project's review agents skip {}: its pull requests get no review here. Its owners turn it back on under Settings.",
+                r.full_name()
+            ),
+        )));
+    }
+    if !repos.reviewed.iter().any(|r| r.same(repo)) {
         return Err(AppError(ApiError::validation(
             "pull_request",
             "Review agents review pull requests in the repositories this project's agents may write to",
         )));
     }
+    connected(ctx, project, repo).await
+}
+
+/// The installation of the GitHub App through which `project`'s workspace
+/// reaches `repo`: of an account it connected, within the repositories it
+/// may use.
+async fn connected(ctx: &Ctx, project: &ProjectRow, repo: &RepoRef) -> AppResult<u64> {
     let connections = crate::workspaces::connections(&ctx.db, project.workspace_id()).await?;
     let allowed = crate::workspaces::scope(&connections, &repo.owner)
         .is_some_and(|scope| scope.allows(&repo.name));

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { BotMark, ReviewBots } from "@/components/project/review-bots";
+import { ReviewRepos } from "@/components/project/review-repos";
 import { ReviewStateIcon } from "@/components/review";
 import {
   Avatar,
@@ -58,8 +59,11 @@ import {
   earlierFindings,
   pullRef,
   repoList,
+  repoName,
   reviewLook,
   reviewOutcome,
+  reviewRepos,
+  sameRepos,
   shortSha,
 } from "@/lib/reviews";
 
@@ -98,8 +102,8 @@ export function ReviewsTab({ project }: { project: G.Project }) {
         </h2>
         {items.length === 0 ? (
           <Empty title="No reviews yet" icon={<ReviewIcon kind="comment" className="size-7" />}>
-            The next commit pushed to a pull request in {repoList(a.repos)} starts one. Its check shows on the
-            commit, and its findings on the pull request.
+            {a.repos.length > 0 &&
+              `The next commit pushed to a pull request in ${repoList(a.repos)} starts one. Its check shows on the commit, and its findings on the pull request.`}
           </Empty>
         ) : (
           <ul className="border-t border-line">
@@ -132,7 +136,12 @@ function useUpdate(project: G.Project, done?: (a: G.ReviewAgents) => void) {
   return useMutation({
     mutationFn: (b: G.UpdateReviewAgentsRequest) => api.updateReviewAgents(project.id, b),
     onSuccess: (a) => {
+      const before = queryClient.getQueryData<G.ReviewAgents>(keys.reviewAgents(project.id));
       queryClient.setQueryData(keys.reviewAgents(project.id), a);
+      // The apps that opened pull requests lately are those of the repositories they review: the
+      // settings ask again when they next open (they close as they save).
+      if (before && !sameRepos(before.repos.map(repoName), a.repos.map(repoName)))
+        void queryClient.invalidateQueries({ queryKey: keys.reviewBots(project.id), refetchType: "none" });
       done?.(a);
     },
   });
@@ -368,35 +377,35 @@ function Status({
               {agents.enabled ? "Review agents are on" : "Review agents are off"}
             </p>
             <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-3">
-              {agents.enabled ? (
+              {!agents.enabled ? (
+                "Pull requests get no new reviews. The reviews they had stay below."
+              ) : agents.repos.length === 0 ? (
+                // Why they review none shows below.
+                operator ? (
+                  <>
+                    They run on <Whose operator={operator} mine={mine} /> Claude subscription
+                    <How model={model} effort={effort} />.
+                  </>
+                ) : (
+                  "They review no pull requests."
+                )
+              ) : (
                 <>
                   They review each new commit of the pull requests in{" "}
                   <span className="text-ink-2">{repoList(agents.repos)}</span>
                   {operator && (
                     <>
-                      , on{" "}
-                      <span className="inline-flex items-baseline gap-1.5 text-ink-2">
-                        <Avatar user={operator} size={16} />
-                        <span className="self-baseline">{mine ? "your" : `${operator.name}'s`}</span>
-                      </span>{" "}
-                      Claude subscription
+                      , on <Whose operator={operator} mine={mine} /> Claude subscription
                     </>
                   )}
-                  {model || effort ? (
+                  <How model={model} effort={effort} />.{" "}
+                  {agents.skipped_repos.length > 0 && (
                     <>
-                      , with <span className="text-ink-2">{model ?? "the project's model"}</span>
-                      {effort && (
-                        <>
-                          {" "}
-                          at <span className="text-ink-2">{effort}</span> effort
-                        </>
-                      )}
+                      They skip <span className="text-ink-2">{repoList(agents.skipped_repos)}</span>.{" "}
                     </>
-                  ) : null}
-                  . <Waiting bots={agents.bots} />
+                  )}
+                  <Waiting bots={agents.bots} />
                 </>
-              ) : (
-                "Pull requests get no new reviews. The reviews they had stay below."
               )}
             </p>
           </div>
@@ -465,6 +474,32 @@ function Status({
   );
 }
 
+/** "your" or "Ada's", with their avatar: whose Claude subscription they run on. */
+function Whose({ operator, mine }: { operator: G.UserRef; mine: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5 text-ink-2">
+      <Avatar user={operator} size={16} />
+      <span className="self-baseline">{mine ? "your" : `${operator.name}'s`}</span>
+    </span>
+  );
+}
+
+/** ", with Opus at high effort", where they don't take the project's model and effort level. */
+function How({ model, effort }: { model?: string; effort?: string }) {
+  if (!model && !effort) return null;
+  return (
+    <>
+      , with <span className="text-ink-2">{model ?? "the project's model"}</span>
+      {effort && (
+        <>
+          {" "}
+          at <span className="text-ink-2">{effort}</span> effort
+        </>
+      )}
+    </>
+  );
+}
+
 /** The models review agents may run on: the project's (`""`), the aliases, or a model ID. */
 function modelOptions(project: G.Project): SelectOption<ModelChoice>[] {
   const own = project.settings.model?.trim();
@@ -483,7 +518,10 @@ function effortOptions(project: G.Project): SelectOption[] {
   ];
 }
 
-/** Whose subscription they run on, their model, effort level and instructions: for the project's owners. */
+/**
+ * Whose subscription they run on, the repositories they review, their model, effort level and
+ * instructions, and the apps that start reviews: for the project's owners.
+ */
 function SettingsForm({
   project,
   agents,
@@ -502,6 +540,11 @@ function SettingsForm({
   const [effort, setEffort] = useState(agents.effort ?? "");
   const [instructions, setInstructions] = useState(agents.instructions ?? "");
   const [bots, setBots] = useState<string[]>(agents.bots);
+  const repos = reviewRepos(agents, project.repo);
+  const [skipped, setSkipped] = useState<string[]>(agents.skipped_repos.map(repoName));
+  // Those the project's agents may still write to, should a repository leave meanwhile.
+  const skips = skipped.filter((s) => repos.some((r) => repoName(r).toLowerCase() === s.toLowerCase()));
+  const skipsChanged = !sameRepos(skips, agents.skipped_repos.map(repoName));
   const save = useUpdate(project, () => {
     toast("Saved: the next review runs with it");
     onDone();
@@ -513,7 +556,8 @@ function SettingsForm({
     (chosenModel(model, modelId) ?? "") !== (agents.model ?? "") ||
     effort !== (agents.effort ?? "") ||
     instructions.trim() !== (agents.instructions ?? "").trim() ||
-    !sameBots(bots, agents.bots);
+    !sameBots(bots, agents.bots) ||
+    skipsChanged;
   return (
     <form
       onSubmit={(e) => {
@@ -527,6 +571,7 @@ function SettingsForm({
           effort,
           instructions,
           bots,
+          ...(skipsChanged && { skipped_repos: skips }),
         });
       }}
       className="flex flex-col gap-5"
@@ -553,6 +598,13 @@ function SettingsForm({
         )}
       </div>
       {takeOver.error && <OnError error={takeOver.error} />}
+      <ReviewRepos
+        repos={repos}
+        primary={project.repo}
+        skipped={skips}
+        onChange={setSkipped}
+        error={err("skipped_repos")}
+      />
       <div className="grid grid-cols-2 items-start gap-4">
         <Field label="Model" error={err("model")}>
           {(id) => (

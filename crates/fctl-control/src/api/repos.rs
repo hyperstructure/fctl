@@ -105,7 +105,7 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             grant.name.as_deref(),
         )?;
     }
-    q(
+    let mut statements = vec![q(
         &ctx.db,
         "INSERT INTO project_repos (project_id, owner, name, access, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?) \
          ON CONFLICT (project_id, owner, name) DO UPDATE SET access = excluded.access",
@@ -117,9 +117,15 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             s(&ctx.user()?.id),
             n(ctx.now),
         ],
-    )?
-    .run()
-    .await?;
+    )?];
+    // One its agents only read now gets no review; written to again, it is
+    // reviewed, as a new one is.
+    if grant.access == RepoAccess::Read
+        && let Some(r) = grant.repo()
+    {
+        statements.push(crate::reviews::unskip(&ctx.db, &p.row.id, &r)?);
+    }
+    crate::db::batch(&ctx.db, statements).await?;
     ctx.audit_in(
         Some(p.workspace_id()),
         "project.repo_added",
@@ -149,16 +155,28 @@ pub async fn remove(ctx: &mut Ctx, id: &str, owner: &str, name: &str) -> AppResu
             "This is the project's primary repository. Link the project to another one instead.",
         ));
     }
-    let removed = q(
+    // GitHub ignores case, as `project_repos` does.
+    let linked = rows(ctx, &p.row.id)
+        .await?
+        .iter()
+        .any(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name));
+    if !linked {
+        return Err(not_found("Repository"));
+    }
+    let mut statements = vec![q(
         &ctx.db,
         "DELETE FROM project_repos WHERE project_id = ? AND owner = ? AND name = ?",
         &[s(&p.row.id), s(owner), s(name)],
-    )?
-    .run()
-    .await?;
-    if removed == 0 {
-        return Err(not_found("Repository"));
+    )?];
+    // Linked again, it is reviewed, as a new one is.
+    if name != ALL_REPOS {
+        let repo = RepoRef {
+            owner: owner.to_owned(),
+            name: name.to_owned(),
+        };
+        statements.push(crate::reviews::unskip(&ctx.db, &p.row.id, &repo)?);
     }
+    crate::db::batch(&ctx.db, statements).await?;
     ctx.audit_in(
         Some(p.workspace_id()),
         "project.repo_removed",
