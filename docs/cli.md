@@ -382,14 +382,16 @@ show` says where the project's sessions start from, their size, setup
 script and variables.
 
 With `--package-caches on`, the project's sessions on each runner share
-what npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright download, so
-a setup script like `npm ci` or `cargo fetch` gets only what is new. The
-runner keeps them for the project up to its owner's limit, 10 GiB unless
-`host.toml` says otherwise, empties them past it, and removes them two
-weeks after a session last used them ([Hosts](#hosts)). Sessions get them
-on runners with the Docker or Apple container driver (and the process
-driver), not Lima, and review agents never do. A session in a sandbox
-made before the project turned them on gets them in its next sandbox.
+what npm, pnpm, Yarn, Bun, Cargo, uv, pip and Go download, and
+Playwright's browsers in images that come without them (the default image
+comes with its own), so a setup script like `npm ci` or `cargo fetch` gets
+only what is new. The runner keeps them for the project up to its owner's
+limit, 10 GiB unless `host.toml` says otherwise, empties them past it, and
+removes them two weeks after a session last used them ([Hosts](#hosts)).
+Sessions get them on runners with the Docker or Apple container driver
+(and the process driver), not Lima, and review agents never do. A session
+in a sandbox made before the project turned them on gets them in its next
+sandbox.
 
 ### Ticket trackers
 

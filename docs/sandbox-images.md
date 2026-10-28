@@ -11,8 +11,8 @@ its repository, which images a host runs, and what an image needs.
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), a
 public repository whose README lists the versions: Debian 13 (trixie)
 with git, the GitHub CLI, build tools, Python and uv, Rust, Node.js,
-TypeScript, Bun, Claude Code and fctl. It is published for arm64 (Apple
-silicon) and amd64.
+TypeScript, Bun, Playwright with its browsers, Claude Code and fctl. It is
+published for arm64 (Apple silicon) and amd64.
 
 | Tag | Image |
 |---|---|
@@ -110,10 +110,24 @@ checks every build for it:
 - **The tools**: git, gh, Python 3 (`python3` and `python`) with uv, Rust
   through rustup with rustfmt and Clippy, Node.js 26 with npm and corepack,
   TypeScript (`tsc`), Bun, build-essential, cmake, pkg-config, OpenSSL's
-  headers, ripgrep, fd, jq, ShellCheck, sqlite3, curl, wget, rsync, zip and
-  tree.
-- **Rust and Bun** are `agent`'s, in `~/.rustup`, `~/.cargo` and `~/.bun`:
-  run `cargo`, `rustup` and `bun` as `agent`. Python is marked externally
+  headers, ripgrep, fd, jq, ShellCheck, sqlite3, curl, wget, rsync, zip,
+  tree, ffmpeg, ImageMagick (`convert`, `identify`, `compare`, `montage`),
+  pngquant and Xvfb (`xvfb-run`).
+- **Browsers**: Playwright (`playwright`), with its headless Chromium and
+  its WebKit, and the system libraries and fonts that its Chromium,
+  Firefox and WebKit need. A script gets Playwright from a `node_modules`
+  of its own; installing the image's version there finds its browsers in
+  place:
+
+  ```sh
+  npm install "playwright@$(playwright --version | cut -d' ' -f2)"
+  ```
+
+  Other versions, and the browsers the image leaves out, download with
+  `npx playwright install`, without sudo or `--with-deps`.
+- **Rust, Bun and Playwright's browsers** are `agent`'s, in `~/.rustup`,
+  `~/.cargo`, `~/.bun` and `~/.cache/ms-playwright`: run `cargo`, `rustup`,
+  `bun` and `playwright install` as `agent`. Python is marked externally
   managed, so packages go into a virtual environment (`uv venv`,
   `python3 -m venv`).
 
@@ -129,9 +143,12 @@ and `pnpm_config_cache_dir` (pnpm 11; pnpm 9 and 10 get theirs in
 beside its tools, so `~/.cargo/registry`, `~/.cargo/git` and their lock
 files become links into the caches. What an image sets stays: its own
 variables, a `~/.cargo/registry` it comes with, and browsers in
-`~/.cache/ms-playwright`. With Docker, the host gives the caches to the
-image's user, `agent` or another; fctl-agent checks it can write to them,
-and without that, the session's package managers keep their own.
+`~/.cache/ms-playwright`, which the default image comes with: Playwright
+keeps other versions' browsers there too, so they download in each
+sandbox rather than once into the caches. With Docker, the host gives the
+caches to the image's user, `agent` or another; fctl-agent checks it can
+write to them, and without that, the session's package managers keep
+their own.
 
 An image that installs something as root switches back to `agent` at the
 end:
