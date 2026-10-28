@@ -217,6 +217,9 @@ cargo xtask linear show ENG-1                           # what fctl did in its a
 cargo xtask linear uninstall                            # Acme uninstalls fctl's app
 ```
 
+Nobody in Acme can delegate to fctl's app, or talk with it, while it isn't
+installed; the next `cargo xtask dev` installs it again.
+
 Issues and replies reach fake-claude as a session's task does, so its
 words work in them: ENG-1 has it write and push `notes.md`, ENG-3 (labeled
 `explore`, which asks for an exploration) explore, and ENG-4 hit the usage

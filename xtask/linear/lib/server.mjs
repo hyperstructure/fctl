@@ -44,6 +44,17 @@ export function createStandin({ schema, state, config, out = console, answerWith
     problems.push({ at: new Date().toISOString(), kind, message, ...details });
     out.error(`[linear] problem: ${message}`);
   };
+  /** Whether fctl's app is installed in Acme: it has a token that works, or renews. */
+  const installed = () => Object.values(w.tokens).some((t) => t.app && !t.revoked && t.kind === "refresh");
+  /** People delegate to, mention and talk with fctl's app only while it is installed. */
+  const toInstalled = () => {
+    if (!installed()) {
+      throw new Refusal(
+        409,
+        "fctl's app isn't installed in Acme: restart cargo xtask dev, or connect Acme on the workspace's Linear tab",
+      );
+    }
+  };
 
   // ───────────────────────────── as people in Linear ─────────────────────────────
 
@@ -114,7 +125,7 @@ export function createStandin({ schema, state, config, out = console, answerWith
   const begin = async (s, what) => {
     save();
     const delivery = await send(D.created(w, config, s), what);
-    out.log(`[linear] ${what}: agent session ${s.id.slice(0, 8)}, fctl answered ${delivery.status}`);
+    out.log(`[linear] ${what}, in agent session ${s.id.slice(0, 8)}: fctl answered ${delivery.status}`);
     const since = new Date().toISOString();
     setTimeout(() => {
       const answered = s.activities.some((a) => a.userId === W.APP_USER) || s.externalUrls.length > 0;
@@ -125,10 +136,20 @@ export function createStandin({ schema, state, config, out = console, answerWith
         );
       }
     }, answerWithinMs).unref();
-    return { session: sessionJson(w, s), delivery };
+    return { what, session: sessionJson(w, s), delivery };
+  };
+  /** A person's prompt in an agent session: delivered. */
+  const prompt = async (s, by, activity, did) => {
+    const a = W.addActivity(s, { userId: by.id, ...activity });
+    save();
+    const what = `${by.name} ${did} in ${W.identifier(w, W.issue(w, s.issueId))}`;
+    const delivery = await send(D.prompted(w, config, s, a), what);
+    out.log(`[linear] ${what}, in agent session ${s.id.slice(0, 8)}: fctl answered ${delivery.status}`);
+    return { what, session: sessionJson(w, s), delivery };
   };
   const actions = {
     delegate: async (body) => {
+      toInstalled();
       const by = who(body.as);
       const i = issueFor(body, by);
       i.delegateId = W.APP_USER;
@@ -138,6 +159,7 @@ export function createStandin({ schema, state, config, out = console, answerWith
       return begin(s, `${by.name} delegated ${W.identifier(w, i)} to fctl`);
     },
     mention: async (body) => {
+      toInstalled();
       const by = who(body.as);
       const i = issueFor(body, by);
       let text = body.body?.trim() || "Can you take a look?";
@@ -147,43 +169,29 @@ export function createStandin({ schema, state, config, out = console, answerWith
       return begin(s, `${by.name} mentioned fctl in ${W.identifier(w, i)}`);
     },
     reply: async (body) => {
+      toInstalled();
       const by = who(body.as);
       const s = sessionFor(body);
       const text = body.body?.trim();
       if (!text) throw new Refusal(400, "Say what the reply says");
       // Linear keeps a reply in the session's thread as a comment, and hands it to the agent as a prompt.
       const c = W.addComment(w, { issueId: s.issueId, userId: by.id, body: text, parentId: s.commentId });
-      const a = W.addActivity(s, {
-        userId: by.id,
-        content: { type: "prompt", body: text },
-        sourceCommentId: c.id,
-      });
-      save();
-      const key = W.identifier(w, W.issue(w, s.issueId));
-      const delivery = await send(D.prompted(w, config, s, a), `${by.name} replied in ${key}`);
-      out.log(
-        `[linear] ${by.name} replied in ${key}'s agent session ${s.id.slice(0, 8)}: fctl answered ${delivery.status}`,
-      );
-      return { session: sessionJson(w, s), delivery };
+      return prompt(s, by, { content: { type: "prompt", body: text }, sourceCommentId: c.id }, "replied");
     },
     stop: async (body) => {
+      toInstalled();
       const by = who(body.as);
       const s = sessionFor(body);
-      const a = W.addActivity(s, { userId: by.id, content: { type: "prompt", body: "" }, signal: "stop" });
-      save();
-      const key = W.identifier(w, W.issue(w, s.issueId));
-      const delivery = await send(D.prompted(w, config, s, a), `${by.name} stopped fctl in ${key}`);
-      out.log(
-        `[linear] ${by.name} pressed stop in ${key}'s agent session ${s.id.slice(0, 8)}: fctl answered ${delivery.status}`,
-      );
-      return { session: sessionJson(w, s), delivery };
+      return prompt(s, by, { content: { type: "prompt", body: "" }, signal: "stop" }, "pressed stop");
     },
     uninstall: async () => {
+      toInstalled();
       O.uninstall(w);
       save();
-      const delivery = await send(D.revoked(config), "fctl's app uninstalled");
-      out.log(`[linear] fctl's app was uninstalled from Acme: fctl answered ${delivery.status}`);
-      return { delivery };
+      const what = "Acme uninstalled fctl's app";
+      const delivery = await send(D.revoked(config), what);
+      out.log(`[linear] ${what}: fctl answered ${delivery.status}`);
+      return { what, delivery };
     },
   };
 
@@ -274,9 +282,7 @@ export function createStandin({ schema, state, config, out = console, answerWith
       if (route === "POST /graphql") return await graphql(req, res, body);
       if (route === "GET /") return page(res, 200, "Acme in the Linear stand-in", overview(w));
       if (route === "GET /standin/health") {
-        // Whether fctl's app is installed: it has a token that works, or renews.
-        const installed = Object.values(w.tokens).some((t) => t.app && !t.revoked && t.kind === "refresh");
-        return json(res, 200, { ok: true, organization: W.ORGANIZATION, installed });
+        return json(res, 200, { ok: true, organization: W.ORGANIZATION, installed: installed() });
       }
       if (route === "GET /standin/problems") return json(res, 200, { problems });
       if (route === "GET /standin/sessions") {
@@ -408,7 +414,12 @@ function overview(w) {
           const text =
             a.type === "action" ? `${a.action} ${a.parameter}${a.result ? ` → ${a.result}` : ""}` : a.body;
           const extra = [a.ephemeral && "ephemeral", a.signal].filter(Boolean).join(", ");
-          return `<li><small>${esc(a.by)} · ${esc(a.type)}${extra ? ` (${esc(extra)})` : ""}</small><br>${esc(text)}</li>`;
+          // What Linear shows with an elicitation: the button that links an account, or the choices.
+          const button = a.signalMetadata?.url
+            ? ` <a href="${esc(a.signalMetadata.url)}">${esc(a.signalMetadata.providerName ?? "Link")}</a>`
+            : "";
+          const choices = (a.signalMetadata?.options ?? []).map((o) => esc(o.label ?? o.value)).join(" · ");
+          return `<li><small>${esc(a.by)} · ${esc(a.type)}${extra ? ` (${esc(extra)})` : ""}</small><br>${esc(text)}${button}${choices ? `<br><small>${choices}</small>` : ""}</li>`;
         });
         const links = j.externalUrls.map((l) => `<a href="${esc(l.url)}">${esc(l.label)}</a>`).join(" · ");
         return `<p><small>Agent session ${esc(s.id.slice(0, 8))} by ${esc(j.creator)}, ${esc(j.status)}${links ? ` · ${links}` : ""}</small></p><ol>${lines.join("")}</ol>`;

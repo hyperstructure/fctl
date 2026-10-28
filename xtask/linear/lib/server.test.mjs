@@ -31,7 +31,34 @@ async function fctl(secret) {
   return { got, server, url: `http://127.0.0.1:${server.address().port}/api/v1/linear/webhook` };
 }
 
-async function standin(webhook) {
+/** Installs fctl's app in Acme, as an admin's sign-in with actor=app does. */
+async function install(base) {
+  const redirect = "http://localhost:8787/api/v1/linear/installed";
+  const authorize = new URL(`${base}/oauth/authorize`);
+  const query = {
+    client_id: "id",
+    redirect_uri: redirect,
+    response_type: "code",
+    scope: "read,write,app:assignable,app:mentionable",
+    actor: "app",
+  };
+  for (const [k, v] of Object.entries(query)) authorize.searchParams.set(k, v);
+  const back = new URL((await fetch(authorize, { redirect: "manual" })).headers.get("location"));
+  const code = back.searchParams.get("code");
+  const res = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirect,
+      client_id: "id",
+      client_secret: "secret",
+    }),
+  });
+  assert.equal(res.status, 200);
+}
+
+async function standin(webhook, { installed = true } = {}) {
   const config = { clientId: "id", clientSecret: "secret", webhookSecret: "hook", webhook };
   const s = createStandin({ schema, config, out: quiet, answerWithinMs: 200 });
   s.server.listen(0, "127.0.0.1");
@@ -45,6 +72,7 @@ async function standin(webhook) {
     });
     return { status: res.status, body: await res.json() };
   };
+  if (installed) await install(base);
   return { ...s, base, call };
 }
 
@@ -120,4 +148,24 @@ test("what Linear wouldn't answer, or fctl's webhook refused, is a problem", asy
     problems[0].message,
     /fctl answered the delivery \(Dev Owner delegated ENG-1 to fctl\) with 401/,
   );
+});
+
+test("nobody delegates to fctl's app, or talks with it, while it isn't installed", async (t) => {
+  const hook = await fctl("hook");
+  const s = await standin(hook.url, { installed: false });
+  t.after(() => {
+    hook.server.close();
+    s.server.close();
+  });
+  const refused = await s.call("POST", "/standin/delegate", { issue: "ENG-1" });
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /isn't installed in Acme/);
+  assert.equal((await s.call("GET", "/standin/health")).body.installed, false);
+  await install(s.base);
+  assert.equal((await s.call("GET", "/standin/health")).body.installed, true);
+  assert.equal((await s.call("POST", "/standin/delegate", { issue: "ENG-1" })).status, 200);
+  const uninstalled = await s.call("POST", "/standin/uninstall");
+  assert.equal(uninstalled.body.delivery.status, 200);
+  assert.equal(hook.got.at(-1).payload.type, "OAuthApp");
+  assert.equal((await s.call("POST", "/standin/reply", { issue: "ENG-1", body: "Hi" })).status, 409);
 });

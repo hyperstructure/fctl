@@ -91,18 +91,20 @@ fn standin(method: &str, path: &str, body: Option<Value>) -> Result<Value> {
     Ok(v)
 }
 
-/// What someone does in Acme (`delegate`, `mention`, `reply`, `stop`), and
-/// fctl's answer to the delivery the stand-in sent: the agent session.
-fn act(action: &str, body: Value) -> Result<Value> {
+/// What someone does in Acme (`delegate`, `mention`, `reply`, `stop`):
+/// what the stand-in says they did, and the agent session once fctl took the
+/// delivery.
+fn act(action: &str, body: Value) -> Result<(String, Value)> {
     let done = standin("POST", &format!("/standin/{action}"), Some(body))?;
+    let what = done["what"].as_str().unwrap_or(action).to_owned();
     let status = done["delivery"]["status"].as_u64().unwrap_or(0);
     if !(200..300).contains(&status) {
         bail!(
-            "fctl answered the Linear stand-in's delivery ({action}) with {status}: {}",
+            "{what}, and fctl answered the delivery with {status}: {}",
             done["delivery"]["body"]
         );
     }
-    Ok(done["session"].clone())
+    Ok((what, done["session"].clone()))
 }
 
 /// Goes through a sign-in to Linear as a browser does, from `url` on: to
@@ -245,6 +247,10 @@ pub(crate) fn connect(root: &Path, token: &str) -> Result<()> {
 /// How long `cargo xtask linear` follows an agent session for fctl's answer.
 const FOLLOW: Duration = Duration::from_secs(180);
 
+/// How long it waits for fctl to say anything at all: it answers each
+/// delivery at once (a thought, or its answer).
+const SILENCE: Duration = Duration::from_secs(15);
+
 /// `cargo xtask linear <action> [<target>] [<text>]`: someone in Acme (the
 /// dev owner, or `--as` another) delegates an issue to fctl, mentions it,
 /// replies in an issue's agent session or presses stop, and this follows
@@ -300,7 +306,8 @@ pub fn command(
     if let Some(who) = who {
         body["as"] = json!(who);
     }
-    follow(&act(action, body)?)?;
+    let (what, session) = act(action, body)?;
+    follow(&what, &session)?;
     problems_note()
 }
 
@@ -320,16 +327,17 @@ fn issue(target: Option<String>, description: Option<String>) -> Result<Value> {
     })
 }
 
-/// Prints what fctl posts in an agent session from now on, until it waits
-/// for the person (an answer, a question, an error) or [`FOLLOW`] passes.
-fn follow(session: &Value) -> Result<()> {
+/// Prints what fctl posts in an agent session after someone's part in it
+/// (`what`): all of a new one, whose first thought comes with fctl's answer
+/// to the delivery. Until fctl waits for them (an answer, a question, an
+/// error), [`FOLLOW`] passes, or fctl says nothing for [`SILENCE`].
+fn follow(what: &str, session: &Value) -> Result<()> {
     let id = session["id"].as_str().context("no agent session")?;
-    let seen = session["activities"].as_array().map_or(0, Vec::len);
-    println!(
-        "{} · agent session {} · fctl's answer:",
-        session["issue"].as_str().unwrap_or("?"),
-        &id[..8.min(id.len())]
-    );
+    let seen = session["activities"]
+        .as_array()
+        .and_then(|a| a.iter().rposition(|a| a["app"] != true))
+        .map_or(0, |i| i + 1);
+    println!("{what}, in agent session {}:", &id[..8.min(id.len())]);
     let start = Instant::now();
     let mut printed = seen;
     loop {
@@ -350,6 +358,13 @@ fn follow(session: &Value) -> Result<()> {
         });
         if waits {
             println!("{}", footer(&s));
+            return Ok(());
+        }
+        if printed == seen && start.elapsed() > SILENCE {
+            println!(
+                "  … fctl said nothing in {} seconds: cargo xtask dev's output says why",
+                SILENCE.as_secs()
+            );
             return Ok(());
         }
         if start.elapsed() > FOLLOW {
@@ -745,7 +760,7 @@ pub(crate) fn smoke(root: &Path, token: &str, children: &mut Children) -> Result
         ]))?;
     }
 
-    let delegated = act(
+    let (_, delegated) = act(
         "delegate",
         json!({ "title": "Say what the playground holds", "description": "Say what the repository holds." }),
     )?;
@@ -883,7 +898,7 @@ pub(crate) fn smoke(root: &Path, token: &str, children: &mut Children) -> Result
     })?;
 
     // A mention in another issue starts another session, which answers there.
-    let mentioned = act(
+    let (_, mentioned) = act(
         "mention",
         json!({ "title": "Count what the playground holds", "body": "how many files does the playground hold?" }),
     )?;
@@ -894,7 +909,7 @@ pub(crate) fn smoke(root: &Path, token: &str, children: &mut Children) -> Result
     let other = linked_session(&m).context("the mention's agent session links no fctl session")?;
 
     // An issue of a team no project takes: fctl says so, and starts nothing.
-    let refused = act(
+    let (_, refused) = act(
         "delegate",
         json!({ "title": "Draw the error states", "team": "DES" }),
     )?;
