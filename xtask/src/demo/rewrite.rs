@@ -957,9 +957,11 @@ fn head_review(ctx: &Ctx, of: &str, sha: Option<&str>) -> Option<Value> {
         .filter(|s| sha.is_some() && w.reviewed_sha(s).ok().as_deref() == sha)
         .max_by_key(|s| s.start.offset())?;
     let r = s.review.as_ref()?;
+    let (project, _) = cast::session_ref(&s.id).ok()?;
     Some(json!({
         "state": r.result, "findings": r.findings, "still_open": r.still_open,
         "session_id": w.sessions.get(&s.id)?.id, "url": review_url(ctx, s),
+        "project_id": w.projects.get(project)?,
     }))
 }
 

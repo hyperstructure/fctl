@@ -16,7 +16,7 @@ use fctl_proto::api::{
 };
 use fctl_proto::event::{PassedOnFinding, PassedOnReview};
 use fctl_proto::session::{PullRequestRef, RepoRef, ReviewCheck};
-use fctl_proto::{ApiError, SessionId};
+use fctl_proto::{ApiError, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1485,10 +1485,12 @@ pub fn check_ended(state: ReviewState, reason: &str, session_url: &str) -> Value
     })
 }
 
-/// What the control plane keeps of a review (`reviews`): the pull request
-/// and commit it reviews, how it went, and what it found and posted.
+/// What the control plane keeps of a review (`reviews`): its project, the
+/// pull request and commit it reviews, how it went, and what it found and
+/// posted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Kept {
+    pub project_id: ProjectId,
     pub repo: RepoRef,
     pub number: u64,
     pub head_sha: String,
@@ -1502,11 +1504,11 @@ pub struct Kept {
 
 /// The review that the checks of pull request `number` of `repo` at
 /// commit `sha` show, as its check run says (`check`), with what the
-/// control plane kept of the review it names (`kept`): once it ended, how,
-/// and what it found. Its check says how it ended only after fctl kept
-/// that, and keeps saying it runs where GitHub refused its last update.
-/// What fctl kept of another pull request's or commit's review changes
-/// nothing.
+/// control plane kept of the review it names (`kept`): its project, and
+/// once it ended, how, and what it found. Its check says how it ended only
+/// after fctl kept that, and keeps saying it runs where GitHub refused its
+/// last update. What fctl kept of another pull request's or commit's
+/// review changes nothing.
 pub fn checked(
     check: ReviewCheck,
     repo: &RepoRef,
@@ -1520,6 +1522,10 @@ pub fn checked(
             && sha.is_none_or(|sha| sha.eq_ignore_ascii_case(&k.head_sha))
     }) else {
         return check;
+    };
+    let check = ReviewCheck {
+        project_id: Some(kept.project_id.clone()),
+        ..check
     };
     if !kept.state.is_done() {
         return check;
@@ -3086,8 +3092,11 @@ mod tests {
             still_open: 0,
             session_id: SessionId::parse("ses_1"),
             url: None,
+            project_id: None,
         };
+        let project = ProjectId::parse("prj_1");
         let kept = |state| Kept {
+            project_id: project.clone().unwrap_or_else(|| panic!("project")),
             repo: RepoRef::parse("Acme/Web").unwrap_or_else(|| panic!("repo")),
             number: 12,
             head_sha: SHA.into(),
@@ -3111,6 +3120,8 @@ mod tests {
             Some("https://github.com/acme/web/pull/12#issuecomment-1")
         );
         assert_eq!(posted.session_id, SessionId::parse("ses_1"));
+        // Its project, where people ask for another review.
+        assert_eq!(posted.project_id, project);
         // How it ended, where its check still says it runs, or says less.
         let stuck = at(
             check(ReviewState::Running, false),
@@ -3127,7 +3138,13 @@ mod tests {
             check(ReviewState::Running, true),
             Some(&kept(ReviewState::Running)),
         );
-        assert_eq!(waiting, check(ReviewState::Running, true));
+        assert_eq!(
+            waiting,
+            ReviewCheck {
+                project_id: project.clone(),
+                ..check(ReviewState::Running, true)
+            }
+        );
         // Nothing kept, or what was kept of another pull request or commit.
         let neutral = check(ReviewState::Commented, false);
         assert_eq!(at(neutral.clone(), None), neutral);
@@ -3152,6 +3169,7 @@ mod tests {
                 still_open,
                 session_id: None,
                 url: None,
+                project_id: None,
             })
         };
         use ReviewState::*;

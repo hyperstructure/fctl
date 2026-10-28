@@ -15,6 +15,7 @@ import {
   prStateText,
   prTitle,
   pullRequests,
+  reviewAgainIn,
   reviewIssues,
 } from "./pulls";
 
@@ -196,6 +197,30 @@ describe("fctl's review of a pull request", () => {
     // The other checks' state comes first.
     expect(checksMark(reviewed(review("passed"), checks(3, 0, 1)))).toBe("pending");
     expect(checksMark(reviewed(review("commented"), checks(3, 1, 0)))).toBe("failed");
+  });
+
+  it("runs again, once it ended, in its project for those who start sessions there", () => {
+    const project = (id: string, role: G.ProjectRole, more: Partial<G.Project> = {}) =>
+      ({ id, slug: id, name: id, role, ...more }) as G.Project;
+    const mine = [
+      project("prj_web", "editor"),
+      project("prj_ops", "viewer"),
+      project("prj_old", "owner", { archived_at: NOW }),
+    ];
+    const again = (r: G.ReviewCheck, projects: G.Project[] | undefined = mine) =>
+      reviewAgainIn(r, projects)?.id;
+    for (const state of ["passed", "commented", "stopped", "superseded", "failed"] as const)
+      expect(again(review(state, { project_id: "prj_web" }))).toBe("prj_web");
+    // Not while it waits or reviews.
+    expect(again(review("running", { project_id: "prj_web" }))).toBeUndefined();
+    expect(again(review("running", { project_id: "prj_web", waiting: true }))).toBeUndefined();
+    // Not where they only follow sessions, the project is archived, isn't theirs, or is unknown.
+    expect(again(review("commented", { project_id: "prj_ops" }))).toBeUndefined();
+    expect(again(review("commented", { project_id: "prj_old" }))).toBeUndefined();
+    expect(again(review("commented", { project_id: "prj_other" }))).toBeUndefined();
+    expect(again(review("commented"))).toBeUndefined();
+    // Their projects not loaded yet.
+    expect(reviewAgainIn(review("commented", { project_id: "prj_web" }), undefined)).toBeUndefined();
   });
 
   it("shows in its tooltip and in what screen readers say of its link", () => {

@@ -4,7 +4,7 @@
 
 import type * as G from "@/gen";
 import { ago, stamp } from "./format";
-import { issues, type ReviewLook } from "./reviews";
+import { canAskForReview, issues, type ReviewLook } from "./reviews";
 
 type Pulls = Pick<G.Session, "pull_request" | "pull_requests">;
 
@@ -112,6 +112,17 @@ export function prReview(pr: G.PullRequestRef): G.ReviewCheck | undefined {
 export function prReviewLook(r: G.ReviewCheck): ReviewLook {
   if (r.state === "running") return r.waiting ? "waiting" : "reviewing";
   return r.state;
+}
+
+/**
+ * Where someone may review a pull request again once fctl's review of it ended, as the Reviews tab's "Review a pull
+ * request" does: the project whose review agents reviewed it, among `projects` (theirs), where they start sessions.
+ * Nothing while it runs, and where the control plane didn't say whose review it was.
+ */
+export function reviewAgainIn(r: G.ReviewCheck, projects: G.Project[] | undefined): G.Project | undefined {
+  if (r.state === "running" || !r.project_id) return undefined;
+  const p = projects?.find((p) => p.id === r.project_id);
+  return p && canAskForReview(p.role) && !p.archived_at ? p : undefined;
 }
 
 /** How many issues it points out: those it found, else those of earlier reviews still open. */
