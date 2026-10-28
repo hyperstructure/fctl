@@ -46,12 +46,18 @@ npm run dev --workspace web -- --port 5175   # main's web app at http://localhos
 
 ## Taking them
 
-Once per sandbox, install Playwright and Chromium beside the screenshots:
+Once per sandbox, install Playwright beside the screenshots. The default
+sandbox image has Playwright with its headless Chromium and the system
+libraries it needs: install the image's version, whose browser is there.
+In an image without Playwright, install it with Chromium:
 
 ```sh
-mkdir -p ~/screenshots && cd ~/screenshots
-npm init -y >/dev/null && npm install playwright
-npx playwright install --with-deps chromium   # sudo installs its system libraries
+mkdir -p ~/screenshots && cd ~/screenshots && npm init -y >/dev/null
+if command -v playwright >/dev/null; then
+  npm install "playwright@$(playwright --version | cut -d' ' -f2)"
+else
+  npm install playwright && npx playwright install --with-deps chromium   # sudo installs its system libraries
+fi
 ```
 
 Run `cargo xtask dev` (in a fresh sandbox it needs `worker-build` first:
@@ -158,10 +164,10 @@ can't attach them. Don't commit them instead.
 `fctl publish` takes images, not videos: turn a recording into an animated
 WebP and publish that. `-ss` and `-t` keep the seconds that show the change.
 Three seconds at 12 frames a second and 800 px wide come to about 1 MB, well
-under the 5 MB limit:
+under the 5 MB limit. The default sandbox image has ffmpeg; elsewhere,
+`sudo apt-get update && sudo apt-get install -y ffmpeg` first:
 
 ```sh
-sudo apt-get update && sudo apt-get install -y ffmpeg   # once per sandbox
 ffmpeg -ss 1 -t 3 -i recording.webm -vf "fps=12,scale=800:-1" \
   -c:v libwebp_anim -q:v 60 -loop 0 after.webp
 fctl publish after.webp
