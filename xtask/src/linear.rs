@@ -198,7 +198,8 @@ pub(crate) fn connect(root: &Path, token: &str) -> Result<()> {
         .as_array()
         .is_some_and(|c| c.iter().any(|c| c["organization"] == organization));
     // The stand-in forgets fctl's app with .fctl-dev/linear, though the
-    // control plane still has the connection.
+    // control plane keeps the connection: then only the app is installed
+    // again, and Playground's tickets stay where someone may have moved them.
     if !connected || health["installed"] != true {
         let res = call(
             "POST",
@@ -212,6 +213,8 @@ pub(crate) fn connect(root: &Path, token: &str) -> Result<()> {
         if !page.contains("linear=connected") {
             bail!("connecting the dev workspace to the Linear stand-in ended at {page}");
         }
+    }
+    if !connected {
         run(fctl(root, token).args([
             "projects",
             "set",
@@ -254,48 +257,20 @@ pub fn command(
     who: Option<String>,
     description: Option<String>,
 ) -> Result<()> {
-    // An issue by its key, or the title of a new one.
-    let issue = |t: Option<String>| -> Result<Value> {
-        let t = t.context("name an issue (ENG-1), or give the title of a new one")?;
-        let key = t.split_once('-').is_some_and(|(team, n)| {
-            !team.is_empty()
-                && team.chars().all(|c| c.is_ascii_alphabetic())
-                && !n.is_empty()
-                && n.chars().all(|c| c.is_ascii_digit())
-        });
-        Ok(if key {
-            json!({ "issue": t })
-        } else {
-            json!({ "title": t, "description": description })
-        })
-    };
-    let with = |mut body: Value, extra: Value| {
-        if let (Some(b), Some(e)) = (body.as_object_mut(), extra.as_object()) {
-            b.extend(e.clone());
+    let mut body = match action {
+        "delegate" => issue(target, description)?,
+        "mention" => {
+            let mut body = issue(target, description)?;
+            body["body"] = json!(text);
+            body
         }
-        b_as(body, who.as_deref())
-    };
-    let session = match action {
-        "delegate" => act("delegate", with(issue(target)?, json!({})))?,
-        "mention" => act("mention", with(issue(target)?, json!({ "body": text })))?,
-        "reply" => {
-            let text =
-                text.context("say what the reply says: cargo xtask linear reply ENG-1 \"…\"")?;
-            act(
-                "reply",
-                with(
-                    json!({ "issue": target.context("name the issue")? }),
-                    json!({ "body": text }),
-                ),
-            )?
+        "reply" => json!({
+            "issue": target.context("name the issue: cargo xtask linear reply ENG-1 \"…\"")?,
+            "body": text.context("say what the reply says: cargo xtask linear reply ENG-1 \"…\"")?,
+        }),
+        "stop" => {
+            json!({ "issue": target.context("name the issue: cargo xtask linear stop ENG-1")? })
         }
-        "stop" => act(
-            "stop",
-            with(
-                json!({ "issue": target.context("name the issue")? }),
-                json!({}),
-            ),
-        )?,
         "show" => {
             let path = match &target {
                 Some(t) => format!("/standin/sessions?issue={t}"),
@@ -304,9 +279,7 @@ pub fn command(
             let all = standin("GET", &path, None)?;
             let sessions = all["sessions"].as_array().cloned().unwrap_or_default();
             if sessions.is_empty() {
-                println!(
-                    "fctl has no agent sessions in Acme yet: cargo xtask linear delegate ENG-1"
-                );
+                println!("fctl has no agent sessions there yet: cargo xtask linear delegate ENG-1");
             }
             for s in &sessions {
                 show(s);
@@ -316,24 +289,35 @@ pub fn command(
         "uninstall" => {
             standin("POST", "/standin/uninstall", Some(json!({})))?;
             println!(
-                "fctl's app was uninstalled from Acme. Connect it again on the workspace's Linear tab, or restart cargo xtask dev."
+                "fctl's app was uninstalled from Acme: restart cargo xtask dev, or connect it again on the workspace's Linear tab"
             );
             return Ok(());
         }
         other => bail!(
-            "unknown action `{other}`: delegate, mention, reply, stop, show or uninstall (cargo xtask help)"
+            "unknown action `{other}`: delegate, mention, reply, stop, show, uninstall or check (cargo xtask help)"
         ),
     };
-    follow(&session)?;
+    if let Some(who) = who {
+        body["as"] = json!(who);
+    }
+    follow(&act(action, body)?)?;
     problems_note()
 }
 
-/// `body`, as person `who` in Acme (the dev owner when `None`).
-fn b_as(mut body: Value, who: Option<&str>) -> Value {
-    if let Some(w) = who {
-        body["as"] = json!(w);
-    }
-    body
+/// An issue by its key (`ENG-1`), or a new one with `target` for its title.
+fn issue(target: Option<String>, description: Option<String>) -> Result<Value> {
+    let t = target.context("name an issue (ENG-1), or give the title of a new one")?;
+    let key = t.split_once('-').is_some_and(|(team, n)| {
+        !team.is_empty()
+            && team.chars().all(|c| c.is_ascii_alphabetic())
+            && !n.is_empty()
+            && n.chars().all(|c| c.is_ascii_digit())
+    });
+    Ok(if key {
+        json!({ "issue": t })
+    } else {
+        json!({ "title": t, "description": description })
+    })
 }
 
 /// Prints what fctl posts in an agent session from now on, until it waits

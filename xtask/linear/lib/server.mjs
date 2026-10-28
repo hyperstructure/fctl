@@ -224,13 +224,11 @@ export function createStandin({ schema, state, config, out = console, answerWith
     for (const e of answer.body.errors ?? []) {
       if (!G.isNotFound(e)) {
         const said = e.extensions?.userPresentableMessage;
+        const what = answer.fields?.join(", ") || "a GraphQL request";
         problem(
           "graphql",
-          `Linear would refuse this: ${e.message}${said && said !== e.message ? ` (${said})` : ""}`,
-          {
-            query: request.query,
-            variables: request.variables,
-          },
+          `${what}: Linear would refuse this: ${e.message}${said && said !== e.message ? ` (${said})` : ""}`,
+          { query: request.query, variables: request.variables },
         );
       }
     }

@@ -805,9 +805,20 @@ export function differences(schema, name, value) {
 
 // ───────────────────────────── answering ─────────────────────────────
 
+/** The fields an operation asks for at its root (`issue`, `agentActivityCreate`), which name it. */
+function rootFields(document, operationName) {
+  const operation = document.definitions.find(
+    (d) => d.kind === Kind.OPERATION_DEFINITION && (!operationName || d.name?.value === operationName),
+  );
+  return (operation?.selectionSet.selections ?? [])
+    .filter((s) => s.kind === Kind.FIELD)
+    .map((s) => s.name.value);
+}
+
 /**
  * Answers a GraphQL request as Linear would, for `actor`: its HTTP status
- * and body, and the uses of what Linear deprecated, which still work.
+ * and body, the fields it asked for at its root, and the uses of what
+ * Linear deprecated, which still work.
  */
 export async function answer(schema, w, actor, request, effects) {
   const { query, variables, operationName } = request ?? {};
@@ -828,11 +839,13 @@ export async function answer(schema, w, actor, request, effects) {
       deprecated: [],
     };
   }
+  const fields = rootFields(document, operationName);
   const invalidQuery = validate(schema, document);
   if (invalidQuery.length) {
     return {
       status: 400,
       body: { errors: invalidQuery.map((e) => graphqlError(e.message, "GRAPHQL_VALIDATION_FAILED", e)) },
+      fields,
       deprecated: [],
     };
   }
@@ -840,7 +853,12 @@ export async function answer(schema, w, actor, request, effects) {
   const points = complexity(document, variables ?? {}, operationName);
   if (points > MAX_COMPLEXITY) {
     const message = `Query too complex: it costs ${points} points, and Linear takes at most ${MAX_COMPLEXITY}`;
-    return { status: 400, body: { errors: [graphqlError(message, "QUERY_TOO_COMPLEX")] }, deprecated };
+    return {
+      status: 400,
+      body: { errors: [graphqlError(message, "QUERY_TOO_COMPLEX")] },
+      fields,
+      deprecated,
+    };
   }
   const result = await execute({
     schema,
@@ -857,7 +875,7 @@ export async function answer(schema, w, actor, request, effects) {
     );
   }
   // Linear refuses variables it can't take with 400, and answers with 200 once it ran the query.
-  return { status: "data" in result ? 200 : 400, body, deprecated };
+  return { status: "data" in result ? 200 : 400, body, fields, deprecated };
 }
 
 /** Resolvers that check what the schema leaves loose, and answer nothing. */
