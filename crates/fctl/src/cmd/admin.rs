@@ -9,8 +9,9 @@ use clap::{ArgGroup, Subcommand};
 use fctl_domain::size;
 use fctl_proto::api::{
     AccessRequest, AccessRequestList, CreateInviteRequest, GithubConnectionStatus,
-    InstanceSettings, Invite, InviteWorkspace, Runner, RunnerSession, RunnerStatus,
-    UpdateInstanceSettingsRequest, UpdateRunnerRequest, UpdateUserRequest, User, UserStatus,
+    InstanceSettings, Invite, InviteWorkspace, ReservedSlugList, Runner, RunnerSession,
+    RunnerStatus, UpdateInstanceSettingsRequest, UpdateRunnerRequest, UpdateUserRequest, User,
+    UserStatus,
 };
 use fctl_proto::session::{InstanceRole, WorkspaceRole};
 use std::io::{BufRead, IsTerminal, Write};
@@ -127,6 +128,26 @@ pub enum AdminCmd {
     Disallow {
         /// The entry's pattern or id.
         pattern: String,
+    },
+    /// List the slugs reserved for later, which no new workspace or project
+    /// takes as its address.
+    Reserved,
+    /// Reserve slugs for later: a new workspace or project whose name makes
+    /// one gets a random ending instead (`home-829d34`), and nobody chooses
+    /// one as an address. Workspaces and projects that have one keep it.
+    #[command(
+        after_help = "Examples:\n  fctl admin reserve home\n  fctl admin reserve me hello users"
+    )]
+    Reserve {
+        /// The slugs, like `home`.
+        #[arg(required = true)]
+        slugs: Vec<String>,
+    },
+    /// Let new workspaces and projects take reserved slugs again.
+    Unreserve {
+        /// The slugs.
+        #[arg(required = true)]
+        slugs: Vec<String>,
     },
     /// List runners.
     Runners,
@@ -405,6 +426,30 @@ fn print_invite_link(invite: &Invite) {
             "The invitation couldn't be emailed to {}. Invite them again in a while.",
             invite.email
         ),
+    }
+}
+
+/// The slugs admins reserve, one a line.
+fn print_reserved(list: &ReservedSlugList) {
+    if list.slugs.is_empty() {
+        println!("No slug is reserved: new workspaces and projects take any that is free.");
+        println!(
+            "{}",
+            style::dim("Reserve one with `fctl admin reserve <slug>`.")
+        );
+        return;
+    }
+    for r in &list.slugs {
+        let by = r
+            .created_by
+            .as_ref()
+            .map(|u| format!(" by {}", u.name))
+            .unwrap_or_default();
+        println!(
+            "{:<24} {}",
+            r.slug,
+            style::dim(&format!("reserved {}{by}", style::ago(r.created_at)))
+        );
     }
 }
 
@@ -845,6 +890,76 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                             .join(", ")
                     );
                 }
+            }
+        }
+        AdminCmd::Reserved => {
+            let list = api.reserved_slugs().await?;
+            if json {
+                return style::print_json(&list);
+            }
+            print_reserved(&list);
+        }
+        AdminCmd::Reserve { slugs } => {
+            let mut failed = Vec::new();
+            for slug in &slugs {
+                match api.reserve_slug(slug).await {
+                    Ok(r) if !json => println!("{} Reserved {}", style::accent("✓"), r.slug),
+                    Ok(_) => {}
+                    Err(e) => match e.api() {
+                        // Reserved already, by an admin or by fctl.
+                        Some(a) if a.code == fctl_proto::ErrorCode::Conflict => {
+                            if !json {
+                                println!("{} {}", style::dim("·"), a.message);
+                            }
+                        }
+                        Some(a) if a.code == fctl_proto::ErrorCode::Validation => {
+                            eprintln!("{} {slug}: {}", style::red("error:"), a.message);
+                            failed.push(slug.as_str());
+                        }
+                        _ => return Err(e.into()),
+                    },
+                }
+            }
+            if json {
+                style::print_json(&api.reserved_slugs().await?)?;
+            }
+            if !failed.is_empty() {
+                bail!("Not reserved: {}", failed.join(", "));
+            }
+        }
+        AdminCmd::Unreserve { slugs } => {
+            // A control plane from before reserved slugs fails here, rather
+            // than answering each one as not reserved.
+            api.reserved_slugs().await?;
+            let mut failed = Vec::new();
+            for slug in &slugs {
+                match api.unreserve_slug(slug).await {
+                    Ok(_) if !json => println!(
+                        "{} New workspaces and projects can take {} again",
+                        style::accent("✓"),
+                        slug.trim().to_lowercase()
+                    ),
+                    Ok(_) => {}
+                    Err(e) => match e.api() {
+                        Some(a) if a.code == fctl_proto::ErrorCode::NotFound => {
+                            if !json {
+                                println!("{} {}", style::dim("·"), a.message);
+                            }
+                        }
+                        // One of fctl's own.
+                        Some(a) if a.code == fctl_proto::ErrorCode::Conflict => {
+                            eprintln!("{} {}", style::red("error:"), a.message);
+                            failed.push(slug.as_str());
+                        }
+                        _ => return Err(e.into()),
+                    },
+                }
+            }
+            if json {
+                style::print_json(&api.reserved_slugs().await?)?;
+            }
+            if !failed.is_empty() {
+                bail!("Still reserved: {}", failed.join(", "));
             }
         }
         AdminCmd::Runners => {

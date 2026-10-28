@@ -469,6 +469,100 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&serde_json::json!({ "ok": true, "disabled": disabled, "disconnected": disconnected }))
 }
 
+// ───────────────────────────── reserved slugs ─────────────────────────────
+
+const RESERVED_SELECT: &str = "SELECT r.slug, r.created_at, r.created_by AS created_by_id, \
+    u.name AS created_by_name FROM reserved_slugs r LEFT JOIN users u ON u.id = r.created_by";
+
+#[derive(serde::Deserialize)]
+struct ReservedRow {
+    slug: String,
+    #[serde(deserialize_with = "crate::db::int")]
+    created_at: i64,
+    created_by_id: Option<String>,
+    created_by_name: Option<String>,
+}
+
+impl ReservedRow {
+    fn to_reserved(&self) -> ReservedSlug {
+        ReservedSlug {
+            slug: self.slug.clone(),
+            created_by: match (&self.created_by_id, &self.created_by_name) {
+                (Some(id), Some(name)) => Some(UserRef {
+                    id: UserId(id.clone()),
+                    name: name.clone(),
+                    avatar_url: None,
+                }),
+                _ => None,
+            },
+            created_at: self.created_at,
+        }
+    }
+}
+
+/// `GET /api/v1/admin/reserved-slugs`.
+pub async fn reserved_slugs(ctx: &Ctx) -> AppResult<Response> {
+    ctx.admin()?;
+    let rows: Vec<ReservedRow> = q(&ctx.db, &format!("{RESERVED_SELECT} ORDER BY r.slug"), &[])?
+        .all()
+        .await?;
+    http::ok(&ReservedSlugList {
+        slugs: rows.iter().map(ReservedRow::to_reserved).collect(),
+    })
+}
+
+/// `POST /api/v1/admin/reserved-slugs`: no new workspace or project takes
+/// it from now on (`crate::slugs`); those that have it keep it.
+pub async fn reserve_slug(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
+    let body: ReserveSlugRequest = http::body(req).await?;
+    let actor = ctx.admin()?.clone();
+    let slug = fctl_domain::slugs::reservable(&body.slug)?;
+    let inserted = q(
+        &ctx.db,
+        "INSERT OR IGNORE INTO reserved_slugs (slug, created_by, created_at) VALUES (?, ?, ?)",
+        &[s(&slug), s(&actor.id), n(ctx.now)],
+    )?
+    .run()
+    .await?;
+    if inserted == 0 {
+        return Err(conflict(&format!("{slug} is reserved already")));
+    }
+    ctx.audit("reserved_slug.added", Some(&slug), None);
+    let row: Option<ReservedRow> = q(
+        &ctx.db,
+        &format!("{RESERVED_SELECT} WHERE r.slug = ?"),
+        &[s(&slug)],
+    )?
+    .first()
+    .await?;
+    http::created(&row.ok_or_else(|| not_found("Reserved slug"))?.to_reserved())
+}
+
+/// `DELETE /api/v1/admin/reserved-slugs/{slug}`: new workspaces and
+/// projects take it again.
+pub async fn unreserve_slug(ctx: &mut Ctx, slug: &str) -> AppResult<Response> {
+    ctx.admin()?;
+    let slug = slug.trim().to_lowercase();
+    if validate::RESERVED_SLUGS.contains(&slug.as_str()) {
+        return Err(conflict(&format!("fctl reserves {slug} itself")));
+    }
+    let removed = q(
+        &ctx.db,
+        "DELETE FROM reserved_slugs WHERE slug = ?",
+        &[s(&slug)],
+    )?
+    .run()
+    .await?;
+    if removed == 0 {
+        return Err(crate::error::AppError(fctl_proto::ApiError::new(
+            fctl_proto::ErrorCode::NotFound,
+            format!("{slug} isn't reserved"),
+        )));
+    }
+    ctx.audit("reserved_slug.removed", Some(&slug), None);
+    http::ok(&Ok { ok: true })
+}
+
 async fn create_invite_for(
     ctx: &Ctx,
     email: &str,

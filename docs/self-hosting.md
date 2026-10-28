@@ -304,7 +304,11 @@ making access tokens and inviting admins, take a passkey or a code first,
 under **Admin → Settings → Sensitive actions** (or `fctl admin set
 --verify-sensitive-actions on`). It is off by default, which may suit an
 instance only you or a few people use; turning it off again asks you to
-confirm it's you.
+confirm it's you. To hold addresses for later, such as `/w/home` and
+`/p/home`, reserve them under **Admin → Settings → Reserved addresses** (or
+`fctl admin reserve home`): a new instance holds none but those fctl's own
+pages use, and a workspace or project whose name makes a reserved one gets
+a random ending instead (`home-829d34`).
 
 ## Connect GitHub (optional, recommended)
 

@@ -258,6 +258,12 @@ has only the branch GitHub makes, which becomes the default, so a `POST`
 with both is refused. A session whose base branch the repository lacks
 fails, and its `status_reason` says so.
 
+Without a `slug`, a new project's comes from its `name`, with a random
+ending of six hex digits (`my-app-829d34`) when another project has that
+one or it is reserved, by fctl or by an instance admin
+(`/api/v1/admin/reserved-slugs`). A `slug` that is taken or reserved is
+refused (`400`, `field: "slug"`). Workspaces' slugs work the same way.
+
 `settings` in a `PATCH` replaces all of the project's settings, so send
 them all: read the project, change what you need, and send its `settings`
 back, as `fctl projects set` does (`fctl projects set -p my-app

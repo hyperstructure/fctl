@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult, conflict, forbidden, not_found, validati
 use crate::github;
 use crate::http;
 use crate::model::{PROJECT_ORDER, PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
+use crate::slugs::{self, Of};
 use crate::workspaces::{self as ws, ConnectionRow};
 use fctl_domain::{naming, perm, published, settings, validate};
 use fctl_proto::api::*;
@@ -173,17 +174,6 @@ fn needs_repo() -> AppError {
     )
 }
 
-async fn slug_taken(ctx: &Ctx, slug: &str) -> AppResult<bool> {
-    let c: Option<Count> = q(
-        &ctx.db,
-        "SELECT COUNT(*) AS n FROM projects WHERE slug = ?",
-        &[s(slug)],
-    )?
-    .first()
-    .await?;
-    Ok(c.map_or(0, |c| c.n) > 0)
-}
-
 /// The workspace a request is about: the one named, or the caller's only
 /// one; with `admin`, for a new project, the only one they are an admin of.
 async fn target_workspace(
@@ -264,29 +254,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .transpose()?
         .filter(|d| !d.is_empty());
     let slug = match body.slug.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(sl) => {
-            let sl = validate::slug(sl)?;
-            if slug_taken(ctx, &sl).await? {
-                return Err(validation("slug", "Another project uses this name"));
-            }
-            sl
-        }
-        None => {
-            let base = naming::project_slug(&name);
-            let base = validate::slug(&base).unwrap_or_else(|_| {
-                format!("project-{}", &fctl_domain::ids::ulid(ctx.now)[20..]).to_lowercase()
-            });
-            let mut candidate = base.clone();
-            let mut i = 2;
-            while slug_taken(ctx, &candidate).await? {
-                candidate = format!("{base}-{i}");
-                i += 1;
-                if i > 50 {
-                    return Err(conflict("Pick a different project name"));
-                }
-            }
-            candidate
-        }
+        Some(sl) => slugs::chosen(&ctx.db, Of::Project, sl, None).await?,
+        None => slugs::free(&ctx.db, Of::Project, &naming::project_slug(&name)).await?,
     };
     let mut settings = body.settings.clone().unwrap_or_default();
     settings::for_new_project(

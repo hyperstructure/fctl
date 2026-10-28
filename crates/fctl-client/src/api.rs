@@ -1218,6 +1218,29 @@ impl Api {
         self.delete(&format!("/admin/allowlist/{}", enc(id))).await
     }
 
+    /// The slugs instance admins reserve: no new workspace or project
+    /// takes one (admins).
+    pub async fn reserved_slugs(&self) -> Result<ReservedSlugList> {
+        self.get("/admin/reserved-slugs").await
+    }
+
+    /// Reserves a slug (admins): a conflict when it is reserved already.
+    pub async fn reserve_slug(&self, slug: &str) -> Result<ReservedSlug> {
+        self.post(
+            "/admin/reserved-slugs",
+            &ReserveSlugRequest {
+                slug: slug.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Lets new workspaces and projects take a slug again (admins).
+    pub async fn unreserve_slug(&self, slug: &str) -> Result<Ok> {
+        self.delete(&format!("/admin/reserved-slugs/{}", enc(slug)))
+            .await
+    }
+
     /// Turns off a user's two-factor sign-in (they lost their phone).
     /// Changes someone's instance role or status (admins).
     pub async fn update_user(&self, user_id: &str, req: &UpdateUserRequest) -> Result<User> {
