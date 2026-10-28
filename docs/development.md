@@ -197,9 +197,10 @@ fctl doesn't know. graphql-js runs each query on Linear's own schema
 activity that Linear wouldn't take fails there too. `cargo xtask dev`
 connects the dev workspace to Acme through the redirects a browser follows,
 has Playground take Engineering's tickets and links the dev owner's
-account, unless they are already; the Linear tab, the Tickets tab and
-Settings show them, and work, as they would with Linear. Acme, and a log of
-every request, live in `.fctl-dev/linear/`.
+account, unless they are already. The workspace's Linear tab, Playground's
+Tickets tab and Settings show them as they would with Linear, and connect
+and link through the stand-in. Acme, and a log of every request, live in
+`.fctl-dev/linear/`.
 
 `cargo xtask linear` acts in Acme as people there do: it sends the control
 plane the delivery Linear would, signed with the webhook's secret, and
@@ -221,10 +222,10 @@ Nobody in Acme can delegate to fctl's app, or talk with it, while it isn't
 installed; the next `cargo xtask dev` installs it again.
 
 Issues and replies reach fake-claude as a session's task does, so its
-words work in them: ENG-1 has it write and push `notes.md`, ENG-3 (labeled
-`explore`, which asks for an exploration) explore, and ENG-4 hit the usage
-limit, after which fctl says in Linear when the session carries on. DES-1
-is in a team no project takes. http://127.0.0.1:8790 shows Acme's issues
+words work in them. In ENG-1 it writes `notes.md` and pushes it; ENG-3 is
+labeled `explore`, so fctl asks for an exploration, and fake-claude
+explores; in ENG-4 it hits the usage limit, and fctl says in Linear when
+the session carries on. DES-1 is in a team no project takes. http://127.0.0.1:8790 shows Acme's issues
 and what fctl did in each. The stand-in prints each change fctl makes in
 Acme, and as a problem what Linear would refuse, or what fctl didn't do in
 time: answer a delivery within five seconds, and say something in a new
@@ -234,9 +235,9 @@ agent session within ten.
 Linear (`fctl_domain::linear::operations`), with variables of the kinds it
 sends, against Linear's schema, without the stack; `cargo xtask check web`
 runs it too. The schema is a copy of the one Linear publishes with its SDK
-(linear/linear, `packages/sdk/src/schema.graphql`), whose first line says
-which commit: `npm run update-schema --workspace xtask/linear` brings it up
-to date.
+(linear/linear, `packages/sdk/src/schema.graphql`): its first line names
+the commit it came from, and `npm run update-schema --workspace
+xtask/linear` brings it up to date.
 
 Notifications work locally too: `http://localhost:5173` is a secure
 context, so turn them on in Settings → Notifications, follow a session and
