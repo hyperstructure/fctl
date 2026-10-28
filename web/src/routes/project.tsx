@@ -65,6 +65,7 @@ import {
   withSource,
 } from "@/lib/images";
 import { ALIASES, asked, chosenModel, EFFORTS, type ModelChoice, modelChoice } from "@/lib/models";
+import { areDefaults, shownInstructions } from "@/lib/pr-instructions";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -997,6 +998,32 @@ function Settings({ project }: { project: G.Project }) {
                 onChange={(v) => set("pull_request_descriptions", v)}
                 options={DESCRIPTIONS}
                 className="w-full"
+              />
+            )}
+          </Field>
+          <Field
+            label="Pull requests and issues"
+            hint="What agents are told about handling the pull requests they open and the issues they work on: fctl's rules until you change them, which give way to the repository's own. Empty, they're told nothing of the kind."
+            error={err("settings.pull_request_instructions")}
+            action={
+              !areDefaults(s.pull_request_instructions) && (
+                <button
+                  type="button"
+                  className="text-[12px] text-ink-3 hover:text-ink"
+                  onClick={() => set("pull_request_instructions", null)}
+                >
+                  Use fctl's rules
+                </button>
+              )
+            }
+          >
+            {(id) => (
+              <Textarea
+                id={id}
+                value={shownInstructions(s.pull_request_instructions)}
+                onChange={(e) => set("pull_request_instructions", e.target.value)}
+                minRows={4}
+                placeholder="Nothing: agents follow the repository's own instructions."
               />
             )}
           </Field>

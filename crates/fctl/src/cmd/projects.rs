@@ -10,7 +10,8 @@ use fctl_proto::api::{
     UpdateMembershipRequest, UpdateProjectRequest,
 };
 use fctl_proto::session::{
-    FollowUps, GithubAccess, ImageBuild, Project, ProjectSettings, RepoAccess, Verbosity,
+    DEFAULT_PULL_REQUEST_INSTRUCTIONS, FollowUps, GithubAccess, ImageBuild, Project,
+    ProjectSettings, RepoAccess, Verbosity,
 };
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -24,7 +25,14 @@ pub enum ProjectsCmd {
         workspace: Option<String>,
     },
     /// Show one project.
-    Show { project: String },
+    Show {
+        project: String,
+        /// Print only what its agents are told about the pull requests
+        /// they open and the issues they work on: the project's own
+        /// instructions, or fctl's defaults, to start yours from.
+        #[arg(long)]
+        pr_instructions: bool,
+    },
     /// Create a project in a workspace.
     Create {
         /// The project's name.
@@ -67,8 +75,8 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -162,6 +170,20 @@ pub enum ProjectsCmd {
         /// later commits change the pull request.
         #[arg(long, value_enum, value_name = "LEVEL")]
         pr_descriptions: Option<Descriptions>,
+        /// How agents handle the pull requests they open and the issues they
+        /// work on, such as waiting for checks and when to write `Fixes`:
+        /// "default" for fctl's rules, which change with fctl, or "" for
+        /// none. Yours take the place of fctl's, which `fctl projects show
+        /// --pr-instructions` prints for you to start from.
+        #[arg(
+            long,
+            value_name = "TEXT|default",
+            conflicts_with = "pr_instructions_file"
+        )]
+        pr_instructions: Option<String>,
+        /// Read those instructions from a file (`-`: stdin).
+        #[arg(long, value_name = "FILE")]
+        pr_instructions_file: Option<PathBuf>,
         /// What brings agents back to the pull requests they opened, on
         /// the Claude subscription each session ran on: comments (people
         /// who can write to the repository mention @fctl or @agent, or
@@ -462,6 +484,27 @@ fn pull_requests(s: &ProjectSettings) -> String {
         },
         descriptions(s)
     )
+}
+
+/// `--pr-instructions`: `None` for fctl's defaults, `default`; an empty
+/// text for none.
+fn own_rules(arg: &str) -> Option<String> {
+    (!arg.trim().eq_ignore_ascii_case("default")).then(|| arg.trim().to_owned())
+}
+
+/// What a project's agents are told about pull requests and issues, in
+/// words.
+fn rules(s: &ProjectSettings) -> String {
+    match s.pull_request_instructions() {
+        None => "are told no rules for pull requests and issues".into(),
+        Some(text) if text == DEFAULT_PULL_REQUEST_INSTRUCTIONS => {
+            "follow fctl's rules for pull requests and issues".into()
+        }
+        Some(text) => format!(
+            "follow the project's rules for pull requests and issues: {}",
+            style::terminal_safe(&script_summary(text))
+        ),
+    }
 }
 
 /// The model and effort a project's agents work with, in words.
@@ -779,8 +822,24 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             print_projects(list.projects);
         }
-        ProjectsCmd::Show { project } => {
+        ProjectsCmd::Show {
+            project,
+            pr_instructions,
+        } => {
             let p = api.project(&project).await?;
+            if pr_instructions {
+                let text = p.settings.pull_request_instructions();
+                if json {
+                    return style::print_json(&serde_json::json!({
+                        "pull_request_instructions": text,
+                        "defaults": p.settings.pull_request_instructions.is_none(),
+                    }));
+                }
+                if let Some(text) = text {
+                    println!("{}", style::terminal_safe(text));
+                }
+                return Ok(());
+            }
             if json {
                 return style::print_json(&p);
             }
@@ -848,6 +907,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             println!("claude:  {}", claude_apps(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
             println!("prs:     agents {}", pull_requests(&p.settings));
+            println!("         and {}", rules(&p.settings));
             println!("tickets: {}", tickets(&p.settings));
             println!("follow:  agents {}", follow_ups(&p.settings));
             println!("role:    {}", p.role.map(|r| r.as_str()).unwrap_or("—"));
@@ -920,6 +980,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             retrospectives,
             github,
             pr_descriptions,
+            pr_instructions,
+            pr_instructions_file,
             follow_ups: new_follow_ups,
             tickets,
             tickets_repo,
@@ -1038,6 +1100,13 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(d) = pr_descriptions {
                 settings.pull_request_descriptions = d.into();
+            }
+            let pr_instructions = match &pr_instructions_file {
+                Some(path) => Some(read_text(path)?),
+                None => pr_instructions,
+            };
+            if let Some(text) = &pr_instructions {
+                settings.pull_request_instructions = own_rules(text);
             }
             if let Some(f) = new_follow_ups {
                 settings.follow_ups = f;
@@ -1251,6 +1320,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     descriptions(&p.settings)
+                );
+            }
+            if pr_instructions.is_some() {
+                println!(
+                    "{} Agents in {} {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    rules(&p.settings)
                 );
             }
             if new_follow_ups.is_some() {
@@ -1743,6 +1820,60 @@ mod tests {
             said(Verbosity::Full),
             "describe their pull requests in full"
         );
+    }
+
+    #[test]
+    fn pull_request_instructions_are_fctls_the_projects_own_or_none() {
+        // Either flag is a change, but not both.
+        assert!(set(&["--pr-instructions", "default"]).is_some());
+        assert!(set(&["--pr-instructions-file", "-"]).is_some());
+        assert!(
+            set(&[
+                "--pr-instructions",
+                "Open drafts.",
+                "--pr-instructions-file",
+                "prs.md"
+            ])
+            .is_none()
+        );
+        assert_eq!(own_rules(" Default "), None);
+        assert_eq!(own_rules(""), Some(String::new()));
+        assert_eq!(own_rules("Open drafts.\n"), Some("Open drafts.".into()));
+
+        let said = |text: Option<&str>| {
+            rules(&ProjectSettings {
+                pull_request_instructions: text.map(str::to_owned),
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            said(None),
+            "follow fctl's rules for pull requests and issues"
+        );
+        assert_eq!(
+            said(Some("Open drafts.\nWait for CI.")),
+            "follow the project's rules for pull requests and issues: Open drafts. (and 1 more line)"
+        );
+        assert_eq!(
+            said(Some("")),
+            "are told no rules for pull requests and issues"
+        );
+
+        // `fctl projects show --pr-instructions` prints them alone.
+        let shown = |args: &[&str]| match Fctl::try_parse_from(args.iter().copied()) {
+            Ok(Fctl {
+                projects:
+                    ProjectsCmd::Show {
+                        pr_instructions, ..
+                    },
+            }) => Some(pr_instructions),
+            _ => None,
+        };
+        assert_eq!(
+            shown(&["fctl", "show", "app", "--pr-instructions"]),
+            Some(true)
+        );
+        assert_eq!(shown(&["fctl", "show", "app"]), Some(false));
     }
 
     #[test]

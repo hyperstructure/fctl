@@ -421,6 +421,13 @@ pub fn system_prompt(
             spec.project.settings.pull_request_descriptions,
             &spec.web_url,
         ));
+        // The project's own, or fctl's defaults; what the tracker comes to
+        // follows them.
+        if let Some(rules) = spec.project.settings.pull_request_instructions() {
+            s.push_str("\n## Pull requests and issues\n\n");
+            s.push_str(rules);
+            s.push('\n');
+        }
     }
     if let Some(t) = &spec.tickets {
         // The control plane says what the project's tracker comes to.
@@ -1140,6 +1147,76 @@ mod tests {
                         "\n## The project's instructions\n\nRun `npm test` before you commit.\n"
                     )
             );
+        }
+    }
+
+    #[test]
+    fn tells_agents_how_to_handle_pull_requests_and_issues_as_the_project_chose() {
+        use fctl_proto::session::{DEFAULT_PULL_REQUEST_INSTRUCTIONS, Tracker};
+        use fctl_proto::tickets::TicketsSpec;
+        let mut chosen = spec_with(serde_json::Value::Null);
+        chosen.project.settings.instructions = Some("Run `npm test` before you commit.".into());
+        chosen.tickets = Some(TicketsSpec {
+            tracker: Tracker::Github,
+            via: TicketsVia::Gh,
+            ticket: None,
+            instructions: "- This project tracks its work in GitHub issues of acme/app.\n".into(),
+        });
+        let text = system_prompt(
+            &chosen,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        // fctl's defaults, after how to describe pull requests, with the
+        // tracker's lines under them, and before the project's own words.
+        let rules = text.find(&format!(
+            "\n## Pull requests and issues\n\n{DEFAULT_PULL_REQUEST_INSTRUCTIONS}\n- This project tracks its work in GitHub issues of acme/app.\n"
+        ));
+        assert!(rules.is_some(), "{text}");
+        assert!(text.find("- Keep the description up to date") < rules);
+        assert!(rules < text.find("\n## The project's instructions\n"));
+        assert!(text.contains("`gh pr checks 12 --watch --fail-fast`"));
+
+        // The project's own take their place.
+        chosen.project.settings.pull_request_instructions =
+            Some("Open pull requests as drafts.\n".into());
+        let text = system_prompt(
+            &chosen,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        assert!(text.contains(
+            "\n## Pull requests and issues\n\nOpen pull requests as drafts.\n- This project tracks"
+        ));
+        assert!(!text.contains("`gh pr checks 12"));
+        // Empty, they say nothing, and the tracker's lines follow the descriptions.
+        chosen.project.settings.pull_request_instructions = Some(String::new());
+        let text = system_prompt(
+            &chosen,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        assert!(!text.contains("## Pull requests and issues"));
+        assert!(text.contains("- This project tracks its work in GitHub issues of acme/app.\n"));
+
+        // Agents that open no pull requests hear none of it.
+        for none in [
+            spec(),
+            with_access(GithubAccess::Comment),
+            with_access(GithubAccess::Read),
+        ] {
+            let text = system_prompt(&none, "/work", &paths(), None, None, false);
+            assert!(!text.contains("## Pull requests and issues"));
+            assert!(!text.contains("`Refs #12`"));
         }
     }
 

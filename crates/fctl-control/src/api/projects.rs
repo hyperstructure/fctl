@@ -90,6 +90,11 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
         let t = validate::text("settings.instructions", i, 20_000)?;
         s.instructions = (!t.is_empty()).then_some(t);
     }
+    // Empty, they tell agents nothing; the same as fctl's, they are fctl's.
+    if let Some(i) = s.pull_request_instructions.as_deref() {
+        let t = validate::text("settings.pull_request_instructions", i, 20_000)?;
+        s.pull_request_instructions = fctl_domain::settings::pull_request_instructions(&t);
+    }
     if let Some(c) = s.cpus
         && !(1..=64).contains(&c)
     {
