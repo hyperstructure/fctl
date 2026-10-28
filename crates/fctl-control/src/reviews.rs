@@ -1067,8 +1067,10 @@ pub async fn started(env: &Env, session_id: &str) -> AppResult<()> {
 }
 
 /// Looks the reviewed pull request up again, so that the sessions that
-/// list it see that its review's runner took it: GitHub's webhook says
-/// nothing of a check that only went from queued to in progress.
+/// list it see how its review stands now: that its runner took it, of
+/// which GitHub's webhook says nothing (its check only went from queued
+/// to in progress), and how it ended, without waiting for the webhook's
+/// word of its check, which may come late or not at all.
 async fn look_again(env: &Env, cfg: &Config, db: &D1Database, repo: &RepoRef, number: u64) {
     if !crate::pull_requests::enabled(cfg) {
         return;
@@ -1135,6 +1137,7 @@ pub async fn ended(
     if let Ok(Err(why)) = r {
         worker::console_error!("ending a review's check: {why}");
     }
+    look_again(env, &cfg, &db, &repo, row.number()).await;
     Ok(())
 }
 
@@ -1360,6 +1363,12 @@ pub async fn submit(
             None
         }
     };
+    let (env, cfg, number) = (ctx.env.clone(), ctx.cfg.clone(), row.number());
+    ctx.defer(async move {
+        let db = env.d1("DB")?;
+        look_again(&env, &cfg, &db, &repo, number).await;
+        Ok(())
+    });
     Ok(PostedReview {
         sent_to,
         ..posting.review
