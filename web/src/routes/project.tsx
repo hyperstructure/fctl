@@ -1003,7 +1003,7 @@ function Settings({ project }: { project: G.Project }) {
           </Field>
           <Field
             label="Pull requests and issues"
-            hint="What agents that open pull requests are told about handling them and the issues they work on: fctl's rules until you change them. Empty, they're told nothing of the kind."
+            hint="What agents that open pull requests are told about handling them and the issues they work on: fctl's rules until you change them, or none when you empty them."
             error={err("settings.pull_request_instructions")}
             action={
               !areDefaults(s.pull_request_instructions) && (
