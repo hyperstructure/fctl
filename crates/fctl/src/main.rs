@@ -13,6 +13,8 @@ mod style;
 mod verify;
 
 use clap::{Parser, Subcommand};
+use std::ffi::OsStr;
+use std::io::IsTerminal;
 
 #[derive(Parser)]
 #[command(
@@ -331,6 +333,11 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(log_colors(
+            std::io::stderr().is_terminal(),
+            std::env::var_os("NO_COLOR").as_deref(),
+            std::env::var_os("FCTL_LOG_FORMAT").as_deref(),
+        ))
         .with_target(false)
         .init();
     let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -363,6 +370,15 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// Whether the log on stderr takes colors: only in a terminal, since the
+/// host service's log goes to a file (launchd) or the journal (systemd),
+/// which would keep the color codes. `NO_COLOR` (unless empty, as
+/// tracing-subscriber reads it) and `FCTL_LOG_FORMAT=plain`, which the
+/// service sets, take them off a terminal too.
+fn log_colors(terminal: bool, no_color: Option<&OsStr>, format: Option<&OsStr>) -> bool {
+    terminal && no_color.is_none_or(OsStr::is_empty) && format.is_none_or(|f| f != "plain")
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
@@ -498,6 +514,21 @@ mod tests {
                 "`{line}` printed {help}"
             );
         }
+    }
+
+    #[test]
+    fn the_log_takes_colors_only_in_a_terminal() {
+        let plain = Some(OsStr::new("plain"));
+        // `fctl host run` in a terminal; into a file or a pipe; as the host
+        // service runs it, into a file or the journal.
+        assert!(log_colors(true, None, None));
+        assert!(!log_colors(false, None, None));
+        assert!(!log_colors(false, None, plain));
+        // NO_COLOR, unless empty, and the service's setting take them off a
+        // terminal too.
+        assert!(!log_colors(true, Some(OsStr::new("1")), None));
+        assert!(log_colors(true, Some(OsStr::new("")), None));
+        assert!(!log_colors(true, None, plain));
     }
 
     #[test]
