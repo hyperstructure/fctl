@@ -622,6 +622,19 @@ mod tests {
     }
 
     #[test]
+    fn specs_say_what_to_call_the_starter() -> serde_json::Result<()> {
+        // Older control planes don't say.
+        let spec: SessionSpec = serde_json::from_value(spec_json())?;
+        assert_eq!(spec.author_called, None);
+        assert!(serde_json::to_value(&spec)?.get("author_called").is_none());
+        let mut json = spec_json();
+        json["author_called"] = serde_json::json!("Carl Oscar");
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert_eq!(spec.author_called.as_deref(), Some("Carl Oscar"));
+        Ok(())
+    }
+
+    #[test]
     fn specs_carry_other_repositories_and_a_read_token() -> serde_json::Result<()> {
         let mut json = spec_json();
         json["project"]["repos"] = serde_json::json!([

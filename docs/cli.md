@@ -1001,10 +1001,11 @@ fctl account passkeys remove pky_01…
 ```
 
 Agents call you by your first names, all of them, unless you choose
-another name for it, in Settings → Profile or with `--preferred-name`. They
-learn it in the sessions you start, with every message you send another
-person's session, and in Linear; the Agent Floor greets you with it too.
-Sessions you started take a new name when they next start or resume;
+another name for them to use, in Settings → Profile or with
+`--preferred-name`. The agents of the sessions you start are told it, and
+so is an agent each time you write to a session someone else started;
+fctl's replies to you in Linear and the Agent Floor's greeting use it too.
+A session you started takes a new name when it next starts or resumes;
 `fctl whoami` shows the one agents use.
 
 Each address is invited to the instance on its own; open an invitation
