@@ -19,6 +19,14 @@ subscription, Cloudflare account or GitHub App.
 - Optional, for release builds: [zig](https://ziglang.org) and
   `cargo install cargo-zigbuild`.
 
+The root `.npmrc` holds `allow-git=all`: npm 12 installs no git
+dependency unless `allow-git` allows it, and `all` installs them as npm 10
+and 11 do. Don't narrow it to `root`, which allows only those that this
+repository's `package.json` files declare: npm 11.9 to 11.12 then refuse
+the design package, and npm 11.17 and newer refuse its new commit when you
+change its tag. npm 11.2 to 11.8 don't know the setting and warn `Unknown
+project config "allow-git"` at every command.
+
 The root `package.json`'s `allowScripts` says which dependencies may run
 install scripts: esbuild and workerd, whose scripts put their platform's
 binary in place of their JavaScript launcher, but not fsevents (macOS

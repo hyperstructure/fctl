@@ -37,7 +37,9 @@ RUN cd crates/fctl-control && worker-build --release \
 
 FROM --platform=$BUILDPLATFORM docker.io/library/node:22-bookworm-slim AS web
 WORKDIR /src
-COPY package.json package-lock.json ./
+# .npmrc lets npm 12 fetch the web app's design package, a git dependency
+# (the last stage's install has none).
+COPY package.json package-lock.json .npmrc ./
 COPY web/package.json web/
 COPY deploy/standalone/package.json deploy/standalone/
 RUN npm ci --no-audit --no-fund
