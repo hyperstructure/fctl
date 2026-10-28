@@ -160,12 +160,16 @@ export function ReviewFooter({ session, review }: { session: G.Session; review?:
   );
 }
 
-/** The review in the session's rail: how it went, the commit, and the project's other reviews. */
+/**
+ * The review in the session's rail: how it went, the commit, the session whose agent opened the pull
+ * request, and the project's other reviews.
+ */
 export function ReviewFacts({ session, review }: { session: G.Session; review?: G.Review }) {
   const pr = session.review;
   if (!pr) return null;
   const look = review ? reviewLook(review) : undefined;
   const earlier = review ? earlierFindings(review) : [];
+  const opener = review?.opened_by;
   return (
     <div className="flex flex-col gap-2.5 text-[12.5px]">
       {review && look && (
@@ -191,6 +195,19 @@ export function ReviewFacts({ session, review }: { session: G.Session; review?: 
           {shortSha(pr.head_sha)}
         </a>
       </div>
+      {opener && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="shrink-0 text-ink-4">Opened by</span>
+          <Link
+            to="/s/$id"
+            params={{ id: opener.id }}
+            title={`#${opener.number} ${opener.title}`}
+            className="min-w-0 truncate text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+          >
+            <span className="font-mono text-[12px] text-ink-3">#{opener.number}</span> {opener.title}
+          </Link>
+        </div>
+      )}
       {review?.review_url && (
         <a
           href={review.review_url}

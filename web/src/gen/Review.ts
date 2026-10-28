@@ -2,6 +2,7 @@
 import type { RepoRef } from "./RepoRef";
 import type { ReviewState } from "./ReviewState";
 import type { SessionId } from "./SessionId";
+import type { SessionRef } from "./SessionRef";
 import type { SessionStatus } from "./SessionStatus";
 import type { UserRef } from "./UserRef";
 
@@ -62,4 +63,11 @@ operator: UserRef, created_at: number, finished_at?: number,
 /**
  * How long its agent worked.
  */
-busy_ms: number, };
+busy_ms: number, 
+/**
+ * The session whose agent opened the pull request, where one of
+ * fctl's agents did and that session is in the review's project: the
+ * one fctl passes the review's findings on to. Absent otherwise, and
+ * from control planes before it.
+ */
+opened_by?: SessionRef, };

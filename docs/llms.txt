@@ -81,7 +81,7 @@ queued → provisioning → preparing → running ⇄ idle → stopping → stop
 - `paused`: the person's plan hit a usage limit (or the turn would have drawn on paid extra usage); it continues by itself when the limit resets (`resume_at`).
 - `failed`: something went wrong (`status_reason` says what). Only a resume (`fctl resume`, on the resumer's subscription) restarts a failed session; a message doesn't.
 - A runner that goes away leaves its agents working; after ten minutes the session shows as stopped and a message resumes it elsewhere, unless the runner comes back first.
-- Review agents' sessions take no messages, stop as soon as their review is posted, and stay off the Agent Floor and session lists.
+- Review agents' sessions take no messages, stop as soon as their review is posted, and stay off the Agent Floor and session lists. Their page links the session whose agent opened the pull request when it is in the same project (`opened_by` in `fctl review --json`).
 
 ## How agents work in a session
 

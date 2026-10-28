@@ -2621,6 +2621,11 @@ pub struct Review {
     pub finished_at: Option<Millis>,
     /// How long its agent worked.
     pub busy_ms: u64,
+    /// The session whose agent opened the pull request, where one of
+    /// fctl's agents did and that session is in the review's project: the
+    /// one fctl passes the review's findings on to. Absent otherwise, and
+    /// from control planes before it.
+    pub opened_by: Option<SessionRef>,
 }
 
 /// `GET /api/v1/projects/{id}/reviews`: newest first. With `?session=`, that
