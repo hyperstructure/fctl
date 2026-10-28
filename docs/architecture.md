@@ -992,6 +992,15 @@ agent posts a notice; a primary repository out of reach fails the session.
 - **Clones.** The primary repository is cloned into `~/workspace` before
   Claude starts. The system prompt lists the others, and Claude clones them
   when it needs them, into `~/repos/<owner>/<name>`.
+- **Base branch.** The session's branch starts from its base branch: the
+  one it asked for, or its project's default branch. A repository with
+  commits but without that branch fails the session, with a reason that
+  says how to fix it, and fctl-agent removes the clone, so that a resume
+  in the same sandbox clones again; an empty repository starts the branch
+  with no commits. Agents from before it start an empty branch instead.
+  The control plane asks GitHub, through the installation, whether the
+  repository has a project's default branch when the branch or the
+  repository changes, and refuses one it lacks (`fctl_domain::base_branch`).
 - **After each turn** fctl-agent finds those clones by their `origin`. In a
   writable one, work on the default branch moves to the session branch
   (which Claude is told to use), new commits on it are pushed, and its pull

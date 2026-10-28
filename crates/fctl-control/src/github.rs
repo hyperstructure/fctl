@@ -10,6 +10,7 @@ use crate::config::GithubConfig;
 use crate::crypto;
 use crate::error::{AppError, AppResult, internal, not_configured, unavailable};
 use base64::Engine;
+use fctl_domain::base_branch;
 use fctl_domain::github::Seen;
 use fctl_domain::repos::{self, ReadScope, TokenPlan};
 use fctl_domain::threads;
@@ -1429,19 +1430,40 @@ impl<'a> Github<'a> {
             )
             .await?;
         if status == 404 {
-            return Err(AppError(ApiError::validation(
-                "repo",
-                format!(
-                    "{} was not found, or the {} app cannot access it",
-                    repo.full_name(),
-                    self.cfg.slug
-                ),
-            )));
+            return Err(self.no_repo(repo));
         }
         if status != 200 {
             return Err(unavailable("GitHub did not answer"));
         }
         Ok(to_repo(serde_json::from_value(v)?))
+    }
+
+    /// Whether `repo` has branch `branch`, as installation `inst` sees it
+    /// (`fctl_domain::base_branch`).
+    pub async fn branch(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+        branch: &str,
+    ) -> AppResult<base_branch::Found> {
+        let answer = self.lookup(inst, base_branch::lookup(repo, branch)).await?;
+        match base_branch::found(&answer) {
+            Some(base_branch::Found::NoRepository) => Err(self.no_repo(repo)),
+            Some(found) => Ok(found),
+            None => Err(unavailable("GitHub did not answer")),
+        }
+    }
+
+    /// GitHub shows the app no repository `repo`.
+    fn no_repo(&self, repo: &RepoRef) -> AppError {
+        AppError(ApiError::validation(
+            "repo",
+            format!(
+                "{} was not found, or the {} app cannot access it",
+                repo.full_name(),
+                self.cfg.slug
+            ),
+        ))
     }
 
     /// Creates a repository in `owner` (an organization the app is installed on).
