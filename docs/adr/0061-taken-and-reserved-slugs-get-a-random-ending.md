@@ -1,4 +1,4 @@
-# 0060: Taken and reserved slugs get a random ending
+# 0061: Taken and reserved slugs get a random ending
 
 2026-10-28 · accepted
 
