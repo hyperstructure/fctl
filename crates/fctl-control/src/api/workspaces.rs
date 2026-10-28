@@ -10,6 +10,7 @@ use crate::internal::{self, LiveRunners};
 use crate::model::{
     PROJECT_ORDER, PROJECT_VISIBLE, RUNNER_SELECT, RunnerRow, RunnerView, UserRow, WORKSPACE_ORDER,
 };
+use crate::slugs::{self, Of};
 use crate::workspaces::{self as ws, INVITATION_SELECT, InvitationRow, WorkspaceRow};
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
@@ -28,36 +29,6 @@ async fn live(ctx: &Ctx) -> LiveRunners {
         Ok(stub) => internal::get(&stub, "/runners").await.unwrap_or_default(),
         Err(_) => LiveRunners::default(),
     }
-}
-
-async fn slug_taken(ctx: &Ctx, slug: &str, except: Option<&str>) -> AppResult<bool> {
-    let c: Option<Count> = q(
-        &ctx.db,
-        "SELECT COUNT(*) AS n FROM workspaces WHERE slug = ? AND id != ?",
-        &[s(slug), s(except.unwrap_or(""))],
-    )?
-    .first()
-    .await?;
-    Ok(c.map_or(0, |c| c.n) > 0)
-}
-
-/// A free slug from a name: the name's, or with a number after it.
-async fn free_slug(ctx: &Ctx, name: &str) -> AppResult<String> {
-    let base = policy::slug_from_name(name);
-    // A name the app's paths use ("New", "Admin") gets a word more.
-    let base = validate::slug(&base)
-        .or_else(|_| validate::slug(&format!("{base}-workspace")))
-        .unwrap_or_else(|_| "workspace".to_owned());
-    let mut candidate = base.clone();
-    let mut i = 2;
-    while slug_taken(ctx, &candidate, None).await? {
-        candidate = format!("{base}-{i}");
-        i += 1;
-        if i > 50 {
-            return Err(conflict("Pick a different workspace name"));
-        }
-    }
-    Ok(candidate)
 }
 
 /// The workspace as the caller sees it now.
@@ -156,14 +127,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?, limit)?;
     let name = policy::name(&body.name)?;
     let slug = match body.slug.as_deref().filter(|s| !s.trim().is_empty()) {
-        Some(sl) => {
-            let sl = validate::slug(sl)?;
-            if slug_taken(ctx, &sl, None).await? {
-                return Err(validation("slug", "Another workspace uses this address"));
-            }
-            sl
-        }
-        None => free_slug(ctx, &name).await?,
+        Some(sl) => slugs::chosen(&ctx.db, Of::Workspace, sl, None).await?,
+        None => slugs::free(&ctx.db, Of::Workspace, &policy::slug_from_name(&name)).await?,
     };
     let email = own_address(ctx, &user, body.email.as_deref()).await?;
     let id = fctl_domain::ids::workspace_id(ctx.now);
@@ -222,7 +187,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     .await;
     if let Err(e) = created {
         // Its address went to another workspace a moment ago.
-        if slug_taken(ctx, &slug, None).await? {
+        if slugs::taken(&ctx.db, Of::Workspace, &slug, None).await? {
             return Err(validation(
                 "slug",
                 "Another workspace took this address a moment ago. Try again.",
@@ -259,13 +224,9 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let user = ctx.user()?.clone();
     let name = body.name.as_deref().map(policy::name).transpose()?;
     let slug = match body.slug.as_deref() {
-        Some(sl) => {
-            let sl = validate::slug(sl)?;
-            if slug_taken(ctx, &sl, Some(a.id())).await? {
-                return Err(validation("slug", "Another workspace uses this address"));
-            }
-            Some(sl)
-        }
+        // Its own stays its own, reserved since or not.
+        Some(sl) if sl.trim().eq_ignore_ascii_case(&a.row.slug) => None,
+        Some(sl) => Some(slugs::chosen(&ctx.db, Of::Workspace, sl, Some(a.id())).await?),
         None => None,
     };
     if let Some(on) = body.require_two_factor {
@@ -303,7 +264,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     .await;
     if let Err(e) = updated {
         if let Some(sl) = &slug
-            && slug_taken(ctx, sl, Some(a.id())).await?
+            && slugs::taken(&ctx.db, Of::Workspace, sl, Some(a.id())).await?
         {
             return Err(validation(
                 "slug",

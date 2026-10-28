@@ -4,7 +4,7 @@
 // and what happened. Instance admins see what workspaces are and who runs
 // them, not what is inside the ones they aren't members of.
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
   Cpu,
@@ -22,6 +22,7 @@ import {
   ShieldOff,
   Trash2,
   Users as UsersIcon,
+  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
@@ -1658,7 +1659,119 @@ function InstanceSettings() {
           />
         </div>
       </Section>
+      <ReservedSlugs />
     </>
+  );
+}
+
+/**
+ * Addresses admins hold for later: no new workspace or project takes one (one whose name makes it
+ * gets a random ending instead), and nobody chooses one. fctl's own, like new and admin, aren't
+ * listed: it reserves them itself.
+ */
+function ReservedSlugs() {
+  const client = useQueryClient();
+  const list = useQuery({ queryKey: keys.reservedSlugs, queryFn: api.reservedSlugs });
+  const [slug, setSlug] = useState("");
+  const shown = slug.trim().toLowerCase() || "…";
+  const reserve = useMutation({
+    mutationFn: () => api.reserveSlug({ slug: slug.trim() }),
+    onSuccess: (r) => {
+      client.setQueryData<G.ReservedSlugList>(keys.reservedSlugs, (l) => ({
+        slugs: [...(l?.slugs ?? []).filter((x) => x.slug !== r.slug), r].sort((a, b) =>
+          a.slug.localeCompare(b.slug),
+        ),
+      }));
+      setSlug("");
+      toast(`${r.slug} is reserved`);
+    },
+  });
+  const unreserve = useMutation({
+    mutationFn: (s: string) => api.unreserveSlug(s),
+    onSuccess: (_, s) => {
+      client.setQueryData<G.ReservedSlugList>(
+        keys.reservedSlugs,
+        (l) => l && { slugs: l.slugs.filter((x) => x.slug !== s) },
+      );
+      toast(`New workspaces and projects can take ${s} again`);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const slugs = list.data?.slugs ?? [];
+  return (
+    <Section
+      title="Reserved addresses"
+      description="Addresses held for later. A new workspace or project whose name makes one gets a random ending instead, like home-829d34, and nobody can choose one. Those that have one already keep it."
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (slug.trim()) reserve.mutate();
+        }}
+      >
+        <Field
+          label="Address"
+          error={reserve.error?.message}
+          hint={
+            <>
+              <span className="font-mono text-[11.5px]">
+                {location.host}/w/{shown}
+              </span>{" "}
+              and <span className="font-mono text-[11.5px]">/p/{shown}</span>
+            </>
+          }
+        >
+          {(id) => (
+            <div className="flex gap-2">
+              <Input
+                id={id}
+                value={slug}
+                onChange={(e) => {
+                  setSlug(e.target.value);
+                  if (reserve.isError) reserve.reset();
+                }}
+                placeholder="home"
+                autoCapitalize="none"
+                spellCheck={false}
+                className="min-w-0 flex-1 font-mono"
+              />
+              <Button
+                type="submit"
+                variant="primary"
+                size="field"
+                loading={reserve.isPending}
+                disabled={!slug.trim()}
+              >
+                Reserve
+              </Button>
+            </div>
+          )}
+        </Field>
+      </form>
+      {slugs.length > 0 && (
+        <ul className="mt-5 border-t border-line">
+          {slugs.map((r) => (
+            <li key={r.slug} className="flex items-center gap-3 border-b border-line py-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-[13px] text-ink [overflow-wrap:anywhere]">{r.slug}</div>
+                <div className="text-[12px] text-ink-4">
+                  reserved {ago(r.created_at)}
+                  {r.created_by && ` by ${r.created_by.name}`}
+                </div>
+              </div>
+              <IconButton
+                label={`Stop reserving ${r.slug}`}
+                className="size-7"
+                disabled={unreserve.isPending && unreserve.variables === r.slug}
+                onClick={() => unreserve.mutate(r.slug)}
+              >
+                <X className="size-4" />
+              </IconButton>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
   );
 }
 

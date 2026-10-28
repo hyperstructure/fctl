@@ -286,7 +286,7 @@ fctl projects list                     # all your workspaces' projects
 fctl projects list -w side-project
 fctl projects show my-app
 fctl projects create "My app" --repo my-org/my-app -w acme   # a workspace's admins create its projects
-fctl projects create "Docs" --repo my-org/docs --slug docs --description "The handbook"   # its URL name, and a sentence for people
+fctl projects create "Docs" --repo my-org/docs --slug handbook --description "The handbook"   # its URL name, and a sentence for people
 fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
 fctl projects set -p my-app --name "Web app" --description "The storefront"   # how people find it; its slug stays (--description "" clears it)
@@ -872,6 +872,9 @@ fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
 fctl admin disallow '*@example.com'        # its addresses lose access (and accounts with no other)
+fctl admin reserved                        # the slugs held for later, which no new workspace or project takes
+fctl admin reserve home me                 # a name that makes one gets a random ending instead: home-829d34
+fctl admin unreserve home                  # new workspaces and projects take it again
 fctl admin runners                         # with their ids and images; draining ones say who drained them
 fctl admin drain studio-mac                # no new sessions start on it (name or id)
 fctl admin undrain studio-mac
@@ -883,6 +886,13 @@ fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
 fctl admin set --verify-sensitive-actions on   # sensitive actions take a passkey or a code (the primary instance owner)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
+
+A new workspace or project takes the slug its name makes, and when
+another has it or it is reserved, that slug with a random ending of six
+hex digits (`home-829d34`). fctl reserves the slugs its own pages use
+(`new`, `admin`, `settings`…), and `fctl admin reserve` holds more for
+later; a new instance holds none. Nobody chooses a reserved slug with
+`--slug`, and the workspaces and projects that have one already keep it.
 
 `fctl admin users` says when each person was last active: when they last
 signed in in a browser or started a session themselves, on the web, with

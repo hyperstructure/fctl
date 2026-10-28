@@ -224,14 +224,25 @@ fn plain(input: &str) -> String {
         .collect()
 }
 
-/// Slugs that would collide with routes.
-const RESERVED_SLUGS: &[&str] = &[
+/// Slugs that would collide with routes: fctl's own, which no workspace or
+/// project takes. Instance admins reserve more (`crate::slugs`).
+pub const RESERVED_SLUGS: &[&str] = &[
     "api", "admin", "new", "settings", "login", "logout", "signup", "setup", "device", "invite",
     "s", "p", "projects", "sessions", "runners", "assets", "static", "app", "help", "docs",
 ];
 
-/// A URL slug: 2–48 of `a-z 0-9 -`, no leading, trailing or double dashes.
+/// A URL slug: 2–48 of `a-z 0-9 -`, no leading, trailing or double dashes,
+/// and none of fctl's own ([`RESERVED_SLUGS`]).
 pub fn slug(input: &str) -> Result<String> {
+    let s = slug_shape(input)?;
+    if RESERVED_SLUGS.contains(&s.as_str()) {
+        return Err(ApiError::validation("slug", "This name is reserved"));
+    }
+    Ok(s)
+}
+
+/// A URL slug's shape alone, as [`slug`] checks it: fctl's own pass.
+pub fn slug_shape(input: &str) -> Result<String> {
     let s = input.trim().to_lowercase();
     let bad = |m: &str| ApiError::validation("slug", m);
     if s.len() < 2 || s.len() > 48 {
@@ -245,9 +256,6 @@ pub fn slug(input: &str) -> Result<String> {
     }
     if s.starts_with('-') || s.ends_with('-') || s.contains("--") {
         return Err(bad("Dashes go between words"));
-    }
-    if RESERVED_SLUGS.contains(&s.as_str()) {
-        return Err(bad("This name is reserved"));
     }
     Ok(s)
 }
@@ -806,6 +814,11 @@ mod tests {
         assert_eq!(slug("My-App").ok().as_deref(), Some("my-app"));
         for bad in ["a", "-a", "a-", "a--b", "a_b", "api", "über"] {
             assert!(slug(bad).is_err(), "{bad}");
+        }
+        // fctl's own have a slug's shape.
+        assert_eq!(slug_shape(" Api ").ok().as_deref(), Some("api"));
+        for bad in ["a", "-a", "a-", "a--b", "a_b", "über", &"a".repeat(49)] {
+            assert!(slug_shape(bad).is_err(), "{bad}");
         }
     }
 

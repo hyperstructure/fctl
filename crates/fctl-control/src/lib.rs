@@ -30,6 +30,7 @@ mod pull_requests;
 mod push;
 mod reviews;
 mod schedules;
+mod slugs;
 mod spec;
 mod starts;
 mod tickets;
@@ -201,6 +202,11 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["admin", "allowlist"]) => api::admin::allowlist(ctx).await,
         (Post, ["admin", "allowlist"]) => api::admin::add_allow(ctx, req).await,
         (Delete, ["admin", "allowlist", id]) => api::admin::remove_allow(ctx, id).await,
+        (Get, ["admin", "reserved-slugs"]) => api::admin::reserved_slugs(ctx).await,
+        (Post, ["admin", "reserved-slugs"]) => api::admin::reserve_slug(ctx, req).await,
+        (Delete, ["admin", "reserved-slugs", slug]) => {
+            api::admin::unreserve_slug(ctx, &http::decode(slug)).await
+        }
         (Post, ["admin", "invites"]) => api::admin::create_invite(ctx, req).await,
         (Delete, ["admin", "invites", id]) => api::admin::revoke_invite(ctx, id).await,
         (Get, ["admin", "access-requests"]) => api::early_access::list(ctx).await,

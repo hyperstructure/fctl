@@ -1116,6 +1116,35 @@ pub struct CreatedAllow {
     pub invite: Option<Invite>,
 }
 
+/// A slug instance admins reserve for later: no new workspace or project
+/// takes it as its address (`/w/<slug>`, `/p/<slug>`). One whose name
+/// makes it gets a random ending instead (`example-829d34`), nobody
+/// chooses it, and those that have it already keep it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReservedSlug {
+    pub slug: String,
+    pub created_by: Option<UserRef>,
+    pub created_at: Millis,
+}
+
+/// `GET /api/v1/admin/reserved-slugs`: in alphabetical order. fctl's own
+/// (`admin`, `new`, `settings`…) aren't in it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReservedSlugList {
+    pub slugs: Vec<ReservedSlug>,
+}
+
+/// `POST /api/v1/admin/reserved-slugs`: `409` when it is reserved already,
+/// by an admin or by fctl.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ReserveSlugRequest {
+    pub slug: String,
+}
+
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
