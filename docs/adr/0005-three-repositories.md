@@ -29,4 +29,5 @@ symbol lives there too.
 - Design changes ship as tagged releases and arrive as dependency bumps.
 - While the repositories are private, CI reaches the others with read-only
   deploy keys and npm installs the design package over git; once public,
-  the package moves to npm and the keys go away.
+  the keys go away and npm keeps installing it from GitHub, without
+  signing in.
