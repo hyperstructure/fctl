@@ -3,9 +3,10 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { MemoryTab } from "@/components/project/memory";
+import { RepoPicker } from "@/components/project/repo-picker";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
 import { ScheduleButton, SchedulesTab } from "@/components/project/schedules";
@@ -65,6 +66,7 @@ import {
   withSource,
 } from "@/lib/images";
 import { ALIASES, asked, chosenModel, EFFORTS, type ModelChoice, modelChoice } from "@/lib/models";
+import { areDefaults, shownInstructions } from "@/lib/pr-instructions";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -76,7 +78,7 @@ import {
   useRunners,
   useSessions,
 } from "@/lib/queries";
-import { repoLabel, repoSummary } from "@/lib/repos";
+import { parseRepo, repoAdditions, repoChoices, repoLabel, repoSummary, repoValue } from "@/lib/repos";
 import { lastMoved, sections } from "@/lib/sessions";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
@@ -486,31 +488,55 @@ function Repositories({ project }: { project: G.Project }) {
   const { data: instance } = useInstance();
   const repos = useProjectRepos(project.id);
   const workspace = project.workspace?.id ?? "";
+  const accounts = useWorkspaceIndex().get(workspace)?.github ?? [];
   // The repositories of the project's workspace.
   const github = useQuery({
     queryKey: keys.repos(workspace),
     queryFn: () => api.githubRepos(workspace),
     enabled: manage && !!workspace && !!instance?.features.github,
   });
-  const [repo, setRepo] = useState("");
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
   const [access, setAccess] = useState<G.RepoAccess>("read");
-  const suggestionsId = useId();
   const list = repos.data?.repos ?? [];
   const owner = list[0]?.owner;
-  const wide = repo.trim().endsWith("/*");
-  const save = (r: G.ProjectRepoList) => {
-    queryClient.setQueryData(keys.projectRepos(project.id), r);
-    // The project's header and the lists of projects count them.
+  const choices = repoChoices({ listed: list, available: github.data?.repos ?? [], accounts, chosen, query });
+  const adding = repoAdditions(chosen, query, list);
+  const wide = adding.length > 0 && adding.every((v) => v.endsWith("/*"));
+  const show = (r: G.ProjectRepoList) => queryClient.setQueryData(keys.projectRepos(project.id), r);
+  // The project's header and the lists of projects count them.
+  const recount = () => {
     for (const k of [keys.project(project.slug), keys.project(project.id), keys.projects])
       void queryClient.invalidateQueries({ queryKey: k });
   };
+  const save = (r: G.ProjectRepoList) => {
+    show(r);
+    recount();
+  };
+  // One by one, in the order they were chosen: those added leave the field, and the first one the
+  // control plane refuses stays in it with the ones after it, under its reason.
   const add = useMutation({
-    mutationFn: () => api.addProjectRepo(project.id, { repo: repo.trim(), access: wide ? "read" : access }),
-    onSuccess: (r) => {
-      save(r);
-      setRepo("");
-      setAccess("read");
+    mutationFn: async (values: string[]) => {
+      for (const repo of values) {
+        let r: G.ProjectRepoList;
+        try {
+          r = await api.addProjectRepo(project.id, { repo, access: repo.endsWith("/*") ? "read" : access });
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          throw new Error(
+            message.toLowerCase().includes(repo.toLowerCase()) ? message : `${repo}: ${message}`,
+          );
+        }
+        show(r);
+        setChosen((c) => c.filter((v) => !same(v, repo)));
+        setQuery((q) => {
+          const t = parseRepo(q);
+          return t && same(repoValue(t), repo) ? "" : q;
+        });
+      }
     },
+    onSuccess: () => setAccess("read"),
+    onSettled: recount,
   });
   const change = useMutation({
     mutationFn: (b: G.AddProjectRepoRequest) => api.addProjectRepo(project.id, b),
@@ -522,12 +548,22 @@ function Repositories({ project }: { project: G.Project }) {
     onSuccess: save,
     onError: (e) => toast(e.message, "error"),
   });
-  // The GitHub App's repositories on the project's account that are not listed yet.
-  const suggestions = (github.data?.repos ?? [])
-    .filter((r) => !owner || same(r.owner, owner))
-    .filter((r) => !list.some((l) => same(l.owner, r.owner) && same(l.name ?? "*", r.name)))
-    .map((r) => r.full_name);
-  if (owner && !list.some((l) => !l.name)) suggestions.unshift(`${owner}/*`);
+  // A new choice clears what the control plane said of the last one.
+  const edited = () => {
+    if (add.isError) add.reset();
+  };
+  const status = github.isError ? (
+    `fctl couldn't list the workspace's repositories: ${github.error.message}`
+  ) : github.isFetching && !github.data ? (
+    "Listing the workspace's repositories…"
+  ) : choices.some((c) => c.elsewhere) ? (
+    "All of a project's repositories belong to one GitHub account."
+  ) : query.trim() && choices.length === 0 ? (
+    <>
+      No repository on the list matches. Type one as{" "}
+      <code className="font-mono text-[11.5px] text-ink-2">owner/name</code> to add it by hand.
+    </>
+  ) : undefined;
   return (
     <div>
       <p className="mb-6 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">
@@ -541,28 +577,33 @@ function Repositories({ project }: { project: G.Project }) {
           className="mb-6"
           onSubmit={(e) => {
             e.preventDefault();
-            if (repo.trim()) add.mutate();
+            if (adding.length && !add.isPending) add.mutate(adding);
           }}
         >
-          <Field label="Add a repository" error={add.error?.message}>
+          <Field label="Add repositories" error={add.error?.message}>
             {(id) => (
-              <div className="flex flex-wrap gap-2">
-                <Input
-                  id={id}
-                  list={suggestionsId}
-                  value={repo}
-                  onChange={(e) => setRepo(e.target.value)}
-                  placeholder={`${owner ?? "owner"}/name, or ${owner ?? "owner"}/* for all of them`}
-                  autoComplete="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  className="min-w-[240px] flex-1 font-mono text-[13px]"
-                />
-                <datalist id={suggestionsId}>
-                  {suggestions.map((n) => (
-                    <option key={n} value={n} />
-                  ))}
-                </datalist>
+              // The access and the button stay by the field's first line as what's chosen fills more.
+              <div className="flex flex-wrap items-start gap-2">
+                <div className="min-w-[240px] flex-1">
+                  <RepoPicker
+                    id={id}
+                    choices={choices}
+                    chosen={chosen}
+                    onChange={(c) => {
+                      setChosen(c);
+                      edited();
+                    }}
+                    query={query}
+                    onQuery={(q) => {
+                      setQuery(q);
+                      edited();
+                    }}
+                    loaded={!!github.data}
+                    status={status}
+                    placeholder={`Choose from the list, or type ${owner ?? "owner"}/name`}
+                    invalid={add.isError}
+                  />
+                </div>
                 <Select
                   aria-label="Access"
                   value={wide ? "read" : access}
@@ -576,7 +617,7 @@ function Repositories({ project }: { project: G.Project }) {
                   size="field"
                   icon={<Plus className="size-3.5" />}
                   loading={add.isPending}
-                  disabled={!repo.trim()}
+                  disabled={adding.length === 0}
                 >
                   Add
                 </Button>
@@ -997,6 +1038,33 @@ function Settings({ project }: { project: G.Project }) {
                 onChange={(v) => set("pull_request_descriptions", v)}
                 options={DESCRIPTIONS}
                 className="w-full"
+              />
+            )}
+          </Field>
+          <Field
+            label="Pull requests and issues"
+            hint="What agents that open pull requests are told about handling them and the issues they work on: fctl's rules until you change them, or none when you empty them."
+            error={err("settings.pull_request_instructions")}
+            action={
+              !areDefaults(s.pull_request_instructions) && (
+                <button
+                  type="button"
+                  className="text-[12px] text-ink-3 hover:text-ink"
+                  onClick={() => set("pull_request_instructions", null)}
+                >
+                  Use fctl's rules
+                </button>
+              )
+            }
+          >
+            {(id) => (
+              <Textarea
+                id={id}
+                value={shownInstructions(s.pull_request_instructions)}
+                onChange={(e) => set("pull_request_instructions", e.target.value)}
+                minRows={4}
+                maxRows={20}
+                placeholder="Nothing: agents follow the repository's own instructions."
               />
             )}
           </Field>

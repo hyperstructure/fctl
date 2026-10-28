@@ -248,6 +248,16 @@ shows a tool's request.
 | `GET /api/v1/projects/{project}/secrets`, `PUT`, `DELETE …/secrets/{name}` | secrets as environment variables of its sandboxes: `PUT` takes `{"value": "…"}`; the list has names and who set them, never values (maintainers) |
 | `GET /api/v1/projects/{project}/tickets` | its ticket tracker as it works now, and the sessions its tickets started |
 
+`default_branch` is where sessions start unless they ask for another
+branch (`base_branch`), so the repository must have it, unless it has no
+commits yet. On an instance with a GitHub App, the control plane asks
+GitHub when a `PATCH` changes it or `repo`, and when a `POST` that links a
+repository names one, and refuses a branch the repository lacks with a
+`validation` error on `default_branch`. A new repository (`create_repo`)
+has only the branch GitHub makes, which becomes the default, so a `POST`
+with both is refused. A session whose base branch the repository lacks
+fails, and its `status_reason` says so.
+
 Without a `slug`, a new project's comes from its `name`, with a random
 ending of six hex digits (`my-app-829d34`) when another project has that
 one or it is reserved, by fctl or by an instance admin
@@ -273,6 +283,8 @@ fctl's own), `model`, `effort`, `image` or `image_build`, `cpus`,
 `memory_mb`, `package_caches`, `env` (not secret), `idle_timeout_minutes`,
 `auto_pull_request` (agents open a pull request when they finish),
 `pull_request_descriptions` (`brief`, `balanced`, `full`),
+`pull_request_instructions` (what agents are told about handling pull
+requests and issues: `null` for fctl's defaults, `""` for nothing),
 `github_access`, `follow_ups` (`comments`, `checks`, `conflicts`,
 `closed`), `tickets`, `remote_control`, `claude_ai_connectors`,
 `credit_people`, `credit_claude`, `publish_screenshots`,

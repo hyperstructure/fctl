@@ -6,6 +6,7 @@
 pub mod account;
 pub mod allowlist;
 pub mod avatar;
+pub mod base_branch;
 pub mod branches;
 pub mod cbor;
 pub mod claude;

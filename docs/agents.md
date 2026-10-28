@@ -425,6 +425,7 @@ fctl projects set -p my-app --setup-script @setup.sh --env NODE_ENV=test --idle-
 fctl projects set -p my-app --image ghcr.io/acme/agent:1      # or --build .devcontainer/devcontainer.json
 fctl projects set -p my-app --cpus 8 --memory 16g --package-caches on
 fctl projects set -p my-app --github push --pr-descriptions balanced --follow-ups all
+fctl projects set -p my-app --pr-instructions-file prs.md   # how they handle pull requests and issues
 fctl projects set -p my-app --tickets github
 fctl projects set -p my-app --model opus --effort high --instructions-file agents.md
 fctl projects set -p my-app --auto-pull-request on --remote-control on --connectors off

@@ -74,6 +74,17 @@ auto_pull_request: boolean,
  */
 pull_request_descriptions?: Verbosity, 
 /**
+ * What agents that open pull requests are told about handling them
+ * and the issues they work on, such as waiting for checks and when to
+ * write `Fixes` (see [`ProjectSettings::pull_request_instructions`]).
+ * Absent: fctl's defaults ([`DEFAULT_PULL_REQUEST_INSTRUCTIONS`]),
+ * which change with fctl; empty: nothing. Always sent, as `null` for
+ * the defaults: an update without it keeps what was stored (see
+ * `fctl_domain::settings::keep_unsent`). Agents from before it are
+ * told none of it.
+ */
+pull_request_instructions?: string | null, 
+/**
  * Enable Remote Control (follow in the Claude apps) when the credential allows it.
  */
 remote_control: boolean, 

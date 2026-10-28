@@ -409,18 +409,58 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
             LogLevel::Info,
             format!("Created {} from {}", spec.branch, spec.base_branch),
         ));
+    } else if has_branches(p).await? {
+        // A typo, or a branch renamed or deleted on GitHub: nothing to
+        // start from. Without the clone, which held nothing before it, a
+        // resume in this sandbox clones again rather than reuse a checkout
+        // that isn't on the session's branch.
+        if let Err(e) = empty(&p.workdir) {
+            let _ = log.send((
+                LogLevel::Warn,
+                format!("Removing the clone of {}: {e:#}", repo.full_name()),
+            ));
+        }
+        let default = spec.base_branch == spec.project.default_branch;
+        bail!(
+            "{}",
+            fctl_domain::base_branch::missing(repo, &spec.base_branch, default)
+        );
     } else {
         // An empty repository: start the branch from nothing.
         git_ok(p, &["checkout", "-q", "--orphan", &spec.branch]).await?;
         let _ = log.send((
-            LogLevel::Warn,
+            LogLevel::Info,
             format!(
-                "{} has no {} branch; starting {} empty",
+                "{} has no commits yet; starting {} empty",
                 repo.full_name(),
-                spec.base_branch,
                 spec.branch
             ),
         ));
+    }
+    Ok(())
+}
+
+/// Whether the clone has any of its `origin`'s branches: an empty
+/// repository has none.
+async fn has_branches(p: &Paths) -> Result<bool> {
+    let first = [
+        "for-each-ref",
+        "--count=1",
+        "--format=%(refname)",
+        "refs/remotes/origin/",
+    ];
+    Ok(!git_ok(p, &first).await?.trim().is_empty())
+}
+
+/// Removes what `dir` holds, and keeps `dir`.
+fn empty(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() && !path.is_symlink() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
     }
     Ok(())
 }
@@ -1570,14 +1610,22 @@ cat "$answer"
 
     /// A local repository standing in for `https://github.com/{full}.git`.
     async fn fake_github(dir: &Path, home: &Path, full: &str) -> Result<PathBuf> {
+        let origin = empty_github(dir, home, full).await?;
+        let first = ["commit", "-q", "--allow-empty", "-m", "Initial commit"];
+        assert!(run(&origin, home, "git", &first).await?.ok);
+        Ok(origin)
+    }
+
+    /// [`fake_github`] without commits, as GitHub makes a repository
+    /// without a README.
+    async fn empty_github(dir: &Path, home: &Path, full: &str) -> Result<PathBuf> {
         let origin = dir.join("github").join(full);
         std::fs::create_dir_all(&origin)?;
-        for args in [
-            &["init", "-q", "-b", "main"][..],
-            &["commit", "-q", "--allow-empty", "-m", "Initial commit"],
-        ] {
-            assert!(run(&origin, home, "git", args).await?.ok);
-        }
+        assert!(
+            run(&origin, home, "git", &["init", "-q", "-b", "main"])
+                .await?
+                .ok
+        );
         let rewrite = format!("url.{}.insteadOf", origin.display());
         let url = format!("https://github.com/{full}.git");
         let config = ["config", "--global", rewrite.as_str(), url.as_str()];
@@ -1651,6 +1699,79 @@ cat "$answer"
         assert_eq!(upstream.trim(), "origin/fctl/1-test");
         let pushed = ["rev-parse", "--verify", "--quiet", "refs/heads/fctl/1-test"];
         assert!(run(&origin, &p.home, "git", &pushed).await?.ok);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_base_branch_the_repository_lacks_fails_the_session() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        let failed = |e: Option<anyhow::Error>| e.map(|e| format!("{e:#}")).unwrap_or_default();
+        // One the session asked for (`fctl run --base`)…
+        let asked = SessionSpec {
+            base_branch: "release".into(),
+            ..spec.clone()
+        };
+        let e = failed(prepare(&p, &asked, &log).await.err());
+        assert!(
+            e.starts_with("acme/widgets has no branch named release to start this session from."),
+            "{e}"
+        );
+        // …leaves nothing behind: no state to report or push when the
+        // session stops, and no checkout for a resume to reuse.
+        assert_eq!(std::fs::read_dir(&p.workdir)?.count(), 0);
+        assert_eq!(
+            state(&p, &asked, &Pulls::default()).await?,
+            GitState::default()
+        );
+        // The project's default branch says where to change it.
+        let mut default = spec.clone();
+        default.base_branch = "develop".into();
+        default.project.default_branch = "develop".into();
+        let e = failed(prepare(&p, &default, &log).await.err());
+        assert!(
+            e.starts_with(
+                "acme/widgets has no branch named develop, the project's default branch."
+            ),
+            "{e}"
+        );
+        // Once someone pushes it, the session resumes in the same sandbox,
+        // from it.
+        git_ok_in(&origin, &p.home, &["checkout", "-q", "-b", "develop"]).await?;
+        commit(&origin, &p.home, "a.txt", "a\n", "On develop").await?;
+        git_ok_in(&origin, &p.home, &["checkout", "-q", "main"]).await?;
+        prepare(&p, &default, &log).await?;
+        let branch = git_ok(&p, &["branch", "--show-current"]).await?;
+        assert_eq!(branch.trim(), "fctl/1-test");
+        assert!(p.workdir.join("a.txt").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_empty_repository_starts_the_branch_from_nothing() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        empty_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &tx).await?;
+        let head = git_ok(&p, &["symbolic-ref", "HEAD"]).await?;
+        assert_eq!(head.trim(), "refs/heads/fctl/1-test");
+        drop(tx);
+        let mut logs = Vec::new();
+        while let Some(l) = rx.recv().await {
+            logs.push(l);
+        }
+        assert!(
+            log_texts(&logs)
+                .contains(&"acme/widgets has no commits yet; starting fctl/1-test empty"),
+            "{logs:?}"
+        );
         Ok(())
     }
 

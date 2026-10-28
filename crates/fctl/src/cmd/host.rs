@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use clap::builder::BoolishValueParser;
 use fctl_domain::{disk, image, size};
-use fctl_host::config::means_default_image;
+use fctl_host::config::{NOT_A_RUNNER, means_default_image};
 use fctl_host::driver::{DiskSpot, Driver};
 use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
 use fctl_proto::api::{Runner, RunnerDetail, RunnerStatus};
@@ -458,6 +458,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         HostCmd::Doctor => doctor().await,
         HostCmd::Logs { lines } => {
             let path = service::log_path();
+            if !path.exists() && !HostConfig::path().exists() {
+                bail!(NOT_A_RUNNER);
+            }
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             let all: Vec<&str> = text.lines().collect();
@@ -539,6 +542,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             fctl_host::image::build(&d, &tag, &cfg.download_base, source.as_deref()).await
         }
         HostCmd::Restart => {
+            if !HostConfig::path().exists() {
+                bail!(NOT_A_RUNNER);
+            }
             service::restart()?;
             println!("Restarted. Sessions keep running in their sandboxes.");
             Ok(())
@@ -949,9 +955,8 @@ fn claude_line(cfg: &HostConfig) -> String {
 
 /// The control plane, as this machine's runner (its token).
 fn runner_api() -> Result<fctl_client::Api> {
-    const NOT_A_RUNNER: &str = "This machine is not a runner yet: run `fctl host install`";
-    let cfg = HostConfig::load().context(NOT_A_RUNNER)?;
-    let token = HostConfig::load_token().context(NOT_A_RUNNER)?;
+    let cfg = HostConfig::load()?;
+    let token = HostConfig::load_token()?;
     Ok(fctl_client::Api::new(&cfg.server, Some(token)))
 }
 

@@ -1,6 +1,6 @@
 //! What a project's settings mean for its sessions.
 
-use fctl_proto::session::ProjectSettings;
+use fctl_proto::session::{DEFAULT_PULL_REQUEST_INSTRUCTIONS, ProjectSettings};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -72,12 +72,12 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// `publish_screenshots` and `package_caches`, off; for `screenshot_days`,
 /// 30 days (send `null` to choose the default); for `github_access`, push,
 /// which would let agents push again; for `pull_request_descriptions`,
-/// balanced; for each of `follow_ups`, off; for `tickets`, GitHub Issues of
-/// the repositories agents write to, which would reach issues the project
-/// keeps its agents away from. An
-/// `image_build` it leaves out stays unless it chooses an image instead
-/// (send `null` for none). `sent` is the update's `settings` object as it
-/// arrived.
+/// balanced; for `pull_request_instructions`, fctl's defaults (send `null`
+/// to choose them); for each of `follow_ups`, off; for `tickets`, GitHub
+/// Issues of the repositories agents write to, which would reach issues the
+/// project keeps its agents away from. An `image_build` it leaves out stays
+/// unless it chooses an image instead (send `null` for none). `sent` is the
+/// update's `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     let follow_ups = sent.get("follow_ups");
     let unsent = |key: &str| follow_ups.and_then(|f| f.get(key)).is_none();
@@ -126,9 +126,25 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     if sent.get("pull_request_descriptions").is_none() {
         settings.pull_request_descriptions = stored.pull_request_descriptions;
     }
+    if sent.get("pull_request_instructions").is_none() {
+        settings
+            .pull_request_instructions
+            .clone_from(&stored.pull_request_instructions);
+    }
     if sent.get("tickets").is_none() {
         settings.tickets = stored.tickets.clone();
     }
+}
+
+/// A project's `pull_request_instructions` as it keeps them, from the text
+/// an update sends: none, which stands for fctl's defaults, when they say
+/// what the defaults say, so that its agents follow the defaults as fctl
+/// changes them rather than a copy. An empty text, which tells agents
+/// nothing, stays.
+pub fn pull_request_instructions(sent: &str) -> Option<String> {
+    let text = sent.replace("\r\n", "\n");
+    let text = text.trim();
+    (text != DEFAULT_PULL_REQUEST_INSTRUCTIONS).then(|| text.to_owned())
 }
 
 #[cfg(test)]
@@ -430,6 +446,53 @@ mod tests {
         let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
         keep_unsent(&mut s, &stored, &sent);
         assert_eq!(s.pull_request_descriptions, Verbosity::Balanced);
+    }
+
+    #[test]
+    fn updates_without_pull_request_instructions_keep_the_projects_own() {
+        let stored = ProjectSettings {
+            pull_request_instructions: Some("Open pull requests as drafts.".into()),
+            ..Default::default()
+        };
+        // An older client sends settings without the field: fctl's defaults.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "auto_pull_request": true }));
+        assert_eq!(
+            s.pull_request_instructions,
+            stored.pull_request_instructions
+        );
+        // `null` chooses the defaults, and an empty text none at all.
+        for sent in [
+            json!({ "pull_request_instructions": null }),
+            json!({ "pull_request_instructions": "" }),
+        ] {
+            let mut s: ProjectSettings = serde_json::from_value(sent.clone()).unwrap_or_default();
+            keep_unsent(&mut s, &stored, &sent);
+            assert_eq!(
+                s.pull_request_instructions,
+                sent["pull_request_instructions"]
+                    .as_str()
+                    .map(str::to_owned)
+            );
+        }
+    }
+
+    #[test]
+    fn pull_request_instructions_that_say_what_fctls_say_are_fctls() {
+        assert_eq!(
+            pull_request_instructions(DEFAULT_PULL_REQUEST_INSTRUCTIONS),
+            None
+        );
+        // As a browser or another system may send them.
+        let sent = format!(
+            "\n{}\n",
+            DEFAULT_PULL_REQUEST_INSTRUCTIONS.replace('\n', "\r\n")
+        );
+        assert_eq!(pull_request_instructions(&sent), None);
+        // Changed, they are the project's own, and empty, nothing.
+        let own = format!("{DEFAULT_PULL_REQUEST_INSTRUCTIONS}\n- Open them as drafts.");
+        assert_eq!(pull_request_instructions(&own), Some(own.clone()));
+        assert_eq!(pull_request_instructions(" \n"), Some(String::new()));
     }
 
     #[test]

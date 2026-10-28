@@ -21,6 +21,8 @@ use crate::error::{AppError, AppResult, internal};
 use crate::internal::{Deliver, Delivered};
 use crate::linear::{self, Linear};
 use crate::model::{PROJECT_SELECT, ProjectRow, UserRow, user_columns};
+use crate::schedules::IntlZone;
+use fctl_domain::cron::Zone;
 use fctl_domain::linear::{self as lin, Act, AgentSessionEvent, Candidate};
 use fctl_domain::tickets as tk;
 use fctl_proto::api::InstanceSettings;
@@ -1400,7 +1402,8 @@ pub async fn turn_ended(env: &Env, session_id: &str, text: &str) -> AppResult<()
 }
 
 /// A session that answers in a Linear thread failed, or paused on a usage
-/// limit: Linear's session says so.
+/// limit: Linear's session says so, and when a paused one carries on, in
+/// the time zone of the person who made the agent session.
 pub async fn halted(
     env: &Env,
     session_id: &str,
@@ -1420,16 +1423,15 @@ pub async fn halted(
             reason.map(|r| format!(": {r}")).unwrap_or_default()
         ),
         SessionStatus::Paused => {
-            let when = until
-                .map(|u| {
-                    format!(
-                        " until {}",
-                        fctl_domain::schedules::stamp(&fctl_domain::cron::Utc, u)
-                    )
-                })
-                .unwrap_or_default();
-            format!(
-                "The session pauses{when}: its Claude subscription reached a usage limit. It carries on by itself."
+            let zone = if until.is_some() {
+                creator_zone(&a).await
+            } else {
+                None
+            };
+            lin::paused(
+                until,
+                zone.as_ref()
+                    .map(|(name, rules)| (name.as_str(), rules as &dyn Zone)),
             )
         }
         _ => return Ok(()),
@@ -1442,6 +1444,20 @@ pub async fn halted(
     a.linear
         .activity(lin::activity(&a.thread.id, &act, false))
         .await
+}
+
+/// The time zone of the person who made a thread's agent session, from
+/// their Linear settings, by its name and its rules: `None` when they have
+/// none there, `Intl` doesn't know it, or Linear doesn't answer.
+async fn creator_zone(a: &Answering<'_>) -> Option<(String, IntlZone)> {
+    let answer = a
+        .linear
+        .graphql(lin::CREATOR_TIMEZONE, json!({ "id": a.thread.id }))
+        .await
+        .inspect_err(|e| worker::console_error!("reading a time zone in Linear: {}", e.0.message))
+        .ok()?;
+    let name = lin::creator_timezone(&answer)?;
+    Some((name.to_owned(), IntlZone::new(name)?))
 }
 
 /// A session that answers in a Linear thread found pull requests: Linear's

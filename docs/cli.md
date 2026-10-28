@@ -290,7 +290,7 @@ fctl projects create "Docs" --repo my-org/docs --slug handbook --description "Th
 fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
 fctl projects set -p my-app --name "Web app" --description "The storefront"   # how people find it; its slug stays (--description "" clears it)
-fctl projects set -p my-app --default-branch develop   # sessions start from develop unless they ask for another (fctl run --base)
+fctl projects set -p my-app --default-branch develop   # sessions start from develop unless they ask for another (fctl run --base); the repository must have it
 fctl projects set -p my-app --model opus --effort high   # its agents' model and effort ("default" for Claude's own)
 fctl projects set -p my-app --instructions-file agents.md   # what its agents are told in every session (--instructions "" for nothing)
 fctl projects set -p my-app --auto-pull-request off   # agents open pull requests when someone asks, not when they finish
@@ -310,6 +310,8 @@ fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
 fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
+fctl projects show my-app --pr-instructions > prs.md   # what agents are told about pull requests and issues: fctl's rules unless the project has its own
+fctl projects set -p my-app --pr-instructions-file prs.md   # the project's own instead (--pr-instructions default for fctl's, "" for none)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
 fctl projects set -p my-app --tickets linear --linear-team ENG   # its tickets are a Linear team's
 fctl projects use my-app

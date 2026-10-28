@@ -245,10 +245,11 @@ fctl projects secrets set STRIPE_KEY       # asks for the value
 fctl projects members add grace@example.com
 ```
 
-Agents can use more repositories of the same account: add them under the
-project's **Repositories** tab, each read only (a private dependency, say)
-or read and write, or let agents read every repository the GitHub App can
-reach. From the terminal: `fctl projects repos add my-org/my-lib --write`.
+Agents can use more repositories of the same account: under the project's
+**Repositories** tab, choose any number of the repositories the workspace
+may use, read only (a private dependency, say) or read and write, or
+`my-org/*` to let agents read every repository the GitHub App can reach.
+From the terminal: `fctl projects repos add my-org/my-lib --write`.
 
 ## 7. Start a session
 
@@ -311,9 +312,12 @@ turns them off.
 ## 8. Follow along and steer
 
 The Agent Floor lists the sessions at work under **Working now**, and the
-latest that ended under **Recently**. A project's page lists its sessions
-the same way, with **Recently** for the ended ones that last moved in the
-past day and **Older** for the rest, the most recent first. There
+latest that ended under **Recently**. When you are in more than one
+workspace, choose one above them to list only its sessions: the task box
+moves to that workspace too, to its first project in your sidebar where
+you can start sessions. A project's page lists its sessions the same way,
+with **Recently** for the ended ones that last moved in the past day and
+**Older** for the rest, the most recent first. There
 **Active** shows only the sessions at work, and **Mine** only the ones you
 started.
 

@@ -155,10 +155,13 @@ function QuickStart({
   user,
   projects,
   workspaces,
+  workspace,
 }: {
   user: string;
   projects: G.Project[];
   workspaces: G.Workspace[];
+  /** The workspace whose work the page shows, by id, if only one's: the project follows it there. */
+  workspace?: string;
 }) {
   const index = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
   // Projects where you may start sessions, under their workspaces, in your order (the list's).
@@ -203,6 +206,14 @@ function QuickStart({
   });
   // Once a session starts with the draft, it is forgotten.
   const { start, starting } = useStartSession(draft.forget);
+  // When the page shows one workspace's work, the project goes to its first in your order, even
+  // from another of its projects. One picked here afterwards stays.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only showing another workspace moves it
+  useEffect(() => {
+    if (!workspace || starting) return;
+    const next = editable.find((p) => p.workspace?.id === workspace);
+    if (next) pick(next.slug);
+  }, [workspace]);
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
@@ -718,6 +729,7 @@ export function Home() {
               user={me.user.id}
               projects={projects.data.projects}
               workspaces={workspaces.data.workspaces}
+              workspace={only}
             />
           )}
           {usage?.length ? <PlanUsageStrip usage={usage} className="mt-3" /> : null}

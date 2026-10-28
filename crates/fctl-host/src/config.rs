@@ -176,6 +176,10 @@ pub fn hostname() -> String {
         .unwrap_or_else(|| "host".into())
 }
 
+/// What commands that need the host's configuration say on a machine
+/// without one.
+pub const NOT_A_RUNNER: &str = "This machine isn't a runner yet: `fctl host install` makes it one";
+
 /// `~/.config/fctl` (or `$FCTL_CONFIG_DIR`).
 pub fn config_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("FCTL_CONFIG_DIR") {
@@ -227,13 +231,11 @@ impl HostConfig {
     }
 
     pub fn load() -> Result<Self> {
-        let path = Self::path();
-        let text = std::fs::read_to_string(&path).with_context(|| {
-            format!(
-                "{} not found: run `fctl host install` first",
-                path.display()
-            )
-        })?;
+        Self::load_from(&Self::path())
+    }
+
+    fn load_from(path: &Path) -> Result<Self> {
+        let text = read(path, NOT_A_RUNNER)?;
         Self::from_toml(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -256,12 +258,7 @@ impl HostConfig {
     /// as it is, comments too.
     pub fn save_auto_update(on: bool) -> Result<()> {
         let path = Self::path();
-        let text = std::fs::read_to_string(&path).with_context(|| {
-            format!(
-                "{} not found: run `fctl host install` first",
-                path.display()
-            )
-        })?;
+        let text = read(&path, NOT_A_RUNNER)?;
         let text = with_key(&text, "auto_update", &on.to_string());
         let saved =
             Self::from_toml(&text).with_context(|| format!("parsing {}", path.display()))?;
@@ -279,15 +276,11 @@ impl HostConfig {
             return Ok(t);
         }
         let path = Self::token_path();
-        Ok(std::fs::read_to_string(&path)
-            .with_context(|| {
-                format!(
-                    "{} not found: run `fctl host install` first",
-                    path.display()
-                )
-            })?
-            .trim()
-            .to_owned())
+        let missing = format!(
+            "No runner token at {}: run `fctl host install` again",
+            path.display()
+        );
+        Ok(read(&path, &missing)?.trim().to_owned())
     }
 
     pub fn save_token(token: &str) -> Result<()> {
@@ -444,6 +437,19 @@ impl Images {
     }
 }
 
+/// Reads a file the host keeps. When it isn't there, the error is `missing`
+/// alone, which says what to do, without the system's "No such file or
+/// directory".
+fn read(path: &Path, missing: &str) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!("{missing}")
+        } else {
+            anyhow::Error::new(e).context(format!("reading {}", path.display()))
+        }
+    })
+}
+
 /// Writes a secret (a token) that only its owner may read. The file is
 /// made that way: written first and restricted after, it could be read in
 /// between.
@@ -493,6 +499,31 @@ mod tests {
         write_private(&path, "fctl_rt_new")?;
         assert_eq!(std::fs::read_to_string(&path)?, "fctl_rt_new");
         std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_machine_without_a_host_says_how_to_make_it_one() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("host.toml");
+        // All of the error, as fctl prints it.
+        let error = || {
+            HostConfig::load_from(&path)
+                .err()
+                .map(|e| format!("{e:#}"))
+                .unwrap_or_default()
+        };
+        assert_eq!(error(), NOT_A_RUNNER);
+        // A host.toml that is there but can't be read, or parsed, says so.
+        std::fs::create_dir(&path)?;
+        let reading = format!("reading {}: ", path.display());
+        assert!(error().starts_with(&reading), "{}", error());
+        std::fs::remove_dir(&path)?;
+        std::fs::write(&path, "capacity = \"four\"")?;
+        let parsing = format!("parsing {}: ", path.display());
+        assert!(error().starts_with(&parsing), "{}", error());
+        std::fs::write(&path, "capacity = 2")?;
+        assert_eq!(HostConfig::load_from(&path)?.capacity, 2);
         Ok(())
     }
 
