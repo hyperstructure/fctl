@@ -20,6 +20,7 @@ use crate::error::{AppError, AppResult, conflict, forbidden, not_found};
 use crate::github::{self, Github};
 use crate::internal::{self, InitSession, Schedule, Stop};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
+use crate::workspaces::ConnectionRow;
 use fctl_domain::reviews::{self as rv, Links, PullRequest};
 use fctl_proto::api::{FindingThread, PostedReview, Review, ReviewBot, ReviewState};
 use fctl_proto::event::{MessageSource, UserMessage};
@@ -289,19 +290,20 @@ pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, r
 /// The sessions whose agents opened the pull requests of reviews `rows`,
 /// by review, as [`pass_on`] picks the one it sends findings to: where
 /// fctl's GitHub App opened one, of the first 20 sessions to list it, in
-/// the order they started, the one on its branch, else the first
-/// (`rv::opener`). Only those in their review's project.
+/// the order they started, in workspaces connected to the account the
+/// review answered for ([`answered_for`]), the one on its branch, else the
+/// first (`rv::opener`). Only those in their review's project.
 pub async fn openers(
     db: &D1Database,
     cfg: &Config,
     rows: &[ReviewRow],
 ) -> AppResult<BTreeMap<String, SessionRef>> {
-    /// A session that lists one of the pull requests.
+    /// A session that lists one of the pull requests, by its place among
+    /// them.
     #[derive(Deserialize)]
     struct Lister {
-        repo: String,
         #[serde(deserialize_with = "int")]
-        number: i64,
+        pull: i64,
         session_id: String,
         project_id: String,
         #[serde(deserialize_with = "int")]
@@ -309,44 +311,85 @@ pub async fn openers(
         title: String,
         branch: Option<String>,
     }
+    /// A pull request, as `pull_request_sessions` names it, with GitHub's
+    /// ids of the account and installation its review answered for, which
+    /// hold the sessions that list it.
+    type Pull = (String, i64, Option<(u64, u64)>);
     let app = app_login(cfg);
-    let asked: Vec<(&ReviewRow, (String, i64))> = rows
-        .iter()
-        .filter(|r| rv::by_app(r.author.as_deref(), app.as_deref()))
-        .filter_map(|r| Some((r, (crate::pull_requests::key(&r.repo()?), r.number))))
-        .collect();
+    // The connections of each review's workspace: those of a project's
+    // reviews are its own.
+    let mut connections: BTreeMap<&str, Vec<ConnectionRow>> = BTreeMap::new();
+    let mut pulls: Vec<Pull> = Vec::new();
+    let mut asked: Vec<(&ReviewRow, usize)> = Vec::new();
+    for r in rows {
+        let Some(repo) = r.repo() else {
+            continue;
+        };
+        if !rv::by_app(r.author.as_deref(), app.as_deref()) {
+            continue;
+        }
+        if !connections.contains_key(r.project_id.as_str()) {
+            let of_workspace = match crate::spec::project_row(db, &r.project_id).await? {
+                Some(p) => crate::workspaces::connections(db, p.workspace_id()).await?,
+                None => Vec::new(),
+            };
+            connections.insert(&r.project_id, of_workspace);
+        }
+        let answered = connections
+            .get(r.project_id.as_str())
+            .and_then(|c| answered_in(c, r, &repo));
+        let pull = (crate::pull_requests::key(&repo), r.number, answered);
+        let at = match pulls.iter().position(|p| *p == pull) {
+            Some(at) => at,
+            None => {
+                pulls.push(pull);
+                pulls.len() - 1
+            }
+        };
+        asked.push((r, at));
+    }
     if asked.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let pulls: BTreeSet<&(String, i64)> = asked.iter().map(|(_, pull)| pull).collect();
+    let pulls: Vec<Value> = pulls
+        .iter()
+        .map(|(repo, number, answered)| {
+            json!([repo, number, answered.map(|a| a.0), answered.map(|a| a.1)])
+        })
+        .collect();
     // As `crate::pull_requests::listed_by` lists them for one pull request.
     let listed: Vec<Lister> = q(
         db,
         &format!(
-            "SELECT repo, number, session_id, project_id, session_number, title, branch FROM ( \
-             SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id, s.project_id AS project_id, \
+            "SELECT pull, session_id, project_id, session_number, title, branch FROM ( \
+             SELECT j.key AS pull, l.session_id AS session_id, s.project_id AS project_id, \
              s.number AS session_number, s.title AS title, s.branch AS branch, \
-             ROW_NUMBER() OVER (PARTITION BY l.repo, l.number ORDER BY s.created_at, s.id) AS place \
+             ROW_NUMBER() OVER (PARTITION BY j.key ORDER BY s.created_at, s.id) AS place \
              FROM json_each(?1) j \
              JOIN pull_request_sessions l ON l.repo = json_extract(j.value, '$[0]') \
              AND l.number = json_extract(j.value, '$[1]') \
              JOIN sessions s ON s.id = l.session_id \
-             WHERE NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = l.session_id) AND {}) \
+             WHERE NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = l.session_id) \
+             AND CASE WHEN json_extract(j.value, '$[2]') IS NULL THEN {} ELSE {} END) \
              WHERE place <= 20 ORDER BY place",
-            crate::pull_requests::in_reach(None)
+            crate::pull_requests::in_reach(None),
+            crate::pull_requests::in_reach(Some((
+                "json_extract(j.value, '$[2]')",
+                "json_extract(j.value, '$[3]')"
+            ))),
         ),
         &[s(&json!(pulls).to_string())],
     )?
     .all()
     .await?;
-    let mut by_pull: BTreeMap<(&str, i64), Vec<&Lister>> = BTreeMap::new();
+    let mut by_pull: BTreeMap<i64, Vec<&Lister>> = BTreeMap::new();
     for l in &listed {
-        by_pull.entry((&l.repo, l.number)).or_default().push(l);
+        by_pull.entry(l.pull).or_default().push(l);
     }
     Ok(asked
         .into_iter()
-        .filter_map(|(r, (repo, number))| {
-            let listing = by_pull.get(&(repo.as_str(), number))?;
+        .filter_map(|(r, at)| {
+            let listing = by_pull.get(&i64::try_from(at).ok()?)?;
             let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
             let opener = listing.get(rv::opener(&branches, r.head_ref.as_deref())?)?;
             (opener.project_id == r.project_id).then(|| {
@@ -1633,19 +1676,29 @@ async fn answered_for(
     row: &ReviewRow,
     repo: &RepoRef,
 ) -> AppResult<Option<(u64, u64)>> {
-    let Some(installation) = row.installation_id.and_then(|i| u64::try_from(i).ok()) else {
+    if row.installation_id.is_none() {
         return Ok(None);
-    };
+    }
     let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
         return Ok(None);
     };
     let connections = crate::workspaces::connections(db, project.workspace_id()).await?;
-    Ok(connections
+    Ok(answered_in(&connections, row, repo))
+}
+
+/// [`answered_for`], given the connections of the review's workspace.
+fn answered_in(
+    connections: &[ConnectionRow],
+    row: &ReviewRow,
+    repo: &RepoRef,
+) -> Option<(u64, u64)> {
+    let installation = row.installation_id.and_then(|i| u64::try_from(i).ok())?;
+    connections
         .iter()
         .find(|c| c.account.eq_ignore_ascii_case(&repo.owner))
         .and_then(|c| c.account_id)
         .and_then(|a| u64::try_from(a).ok())
-        .map(|account| (account, installation)))
+        .map(|account| (account, installation))
 }
 
 /// [`submit`]'s work on GitHub, with a token of the review's repository.
