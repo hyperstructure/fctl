@@ -34,7 +34,12 @@ import {
   useSessionMemory,
 } from "@/components/session/kept";
 import { AgentOrb } from "@/components/session/orb";
-import { PullRequestChecksIcon, PullRequestStateIcon } from "@/components/session/pull-request";
+import {
+  PullRequestChecksIcon,
+  PullRequestReviewLine,
+  PullRequestReviewMark,
+  PullRequestStateIcon,
+} from "@/components/session/pull-request";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { Transcript } from "@/components/session/transcript";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
@@ -71,6 +76,7 @@ import {
   prFullRef,
   prLabel,
   prRef,
+  prReview,
   prState,
   prStateText,
   prTitle,
@@ -291,6 +297,7 @@ export function SessionPage() {
                                   <PullRequestStateIcon pr={pr} className="size-3" />
                                   {prRef(pr)}
                                   <PullRequestChecksIcon pr={pr} className="size-3" />
+                                  <PullRequestReviewMark pr={pr} />
                                 </a>
                               ))}
                             </span>
@@ -737,21 +744,30 @@ function ContextPart({ span, used, close }: ContextUse["parts"][number] & { clos
   );
 }
 
-/** Every pull request of the session, with the repository of each, its state and its checks. */
-function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
+/**
+ * Every pull request of the session, with the repository of each, its state, its checks and how
+ * fctl's review of it stands, which opens the review's session.
+ */
+function PullRequests({ prs, session }: { prs: G.PullRequestRef[]; session: G.Session }) {
   return (
     <ul className="flex flex-col gap-1.5">
       {prs.map((pr) => {
         const known = prState(pr) !== "unknown";
         const checks = checksText(pr);
+        // A review agent's session has its review in the rail's Review section.
+        const review = prReview(pr);
+        const reviewed = review && review.session_id !== session.id ? review : undefined;
         return (
-          <li key={pr.url}>
+          <li
+            key={pr.url}
+            className="overflow-hidden rounded-md border border-line transition-colors hover:border-line-strong"
+          >
             <a
               href={pr.url}
               target="_blank"
               rel="noreferrer"
               title={prTitle(pr)}
-              className="flex items-start gap-2.5 rounded-md border border-line px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+              className="flex items-start gap-2.5 px-3 py-2 text-[12.5px] text-ink-2 transition-colors hover:text-ink"
             >
               <PullRequestStateIcon pr={pr} className="mt-px size-4" />
               <span className="min-w-0 flex-1">
@@ -772,6 +788,7 @@ function PullRequests({ prs }: { prs: G.PullRequestRef[] }) {
               </span>
               <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-ink-4" />
             </a>
+            {reviewed && <PullRequestReviewLine review={reviewed} />}
           </li>
         );
       })}
@@ -915,7 +932,7 @@ function Details({
   const hint = session.review ? undefined : followUpHint(project?.settings.follow_ups);
   const pulls = prs.length > 0 && (
     <RailSection title="Pull requests">
-      <PullRequests prs={prs} />
+      <PullRequests prs={prs} session={session} />
       {hint && (
         <p className="mt-3 flex gap-2 text-[12px] leading-relaxed text-ink-4">
           <Undo2 aria-hidden="true" className="mt-[3px] size-3 shrink-0" />

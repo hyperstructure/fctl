@@ -4,7 +4,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRight } from "lucide-react";
-import { ChecksIcon, ReviewIcon } from "@/components/ui";
+import { ChecksIcon, EyeIcon, ReviewIcon } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -13,8 +13,8 @@ import { keys } from "@/lib/queries";
 import { earlierFindings, type ReviewLook, reviewLook, reviewOutcome, shortSha } from "@/lib/reviews";
 
 /**
- * How a review stands, as GitHub shows its check: a dot while it waits or reviews (pulsing as it
- * reviews), a check when it found nothing, a comment when it posted findings, skip when it ended
+ * How a review stands, wherever it shows: an eye while it waits for a runner, reading as it
+ * reviews, a check when it found nothing, a comment when it posted findings, skip when it ended
  * without posting, and an x when it failed.
  */
 export function ReviewStateIcon({
@@ -29,18 +29,13 @@ export function ReviewStateIcon({
   const cls = cn("shrink-0", className);
   switch (look) {
     case "waiting":
-      return <ChecksIcon state="pending" className={cn(cls, "text-ink-4")} />;
+      return <EyeIcon className={cn(cls, "text-ink-4")} />;
     case "reviewing":
-      return (
-        <ChecksIcon
-          state="pending"
-          className={cn(cls, "text-checks-pending motion-safe:animate-pulse-soft")}
-        />
-      );
+      return <EyeIcon reading className={cn(cls, "text-accent")} />;
     case "passed":
       return <ChecksIcon state="passed" className={cn(cls, "text-checks-passed")} />;
     case "commented":
-      return <ReviewIcon kind="comment" className={cn(cls, "text-ink-2")} />;
+      return <ReviewIcon kind="comment" className={cn(cls, "text-blue")} />;
     case "failed":
       return <ChecksIcon state="failed" className={cn(cls, "text-danger")} />;
     default:

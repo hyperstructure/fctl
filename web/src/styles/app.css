@@ -289,6 +289,27 @@
   --floor-drop: rgb(0 0 0 / 0.2);
 }
 
+/* A review agent's eye (components/ui/icons.tsx) while it reviews: its pupil
+   reads along a line, and darts back to the start of the next. */
+@keyframes eye-reading {
+  0%,
+  10% {
+    translate: -2px 0;
+  }
+  72%,
+  80% {
+    translate: 2px 0;
+  }
+  to {
+    translate: -2px 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .eye-reading {
+    animation: eye-reading 2.4s var(--ease-in-out) infinite;
+  }
+}
+
 /* Select (components/ui/select.tsx): the list grows out of its trigger, its
    options settle in one after another, the picked one flashes, its check draws
    itself and the new value rolls into the trigger. */
