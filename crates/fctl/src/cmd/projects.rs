@@ -29,7 +29,9 @@ pub enum ProjectsCmd {
         project: String,
         /// Print only what its agents are told about the pull requests
         /// they open and the issues they work on: the project's own
-        /// instructions, or fctl's defaults, to start yours from.
+        /// instructions, or fctl's defaults, to start yours from. With
+        /// --json, `text` (null for nothing) and whether it is fctl's
+        /// `defaults`.
         #[arg(long)]
         pr_instructions: bool,
     },
@@ -830,8 +832,10 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             if pr_instructions {
                 let text = p.settings.pull_request_instructions();
                 if json {
+                    // What agents are told (`null`: nothing), and whether
+                    // it is fctl's defaults.
                     return style::print_json(&serde_json::json!({
-                        "pull_request_instructions": text,
+                        "text": text,
                         "defaults": p.settings.pull_request_instructions.is_none(),
                     }));
                 }
