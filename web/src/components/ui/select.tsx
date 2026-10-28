@@ -183,14 +183,14 @@ export function Select<T extends string>({
     } catch {
       // Without the Popover API the list is a fixed element where it is.
     }
-    place(t, el);
+    placeList(t, el);
     const chosen = el.querySelector<HTMLElement>('[aria-selected="true"]');
     if (chosen) el.scrollTop = chosen.offsetTop - (el.clientHeight - chosen.offsetHeight) / 2;
     let frame = 0;
     const follow = (e: Event) => {
       if (e.target === el) return;
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => place(t, el));
+      frame = requestAnimationFrame(() => placeList(t, el));
     };
     const outside = (e: PointerEvent) => {
       const target = e.target as Node;
@@ -373,7 +373,7 @@ export function Select<T extends string>({
             className={compact ? undefined : "sm:hidden"}
           />
         )}
-        <Chevron className={narrow === "bare" ? "max-sm:hidden" : undefined} />
+        <SelectChevron className={narrow === "bare" ? "max-sm:hidden" : undefined} />
       </button>
       {mounted && (
         <div
@@ -537,8 +537,11 @@ function Value({
   );
 }
 
-/** A chevron whose arms swing from pointing down to pointing up while the list is open. */
-function Chevron({ className }: { className?: string }) {
+/**
+ * A chevron whose arms swing from pointing down to pointing up while the list is open: while
+ * `open`, or while the element with the `group/select` class has `aria-expanded`.
+ */
+export function SelectChevron({ open, className }: { open?: boolean; className?: string }) {
   const arm =
     "origin-center transition-[rotate] duration-300 ease-[var(--ease-spring)] [transform-box:fill-box]";
   return (
@@ -547,12 +550,19 @@ function Chevron({ className }: { className?: string }) {
       aria-hidden="true"
       className={cn(
         "ml-auto size-3.5 shrink-0 overflow-visible text-ink-4 transition-colors duration-150 group-hover/select:text-ink-3 group-aria-expanded/select:text-ink-2",
+        open && "text-ink-2 group-hover/select:text-ink-2",
         className,
       )}
     >
       <g fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round">
-        <path d="M4 6.5l4 4" className={cn(arm, "group-aria-expanded/select:-rotate-90")} />
-        <path d="M12 6.5l-4 4" className={cn(arm, "group-aria-expanded/select:rotate-90")} />
+        <path
+          d="M4 6.5l4 4"
+          className={cn(arm, "group-aria-expanded/select:-rotate-90", open && "-rotate-90")}
+        />
+        <path
+          d="M12 6.5l-4 4"
+          className={cn(arm, "group-aria-expanded/select:rotate-90", open && "rotate-90")}
+        />
       </g>
     </svg>
   );
@@ -576,8 +586,8 @@ function Check({ draw, className }: { draw: boolean; className?: string }) {
   );
 }
 
-/** Puts the list under its trigger, or over it when there is more room above. */
-function place(trigger: HTMLElement, list: HTMLElement) {
+/** Puts a list under its trigger, or over it when there is more room above. */
+export function placeList(trigger: HTMLElement, list: HTMLElement) {
   const r = trigger.getBoundingClientRect();
   const { clientWidth: vw, clientHeight: vh } = document.documentElement;
   list.style.minWidth = `${Math.min(r.width, vw - 2 * MARGIN)}px`;
