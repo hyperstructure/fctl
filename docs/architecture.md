@@ -1718,7 +1718,10 @@ issue's delegate (the person stays its assignee), and mention.
    (`fctl_domain::linear::step`): a command's description and not the
    command, a page's site and not its address, and searches without what
    looks like a token. A session that pauses on a usage limit, or fails, says so
-   there. The transcript says what fctl posted (`ticket_replied`,
+   there: a paused one says when it carries on, in the time zone of the
+   person who asked, as their Linear settings give it
+   (`fctl_domain::linear::paused`), or in UTC, saying so, when fctl can't
+   learn theirs. The transcript says what fctl posted (`ticket_replied`,
    `ticket_moved`). Nothing goes back for a session whose workspace no
    longer works in the Linear workspace.
 7. **Replies and stops** (`prompted`). A reply in a started thread reaches
