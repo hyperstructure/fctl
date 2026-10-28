@@ -23,14 +23,15 @@ The root `package.json`'s `allowScripts` says which dependencies may run
 install scripts: esbuild and workerd, whose scripts put their platform's
 binary in place of their JavaScript launcher, but not fsevents (macOS
 only), which has no script to run though the registry says it has one.
-From 11.16, npm lists the scripts `allowScripts` doesn't cover at the end
-of every install; npm 11 still runs them, and npm 12 skips them. When a
-dependency you add brings install scripts, read what they do (`npm
-install-scripts ls` lists them). Then let them run with `npm
-install-scripts approve --no-allow-scripts-pin <pkg>`, which approves every
-version of the package, so that updating it needs no new approval, or keep
-them from running with `npm install-scripts deny <pkg>` if the package
-works without them. Neither command finds a package that npm doesn't
+npm 11.16 and newer list the scripts `allowScripts` doesn't cover at the
+end of every install; npm 11 still runs them, and npm 12 skips them. When
+a dependency you add brings install scripts, read what they do (`npm
+install-scripts ls` lists them; the `install-scripts` commands need npm
+11.18 or newer). Then let them run with `npm install-scripts approve
+--no-allow-scripts-pin <pkg>`, which approves every version of the
+package, so that updating it needs no new approval, or keep them from
+running with `npm install-scripts deny <pkg>` if the package works without
+them. Neither command finds a package that npm doesn't
 install on your platform, like fsevents on Linux: write its entry by hand,
 and keep it when `npm install-scripts prune` there would remove it. CI and
 the standalone image install with Node.js 22's npm 10, which ignores
