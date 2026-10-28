@@ -29,12 +29,16 @@ use fctl_proto::api::InstanceSettings;
 use fctl_proto::error::ErrorCode;
 use fctl_proto::event::{EventBody, MessageSource, Notice, NoticeLevel, UserMessage};
 use fctl_proto::session::{
-    LinearTickets, ProjectRole, PullRequestRef, SessionStatus, SessionTicket, Tracker, UserRef,
+    LinearTickets, ProjectRole, PullRequestRef, RepoRef, SessionStatus, SessionTicket, Tracker,
+    UserRef,
 };
-use fctl_proto::tickets::{TicketEvent, TicketLink, TicketMessage, TicketNotice, TicketPerson};
+use fctl_proto::tickets::{
+    TicketEvent, TicketLink, TicketMessage, TicketNotice, TicketPerson, TicketState,
+};
 use fctl_proto::uplink::{Delivery, DeliveryKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use worker::{D1Database, Env};
 
 /// What a session that started from a Linear ticket keeps of it
@@ -46,6 +50,9 @@ pub struct TicketColumn {
     /// The Linear workspace, by Linear's id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub organization: Option<String>,
+    /// They mentioned fctl on it rather than delegate it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mentioned: bool,
     /// They asked for an exploration.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub explore: bool,
@@ -583,19 +590,21 @@ async fn take_up(
         .filter_map(|c| all.iter().find(|t| t.row.id == c.project_id))
         .collect();
     let explore_of = |t: &Taker| tk::explores(&ticket.labels, t.linear.explore_label());
-    let comment = session
-        .comment
-        .as_ref()
-        .and_then(|c| c.body.as_deref())
-        .map(str::trim)
-        .filter(|c| !c.is_empty());
-    // A comment with words in it mentioned fctl; without one, the issue was
-    // delegated to it. Only an issue whose delegate is fctl's app user moves
-    // as its session starts, not one delegated to another agent.
-    let delegated = comment.is_none();
+    // Linear starts a delegation's thread with words of its own, which ask
+    // nothing; a mention's are the person's. Only an issue whose delegate is
+    // fctl's app user moves as its session starts, not one delegated to
+    // another agent.
+    let asking = session.asking();
+    let comment = asking.comment();
+    let delegated = asking == lin::Asking::Delegated;
     let delegated_to_fctl = match e.app_user_id.as_deref() {
         Some(app) => issue.pointer("/delegate/id").and_then(Value::as_str) == Some(app),
         None => ticket.delegate.as_ref().is_some_and(|d| d.app),
+    };
+    let event = if delegated {
+        TicketEvent::Delegated
+    } else {
+        TicketEvent::Mentioned
     };
     // The session that works on the issue already, if they may message it.
     if let Some((session_id, number, slug)) = working_on(db, &ticket.id, &allowed).await?
@@ -606,18 +615,26 @@ async fn take_up(
         let text = lin::task(&lin::Asked {
             ticket: &st,
             by: &user.name,
-            comment,
+            asking,
             prompt_context: e.prompt_context.as_deref(),
             description: ticket.description.as_deref(),
             explore: false,
         });
+        // Handed to fctl now, it starts, as one would in a new session.
+        let starts = delegated
+            && delegated_to_fctl
+            && allowed
+                .iter()
+                .find(|t| t.row.slug == slug)
+                .is_some_and(|t| t.linear.moves_started());
+        let moved = if starts {
+            move_ticket(linear, &ticket.id, tk::Progress::Started).await
+        } else {
+            None
+        };
         let message = TicketMessage {
             ticket: st.clone(),
-            event: if comment.is_some() {
-                TicketEvent::Mentioned
-            } else {
-                TicketEvent::Delegated
-            },
+            event,
             by: session.creator.as_ref().map(lin::Person::to_ticket_person),
             description: ticket.description.clone(),
             body: comment.map(str::to_owned),
@@ -635,6 +652,9 @@ async fn take_up(
             Some(format!("linear:{id}")),
         )
         .await?;
+        if let Some(state) = moved {
+            moved_notice(env, &session_id, ticket.link(), state).await;
+        }
         if let Err(err) = linear
             .update_session(
                 id,
@@ -707,7 +727,7 @@ async fn take_up(
     let text = lin::task(&lin::Asked {
         ticket: &st,
         by: &user.name,
-        comment,
+        asking,
         prompt_context: e.prompt_context.as_deref(),
         description: ticket.description.as_deref(),
         explore,
@@ -717,13 +737,14 @@ async fn take_up(
     // Linear asks agents to start what is delegated to them: before the
     // session, so that its agent hears of it.
     let moved = if delegated && delegated_to_fctl && taker.linear.moves_started() {
-        move_started(linear, &ticket, &team).await
+        move_ticket(linear, &ticket.id, tk::Progress::Started).await
     } else {
         None
     };
     let column = TicketColumn {
         ticket: st.clone(),
         organization: Some(e.organization_id.clone()),
+        mentioned: !delegated,
         explore,
         moved_to: moved.as_ref().map(|m| m.name.clone()),
     };
@@ -745,11 +766,7 @@ async fn take_up(
             source: MessageSource::Api,
             ticket_message: Some(TicketMessage {
                 ticket: st.clone(),
-                event: if comment.is_some() {
-                    TicketEvent::Mentioned
-                } else {
-                    TicketEvent::Delegated
-                },
+                event,
                 by: session.creator.as_ref().map(lin::Person::to_ticket_person),
                 description: ticket.description.clone(),
                 body: comment.map(str::to_owned),
@@ -794,24 +811,8 @@ async fn take_up(
     {
         worker::console_error!("linking Linear's agent session: {}", err.0.message);
     }
-    if let Some(state) = &moved {
-        notice(
-            env,
-            session_id.as_str(),
-            "ticket_moved",
-            format!("Moved {key} to {} in Linear", state.name),
-            TicketNotice {
-                tracker: Tracker::Linear,
-                ticket: TicketLink {
-                    state: Some(state.clone()),
-                    ..ticket.link()
-                },
-                body: None,
-                url: None,
-                state: Some(state.clone()),
-            },
-        )
-        .await;
+    if let Some(state) = moved {
+        moved_notice(env, session_id.as_str(), ticket.link(), state).await;
     }
     let what = if explore {
         "Exploring this"
@@ -890,34 +891,59 @@ async fn suggested<'t>(
     })
 }
 
-/// Moves a ticket to its team's first started state, unless it started
-/// already: the state it moved to.
-async fn move_started(
+/// Moves a ticket on in its team's workflow as far as `progress` takes it
+/// (`fctl_domain::tickets::next_state`), never back: the state it moved
+/// to, or `None` when it stays where it is or Linear refused.
+async fn move_ticket(
     linear: &Linear<'_>,
-    ticket: &fctl_proto::tickets::Ticket,
-    team: &str,
-) -> Option<fctl_proto::tickets::TicketState> {
+    issue: &str,
+    progress: tk::Progress,
+) -> Option<TicketState> {
     let data = linear
-        .graphql(lin::TEAM_STATES, json!({ "id": team }))
+        .graphql(lin::ISSUE_STATES, json!({ "id": issue }))
         .await
+        .inspect_err(|e| worker::console_error!("reading a ticket's state: {}", e.0.message))
         .ok()?;
-    let states = lin::states(data.get("team")?);
-    let ids: Vec<(String, fctl_proto::tickets::StateKind)> = states
-        .iter()
-        .filter_map(|s| Some((s.id.clone()?, s.kind)))
-        .collect();
-    let target = tk::start_state(ticket.state.as_ref().map(|s| s.kind), &ids)?;
+    let found = data.get("issue")?;
+    let current = found.get("state").and_then(lin::state);
+    let states = lin::states(found.get("team")?);
+    let target = tk::next_state(progress, current.as_ref(), &states)?.clone();
+    let key = found
+        .get("identifier")
+        .and_then(Value::as_str)
+        .unwrap_or(issue);
     if let Err(e) = linear
         .graphql(
             &lin::issue_update(),
-            json!({ "id": ticket.id, "input": { "stateId": target } }),
+            json!({ "id": issue, "input": { "stateId": target.id.as_deref()? } }),
         )
         .await
     {
-        worker::console_error!("moving {} to started: {}", ticket.key, e.0.message);
+        worker::console_error!("moving {key} to {}: {}", target.name, e.0.message);
         return None;
     }
-    states.into_iter().find(|s| s.id.as_deref() == Some(target))
+    Some(target)
+}
+
+/// Says in a session's transcript that fctl moved its ticket in Linear.
+async fn moved_notice(env: &Env, session_id: &str, ticket: TicketLink, state: TicketState) {
+    notice(
+        env,
+        session_id,
+        "ticket_moved",
+        format!("Moved {} to {} in Linear", ticket.key, state.name),
+        TicketNotice {
+            tracker: Tracker::Linear,
+            ticket: TicketLink {
+                state: Some(state.clone()),
+                ..ticket
+            },
+            body: None,
+            url: None,
+            state: Some(state),
+        },
+    )
+    .await;
 }
 
 /// Replies kept for people fctl doesn't know yet, by their Linear id,
@@ -1521,6 +1547,147 @@ pub async fn pull_requests(env: &Env, session_id: &str, found: &[PullRequestRef]
         }
     }
     Ok(())
+}
+
+/// Moves the ticket of a session that answers in a Linear thread on, as far
+/// as `progress` takes it and its project lets fctl
+/// (`LinearTickets::move_started` and the rest), and says so in the
+/// transcript: as a turn ends with changes or a pull request up, and once
+/// its pull requests merged (`merged`: those that did), when one of them
+/// completes the ticket ([`completing`]).
+pub async fn move_on(
+    env: &Env,
+    session_id: &str,
+    progress: tk::Progress,
+    merged: &[PullRequestRef],
+) -> AppResult<()> {
+    let cfg = Config::from_env(env);
+    let db = env.d1("DB")?;
+    let now = crate::ctx::now_ms();
+    let Some(a) = answering(&db, &cfg, session_id, now).await? else {
+        return Ok(());
+    };
+    let Some(row) = crate::spec::session_row(&db, session_id).await? else {
+        return Ok(());
+    };
+    let Some(column) = row
+        .ticket
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<TicketColumn>(j).ok())
+    else {
+        return Ok(());
+    };
+    let Some(project) = crate::spec::project_row(&db, &row.project_id).await? else {
+        return Ok(());
+    };
+    let settings = project.settings();
+    let lets = match settings.tickets.linear.as_ref() {
+        Some(l)
+            if settings.tickets.tracker == Tracker::Linear
+                && l.organization == a.thread.organization_id =>
+        {
+            match progress {
+                tk::Progress::Started => l.moves_started(),
+                tk::Progress::Review => l.moves_review(),
+                tk::Progress::Merged => l.moves_done(),
+            }
+        }
+        _ => false,
+    };
+    let key = column.ticket.key.as_str();
+    if !lets
+        || progress == tk::Progress::Merged
+            && !completing(&cfg, &db, session_id, key, merged, now).await
+    {
+        return Ok(());
+    }
+    if let Some(state) = move_ticket(&a.linear, &column.ticket.id, progress).await {
+        let link = TicketLink {
+            key: key.to_owned(),
+            title: column.ticket.title.clone().unwrap_or_default(),
+            url: column.ticket.url.clone(),
+            state: None,
+        };
+        moved_notice(env, session_id, link, state).await;
+    }
+    Ok(())
+}
+
+/// Whether one of a session's `merged` pull requests completes ticket
+/// `key`, as GitHub has their titles, descriptions and branches now
+/// (`fctl_domain::tickets::completes`): among those the session may look
+/// up (`crate::pull_requests::track`). False when GitHub can't say.
+async fn completing(
+    cfg: &Config,
+    db: &D1Database,
+    session_id: &str,
+    key: &str,
+    merged: &[PullRequestRef],
+    now: i64,
+) -> bool {
+    #[derive(Deserialize)]
+    struct Tracked {
+        repo: String,
+        #[serde(deserialize_with = "crate::db::int")]
+        number: i64,
+    }
+    let tracked: Vec<Tracked> = match q(
+        db,
+        &format!(
+            "SELECT l.repo AS repo, l.number AS number FROM pull_request_sessions l \
+             WHERE l.session_id = ? AND {}",
+            crate::pull_requests::in_reach(None)
+        ),
+        &[s(session_id)],
+    ) {
+        Ok(query) => query.all().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let mut accounts: BTreeMap<String, Vec<(RepoRef, u64)>> = BTreeMap::new();
+    for pr in merged {
+        let Some(repo) = pr
+            .repo
+            .clone()
+            .or_else(|| fctl_domain::pulls::repo_of(&pr.url))
+        else {
+            continue;
+        };
+        let name = crate::pull_requests::key(&repo);
+        if tracked
+            .iter()
+            .any(|t| t.repo == name && t.number == pr.number as i64)
+        {
+            accounts
+                .entry(repo.owner.to_ascii_lowercase())
+                .or_default()
+                .push((repo, pr.number));
+        }
+    }
+    let Ok(gh) = crate::github::from_config(cfg, now) else {
+        return false;
+    };
+    for prs in accounts.values() {
+        match gh
+            .pull_requests(None, prs, fctl_domain::webhooks::Fields::Text)
+            .await
+        {
+            Ok(Some(answer)) => {
+                let completes = (0..prs.len()).any(|i| {
+                    fctl_domain::webhooks::texts(&answer, i)
+                        .is_some_and(|t| tk::completes(key, &t.title, &t.body, &t.branch))
+                });
+                if completes {
+                    return true;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => worker::console_error!(
+                "reading what the pull requests of {session_id} say: {}",
+                e.0.message
+            ),
+        }
+    }
+    false
 }
 
 fn pull_label(pr: &PullRequestRef) -> String {

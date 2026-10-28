@@ -286,6 +286,9 @@ pub enum Fields {
     /// moved (`crate::follow_ups::conflicts`), however many checks they
     /// have, and leaves the checks sessions know as they were.
     WithoutChecks,
+    /// What it says, and nothing else: its title, description and branch,
+    /// which tell whether it completes a ticket ([`texts`]).
+    Text,
 }
 
 impl Fields {
@@ -294,8 +297,37 @@ impl Fields {
         match self {
             Fields::All => format!("fragment pr on PullRequest {{\n  {PULL}\n  {CHECKS}\n}}"),
             Fields::WithoutChecks => format!("fragment pr on PullRequest {{\n  {PULL}\n}}"),
+            Fields::Text => {
+                "fragment pr on PullRequest {\n  number title body headRefName\n}".into()
+            }
         }
     }
+}
+
+/// What a pull request says, as a lookup of [`Fields::Text`] found it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Text {
+    pub title: String,
+    pub body: String,
+    /// The branch it comes from.
+    pub branch: String,
+}
+
+/// What GitHub's answer to [`query`] with [`Fields::Text`] says of the
+/// `i`th pull request it asked about: `None` when GitHub has none.
+pub fn texts(answer: &Value, i: usize) -> Option<Text> {
+    let pr = answer.pointer(&format!("/data/pr{i}/pullRequest"))?;
+    let text = |key: &str| {
+        pr.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    pr.is_object().then(|| Text {
+        title: text("title"),
+        body: text("body"),
+        branch: text("headRefName"),
+    })
 }
 
 /// The GraphQL request, its `query` and `variables`, that looks up `prs`
@@ -985,6 +1017,37 @@ mod tests {
         );
         assert_eq!(remaining(&a), Some(4990));
         assert_eq!(remaining(&json!({ "errors": [] })), None);
+    }
+
+    #[test]
+    fn a_lookup_of_what_pull_requests_say_asks_for_nothing_else() {
+        let repo = |s| RepoRef::parse(s).unwrap_or_else(|| panic!("{s}"));
+        let body = query(
+            &[(repo("acme/app"), 12), (repo("acme/app"), 13)],
+            Fields::Text,
+        );
+        let q = body["query"].as_str().unwrap_or_default();
+        assert!(q.ends_with("fragment pr on PullRequest {\n  number title body headRefName\n}"));
+        assert!(!q.contains("statusCheckRollup") && !q.contains("author"));
+        let a = json!({ "data": {
+            "pr0": { "pullRequest": {
+                "number": 12, "title": "Fix the loop", "body": "Fixes ENG-123",
+                "headRefName": "fctl/12-eng-123-fix-the-loop"
+            } },
+            "pr1": { "pullRequest": { "number": 13, "title": "Tidy", "body": null, "headRefName": "tidy" } },
+            "pr2": { "pullRequest": null }
+        } });
+        assert_eq!(
+            texts(&a, 0),
+            Some(Text {
+                title: "Fix the loop".into(),
+                body: "Fixes ENG-123".into(),
+                branch: "fctl/12-eng-123-fix-the-loop".into(),
+            })
+        );
+        assert_eq!(texts(&a, 1).map(|t| t.body), Some(String::new()));
+        assert_eq!(texts(&a, 2), None);
+        assert_eq!(texts(&a, 3), None);
     }
 
     #[test]

@@ -17,6 +17,16 @@ states: Array<TicketState>,
  */
 start_state?: string, 
 /**
+ * The state they move to when their pull requests are up: its first
+ * started one whose name says review, or else its first started one.
+ */
+review_state?: string, 
+/**
+ * The state they move to when their pull requests merged: its first
+ * completed one.
+ */
+done_state?: string, 
+/**
  * Its projects that aren't done or canceled.
  */
 projects: Array<LinearProject>, };

@@ -773,8 +773,16 @@ pub struct LinearTickets {
     pub project: Option<String>,
     pub project_name: Option<String>,
     /// Move a ticket to the team's first started state (In Progress) when
-    /// its session starts, if it hasn't started yet. Absent: yes.
+    /// its session starts work on it, if it hasn't started yet. Absent: yes.
     pub move_started: Option<bool>,
+    /// Move a ticket to the team's review state (In Review) when a turn of
+    /// its session ends with a pull request up for review, if it isn't
+    /// there or further along yet. Absent: yes.
+    pub move_review: Option<bool>,
+    /// Move a ticket to the team's first completed state (Done) once its
+    /// session's pull requests merged, one that completes it among them,
+    /// if it isn't done or canceled yet. Absent: yes.
+    pub move_done: Option<bool>,
     /// The label that asks for an exploration rather than a change: the
     /// agent looks into the ticket and replies with what it found and a
     /// plan, without changing code, until someone replies to go ahead.
@@ -786,6 +794,16 @@ impl LinearTickets {
     /// Whether sessions move their tickets to started.
     pub fn moves_started(&self) -> bool {
         self.move_started.unwrap_or(true)
+    }
+
+    /// Whether sessions move their tickets to review.
+    pub fn moves_review(&self) -> bool {
+        self.move_review.unwrap_or(true)
+    }
+
+    /// Whether sessions move their tickets to done.
+    pub fn moves_done(&self) -> bool {
+        self.move_done.unwrap_or(true)
     }
 
     /// The label that asks for an exploration, if any does.

@@ -537,6 +537,7 @@ fn samples(name: &str) -> Option<Vec<Value>> {
         "TEAM" | "TEAM_STATES" | "TEAM_LABELS" => vec![json!({ "id": TEAM })],
         "PROJECT" => vec![json!({ "id": PROJECT })],
         "issue_query" => vec![json!({ "id": "ENG-123" }), json!({ "id": ISSUE })],
+        "ISSUE_STATES" => vec![json!({ "id": ISSUE })],
         "issues_query" => vec![json!({ "filter": filter, "first": 50 })],
         "search_query" => vec![json!({ "term": "footer links", "filter": filter, "first": 50 })],
         "issue_create" => vec![json!({ "input": {

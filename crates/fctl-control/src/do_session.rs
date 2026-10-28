@@ -19,6 +19,7 @@ use fctl_domain::journal::{self, Take};
 use fctl_domain::kept_images;
 use fctl_domain::notify;
 use fctl_domain::search;
+use fctl_domain::tickets::Progress;
 use fctl_domain::usage as plan;
 use fctl_proto::api::{EventPage, PlanLimit};
 use fctl_proto::event::{
@@ -217,6 +218,20 @@ const LAST_RESULT_CHARS: usize = 12_000;
 
 fn api_err(code: ErrorCode, message: &str) -> ApiError {
     ApiError::new(code, message)
+}
+
+/// How far a session's work on its ticket has come, as its changes and
+/// pull requests show (`fctl_domain::tickets::progress`).
+fn progress(s: &Session) -> Option<Progress> {
+    fctl_domain::tickets::progress(&s.pull_requests, s.stats.files_changed > 0)
+}
+
+/// The pull requests among `prs` that merged.
+fn merged(prs: &[PullRequestRef]) -> Vec<PullRequestRef> {
+    prs.iter()
+        .filter(|p| p.state.as_deref() == Some("merged"))
+        .cloned()
+        .collect()
 }
 
 fn has_files(d: &Delivery) -> bool {
@@ -1938,6 +1953,10 @@ impl SessionObject {
                 let acked_before = acked;
                 let mut out = Vec::new();
                 let mut summary = self.summary();
+                let merged_before = summary
+                    .as_ref()
+                    .map_or(0, |s| merged(&s.pull_requests).len());
+                let progress_before = summary.as_ref().and_then(progress);
                 let mut summary_changed = false;
                 let mut lists_changed = false;
                 // Pull requests the session lists from now on.
@@ -2088,6 +2107,8 @@ impl SessionObject {
                     if !found.is_empty() {
                         self.track_pull_requests(&s, found);
                     }
+                    self.move_on_merged(&s, merged_before);
+                    self.move_on_reported(&s, progress_before, turn_ended);
                     // A host that reconnects reports its state before it
                     // replays the events it kept: a turn that ended meanwhile
                     // shows as a result while the session is already idle.
@@ -2361,8 +2382,10 @@ impl SessionObject {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
         };
         let now = now_ms();
+        let merged_before = merged(&s.pull_requests).len();
         let changed = fctl_domain::pulls::observe(&mut s.pull_requests, &b.prs, now);
         if changed {
+            self.move_on_merged(&s, merged_before);
             self.pull_requests_changed(s, now).await;
         }
         // After the pull requests, which tell whether failed checks are news.
@@ -2633,6 +2656,49 @@ impl SessionObject {
             .is_some_and(|t| t.tracker == fctl_proto::session::Tracker::Linear)
     }
 
+    /// Moves the session's ticket in Linear on once its pull requests
+    /// merged: when one more did than `merged_before`, and none is open any
+    /// more (`crate::delegations::move_on`). A turn's end moves it as far as
+    /// the session came too, whatever merged meanwhile.
+    fn move_on_merged(&self, s: &Session, merged_before: usize) {
+        let done = merged(&s.pull_requests);
+        if !Self::answers_linear(s)
+            || done.len() <= merged_before
+            || progress(s) != Some(Progress::Merged)
+        {
+            return;
+        }
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::delegations::move_on(&env, &id, Progress::Merged, &done).await {
+                worker::console_error!("moving the ticket of {id} on: {}", e.0.message);
+            }
+        });
+    }
+
+    /// Moves the session's ticket in Linear on as far as what its agent
+    /// reported takes it from `before` (`fctl_domain::tickets::reported`):
+    /// the agent's last report of a turn can come after the turn ended
+    /// (`turn_ended`, or it waits), which moved the ticket as far as the
+    /// session had come then ([`Self::report_to_linear`]). Merges move it
+    /// on their own ([`Self::move_on_merged`]).
+    fn move_on_reported(&self, s: &Session, before: Option<Progress>, turn_ended: bool) {
+        let turn_over = turn_ended || s.status != SessionStatus::Running;
+        let Some(to) = fctl_domain::tickets::reported(before, progress(s), turn_over)
+            .filter(|_| Self::answers_linear(s))
+        else {
+            return;
+        };
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::delegations::move_on(&env, &id, to, &[]).await {
+                worker::console_error!("moving the ticket of {id} on: {}", e.0.message);
+            }
+        });
+    }
+
     /// What the agent does, for Linear's session: a step now and then (one
     /// of its tool calls), and its plan (Claude Code's todo list).
     fn mirror_to_linear(&self, s: &Session, v: &serde_json::Value, now: i64) {
@@ -2711,9 +2777,17 @@ impl SessionObject {
                     return;
                 }
                 self.set_meta("linear_replied_seq", &seq);
+                // How far it came, which moves its ticket on.
+                let progress = progress(s);
+                let merged = merged(&s.pull_requests);
                 self.state.wait_until(async move {
                     if let Err(e) = crate::delegations::turn_ended(&env, &id, &text).await {
                         worker::console_error!("replying in Linear for {id}: {}", e.0.message);
+                    }
+                    if let Some(p) = progress
+                        && let Err(e) = crate::delegations::move_on(&env, &id, p, &merged).await
+                    {
+                        worker::console_error!("moving the ticket of {id} on: {}", e.0.message);
                     }
                 });
             }

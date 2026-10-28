@@ -155,7 +155,7 @@ export function createStandin({ schema, state, config, out = console, answerWith
       i.delegateId = W.APP_USER;
       i.assigneeId ??= by.id;
       i.updatedAt = new Date().toISOString();
-      const s = W.addSession(w, { issue: i, creatorId: by.id, commentId: null });
+      const s = W.addSession(w, { issue: i, creatorId: by.id, commentId: W.addAnchor(w, i).id });
       return begin(s, `${by.name} delegated ${W.identifier(w, i)} to fctl`);
     },
     mention: async (body) => {
@@ -399,6 +399,12 @@ export function issueJson(w, i) {
   };
 }
 
+/** What the person who mentioned fctl wrote, for an agent session a mention made. */
+function mentionOf(w, s) {
+  const c = W.comment(w, s.commentId);
+  return c && !c.anchor ? c.body : null;
+}
+
 /** An agent session as /standin/ shows it: its issue, links and plan, and its activities in order. */
 export function sessionJson(w, s) {
   const i = W.issue(w, s.issueId);
@@ -410,7 +416,7 @@ export function sessionJson(w, s) {
     delegate: W.user(w, i.delegateId)?.name ?? null,
     attachments: i.attachments.map(({ title, url }) => ({ title, url })),
     creator: W.user(w, s.creatorId)?.name ?? null,
-    mention: W.comment(w, s.commentId)?.body ?? null,
+    mention: mentionOf(w, s),
     status: W.sessionStatus(s),
     createdAt: s.createdAt,
     externalUrls: s.externalUrls,

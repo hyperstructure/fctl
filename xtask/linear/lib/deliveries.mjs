@@ -94,7 +94,8 @@ export function promptContext(w, s) {
   if (project) lines.push(`<project name="${xml(project.name)}"/>`);
   lines.push("</issue>");
   const asked = W.comment(w, s.commentId);
-  if (asked?.body) lines.push(thread(w, "primary-directive-thread", asked));
+  // A delegation's thread starts with Linear's own words, which ask nothing.
+  if (asked?.body && !asked.anchor) lines.push(thread(w, "primary-directive-thread", asked));
   for (const c of w.comments.filter((c) => c.issueId === i.id && !c.parentId && c.id !== asked?.id)) {
     lines.push(thread(w, "other-thread", c));
   }

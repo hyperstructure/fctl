@@ -547,6 +547,12 @@ pub struct LinearTeam {
     /// The state its tickets move to when their sessions start: its first
     /// started one.
     pub start_state: Option<String>,
+    /// The state they move to when their pull requests are up: its first
+    /// started one whose name says review, or else its first started one.
+    pub review_state: Option<String>,
+    /// The state they move to when their pull requests merged: its first
+    /// completed one.
+    pub done_state: Option<String>,
     /// Its projects that aren't done or canceled.
     pub projects: Vec<LinearProject>,
 }

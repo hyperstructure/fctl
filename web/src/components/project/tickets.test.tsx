@@ -129,6 +129,8 @@ function tab(
         name: "Engineering",
         states: [],
         start_state: "In Progress",
+        review_state: "Code review",
+        done_state: "Shipped",
         projects: [{ id: "c0000000-0000-4000-8000-000000000101", name: "Website" }],
       },
     ],
@@ -249,11 +251,44 @@ describe("the Tickets tab", () => {
       },
     });
     expect(c.textContent).toContain("Engineering");
-    expect(c.textContent).toContain("moves to In Progress");
+    expect(c.textContent).toContain("A delegated ticket at once, as Linear asks of agents");
+    expect(c.textContent).toContain("The ticket moves to In Review when its pull request is up, and to Done");
     expect(c.textContent).toContain("A ticket labelled explore gets an exploration");
     expect(c.textContent).toContain("assign one of ENG's issues to fctl");
     const link = c.querySelector<HTMLAnchorElement>('a[href="/api/v1/linear/link?project=web"]');
     expect(link?.textContent).toContain("Link Linear account");
+  });
+
+  it("moves tickets through the team's states, each with a switch", () => {
+    const c = tab(
+      project({
+        settings: { ...settings, tickets: { tracker: "linear", linear: { ...linear, move_done: false } } },
+      }),
+      {
+        status: {
+          tracker: "linear",
+          scope: "Linear team ENG (Acme)",
+          via: "fctl",
+          linear: connection,
+          linked: true,
+        },
+      },
+    );
+    const switches = () => [...c.querySelectorAll<HTMLButtonElement>('button[role="switch"]')];
+    const states = () => switches().map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked")]);
+    expect(states()).toEqual([
+      ["Move a ticket to In Progress as its session starts", "true"],
+      ["Move a ticket to Code review when its pull request is up", "true"],
+      ["Move a ticket to Shipped once its pull requests merge", "false"],
+    ]);
+    expect(c.textContent).toContain("through Engineering's workflow, never back");
+    expect(c.textContent).toContain("The ticket moves to In Review when its pull request is up.");
+    expect(c.textContent).not.toContain("Save");
+    act(() => switches()[2]?.click());
+    expect(states()[2]).toEqual(["Move a ticket to Shipped once its pull requests merge", "true"]);
+    act(() => switches()[0]?.click());
+    expect(states()[0]).toEqual(["Move a ticket to In Progress as its session starts", "false"]);
+    expect(c.textContent).toContain("Save");
   });
 
   it("says when fctl knows the person in Linear already", () => {

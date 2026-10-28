@@ -77,7 +77,7 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
         after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
@@ -218,9 +218,19 @@ pub enum ProjectsCmd {
         #[arg(long, value_name = "NAME|all")]
         linear_project: Option<String>,
         /// For Linear: move a ticket to the team's first started state (In
-        /// Progress) as its session starts (on by default).
+        /// Progress) as its session starts work on it (on by default).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         linear_start: Option<bool>,
+        /// For Linear: move a ticket to the team's review state (In Review)
+        /// when a turn of its session ends with a pull request up (on by
+        /// default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        linear_review: Option<bool>,
+        /// For Linear: move a ticket to the team's first completed state
+        /// (Done) once its session's pull requests merged, one that
+        /// completes it (Fixes ENG-123) among them (on by default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        linear_done: Option<bool>,
         /// For Linear: the label that asks for an exploration, where the
         /// agent looks into a ticket and replies with a plan without
         /// changing code ("explore" unless set; "" for none).
@@ -993,6 +1003,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             linear_team,
             linear_project,
             linear_start,
+            linear_review,
+            linear_done,
             explore_label,
             image: new_image,
             build,
@@ -1121,6 +1133,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 || linear_team.is_some()
                 || linear_project.is_some()
                 || linear_start.is_some()
+                || linear_review.is_some()
+                || linear_done.is_some()
                 || explore_label.is_some();
             if tracker_changed {
                 settings.tickets = tracker(
@@ -1133,6 +1147,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                         team: linear_team,
                         project: linear_project,
                         start: linear_start,
+                        review: linear_review,
+                        done: linear_done,
                         explore_label,
                     },
                 )
@@ -1518,6 +1534,8 @@ struct TrackerChange {
     team: Option<String>,
     project: Option<String>,
     start: Option<bool>,
+    review: Option<bool>,
+    done: Option<bool>,
     explore_label: Option<String>,
 }
 
@@ -1620,15 +1638,23 @@ async fn tracker(
                 .map(|x| x.name.clone()),
             project,
             move_started: current.as_ref().and_then(|l| l.move_started),
+            move_review: current.as_ref().and_then(|l| l.move_review),
+            move_done: current.as_ref().and_then(|l| l.move_done),
             explore_label: current.as_ref().and_then(|l| l.explore_label.clone()),
         });
     }
-    if c.start.is_some() || c.explore_label.is_some() {
+    if c.start.is_some() || c.review.is_some() || c.done.is_some() || c.explore_label.is_some() {
         let Some(l) = t.linear.as_mut() else {
             bail!("choose the project's Linear team first, with --linear-team");
         };
         if let Some(on) = c.start {
             l.move_started = Some(on);
+        }
+        if let Some(on) = c.review {
+            l.move_review = Some(on);
+        }
+        if let Some(on) = c.done {
+            l.move_done = Some(on);
         }
         if let Some(label) = c.explore_label {
             l.explore_label = Some(label);
