@@ -215,12 +215,13 @@ async fn set(
 
 /// What agents call you, as `fctl whoami` and `fctl account set` say it.
 pub fn agents_call_you(user: &fctl_proto::api::User) -> String {
-    match fctl_domain::validate::called(user.preferred_name.as_deref(), user.given_name.as_deref())
-    {
-        Some(name) => format!("Agents call you {name}"),
-        None => "Agents aren't told what to call you: `fctl account set --preferred-name NAME` tells them"
-            .to_owned(),
-    }
+    let name = fctl_domain::validate::called(
+        user.preferred_name.as_deref(),
+        user.given_name.as_deref(),
+        &user.name,
+    )
+    .unwrap_or_else(|| user.name.clone());
+    format!("Agents call you {name}")
 }
 
 pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()> {

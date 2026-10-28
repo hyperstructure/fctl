@@ -1883,7 +1883,8 @@ filled with one, stays empty, and agents ignore it
 Agents call people by the name they chose for it (`preferred_name`;
 Settings → Profile, `fctl account set --preferred-name`), or else by
 their first names, all of them (`given_name`: "Carl Oscar", not "Carl");
-an account an older client made with only a full name has neither
+an account an older client made with only a full name takes the words of
+that name but the last, as Settings shows them
 (`fctl_domain::validate::called`). FleetDO puts the starter's in the
 spec's `author_called`, and the system prompt says who started the session
 and what to call them, the whole name when it has several words. A

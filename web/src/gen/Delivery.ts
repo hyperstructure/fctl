@@ -9,8 +9,7 @@ import type { UserRef } from "./UserRef";
 export type Delivery = { id: DeliveryId, } & ({ "kind": "message", text: string, author?: UserRef, 
 /**
  * What agents call `author` (`SessionSpec::author_called`).
- * Absent when fctl knows neither their chosen name nor their first
- * names, and from older control planes; older hosts drop it.
+ * Absent from older control planes; older hosts drop it.
  */
 author_called?: string, 
 /**

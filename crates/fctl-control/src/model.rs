@@ -163,9 +163,17 @@ impl UserRow {
         }
     }
 
-    /// What agents call them (`fctl_domain::validate::called`).
+    /// What agents call them (`fctl_domain::validate::called`); nothing,
+    /// once their account is deleted.
     pub fn called(&self) -> Option<String> {
-        fctl_domain::validate::called(self.preferred_name.as_deref(), self.given_name.as_deref())
+        if fctl_domain::account::is_tombstone(&self.email) {
+            return None;
+        }
+        fctl_domain::validate::called(
+            self.preferred_name.as_deref(),
+            self.given_name.as_deref(),
+            &self.name,
+        )
     }
 
     /// What fctl calls them where it writes to them by name: what agents

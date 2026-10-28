@@ -13,6 +13,11 @@ pub fn tombstone_email(user_id: &str) -> String {
     format!("deleted-{}@deleted.invalid", user_id.to_ascii_lowercase())
 }
 
+/// Whether `email` is a deleted account's ([`tombstone_email`]).
+pub fn is_tombstone(email: &str) -> bool {
+    email.starts_with("deleted-") && email.ends_with("@deleted.invalid")
+}
+
 /// Whether `typed` confirms deleting the account with this email address.
 pub fn confirms_deletion(typed: &str, email: &str) -> bool {
     let email = email.trim();
@@ -74,6 +79,8 @@ mod tests {
             "deleted-usr_01abc@deleted.invalid"
         );
         assert_ne!(tombstone_email("usr_1"), tombstone_email("usr_2"));
+        assert!(is_tombstone(&tombstone_email("usr_01ABC")));
+        assert!(!is_tombstone("ada@example.com"));
     }
 
     #[test]

@@ -618,23 +618,31 @@ async fn creator(
     }))
 }
 
-/// What agents call the person `user_id` (`fctl_domain::validate::called`).
+/// What agents call the person `user_id` (`fctl_domain::validate::called`):
+/// nothing, once their account is deleted.
 async fn called(db: &D1Database, user_id: &str) -> AppResult<Option<String>> {
     #[derive(serde::Deserialize)]
     struct U {
+        email: String,
+        name: String,
         preferred_name: Option<String>,
         given_name: Option<String>,
     }
     let u: Option<U> = q(
         db,
-        "SELECT preferred_name, given_name FROM users WHERE id = ?",
+        "SELECT email, name, preferred_name, given_name FROM users WHERE id = ?",
         &[s(user_id)],
     )?
     .first()
     .await?;
-    Ok(u.and_then(|u| {
-        fctl_domain::validate::called(u.preferred_name.as_deref(), u.given_name.as_deref())
-    }))
+    Ok(u.filter(|u| !fctl_domain::account::is_tombstone(&u.email))
+        .and_then(|u| {
+            fctl_domain::validate::called(
+                u.preferred_name.as_deref(),
+                u.given_name.as_deref(),
+                &u.name,
+            )
+        }))
 }
 
 /// Commits are authored by the GitHub App's bot account.

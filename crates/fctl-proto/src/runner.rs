@@ -331,9 +331,10 @@ pub struct SessionSpec {
     pub task_attachments: Vec<Attachment>,
     pub author: UserRef,
     /// What its agent calls `author`: the name they chose, or else their
-    /// first names (`fctl_domain::validate::called`). Absent when fctl knows
-    /// neither, and from older control planes; older hosts leave it out of
-    /// the agent's configuration, and their agents aren't told.
+    /// first names (`fctl_domain::validate::called`). Absent for review
+    /// agents and deleted accounts, and from older control planes; older
+    /// hosts leave it out of the agent's configuration, and their agents
+    /// aren't told.
     pub author_called: Option<String>,
     /// UUID passed to `claude --session-id` (or `--resume`).
     pub claude_session_id: String,

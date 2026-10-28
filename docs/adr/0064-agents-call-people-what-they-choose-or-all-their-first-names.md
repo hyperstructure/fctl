@@ -22,9 +22,10 @@ that agents don't take one of several names for the whole.
   agents call you" in Settings → Profile, `fctl account set
   --preferred-name`): a name like the others, at most 80 characters on one
   line, which an empty one clears. Without one, agents call people by their
-  first names, all of them (`given_name`), which every account has but
-  those an older client made with only a full name
-  (`fctl_domain::validate::called`).
+  first names, all of them (`given_name`). An account an older client made
+  with only a full name takes its words but the last for those, as
+  Settings → Profile shows them and the greeting took them already
+  (`fctl_domain::validate::called`); a deleted account gets no name.
 - **The system prompt names the starter.** FleetDO puts what to call them
   in the spec (`author_called`), and the system prompt says who started
   the session and what to call them: "the whole name rather than a part of

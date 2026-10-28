@@ -50,8 +50,7 @@ pub enum DeliveryKind {
         #[cfg_attr(feature = "ts", ts(optional))]
         author: Option<UserRef>,
         /// What agents call `author` (`SessionSpec::author_called`).
-        /// Absent when fctl knows neither their chosen name nor their first
-        /// names, and from older control planes; older hosts drop it.
+        /// Absent from older control planes; older hosts drop it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         author_called: Option<String>,

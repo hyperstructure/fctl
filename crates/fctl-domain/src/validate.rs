@@ -176,15 +176,25 @@ pub fn preferred_name(input: &str) -> Result<Option<String>> {
 }
 
 /// What agents call someone: the name they chose, or else their first
-/// names, all of them ("Carl Oscar"). `None` when fctl knows neither, as
-/// for an account an older client created with only a full name.
-pub fn called(preferred: Option<&str>, given: Option<&str>) -> Option<String> {
+/// names, all of them ("Carl Oscar"). An account an older client made with
+/// only a full name takes its words but the last for those, as Settings →
+/// Profile shows them and migration 0003 split the names of the accounts
+/// before it. `None` only for an empty name.
+pub fn called(preferred: Option<&str>, given: Option<&str>, full: &str) -> Option<String> {
     [preferred, given]
         .into_iter()
         .flatten()
         .map(str::trim)
         .find(|n| !n.is_empty())
         .map(str::to_owned)
+        .or_else(|| {
+            let words: Vec<&str> = full.split_whitespace().collect();
+            match words.as_slice() {
+                [] => None,
+                [one] => Some((*one).to_owned()),
+                [first @ .., _] => Some(first.join(" ")),
+            }
+        })
 }
 
 /// Optional free text (descriptions): at most `max` characters.
@@ -816,16 +826,16 @@ mod tests {
 
     #[test]
     fn agents_call_people_what_they_chose_or_all_their_first_names() {
-        assert_eq!(called(Some("Bob"), Some("Robert")).as_deref(), Some("Bob"));
-        assert_eq!(
-            called(None, Some("Carl Oscar")).as_deref(),
-            Some("Carl Oscar")
-        );
-        assert_eq!(
-            called(Some(" "), Some("Carl Oscar")).as_deref(),
-            Some("Carl Oscar")
-        );
-        assert_eq!(called(None, None), None);
+        let full = "Carl Oscar Aaro";
+        let bob = called(Some("Bob"), Some("Robert"), "Robert Smith");
+        assert_eq!(bob.as_deref(), Some("Bob"));
+        let carl = Some("Carl Oscar");
+        assert_eq!(called(None, Some("Carl Oscar"), full).as_deref(), carl);
+        assert_eq!(called(Some(" "), Some("Carl Oscar"), full).as_deref(), carl);
+        // Only a full name: its words but the last, as Settings shows them.
+        assert_eq!(called(None, None, full).as_deref(), carl);
+        assert_eq!(called(None, Some(""), "Cher").as_deref(), Some("Cher"));
+        assert_eq!(called(None, None, " "), None);
     }
 
     #[test]
