@@ -330,6 +330,12 @@ pub struct SessionSpec {
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
     pub task_attachments: Vec<Attachment>,
     pub author: UserRef,
+    /// What its agent calls `author`: the name they chose, or else their
+    /// first names (`fctl_domain::validate::called`). Absent for review
+    /// agents and deleted accounts, and from older control planes; older
+    /// hosts leave it out of the agent's configuration, and their agents
+    /// aren't told.
+    pub author_called: Option<String>,
     /// UUID passed to `claude --session-id` (or `--resume`).
     pub claude_session_id: String,
     /// Resume `claude_session_id` instead of starting a new conversation.
@@ -613,6 +619,19 @@ mod tests {
         let json = serde_json::to_value(&spec)?;
         assert!(json["project"].get("repos").is_none());
         assert!(json["credentials"].get("github_read").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn specs_say_what_to_call_the_starter() -> serde_json::Result<()> {
+        // Older control planes don't say.
+        let spec: SessionSpec = serde_json::from_value(spec_json())?;
+        assert_eq!(spec.author_called, None);
+        assert!(serde_json::to_value(&spec)?.get("author_called").is_none());
+        let mut json = spec_json();
+        json["author_called"] = serde_json::json!("Carl Oscar");
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert_eq!(spec.author_called.as_deref(), Some("Carl Oscar"));
         Ok(())
     }
 

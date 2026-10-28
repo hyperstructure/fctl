@@ -49,6 +49,11 @@ pub enum DeliveryKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         author: Option<UserRef>,
+        /// What agents call `author` (`SessionSpec::author_called`).
+        /// Absent from older control planes; older hosts drop it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        author_called: Option<String>,
         /// Files sent with the message. The host fetches their bytes
         /// (`GET /api/v1/runner/sessions/{id}/attachments/{attachment}`) and
         /// hands them to fctl-agent before the message.
@@ -234,6 +239,34 @@ mod tests {
         let json = serde_json::to_value(&state)?;
         assert_eq!(json["effort"], "high");
         assert_eq!(serde_json::from_value::<SessionState>(json)?, state);
+        Ok(())
+    }
+
+    #[test]
+    fn messages_say_what_to_call_their_author() -> serde_json::Result<()> {
+        // From an older control plane: the author alone.
+        let old: Delivery = serde_json::from_str(
+            r#"{"id":"dlv_1","kind":"message","text":"hi","author":{"id":"usr_2","name":"Carl Oscar Aaro"}}"#,
+        )?;
+        let DeliveryKind::Message { author_called, .. } = &old.kind else {
+            panic!("not a message: {old:?}");
+        };
+        assert_eq!(author_called, &None);
+        // Nothing more on the wire when fctl doesn't know.
+        let json = serde_json::to_value(&old)?;
+        assert!(json.get("author_called").is_none());
+        let called = Delivery {
+            kind: DeliveryKind::Message {
+                text: "hi".into(),
+                author: None,
+                author_called: Some("Carl Oscar".into()),
+                attachments: Vec::new(),
+            },
+            ..old
+        };
+        let json = serde_json::to_value(&called)?;
+        assert_eq!(json["author_called"], "Carl Oscar");
+        assert_eq!(serde_json::from_value::<Delivery>(json)?, called);
         Ok(())
     }
 }

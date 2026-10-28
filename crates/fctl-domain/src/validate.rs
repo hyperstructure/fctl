@@ -166,6 +166,37 @@ pub fn person_name(
     })
 }
 
+/// What someone asked to be called (`User.preferred_name`): a [`name`], or
+/// `None` for an empty one, which leaves them their first names.
+pub fn preferred_name(input: &str) -> Result<Option<String>> {
+    if collapse_spaces(&plain(input)).is_empty() {
+        return Ok(None);
+    }
+    name("preferred_name", input).map(Some)
+}
+
+/// What agents call someone: the name they chose, or else their first
+/// names, all of them ("Carl Oscar"). An account an older client made with
+/// only a full name takes its words but the last for those, as Settings →
+/// Profile shows them and migration 0003 split the names of the accounts
+/// before it. `None` only for an empty name.
+pub fn called(preferred: Option<&str>, given: Option<&str>, full: &str) -> Option<String> {
+    [preferred, given]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|n| !n.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            let words: Vec<&str> = full.split_whitespace().collect();
+            match words.as_slice() {
+                [] => None,
+                [one] => Some((*one).to_owned()),
+                [first @ .., _] => Some(first.join(" ")),
+            }
+        })
+}
+
 /// Optional free text (descriptions): at most `max` characters.
 pub fn text(field: &str, input: &str, max: usize) -> Result<String> {
     let s = input.trim().to_owned();
@@ -778,6 +809,33 @@ mod tests {
         );
         assert!(person_name(None, None, None).is_err());
         assert!(person_name(Some("Ada"), Some(&"x".repeat(81)), None).is_err());
+    }
+
+    #[test]
+    fn preferred_names() {
+        assert_eq!(
+            preferred_name("  Carl \n Oscar ").ok(),
+            Some(Some("Carl Oscar".into()))
+        );
+        assert_eq!(preferred_name(" \u{202e} ").ok(), Some(None));
+        assert_eq!(
+            preferred_name(&"x".repeat(81)).map_err(|e| e.field),
+            Err(Some("preferred_name".into()))
+        );
+    }
+
+    #[test]
+    fn agents_call_people_what_they_chose_or_all_their_first_names() {
+        let full = "Carl Oscar Aaro";
+        let bob = called(Some("Bob"), Some("Robert"), "Robert Smith");
+        assert_eq!(bob.as_deref(), Some("Bob"));
+        let carl = Some("Carl Oscar");
+        assert_eq!(called(None, Some("Carl Oscar"), full).as_deref(), carl);
+        assert_eq!(called(Some(" "), Some("Carl Oscar"), full).as_deref(), carl);
+        // Only a full name: its words but the last, as Settings shows them.
+        assert_eq!(called(None, None, full).as_deref(), carl);
+        assert_eq!(called(None, Some(""), "Cher").as_deref(), Some("Cher"));
+        assert_eq!(called(None, None, " "), None);
     }
 
     #[test]

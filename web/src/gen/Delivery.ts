@@ -8,6 +8,11 @@ import type { UserRef } from "./UserRef";
  */
 export type Delivery = { id: DeliveryId, } & ({ "kind": "message", text: string, author?: UserRef, 
 /**
+ * What agents call `author` (`SessionSpec::author_called`).
+ * Absent from older control planes; older hosts drop it.
+ */
+author_called?: string, 
+/**
  * Files sent with the message. The host fetches their bytes
  * (`GET /api/v1/runner/sessions/{id}/attachments/{attachment}`) and
  * hands them to fctl-agent before the message.

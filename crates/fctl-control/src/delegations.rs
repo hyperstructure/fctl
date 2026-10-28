@@ -572,13 +572,13 @@ async fn take_up(
             return refuse(if names.is_empty() {
                 format!(
                     "{}, you can't start sessions in the fctl project that takes {}'s tickets: its owners make you an editor of it.",
-                    user.name,
+                    user.addressed(),
                     team_name()
                 )
             } else {
                 format!(
                     "{}, you can't start sessions in {}, which takes these tickets in fctl: its owners make you an editor of it.",
-                    user.name,
+                    user.addressed(),
                     names.join(" or ")
                 )
             })
@@ -645,7 +645,7 @@ async fn take_up(
             env,
             &session_id,
             text,
-            user.to_ref(),
+            &user,
             message,
             Some(format!("linear:{id}")),
         )
@@ -714,7 +714,7 @@ async fn take_up(
     else {
         return refuse(format!(
             "{}, connect your Claude subscription in fctl first (Settings → Claude): sessions run on it. Then delegate {key} again.",
-            user.name
+            user.addressed()
         ))
         .await;
     };
@@ -1058,7 +1058,7 @@ async fn reply(
             &t.id,
             &Act::Error(&format!(
                 "{}, you can't message this session in fctl, so your reply didn't reach its agent.",
-                user.name
+                user.addressed()
             )),
             false,
         )
@@ -1136,7 +1136,7 @@ async fn reply(
         env,
         session_id,
         text,
-        user.to_ref(),
+        &user,
         message,
         Some(format!("linear:{}", activity.id)),
     )
@@ -1178,11 +1178,12 @@ async fn deliver(
     env: &Env,
     session_id: &str,
     text: String,
-    author: UserRef,
+    user: &UserRow,
     ticket: TicketMessage,
     client_key: Option<String>,
 ) -> AppResult<()> {
     let id = fctl_domain::ids::delivery_id(crate::ctx::now_ms());
+    let author = user.to_ref();
     let stub = crate::internal::session_stub(env, session_id)?;
     let _: Delivered = crate::internal::post(
         &stub,
@@ -1193,6 +1194,7 @@ async fn deliver(
                 kind: DeliveryKind::Message {
                     text: text.clone(),
                     author: Some(author.clone()),
+                    author_called: user.called(),
                     attachments: Vec::new(),
                 },
             },

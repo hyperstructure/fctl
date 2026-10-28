@@ -158,6 +158,11 @@ pub struct DrainStopped {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ViewerIdentity {
     pub user: UserRef,
+    /// What agents call them, as of the socket's last check, which goes
+    /// with the messages they send over it
+    /// (`DeliveryKind::Message::author_called`).
+    #[serde(default)]
+    pub called: Option<String>,
     pub role: SessionRole,
     /// The token it was opened with, which SessionObject checks again,
     /// with the role, while the socket stays open.

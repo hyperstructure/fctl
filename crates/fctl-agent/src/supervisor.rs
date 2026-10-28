@@ -1434,17 +1434,13 @@ impl Supervisor {
     async fn send_turn(
         &mut self,
         text: &str,
-        author: Option<&str>,
+        author: Option<prompt::Author<'_>>,
         delivery: Option<&DeliveryId>,
         files: &[Attachment],
     ) {
-        let starter = self
-            .config
-            .as_ref()
-            .map(|c| c.spec.author.name.clone())
-            .unwrap_or_default();
+        let starter = self.config.as_ref().map(|c| &c.spec.author);
         let files = self.prepare_files(files);
-        let text = prompt::user_turn(&prompt::with_files(text, &files.note), author, &starter);
+        let text = prompt::user_turn(&prompt::with_files(text, &files.note), author, starter);
         self.send_content(&text, files.images, delivery).await;
     }
 
@@ -1500,6 +1496,7 @@ impl Supervisor {
             DeliveryKind::Message {
                 text,
                 author,
+                author_called,
                 attachments,
             } => {
                 if self.stopping.is_some() {
@@ -1510,15 +1507,16 @@ impl Supervisor {
                     self.queue.push_back(d.clone());
                     return;
                 }
-                let (text, author) = (text.clone(), author.as_ref().map(|a| a.name.clone()));
-                let files = attachments.clone();
                 // A message during a usage-limit pause waits for the reset.
                 if self.state.status == SessionStatus::Paused {
                     self.queue.push_back(d.clone());
                     return;
                 }
-                self.send_turn(&text, author.as_deref(), Some(&d.id), &files)
-                    .await;
+                let author = author.as_ref().map(|user| prompt::Author {
+                    user,
+                    called: author_called.as_deref(),
+                });
+                self.send_turn(text, author, Some(&d.id), attachments).await;
             }
             DeliveryKind::Interrupt { .. } => {
                 if let Some(c) = self.claude.as_mut()
@@ -3794,8 +3792,16 @@ done
 
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.claude = Some(stub_claude(dir.path(), &next)?);
-        next.send_turn("Please continue", Some("Bob"), None, &[])
-            .await;
+        let bob = fctl_proto::session::UserRef {
+            id: fctl_proto::UserId("usr_2".into()),
+            name: "Bob".into(),
+            avatar_url: None,
+        };
+        let by = prompt::Author {
+            user: &bob,
+            called: None,
+        };
+        next.send_turn("Please continue", Some(by), None, &[]).await;
         next.send_turn("And then this", None, None, &[]).await;
         let sent = sent_to_claude(dir.path(), 2).await?;
         let text = |i: usize| {

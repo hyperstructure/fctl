@@ -183,6 +183,7 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
     if !others.is_empty() {
         println!("Also signs in as {}", others.join(", "));
     }
+    println!("{}", super::account::agents_call_you(&me.user));
     if let Some(email) = &me.commit_email {
         println!("Commits credit you as {email}");
     }

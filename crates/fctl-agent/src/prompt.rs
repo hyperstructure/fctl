@@ -7,7 +7,7 @@ use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
 use fctl_proto::event::Attachment;
 use fctl_proto::runner::{MemorySpec, ReviewSpec, SandboxSize, SessionRepo, SessionSpec};
-use fctl_proto::session::{GithubAccess, RepoAccess, Verbosity};
+use fctl_proto::session::{GithubAccess, RepoAccess, UserRef, Verbosity};
 use fctl_proto::tickets::TicketsVia;
 use std::path::PathBuf;
 
@@ -417,7 +417,7 @@ pub fn system_prompt(
             (false, false) => {}
         }
     }
-    s.push_str("- Messages from people other than the session's starter begin with their name.\n");
+    s.push_str(&people(spec));
     s.push_str("- Never print, log or commit secrets. Project secrets are available as environment variables.\n");
     s.push_str("- If you are blocked on a decision only a person can make, say so plainly and stop; someone will answer.\n");
     let idle = tasks::idle_timeout(spec);
@@ -474,6 +474,30 @@ pub fn system_prompt(
         s.push('\n');
     }
     s
+}
+
+/// Who started the session and what to call them, as far as fctl knows, and
+/// how messages from other people show who wrote them ([`user_turn`]).
+fn people(spec: &SessionSpec) -> String {
+    let Some(called) = spec
+        .author_called
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    else {
+        return "- Messages from people other than the session's starter begin with their name.\n"
+            .to_owned();
+    };
+    // Agents take the first of several first names for the whole.
+    let whole = if called.contains(char::is_whitespace) {
+        ", the whole name rather than a part of it,"
+    } else {
+        ""
+    };
+    format!(
+        "- {} started this session. Call them {called}{whole} when you write to them or about them. Messages from other people begin with their name and what to call them.\n",
+        spec.author.name
+    )
 }
 
 /// How an agent that may push describes the pull requests it opens: as much
@@ -772,10 +796,25 @@ pub fn with_files(text: &str, note: &str) -> String {
     }
 }
 
-/// A user turn as Claude sees it: messages from others carry their name.
-pub fn user_turn(text: &str, author: Option<&str>, starter: &str) -> String {
+/// Who wrote a message to the agent, and what agents call them
+/// (`DeliveryKind::Message::author_called`).
+#[derive(Clone, Copy, Debug)]
+pub struct Author<'a> {
+    pub user: &'a UserRef,
+    pub called: Option<&'a str>,
+}
+
+/// A user turn as Claude sees it: messages from people other than the
+/// session's starter carry their name, and what to call them.
+pub fn user_turn(text: &str, author: Option<Author<'_>>, starter: Option<&UserRef>) -> String {
     match author {
-        Some(name) if name != starter => format!("{name} wrote:\n\n{text}"),
+        Some(a) if starter.is_none_or(|s| s.id != a.user.id) => {
+            let name = &a.user.name;
+            match a.called.map(str::trim).filter(|c| !c.is_empty()) {
+                Some(called) => format!("{name} (call them {called}) wrote:\n\n{text}"),
+                None => format!("{name} wrote:\n\n{text}"),
+            }
+        }
         _ => text.to_owned(),
     }
 }
@@ -825,6 +864,7 @@ mod tests {
                 name: "Ada".into(),
                 avatar_url: None,
             },
+            author_called: None,
             claude_session_id: "uuid".into(),
             resume: false,
             model: None,
@@ -1552,9 +1592,55 @@ mod tests {
 
     #[test]
     fn attributes_other_people() {
-        assert_eq!(user_turn("hi", Some("Ada"), "Ada"), "hi");
-        assert_eq!(user_turn("hi", Some("Bob"), "Ada"), "Bob wrote:\n\nhi");
-        assert_eq!(user_turn("continue", None, "Ada"), "continue");
+        let person = |id: &str, name: &str| UserRef {
+            id: UserId(id.into()),
+            name: name.into(),
+            avatar_url: None,
+        };
+        let (ada, bob) = (person("usr_1", "Ada"), person("usr_2", "Bob"));
+        let by = |user, called| Some(Author { user, called });
+        assert_eq!(user_turn("hi", by(&ada, None), Some(&ada)), "hi");
+        assert_eq!(
+            user_turn("hi", by(&bob, None), Some(&ada)),
+            "Bob wrote:\n\nhi"
+        );
+        assert_eq!(user_turn("continue", None, Some(&ada)), "continue");
+        // By who they are: a starter who renamed themselves is still them.
+        let renamed = person("usr_1", "Ada Lovelace");
+        assert_eq!(user_turn("hi", by(&renamed, None), Some(&ada)), "hi");
+        assert_eq!(user_turn("hi", by(&ada, None), None), "Ada wrote:\n\nhi");
+        // With what to call them, when fctl knows.
+        let carl = person("usr_3", "Carl Oscar Aaro");
+        assert_eq!(
+            user_turn("hi", by(&carl, Some("Carl Oscar")), Some(&ada)),
+            "Carl Oscar Aaro (call them Carl Oscar) wrote:\n\nhi"
+        );
+        assert_eq!(
+            user_turn("hi", by(&carl, Some(" ")), Some(&ada)),
+            "Carl Oscar Aaro wrote:\n\nhi"
+        );
+    }
+
+    #[test]
+    fn says_who_started_the_session_and_what_to_call_them() {
+        let text = system_prompt(&spec(), "/work", &paths(), None, None, false);
+        assert!(text.contains(
+            "- Messages from people other than the session's starter begin with their name.\n"
+        ));
+        assert!(!text.contains("started this session"));
+        let mut carl = spec();
+        carl.author.name = "Carl Oscar Aaro".into();
+        carl.author_called = Some("Carl Oscar".into());
+        let text = system_prompt(&carl, "/work", &paths(), None, None, false);
+        assert!(text.contains(
+            "- Carl Oscar Aaro started this session. Call them Carl Oscar, the whole name rather than a part of it, when you write to them or about them. Messages from other people begin with their name and what to call them.\n"
+        ));
+        assert!(!text.contains("the session's starter"));
+        carl.author_called = Some("Bob".into());
+        let text = system_prompt(&carl, "/work", &paths(), None, None, false);
+        assert!(text.contains(
+            "- Carl Oscar Aaro started this session. Call them Bob when you write to them or about them."
+        ));
     }
 
     #[test]

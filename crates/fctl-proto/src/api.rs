@@ -120,9 +120,13 @@ pub struct User {
     pub email: String,
     /// The full name everyone sees.
     pub name: String,
-    /// First names, all of them ("Carl Oscar"); what greetings use.
+    /// First names, all of them ("Carl Oscar"): what greetings and agents
+    /// call them, unless they chose `preferred_name`.
     pub given_name: Option<String>,
     pub family_name: Option<String>,
+    /// What they asked to be called ("Carl Oscar", "Bob"): agents call
+    /// them this, and greetings use it. Absent: their first names.
+    pub preferred_name: Option<String>,
     pub avatar_url: Option<String>,
     pub role: InstanceRole,
     pub status: UserStatus,
@@ -280,6 +284,9 @@ pub struct UpdateMeRequest {
     pub family_name: Option<String>,
     /// The full name alone, from older clients: the parts become unknown.
     pub name: Option<String>,
+    /// What agents call you (`User.preferred_name`); an empty one leaves
+    /// them your first names.
+    pub preferred_name: Option<String>,
     /// `""` removes your picture. `PUT /api/v1/me/avatar` uploads one: an
     /// address is refused, unless it is the one you have.
     pub avatar_url: Option<String>,

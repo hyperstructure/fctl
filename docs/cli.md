@@ -941,6 +941,7 @@ the ones before them.
 ```sh
 fctl account emails                        # your addresses, their commit emails and workspaces
 fctl account set --avatar me.png           # your picture (PNG, JPEG, GIF or WebP; --avatar none for your initials)
+fctl account set --preferred-name "Carl Oscar"   # what agents call you ("" for your first names)
 fctl account set --commit-email 1234+ada@users.noreply.github.com      # your primary address's
 fctl account set --for ada.lovelace@acme.example --commit-email ada.lovelace@acme.example
 fctl account set --commit-email ""         # commits stop crediting you
@@ -998,6 +999,14 @@ fctl account passkeys list
 fctl account passkeys rename "Chrome on macOS" "Studio laptop"   # by name or id
 fctl account passkeys remove pky_01…
 ```
+
+Agents call you by your first names, all of them, unless you choose
+another name for them to use, in Settings → Profile or with
+`--preferred-name`. The agents of the sessions you start are told it, and
+so is an agent each time you write to a session someone else started;
+fctl's replies to you in Linear and the Agent Floor's greeting use it too.
+A session you started takes a new name when it next starts or resumes;
+`fctl whoami` shows the one agents use.
 
 Each address is invited to the instance on its own; open an invitation
 while signed in to connect its address to your account (the web app asks).

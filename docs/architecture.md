@@ -1878,6 +1878,25 @@ emails never go into commits: `co_authors`, which older control planes
 filled with one, stays empty, and agents ignore it
 ([ADR 0011](adr/0011-commits-credit-people-with-an-address-they-choose.md)).
 
+### What agents call people
+
+Agents call people by the name they chose for it (`preferred_name`;
+Settings → Profile, `fctl account set --preferred-name`), or else by
+their first names, all of them (`given_name`: "Carl Oscar", not "Carl");
+an account an older client made with only a full name takes the words of
+that name but the last, as Settings shows them
+(`fctl_domain::validate::called`). FleetDO puts the starter's in the
+spec's `author_called`, and the system prompt says who started the session
+and what to call them, the whole name when it has several words. A
+message from anyone else carries theirs in its delivery (`author_called`,
+from their account as the Worker delivers it, or as SessionDO last checked
+the viewer socket it came over), and fctl-agent puts it after their name:
+`Carl Oscar Aaro (call them Carl Oscar) wrote:`. fctl's own words to
+people in Linear use it too, and the Agent Floor greets people with it.
+Older control planes and hosts send neither, and their agents see full
+names alone
+([ADR 0064](adr/0064-agents-call-people-what-they-choose-or-all-their-first-names.md)).
+
 ### Titles
 
 A session's title starts as the first line of its task. Once the agent

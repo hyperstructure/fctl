@@ -8,7 +8,7 @@ use crate::http;
 use crate::internal::{
     self, ControlState, Deliver, Delivered, InitSession, Schedule, Stop, ViewerIdentity,
 };
-use crate::model::{CredentialRow, SESSION_SELECT, SessionRow};
+use crate::model::{CredentialRow, SESSION_SELECT, SessionRow, UserRow};
 use fctl_domain::{naming, validate};
 use fctl_proto::api::*;
 use fctl_proto::event::{Attachment, EventBody, Interrupt, MessageSource, UserMessage};
@@ -456,12 +456,12 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
     if !status.accepts_messages() && !status.resumes_for_messages() {
         return Err(conflict("The session failed. Resume it to continue."));
     }
-    let author = ctx.user()?.to_ref();
+    let author = ctx.user()?.clone();
     let attachments = internal::claim_files(
         &ctx.env,
         &a.row.project_id,
         &a.row.session_id(),
-        author.id.as_str(),
+        &author.id,
         &files,
     )
     .await?;
@@ -472,7 +472,7 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
         ctx,
         id,
         text,
-        author,
+        &author,
         source_of(ctx),
         client_key,
         attachments,
@@ -487,12 +487,13 @@ pub async fn deliver_message(
     ctx: &Ctx,
     session_id: &str,
     text: String,
-    author: UserRef,
+    user: &UserRow,
     source: MessageSource,
     client_key: Option<String>,
     attachments: Vec<Attachment>,
 ) -> AppResult<fctl_proto::DeliveryId> {
     let delivery_id = fctl_domain::ids::delivery_id(ctx.now);
+    let author = user.to_ref();
     let stub = internal::session_stub(&ctx.env, session_id)?;
     let out: Delivered = internal::post(
         &stub,
@@ -503,6 +504,7 @@ pub async fn deliver_message(
                 kind: DeliveryKind::Message {
                     text: text.clone(),
                     author: Some(author.clone()),
+                    author_called: user.called(),
                     attachments: attachments.clone(),
                 },
             },
@@ -634,16 +636,7 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     )
     .await?;
     if let Some(text) = message {
-        deliver_message(
-            ctx,
-            id,
-            text,
-            user.to_ref(),
-            source_of(ctx),
-            None,
-            attachments,
-        )
-        .await?;
+        deliver_message(ctx, id, text, &user, source_of(ctx), None, attachments).await?;
     }
     let fleet = internal::fleet_stub(&ctx.env)?;
     let _: serde_json::Value = internal::post(
@@ -685,6 +678,7 @@ pub async fn websocket(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response
     let a = access::session(ctx, id).await?;
     let ident = ViewerIdentity {
         user: ctx.user()?.to_ref(),
+        called: ctx.user()?.called(),
         role: a.role,
         token_id: ctx.auth.as_ref().map(|t| t.token_id.clone()),
     };

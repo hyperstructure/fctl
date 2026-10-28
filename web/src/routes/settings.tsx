@@ -118,10 +118,11 @@ export function SettingsPage() {
 function Profile({ me }: { me: G.Me }) {
   const [given, setGiven] = useState(() => nameParts(me.user).given);
   const [family, setFamily] = useState(() => nameParts(me.user).family);
+  const [preferred, setPreferred] = useState(me.user.preferred_name ?? "");
   const file = useRef<HTMLInputElement>(null);
   const saved = (m: G.Me) => queryClient.setQueryData(keys.me, m);
   const save = useMutation({
-    mutationFn: () => api.updateMe({ given_name: given, family_name: family }),
+    mutationFn: () => api.updateMe({ given_name: given, family_name: family, preferred_name: preferred }),
     onSuccess: (m) => {
       saved(m);
       toast("Profile saved");
@@ -203,6 +204,23 @@ function Profile({ me }: { me: G.Me }) {
           }}
         >
           <NameFields given={given} family={family} onGiven={setGiven} onFamily={setFamily} error={err} />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="What agents call you"
+              hint="Left empty, agents use your first names. The Agent Floor greets you with it too."
+              error={err("preferred_name")}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  autoComplete="nickname"
+                  value={preferred}
+                  onChange={(e) => setPreferred(e.target.value)}
+                  placeholder={given.trim() || "Your first names"}
+                />
+              )}
+            </Field>
+          </div>
           <div>
             <Button type="submit" variant="primary" loading={save.isPending}>
               Save
