@@ -1074,6 +1074,11 @@ pub struct ReviewCheck {
     pub session_id: Option<SessionId>,
     /// What it posted on GitHub: its summary, above its findings.
     pub url: Option<String>,
+    /// The project whose review agents reviewed it, where people who start
+    /// sessions in it ask for another review of the pull request (`POST
+    /// /api/v1/projects/{id}/reviews`). Absent where the control plane
+    /// kept no record of the review, and from control planes before it.
+    pub project_id: Option<ProjectId>,
 }
 
 #[skip_serializing_none]

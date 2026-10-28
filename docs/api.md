@@ -95,7 +95,7 @@ It answers with the session, `queued`. A session is:
 | `status`, `status_reason`, `resume_at` | `queued`, `provisioning`, `preparing`, `running`, `idle`, `paused`, `stopping`, `stopped` or `failed`, and why |
 | `created_by`, `created_at`, `started_at`, `ended_at`, `last_activity_at`, `updated_at` | who and when |
 | `branch`, `base_branch` | its branch and where it started from |
-| `pull_requests` | every pull request its agent opened or found: `url`, `number`, `repo`, `title`, `state` (`open`, `draft`, `queued`, `merged`, `closed`), `checks` (`passed`, `failed`, `pending`, and `review`: fctl's review of the newest commit, which the counts leave out, with its `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), `waiting` for a runner, `findings`, `still_open` from earlier reviews, `session_id` and its summary's `url`) |
+| `pull_requests` | every pull request its agent opened or found: `url`, `number`, `repo`, `title`, `state` (`open`, `draft`, `queued`, `merged`, `closed`), `checks` (`passed`, `failed`, `pending`, and `review`: fctl's review of the newest commit, which the counts leave out, with its `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), `waiting` for a runner, `findings`, `still_open` from earlier reviews, `session_id`, its summary's `url` and the `project_id` whose review agents reviewed it, where `POST /api/v1/projects/{id}/reviews` reviews it again) |
 | `model`, `effort`, `github_access`, `github_issues` | what it runs with |
 | `stats` | turns, tool calls, changed files, additions and deletions, tokens, context |
 | `role`, `following`, `archived` | the caller's role in it, whether they follow it, and whether it is archived |

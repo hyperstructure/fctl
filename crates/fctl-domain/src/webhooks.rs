@@ -681,6 +681,7 @@ fn review_of(run: &Value) -> ReviewCheck {
             .and_then(Value::as_str)
             .and_then(SessionId::parse),
         url: None,
+        project_id: None,
     }
 }
 

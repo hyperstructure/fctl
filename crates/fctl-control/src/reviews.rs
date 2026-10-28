@@ -28,7 +28,7 @@ use fctl_proto::runner::{GithubCredential, StopReason};
 use fctl_proto::session::{
     GithubAccess, PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef,
 };
-use fctl_proto::{ApiError, ErrorCode, SessionId, UserId};
+use fctl_proto::{ApiError, ErrorCode, ProjectId, SessionId, UserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -235,14 +235,15 @@ pub async fn of_session(db: &D1Database, session_id: &str) -> AppResult<Option<R
     .await
 }
 
-/// What D1 keeps of the reviews of sessions `ids`, by session: the pull
-/// request and commit each reviews, how it went and what it found, which
-/// sessions' pull requests show with their checks
+/// What D1 keeps of the reviews of sessions `ids`, by session: the
+/// project, the pull request and commit each reviews, how it went and what
+/// it found, which sessions' pull requests show with their checks
 /// (`crate::pull_requests`).
 pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, rv::Kept>> {
     #[derive(Deserialize)]
     struct Row {
         session_id: String,
+        project_id: String,
         repo: String,
         #[serde(deserialize_with = "int")]
         number: i64,
@@ -259,8 +260,8 @@ pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, r
     }
     let rows: Vec<Row> = q(
         db,
-        "SELECT session_id, repo, number, head_sha, state, findings, still_open, review_url FROM reviews \
-         WHERE session_id IN (SELECT value FROM json_each(?1))",
+        "SELECT session_id, project_id, repo, number, head_sha, state, findings, still_open, review_url \
+         FROM reviews WHERE session_id IN (SELECT value FROM json_each(?1))",
         &[s(&json!(ids).to_string())],
     )?
     .all()
@@ -274,6 +275,7 @@ pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, r
                 ReviewState::parse(&r.state)
             };
             let kept = rv::Kept {
+                project_id: ProjectId(r.project_id),
                 repo: RepoRef::parse(&r.repo)?,
                 number: u64::try_from(r.number).ok()?,
                 head_sha: r.head_sha,

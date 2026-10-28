@@ -1161,9 +1161,9 @@ session that stopped looks up nothing, so GitHub tells the control plane
 4. **The sessions.** The control plane sends what it found to the
    SessionDO of each session that lists the pull request
    (`/pull-requests`), with what `reviews` keeps of the review its check
-   names (`fctl_domain::reviews::checked`): once it ended, how, how many
-   issues it found, how many earlier ones are still open and where its
-   summary is. The SessionDO takes what is newer (`fctl_domain::pulls::update`):
+   names (`fctl_domain::reviews::checked`): its project, and once it ended,
+   how, how many issues it found, how many earlier ones are still open and
+   where its summary is. The SessionDO takes what is newer (`fctl_domain::pulls::update`):
    GitHub's `updatedAt` orders what GitHub and agents say of its title and
    state, an agent's `open` leaves a queued one queued (`gh` can't see merge
    queues), and checks go by when the control plane asked. It keeps when
@@ -1264,10 +1264,11 @@ skip, drafts too, and fctl posts what it found on GitHub
    People who start sessions in the project ask for one of a pull
    request's head (the Reviews tab, `fctl review start`, `POST
    /api/v1/projects/{id}/reviews`), outsiders' too, once they have looked
-   at it. The review of the pull request still
-   under way stops (`superseded`), once the new one is in: a newer commit
-   takes its place, and a review that runs finishes even when its pull
-   request merges meanwhile.
+   at it; a session's page asks for another beside a review that ended,
+   in the project that `checks.review.project_id` names. The review of
+   the pull request still under way stops (`superseded`), once the new
+   one is in: a newer commit takes its place, and a review that runs
+   finishes even when its pull request merges meanwhile.
 3. **The session.** A review is a session of its project (`reviews` keeps
    which, with the pull request, its head and how it went), started as
    the operator, titled after the pull request (`Review of web#12: …`),

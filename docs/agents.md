@@ -475,10 +475,13 @@ then gets a review; when an fctl agent opened the pull request, its session
 gets the findings, fixes what is real and answers in the threads. Sessions
 that list the pull request show how the review stands beside its checks,
 out of their count (`checks.review` in `fctl show --json`): waiting for a
-runner, reviewing, or how many issues it found. Follow-ups
-bring that agent back for `@fctl` comments from people who can write to the
-repository, failed checks, conflicts with the base branch and merges. Both
-need the instance's GitHub webhook ([Self-hosting](self-hosting.md#follow-ups)).
+runner, reviewing, or how many issues it found. Once it ended, people who
+start sessions in its project review the pull request again from that line
+on the session's page, say when an issue or an API it relied on changed.
+Follow-ups bring that agent back for `@fctl` comments from people who can
+write to the repository, failed checks, conflicts with the base branch and
+merges. Both need the instance's GitHub webhook
+([Self-hosting](self-hosting.md#follow-ups)).
 
 ### Set up a project
 

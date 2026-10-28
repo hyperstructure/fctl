@@ -788,7 +788,7 @@ function PullRequests({ prs, session }: { prs: G.PullRequestRef[]; session: G.Se
               </span>
               <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-ink-4" />
             </a>
-            {reviewed && <PullRequestReviewLine review={reviewed} />}
+            {reviewed && <PullRequestReviewLine pr={pr} review={reviewed} />}
           </li>
         );
       })}
