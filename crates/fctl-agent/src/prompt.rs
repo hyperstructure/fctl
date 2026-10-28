@@ -370,8 +370,18 @@ pub fn system_prompt(
             ),
             None => "the runner empties it when it needs the room".to_owned(),
         };
+        // Playwright keeps to the browsers an image comes with (caches::env).
+        let managers = if cache
+            .env
+            .iter()
+            .any(|(key, _)| key == "PLAYWRIGHT_BROWSERS_PATH")
+        {
+            "npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright"
+        } else {
+            "npm, pnpm, Yarn, Bun, Cargo, uv, pip and Go"
+        };
         s.push_str(&format!(
-            "- Package managers keep their downloads in {} ($FCTL_CACHE_DIR), which this project's sessions on this runner share: npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright find there what earlier sessions fetched. Leave it in place; {limit}.\n",
+            "- Package managers keep their downloads in {} ($FCTL_CACHE_DIR), which this project's sessions on this runner share: {managers} find there what earlier sessions fetched. Leave it in place; {limit}.\n",
             cache.dir.display()
         ));
     }
@@ -854,14 +864,25 @@ mod tests {
 
     #[test]
     fn tells_claude_where_package_managers_keep_their_downloads() {
-        let cache = Ready {
+        let mut cache = Ready {
             dir: PathBuf::from("/var/cache/fctl"),
             max_mb: Some(10 * 1024),
-            env: Vec::new(),
+            env: vec![(
+                "PLAYWRIGHT_BROWSERS_PATH".into(),
+                "/var/cache/fctl/ms-playwright".into(),
+            )],
         };
         let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache), false);
         assert!(
             text.contains("- Package managers keep their downloads in /var/cache/fctl ($FCTL_CACHE_DIR), which this project's sessions on this runner share: npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright find there what earlier sessions fetched. Leave it in place; the runner empties it once it takes more than 10 GiB.\n"),
+            "{text}"
+        );
+        // With an image that comes with browsers, as the default one does,
+        // Playwright keeps its own.
+        cache.env.clear();
+        let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache), false);
+        assert!(
+            text.contains("share: npm, pnpm, Yarn, Bun, Cargo, uv, pip and Go find there what earlier sessions fetched."),
             "{text}"
         );
         assert!(
