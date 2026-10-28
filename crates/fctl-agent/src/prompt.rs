@@ -422,12 +422,35 @@ pub fn system_prompt(
             &spec.web_url,
         ));
     }
-    if let Some(t) = &spec.tickets {
-        // The control plane says what the project's tracker comes to.
-        s.push_str(&t.instructions);
+    // The control plane says what the project's tracker comes to.
+    let tracker = spec.tickets.as_ref().map(|t| {
+        let mut lines = t.instructions.clone();
         if t.via == TicketsVia::Fctl && !tickets_cli {
-            s.push_str(NO_FCTL_TICKET);
+            lines.push_str(NO_FCTL_TICKET);
         }
+        lines
+    });
+    let settings = &spec.project.settings;
+    match settings
+        .pull_request_instructions()
+        .filter(|_| opens_pull_requests)
+    {
+        // The tracker's lines first, then how to handle pull requests and
+        // issues: a project's own rules come first where those lines say
+        // otherwise (their `Fixes`, say), while fctl's agree with them.
+        Some(rules) => {
+            s.push_str("\n## Pull requests and issues\n\n");
+            if let Some(lines) = &tracker {
+                s.push_str(lines);
+                s.push('\n');
+                if settings.pull_request_instructions.is_some() {
+                    s.push_str(OWN_RULES);
+                }
+            }
+            s.push_str(rules);
+            s.push('\n');
+        }
+        None => s.push_str(tracker.as_deref().unwrap_or_default()),
     }
     if let Some(extra) = spec
         .project
@@ -583,6 +606,10 @@ pub fn review_system_prompt(
 fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
+
+/// What comes before a project's own rules for pull requests and issues,
+/// after the tracker's lines.
+const OWN_RULES: &str = "The project's own rules for them follow; where they differ from the lines above, they come first.\n\n";
 
 /// What an agent whose sandbox's fctl has no `fctl ticket` is told, in a
 /// project whose tracker it reaches only with it.
@@ -1140,6 +1167,92 @@ mod tests {
                         "\n## The project's instructions\n\nRun `npm test` before you commit.\n"
                     )
             );
+        }
+    }
+
+    #[test]
+    fn tells_agents_how_to_handle_pull_requests_and_issues_as_the_project_chose() {
+        use fctl_proto::session::{DEFAULT_PULL_REQUEST_INSTRUCTIONS, Tracker};
+        use fctl_proto::tickets::TicketsSpec;
+        let mut chosen = spec_with(serde_json::Value::Null);
+        chosen.project.settings.instructions = Some("Run `npm test` before you commit.".into());
+        chosen.tickets = Some(TicketsSpec {
+            tracker: Tracker::Github,
+            via: TicketsVia::Gh,
+            ticket: None,
+            instructions: "- This project tracks its work in GitHub issues of acme/app.\n".into(),
+        });
+        let text = system_prompt(
+            &chosen,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        // After how to describe pull requests, the tracker's lines, then
+        // fctl's defaults, which agree with them; then the project's words.
+        let rules = text.find(&format!(
+            "\n## Pull requests and issues\n\n- This project tracks its work in GitHub issues of acme/app.\n\n{DEFAULT_PULL_REQUEST_INSTRUCTIONS}\n"
+        ));
+        assert!(rules.is_some(), "{text}");
+        assert!(text.find("- Keep the description up to date") < rules);
+        assert!(rules < text.find("\n## The project's instructions\n"));
+        assert!(text.contains("`gh pr checks 12 --watch --fail-fast`"));
+        assert!(!text.contains(OWN_RULES));
+
+        // The project's own take their place, and come first where the
+        // tracker's lines say otherwise.
+        chosen.project.settings.pull_request_instructions =
+            Some("Never write `Fixes`: we close issues as we deploy.\n".into());
+        let text = system_prompt(
+            &chosen,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        assert!(text.contains(&format!(
+            "\n## Pull requests and issues\n\n- This project tracks its work in GitHub issues of acme/app.\n\n{OWN_RULES}Never write `Fixes`: we close issues as we deploy.\n"
+        )));
+        assert!(!text.contains("`gh pr checks 12"));
+        // With no tracker's lines to come before, they need no word of it.
+        let mut untracked = chosen.clone();
+        untracked.tickets = None;
+        let text = system_prompt(
+            &untracked,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        assert!(text.contains(
+            "\n## Pull requests and issues\n\nNever write `Fixes`: we close issues as we deploy.\n"
+        ));
+        // Empty, they say nothing, and the tracker's lines follow the descriptions.
+        chosen.project.settings.pull_request_instructions = Some(String::new());
+        let text = system_prompt(
+            &chosen,
+            "/home/agent/workspace",
+            &paths(),
+            None,
+            None,
+            false,
+        );
+        assert!(!text.contains("## Pull requests and issues"));
+        assert!(text.contains("- This project tracks its work in GitHub issues of acme/app.\n"));
+
+        // Agents that open no pull requests hear none of it.
+        for none in [
+            spec(),
+            with_access(GithubAccess::Comment),
+            with_access(GithubAccess::Read),
+        ] {
+            let text = system_prompt(&none, "/work", &paths(), None, None, false);
+            assert!(!text.contains("## Pull requests and issues"));
+            assert!(!text.contains("`Refs #12`"));
         }
     }
 

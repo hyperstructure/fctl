@@ -29,7 +29,7 @@ pub mod viewer;
 #[cfg(feature = "ts")]
 mod ts_export;
 #[cfg(feature = "ts")]
-pub use ts_export::export_typescript;
+pub use ts_export::{DEFAULTS_FILE, export_typescript};
 
 pub use error::{ApiError, ErrorCode};
 pub use ids::*;

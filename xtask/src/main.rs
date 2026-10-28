@@ -255,7 +255,8 @@ impl Args {
     }
 }
 
-/// Regenerates `web/src/gen` from the Rust protocol types.
+/// Regenerates `web/src/gen` from the Rust protocol types, and the values
+/// the web app shows as they are there.
 fn generate_types(root: &Path) -> Result<()> {
     let out = root.join("web/src/gen");
     if out.exists() {
@@ -263,11 +264,12 @@ fn generate_types(root: &Path) -> Result<()> {
     }
     std::fs::create_dir_all(&out)?;
     fctl_proto::export_typescript(&out).context("exporting TypeScript")?;
-    // An index that re-exports every type.
+    // An index that re-exports every type. The web app imports the values
+    // beside them from their own file.
     let mut names: Vec<String> = std::fs::read_dir(&out)?
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".ts") && n != "index.ts")
+        .filter(|n| n.ends_with(".ts") && n != "index.ts" && n != fctl_proto::DEFAULTS_FILE)
         .map(|n| n.trim_end_matches(".ts").to_owned())
         .collect();
     names.sort();

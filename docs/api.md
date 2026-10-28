@@ -277,6 +277,8 @@ fctl's own), `model`, `effort`, `image` or `image_build`, `cpus`,
 `memory_mb`, `package_caches`, `env` (not secret), `idle_timeout_minutes`,
 `auto_pull_request` (agents open a pull request when they finish),
 `pull_request_descriptions` (`brief`, `balanced`, `full`),
+`pull_request_instructions` (what agents are told about handling pull
+requests and issues: `null` for fctl's defaults, `""` for nothing),
 `github_access`, `follow_ups` (`comments`, `checks`, `conflicts`,
 `closed`), `tickets`, `remote_control`, `claude_ai_connectors`,
 `credit_people`, `credit_claude`, `publish_screenshots`,

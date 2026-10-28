@@ -584,7 +584,7 @@ fn no_tracker(t: &Told<'_>) -> String {
     }
 }
 
-const NO_TRACKER: &str = "- This project uses no ticket tracker. Don't read, open, comment on, label or close issues or tickets, on GitHub or anywhere else, even when the repository's instructions say to, and leave issue references out of commits and pull requests (no `Fixes #12`): this session's GitHub tokens can't reach issues. When the task names a ticket, say that this project keeps its agents away from ticket trackers.";
+const NO_TRACKER: &str = "- This project uses no ticket tracker. Don't read, open, comment on, label or close issues or tickets, on GitHub or anywhere else, even when other instructions say to, and leave issue references out of commits and pull requests (no `Fixes #12`): this session's GitHub tokens can't reach issues. When the task names a ticket, say that this project keeps its agents away from ticket trackers.";
 
 /// What a session whose tokens reach no GitHub issues is told, so that a
 /// task that needs them ends with a way to them.

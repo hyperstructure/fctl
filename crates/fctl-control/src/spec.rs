@@ -495,6 +495,8 @@ async fn review_spec(
         idle_timeout_minutes: Some(1),
         auto_pull_request: false,
         pull_request_descriptions: Default::default(),
+        // It opens none: empty, they say nothing.
+        pull_request_instructions: Some(String::new()),
         remote_control: false,
         claude_ai_connectors: false,
         credit_people: false,
