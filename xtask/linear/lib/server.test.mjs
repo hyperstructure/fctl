@@ -205,8 +205,17 @@ test("stays up whatever a client sends", async (t) => {
   const empty = await s.call("POST", "/standin/delegate");
   assert.equal(empty.status, 400);
   assert.match(empty.body.error, /Name an issue/);
-  const bad = await fetch(`${s.base}/standin/delegate`, { method: "POST", body: "{" });
-  assert.equal(bad.status, 400);
+  for (const body of ["{", "null", "5", "[]"]) {
+    const bad = await fetch(`${s.base}/standin/delegate`, { method: "POST", body });
+    assert.equal(bad.status, 400, body);
+    assert.match((await bad.json()).error, /a JSON object/);
+  }
   assert.equal((await fetch(`${s.base}/standin/toString`, { method: "POST" })).status, 404);
   assert.equal((await s.call("GET", "/standin/health")).body.ok, true);
+  // Turned down, none of them is the stand-in's own failure.
+  const { problems } = (await s.call("GET", "/standin/problems")).body;
+  assert.deepEqual(
+    problems.filter((p) => p.kind === "standin"),
+    [],
+  );
 });

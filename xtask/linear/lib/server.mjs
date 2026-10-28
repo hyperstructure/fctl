@@ -318,7 +318,10 @@ export function createStandin({ schema, state, config, out = console, answerWith
         try {
           input = body ? JSON.parse(body) : {};
         } catch {
-          throw new Refusal(400, "The body must be JSON");
+          input = undefined;
+        }
+        if (input === null || typeof input !== "object" || Array.isArray(input)) {
+          throw new Refusal(400, "The body must be a JSON object");
         }
         return json(res, 200, await actions[name](input));
       }
