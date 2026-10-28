@@ -1652,7 +1652,7 @@ pub async fn move_on(
 /// `key`, as GitHub has their titles, descriptions and branches now
 /// (`fctl_domain::tickets::completes`): among those the session may look
 /// up (`crate::pull_requests::track`). `None` when D1 or GitHub couldn't
-/// say.
+/// say, or none of them is tracked yet.
 async fn completing(
     cfg: &Config,
     db: &D1Database,
@@ -1701,8 +1701,10 @@ async fn completing(
                 .push((repo, pr.number));
         }
     }
+    // None tracked yet: the session may still be recording them
+    // (`crate::pull_requests::track`), so this is asked again later.
     if accounts.is_empty() {
-        return Some(false);
+        return None;
     }
     let gh = crate::github::from_config(cfg, now).ok()?;
     let mut unsure = false;
