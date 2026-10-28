@@ -230,7 +230,13 @@ Nobody in Acme can delegate to fctl's app, or talk with it, while it isn't
 installed; the next `cargo xtask dev` installs it again.
 
 Issues and replies reach fake-claude as a session's task does, so its
-words work in them. In ENG-1 it writes `notes.md` and pushes it; ENG-3 is
+words work in them. A delegation's agent session starts with Linear's own
+comment ("This thread is for an agent session with fctl."), as Linear's
+does, and fctl moves the issue on as the session works: to In Progress as
+a delegation's session starts, or once a mention's agent writes something
+(`cargo xtask linear mention "Notes" "write notes.md"`). Dev projects
+have no repository, so their sessions open no pull request, and nothing
+moves issues to In Review or Done there. In ENG-1 it writes `notes.md` and pushes it; ENG-3 is
 labeled `explore`, so fctl asks for an exploration, and fake-claude
 explores; in ENG-4 it hits the usage limit, and fctl says in Linear when
 the session carries on. DES-1 is in a team no project takes. http://127.0.0.1:8790 shows Acme's issues
@@ -417,7 +423,10 @@ that the project remembers the model it asked for. Then, in the Linear
 stand-in, Dev Owner delegates a new issue to fctl, and the smoke test
 waits until fctl has said in the issue's agent session that it looks at
 the issue and works on it in a session of Playground, moved the issue to
-In Progress, linked the session there and answered as the turn ended. A
+In Progress, told the agent the issue was delegated to it (the stand-in
+starts a delegation's thread with Linear's own words, as Linear does,
+which fctl must not take for a mention), linked the session there and
+answered as the turn ended. A
 reply has the agent run `fctl ticket` commands, whose list, search, view,
 new sub-issue, comment and change of state, label and priority must reach
 Acme; another reply starts a turn, which Dev Owner's stop must interrupt,

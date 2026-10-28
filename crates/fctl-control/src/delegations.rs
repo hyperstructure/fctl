@@ -1564,9 +1564,6 @@ pub async fn move_on(
     let cfg = Config::from_env(env);
     let db = env.d1("DB")?;
     let now = crate::ctx::now_ms();
-    let Some(a) = answering(&db, &cfg, session_id, now).await? else {
-        return Ok(());
-    };
     let Some(row) = crate::spec::session_row(&db, session_id).await? else {
         return Ok(());
     };
@@ -1581,18 +1578,20 @@ pub async fn move_on(
         return Ok(());
     };
     let settings = project.settings();
-    let lets = match settings.tickets.linear.as_ref() {
-        Some(l)
-            if settings.tickets.tracker == Tracker::Linear
-                && l.organization == a.thread.organization_id =>
-        {
-            match progress {
-                tk::Progress::Started => l.moves_started(),
-                tk::Progress::Review => l.moves_review(),
-                tk::Progress::Merged => l.moves_done(),
-            }
-        }
-        _ => false,
+    // Only where the project still takes this Linear workspace's tickets.
+    let Some(l) = settings
+        .tickets
+        .linear
+        .as_ref()
+        .filter(|_| settings.tickets.tracker == Tracker::Linear)
+        .filter(|l| column.organization.as_deref().is_none_or(|o| o == l.organization))
+    else {
+        return Ok(());
+    };
+    let lets = match progress {
+        tk::Progress::Started => l.moves_started(),
+        tk::Progress::Review => l.moves_review(),
+        tk::Progress::Merged => l.moves_done(),
     };
     let key = column.ticket.key.as_str();
     if !lets
@@ -1601,6 +1600,12 @@ pub async fn move_on(
     {
         return Ok(());
     }
+    let Some(a) = answering(&db, &cfg, session_id, now)
+        .await?
+        .filter(|a| a.thread.organization_id == l.organization)
+    else {
+        return Ok(());
+    };
     if let Some(state) = move_ticket(&a.linear, &column.ticket.id, progress).await {
         let link = TicketLink {
             key: key.to_owned(),

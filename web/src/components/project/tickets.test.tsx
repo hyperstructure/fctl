@@ -275,7 +275,8 @@ describe("the Tickets tab", () => {
       },
     );
     const switches = () => [...c.querySelectorAll<HTMLButtonElement>('button[role="switch"]')];
-    const states = () => switches().map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked")]);
+    const states = () =>
+      switches().map((s) => [s.getAttribute("aria-label"), s.getAttribute("aria-checked")]);
     expect(states()).toEqual([
       ["Move a ticket to In Progress as its session starts", "true"],
       ["Move a ticket to Code review when its pull request is up", "true"],

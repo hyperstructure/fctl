@@ -409,6 +409,7 @@ fctl workspaces linear teams                   # the Linear teams fctl's app rea
 fctl projects set -p my-app --tickets linear --linear-team ENG
 fctl projects set -p my-app --linear-project "Mobile app"   # only that Linear project's issues ("all": the team's)
 fctl projects set -p my-app --linear-start off # tickets stay in their state as their sessions start
+fctl projects set -p my-app --linear-review off --linear-done off   # leave In Review and Done to Linear's GitHub integration
 fctl projects set -p my-app --explore-label plan   # the label that asks for a plan first ("" for none)
 ```
 
@@ -438,12 +439,19 @@ people assign an issue to fctl, which makes fctl its delegate, or mention
 fctl in a comment, and fctl starts a session of the project that takes
 the issue's team, on the subscription of whoever asked, once they have
 linked their Linear account ([Your account](#your-account)) and only
-while they may start sessions in the project. The ticket moves to the
-team's first started state (In Progress), the session's branch carries
-its key (`fctl/12-eng-123-fix-the-login-loop`) for Linear's GitHub
-integration to link the pull request, and fctl posts the agent's steps,
-its pull requests and each turn's last message to the ticket's agent
-session in Linear. Replies there reach the agent as their writers'
+while they may start sessions in the project. The session's branch
+carries the ticket's key (`fctl/12-eng-123-fix-the-login-loop`) for
+Linear's GitHub integration to link the pull request, and fctl posts the
+agent's steps, its pull requests and each turn's last message to the
+ticket's agent session in Linear. fctl moves the ticket through its
+team's workflow, never back: to In Progress as a delegated ticket's
+session starts, or once a mention's agent changes something; to In
+Review when a turn ends with the session's pull request up; and to Done
+once its pull requests merged, one that completes the ticket (`Fixes
+ENG-123`, not `Part of ENG-123`) among them. `--linear-start`,
+`--linear-review` and `--linear-done` turn each move off or on again, and
+`fctl workspaces linear teams` names the states each team's tickets move
+to. Replies there reach the agent as their writers'
 messages, and stopping the agent session there interrupts it. An issue
 with the explore label (`explore` unless a project names another) gets a
 plan, and no changes until someone asks for them

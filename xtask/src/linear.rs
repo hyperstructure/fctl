@@ -730,8 +730,10 @@ fn linked_session(s: &Value) -> Option<String> {
 
 /// `--smoke`'s delegation, in the stand-in: someone delegates a new issue
 /// to fctl, which starts a session of Playground, says so in the issue's
-/// agent session, moves the issue to In Progress, links the session there
-/// and answers as the turn ends; their reply has the agent list, read,
+/// agent session, moves the issue to In Progress, tells the agent it was
+/// delegated (Linear's own words start the thread, which fctl must tell
+/// from a mention), links the session there and answers as the turn ends;
+/// their reply has the agent list, read,
 /// file, comment on and change tickets with `fctl ticket`, which reach
 /// Acme; another reply reaches the agent and their stop interrupts its
 /// turn; another runs into a usage limit, and fctl says until when the
@@ -793,6 +795,29 @@ pub(crate) fn smoke(root: &Path, token: &str, children: &mut Children) -> Result
             s["externalUrls"]
         )
     })?;
+    // Linear starts a delegation's thread with words of its own, which fctl
+    // tells from a mention's: the agent hears that the ticket was delegated.
+    let events = call(
+        "GET",
+        &format!("/sessions/{session}/events?after=0&limit=20"),
+        Some(&auth),
+        None,
+    )?;
+    ok("reading the delegated session's events", &events)?;
+    let first = events.1["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|e| e["kind"] == "user_message");
+    let told = first
+        .and_then(|e| e["data"]["text"].as_str())
+        .unwrap_or_default();
+    if first.map(|e| &e["data"]["ticket"]["event"]) != Some(&json!("delegated"))
+        || !told.starts_with(&format!("Dev Owner delegated {key} to fctl"))
+        || told.contains("This thread is for an agent session")
+    {
+        bail!("fctl told the agent of the delegation of {key} as something else: {told}");
+    }
 
     // The agent works with the project's tickets, as agents reach their
     // project's tracker: fake-claude runs the lines that start `fctl ticket`.
@@ -941,6 +966,6 @@ pub(crate) fn smoke(root: &Path, token: &str, children: &mut Children) -> Result
         )?;
     }
     Ok(format!(
-        "in the Linear stand-in, a delegation of {key} started a session that said so there, moved the issue to In Progress, linked the session and answered as its turn ended, the agent's `fctl ticket` commands listed, read, filed, commented on and changed issues there, a reply reached the agent and a stop interrupted it, a usage limit's pause note came in Dev Owner's time zone, a reply from someone fctl doesn't know asked them to link their account, a mention started another session that answered, a delegation no project takes got fctl's refusal, and Linear's schema took everything fctl sent"
+        "in the Linear stand-in, a delegation of {key} started a session that said so there, moved the issue to In Progress, told the agent it was delegated, linked the session and answered as its turn ended, the agent's `fctl ticket` commands listed, read, filed, commented on and changed issues there, a reply reached the agent and a stop interrupted it, a usage limit's pause note came in Dev Owner's time zone, a reply from someone fctl doesn't know asked them to link their account, a mention started another session that answered, a delegation no project takes got fctl's refusal, and Linear's schema took everything fctl sent"
     ))
 }

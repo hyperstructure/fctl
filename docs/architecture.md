@@ -1724,7 +1724,12 @@ issue's delegate (the person stays its assignee), and mention.
    (`linear_threads`, by Linear's id): waiting, started (with the fctl
    session it reaches) or refused.
 5. **A delegation or a mention** (`AgentSessionEvent` `created`,
-   `crate::delegations::created`). fctl thinks aloud in the agent session
+   `crate::delegations::created`). Linear starts a delegation's thread
+   with a comment of its own ("This thread is for an agent session with
+   fctl."), which the delivery carries as the session's comment: fctl
+   tells a delegation by those words, and a mention by a comment of the
+   person's, or one in another thread
+   (`fctl_domain::linear::AgentSession::asking`). fctl thinks aloud in the agent session
    at once ("Looking at ENG-123…"), then finds the person who made it among
    the people it knows; without them, it asks them in Linear to link their
    account (an elicitation with Linear's `auth` signal, whose link starts
@@ -1754,10 +1759,9 @@ issue's delegate (the person stays its assignee), and mention.
    workspace's and team's guidance for agents, cut at 40,000 characters),
    as information from the people who wrote it rather than instructions
    from fctl (`fctl_domain::linear::task`); the transcript shows it as the
-   ticket (`UserMessage::ticket`). Where the project says so (on unless
-   its maintainers turn it off), a delegated issue that hasn't started
+   ticket (`UserMessage::ticket`). A delegated issue that hasn't started
    moves to its team's first started state (In Progress) before the
-   session starts, as Linear asks of agents. A label (`explore` unless the
+   session starts, as Linear asks of agents (step 8). A label (`explore` unless the
    project names another) asks for an exploration: the agent finds out
    what the ticket needs and replies with a plan, without changing code,
    until someone replies to go ahead. fctl links the agent session to the
@@ -1795,13 +1799,43 @@ issue's delegate (the person stays its assignee), and mention.
    person's subscription, so fctl says only they can, while anyone's stop
    ends it.
 
+8. **Moving tickets on** ([ADR 0063](adr/0063-fctl-moves-linear-tickets-through-their-teams-workflow-as-sessions-work.md)).
+   The control plane moves a session's ticket through its team's
+   workflow as fctl's app, only forward and never out of done or canceled
+   (`fctl_domain::tickets::next_state`), each move where the project says
+   so (`LinearTickets::move_started`, `move_review` and `move_done`, on
+   unless its maintainers turn them off): to its first started state (In
+   Progress) as a delegated ticket's session starts, also when the
+   delegation reaches a session that works on it already, or once a
+   mention's agent changes something, as the agent's git reports show
+   SessionDO (a mention may only ask a question); to its review state, the
+   first started one whose name says review (In Review), or else its
+   first started one, when a turn ends with a pull request of the session
+   open for review, not a draft: after the agent waited for its checks,
+   and after Linear's GitHub integration moved the ticket to In Progress
+   as it opened; and to its first completed state (Done) once the
+   session's pull requests merged and none is open, when one of them
+   completes the ticket as Linear's GitHub integration reads it: words
+   that close it before its key in its title or description (`Fixes
+   ENG-123`), not others (`Part of ENG-123`), and without any, its key in
+   its title or branch (`fctl_domain::tickets::completes`). The control
+   plane reads their titles, descriptions and branches from GitHub as
+   they merge (`crate::delegations::move_on`), of the pull requests the
+   session may look up, and the transcript says each move
+   (`ticket_moved`). Agents leave the state alone unless asked, and move
+   a ticket that needs no pull request to Done themselves; agents of
+   sessions that didn't start from a ticket move the tickets whose work
+   their task is with `fctl ticket update`, as the switches allow.
+
 Branches carry their ticket's key, so where the Linear workspace has
 Linear's GitHub integration, it links the session's pull requests to the
-ticket and moves the ticket on as they open and merge; agents write
-`Fixes ENG-123` (or `Part of ENG-123`) in their pull requests and leave the
-ticket's state alone unless asked. The project's Tickets tab shows the
-sessions tickets started lately (`GET /api/v1/projects/{id}/tickets`), and
-session lists and pages show each session's ticket (`Session::ticket`).
+ticket and moves the ticket on as each team configures it too: on its
+defaults to In Progress as a pull request opens and to Done as it merges.
+A team whose automation moves tickets elsewhere, to a QA state as they
+merge, say, turns fctl's switch for that move off. The project's Tickets
+tab shows the sessions tickets started lately (`GET
+/api/v1/projects/{id}/tickets`), and session lists and pages show each
+session's ticket (`Session::ticket`).
 
 ### Commits
 

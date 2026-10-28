@@ -80,9 +80,10 @@ its question. Reply there to answer it or to ask for more, and stop it
 there to interrupt it. Delegate a ticket with the `explore` label for a
 plan first: the agent finds out what it needs and replies with what it
 found, and changes nothing until someone asks. The ticket moves to In
-Progress as its session starts, and the session's branch carries its key,
-so with Linear's GitHub integration the pull request links to the ticket
-and moves it on as it opens and merges.
+Progress as its session starts, to In Review when a turn ends with the
+session's pull request up, and to Done once the pull request that fixes
+it merges. The session's branch carries its key, so with Linear's GitHub
+integration the pull request links to the ticket too.
 
 Only people who may start sessions in the project start them this way,
 on their own subscription; a ticket from someone else, or for a team no

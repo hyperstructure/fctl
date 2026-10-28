@@ -641,7 +641,7 @@ fn moves(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
     let on = |f: fn(&LinearTickets) -> bool| t.tickets.linear.as_ref().is_some_and(f);
     let mut steps = Vec::new();
     if from.mentioned && on(LinearTickets::moves_started) {
-        steps.push("to In Progress when a turn ends with changes of yours");
+        steps.push("to In Progress once you change something");
     }
     if on(LinearTickets::moves_review) {
         steps.push("to In Review when a turn ends with your pull request up");
@@ -1698,7 +1698,7 @@ mod tests {
         let mentioned = told(&with([None; 3]), from(true, None), GithubAccess::Push);
         assert!(mentioned.contains("ENG-7, where Ada Lovelace mentioned fctl in Linear"));
         assert!(mentioned.contains(
-            "fctl moves the ticket on in Linear as you go: to In Progress when a turn ends with changes of yours, to In Review when a turn ends with your pull request up, and to Done once"
+            "fctl moves the ticket on in Linear as you go: to In Progress once you change something, to In Review when a turn ends with your pull request up, and to Done once"
         ));
         // Only what the project lets fctl do.
         let review = told(

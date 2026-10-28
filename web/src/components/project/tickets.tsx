@@ -921,7 +921,7 @@ function TicketMoves({
       kind: "started",
       state: team?.start_state ?? "In Progress",
       when: "as its session starts",
-      hint: "A delegated ticket at once, as Linear asks of agents; one that mentions fctl when a turn ends with changes.",
+      hint: "A delegated ticket at once, as Linear asks of agents; one that mentions fctl once its agent changes something.",
     },
     {
       key: "move_review",
@@ -935,7 +935,7 @@ function TicketMoves({
       kind: "completed",
       state: team?.done_state ?? "Done",
       when: "once its pull requests merge",
-      hint: "Once none is open and one that completes it merged (Fixes, not Part of). One that needs no pull request, its agent moves.",
+      hint: "Once one that completes it (Fixes, not Part of) merged and none is open. Its agent moves a ticket that needs no pull request.",
     },
   ];
   return (
@@ -994,7 +994,7 @@ export function DelegatedTicket({ team, project, app }: { team: string; project:
           <span className="font-mono">{key}</span>
           <span className="inline-flex items-center gap-1 text-blue">
             <StateDot kind="started" />
-            In Progress
+            In Review
           </span>
           <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-line px-1.5 py-px">
             <Logo withWord={false} className="[&_svg]:size-3" />
