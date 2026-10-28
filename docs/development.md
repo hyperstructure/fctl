@@ -464,9 +464,9 @@ that a long package name and its versions take past 72 characters
 (`build(deps): bump @cloudflare/workerd-linux-64 from …`) fails the
 Conventional Commits check: shorten it on the pull request, which reruns
 the check. GitHub also raises an alert for `web/package.json`,
-`deploy/standalone/package.json` and the crates' own `Cargo.toml` files,
-but Dependabot would update those without the lockfile, so their
-directories open none.
+`deploy/standalone/package.json`, `xtask/linear/package.json` and the
+crates' own `Cargo.toml` files, but Dependabot would update those without
+the lockfile, so their directories open none.
 
 ## Repository map
 
