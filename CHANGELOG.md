@@ -2,6 +2,18 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.25.1 (2026-10-28)
+
+### Features
+
+- Move Linear tickets through In Progress, In Review and Done ([#322](https://github.com/hyperstructure/fctl/pull/322))
+- Let people choose what agents call them ([#323](https://github.com/hyperstructure/fctl/pull/323))
+- **web:** Review a session's pull request again from its page ([#324](https://github.com/hyperstructure/fctl/pull/324))
+
+### Documentation
+
+- Tell personal agents to ask for a full sign-in or a project token ([#321](https://github.com/hyperstructure/fctl/pull/321))
+
 ## 0.25.0 (2026-10-28)
 
 ### Features
