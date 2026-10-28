@@ -335,7 +335,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 println!("{} Service: {what}", style::accent("✓"));
                 println!(
                     "{}",
-                    style::dim(&format!("Logs: {}", service::log_path().display()))
+                    style::dim(&format!("Logs: {}", service::log_location()))
                 );
             }
             if matches!(claude_token::load(&cfg.claude_token()), Ok(None)) {
@@ -456,19 +456,18 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             Ok(())
         }
         HostCmd::Doctor => doctor().await,
-        HostCmd::Logs { lines } => {
-            let path = service::log_path();
-            if !path.exists() && !HostConfig::path().exists() {
-                bail!(NOT_A_RUNNER);
+        HostCmd::Logs { lines } => match service::log_tail(lines) {
+            Ok(Some(tail)) => {
+                for l in &tail {
+                    println!("{l}");
+                }
+                Ok(())
             }
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let all: Vec<&str> = text.lines().collect();
-            for l in &all[all.len().saturating_sub(lines)..] {
-                println!("{l}");
-            }
-            Ok(())
-        }
+            // No log, or no journalctl to read one, and no host.toml: no host.
+            _ if !HostConfig::path().exists() => bail!(NOT_A_RUNNER),
+            Ok(None) => bail!("{}", service::why_no_log()),
+            Err(e) => Err(e),
+        },
         HostCmd::Image(ImageCmd::Pull) => {
             let cfg = HostConfig::load().unwrap_or_default();
             let d = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;

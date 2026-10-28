@@ -691,7 +691,7 @@ fctl host install --auto-update off   # update fctl yourself (new hosts update t
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's id and sessions, and whether it drains
 fctl host doctor                 # check the driver, image, agent binary, connection
-fctl host logs -n 200
+fctl host logs -n 200            # the last 200 lines of its log (on Linux, from the journal)
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
 fctl host image build            # build it here instead (with Lima: the base VM)
 fctl host image build --source ~/src/sandbox   # from a checkout of hyperstructure/sandbox
@@ -722,6 +722,12 @@ before it stops them, or, without a terminal, needs `--wait` or `--force`.
 Stopped this way, their agents stop and push their work, and a message
 resumes each on another runner, in a new sandbox without its conversation.
 The runner keeps draining until `fctl host undrain`.
+
+The host service is a launchd agent on macOS and a systemd user unit on
+Linux. On macOS, launchd writes its log to `~/Library/Logs/fctl/host.log`;
+on Linux, systemd keeps it in the journal, where
+`journalctl --user-unit=fctl-host.service -f` follows it. `fctl host logs`
+prints the end of it on both.
 
 `fctl host install` checks the driver before it registers anything: if the
 driver can't run sessions (Apple's `container` or Lima isn't installed, a
