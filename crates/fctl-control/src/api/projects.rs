@@ -228,6 +228,18 @@ async fn check_repo(
     ws::installation(&ctx.db, gh, connections, &repo.owner).await
 }
 
+/// Refuses a default branch `repo` doesn't have, which would leave its
+/// sessions nothing to start from (`fctl_domain::base_branch::check`).
+async fn check_default_branch(
+    gh: &github::Github<'_>,
+    inst: u64,
+    repo: &RepoRef,
+    branch: &str,
+) -> AppResult<()> {
+    let found = gh.branch(inst, repo, branch).await?;
+    Ok(fctl_domain::base_branch::check(repo, branch, &found)?)
+}
+
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     // Read as JSON first: a new project's settings start with connectors off
     // and follow-ups on unless the request sets them (see
@@ -285,6 +297,14 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .map(|b| validate::branch("default_branch", b))
         .transpose()?;
     if let Some(create) = &body.create_repo {
+        // GitHub makes the repository with one branch, which the project
+        // takes: it would have no other.
+        if default_branch.is_some() {
+            return Err(validation(
+                "default_branch",
+                "A new repository has one branch, which the project's sessions start from: leave the default branch out, and change it once the repository has the branch you want",
+            ));
+        }
         let gh = github::from_config(&ctx.cfg, ctx.now)?;
         let owner = new_repo_owner(&gh, &connections, create.owner.as_deref())?;
         // The account the workspace connected, while its login is still its.
@@ -301,7 +321,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 create.description.as_deref(),
             )
             .await?;
-        default_branch = default_branch.or(Some(created.default_branch.clone()));
+        default_branch = Some(created.default_branch);
         repo = Some(RepoRef {
             owner: created.owner,
             name: created.name,
@@ -311,7 +331,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             .ok_or_else(|| validation("repo", "Use owner/name, like hyperstructure/fctl"))?;
         if ctx.cfg.github.is_some() {
             let gh = github::from_config(&ctx.cfg, ctx.now)?;
-            check_repo(ctx, &gh, &connections, &parsed).await?;
+            let inst = check_repo(ctx, &gh, &connections, &parsed).await?;
             let found = gh.get_repo(&parsed).await?;
             // GitHub answers for a repository by its old name too, once it
             // was renamed or moved to another account: the one it names
@@ -321,11 +341,15 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 &found.owner,
                 Some(&found.name),
             )?;
-            default_branch = default_branch.or(Some(found.default_branch.clone()));
-            repo = Some(RepoRef {
+            let linked = RepoRef {
                 owner: found.owner,
                 name: found.name,
-            });
+            };
+            match &default_branch {
+                Some(b) => check_default_branch(&gh, inst, &linked, b).await?,
+                None => default_branch = Some(found.default_branch),
+            }
+            repo = Some(linked);
         } else {
             repo = Some(parsed);
         }
@@ -418,6 +442,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         None => row.description.clone(),
     };
     let (mut owner, mut repo_name) = (row.repo_owner.clone(), row.repo_name.clone());
+    // The installation that reaches a newly linked repository.
+    let mut inst = None;
     if let Some(r) = body.repo.as_deref() {
         if r.trim().is_empty() {
             owner = None;
@@ -430,7 +456,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             if ctx.cfg.github.is_some() {
                 let gh = github::from_config(&ctx.cfg, ctx.now)?;
                 let connections = ws::connections(&ctx.db, p.workspace_id()).await?;
-                check_repo(ctx, &gh, &connections, &parsed).await?;
+                inst = Some(check_repo(ctx, &gh, &connections, &parsed).await?);
                 gh.get_repo(&parsed).await?;
             }
             owner = Some(parsed.owner);
@@ -443,6 +469,30 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         .map(|b| validate::branch("default_branch", b))
         .transpose()?
         .unwrap_or_else(|| row.default_branch.clone());
+    // Sessions start from the default branch, so the repository must have
+    // it: checked when either changes, as the web app sends the branch with
+    // every save.
+    let changed = default_branch != row.default_branch
+        || owner != row.repo_owner
+        || repo_name != row.repo_name;
+    if changed
+        && ctx.cfg.github.is_some()
+        && let (Some(o), Some(n)) = (&owner, &repo_name)
+    {
+        let gh = github::from_config(&ctx.cfg, ctx.now)?;
+        let repo = RepoRef {
+            owner: o.clone(),
+            name: n.clone(),
+        };
+        let inst = match inst {
+            Some(i) => i,
+            None => {
+                let connections = ws::connections(&ctx.db, p.workspace_id()).await?;
+                check_repo(ctx, &gh, &connections, &repo).await?
+            }
+        };
+        check_default_branch(&gh, inst, &repo, &default_branch).await?;
+    }
     let settings = match body.settings {
         Some(st) => {
             let mut st = clean_settings(st)?;
