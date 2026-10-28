@@ -530,6 +530,19 @@ five or more. Anyone on the instance creates one, as its primary admin.
   shows on its pings, at most once a minute (`recheck_feed`), and closes a
   feed whose token no longer signs anyone in, as SessionDO does with
   [viewers](#viewers).
+- **Addresses.** Workspaces' slugs (`/w/<slug>`) and projects' (`/p/<slug>`)
+  are each unique on the instance. A new one takes the slug its name makes
+  (`fctl_domain::workspace::slug_from_name`, `naming::project_slug`) while
+  that is free; when another workspace or project has it, or it is
+  reserved, it gets a random ending of six hex digits instead,
+  `example-829d34` (`slugs::free`,
+  [ADR 0060](adr/0060-taken-and-reserved-slugs-get-a-random-ending.md)).
+  fctl reserves the slugs its own pages use (`new`, `admin`, `settings`…:
+  `fctl_domain::validate::RESERVED_SLUGS`), and instance admins reserve
+  more for later under Admin → Settings → Reserved addresses or with
+  `fctl admin reserve` (`reserved_slugs`; a new instance has none). Nobody
+  chooses a reserved slug as an address, with `--slug` or in a workspace's
+  settings, and the workspaces and projects that had one before keep it.
 - **Deleting** a workspace (its primary admin, or an instance admin, typing
   its name) deletes its projects with their sessions and files, as deleting
   a project does, once none of its sessions runs.
@@ -696,8 +709,8 @@ sessions' retrospectives, projects' schedules and their runs, the Linear
 workspaces fctl's app is installed in (with their sealed tokens), the
 fctl workspaces connected to each, people's Linear accounts, Linear's
 agent sessions and the fctl sessions they reach, what agents wrote in
-their trackers in the last hour, the instance's settings and sealed Web
-Push key, and the audit log.
+their trackers in the last hour, the instance's settings, reserved slugs
+and sealed Web Push key, and the audit log.
 
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending

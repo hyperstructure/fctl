@@ -36,6 +36,7 @@ web app · fctl CLI · HTTP API · Claude apps · Linear · GitHub webhooks
 ## Vocabulary
 
 - **Instance**: one fctl deployment: a control plane and the hosts connected to it. Its URL is what `fctl login` and `FCTL_SERVER` name (`https://app.fctl.sh`, or a self-hosted one).
+- **Slug**: a workspace's or project's address, unique on the instance among workspaces and among projects. A new one's comes from its name; when that one is taken or reserved (by fctl, like `new` and `settings`, or by an instance admin, like `home`), it gets a random ending of six hex digits, `my-app-829d34`. Nobody chooses a reserved slug with `--slug`.
 - **Workspace** (`wsp_…`, `/w/<slug>`): the people who work together, their projects, the runners their sessions run on, the GitHub accounts and Linear workspaces they work in, and an audit log. A person is in at most five workspaces (the primary instance owner in any number).
 - **Project** (`prj_…`, `/p/<slug>`, slugs are unique per instance): a primary GitHub repository (or none), more repositories of the same GitHub account (read only or read and write), and everything agents need: setup script, instructions, model and effort, image, CPUs and memory, environment variables, secrets, idle timeout, GitHub access, follow-ups, ticket tracker, memory, schedules, review agents.
 - **Session** (`ses_…`, or `<project>#<number>` like `my-app#12`, URL `/s/<id>`): one agent working on one task: one Claude conversation in one sandbox on its own branch. A session has turns, a status, a transcript (its event log), pull requests, and a person it runs for, whose Claude subscription it uses.
@@ -59,7 +60,7 @@ web app · fctl CLI · HTTP API · Claude apps · Linear · GitHub webhooks
 
 ## Roles
 
-- **Instance**: `owner` (the primary instance owner, one), `admin` (people, invitations, allowlist, runners, GitHub installations, instance settings; not inside workspaces they aren't in), `member`.
+- **Instance**: `owner` (the primary instance owner, one), `admin` (people, invitations, allowlist, runners, GitHub installations, instance settings, reserved slugs; not inside workspaces they aren't in), `member`.
 - **Workspace**: the primary admin (one; hands the role over before leaving), `admin` (people, roles, runners, GitHub and Linear connections, settings; creates projects; owns every project), `member`. A **base role** (`none`, `viewer`, `editor`, `maintainer`; new workspaces: `editor`) gives every member that role in every project.
 - **Project**: `owner` (everything, including deleting it and turning review agents on), `maintainer` (settings, secrets, members, schedules of others), `editor` (start sessions, message agents, keep memory), `viewer` (read sessions). A member's role is the higher of their project role and the base role.
 - **Session**: `owner` (who started it, while they may still start sessions in the project, and the project's maintainers and owners: stop, resume, archive, share), `editor` (message and interrupt), `viewer` (read). Sessions can be shared with people in the same workspace, as viewers, editors or owners.
@@ -190,7 +191,7 @@ Each recipe says who does what: some steps take a person with a role in the proj
 - **Session page** (`/s/<id>`): the live transcript (tool calls fold into lines; the images the agent read show small under them for 7 days), the composer to message the agent, Interrupt, Stop and Resume, Share, the follow bell, Changes (the branch's diff), pull requests with checks, context and usage, retrospectives, ⌘F to find in the transcript, Open in Claude.
 - **Project page** (`/p/<slug>`): Sessions, Tickets, Schedules, Reviews, Memory, Retrospectives, Repositories and Members tabs; maintainers and owners also see Settings (agents, sandbox, GitHub, follow-ups…) and Secrets.
 - **Workspace page** (`/w/<slug>`): Projects, People, Runners (with the command and token that add one), GitHub, Linear, Settings, and the Audit log for admins.
-- **Settings** (`/settings`): profile (name and picture), email addresses and commit emails, workspaces (which Claude connection, only my runners), Claude, notifications, Linear account, sign-in methods, passkeys, two-factor sign-in, devices and access tokens, appearance (dark or light, a 12- or 24-hour clock), your data, deleting your account. **Admin** (`/admin`, instance admins): people, access (allowlist), early access, workspaces, GitHub, runners, settings, audit.
+- **Settings** (`/settings`): profile (name and picture), email addresses and commit emails, workspaces (which Claude connection, only my runners), Claude, notifications, Linear account, sign-in methods, passkeys, two-factor sign-in, devices and access tokens, appearance (dark or light, a 12- or 24-hour clock), your data, deleting your account. **Admin** (`/admin`, instance admins): people, access (allowlist), early access, workspaces, GitHub, runners, settings (with reserved addresses), audit.
 - Notifications are Web Push to browsers where people turned them on (on iPhone and iPad, fctl added to the Home Screen): a followed session waits for a reply, pauses on a usage limit, or fails.
 
 ## Docs

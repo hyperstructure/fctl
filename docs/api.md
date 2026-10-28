@@ -248,6 +248,12 @@ shows a tool's request.
 | `GET /api/v1/projects/{project}/secrets`, `PUT`, `DELETE …/secrets/{name}` | secrets as environment variables of its sandboxes: `PUT` takes `{"value": "…"}`; the list has names and who set them, never values (maintainers) |
 | `GET /api/v1/projects/{project}/tickets` | its ticket tracker as it works now, and the sessions its tickets started |
 
+Without a `slug`, a new project's comes from its `name`, with a random
+ending of six hex digits (`my-app-829d34`) when another project has that
+one or it is reserved, by fctl or by an instance admin
+(`/api/v1/admin/reserved-slugs`). A `slug` that is taken or reserved is
+refused (`400`, `field: "slug"`). Workspaces' slugs work the same way.
+
 `settings` in a `PATCH` replaces all of the project's settings, so send
 them all: read the project, change what you need, and send its `settings`
 back, as `fctl projects set` does (`fctl projects set -p my-app
