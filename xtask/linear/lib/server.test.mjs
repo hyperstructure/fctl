@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { test } from "node:test";
 import { loadSchema } from "./graphql.mjs";
 import { createStandin } from "./server.mjs";
@@ -168,4 +169,44 @@ test("nobody delegates to fctl's app, or talks with it, while it isn't installed
   assert.equal(uninstalled.body.delivery.status, 200);
   assert.equal(hook.got.at(-1).payload.type, "OAuthApp");
   assert.equal((await s.call("POST", "/standin/reply", { issue: "ENG-1", body: "Hi" })).status, 409);
+});
+
+test("stays up whatever a client sends", async (t) => {
+  const hook = await fctl("hook");
+  const s = await standin(hook.url);
+  t.after(() => {
+    hook.server.close();
+    s.server.close();
+  });
+  /** Sends `raw` as it is, and what came back, after `end` (or once it closes). */
+  const send = async (raw, { close = false } = {}) => {
+    const socket = connect(s.server.address().port, "127.0.0.1");
+    await once(socket, "connect");
+    let got = "";
+    socket.on("data", (d) => {
+      got += d;
+    });
+    socket.write(raw);
+    if (close) {
+      socket.destroy();
+      return got;
+    }
+    // A stand-in that went down answers nothing: give up rather than wait.
+    socket.setTimeout(2_000, () => socket.destroy());
+    await once(socket, "close");
+    return got;
+  };
+  const slashes = await send("GET // HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  assert.match(slashes, /^HTTP\/1.1 400/);
+  await send('POST /standin/delegate HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{"issue"', {
+    close: true,
+  });
+  await send("GET /oauth/authorize HTTP/1.1\r\nHost x\r\n\r\n");
+  const empty = await s.call("POST", "/standin/delegate");
+  assert.equal(empty.status, 400);
+  assert.match(empty.body.error, /Name an issue/);
+  const bad = await fetch(`${s.base}/standin/delegate`, { method: "POST", body: "{" });
+  assert.equal(bad.status, 400);
+  assert.equal((await fetch(`${s.base}/standin/toString`, { method: "POST" })).status, 404);
+  assert.equal((await s.call("GET", "/standin/health")).body.ok, true);
 });

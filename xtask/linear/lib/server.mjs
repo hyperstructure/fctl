@@ -249,10 +249,24 @@ export function createStandin({ schema, state, config, out = console, answerWith
     return json(res, answer.status, answer.body);
   };
 
+  // Whatever a client sends, the stand-in answers it, or turns it down,
+  // and stays up for the rest of cargo xtask dev.
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url, "http://127.0.0.1");
-    const body = await read(req);
+    let url;
+    try {
+      url = new URL(req.url, "http://127.0.0.1");
+    } catch {
+      problem("unknown", `a request Linear has no answer for: ${req.method} ${req.url}`);
+      return json(res, 400, { error: "Linear answers no such address" });
+    }
     const route = `${req.method} ${url.pathname}`;
+    let body;
+    try {
+      body = await read(req);
+    } catch {
+      // The client went away before its request ended: nobody waits for an answer.
+      return res.destroy();
+    }
     try {
       if (route === "GET /oauth/authorize") {
         const answer = O.authorize(config, codes, url.searchParams);
@@ -298,9 +312,16 @@ export function createStandin({ schema, state, config, out = console, answerWith
         const s = W.session(w, url.pathname.split("/").pop());
         return s ? json(res, 200, sessionJson(w, s)) : json(res, 404, { error: "No such agent session" });
       }
-      const action =
-        req.method === "POST" && url.pathname.startsWith("/standin/") && actions[url.pathname.slice(9)];
-      if (action) return json(res, 200, await action(body ? JSON.parse(body) : {}));
+      const name = url.pathname.slice("/standin/".length);
+      if (req.method === "POST" && url.pathname.startsWith("/standin/") && Object.hasOwn(actions, name)) {
+        let input;
+        try {
+          input = body ? JSON.parse(body) : {};
+        } catch {
+          throw new Refusal(400, "The body must be JSON");
+        }
+        return json(res, 200, await actions[name](input));
+      }
       problem("unknown", `a request Linear has no answer for: ${route}`);
       return json(res, 404, { error: `Linear has no ${route}` });
     } catch (e) {
@@ -309,6 +330,7 @@ export function createStandin({ schema, state, config, out = console, answerWith
       return json(res, 500, { error: String(e.message ?? e) });
     }
   });
+  server.on("clientError", (_e, socket) => socket.destroy());
   return { server, world: w, problems };
 }
 
@@ -330,6 +352,7 @@ function read(req) {
 }
 
 function json(res, status, value) {
+  if (res.headersSent || res.destroyed) return;
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(value));
 }
