@@ -150,7 +150,7 @@ function RepoText({ project }: { project: G.Project }) {
 
 /** The project a new session goes to: picked here last time, while it is still there. */
 const LAST_TARGET = "fctl:last-target";
-/** The project picked here last in each workspace, by the workspace's id. */
+/** The project each workspace had here last, by the workspace's id. */
 const LAST_TARGETS = "fctl:last-targets";
 
 function lastTargets(): Record<string, string> {
@@ -204,12 +204,17 @@ function QuickStart({
   }, [first, project, editable]);
   const pick = (slug: string) => {
     setProject(slug);
-    const w = editable.find((p) => p.slug === slug)?.workspace?.id;
     try {
       localStorage.setItem(LAST_TARGET, slug);
-      if (w) localStorage.setItem(LAST_TARGETS, JSON.stringify({ ...lastTargets(), [w]: slug }));
     } catch {}
   };
+  const at = target?.workspace?.id;
+  useEffect(() => {
+    if (!at) return;
+    try {
+      localStorage.setItem(LAST_TARGETS, JSON.stringify({ ...lastTargets(), [at]: project }));
+    } catch {}
+  }, [at, project]);
   const files = useAttachments(editable.length && project ? { project } : undefined, { keep });
   const draft = useKeepDraft(keep, {
     kept,
@@ -220,7 +225,7 @@ function QuickStart({
   // Once a session starts with the draft, it is forgotten.
   const { start, starting } = useStartSession(draft.forget);
   // When the page shows one workspace's work, the project goes there too, unless it is there
-  // already: to the one picked there last, else its first. One picked here afterwards stays.
+  // already: to the one it had there last, else its first. One picked here afterwards stays.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only showing another workspace moves it
   useEffect(() => {
     if (!workspace || starting || target?.workspace?.id === workspace) return;

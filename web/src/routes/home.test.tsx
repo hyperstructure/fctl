@@ -129,20 +129,28 @@ describe("the Agent Floor's composer", () => {
     expect(open().project()).toBe("Frog / frog-api");
   });
 
-  it("goes to the workspace whose work the page shows: to the project picked there last, else its first you start sessions in", () => {
-    localStorage.setItem("fctl:last-target", "cook-it");
-    localStorage.setItem("fctl:last-targets", JSON.stringify({ ws_frog: "frog-api" }));
+  it("goes to the workspace whose work the page shows, to the project it had there last", () => {
+    localStorage.setItem("fctl:last-target", "frog-api");
+    localStorage.setItem("fctl:last-targets", JSON.stringify({ ws_kind: "kind-app" }));
+    const floor = open();
+    expect(floor.project()).toBe("Frog / frog-api");
+    floor.show("Kind Machine");
+    expect(floor.showing()).toContain("Kind Machine");
+    expect(floor.project()).toBe("Kind Machine / kind-app");
+    floor.show("Frog");
+    expect(floor.project()).toBe("Frog / frog-api");
+    // The next page starts where this one is.
+    expect(localStorage.getItem("fctl:last-target")).toBe("frog-api");
+    expect(lastTargets()).toEqual({ ws_frog: "frog-api", ws_kind: "kind-app" });
+  });
+
+  it("goes to a workspace's first project you start sessions in, when it had none there", () => {
     const floor = open();
     expect(floor.project()).toBe("Frog / cook-it");
     // Ada only watches kind-docs.
     floor.show("Kind Machine");
-    expect(floor.showing()).toContain("Kind Machine");
     expect(floor.project()).toBe("Kind Machine / kind-web");
-    floor.show("Frog");
-    expect(floor.project()).toBe("Frog / frog-api");
-    // The next page starts where this one was.
-    expect(localStorage.getItem("fctl:last-target")).toBe("frog-api");
-    expect(lastTargets()).toEqual({ ws_frog: "frog-api", ws_kind: "kind-web" });
+    expect(localStorage.getItem("fctl:last-target")).toBe("kind-web");
   });
 
   it("stays where it is when the page shows every workspace, or one where it can't start sessions", () => {
