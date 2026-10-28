@@ -13,6 +13,8 @@ const me = { id: "usr_ada" as G.UserId, name: "Ada" };
 const state = vi.hoisted(() => ({
   agents: undefined as unknown as G.ReviewAgents,
   sent: [] as G.UpdateReviewAgentsRequest[],
+  /** How often the form asked which apps opened pull requests lately. */
+  botsAsked: 0,
 }));
 
 vi.mock("@/lib/api", () => {
@@ -22,7 +24,10 @@ vi.mock("@/lib/api", () => {
     api: {
       reviewAgents: async () => state.agents,
       reviews: async () => ({ reviews: [] }),
-      reviewBots: async () => ({ bots: [] }),
+      reviewBots: async () => {
+        state.botsAsked++;
+        return { bots: [] };
+      },
       reviewBot: async () => {
         throw new ApiFailure("GitHub shows no app by that name.");
       },
@@ -52,6 +57,7 @@ vi.mock("@tanstack/react-router", () => ({
 const roots: (() => void)[] = [];
 beforeEach(() => {
   state.sent = [];
+  state.botsAsked = 0;
   state.agents = {
     enabled: true,
     operator: me,
@@ -158,6 +164,10 @@ describe("the repositories review agents review", () => {
     const status = c.textContent ?? "";
     expect(status).toContain("in acme/web and acme/shared-lib");
     expect(status).toContain("They skip acme/api.");
+    // The apps that opened pull requests lately are asked for again, in the repositories reviewed now.
+    expect(state.botsAsked).toBe(1);
+    await openSettings(c);
+    expect(state.botsAsked).toBe(2);
   });
 
   it("are left as they are when only something else changes", async () => {
@@ -179,6 +189,9 @@ describe("the repositories review agents review", () => {
     await save(c);
     expect(state.sent.at(-1)?.instructions).toBe("Mind the migrations.");
     expect(state.sent.at(-1)).not.toHaveProperty("skipped_repos");
+    // Nor are the apps that opened pull requests lately asked for again.
+    await openSettings(c);
+    expect(state.botsAsked).toBe(1);
   });
 
   it("say so when they skip every one", async () => {

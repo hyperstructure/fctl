@@ -136,7 +136,12 @@ function useUpdate(project: G.Project, done?: (a: G.ReviewAgents) => void) {
   return useMutation({
     mutationFn: (b: G.UpdateReviewAgentsRequest) => api.updateReviewAgents(project.id, b),
     onSuccess: (a) => {
+      const before = queryClient.getQueryData<G.ReviewAgents>(keys.reviewAgents(project.id));
       queryClient.setQueryData(keys.reviewAgents(project.id), a);
+      // The apps that opened pull requests lately are those of the repositories they review: the
+      // settings ask again when they next open (they close as they save).
+      if (before && !sameRepos(before.repos.map(repoName), a.repos.map(repoName)))
+        void queryClient.invalidateQueries({ queryKey: keys.reviewBots(project.id), refetchType: "none" });
       done?.(a);
     },
   });
