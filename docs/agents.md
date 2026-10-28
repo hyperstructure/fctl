@@ -409,7 +409,10 @@ fctl projects set -p my-app --follow-ups all                      # comments, ch
 
 Each new commit of a pull request in the project's writable repositories
 then gets a review; when an fctl agent opened the pull request, its session
-gets the findings, fixes what is real and answers in the threads. Follow-ups
+gets the findings, fixes what is real and answers in the threads. Sessions
+that list the pull request show how the review stands beside its checks,
+out of their count (`checks.review` in `fctl show --json`): waiting for a
+runner, reviewing, or how many issues it found. Follow-ups
 bring that agent back for `@fctl` comments from people who can write to the
 repository, failed checks, conflicts with the base branch and merges. Both
 need the instance's GitHub webhook ([Self-hosting](self-hosting.md#follow-ups)).

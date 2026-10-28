@@ -21,6 +21,7 @@ use crate::github;
 use crate::{follow_ups, internal};
 use fctl_domain::follow_ups::{self as fu, Ask};
 use fctl_domain::pulls;
+use fctl_domain::reviews as rv;
 use fctl_domain::webhooks::{self, Fields, Hints, Hook, Looked, Payload};
 use fctl_proto::session::{PullRequestRef, RepoRef};
 use serde::Deserialize;
@@ -55,6 +56,14 @@ pub fn enabled(cfg: &Config) -> bool {
     cfg.github
         .as_ref()
         .is_some_and(|g| g.webhook_secret.is_some())
+}
+
+/// GitHub's id of the instance's GitHub App, whose review checks lookups
+/// tell apart from the others (`webhooks::looked_up`).
+fn app_id(cfg: &Config) -> Option<u64> {
+    cfg.github
+        .as_ref()
+        .and_then(|g| g.app_id.trim().parse().ok())
 }
 
 /// How `pull_request_sessions` names a repository.
@@ -262,7 +271,7 @@ pub async fn hook(
             let hints = payload.map(webhooks::Payload::hints).unwrap_or_default();
             let looked = answer
                 .as_ref()
-                .and_then(|a| webhooks::looked_up(a, i, now, hints))
+                .and_then(|a| webhooks::looked_up(a, i, now, hints, app_id(cfg)))
                 .or_else(|| {
                     payload.map(|p| Looked {
                         pr: p.seen.clone(),
@@ -307,7 +316,7 @@ pub async fn hook(
             for (i, (repo, number)) in others.into_iter().enumerate() {
                 let looked = answer
                     .as_ref()
-                    .and_then(|a| webhooks::looked_up(a, i, now, Hints::default()));
+                    .and_then(|a| webhooks::looked_up(a, i, now, Hints::default(), app_id(cfg)));
                 if looked.is_some() {
                     seen.push(Seen {
                         repo,
@@ -531,10 +540,9 @@ pub async fn refresh(
                 .map(|(i, (repo, number))| Seen {
                     repo: repo.clone(),
                     number: *number,
-                    looked: answer
-                        .as_ref()
-                        .ok()
-                        .and_then(|a| webhooks::looked_up(a, i, now, Hints::default())),
+                    looked: answer.as_ref().ok().and_then(|a| {
+                        webhooks::looked_up(a, i, now, Hints::default(), app_id(cfg))
+                    }),
                     checks: true,
                 })
                 .collect();
@@ -671,7 +679,7 @@ pub async fn ask_again(
             .map(|(i, (repo, number))| Seen {
                 repo,
                 number,
-                looked: webhooks::looked_up(&answer, i, now, Hints::default()),
+                looked: webhooks::looked_up(&answer, i, now, Hints::default(), app_id(cfg)),
                 checks: false,
             })
             .collect();
@@ -759,15 +767,34 @@ async fn settle(
     let of = |l: &Listing| {
         seen.iter()
             .find(|x| x.number as i64 == l.number && key(&x.repo) == l.repo)
-            .and_then(|x| x.looked.as_ref())
+    };
+    let reviewed = if listing.is_empty() {
+        BTreeMap::new()
+    } else {
+        reviewed(db, seen).await
     };
     let mut sessions: BTreeMap<&str, Vec<PullRequestRef>> = BTreeMap::new();
     for l in &listing {
-        if let Some(looked) = of(l) {
-            sessions
-                .entry(&l.session_id)
-                .or_default()
-                .push(looked.pr.clone());
+        if let Some(x) = of(l)
+            && let Some(looked) = &x.looked
+        {
+            let mut pr = looked.pr.clone();
+            if let Some(c) = pr.checks.as_mut()
+                && let Some(check) = c.review.take()
+            {
+                let kept = check
+                    .session_id
+                    .as_ref()
+                    .and_then(|id| reviewed.get(id.as_str()));
+                c.review = Some(rv::checked(
+                    check,
+                    &x.repo,
+                    x.number,
+                    c.sha.as_deref(),
+                    kept,
+                ));
+            }
+            sessions.entry(&l.session_id).or_default().push(pr);
         }
     }
     let mut told = 0;
@@ -833,6 +860,37 @@ async fn settle(
     }
     crate::db::batch(db, statements).await?;
     Ok(told)
+}
+
+/// What the instance kept of the reviews whose checks `seen` show, by their
+/// sessions: how each went and what it found (`crate::reviews::kept`).
+/// Without it, the checks say how they went alone.
+async fn reviewed(db: &D1Database, seen: &[Seen]) -> BTreeMap<String, rv::Kept> {
+    let ids: Vec<&str> = seen
+        .iter()
+        .filter_map(|x| {
+            x.looked
+                .as_ref()?
+                .pr
+                .checks
+                .as_ref()?
+                .review
+                .as_ref()?
+                .session_id
+                .as_ref()
+        })
+        .map(|id| id.as_str())
+        .collect();
+    match crate::reviews::kept(db, &ids).await {
+        Ok(kept) => kept,
+        Err(e) => {
+            worker::console_error!(
+                "reading the reviews of pull requests' checks: {}",
+                e.0.message
+            );
+            BTreeMap::new()
+        }
+    }
 }
 
 /// Tells a session what GitHub says of pull requests it lists, with what

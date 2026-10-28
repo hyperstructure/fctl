@@ -1118,8 +1118,9 @@ how, where the sandbox's fctl has the command.
 
 Session lists, the session page and `fctl show` give each pull request its
 state, `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`,
-since when, and the checks of its head commit: how many passed, failed and
-are still to finish. Agents look their pull requests up as turns end, but a
+since when, the checks of its head commit: how many passed, failed and
+are still to finish, and how the instance's review of that commit stands,
+where its review agents review the pull request. Agents look their pull requests up as turns end, but a
 session that stopped looks up nothing, so GitHub tells the control plane
 ([ADR 0032](adr/0032-githubs-webhook-keeps-sessions-pull-requests-current.md)):
 
@@ -1142,7 +1143,15 @@ session that stopped looks up nothing, so GitHub tells the control plane
    head commit's checks counted by state, each check once: GitHub counts
    every run of a check, but the pull request shows its latest run alone,
    so a run that a re-run, or the next run of its workflow for the same
-   commit, replaced counts no more. Deliveries come out of order and some
+   commit, replaced counts no more. The instance's own review check
+   (`fctl review`, run by its GitHub App) counts in none of them: GitHub
+   counts its neutral conclusion as passed, which is how a review that
+   found issues ends ([Review agents](#review-agents)). The lookup says
+   how the review stands instead (`checks.review`,
+   `fctl_domain::webhooks::review_run`): waiting for a runner (queued),
+   reviewing (in progress), passed, found issues (neutral) or stopped
+   (cancelled), and its session (the check's `external_id`). Another
+   app's check of that name counts as any. Deliveries come out of order and some
    never come; a lookup says how things are. A pull request is queued
    when the delivery's action is `enqueued` (or `queued`), GitHub lists its
    entry in the merge queue, or its merge state status (else its
@@ -1150,7 +1159,10 @@ session that stopped looks up nothing, so GitHub tells the control plane
    fails, a `pull_request` delivery's own payload gives the state.
 4. **The sessions.** The control plane sends what it found to the
    SessionDO of each session that lists the pull request
-   (`/pull-requests`), which takes what is newer (`fctl_domain::pulls::update`):
+   (`/pull-requests`), with what `reviews` keeps of the review its check
+   names (`fctl_domain::reviews::checked`): once it ended, how, how many
+   issues it found, how many earlier ones are still open and where its
+   summary is. The SessionDO takes what is newer (`fctl_domain::pulls::update`):
    GitHub's `updatedAt` orders what GitHub and agents say of its title and
    state, an agent's `open` leaves a queued one queued (`gh` can't see merge
    queues), and checks go by when the control plane asked. It keeps when
@@ -1179,7 +1191,11 @@ Each session hears of all of its pull requests at once, and
 `pull_request_sessions` keeps a pull request's old state until every
 session that lists it heard, so that the job asks again for one that
 didn't. The web app shows the states and checks with GitHub's octicons and
-colors (the design system's `pr-*` and `checks-*` tokens).
+colors (the design system's `pr-*` and `checks-*` tokens), and the review
+beside them: GitHub's eye while it waits for a runner, reading as it
+reviews, and a comment with how many issues it found; the session page
+adds a line under the pull request that says how it stands and opens the
+review's session.
 
 ### Review agents
 
@@ -1269,7 +1285,11 @@ posts what it found on GitHub
 4. **On GitHub, as it starts.** The control plane adds an `eyes`
    reaction to the pull request and a check on the commit, `fctl review`,
    queued until a runner takes the session and in progress after
-   (`crate::reviews::started`), with a link to the session.
+   (`crate::reviews::started`), with a link to the session, which is also
+   its `external_id`. GitHub's webhook says nothing of a check that only
+   went from queued to in progress, so the control plane then looks the
+   pull request up itself, and the sessions that list it see that the
+   review runs ([Pull request state and checks](#pull-request-state-and-checks)).
 5. **Posting** (`fctl review submit`, an agent call). The agent hands its
    findings (file, line, severity, title, a few sentences, an optional
    suggested change) and the earlier ones the new commits fixed to the
@@ -1287,9 +1307,9 @@ posts what it found on GitHub
    it found stand (`restated`: fixed, or resolved by someone, going by
    the threads its session started, which fctl notes out of sight in
    every comment it posts), and hides the summary as outdated once all of
-   them are; and completes the check: success with nothing to look at,
-   neutral with findings or earlier ones still open, since acting on them
-   is up to the pull request's people. It posts once: a second submission
+   them are; and, once `reviews` keeps how it went, completes the check:
+   success with nothing to look at, neutral with findings or earlier ones
+   still open, since acting on them is up to the pull request's people. It posts once: a second submission
    gets what the first posted. `fctl review threads` lists fctl's earlier
    findings, with what people answered. fctl-agent reminds an agent that
    ends its turn without posting, once.

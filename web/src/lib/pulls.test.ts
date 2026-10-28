@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
+  checksMark,
   checksState,
   checksText,
   githubLink,
   prFullRef,
   prLabel,
   prRef,
+  prReview,
+  prReviewLook,
+  prReviewText,
   prState,
   prStateText,
   prTitle,
   pullRequests,
+  reviewIssues,
 } from "./pulls";
 
 const pr = (repo: string | undefined, number: number, title?: string): G.PullRequestRef => {
@@ -127,6 +132,86 @@ describe("a pull request's checks", () => {
     expect(prTitle(merged)).toMatch(/^hyperstructure\/fctl#171: Show pull requests' state\nMerged .+2026/);
     expect(prLabel(merged, NOW)).toBe("fctl#171, merged 2 hours ago");
     expect(prLabel(pr("acme/app", 7))).toBe("app#7");
+  });
+});
+
+describe("fctl's review of a pull request", () => {
+  const review = (state: G.ReviewState, more: Partial<G.ReviewCheck> = {}): G.ReviewCheck => ({
+    state,
+    findings: 0,
+    still_open: 0,
+    session_id: "ses_review",
+    ...more,
+  });
+  const reviewed = (r: G.ReviewCheck, c = checks(9, 0, 0), state = "open"): G.PullRequestRef => ({
+    ...pr("hyperstructure/fctl", 302, "Choose a project's repositories from a list"),
+    state,
+    checks: { ...c, review: r },
+  });
+
+  it("says how it stands, as fctl show says it", () => {
+    const said = (r: G.ReviewCheck) => [prReviewLook(r), prReviewText(r)];
+    expect(said(review("running", { waiting: true }))).toEqual([
+      "waiting",
+      "fctl's review agent waits for a runner",
+    ]);
+    expect(said(review("running"))).toEqual(["reviewing", "fctl's review agent is reviewing it"]);
+    expect(said(review("passed"))).toEqual(["passed", "fctl's review agent found no issues"]);
+    expect(said(review("commented", { findings: 1, still_open: 2 }))).toEqual([
+      "commented",
+      "fctl's review agent found 1 issue",
+    ]);
+    expect(said(review("commented", { findings: 3 }))[1]).toBe("fctl's review agent found 3 issues");
+    expect(said(review("commented", { still_open: 1 }))[1]).toBe(
+      "1 issue from fctl's earlier reviews is still open",
+    );
+    expect(said(review("commented", { still_open: 2 }))[1]).toBe(
+      "2 issues from fctl's earlier reviews are still open",
+    );
+    expect(said(review("commented"))[1]).toBe("fctl's review agent found issues");
+    expect(said(review("stopped"))).toEqual(["stopped", "fctl's review stopped"]);
+    expect(said(review("superseded"))[1]).toBe("fctl's review stopped");
+    expect(said(review("failed"))).toEqual(["failed", "fctl's review failed"]);
+  });
+
+  it("counts the issues it found, else those still open", () => {
+    expect(reviewIssues(review("commented", { findings: 3, still_open: 2 }))).toBe(3);
+    expect(reviewIssues(review("commented", { still_open: 2 }))).toBe(2);
+  });
+
+  it("matters while its checks do, apart from them", () => {
+    const found = reviewed(review("commented", { findings: 2 }));
+    expect(prReview(found)?.findings).toBe(2);
+    // The other checks: its own isn't counted among them.
+    expect([checksState(found), checksText(found)]).toEqual(["passed", "All 9 checks passed"]);
+    expect(prReview({ ...found, state: "merged" })).toBeUndefined();
+    expect(prReview(pr("acme/app", 1))).toBeUndefined();
+  });
+
+  it("passes the checks' mark where nothing else checks the pull request", () => {
+    const none = checks(0, 0, 0);
+    expect(checksMark(reviewed(review("passed"), none))).toBe("passed");
+    expect(checksMark(reviewed(review("commented", { findings: 1 }), none))).toBeUndefined();
+    expect(checksMark(reviewed(review("running"), none))).toBeUndefined();
+    // The other checks' state comes first.
+    expect(checksMark(reviewed(review("passed"), checks(3, 0, 1)))).toBe("pending");
+    expect(checksMark(reviewed(review("commented"), checks(3, 1, 0)))).toBe("failed");
+  });
+
+  it("shows in its tooltip and in what screen readers say of its link", () => {
+    const found = reviewed(review("commented", { findings: 2 }));
+    expect(prTitle(found)).toBe(
+      "hyperstructure/fctl#302: Choose a project's repositories from a list\nOpen · All 9 checks passed · fctl's review agent found 2 issues",
+    );
+    expect(prLabel(found)).toBe("fctl#302, open, all 9 checks passed, fctl's review agent found 2 issues");
+    const running = reviewed(review("running"), checks(5, 0, 2));
+    expect(prLabel(running)).toBe(
+      "fctl#302, open, 2 of 7 checks pending, fctl's review agent is reviewing it",
+    );
+    // Without other checks.
+    expect(prLabel(reviewed(review("running", { waiting: true }), checks(0, 0, 0), "draft"))).toBe(
+      "fctl#302, draft, fctl's review agent waits for a runner",
+    );
   });
 });
 

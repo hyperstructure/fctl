@@ -13,7 +13,7 @@ import { agoShort, stamp } from "@/lib/format";
 import { prLabel, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { statusReason } from "@/lib/status";
 import { ticketLabel } from "@/lib/tickets";
-import { PullRequestChecksIcon, PullRequestStateIcon } from "./pull-request";
+import { PullRequestChecksIcon, PullRequestReviewMark, PullRequestStateIcon } from "./pull-request";
 
 export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.WorkspaceRef }) {
   return (
@@ -132,8 +132,9 @@ export function ScheduleLink({
 }
 
 /**
- * "· fctl#120 design#14", each a link to it on GitHub after GitHub's icon for its state, with a mark
- * for its checks while they matter, and what they say on hover; nothing without any.
+ * "· fctl#120 design#14", each a link to it on GitHub after GitHub's icon for its state, with marks
+ * for its checks and fctl's review of it while they matter, and what they say on hover; nothing
+ * without any.
  */
 export function PullRequestLinks({ s, className }: { s: G.Session; className?: string }) {
   const prs = pullRequests(s);
@@ -157,6 +158,7 @@ export function PullRequestLinks({ s, className }: { s: G.Session; className?: s
             <PullRequestStateIcon pr={pr} className="mr-1 inline size-3 align-[-1.5px]" />
             <span className="underline-offset-2 group-hover/pr:underline">{prRef(pr)}</span>
             <PullRequestChecksIcon pr={pr} className="ml-1 inline size-3 align-[-1.5px]" />
+            <PullRequestReviewMark pr={pr} className="ml-1 align-[-1.5px]" />
           </a>
         </Fragment>
       ))}

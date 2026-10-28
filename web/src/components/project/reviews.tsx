@@ -754,9 +754,9 @@ function AskForReview({
 
 const OUTCOME_TONE: Record<ReturnType<typeof reviewLook>, string> = {
   waiting: "text-ink-3",
-  reviewing: "text-checks-pending",
+  reviewing: "text-accent",
   passed: "text-checks-passed",
-  commented: "text-ink",
+  commented: "text-blue",
   superseded: "text-ink-4",
   stopped: "text-ink-4",
   failed: "text-danger",

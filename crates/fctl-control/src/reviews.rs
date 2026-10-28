@@ -30,7 +30,7 @@ use fctl_proto::session::{
 use fctl_proto::{ApiError, ErrorCode, SessionId, UserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use worker::{D1Database, Env};
 
 /// A project's review agents, as D1 keeps them (`project_reviews`).
@@ -228,6 +228,58 @@ pub async fn of_session(db: &D1Database, session_id: &str) -> AppResult<Option<R
     )?
     .first()
     .await
+}
+
+/// What D1 keeps of the reviews of sessions `ids`, by session: the pull
+/// request and commit each reviews, how it went and what it found, which
+/// sessions' pull requests show with their checks
+/// (`crate::pull_requests`).
+pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, rv::Kept>> {
+    #[derive(Deserialize)]
+    struct Row {
+        session_id: String,
+        repo: String,
+        #[serde(deserialize_with = "int")]
+        number: i64,
+        head_sha: String,
+        state: String,
+        #[serde(deserialize_with = "int", default)]
+        findings: i64,
+        #[serde(deserialize_with = "int", default)]
+        still_open: i64,
+        review_url: Option<String>,
+    }
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows: Vec<Row> = q(
+        db,
+        "SELECT session_id, repo, number, head_sha, state, findings, still_open, review_url FROM reviews \
+         WHERE session_id IN (SELECT value FROM json_each(?1))",
+        &[s(&json!(ids).to_string())],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            let state = if r.state == POSTING {
+                ReviewState::Running
+            } else {
+                ReviewState::parse(&r.state)
+            };
+            let kept = rv::Kept {
+                repo: RepoRef::parse(&r.repo)?,
+                number: u64::try_from(r.number).ok()?,
+                head_sha: r.head_sha,
+                state,
+                findings: count(r.findings),
+                still_open: count(r.still_open),
+                review_url: r.review_url.as_deref().and_then(rv::posted_link),
+            };
+            Some((r.session_id, kept))
+        })
+        .collect())
 }
 
 /// A project's reviews, newest first: before `before`, at most `limit`.
@@ -876,6 +928,7 @@ async fn announce(
             )
             .await;
         gh.revoke_installation_token(&token).await;
+        look_again(env, cfg, &db, &pr.repo, pr.number).await;
     }
     Ok(())
 }
@@ -1009,7 +1062,27 @@ pub async fn started(env: &Env, session_id: &str) -> AppResult<()> {
     if let Ok(Err(why)) = r {
         worker::console_error!("starting a review's check: {why}");
     }
+    look_again(env, &cfg, &db, &repo, row.number()).await;
     Ok(())
+}
+
+/// Looks the reviewed pull request up again, so that the sessions that
+/// list it see how its review stands now: that its runner took it, of
+/// which GitHub's webhook says nothing (its check only went from queued
+/// to in progress), and how it ended, without waiting for the webhook's
+/// word of its check, which may come late or not at all.
+async fn look_again(env: &Env, cfg: &Config, db: &D1Database, repo: &RepoRef, number: u64) {
+    if !crate::pull_requests::enabled(cfg) {
+        return;
+    }
+    let prs = [(repo.clone(), number)];
+    if let Err(e) = crate::pull_requests::refresh(env, cfg, db, &prs, now_ms(), false).await {
+        worker::console_error!(
+            "looking up {}#{number} as its review started: {}",
+            repo.full_name(),
+            e.0.message
+        );
+    }
 }
 
 /// A review session stopped or failed before its agent posted a review:
@@ -1064,6 +1137,7 @@ pub async fn ended(
     if let Ok(Err(why)) = r {
         worker::console_error!("ending a review's check: {why}");
     }
+    look_again(env, &cfg, &db, &repo, row.number()).await;
     Ok(())
 }
 
@@ -1289,6 +1363,12 @@ pub async fn submit(
             None
         }
     };
+    let (env, cfg, number) = (ctx.env.clone(), ctx.cfg.clone(), row.number());
+    ctx.defer(async move {
+        let db = env.d1("DB")?;
+        look_again(&env, &cfg, &db, &repo, number).await;
+        Ok(())
+    });
     Ok(PostedReview {
         sent_to,
         ..posting.review
@@ -1589,18 +1669,6 @@ async fn post(
         .filter(|t| !t.resolved && !fixed.contains(t.id.as_str()))
         .count();
     let state = rv::outcome(sub.findings.len(), still_open);
-    if let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) {
-        let body = rv::check_posted(
-            &sub.findings,
-            resolved_ids.len(),
-            still_open,
-            url.as_deref(),
-            &links,
-        );
-        if let Err(why) = gh.update_check(token, repo, check, body).await? {
-            worker::console_error!("completing a review's check: {why}");
-        }
-    }
     q(
         &ctx.db,
         "UPDATE reviews SET state = ?, findings = ?, resolved = ?, still_open = ?, review_url = ?, finished_at = ?, \
@@ -1617,6 +1685,24 @@ async fn post(
     )?
     .run()
     .await?;
+    // Its check once D1 says how it went: the lookup that GitHub's word of
+    // the check brings shows the pull request's sessions what it found
+    // (`crate::pull_requests`). The review is posted by now, whatever
+    // GitHub says to the check.
+    if let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) {
+        let body = rv::check_posted(
+            &sub.findings,
+            resolved_ids.len(),
+            still_open,
+            url.as_deref(),
+            &links,
+        );
+        match gh.update_check(token, repo, check, body).await {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => worker::console_error!("completing a review's check: {why}"),
+            Err(e) => worker::console_error!("completing a review's check: {}", e.0.message),
+        }
+    }
     Ok(Posting {
         review: PostedReview {
             state,

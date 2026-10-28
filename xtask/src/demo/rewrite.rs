@@ -904,7 +904,7 @@ fn pull_title(ctx: &Ctx, of: &str) -> Result<String> {
 }
 
 /// The pull requests a session lists: the one it opened, as GitHub has it
-/// at the shots, with its checks.
+/// at the shots, with its checks and the review of its head commit.
 fn pull_requests(
     ctx: &Ctx,
     s: &SessionSpec,
@@ -937,8 +937,30 @@ fn pull_requests(
             "passed": pr.passed.unwrap_or(0), "failed": pr.failed.unwrap_or(0), "pending": pr.pending.unwrap_or(0),
             "sha": sha, "at": changed.max(ctx.anchor - 120_000),
         });
+        if let Some(review) = head_review(ctx, &format!("{repo}#{}", pr.number), sha.as_deref()) {
+            out["checks"]["review"] = review;
+        }
     }
     Ok(vec![out])
+}
+
+/// The review of pull request `of` (`owner/name#number`) at its head
+/// commit `sha`, as its checks show it: the cast's latest that reviewed
+/// that commit.
+fn head_review(ctx: &Ctx, of: &str, sha: Option<&str>) -> Option<Value> {
+    let w = ctx.w;
+    let s = w
+        .cast
+        .sessions
+        .iter()
+        .filter(|s| s.review.as_ref().is_some_and(|r| r.of == of))
+        .filter(|s| sha.is_some() && w.reviewed_sha(s).ok().as_deref() == sha)
+        .max_by_key(|s| s.start.offset())?;
+    let r = s.review.as_ref()?;
+    Some(json!({
+        "state": r.result, "findings": r.findings, "still_open": r.still_open,
+        "session_id": w.sessions.get(&s.id)?.id, "url": review_url(ctx, s),
+    }))
 }
 
 /// The ticket a session started from, as Linear names it.

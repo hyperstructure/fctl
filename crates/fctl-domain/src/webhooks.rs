@@ -11,8 +11,9 @@
 //! fails, a `pull_request` event's payload tells the state.
 
 use crate::pulls::{self, Times, github_time as time};
-use fctl_proto::Millis;
-use fctl_proto::session::{PullRequestChecks, PullRequestRef, RepoRef};
+use fctl_proto::api::ReviewState;
+use fctl_proto::session::{PullRequestChecks, PullRequestRef, RepoRef, ReviewCheck};
+use fctl_proto::{Millis, SessionId};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
@@ -252,7 +253,8 @@ const PULL: &str = "number url title state isDraft createdAt updatedAt mergedAt 
 /// What a lookup of [`Fields::All`] asks besides: the checks of its head
 /// commit counted by their state, with the first 100 checks among them, in
 /// which [`replaced`] finds the runs that a later run of the same check
-/// replaced, and [`failing`] the checks that failed.
+/// replaced, [`failing`] the checks that failed, and [`review_run`] the
+/// instance's review of the commit.
 const CHECKS: &str = "commits(last: 1) {
     nodes {
       commit {
@@ -263,7 +265,7 @@ const CHECKS: &str = "commits(last: 1) {
             statusContextCountsByState { state count }
             nodes {
               ... on CheckRun {
-                name status conclusion databaseId
+                name status conclusion databaseId externalId
                 checkSuite { app { databaseId } workflowRun { event workflow { databaseId } } }
               }
               ... on StatusContext { context state }
@@ -385,8 +387,16 @@ impl Mergeable {
 
 /// What GitHub's answer to [`query`], asked at `at`, says of the `i`th pull
 /// request it asked about, with what the webhook that asked says (`hints`);
-/// `None` when GitHub has none.
-pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Option<Looked> {
+/// `None` when GitHub has none. `app`: GitHub's id of the instance's GitHub
+/// App, whose `fctl review` check is the instance's review of the commit,
+/// which the checks say apart from the others' counts ([`review_run`]).
+pub fn looked_up(
+    answer: &Value,
+    i: usize,
+    at: Millis,
+    hints: Hints<'_>,
+    app: Option<u64>,
+) -> Option<Looked> {
     let pr = answer.pointer(&format!("/data/pr{i}/pullRequest"))?;
     let text = |key: &str| pr.get(key).and_then(Value::as_str);
     let url = text("url")?;
@@ -443,6 +453,14 @@ pub fn looked_up(answer: &Value, i: usize, at: Millis, hints: Hints<'_>) -> Opti
                 let n = check.of(&mut checks);
                 *n = n.saturating_sub(1);
             }
+        }
+        // The instance's review says how it went in place of a count.
+        if let Some(run) = app.and_then(|app| review_run(contexts, app)) {
+            if let Some(check) = run_state(run).and_then(check_state) {
+                let n = check.of(&mut checks);
+                *n = n.saturating_sub(1);
+            }
+            checks.review = Some(review_of(run));
         }
         checks
     });
@@ -557,12 +575,11 @@ fn replaced(contexts: Option<&Value>) -> Vec<&str> {
         .into_iter()
         .flatten()
         .filter_map(|run| {
-            // As GitHub counts it: its conclusion once it finished, else its status.
-            let state = run
-                .get("conclusion")
-                .and_then(Value::as_str)
-                .or_else(|| run.get("status")?.as_str())?;
-            Some((check_of(run)?, run.get("databaseId")?.as_u64()?, state))
+            Some((
+                check_of(run)?,
+                run.get("databaseId")?.as_u64()?,
+                run_state(run)?,
+            ))
         })
         .collect();
     runs.iter()
@@ -572,6 +589,67 @@ fn replaced(contexts: Option<&Value>) -> Vec<&str> {
         })
         .map(|(_, _, state)| *state)
         .collect()
+}
+
+/// A check run's state as GitHub counts it: its conclusion once it
+/// finished, else its status.
+fn run_state(run: &Value) -> Option<&str> {
+    run.get("conclusion")
+        .and_then(Value::as_str)
+        .or_else(|| run.get("status")?.as_str())
+}
+
+/// The latest run among `contexts`' nodes of the review check
+/// (`crate::reviews::CHECK_NAME`) of GitHub App `app`: the instance's
+/// review of the commit. Another instance's app, or any other, may name a
+/// check so too, and counts as any check. Only the first 100 checks are
+/// among the nodes: of a commit with more, the review may be missing, and
+/// its check counts as any.
+fn review_run(contexts: Option<&Value>, app: u64) -> Option<&Value> {
+    contexts
+        .and_then(|c| c.get("nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|run| {
+            run.get("name").and_then(Value::as_str) == Some(crate::reviews::CHECK_NAME)
+                && run
+                    .pointer("/checkSuite/app/databaseId")
+                    .and_then(Value::as_u64)
+                    == Some(app)
+        })
+        .max_by_key(|run| run.get("databaseId").and_then(Value::as_u64))
+}
+
+/// What a review's check run says of it (`crate::reviews::check_running`,
+/// `check_posted` and `check_ended`): it waits for a runner while queued and
+/// runs once in progress; it passed when it succeeded, commented when it
+/// ended neutral (with findings, or earlier ones still open), and stopped
+/// when it was cancelled, as superseded and failed reviews are too. Only
+/// the control plane's own record of the review, which its session
+/// (`externalId`) names, says how many findings it posted and where.
+fn review_of(run: &Value) -> ReviewCheck {
+    let (state, waiting) = match (
+        run.get("status").and_then(Value::as_str),
+        run.get("conclusion").and_then(Value::as_str),
+    ) {
+        (_, Some("SUCCESS")) => (ReviewState::Passed, false),
+        (_, Some("NEUTRAL")) => (ReviewState::Commented, false),
+        (_, Some(_)) | (Some("COMPLETED"), None) => (ReviewState::Stopped, false),
+        (Some("IN_PROGRESS"), None) => (ReviewState::Running, false),
+        _ => (ReviewState::Running, true),
+    };
+    ReviewCheck {
+        state,
+        waiting,
+        findings: 0,
+        still_open: 0,
+        session_id: run
+            .get("externalId")
+            .and_then(Value::as_str)
+            .and_then(SessionId::parse),
+        url: None,
+    }
 }
 
 /// Which check a check run is a run of: its name, and the app, workflow and
@@ -822,8 +900,8 @@ mod tests {
 
     #[test]
     fn lookups_say_the_state_and_count_the_checks() {
-        let looked =
-            looked_up(&answer(), 0, 1_000, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        let looked = looked_up(&answer(), 0, 1_000, Hints::default(), None)
+            .unwrap_or_else(|| panic!("no found"));
         assert_eq!(looked.head.as_deref(), Some("9f8e7d"));
         let pr = looked.pr;
         assert_eq!((pr.number, pr.state.as_deref()), (170, Some("draft")));
@@ -838,13 +916,14 @@ mod tests {
                 pending: 2,
                 sha: Some("9f8e7d".into()),
                 at: 1_000,
+                review: None,
             })
         );
         // Without checks: none counted, still for that commit.
         let mut none = answer();
         none["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"] =
             Value::Null;
-        let c = looked_up(&none, 0, 1_000, Hints::default())
+        let c = looked_up(&none, 0, 1_000, Hints::default(), None)
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         assert_eq!(
@@ -857,7 +936,7 @@ mod tests {
             json!({ "data": { "pr0": null } }),
             json!({ "errors": [{ "message": "Bad credentials" }] }),
         ] {
-            assert_eq!(looked_up(&nothing, 0, 1, Hints::default()), None);
+            assert_eq!(looked_up(&nothing, 0, 1, Hints::default(), None), None);
         }
     }
 
@@ -899,7 +978,7 @@ mod tests {
         a["data"]["pr2"]["pullRequest"]["number"] = json!(171);
         a["data"]["pr2"]["pullRequest"]["url"] =
             json!("https://github.com/hyperstructure/fctl/pull/171");
-        let number = |i| looked_up(&a, i, 1, Hints::default()).map(|l| l.pr.number);
+        let number = |i| looked_up(&a, i, 1, Hints::default(), None).map(|l| l.pr.number);
         assert_eq!(
             [number(0), number(1), number(2), number(3)],
             [Some(170), None, Some(171), None]
@@ -926,7 +1005,7 @@ mod tests {
         let pr = &mut queued["data"]["pr0"]["pullRequest"];
         pr["isDraft"] = json!(false);
         pr["mergeQueueEntry"] = json!({ "enqueuedAt": "2026-10-21T16:45:00Z" });
-        let looked = looked_up(&queued, 0, 1, Hints::default())
+        let looked = looked_up(&queued, 0, 1, Hints::default(), None)
             .unwrap_or_else(|| panic!("no found"))
             .pr;
         assert_eq!(looked.state.as_deref(), Some("queued"));
@@ -938,14 +1017,14 @@ mod tests {
             action: Some(action),
             mergeable_state: None,
         };
-        let state = |v: &Value, h| looked_up(v, 0, 1, h).and_then(|l| l.pr.state);
+        let state = |v: &Value, h| looked_up(v, 0, 1, h, None).and_then(|l| l.pr.state);
         assert_eq!(state(&open, hints("enqueued")).as_deref(), Some("queued"));
         assert_eq!(state(&open, hints("dequeued")).as_deref(), Some("open"));
         // Merged beats queued.
         let mut merged = queued.clone();
         merged["data"]["pr0"]["pullRequest"]["state"] = json!("MERGED");
         merged["data"]["pr0"]["pullRequest"]["mergedAt"] = json!("2026-10-21T16:50:00Z");
-        let pr = looked_up(&merged, 0, 1, hints("enqueued"))
+        let pr = looked_up(&merged, 0, 1, hints("enqueued"), None)
             .unwrap_or_else(|| panic!("no found"))
             .pr;
         assert_eq!(
@@ -968,7 +1047,7 @@ mod tests {
             a["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
                 ["contexts"] =
                 json!({ "checkRunCountsByState": runs, "statusContextCountsByState": statuses });
-            let c = looked_up(&a, 0, 1, Hints::default())
+            let c = looked_up(&a, 0, 1, Hints::default(), None)
                 .and_then(|l| l.pr.checks)
                 .unwrap_or_else(|| panic!("no checks"));
             (c.passed, c.failed, c.pending)
@@ -1065,21 +1144,22 @@ mod tests {
             json!({ "context": "ci/lint", "state": "SUCCESS" }),
             json!({}),
         ]);
-        let looked = looked_up(&a, 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        let looked =
+            looked_up(&a, 0, 1, Hints::default(), None).unwrap_or_else(|| panic!("no found"));
         // GraphQL names an app's bot without `[bot]`, which REST adds.
         assert_eq!(looked.author.as_deref(), Some("fctl-sh[bot]"));
         let mut person = a.clone();
         person["data"]["pr0"]["pullRequest"]["author"] =
             json!({ "login": "fctl-sh", "__typename": "User" });
-        let by = looked_up(&person, 0, 1, Hints::default()).and_then(|l| l.author);
+        let by = looked_up(&person, 0, 1, Hints::default(), None).and_then(|l| l.author);
         assert_eq!(by.as_deref(), Some("fctl-sh"));
         assert_eq!(looked.head_ref.as_deref(), Some("fctl/119-agent-floor"));
         assert_eq!(looked.base_ref.as_deref(), Some("main"));
         // In the order of their latest runs.
         assert_eq!(looked.failing, ["Timed out", "Rust tests", "ci/deploy"]);
         // A lookup from before the fields: none of them.
-        let looked =
-            looked_up(&answer(), 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        let looked = looked_up(&answer(), 0, 1, Hints::default(), None)
+            .unwrap_or_else(|| panic!("no found"));
         assert_eq!(
             (looked.author, looked.head_ref, looked.failing.len()),
             (None, None, 0)
@@ -1094,7 +1174,7 @@ mod tests {
         let with = |state: Value| {
             let mut a = answer();
             a["data"]["pr0"]["pullRequest"]["mergeable"] = state;
-            looked_up(&a, 0, 1, Hints::default()).and_then(|l| l.mergeable)
+            looked_up(&a, 0, 1, Hints::default(), None).and_then(|l| l.mergeable)
         };
         assert_eq!(with(json!("MERGEABLE")), Some(Mergeable::Yes));
         assert_eq!(with(json!("CONFLICTING")), Some(Mergeable::Conflicts));
@@ -1115,7 +1195,8 @@ mod tests {
         let pr = &mut a["data"]["pr0"]["pullRequest"];
         pr.as_object_mut().map(|o| o.remove("commits"));
         pr["mergeable"] = json!("CONFLICTING");
-        let looked = looked_up(&a, 0, 1, Hints::default()).unwrap_or_else(|| panic!("no found"));
+        let looked =
+            looked_up(&a, 0, 1, Hints::default(), None).unwrap_or_else(|| panic!("no found"));
         assert_eq!(looked.head.as_deref(), Some("9f8e7d"));
         assert_eq!(looked.pr.checks, None);
         assert_eq!(looked.mergeable, Some(Mergeable::Conflicts));
@@ -1156,7 +1237,7 @@ mod tests {
     fn a_check_that_ran_again_counts_by_its_latest_run() {
         // GitHub counts the cancelled run too; its pull request shows 9
         // checks, all passed or skipped.
-        let c = looked_up(&answer_216(), 0, 1, Hints::default())
+        let c = looked_up(&answer_216(), 0, 1, Hints::default(), None)
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         assert_eq!((c.passed, c.failed, c.pending), (9, 0, 0));
@@ -1200,7 +1281,7 @@ mod tests {
             "statusContextCountsByState": [],
             "nodes": nodes,
         });
-        let c = looked_up(&a, 0, 1, Hints::default())
+        let c = looked_up(&a, 0, 1, Hints::default(), None)
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         (c.passed, c.failed, c.pending)
@@ -1239,5 +1320,91 @@ mod tests {
             ("test", json!(2), CI, pr, "SUCCESS"),
         ];
         assert_eq!(count_runs(&unknown), (1, 1, 0));
+    }
+
+    #[test]
+    fn the_instances_review_says_how_it_went_apart_from_the_counts() {
+        const FCTL: u64 = 404;
+        const OTHER: u64 = 405;
+        const SESSION: &str = "ses_01M61C19MFRK8D17MFXBGV2Q7P";
+        // Check runs (name, `databaseId`, app, state), with two passed CI
+        // checks: the review's runs are its session's.
+        let lookup = |runs: &[(&str, u64, u64, &str)], app: Option<u64>| {
+            let ci = [("lint", 1, 15368, "SUCCESS"), ("test", 2, 15368, "SUCCESS")];
+            let mut states = std::collections::BTreeMap::<&str, u64>::new();
+            let nodes: Vec<Value> = ci
+                .iter()
+                .chain(runs)
+                .map(|(name, id, app, state)| {
+                    *states.entry(state).or_default() += 1;
+                    let done = !matches!(*state, "QUEUED" | "IN_PROGRESS");
+                    json!({
+                        "name": name,
+                        "status": if done { "COMPLETED" } else { state },
+                        "conclusion": done.then_some(state),
+                        "databaseId": id,
+                        "externalId": (*name == "fctl review").then_some(SESSION),
+                        "checkSuite": { "app": { "databaseId": app }, "workflowRun": null },
+                    })
+                })
+                .collect();
+            let mut a = answer();
+            a["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+                ["contexts"] = json!({
+                "checkRunCountsByState": states
+                    .iter()
+                    .map(|(state, count)| json!({ "state": state, "count": count }))
+                    .collect::<Vec<_>>(),
+                "statusContextCountsByState": [],
+                "nodes": nodes,
+            });
+            let c = looked_up(&a, 0, 1, Hints::default(), app)
+                .and_then(|l| l.pr.checks)
+                .unwrap_or_else(|| panic!("no checks"));
+            let review = c.review.map(|r| {
+                assert_eq!(r.session_id.as_ref().map(|s| s.as_str()), Some(SESSION));
+                (r.state, r.waiting)
+            });
+            ((c.passed, c.failed, c.pending), review)
+        };
+        let review = |state| [("fctl review", 9, FCTL, state)];
+        // Waiting for a runner, then reviewing: not a check still to finish.
+        assert_eq!(
+            lookup(&review("QUEUED"), Some(FCTL)),
+            ((2, 0, 0), Some((ReviewState::Running, true)))
+        );
+        assert_eq!(
+            lookup(&review("IN_PROGRESS"), Some(FCTL)),
+            ((2, 0, 0), Some((ReviewState::Running, false)))
+        );
+        // Findings make its check neutral, which counts as passed.
+        assert_eq!(
+            lookup(&review("NEUTRAL"), Some(FCTL)),
+            ((2, 0, 0), Some((ReviewState::Commented, false)))
+        );
+        assert_eq!(
+            lookup(&review("SUCCESS"), Some(FCTL)),
+            ((2, 0, 0), Some((ReviewState::Passed, false)))
+        );
+        // Stopped, superseded or failed, it is cancelled: no failed check.
+        assert_eq!(
+            lookup(&review("CANCELLED"), Some(FCTL)),
+            ((2, 0, 0), Some((ReviewState::Stopped, false)))
+        );
+        // Asked for again, the newer review is the one.
+        let again = [
+            ("fctl review", 12, FCTL, "IN_PROGRESS"),
+            ("fctl review", 9, FCTL, "CANCELLED"),
+        ];
+        assert_eq!(
+            lookup(&again, Some(FCTL)),
+            ((2, 0, 0), Some((ReviewState::Running, false)))
+        );
+        // Another app's check of that name, or a lookup that doesn't know
+        // the instance's app, counts it as any check.
+        let elsewhere = [("fctl review", 9, OTHER, "NEUTRAL")];
+        assert_eq!(lookup(&elsewhere, Some(FCTL)), ((3, 0, 0), None));
+        assert_eq!(lookup(&review("QUEUED"), None), ((2, 0, 1), None));
+        assert_eq!(lookup(&[], Some(FCTL)), ((2, 0, 0), None));
     }
 }

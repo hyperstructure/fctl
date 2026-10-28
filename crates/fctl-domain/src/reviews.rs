@@ -15,7 +15,7 @@ use fctl_proto::api::{
     FindingThread, ResolvedFinding, ReviewBot, ReviewFinding, ReviewState, Severity, ThreadReply,
 };
 use fctl_proto::event::{PassedOnFinding, PassedOnReview};
-use fctl_proto::session::{PullRequestRef, RepoRef};
+use fctl_proto::session::{PullRequestRef, RepoRef, ReviewCheck};
 use fctl_proto::{ApiError, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1410,6 +1410,76 @@ pub fn check_ended(state: ReviewState, reason: &str, session_url: &str) -> Value
             "summary": format!("{reason}\n\n[The review session]({session_url})"),
         },
     })
+}
+
+/// What the control plane keeps of a review (`reviews`): the pull request
+/// and commit it reviews, how it went, and what it found and posted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    pub repo: RepoRef,
+    pub number: u64,
+    pub head_sha: String,
+    /// `running` while it runs, and while fctl posts it.
+    pub state: ReviewState,
+    pub findings: u32,
+    pub still_open: u32,
+    /// Its summary on GitHub.
+    pub review_url: Option<String>,
+}
+
+/// The review that the checks of pull request `number` of `repo` at
+/// commit `sha` show, as its check run says (`check`), with what the
+/// control plane kept of the review it names (`kept`): once it ended, how,
+/// and what it found. Its check says how it ended only after fctl kept
+/// that, and keeps saying it runs where GitHub refused its last update.
+/// What fctl kept of another pull request's or commit's review changes
+/// nothing.
+pub fn checked(
+    check: ReviewCheck,
+    repo: &RepoRef,
+    number: u64,
+    sha: Option<&str>,
+    kept: Option<&Kept>,
+) -> ReviewCheck {
+    let Some(kept) = kept.filter(|k| {
+        k.repo.same(repo)
+            && k.number == number
+            && sha.is_none_or(|sha| sha.eq_ignore_ascii_case(&k.head_sha))
+    }) else {
+        return check;
+    };
+    if !kept.state.is_done() {
+        return check;
+    }
+    ReviewCheck {
+        state: kept.state,
+        waiting: false,
+        findings: kept.findings,
+        still_open: kept.still_open,
+        url: kept.review_url.clone(),
+        ..check
+    }
+}
+
+/// What a pull request's review says, as `fctl show` and the web app say
+/// it beside its checks: "fctl's review agent found 3 issues".
+pub fn said(r: &ReviewCheck) -> String {
+    match r.state {
+        ReviewState::Running if r.waiting => "fctl's review agent waits for a runner".to_owned(),
+        ReviewState::Running => "fctl's review agent is reviewing it".to_owned(),
+        ReviewState::Passed => "fctl's review agent found no issues".to_owned(),
+        ReviewState::Commented if r.findings > 0 => {
+            format!("fctl's review agent found {}", issues(r.findings as usize))
+        }
+        ReviewState::Commented if r.still_open > 0 => format!(
+            "{} from fctl's earlier reviews {} still open",
+            issues(r.still_open as usize),
+            if r.still_open == 1 { "is" } else { "are" }
+        ),
+        ReviewState::Commented => "fctl's review agent found issues".to_owned(),
+        ReviewState::Failed => "fctl's review failed".to_owned(),
+        ReviewState::Superseded | ReviewState::Stopped => "fctl's review stopped".to_owned(),
+    }
 }
 
 // ───────────────────────────── earlier reviews ─────────────────────────────
@@ -2855,6 +2925,122 @@ mod tests {
         );
         assert_eq!(ended["conclusion"], "cancelled");
         assert_eq!(ended["output"]["title"], "Superseded by a newer commit");
+    }
+
+    #[test]
+    fn pull_requests_checks_show_how_fctl_kept_the_review() {
+        let repo = pr().repo;
+        let check = |state, waiting| ReviewCheck {
+            state,
+            waiting,
+            findings: 0,
+            still_open: 0,
+            session_id: SessionId::parse("ses_1"),
+            url: None,
+        };
+        let kept = |state| Kept {
+            repo: RepoRef::parse("Acme/Web").unwrap_or_else(|| panic!("repo")),
+            number: 12,
+            head_sha: SHA.into(),
+            state,
+            findings: 3,
+            still_open: 1,
+            review_url: Some("https://github.com/acme/web/pull/12#issuecomment-1".into()),
+        };
+        let at = |c: ReviewCheck, k: Option<&Kept>| checked(c, &repo, 12, Some(SHA), k);
+        // Its findings and its summary on GitHub, once it posted.
+        let posted = at(
+            check(ReviewState::Commented, false),
+            Some(&kept(ReviewState::Commented)),
+        );
+        assert_eq!(
+            (posted.state, posted.findings, posted.still_open),
+            (ReviewState::Commented, 3, 1)
+        );
+        assert_eq!(
+            posted.url.as_deref(),
+            Some("https://github.com/acme/web/pull/12#issuecomment-1")
+        );
+        assert_eq!(posted.session_id, SessionId::parse("ses_1"));
+        // How it ended, where its check still says it runs, or says less.
+        let stuck = at(
+            check(ReviewState::Running, false),
+            Some(&kept(ReviewState::Commented)),
+        );
+        assert_eq!(stuck.state, ReviewState::Commented);
+        let failed = at(
+            check(ReviewState::Stopped, false),
+            Some(&kept(ReviewState::Failed)),
+        );
+        assert_eq!(failed.state, ReviewState::Failed);
+        // Its check says whether it waits for a runner while it runs.
+        let waiting = at(
+            check(ReviewState::Running, true),
+            Some(&kept(ReviewState::Running)),
+        );
+        assert_eq!(waiting, check(ReviewState::Running, true));
+        // Nothing kept, or what was kept of another pull request or commit.
+        let neutral = check(ReviewState::Commented, false);
+        assert_eq!(at(neutral.clone(), None), neutral);
+        let mut other = kept(ReviewState::Passed);
+        other.number = 13;
+        assert_eq!(at(neutral.clone(), Some(&other)), neutral);
+        let mut older = kept(ReviewState::Passed);
+        older.head_sha = "4d5e6f7".into();
+        assert_eq!(at(neutral.clone(), Some(&older)), neutral);
+        // Checks that don't say their commit take the record's.
+        let unsure = checked(neutral, &repo, 12, None, Some(&kept(ReviewState::Passed)));
+        assert_eq!(unsure.state, ReviewState::Passed);
+    }
+
+    #[test]
+    fn pull_requests_say_how_their_review_went() {
+        let r = |state, waiting, findings, still_open| {
+            said(&ReviewCheck {
+                state,
+                waiting,
+                findings,
+                still_open,
+                session_id: None,
+                url: None,
+            })
+        };
+        use ReviewState::*;
+        assert_eq!(
+            r(Running, true, 0, 0),
+            "fctl's review agent waits for a runner"
+        );
+        assert_eq!(
+            r(Running, false, 0, 0),
+            "fctl's review agent is reviewing it"
+        );
+        assert_eq!(
+            r(Passed, false, 0, 0),
+            "fctl's review agent found no issues"
+        );
+        assert_eq!(
+            r(Commented, false, 1, 2),
+            "fctl's review agent found 1 issue"
+        );
+        assert_eq!(
+            r(Commented, false, 3, 0),
+            "fctl's review agent found 3 issues"
+        );
+        assert_eq!(
+            r(Commented, false, 0, 1),
+            "1 issue from fctl's earlier reviews is still open"
+        );
+        assert_eq!(
+            r(Commented, false, 0, 2),
+            "2 issues from fctl's earlier reviews are still open"
+        );
+        assert_eq!(
+            r(Commented, false, 0, 0),
+            "fctl's review agent found issues"
+        );
+        assert_eq!(r(Stopped, false, 0, 0), "fctl's review stopped");
+        assert_eq!(r(Superseded, false, 0, 0), "fctl's review stopped");
+        assert_eq!(r(Failed, false, 0, 0), "fctl's review failed");
     }
 
     #[test]
