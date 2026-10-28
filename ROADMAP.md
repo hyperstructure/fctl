@@ -42,14 +42,13 @@ this file is the overview. Order within a section is priority.
 - [x] Make the repositories public, and drop the deploy keys that read
       design and fctl: `npm ci` downloads `@hyperstructure/design` from
       GitHub without them
-- [ ] Move `@hyperstructure/design` to npm
 
 ## 0.2 — run it every day
 
 - [x] First real-Claude runs on the hyperstructure Mac host with the Apple
       container driver: provisioning, a full login, host restarts, DNS,
       clock and disk (#1)
-- [ ] The same with a long-lived token, an OAuth refresh and a usage-limit
+- [x] The same with a long-lived token, an OAuth refresh and a usage-limit
       pause (#79)
 - [x] Hosts make room when their disk runs low, starting with stopped
       sandboxes (#76)
