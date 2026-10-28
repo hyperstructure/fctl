@@ -514,9 +514,10 @@ pub fn open_project_of(v: &Value, team: &str) -> bool {
 /// A team's workflow states.
 pub const TEAM_STATES: &str = "query($id: String!) { team(id: $id) { id key name states(first: 50) { nodes { id name type position } } } }";
 
-/// An issue's state, and its team's workflow states: what moving it on
-/// starts from ([`crate::tickets::next_state`]).
-pub const ISSUE_STATES: &str = "query($id: String!) { issue(id: $id) { id identifier state { id name type } team { id states(first: 50) { nodes { id name type position } } } } }";
+/// An issue's state, its team's workflow states and its project: what
+/// moving it on starts from ([`crate::tickets::next_state`]), and whether
+/// a project still takes it ([`takes`]).
+pub const ISSUE_STATES: &str = "query($id: String!) { issue(id: $id) { id identifier state { id name type } team { id states(first: 50) { nodes { id name type position } } } project { id } } }";
 
 /// The labels a team's issues can have: its own and the workspace's.
 pub const TEAM_LABELS: &str = "query($id: String!) { team(id: $id) { labels(first: 100) { nodes { id name } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } } }";

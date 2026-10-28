@@ -621,16 +621,14 @@ async fn take_up(
             explore: false,
         });
         // Handed to fctl now, it starts, as one would in a new session.
-        let starts = delegated
-            && delegated_to_fctl
-            && allowed
-                .iter()
-                .find(|t| t.row.slug == slug)
-                .is_some_and(|t| t.linear.moves_started());
-        let moved = if starts {
-            move_ticket(linear, &ticket.id, tk::Progress::Started).await
-        } else {
-            None
+        let starts = allowed
+            .iter()
+            .find(|t| t.row.slug == slug)
+            .map(|t| &t.linear)
+            .filter(|l| delegated && delegated_to_fctl && l.moves_started());
+        let moved = match starts {
+            Some(l) => move_ticket(linear, &ticket.id, tk::Progress::Started, l).await,
+            None => None,
         };
         let message = TicketMessage {
             ticket: st.clone(),
@@ -737,7 +735,7 @@ async fn take_up(
     // Linear asks agents to start what is delegated to them: before the
     // session, so that its agent hears of it.
     let moved = if delegated && delegated_to_fctl && taker.linear.moves_started() {
-        move_ticket(linear, &ticket.id, tk::Progress::Started).await
+        move_ticket(linear, &ticket.id, tk::Progress::Started, &taker.linear).await
     } else {
         None
     };
@@ -892,19 +890,21 @@ async fn suggested<'t>(
 }
 
 /// Moves a ticket on in its team's workflow as far as `progress` takes it
-/// (`fctl_domain::tickets::next_state`), never back: the state it moved
-/// to, or `None` when it stays where it is or Linear refused.
+/// (`fctl_domain::tickets::next_state`), never back, while it is one of the
+/// tickets a project takes (`scope`): the state it moved to, or `None` when
+/// it stays where it is or Linear refused.
 async fn move_ticket(
     linear: &Linear<'_>,
     issue: &str,
     progress: tk::Progress,
+    scope: &LinearTickets,
 ) -> Option<TicketState> {
     let data = linear
         .graphql(lin::ISSUE_STATES, json!({ "id": issue }))
         .await
         .inspect_err(|e| worker::console_error!("reading a ticket's state: {}", e.0.message))
         .ok()?;
-    let found = data.get("issue")?;
+    let found = data.get("issue").filter(|v| lin::takes(scope, v))?;
     let current = found.get("state").and_then(lin::state);
     let states = lin::states(found.get("team")?);
     let target = tk::next_state(progress, current.as_ref(), &states)?.clone();
@@ -1584,7 +1584,12 @@ pub async fn move_on(
         .linear
         .as_ref()
         .filter(|_| settings.tickets.tracker == Tracker::Linear)
-        .filter(|l| column.organization.as_deref().is_none_or(|o| o == l.organization))
+        .filter(|l| {
+            column
+                .organization
+                .as_deref()
+                .is_none_or(|o| o == l.organization)
+        })
     else {
         return Ok(());
     };
@@ -1606,7 +1611,7 @@ pub async fn move_on(
     else {
         return Ok(());
     };
-    if let Some(state) = move_ticket(&a.linear, &column.ticket.id, progress).await {
+    if let Some(state) = move_ticket(&a.linear, &column.ticket.id, progress, l).await {
         let link = TicketLink {
             key: key.to_owned(),
             title: column.ticket.title.clone().unwrap_or_default(),
