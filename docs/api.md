@@ -248,6 +248,16 @@ shows a tool's request.
 | `GET /api/v1/projects/{project}/secrets`, `PUT`, `DELETE …/secrets/{name}` | secrets as environment variables of its sandboxes: `PUT` takes `{"value": "…"}`; the list has names and who set them, never values (maintainers) |
 | `GET /api/v1/projects/{project}/tickets` | its ticket tracker as it works now, and the sessions its tickets started |
 
+`default_branch` is where sessions start unless they ask for another
+branch (`base_branch`), so the repository must have it, unless it has no
+commits yet. On an instance with a GitHub App, the control plane asks
+GitHub when a `PATCH` changes it or `repo`, and when a `POST` that links a
+repository names one, and refuses a branch the repository lacks with a
+`validation` error on `default_branch`. A new repository (`create_repo`)
+has only the branch GitHub makes, which becomes the default, so a `POST`
+with both is refused. A session whose base branch the repository lacks
+fails, and its `status_reason` says so.
+
 `settings` in a `PATCH` replaces all of the project's settings, so send
 them all: read the project, change what you need, and send its `settings`
 back, as `fctl projects set` does (`fctl projects set -p my-app

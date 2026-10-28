@@ -36,7 +36,8 @@ pub struct RunArgs {
     /// Branch to work on (default: fctl/<number>-<title>).
     #[arg(long)]
     pub branch: Option<String>,
-    /// Branch to start from (default: the project's default branch).
+    /// Branch to start from (default: the project's default branch). The
+    /// session fails when the repository has commits but not this branch.
     #[arg(long)]
     pub base: Option<String>,
     /// Claude model (opus, sonnet, haiku, fable, or a full model name).

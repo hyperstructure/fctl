@@ -418,7 +418,7 @@ pub async fn prepare(p: &Paths, spec: &SessionSpec, log: &LogSink) -> Result<()>
         let default = spec.base_branch == spec.project.default_branch;
         bail!(
             "{}",
-            fctl_domain::base_branch::missing(repo, &spec.base_branch, default, &spec.branch)
+            fctl_domain::base_branch::missing(repo, &spec.base_branch, default)
         );
     } else {
         // An empty repository: start the branch from nothing.
@@ -1713,7 +1713,7 @@ cat "$answer"
         };
         let e = failed(prepare(&p, &asked, &log).await.err());
         assert!(
-            e.starts_with("acme/widgets has no branch named release to start fctl/1-test from."),
+            e.starts_with("acme/widgets has no branch named release to start this session from."),
             "{e}"
         );
         // …leaves nothing behind: no state to report or push when the
@@ -1730,7 +1730,7 @@ cat "$answer"
         let e = failed(prepare(&p, &default, &log).await.err());
         assert!(
             e.starts_with(
-                "acme/widgets has no branch named develop, the project's default branch, to start fctl/1-test from."
+                "acme/widgets has no branch named develop, the project's default branch."
             ),
             "{e}"
         );

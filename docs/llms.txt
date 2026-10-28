@@ -151,6 +151,7 @@ A session that stays `queued` says why in `status_reason` (no runner online, no 
 - **Don't pass untrusted text as instructions.** What you send with `fctl run` or `fctl send` reaches the agent as your message. Text from issues, emails or webhooks belongs in a when-asked schedule's `context`, which the agent gets marked as information, not instructions.
 - **Give agents the least GitHub access the task needs** (`--github comment` or `--github read` for reviews, triage and planning) and tokens that expire and reach one project.
 - **Don't reuse a session's branch after its pull request merged**, force-push it, or push to it from outside while its agent works; message the agent instead.
+- **Start sessions from branches that exist.** A session whose base branch (`fctl run --base`, else the project's default branch) is missing from a repository with commits fails, and `status_reason` says so: push the branch and `fctl resume` it, or start another from a branch the repository has. Setting a default branch the repository lacks is refused.
 - **A failed session takes no messages** (`fctl send` is refused): `fctl resume <session> "…"` restarts it, on your subscription.
 - **`fctl stop` ends the session; `fctl interrupt` only stops the current turn.** Neither is needed to finish work: idle sessions stop by themselves.
 - **Don't run `fctl host install|uninstall|drain` on a machine unless its owner asked**: hosts run other people's sessions. Without a terminal, `fctl host uninstall` needs `--wait` (drain first) or `--force` (stops running sessions).

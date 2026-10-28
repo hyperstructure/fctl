@@ -78,18 +78,18 @@ pub fn check(repo: &RepoRef, branch: &str, found: &Found) -> Result<()> {
 }
 
 /// Why a session fails to start: `repo` has commits, but no branch `base`
-/// to start the session's `branch` from. `default` says whether `base` is
-/// the project's default branch, which people change for new sessions; the
-/// session keeps its own, so pushing `base` lets it start when resumed.
-pub fn missing(repo: &RepoRef, base: &str, default: bool, branch: &str) -> String {
+/// to start from. `default` says whether `base` is the project's default
+/// branch, which people change for new sessions; the session keeps its
+/// own, so pushing `base` lets it start when resumed.
+pub fn missing(repo: &RepoRef, base: &str, default: bool) -> String {
     let repo = repo.full_name();
     if default {
         format!(
-            "{repo} has no branch named {base}, the project's default branch, to start {branch} from. Choose a branch it has in Settings → Project → Default branch (fctl projects set --default-branch) and start a new session, or push {base} and resume this one."
+            "{repo} has no branch named {base}, the project's default branch. Choose one it has in Settings → Project → Default branch (fctl projects set --default-branch) and start a new session, or push {base} and resume this one."
         )
     } else {
         format!(
-            "{repo} has no branch named {base} to start {branch} from. Start a new session from a branch it has (fctl run --base), or push {base} and resume this one."
+            "{repo} has no branch named {base} to start this session from. Start a new session from a branch it has (fctl run --base), or push {base} and resume this one."
         )
     }
 }
@@ -179,17 +179,15 @@ mod tests {
 
     #[test]
     fn a_missing_base_says_how_to_start_the_session() {
-        let default = missing(&web(), "develop", true, "fctl/12-fix-login");
+        let default = missing(&web(), "develop", true);
         assert!(default.starts_with(
-            "acme/web has no branch named develop, the project's default branch, to start fctl/12-fix-login from."
+            "acme/web has no branch named develop, the project's default branch. Choose one it has in Settings → Project → Default branch"
         ));
         assert!(default.contains("fctl projects set --default-branch"));
         assert!(default.ends_with("or push develop and resume this one."));
-        let asked = missing(&web(), "release", false, "fctl/12-fix-login");
+        let asked = missing(&web(), "release", false);
         assert!(
-            asked.starts_with(
-                "acme/web has no branch named release to start fctl/12-fix-login from."
-            )
+            asked.starts_with("acme/web has no branch named release to start this session from.")
         );
         assert!(asked.contains("fctl run --base"));
         assert!(!asked.contains("default branch"));

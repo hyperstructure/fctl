@@ -82,7 +82,8 @@ pub enum ProjectsCmd {
         #[arg(long)]
         description: Option<String>,
         /// The branch sessions start from, unless one asks for another
-        /// (`fctl run --base`). Sessions that already started keep theirs.
+        /// (`fctl run --base`). The repository must have it, unless it has
+        /// no commits yet. Sessions that already started keep theirs.
         #[arg(long, value_name = "BRANCH")]
         default_branch: Option<String>,
         /// The model its agents work with: opus, sonnet, haiku, fable or a
