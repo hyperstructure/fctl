@@ -239,14 +239,35 @@ export function addComment(w, input, now = new Date()) {
     userId: input.userId,
     parentId: input.parentId ?? null,
     createdAt: now.toISOString(),
+    ...(input.anchor ? { anchor: true } : {}),
   };
   w.comments.push(c);
   return c;
 }
 
 /**
+ * The comment Linear starts a delegation's agent session thread with, in
+ * its own words: the delivery carries it as the session's comment, which
+ * agents tell from a mention by those words (`fctl_domain::linear`).
+ */
+export function addAnchor(w, issue, now = new Date()) {
+  const app = user(w, APP_USER);
+  return addComment(
+    w,
+    {
+      issueId: issue.id,
+      userId: app.id,
+      body: `This thread is for an agent session with ${app.name}.`,
+      anchor: true,
+    },
+    now,
+  );
+}
+
+/**
  * An agent session on an issue, as a delegation or a mention makes one:
- * tied to a comment thread, the mention's or the one Linear starts.
+ * tied to a comment thread, the mention's or the one Linear starts
+ * (`addAnchor`).
  */
 export function addSession(w, { issue, creatorId, commentId }, now = new Date()) {
   const at = now.toISOString();

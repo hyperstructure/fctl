@@ -71,6 +71,7 @@ pub async fn spec(
     let started_from = column.as_ref().map(|c| tk::StartedFrom {
         ticket: &c.ticket,
         by: &by,
+        mentioned: c.mentioned,
         explore: c.explore,
         moved_to: c.moved_to.as_deref(),
     });

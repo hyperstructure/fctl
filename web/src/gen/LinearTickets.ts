@@ -25,9 +25,21 @@ team_key?: string, team_name?: string,
 project?: string, project_name?: string, 
 /**
  * Move a ticket to the team's first started state (In Progress) when
- * its session starts, if it hasn't started yet. Absent: yes.
+ * its session starts work on it, if it hasn't started yet. Absent: yes.
  */
 move_started?: boolean, 
+/**
+ * Move a ticket to the team's review state (In Review) when a turn of
+ * its session ends with a pull request up for review, if it isn't
+ * there or further along yet. Absent: yes.
+ */
+move_review?: boolean, 
+/**
+ * Move a ticket to the team's first completed state (Done) once its
+ * session's pull requests merged, one that completes it among them,
+ * if it isn't done or canceled yet. Absent: yes.
+ */
+move_done?: boolean, 
 /**
  * The label that asks for an exploration rather than a change: the
  * agent looks into the ticket and replies with what it found and a

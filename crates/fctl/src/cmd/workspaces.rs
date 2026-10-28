@@ -1384,12 +1384,27 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
                     style::bold(&style::terminal_safe(&t.key)),
                     style::terminal_safe(&t.name)
                 );
-                if let Some(s) = &t.start_state {
+                // The states fctl moves its tickets through, once each.
+                let mut moves: Vec<&str> = Vec::new();
+                for s in [&t.start_state, &t.review_state, &t.done_state]
+                    .into_iter()
+                    .flatten()
+                {
+                    if !moves.contains(&s.as_str()) {
+                        moves.push(s);
+                    }
+                }
+                let words = match moves.as_slice() {
+                    [] => None,
+                    [one] => Some((*one).to_owned()),
+                    [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+                };
+                if let Some(words) = words {
                     println!(
                         "{}",
                         style::dim(&format!(
-                            "         tickets start in {}",
-                            style::terminal_safe(s)
+                            "         tickets move to {}",
+                            style::terminal_safe(&words)
                         ))
                     );
                 }

@@ -447,10 +447,15 @@ fctl schedules runs "Weekly dependencies" -p my-app
 
 Then assigning an issue to fctl in Linear (which makes fctl its delegate)
 or mentioning fctl in a comment starts a session of the project as that
-person, on their subscription. The issue moves to the team's first started
-state, the branch carries its key (`fctl/12-eng-123-fix-the-login-loop`),
-and the agent's steps, pull requests and replies show in the issue's agent
-session, where replies reach the agent. With the `explore` label the agent
+person, on their subscription. The branch carries the issue's key
+(`fctl/12-eng-123-fix-the-login-loop`), and the agent's steps, pull
+requests and replies show in the issue's agent session, where replies
+reach the agent. fctl moves the issue to In Progress as a delegated
+issue's session starts, or once a mention's agent changes something, to
+In Review when a turn ends with the session's pull request up, and to
+Done once its pull requests merged, one that completes it (`Fixes
+ENG-123`) among them; `fctl projects set --linear-start`,
+`--linear-review` and `--linear-done` turn each move off. With the `explore` label the agent
 replies with a plan and changes nothing until someone asks. In the
 sandbox, the agent reads and writes the team's issues with `fctl ticket`.
 

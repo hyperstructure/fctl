@@ -39,7 +39,7 @@ import { ApiFailure, api, linearLinkUrl, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
 import { keys, queryClient, useInstance } from "@/lib/queries";
-import { type LinearOutcome, linearOutcome, TRACKERS, trackerOf } from "@/lib/tickets";
+import { type LinearOutcome, linearOutcome, stateTone, TRACKERS, trackerOf } from "@/lib/tickets";
 import { useWorkspaceIndex } from "@/lib/workspaces";
 
 const DEFAULT_EXPLORE = "explore";
@@ -486,7 +486,13 @@ function LinearDetails({
               onChange={(v) =>
                 onChange({
                   ...draft,
-                  linear: { organization: v, team: "", move_started: draft.linear?.move_started },
+                  linear: {
+                    organization: v,
+                    team: "",
+                    move_started: draft.linear?.move_started,
+                    move_review: draft.linear?.move_review,
+                    move_done: draft.linear?.move_done,
+                  },
                 })
               }
               options={all.map((c) => ({
@@ -710,27 +716,7 @@ function LinearChoice({
         </Field>
       </div>
       {teams.error && <Banner tone="error">{teams.error.message}</Banner>}
-      <div className="flex items-start justify-between gap-4 text-[13.5px] text-ink-2">
-        <span>
-          Start tickets as their sessions start
-          <span className="block text-[12.5px] leading-relaxed text-ink-4">
-            A delegated ticket moves to{" "}
-            {team?.start_state ? (
-              <span className="text-ink-3">{team.start_state}</span>
-            ) : (
-              "its team's first started state"
-            )}
-            , as Linear asks of agents. Linear's GitHub integration moves it on as its pull request opens and
-            merges.
-          </span>
-        </span>
-        <Switch
-          checked={current?.move_started ?? true}
-          onChange={(v) => set({ move_started: v })}
-          label="Start tickets as their sessions start"
-          disabled={disabled || !current?.team}
-        />
-      </div>
+      <TicketMoves current={current} team={team} set={set} disabled={disabled || !current?.team} />
       <Field
         label="Label that asks for an exploration"
         error={err("settings.tickets.linear.explore_label")}
@@ -803,6 +789,16 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
   // As people find fctl's app in Linear: the instance's Linear app may go by another name.
   const app = status?.linear?.app_name ?? "fctl";
   const handle = status?.linear?.app_handle ?? "fctl";
+  const review = l?.move_review !== false;
+  const done = l?.move_done !== false;
+  const moves =
+    review && done
+      ? " The ticket moves to In Review when its pull request is up, and to Done once a pull request that fixes it merges."
+      : review
+        ? " The ticket moves to In Review when its pull request is up."
+        : done
+          ? " The ticket moves to Done once a pull request that fixes it merges."
+          : "";
   const steps: { icon: ReactNode; text: ReactNode }[] = [
     {
       icon: <AtSign />,
@@ -824,7 +820,7 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
     },
     {
       icon: <GitPullRequestArrow />,
-      text: "Its steps show in the ticket as it works, its pull requests link to it, and each of its replies lands in the ticket's thread.",
+      text: `Its steps show in the ticket as it works, its pull requests link to it, and each of its replies lands in the ticket's thread.${moves}`,
     },
     {
       icon: <MessagesSquare />,
@@ -893,6 +889,97 @@ function YourAccount({ project, status }: { project: G.Project; status?: G.Proje
   );
 }
 
+/** A switch of [`TicketMoves`]: the setting, the state it moves tickets to, and when. */
+type Move = {
+  key: "move_started" | "move_review" | "move_done";
+  kind: G.StateKind;
+  state?: string;
+  when: string;
+  hint: string;
+};
+
+/**
+ * The states fctl moves a project's tickets to as their sessions work, each with a switch: the team's
+ * first started one as a session starts, its review one when a pull request is up, and its first
+ * completed one once they merged (`fctl_domain::tickets::next_state`).
+ */
+function TicketMoves({
+  current,
+  team,
+  set,
+  disabled,
+}: {
+  current?: G.LinearTickets;
+  team?: G.LinearTeam;
+  set: (l: Partial<G.LinearTickets>) => void;
+  disabled: boolean;
+}) {
+  const id = useId();
+  const moves: Move[] = [
+    {
+      key: "move_started",
+      kind: "started",
+      state: team?.start_state ?? "In Progress",
+      when: "as its session starts",
+      hint: "A delegated ticket at once, as Linear asks of agents; one that mentions fctl once its agent changes something.",
+    },
+    {
+      key: "move_review",
+      kind: "started",
+      state: team?.review_state ?? "In Review",
+      when: "when its pull request is up",
+      hint: "When a turn of its session ends with a pull request open for review.",
+    },
+    {
+      key: "move_done",
+      kind: "completed",
+      state: team?.done_state ?? "Done",
+      when: "once its pull requests merge",
+      hint: "Once one that completes it (Fixes, not Part of) merged and none is open. Its agent moves a ticket that needs no pull request.",
+    },
+  ];
+  return (
+    <fieldset aria-describedby={`${id}-hint`} className="flex min-w-0 flex-col gap-1.5">
+      <legend className="mb-1.5 text-[12.5px] font-medium text-ink-2">Ticket states</legend>
+      <p id={`${id}-hint`} className="text-[12.5px] leading-relaxed text-ink-3">
+        fctl moves the tickets its sessions work on through {team ? `${team.name}'s` : "the team's"} workflow,
+        never back and never out of done or canceled. Turn off what Linear's GitHub integration does for the
+        team already.
+      </p>
+      <ul className="mt-1.5 divide-y divide-line overflow-hidden rounded-lg border border-line">
+        {moves.map((m) => {
+          const on = current?.[m.key] ?? true;
+          return (
+            <li key={m.key} className="flex items-center gap-3 px-3.5 py-2.5">
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-x-1.5 text-[13.5px] text-ink-2">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 font-medium transition-colors duration-200",
+                      on ? stateTone(m.kind) : "text-ink-4",
+                    )}
+                  >
+                    <StateDot kind={m.kind} />
+                    {m.state}
+                  </span>
+                  {m.when}
+                </span>
+                <span className="block text-[12.5px] leading-relaxed text-ink-4">{m.hint}</span>
+              </span>
+              <Switch
+                checked={on}
+                onChange={(v) => set({ [m.key]: v })}
+                label={`Move a ticket to ${m.state} ${m.when}`}
+                disabled={disabled}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </fieldset>
+  );
+}
+
 /**
  * What a delegated ticket looks like in Linear: fctl's session on it, a step, a pull request, a reply.
  * The workspace's Linear tab shows it too, before Linear is connected.
@@ -907,7 +994,7 @@ export function DelegatedTicket({ team, project, app }: { team: string; project:
           <span className="font-mono">{key}</span>
           <span className="inline-flex items-center gap-1 text-blue">
             <StateDot kind="started" />
-            In Progress
+            In Review
           </span>
           <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-line px-1.5 py-px">
             <Logo withWord={false} className="[&_svg]:size-3" />

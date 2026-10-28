@@ -630,8 +630,11 @@ deliveries**, under the app's webhook, show what fctl answered:
 
 Let Linear's GitHub integration link the Linear workspace to your GitHub
 organizations too: sessions' branches carry their ticket's key, so it
-links their pull requests to the tickets and moves the tickets on as the
-pull requests open and merge, as each team configures.
+links their pull requests to the tickets. fctl moves the tickets to In
+Progress, In Review and Done itself as their sessions work, which each
+project's Tickets tab can turn off where a team's own automation in Linear
+moves them otherwise. fctl hears of merges through the GitHub App's
+webhook ([Pull request state and checks](#pull-request-state-and-checks)).
 
 ## Google sign-in (optional)
 

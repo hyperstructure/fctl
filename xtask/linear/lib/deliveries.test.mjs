@@ -45,13 +45,17 @@ test("delivers what Linear's schema says its webhooks hold", () => {
   ]);
 });
 
-test("a delegation says nothing, and a mention what the person wrote", () => {
+test("a delegation comes with Linear's own thread, and a mention with what the person wrote", () => {
   const w = W.seed();
   const i = W.issue(w, "ENG-1");
-  const delegated = created(w, config, W.addSession(w, { issue: i, creatorId: W.DEV_USER, commentId: null }));
-  assert.equal(delegated.agentSession.comment, null);
+  const anchor = W.addAnchor(w, i);
+  const s = W.addSession(w, { issue: i, creatorId: W.DEV_USER, commentId: anchor.id });
+  const delegated = created(w, config, s);
+  assert.equal(delegated.agentSession.comment.body, "This thread is for an agent session with fctl.");
   assert.equal(delegated.agentSession.issue.identifier, "ENG-1");
   assert.equal(delegated.agentSession.creator.email, "dev@fctl.test");
+  // Linear's words ask nothing: they aren't what the agent is asked.
+  assert.doesNotMatch(promptContext(w, s), /primary-directive-thread|agent session with/);
   const c = W.addComment(w, { issueId: i.id, userId: W.DEV_USER, body: "@fctl what's left?" });
   const mentioned = created(w, config, W.addSession(w, { issue: i, creatorId: W.DEV_USER, commentId: c.id }));
   assert.equal(mentioned.agentSession.comment.body, "@fctl what's left?");

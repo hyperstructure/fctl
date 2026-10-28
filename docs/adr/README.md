@@ -68,3 +68,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0060](0060-agents-follow-rules-for-pull-requests-and-issues-that-projects-can-change.md) | Agents follow rules for pull requests and issues that projects can change |
 | [0061](0061-taken-and-reserved-slugs-get-a-random-ending.md) | Taken and reserved slugs get a random ending, and instance admins reserve slugs |
 | [0062](0062-projects-choose-which-of-their-repositories-review-agents-review.md) | Projects choose which of their repositories review agents review |
+| [0063](0063-fctl-moves-linear-tickets-through-their-teams-workflow-as-sessions-work.md) | fctl moves Linear tickets through their team's workflow as sessions work |

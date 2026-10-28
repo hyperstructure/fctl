@@ -18,6 +18,7 @@
 
 use crate::cron::{Utc, Zone};
 use crate::schedules::stamp;
+use crate::tickets::{Progress, next_state};
 use crate::validate::Result;
 use fctl_proto::ApiError;
 use fctl_proto::session::{LinearTickets, SessionTicket, Tracker};
@@ -159,12 +160,64 @@ pub struct AgentSession {
     pub issue_id: Option<String>,
     pub issue: Option<IssueRef>,
     /// The comment thread it is tied to: the comment that mentioned fctl,
-    /// or the one Linear started for a delegation.
+    /// or the one Linear started for a delegation ([`AgentSession::asking`]).
     pub comment_id: Option<String>,
     pub comment: Option<CommentRef>,
+    /// The comment that mentioned fctl, when it is in another thread.
+    pub source_comment_id: Option<String>,
     /// Who made it: the person who delegated the issue, or mentioned fctl.
     pub creator_id: Option<String>,
     pub creator: Option<Person>,
+}
+
+/// How Linear starts the thread of a delegation's agent session, in a
+/// comment of its own ("This thread is for an agent session with fctl."),
+/// which the delivery carries as the session's comment though nobody wrote
+/// it.
+const THREAD_START: &str = "This thread is for an agent session";
+
+/// How someone asked fctl to work on an issue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Asking<'a> {
+    /// They delegated the issue to fctl.
+    Delegated,
+    /// They mentioned fctl in a comment: what they wrote, when the delivery
+    /// says (Linear's prompt context has it too).
+    Mentioned(Option<&'a str>),
+}
+
+impl<'a> Asking<'a> {
+    /// What they wrote, for a mention.
+    pub fn comment(self) -> Option<&'a str> {
+        match self {
+            Asking::Mentioned(c) => c,
+            Asking::Delegated => None,
+        }
+    }
+}
+
+impl AgentSession {
+    /// How its person asked: a session tied to a comment they wrote, or
+    /// made from one in another thread, is a mention; one tied to the
+    /// comment Linear starts a delegation's thread with ([`THREAD_START`]),
+    /// or to none, a delegation.
+    pub fn asking(&self) -> Asking<'_> {
+        let words = self
+            .comment
+            .as_ref()
+            .and_then(|c| c.body.as_deref())
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
+        let linears = |b: &str| {
+            b.get(..THREAD_START.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(THREAD_START))
+        };
+        match words {
+            Some(b) if !linears(b) => Asking::Mentioned(Some(b)),
+            _ if self.source_comment_id.is_some() => Asking::Mentioned(None),
+            _ => Asking::Delegated,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -415,16 +468,16 @@ pub fn teams_page(d: &Value) -> (Vec<LinearTeam>, Option<String>) {
     (teams, next)
 }
 
-/// A team as [`TEAMS`] reads it, with the state its tickets start in.
+/// A team as [`TEAMS`] reads it, with the states fctl moves its tickets to
+/// (`fctl_domain::tickets::next_state`).
 fn team(t: &Value) -> Option<LinearTeam> {
     let workflow = states(t);
-    let ids: Vec<(String, StateKind)> = workflow
-        .iter()
-        .filter_map(|s| Some((s.id.clone()?, s.kind)))
-        .collect();
-    let start_state = crate::tickets::start_state(None, &ids)
-        .and_then(|id| workflow.iter().find(|s| s.id.as_deref() == Some(id)))
-        .map(|s| s.name.clone());
+    let to = |p: Progress| next_state(p, None, &workflow).map(|s| s.name.clone());
+    let (start_state, review_state, done_state) = (
+        to(Progress::Started),
+        to(Progress::Review),
+        to(Progress::Merged),
+    );
     Some(LinearTeam {
         id: s(t, "id")?,
         key: s(t, "key")?,
@@ -432,6 +485,8 @@ fn team(t: &Value) -> Option<LinearTeam> {
         color: s(t, "color"),
         states: workflow,
         start_state,
+        review_state,
+        done_state,
         projects: nodes(t, "projects")
             .filter_map(|p| {
                 Some(LinearProject {
@@ -458,6 +513,11 @@ pub fn open_project_of(v: &Value, team: &str) -> bool {
 
 /// A team's workflow states.
 pub const TEAM_STATES: &str = "query($id: String!) { team(id: $id) { id key name states(first: 50) { nodes { id name type position } } } }";
+
+/// An issue's state, its team's workflow states and its project: what
+/// moving it on starts from ([`crate::tickets::next_state`]), and whether
+/// a project still takes it ([`takes`]).
+pub const ISSUE_STATES: &str = "query($id: String!) { issue(id: $id) { id identifier state { id name type } team { id states(first: 50) { nodes { id name type position } } } project { id } } }";
 
 /// The labels a team's issues can have: its own and the workspace's.
 pub const TEAM_LABELS: &str = "query($id: String!) { team(id: $id) { labels(first: 100) { nodes { id name } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } } }";
@@ -533,6 +593,7 @@ pub fn operations() -> Vec<(&'static str, String)> {
         ("TEAM", TEAM.to_owned()),
         ("PROJECT", PROJECT.to_owned()),
         ("TEAM_STATES", TEAM_STATES.to_owned()),
+        ("ISSUE_STATES", ISSUE_STATES.to_owned()),
         ("TEAM_LABELS", TEAM_LABELS.to_owned()),
         ("issue_query", issue_query()),
         ("issues_query", issues_query()),
@@ -971,8 +1032,9 @@ pub struct Asked<'a> {
     pub ticket: &'a SessionTicket,
     /// Who, as fctl knows them.
     pub by: &'a str,
-    /// They mentioned fctl in this comment rather than delegate the issue.
-    pub comment: Option<&'a str>,
+    /// Whether they delegated the issue or mentioned fctl, and what they
+    /// wrote.
+    pub asking: Asking<'a>,
     /// What Linear writes for agents: the issue, its comments, guidance.
     pub prompt_context: Option<&'a str>,
     /// The issue's description, when there is no prompt context.
@@ -987,17 +1049,17 @@ pub struct Asked<'a> {
 pub fn task(a: &Asked<'_>) -> String {
     let t = a.ticket;
     let title = t.title.as_deref().unwrap_or_default();
-    let mut s = match a.comment {
-        Some(_) => format!(
+    let mut s = match a.asking {
+        Asking::Mentioned(_) => format!(
             "{} mentioned fctl on {} in Linear: {}\n",
             a.by, t.key, t.url
         ),
-        None => format!(
+        Asking::Delegated => format!(
             "{} delegated {} to fctl in Linear: {}\n",
             a.by, t.key, t.url
         ),
     };
-    if let Some(c) = a.comment.map(str::trim).filter(|c| !c.is_empty()) {
+    if let Some(c) = a.asking.comment().map(str::trim).filter(|c| !c.is_empty()) {
         s.push_str("\nWhat they wrote:\n\n");
         s.push_str(&quote(c));
         s.push('\n');
@@ -1328,6 +1390,8 @@ mod tests {
             project: None,
             project_name: None,
             move_started: None,
+            move_review: None,
+            move_done: None,
             explore_label: None,
         };
         let issue = json!({
@@ -1513,12 +1577,13 @@ mod tests {
     }
 
     #[test]
-    fn teams_come_with_their_start_state_and_open_projects() {
+    fn teams_come_with_the_states_fctl_moves_tickets_to_and_open_projects() {
         let page = json!({ "teams": {
             "nodes": [
                 { "id": "t1", "key": "ENG", "name": "Engineering", "color": "#5e6ad2",
                   "states": { "nodes": [
                       { "id": "r", "name": "In Review", "type": "started", "position": 3 },
+                      { "id": "d", "name": "Done", "type": "completed", "position": 4 },
                       { "id": "p", "name": "In Progress", "type": "started", "position": 2 },
                       { "id": "t", "name": "Todo", "type": "unstarted", "position": 1 }
                   ] },
@@ -1535,7 +1600,9 @@ mod tests {
         };
         assert_eq!((t.key.as_str(), t.name.as_str()), ("ENG", "Engineering"));
         assert_eq!(t.start_state.as_deref(), Some("In Progress"));
-        assert_eq!(t.states.len(), 3);
+        assert_eq!(t.review_state.as_deref(), Some("In Review"));
+        assert_eq!(t.done_state.as_deref(), Some("Done"));
+        assert_eq!(t.states.len(), 4);
         assert_eq!(
             t.projects,
             [LinearProject {
@@ -1720,6 +1787,48 @@ mod tests {
     }
 
     #[test]
+    fn delegations_come_with_linears_own_thread_and_mentions_with_what_people_wrote() {
+        let session = |extra: Value| {
+            let mut v = json!({ "id": "as1", "issue": { "id": "iss1", "identifier": "ENG-12" } });
+            if let (Some(o), Some(more)) = (v.as_object_mut(), extra.as_object()) {
+                o.extend(more.clone());
+            }
+            serde_json::from_value::<AgentSession>(v).unwrap_or_default()
+        };
+        // Linear starts a delegation's thread with words of its own.
+        let delegated = session(json!({ "commentId": "c1", "comment": {
+            "id": "c1", "body": "This thread is for an agent session with fctl."
+        } }));
+        assert_eq!(delegated.asking(), Asking::Delegated);
+        let other_name = session(json!({ "comment": {
+            "id": "c1", "body": "  this thread is for an agent session with Acme's fctl.\n"
+        } }));
+        assert_eq!(other_name.asking(), Asking::Delegated);
+        assert_eq!(session(json!({})).asking(), Asking::Delegated);
+        assert_eq!(
+            session(json!({ "comment": { "id": "c1", "body": " " } })).asking(),
+            Asking::Delegated
+        );
+        let mentioned = session(json!({ "comment": {
+            "id": "c2", "body": "@fctl can you fix this?\n", "userId": "u1"
+        } }));
+        assert_eq!(
+            mentioned.asking(),
+            Asking::Mentioned(Some("@fctl can you fix this?"))
+        );
+        assert_eq!(
+            mentioned.asking().comment(),
+            Some("@fctl can you fix this?")
+        );
+        // A mention in another thread: Linear's thread, made from that comment.
+        let elsewhere = session(json!({ "sourceCommentId": "c3", "comment": {
+            "id": "c1", "body": "This thread is for an agent session with fctl."
+        } }));
+        assert_eq!(elsewhere.asking(), Asking::Mentioned(None));
+        assert_eq!(Asking::Delegated.comment(), None);
+    }
+
+    #[test]
     fn reads_revocations_and_team_changes() {
         assert_eq!(
             delivery(&json!({ "type": "OAuthApp", "action": "revoked", "organizationId": "org1" })),
@@ -1874,6 +1983,8 @@ mod tests {
             project: project.map(str::to_owned),
             project_name: None,
             move_started: None,
+            move_review: None,
+            move_done: None,
             explore_label: None,
         }
     }
@@ -1999,7 +2110,7 @@ mod tests {
         let delegated = task(&Asked {
             ticket: &t,
             by: "Ada Lovelace",
-            comment: None,
+            asking: Asking::Delegated,
             prompt_context: Some("<issue identifier=\"ENG-12\">It loops.</issue>"),
             description: None,
             explore: false,
@@ -2010,7 +2121,7 @@ mod tests {
         let mentioned = task(&Asked {
             ticket: &t,
             by: "Ada Lovelace",
-            comment: Some("@fctl can you look?\n\nThanks"),
+            asking: Asking::Mentioned(Some("@fctl can you look?\n\nThanks")),
             prompt_context: None,
             description: Some("It loops."),
             explore: true,

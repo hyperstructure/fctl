@@ -15,10 +15,11 @@
 
 use crate::validate::Result;
 use fctl_proto::ApiError;
+use fctl_proto::session::PullRequestRef;
 use fctl_proto::session::{
     GithubAccess, LinearTickets, RepoAccess, RepoGrant, RepoRef, SessionTicket, Tickets, Tracker,
 };
-use fctl_proto::tickets::{StateKind, TicketsVia};
+use fctl_proto::tickets::{StateKind, TicketState, TicketsVia};
 
 /// The longest a label that asks for an exploration may be.
 pub const MAX_LABEL: usize = 80;
@@ -442,12 +443,14 @@ pub struct Told<'a> {
     pub started_from: Option<StartedFrom<'a>>,
 }
 
-/// The ticket a session started from: who delegated it, whether they asked
-/// for an exploration, and what fctl did with it.
+/// The ticket a session started from: who delegated it, or mentioned fctl
+/// on it, whether they asked for an exploration, and what fctl did with it.
 pub struct StartedFrom<'a> {
     pub ticket: &'a SessionTicket,
     /// The person, as fctl knows them.
     pub by: &'a str,
+    /// They mentioned fctl on it rather than delegate it.
+    pub mentioned: bool,
     pub explore: bool,
     /// The state fctl moved it to as the session started.
     pub moved_to: Option<&'a str>,
@@ -534,8 +537,13 @@ pub fn instructions(t: &Told<'_>) -> String {
                         "Leave GitHub's issues alone (its tokens here can't reach them), and refer to tickets by their keys (`ENG-123`). {ASK_FOR_ISSUES}"
                     )
                 };
+                let moving = if writes && t.started_from.is_none() {
+                    own_moves(l)
+                } else {
+                    String::new()
+                };
                 s.push_str(&format!(
-                    "- This project tracks its work in Linear, in {scope}: {how}. {github}\n"
+                    "- This project tracks its work in Linear, in {scope}: {how}. {github}{moving}\n"
                 ));
             }
         },
@@ -596,9 +604,13 @@ fn started_from(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
     let mut s = String::new();
     match from.ticket.tracker {
         Tracker::Linear => {
+            let how = if from.mentioned {
+                format!("where {} mentioned fctl in Linear", from.by)
+            } else {
+                format!("which {} delegated to fctl in Linear", from.by)
+            };
             s.push_str(&format!(
-                "- This session started from {key}, which {} delegated to fctl in Linear. Your last message of each turn goes to the ticket's thread in Linear as your reply: write it for the people there, in a few short paragraphs, saying what you did, what's left and the pull request's link, without the details the session already shows. When you need someone to decide something, ask it at the end of that message, ending with a question mark; their answers in the thread come to you here, from people fctl knows.\n",
-                from.by
+                "- This session started from {key}, {how}. Your last message of each turn goes to the ticket's thread in Linear as your reply: write it for the people there, in a few short paragraphs, saying what you did, what's left and the pull request's link, without the details the session already shows. When you need someone to decide something, ask it at the end of that message, ending with a question mark; their answers in the thread come to you here, from people fctl knows.\n"
             ));
             if from.explore {
                 s.push_str(&format!(
@@ -607,16 +619,9 @@ fn started_from(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
             }
             if t.access.pushes() {
                 s.push_str(&format!(
-                    "- Your branch is named after {key}, which links its pull request to the ticket. Write `Fixes {key}` in the pull request's description when it does what the ticket asks, or `Part of {key}` when it does part of it."
+                    "- Your branch is named after {key}, which links its pull request to the ticket. Write `Fixes {key}` in the pull request's description when it does what the ticket asks, or `Part of {key}` when it does part of it.{}\n",
+                    moves(t, from)
                 ));
-                match from.moved_to {
-                    Some(state) => s.push_str(&format!(
-                        " fctl moved the ticket to {state} as the session started, and Linear's GitHub integration moves it on as the pull request opens and merges, so leave its state alone unless you are asked.\n"
-                    )),
-                    None => s.push_str(
-                        " Linear's GitHub integration moves the ticket on as the pull request opens and merges, so leave its state alone unless you are asked.\n",
-                    ),
-                }
             }
         }
         Tracker::Github | Tracker::None => s.push_str(&format!(
@@ -625,6 +630,75 @@ fn started_from(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
         )),
     }
     s
+}
+
+/// What a session that started from a Linear ticket is told of how the
+/// ticket moves on: what fctl does as its project lets it
+/// (`LinearTickets::move_started` and the rest), and what is left to the
+/// agent.
+fn moves(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
+    let key = &from.ticket.key;
+    let on = |f: fn(&LinearTickets) -> bool| t.tickets.linear.as_ref().is_some_and(f);
+    let mut steps = Vec::new();
+    if from.mentioned && on(LinearTickets::moves_started) {
+        steps.push("to In Progress once you change something");
+    }
+    if on(LinearTickets::moves_review) {
+        steps.push("to In Review when a turn ends with your pull request up");
+    }
+    if on(LinearTickets::moves_done) {
+        steps
+            .push("to Done once the pull requests that complete it merge (`Fixes`, not `Part of`)");
+    }
+    let steps = match steps.as_slice() {
+        [] => None,
+        [one] => Some((*one).to_owned()),
+        [rest @ .., last] => Some(format!("{}, and {last}", rest.join(", "))),
+    };
+    let mut s = match (from.moved_to, steps) {
+        (Some(state), Some(steps)) => format!(
+            " fctl moved the ticket to {state} as the session started, and moves it on in Linear as you go: {steps}, or to the states its team has for them. Leave its state alone unless you are asked."
+        ),
+        (None, Some(steps)) => format!(
+            " fctl moves the ticket on in Linear as you go: {steps}, or to the states its team has for them. Leave its state alone unless you are asked."
+        ),
+        (moved, None) => format!(
+            "{} Where the Linear workspace has Linear's GitHub integration, it moves the ticket on as the pull request opens and merges: leave its state alone unless you are asked.",
+            moved
+                .map(|state| format!(" fctl moved the ticket to {state} as the session started."))
+                .unwrap_or_default()
+        ),
+    };
+    if on(LinearTickets::moves_done) && writes(t.access) {
+        s.push_str(&format!(
+            " When the ticket needs no pull request and you have done all it asks, move it to Done yourself: `fctl ticket update {key} --state Done` (`fctl ticket states` lists its team's states)."
+        ));
+    }
+    s
+}
+
+/// What a session that didn't start from a ticket is told of moving the
+/// tickets it works on, as the project lets fctl move tickets: fctl doesn't
+/// know which those are, so the agent moves them.
+fn own_moves(l: &LinearTickets) -> String {
+    let mut steps = Vec::new();
+    if l.moves_started() {
+        steps.push("to In Progress as you start, unless it has started");
+    }
+    if l.moves_review() {
+        steps.push("to In Review once your pull requests are up");
+    }
+    if l.moves_done() {
+        steps.push("to Done once you have done all it asks, when it needs no pull request");
+    }
+    let steps = match steps.as_slice() {
+        [] => return String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    };
+    format!(
+        " When your task is to do a ticket's work, move the ticket on as you go with `fctl ticket update`: {steps}. Write `Fixes ENG-123` in a pull request that does what the ticket asks, or `Part of ENG-123` when it does part of it."
+    )
 }
 
 /// How to use `fctl ticket`, for agents that reach their tracker with it.
@@ -702,18 +776,265 @@ pub fn reply(text: &str, session_url: &str) -> Option<(ReplyKind, String)> {
     Some((ReplyKind::Response, body))
 }
 
-/// The state a ticket moves to as its session starts: the first started
-/// state of its team's workflow (`states` in order, with their kinds),
-/// unless it has started already, or is done or canceled. Linear asks
-/// agents to do this with the issues delegated to them.
-pub fn start_state(current: Option<StateKind>, states: &[(String, StateKind)]) -> Option<&str> {
-    match current {
-        Some(StateKind::Started | StateKind::Completed | StateKind::Canceled) => None,
-        _ => states
-            .iter()
-            .find(|(_, k)| *k == StateKind::Started)
-            .map(|(id, _)| id.as_str()),
+// ───────────────────────────── moving tickets on ─────────────────────────────
+
+/// How far a session's work on its ticket has come: what fctl moves the
+/// ticket on for, in the order tickets go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Progress {
+    /// It works on the ticket: the ticket was delegated to it, or its
+    /// agent changed something.
+    Started,
+    /// A pull request of its is up for review: open, and not a draft.
+    Review,
+    /// Its pull requests merged: one did, and none is open any more.
+    Merged,
+}
+
+/// How far a session has come, as its pull requests and whether its agent
+/// changed anything show: `None` while it has neither. A pull request
+/// whose state nobody looked up yet is still open, but not known to be up
+/// for review: it may be a draft.
+pub fn progress(prs: &[PullRequestRef], changed: bool) -> Option<Progress> {
+    let state = |p: &PullRequestRef| p.state.clone().unwrap_or_default();
+    let open: Vec<String> = prs
+        .iter()
+        .map(state)
+        .filter(|s| !matches!(s.as_str(), "merged" | "closed"))
+        .collect();
+    if open.is_empty() && prs.iter().any(|p| state(p) == "merged") {
+        Some(Progress::Merged)
+    } else if open.iter().any(|s| matches!(s.as_str(), "open" | "queued")) {
+        Some(Progress::Review)
+    } else {
+        (changed || !open.is_empty()).then_some(Progress::Started)
     }
+}
+
+/// Whether to see if a session's ticket is done, now that what fctl knows
+/// of its pull requests went from `before` to `now` (as [`progress`] has
+/// them): once none is open any more, one merged among them, or once one
+/// more merged (`merged_more`) while none is.
+pub fn done_due(before: Option<Progress>, now: Option<Progress>, merged_more: bool) -> bool {
+    now == Some(Progress::Merged) && (before != Some(Progress::Merged) || merged_more)
+}
+
+/// How long fctl waits before it sees again whether a session's ticket is
+/// done, after GitHub or Linear couldn't say: after each try in turn, and
+/// then no more.
+pub const DONE_AGAIN_IN_MS: [i64; 4] = [60_000, 10 * 60_000, 60 * 60_000, 6 * 60 * 60_000];
+
+/// How far an agent's report moves its session's ticket on, from `before`
+/// to `now` (as [`progress`] has them): to started once it changed
+/// something, at once, and to review once a pull request is up, but only
+/// after its turn (`turn_over`), as a turn's end moves it too. Merges
+/// move it on their own, as GitHub says or a turn ends.
+pub fn reported(
+    before: Option<Progress>,
+    now: Option<Progress>,
+    turn_over: bool,
+) -> Option<Progress> {
+    match now {
+        _ if now <= before => None,
+        Some(Progress::Review) if turn_over => Some(Progress::Review),
+        Some(Progress::Started | Progress::Review) if before.is_none() => Some(Progress::Started),
+        _ => None,
+    }
+}
+
+/// The state among a team's workflow `states` (in order: by kind, then
+/// position) that a ticket in `current` moves to for `progress`: its
+/// first started state (In Progress) once work starts, as Linear asks of
+/// agents; its review state (In Review: the first started state whose
+/// name says review, or else its first started one) once a pull request is
+/// up; and its first completed state (Done) once they merged. `None`
+/// leaves it where it is: done or canceled, there or further along
+/// already, or in a workflow without such a state.
+pub fn next_state<'a>(
+    progress: Progress,
+    current: Option<&TicketState>,
+    states: &'a [TicketState],
+) -> Option<&'a TicketState> {
+    if current.is_some_and(|c| !c.kind.is_open()) {
+        return None;
+    }
+    let first = |kind: StateKind| states.iter().find(|s| s.kind == kind);
+    let target = match progress {
+        Progress::Started => first(StateKind::Started),
+        Progress::Review => states
+            .iter()
+            .find(|s| s.kind == StateKind::Started && says_review(&s.name))
+            .or_else(|| first(StateKind::Started)),
+        Progress::Merged => first(StateKind::Completed),
+    }?;
+    let Some(current) = current else {
+        return Some(target);
+    };
+    let place = |s: &TicketState| {
+        states.iter().position(|x| match (&x.id, &s.id) {
+            (Some(a), Some(b)) => a == b,
+            _ => x.name.eq_ignore_ascii_case(&s.name),
+        })
+    };
+    match (place(current), place(target)) {
+        (Some(c), Some(t)) => (c < t).then_some(target),
+        // A state the workflow doesn't list: by its kind alone.
+        _ => (current.kind < target.kind).then_some(target),
+    }
+}
+
+/// Whether a state's name says review ("In Review", "Code review",
+/// "Reviewing"), and not a word that holds it ("Preview").
+fn says_review(name: &str) -> bool {
+    name.split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("review")))
+}
+
+/// Linear's GitHub integration's words before an issue's key in a pull
+/// request (`Fixes ENG-123`): those that complete the issue as it merges,
+/// and those that only link it (`Part of ENG-123`, `Related to ENG-123`)
+/// or keep it apart (`Skip ENG-123`).
+const CLOSING: &[&str] = &[
+    "close",
+    "closes",
+    "closed",
+    "closing",
+    "fix",
+    "fixes",
+    "fixed",
+    "fixing",
+    "resolve",
+    "resolves",
+    "resolved",
+    "resolving",
+    "complete",
+    "completes",
+    "completed",
+    "completing",
+    "implement",
+    "implements",
+    "implemented",
+    "implementing",
+];
+const NOT_CLOSING: &[&str] = &[
+    "ref",
+    "refs",
+    "references",
+    "part of",
+    "contributes to",
+    "toward",
+    "towards",
+    "relates to",
+    "related to",
+    "skip",
+    "ignore",
+];
+
+/// Whether a pull request completes ticket `key` (`ENG-123`) as it merges,
+/// as Linear's GitHub integration reads it: by the words before the key
+/// in its title and description (`Fixes ENG-123` does; `Part of ENG-123`
+/// doesn't), and without any, by the key in its title or in its branch,
+/// which fctl names after a session's ticket.
+pub fn completes(key: &str, title: &str, body: &str, branch: &str) -> bool {
+    let words: Vec<Option<bool>> = words_before(title, key)
+        .into_iter()
+        .chain(words_before(body, key))
+        .collect();
+    if words.contains(&Some(true)) {
+        true
+    } else if words.contains(&Some(false)) {
+        false
+    } else {
+        names(title, key) || names(branch, key)
+    }
+}
+
+/// Whether `text` names ticket `key`, in any case, as a word of its own.
+fn names(text: &str, key: &str) -> bool {
+    !keys_in(text, key).is_empty()
+}
+
+/// Where `text` names `key`, in any case, as a word of its own
+/// (`ENG-12` isn't in `ENG-123` or `XENG-12`).
+fn keys_in(text: &str, key: &str) -> Vec<usize> {
+    let lower = text.to_ascii_lowercase();
+    let key = key.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        return Vec::new();
+    }
+    let bytes = lower.as_bytes();
+    lower
+        .match_indices(&key)
+        .map(|(at, _)| at)
+        .filter(|&at| {
+            let before = at.checked_sub(1).and_then(|i| bytes.get(i));
+            let after = bytes.get(at + key.len());
+            before.is_none_or(|b| !b.is_ascii_alphanumeric())
+                && after.is_none_or(|b| !b.is_ascii_alphanumeric())
+        })
+        .collect()
+}
+
+/// What the words before each place `text` names `key` say: `Some(true)`
+/// for a closing word (`Fixes ENG-1`, `Fixes ENG-2, ENG-1`, `Fixes
+/// https://linear.app/acme/issue/ENG-1/…`), `Some(false)` for another
+/// magic word, `None` for none.
+fn words_before(text: &str, key: &str) -> Vec<Option<bool>> {
+    keys_in(text, key)
+        .into_iter()
+        .map(|at| {
+            let line = text[..at].rsplit('\n').next().unwrap_or_default();
+            magic_word(line)
+        })
+        .collect()
+}
+
+/// What the end of `before`, the line before a key, says of it: past the
+/// keys and links of a list (`Fixes ENG-1, ENG-2 and `), a closing word
+/// (`Some(true)`), another magic word (`Some(false)`), or none.
+fn magic_word(before: &str) -> Option<bool> {
+    let apart = |c: char| c.is_whitespace() || ",;:&*_`'\"()[]<>#".contains(c);
+    let mut rest = before;
+    loop {
+        rest = rest.trim_end_matches(apart);
+        let start = rest
+            .char_indices()
+            .rev()
+            .find(|(_, c)| apart(*c))
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let word = &rest[start..];
+        let listed = word.eq_ignore_ascii_case("and")
+            || is_key(word)
+            || word.starts_with("http")
+            || word.contains("linear.app/");
+        if word.is_empty() || !listed {
+            break;
+        }
+        rest = &rest[..start];
+    }
+    let rest = rest.to_ascii_lowercase();
+    let ends = |phrase: &str| {
+        rest.strip_suffix(phrase)
+            .is_some_and(|b| b.chars().last().is_none_or(|c| !c.is_alphanumeric()))
+    };
+    if CLOSING.iter().any(|w| ends(w)) {
+        Some(true)
+    } else if NOT_CLOSING.iter().any(|w| ends(w)) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether a word is a ticket's key (`ENG-123`).
+fn is_key(word: &str) -> bool {
+    let Some((team, number)) = word.rsplit_once('-') else {
+        return false;
+    };
+    team.starts_with(|c: char| c.is_ascii_alphabetic())
+        && team.chars().all(|c| c.is_ascii_alphanumeric())
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Whether a ticket's labels ask for an exploration: one of them is the
@@ -786,6 +1107,8 @@ mod tests {
                 project: None,
                 project_name: None,
                 move_started: None,
+                move_review: None,
+                move_done: None,
                 explore_label: None,
             }),
         }
@@ -987,21 +1310,313 @@ mod tests {
         assert!(!body.contains('b'));
     }
 
+    fn workflow(states: &[(&str, StateKind)]) -> Vec<TicketState> {
+        states
+            .iter()
+            .map(|(name, kind)| TicketState {
+                name: (*name).to_owned(),
+                kind: *kind,
+                id: Some(format!(
+                    "id-{}",
+                    name.to_ascii_lowercase().replace(' ', "-")
+                )),
+            })
+            .collect()
+    }
+
+    /// A new Linear team's workflow, with triage on.
+    fn linears() -> Vec<TicketState> {
+        workflow(&[
+            ("Triage", StateKind::Triage),
+            ("Backlog", StateKind::Backlog),
+            ("Todo", StateKind::Unstarted),
+            ("In Progress", StateKind::Started),
+            ("In Review", StateKind::Started),
+            ("Done", StateKind::Completed),
+            ("Canceled", StateKind::Canceled),
+            ("Duplicate", StateKind::Canceled),
+        ])
+    }
+
+    fn moved(progress: Progress, from: Option<&str>, states: &[TicketState]) -> Option<String> {
+        let current = from.and_then(|f| states.iter().find(|s| s.name == f));
+        next_state(progress, current, states).map(|s| s.name.clone())
+    }
+
     #[test]
-    fn tickets_move_to_the_first_started_state_until_they_started() {
-        let states = vec![
-            ("t".to_owned(), StateKind::Triage),
-            ("b".to_owned(), StateKind::Backlog),
-            ("u".to_owned(), StateKind::Unstarted),
-            ("p".to_owned(), StateKind::Started),
-            ("r".to_owned(), StateKind::Started),
-            ("d".to_owned(), StateKind::Completed),
-        ];
-        assert_eq!(start_state(Some(StateKind::Backlog), &states), Some("p"));
-        assert_eq!(start_state(None, &states), Some("p"));
-        assert_eq!(start_state(Some(StateKind::Started), &states), None);
-        assert_eq!(start_state(Some(StateKind::Completed), &states), None);
-        assert_eq!(start_state(Some(StateKind::Unstarted), &[]), None);
+    fn tickets_start_until_they_started() {
+        let states = linears();
+        for from in ["Triage", "Backlog", "Todo"] {
+            assert_eq!(
+                moved(Progress::Started, Some(from), &states).as_deref(),
+                Some("In Progress"),
+                "{from}"
+            );
+        }
+        assert_eq!(
+            moved(Progress::Started, None, &states).as_deref(),
+            Some("In Progress")
+        );
+        for from in ["In Progress", "In Review", "Done", "Canceled", "Duplicate"] {
+            assert_eq!(
+                moved(Progress::Started, Some(from), &states),
+                None,
+                "{from}"
+            );
+        }
+        assert_eq!(
+            next_state(
+                Progress::Started,
+                None,
+                &workflow(&[("Todo", StateKind::Unstarted)])
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tickets_go_to_review_as_pull_requests_are_up_and_never_back() {
+        let states = linears();
+        for from in ["Backlog", "Todo", "In Progress"] {
+            assert_eq!(
+                moved(Progress::Review, Some(from), &states).as_deref(),
+                Some("In Review"),
+                "{from}"
+            );
+        }
+        for from in ["In Review", "Done", "Canceled"] {
+            assert_eq!(moved(Progress::Review, Some(from), &states), None, "{from}");
+        }
+        // Further along than review: a state after it stays.
+        let qa = workflow(&[
+            ("Todo", StateKind::Unstarted),
+            ("In Progress", StateKind::Started),
+            ("Code review", StateKind::Started),
+            ("QA", StateKind::Started),
+            ("Done", StateKind::Completed),
+        ]);
+        assert_eq!(
+            moved(Progress::Review, Some("In Progress"), &qa).as_deref(),
+            Some("Code review")
+        );
+        assert_eq!(moved(Progress::Review, Some("QA"), &qa), None);
+        // Without a review state, a ticket that hasn't started starts.
+        let plain = workflow(&[
+            ("Todo", StateKind::Unstarted),
+            ("Doing", StateKind::Started),
+            ("Preview", StateKind::Started),
+            ("Done", StateKind::Completed),
+        ]);
+        assert_eq!(
+            moved(Progress::Review, Some("Todo"), &plain).as_deref(),
+            Some("Doing")
+        );
+        assert_eq!(moved(Progress::Review, Some("Doing"), &plain), None);
+        assert!(says_review("Reviewing") && says_review("Ready for review"));
+        assert!(says_review("PR-review") && !says_review("Preview"));
+        assert!(!says_review("Révision") && !says_review("Revi"));
+    }
+
+    #[test]
+    fn tickets_are_done_once_their_pull_requests_merged() {
+        let states = linears();
+        for from in ["Todo", "In Progress", "In Review"] {
+            assert_eq!(
+                moved(Progress::Merged, Some(from), &states).as_deref(),
+                Some("Done"),
+                "{from}"
+            );
+        }
+        for from in ["Done", "Canceled", "Duplicate"] {
+            assert_eq!(moved(Progress::Merged, Some(from), &states), None, "{from}");
+        }
+        // A state the workflow doesn't list goes by its kind.
+        let gone = TicketState {
+            name: "Archived review".into(),
+            kind: StateKind::Started,
+            id: Some("id-gone".into()),
+        };
+        assert_eq!(
+            next_state(Progress::Merged, Some(&gone), &states).map(|s| s.name.as_str()),
+            Some("Done")
+        );
+        assert_eq!(next_state(Progress::Review, Some(&gone), &states), None);
+    }
+
+    fn pr(state: Option<&str>) -> PullRequestRef {
+        PullRequestRef {
+            number: 1,
+            url: "https://github.com/acme/web/pull/1".into(),
+            title: None,
+            state: state.map(str::to_owned),
+            repo: None,
+            state_changed_at: None,
+            updated_at: None,
+            checks: None,
+        }
+    }
+
+    #[test]
+    fn progress_shows_in_changes_and_pull_requests() {
+        assert_eq!(progress(&[], false), None);
+        assert_eq!(progress(&[], true), Some(Progress::Started));
+        assert_eq!(
+            progress(&[pr(Some("draft"))], false),
+            Some(Progress::Started)
+        );
+        assert_eq!(
+            progress(&[pr(Some("closed"))], true),
+            Some(Progress::Started)
+        );
+        assert_eq!(progress(&[pr(Some("closed"))], false), None);
+        for up in ["open", "queued"] {
+            assert_eq!(
+                progress(&[pr(Some(up))], false),
+                Some(Progress::Review),
+                "{up}"
+            );
+        }
+        // One nobody looked up yet may be a draft: it is open, not up.
+        assert_eq!(progress(&[pr(None)], false), Some(Progress::Started));
+        assert_eq!(
+            progress(&[pr(Some("merged")), pr(None)], true),
+            Some(Progress::Started)
+        );
+        assert_eq!(
+            progress(&[pr(Some("draft")), pr(Some("open"))], true),
+            Some(Progress::Review)
+        );
+        assert_eq!(
+            progress(&[pr(Some("merged"))], false),
+            Some(Progress::Merged)
+        );
+        assert_eq!(
+            progress(&[pr(Some("merged")), pr(Some("closed"))], true),
+            Some(Progress::Merged)
+        );
+        // Another still open: the ticket isn't done yet.
+        assert_eq!(
+            progress(&[pr(Some("merged")), pr(Some("open"))], true),
+            Some(Progress::Review)
+        );
+        assert_eq!(
+            progress(&[pr(Some("merged")), pr(Some("draft"))], true),
+            Some(Progress::Started)
+        );
+    }
+
+    #[test]
+    fn what_agents_report_starts_tickets_at_once_and_has_them_reviewed_after_the_turn() {
+        use Progress::*;
+        // The first change starts it, during a turn or after.
+        assert_eq!(reported(None, Some(Started), false), Some(Started));
+        assert_eq!(reported(None, Some(Started), true), Some(Started));
+        // A pull request up waits for the turn's end, and starts it meanwhile.
+        assert_eq!(reported(None, Some(Review), false), Some(Started));
+        assert_eq!(reported(Some(Started), Some(Review), false), None);
+        assert_eq!(reported(Some(Started), Some(Review), true), Some(Review));
+        assert_eq!(reported(None, Some(Review), true), Some(Review));
+        // Nothing new, or less: nothing moves.
+        for turn_over in [false, true] {
+            assert_eq!(reported(Some(Started), Some(Started), turn_over), None);
+            assert_eq!(reported(Some(Review), Some(Review), turn_over), None);
+            assert_eq!(reported(Some(Review), Some(Started), turn_over), None);
+            assert_eq!(reported(None, None, turn_over), None);
+            // Merges move it on their own.
+            assert_eq!(reported(Some(Review), Some(Merged), turn_over), None);
+        }
+    }
+
+    #[test]
+    fn tickets_are_seen_to_once_none_is_open_or_one_more_merged() {
+        use Progress::*;
+        // The last open one merged, or closed while another had merged.
+        assert!(done_due(Some(Review), Some(Merged), true));
+        assert!(done_due(Some(Review), Some(Merged), false));
+        assert!(done_due(None, Some(Merged), true));
+        // One more merged among those that did: it may be the one that
+        // completes the ticket.
+        assert!(done_due(Some(Merged), Some(Merged), true));
+        assert!(!done_due(Some(Merged), Some(Merged), false));
+        // One merged while another is open: not yet.
+        assert!(!done_due(Some(Review), Some(Review), true));
+        assert!(!done_due(Some(Merged), Some(Review), false));
+        assert!(!done_due(None, None, false));
+        assert!(DONE_AGAIN_IN_MS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn pull_requests_complete_tickets_as_linears_github_integration_reads_them() {
+        let branch = "fctl/12-eng-123-fix-the-login-loop";
+        // The branch links it.
+        assert!(completes("ENG-123", "Fix the login loop", "", branch));
+        assert!(!completes(
+            "ENG-123",
+            "Fix the login loop",
+            "",
+            "fctl/12-fix"
+        ));
+        assert!(!completes("ENG-12", "Fix", "", branch));
+        // So do the words before the key.
+        for body in [
+            "Fixes ENG-123",
+            "This change.\n\nCloses: eng-123.",
+            "- **Resolves** ENG-123",
+            "Fixes ENG-7, ENG-9 and ENG-123",
+            "Implements https://linear.app/acme/issue/ENG-123/fix-the-login-loop",
+            "Fixes [ENG-123](https://linear.app/acme/issue/ENG-123/x)",
+        ] {
+            assert!(
+                completes("ENG-123", "Fix it", body, "fctl/12-fix"),
+                "{body}"
+            );
+        }
+        for body in [
+            "Part of ENG-123",
+            "Refs ENG-123",
+            "Contributes to [ENG-123](https://linear.app/acme/issue/ENG-123/x)",
+            "Related to ENG-123, ENG-9",
+            "Skip ENG-123",
+        ] {
+            assert!(!completes("ENG-123", "Fix it", body, branch), "{body}");
+        }
+        // A closing word anywhere wins.
+        assert!(completes(
+            "ENG-123",
+            "Fixes ENG-123",
+            "Part of ENG-123",
+            branch
+        ));
+        // Words that hold a magic word, or come before other words, don't count.
+        assert!(!completes("ENG-123", "", "Prefixes ENG-123", "fctl/1-x"));
+        assert!(!completes(
+            "ENG-123",
+            "",
+            "This fixes the bug in ENG-123",
+            "fctl/1-x"
+        ));
+        // Named alone, in the title it links, in the description it doesn't.
+        assert!(completes(
+            "ENG-123",
+            "ENG-123: Fix the loop",
+            "",
+            "fctl/1-x"
+        ));
+        assert!(!completes("ENG-123", "Fix", "See ENG-123", "fctl/1-x"));
+        // Odd text breaks nothing.
+        assert!(!completes(
+            "ENG-123",
+            "",
+            "Fixes\u{3000}\u{a0} ENG-1234",
+            "fctl/1-x"
+        ));
+        assert!(completes(
+            "ENG-123",
+            "",
+            "Fixes\u{3000}\u{a0}ENG-123",
+            "fctl/1-x"
+        ));
+        assert!(!completes("", "Fixes", "", ""));
     }
 
     #[test]
@@ -1062,6 +1677,7 @@ mod tests {
             started_from: Some(StartedFrom {
                 ticket: &ticket,
                 by: "Ada Lovelace",
+                mentioned: false,
                 explore: true,
                 moved_to: Some("In Progress"),
             }),
@@ -1069,7 +1685,101 @@ mod tests {
         assert!(started.contains("ENG-7, which Ada Lovelace delegated"));
         assert!(started.contains("exploration"));
         assert!(started.contains("`Fixes ENG-7`"));
-        assert!(started.contains("moved the ticket to In Progress"));
+        assert!(started.contains(
+            "fctl moved the ticket to In Progress as the session started, and moves it on in Linear as you go: to In Review when a turn ends with your pull request up, and to Done once the pull requests that complete it merge"
+        ));
+        assert!(started.contains("Leave its state alone unless you are asked."));
+        assert!(
+            started.contains("move it to Done yourself: `fctl ticket update ENG-7 --state Done`")
+        );
+        // It moves the tickets it starts from itself.
+        assert!(!started.contains("When your task is to do a ticket's work"));
+    }
+
+    #[test]
+    fn agents_hear_how_their_tickets_move_on_as_the_project_lets_fctl_move_them() {
+        let primary = r("acme/web");
+        let ticket = SessionTicket {
+            tracker: Tracker::Linear,
+            id: "i".into(),
+            key: "ENG-7".into(),
+            title: None,
+            url: "https://linear.app/acme/issue/ENG-7".into(),
+        };
+        let with = |moves: [Option<bool>; 3]| {
+            let mut t = linear();
+            if let Some(l) = t.linear.as_mut() {
+                [l.move_started, l.move_review, l.move_done] = moves;
+            }
+            t
+        };
+        let told = |t: &Tickets, from: Option<StartedFrom<'_>>, access| {
+            instructions(&Told {
+                tickets: t,
+                via: TicketsVia::Fctl,
+                primary: Some(&primary),
+                grants: &[],
+                access,
+                github_issues: false,
+                linear_workspace: Some("Acme"),
+                started_from: from,
+            })
+        };
+        let from = |mentioned, moved_to| {
+            Some(StartedFrom {
+                ticket: &ticket,
+                by: "Ada Lovelace",
+                mentioned,
+                explore: false,
+                moved_to,
+            })
+        };
+        // A mention moves it once the agent changed something.
+        let mentioned = told(&with([None; 3]), from(true, None), GithubAccess::Push);
+        assert!(mentioned.contains("ENG-7, where Ada Lovelace mentioned fctl in Linear"));
+        assert!(mentioned.contains(
+            "fctl moves the ticket on in Linear as you go: to In Progress once you change something, to In Review when a turn ends with your pull request up, and to Done once"
+        ));
+        // Only what the project lets fctl do.
+        let review = told(
+            &with([Some(false), Some(true), Some(false)]),
+            from(true, None),
+            GithubAccess::Push,
+        );
+        assert!(
+            review.contains(
+                "as you go: to In Review when a turn ends with your pull request up, or to"
+            )
+        );
+        assert!(!review.contains("Done"));
+        let off = told(
+            &with([Some(false); 3]),
+            from(false, None),
+            GithubAccess::Push,
+        );
+        assert!(off.contains("Linear's GitHub integration, it moves the ticket on"));
+        assert!(!off.contains("fctl moves") && !off.contains("Done yourself"));
+        // An agent that can't write tickets moves none.
+        let reads = told(&with([None; 3]), from(false, None), GithubAccess::Read);
+        assert!(!reads.contains("Done yourself") && !reads.contains("Your branch"));
+        // A session of its own moves the tickets it works on.
+        let own = told(&with([None; 3]), None, GithubAccess::Push);
+        assert!(own.contains(
+            "When your task is to do a ticket's work, move the ticket on as you go with `fctl ticket update`: to In Progress as you start, unless it has started, to In Review once your pull requests are up, and to Done once you have done all it asks, when it needs no pull request."
+        ));
+        let some = told(
+            &with([Some(true), Some(false), Some(false)]),
+            None,
+            GithubAccess::Push,
+        );
+        assert!(some.contains("as you go with `fctl ticket update`: to In Progress as you start, unless it has started. Write `Fixes ENG-123`"));
+        for t in [with([Some(false); 3]), linear()] {
+            let quiet = told(&t, None, GithubAccess::Read);
+            assert!(!quiet.contains("When your task is to do a ticket's work"));
+        }
+        assert!(
+            !told(&with([Some(false); 3]), None, GithubAccess::Push).contains("When your task")
+        );
     }
 
     #[test]

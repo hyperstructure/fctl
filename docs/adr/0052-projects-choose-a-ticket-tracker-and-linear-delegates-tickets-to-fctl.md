@@ -1,6 +1,6 @@
 # 0052: Projects choose a ticket tracker, and Linear delegates tickets to fctl
 
-2026-10-23 · accepted
+2026-10-23 · accepted · fctl moves tickets to In Review and Done as their sessions' pull requests come up and merge, and to In Progress once a mention's agent changes something, since [0063](0063-fctl-moves-linear-tickets-through-their-teams-workflow-as-sessions-work.md)
 
 ## Context
 
