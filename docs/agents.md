@@ -1,13 +1,14 @@
 # fctl for agents
 
 This page is for agents, scripts and other programs that drive fctl: a
-coding agent that hands work to fctl, a CI job, a bot, an issue tracker's
-automation. It says how to sign in without a person at the keyboard, which
-commands return and which keep running, how to wait for a session and read
-what its agent did, what to avoid, and how to set up the common flows. The
-last part is about the other side: what an agent working in an fctl session
-can do in its sandbox. [llms.txt](https://fctl.sh/llms.txt) sums all of
-this up in one file, with fctl's vocabulary.
+coding agent that hands work to fctl, a personal agent that works for
+someone, a CI job, a bot, an issue tracker's automation. It says how to
+sign in, with or without a person at hand, which commands return and which
+keep running, how to wait for a session and read what its agent did, what
+to avoid, and how to set up the common flows. The last part is about the
+other side: what an agent working in an fctl session can do in its
+sandbox. [llms.txt](https://fctl.sh/llms.txt) sums all of this up in one
+file, with fctl's vocabulary.
 
 Everything here works the same against app.fctl.sh and an instance of your
 own: `FCTL_SERVER` says which. [The CLI](cli.md) lists every command, and
@@ -46,6 +47,60 @@ fctl whoami                      # whose it is, and what it may do
   takes precedence over both.
 - Revoke a token that may have leaked at once: `fctl tokens revoke NAME`
   or Settings → Access tokens.
+
+### From a personal agent
+
+A personal agent works for one person across their apps and accounts, as
+[Grok Bot](https://x.ai/bot),
+[Claude Duet](https://claude.com/product/claude-duet),
+[Meta Muse](https://ai.meta.com/muse/), [Wabi](https://wabi.ai) and
+OpenAI's [ChatGPT Dots](https://chatgpt.com/features/dots) do. Its person
+is there to answer, so before it signs in to fctl, it asks them which of
+two kinds of access they want to give it, unless their request already
+says:
+
+- **A full sign-in**: the agent can do anything the person can in fctl,
+  in every workspace and project, with their account, Claude connections
+  and access tokens. It runs `fctl login app.fctl.sh --no-browser` (or
+  their own instance's address), which prints a link and a code, then
+  waits up to ten minutes and returns once the person approves. So the
+  agent runs it in the background, or wherever it reads the output before
+  the command returns, and without `--json`, with which it prints neither
+  link nor code. It shows the person the link and the code: they open the
+  link, check that the page shows the same code, and approve. The sign-in
+  shows in the person's Settings → Devices, where revoking it signs the
+  agent out at once.
+- **A token for one project**: the agent can start sessions in that
+  project, steer their agents, and read the project's sessions, memory and
+  retrospectives. It reaches nothing else: not the person's other
+  projects, their workspaces' people, settings and runners, their account
+  or their other tokens. The person makes the token, in Settings →
+  Access tokens (New access token: Run sessions, Only some, the project, an
+  expiry) or in a terminal, and gives it to the agent, which keeps it in
+  `FCTL_TOKEN` and doesn't repeat it in the conversation:
+
+  ```sh
+  fctl token "Personal agent" --access run -p xyz123 --days 30   # the person runs this
+  export FCTL_SERVER=https://app.fctl.sh FCTL_TOKEN=fctl_pat_…
+  fctl whoami                      # whose it is, and what it may do
+  ```
+
+  `--access full` (Everything) also lets the agent change the project's
+  settings, secrets, members and schedules, as far as the person's role
+  there allows, and `--github comment` or `--github read` keeps the agents
+  of its sessions from pushing.
+
+What the person asks is a hint. "I want to use the fctl.sh CLI to manage
+the xyz123 project" names one project, so they most likely want a token for
+xyz123 alone: not a full sign-in, nor a token for every project of the
+workspace xyz123 is in (`-w`). Suggest a token that runs sessions in that
+project (`--access run -p xyz123`), or one that does everything there
+(`--access full -p xyz123`) if they also want the agent to change its
+settings. When they name more projects, or a workspace, the token takes
+them all (`-p` repeated, `-w`); a full sign-in is for when they want the
+agent to reach their account, or their workspaces' people, settings and
+runners. Either way, the sessions the agent starts run as the person, on
+their Claude subscription.
 
 ## Commands that return, and commands that follow
 

@@ -111,7 +111,7 @@ export FCTL_TOKEN=fctl_pat_…                # an access token a person made fo
 fctl whoami                                  # who it acts as, and what the token may do
 ```
 
-- Prefer an access token limited to the job over a person's sign-in: `fctl token "Nightly triage" --access run -p my-app --github comment --days 30` (a person runs it; it prints the token once). `fctl login` needs a person to approve the device in a browser (`--no-browser` prints the link).
+- Prefer an access token limited to the job over a person's sign-in: `fctl token "Nightly triage" --access run -p my-app --github comment --days 30` (a person runs it; it prints the token once). `fctl login` needs a person to approve the device in a browser (`--no-browser` prints the link). A personal agent asks its person which of the two they want first (Signing in from a personal agent, below).
 - Name sessions by id (`ses_…`, also in URLs) in scripts: `my-app#12` only finds the project's latest 200 sessions.
 - `--json` prints one JSON document on stdout, in the API's shapes (`fctl run -d --json` prints the new session, `.id` is its id). `fctl logs --json` is the exception: one event per line (JSON Lines), with or without `-f`; use `jq -s` to read it as an array.
 - Exit codes: 0 success; 1 an error (the message on stderr, as text even with `--json`); 2 a usage error (unknown flag, missing argument). Check the exit code; don't parse stderr.
@@ -139,6 +139,15 @@ n=$(turns "$id"); fctl send "$id" "Also add a regression test"; wait_turn "$id" 
 ```
 
 A session that stays `queued` says why in `status_reason` (no runner online, no runner allows its image, its person's runners are offline…): report it rather than wait forever.
+
+## Signing in from a personal agent
+
+Personal agents that work for one person across their apps, such as [Grok Bot](https://x.ai/bot), [Claude Duet](https://claude.com/product/claude-duet), [Meta Muse](https://ai.meta.com/muse/), [Wabi](https://wabi.ai) and OpenAI's [ChatGPT Dots](https://chatgpt.com/features/dots), drive fctl as above. Their person is there to answer, so before signing in, ask them which of two kinds of access they want to give you, unless their request already says:
+
+- **A full sign-in**: anything they can do in fctl, in every workspace and project, with their account, Claude connections and access tokens. Run `fctl login app.fctl.sh --no-browser` (or their own instance's address): it prints a link and a code, then waits up to ten minutes and returns once they approve, so run it in the background, or wherever you read its output before it returns, and without `--json`, with which it prints neither link nor code. Show them the link and the code; they open the link, check that the page shows the same code, and approve. Revoking the sign-in in their Settings → Devices signs you out at once.
+- **A token for one project**: start sessions in that project, steer their agents, and read its sessions, memory and retrospectives. It reaches nothing else: not their other projects, their workspaces' people, settings and runners, their account or their other tokens. They make it in Settings → Access tokens (New access token: Run sessions, Only some, the project, an expiry) or with `fctl token "Personal agent" --access run -p xyz123 --days 30`, and give it to you: keep it in `FCTL_TOKEN`, with `FCTL_SERVER`, and don't repeat it in the conversation. `--access full` (Everything) also changes the project's settings, secrets, members and schedules, as far as their role there allows; `--github comment` or `--github read` keeps its sessions' agents from pushing.
+
+What they ask is a hint. "I want to use the fctl.sh CLI to manage the xyz123 project" names one project, so they most likely want a token for xyz123 alone: not a full sign-in, nor a token for every project of the workspace xyz123 is in (`-w`). Suggest `--access run -p xyz123`, or `--access full -p xyz123` if they also want you to change its settings. When they name more projects, or a workspace, the token takes them all (`-p` repeated, `-w`); a full sign-in is for when they want you to reach their account, or their workspaces' people, settings and runners. Either way, the sessions you start run as them, on their Claude subscription. More in [fctl for agents](https://fctl.sh/docs/agents.md#from-a-personal-agent).
 
 ## Things to avoid
 
@@ -201,7 +210,7 @@ Each recipe says who does what: some steps take a person with a role in the proj
 - [Overview](https://fctl.sh/docs/index.md): the three pieces (control plane, hosts, clients), where to go next, and the words the docs use.
 - [Getting started](https://fctl.sh/docs/getting-started.md): signing in, installing the CLI, workspaces, connecting Claude, bringing a machine online, creating a project, starting, following and steering sessions, working together, roles.
 - [The CLI](https://fctl.sh/docs/cli.md): every command: sign-in and access tokens, sessions and sharing them, search, workspaces, projects with their secrets and members, repositories, ticket trackers, memory and retrospectives, review agents, schedules, notifications, Claude, hosts and `host.toml`, admin, your account, updating, exit codes.
-- [fctl for agents](https://fctl.sh/docs/agents.md): driving fctl from agents, scripts and other programs: tokens, waiting for sessions, reading transcripts, JSON and exit codes, pitfalls, recipes in full, and what agents do inside a session's sandbox.
+- [fctl for agents](https://fctl.sh/docs/agents.md): driving fctl from agents, scripts and other programs: tokens, what a personal agent asks its person before it signs in, waiting for sessions, reading transcripts, JSON and exit codes, pitfalls, recipes in full, and what agents do inside a session's sandbox.
 - [The HTTP API](https://fctl.sh/docs/api.md): authentication, errors, paging, and the endpoints for sessions, messages, events, schedules, projects, memory, retrospectives and reviews, with examples.
 - [Automation](https://fctl.sh/docs/automation.md): schedules, Linear delegation, starting agents from other tools, access tokens, GitHub access levels, review agents from GitHub Actions, other uses.
 - [Self-hosting](https://fctl.sh/docs/self-hosting.md): the control plane in a container (Docker, Kubernetes) or on Cloudflare, settings, HTTPS, the first account, the GitHub App (permissions, webhook, follow-ups), the Linear app, Google sign-in, email, hosts.
