@@ -122,7 +122,7 @@ export function NewWorkspace() {
               address.ending ? (
                 <>
                   <span className="font-mono text-[11.5px]">
-                    {location.host}/w/{beforeEnding(address.slug)}-<span className="text-ink-4">······</span>
+                    {location.host}/w/{beforeEnding(address.slug)}-<span className="text-ink-4">xxxxxx</span>
                   </span>{" "}
                   · {address.slug} is {address.ending}, so it gets a random ending
                 </>
