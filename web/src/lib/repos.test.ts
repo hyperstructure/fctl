@@ -215,4 +215,16 @@ describe("what the field adds to a project", () => {
     expect(repoAdditions([], "hyperstructure/*", [...project, listed("hyperstructure")])).toEqual([]);
     expect(repoAdditions([], "hyperstructure/*", project)).toEqual(["hyperstructure/*"]);
   });
+
+  it("leaves out one typed of another account than the project's repositories, as the list does", () => {
+    expect(repoAdditions(chosen, "romanescohq/web", project)).toEqual(chosen);
+    expect(repoAdditions([], "romanescohq/web", project)).toEqual([]);
+    // Without repositories, the project takes the account of the first chosen.
+    expect(repoAdditions([], "romanescohq/web", [])).toEqual(["romanescohq/web"]);
+    expect(repoAdditions(["romanescohq/shop"], "hyperstructure/fctl", [])).toEqual(["romanescohq/shop"]);
+    expect(repoAdditions(["romanescohq/shop"], "RomanescoHQ/web", [])).toEqual([
+      "romanescohq/shop",
+      "RomanescoHQ/web",
+    ]);
+  });
 });

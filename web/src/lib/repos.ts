@@ -139,7 +139,7 @@ export function repoChoices({
     else groups.unshift([c]);
   }
   const pool = groups.flat();
-  const account = project ?? chosen.map(parseRepo).find((r) => !!r)?.owner;
+  const account = accountOf(listed, chosen);
   const mark = (c: RepoChoice): RepoChoice =>
     account && !same(c.owner, account) ? { ...c, elsewhere: account } : c;
   const q = query.trim().toLowerCase();
@@ -164,9 +164,15 @@ export function repoChoices({
   return [...found, ...extra].map(mark);
 }
 
+/** The account a project's repositories belong to: of those it has, else of those chosen. */
+function accountOf(listed: readonly G.ProjectRepo[], chosen: readonly string[]): string | undefined {
+  return listed[0]?.owner ?? chosen.map(parseRepo).find((r) => !!r)?.owner;
+}
+
 /**
- * What the field adds to a project: the repositories chosen, and one typed whole besides, unless
- * the project has it already, where adding it again would only change its access.
+ * What the field adds to a project: the repositories chosen, and one typed whole besides, as
+ * `repoChoices` would let it be chosen: not one the project has, which adding again would only
+ * give the access chosen, nor one of another account than its repositories'.
  */
 export function repoAdditions(
   chosen: readonly string[],
@@ -177,5 +183,6 @@ export function repoAdditions(
   if (!typed) return [...chosen];
   const value = repoValue(typed);
   const known = [...chosen, ...listed.map(repoValue)].some((v) => same(v, value));
-  return known ? [...chosen] : [...chosen, value];
+  const account = accountOf(listed, chosen);
+  return known || (account && !same(account, typed.owner)) ? [...chosen] : [...chosen, value];
 }
