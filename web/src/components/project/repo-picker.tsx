@@ -32,7 +32,7 @@ export function RepoPicker({
   onChange,
   query,
   onQuery,
-  listed,
+  loaded,
   status,
   placeholder,
   invalid,
@@ -48,8 +48,8 @@ export function RepoPicker({
   /** What's typed, which narrows the list down. */
   query: string;
   onQuery: (query: string) => void;
-  /** fctl listed the repositories the workspace may use: one typed is off that list. */
-  listed: boolean;
+  /** The repositories the workspace may use have loaded: one typed that isn't among them says so. */
+  loaded: boolean;
   /** A line under the list, such as that it's still loading. */
   status?: ReactNode;
   placeholder: string;
@@ -403,7 +403,7 @@ export function RepoPicker({
                         <span className="block pb-0.5 text-[12px] leading-[1.45] text-ink-3">
                           Every repository of {c.owner} the GitHub App can reach, read only
                         </span>
-                      ) : c.typed && listed && !c.elsewhere ? (
+                      ) : c.typed && loaded && !c.elsewhere ? (
                         <span className="block pb-0.5 text-[12px] leading-[1.45] text-ink-3">
                           Not on the list: fctl checks it with GitHub as it adds it
                         </span>

@@ -60,7 +60,7 @@ function Tab({
         }}
         query={query}
         onQuery={setQuery}
-        listed
+        loaded
         placeholder="Choose from the list, or type hyperstructure/name"
       />
     </form>

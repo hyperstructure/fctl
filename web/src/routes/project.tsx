@@ -562,7 +562,8 @@ function Repositories({ project }: { project: G.Project }) {
     "All of a project's repositories belong to one GitHub account."
   ) : query.trim() && choices.length === 0 ? (
     <>
-      No repository on the list matches. Type one as <Address>owner/name</Address> to add it by hand.
+      No repository on the list matches. Type one as{" "}
+      <code className="font-mono text-[11.5px] text-ink-2">owner/name</code> to add it by hand.
     </>
   ) : undefined;
   return (
@@ -599,7 +600,7 @@ function Repositories({ project }: { project: G.Project }) {
                       setQuery(q);
                       edited();
                     }}
-                    listed={!!github.data}
+                    loaded={!!github.data}
                     status={status}
                     placeholder={`Choose from the list, or type ${owner ?? "owner"}/name`}
                     invalid={add.isError}
