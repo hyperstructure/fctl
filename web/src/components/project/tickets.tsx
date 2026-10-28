@@ -793,11 +793,11 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
   const done = l?.move_done !== false;
   const moves =
     review && done
-      ? " The ticket moves to In Review when its pull request is up, and to Done once it merges."
+      ? " The ticket moves to In Review when its pull request is up, and to Done once a pull request that fixes it merges."
       : review
         ? " The ticket moves to In Review when its pull request is up."
         : done
-          ? " The ticket moves to Done once its pull request merges."
+          ? " The ticket moves to Done once a pull request that fixes it merges."
           : "";
   const steps: { icon: ReactNode; text: ReactNode }[] = [
     {

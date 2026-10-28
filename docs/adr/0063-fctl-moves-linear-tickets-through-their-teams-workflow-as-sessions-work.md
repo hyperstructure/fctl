@@ -53,7 +53,9 @@ Review by default.
     its key in its title or branch, which fctl names after the ticket
     (`fctl_domain::tickets::completes`). The control plane reads their
     titles, descriptions and branches from GitHub as they merge, of those
-    the session may look up.
+    the session may look up, and tries again later, a few times over seven
+    hours, when GitHub or Linear can't say: the session is usually done by
+    then, so nothing else would.
 - **Each move has a project switch** (`LinearTickets::move_started`,
   `move_review`, `move_done`; `fctl projects set --linear-start`,
   `--linear-review`, `--linear-done`; the Tickets tab, which names the

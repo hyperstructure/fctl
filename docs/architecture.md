@@ -1818,10 +1818,12 @@ issue's delegate (the person stays its assignee), and mention.
    completes the ticket as Linear's GitHub integration reads it: words
    that close it before its key in its title or description (`Fixes
    ENG-123`), not others (`Part of ENG-123`), and without any, its key in
-   its title or branch (`fctl_domain::tickets::completes`). The control
-   plane reads their titles, descriptions and branches from GitHub as
-   they merge (`crate::delegations::move_on`), of the pull requests the
-   session may look up, and the transcript says each move
+   its title or branch (`fctl_domain::tickets::completes`). SessionDO's
+   alarm has the control plane read their titles, descriptions and
+   branches from GitHub as they merge (`crate::delegations::move_on`), of
+   the pull requests the session may look up, and tries again later, four
+   more times over seven hours, when GitHub or Linear couldn't say, since
+   the session is usually done by then. The transcript says each move
    (`ticket_moved`). Agents leave the state alone unless asked, and move
    a ticket that needs no pull request to Done themselves; agents of
    sessions that didn't start from a ticket move the tickets whose work

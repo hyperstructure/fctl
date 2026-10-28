@@ -252,7 +252,9 @@ describe("the Tickets tab", () => {
     });
     expect(c.textContent).toContain("Engineering");
     expect(c.textContent).toContain("A delegated ticket at once, as Linear asks of agents");
-    expect(c.textContent).toContain("The ticket moves to In Review when its pull request is up, and to Done");
+    expect(c.textContent).toContain(
+      "The ticket moves to In Review when its pull request is up, and to Done once a pull request that fixes it merges.",
+    );
     expect(c.textContent).toContain("A ticket labelled explore gets an exploration");
     expect(c.textContent).toContain("assign one of ENG's issues to fctl");
     const link = c.querySelector<HTMLAnchorElement>('a[href="/api/v1/linear/link?project=web"]');

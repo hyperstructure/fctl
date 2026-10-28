@@ -792,25 +792,37 @@ pub enum Progress {
 }
 
 /// How far a session has come, as its pull requests and whether its agent
-/// changed anything show: `None` while it has neither.
+/// changed anything show: `None` while it has neither. A pull request
+/// whose state nobody looked up yet is still open, but not known to be up
+/// for review: it may be a draft.
 pub fn progress(prs: &[PullRequestRef], changed: bool) -> Option<Progress> {
-    // One whose state nobody looked up yet is open.
-    fn state(p: &PullRequestRef) -> &str {
-        p.state.as_deref().unwrap_or("open")
-    }
-    let open: Vec<&str> = prs
+    let state = |p: &PullRequestRef| p.state.clone().unwrap_or_default();
+    let open: Vec<String> = prs
         .iter()
         .map(state)
-        .filter(|s| !matches!(*s, "merged" | "closed"))
+        .filter(|s| !matches!(s.as_str(), "merged" | "closed"))
         .collect();
     if open.is_empty() && prs.iter().any(|p| state(p) == "merged") {
         Some(Progress::Merged)
-    } else if open.iter().any(|s| *s != "draft") {
+    } else if open.iter().any(|s| matches!(s.as_str(), "open" | "queued")) {
         Some(Progress::Review)
     } else {
         (changed || !open.is_empty()).then_some(Progress::Started)
     }
 }
+
+/// Whether to see if a session's ticket is done, now that what fctl knows
+/// of its pull requests went from `before` to `now` (as [`progress`] has
+/// them): once none is open any more, one merged among them, or once one
+/// more merged (`merged_more`) while none is.
+pub fn done_due(before: Option<Progress>, now: Option<Progress>, merged_more: bool) -> bool {
+    now == Some(Progress::Merged) && (before != Some(Progress::Merged) || merged_more)
+}
+
+/// How long fctl waits before it sees again whether a session's ticket is
+/// done, after GitHub or Linear couldn't say: after each try in turn, and
+/// then no more.
+pub const DONE_AGAIN_IN_MS: [i64; 4] = [60_000, 10 * 60_000, 60 * 60_000, 6 * 60 * 60_000];
 
 /// How far an agent's report moves its session's ticket on, from `before`
 /// to `now` (as [`progress`] has them): to started once it changed
@@ -1457,9 +1469,19 @@ mod tests {
             Some(Progress::Started)
         );
         assert_eq!(progress(&[pr(Some("closed"))], false), None);
-        for up in [Some("open"), Some("queued"), None] {
-            assert_eq!(progress(&[pr(up)], false), Some(Progress::Review), "{up:?}");
+        for up in ["open", "queued"] {
+            assert_eq!(
+                progress(&[pr(Some(up))], false),
+                Some(Progress::Review),
+                "{up}"
+            );
         }
+        // One nobody looked up yet may be a draft: it is open, not up.
+        assert_eq!(progress(&[pr(None)], false), Some(Progress::Started));
+        assert_eq!(
+            progress(&[pr(Some("merged")), pr(None)], true),
+            Some(Progress::Started)
+        );
         assert_eq!(
             progress(&[pr(Some("draft")), pr(Some("open"))], true),
             Some(Progress::Review)
@@ -1503,6 +1525,24 @@ mod tests {
             // Merges move it on their own.
             assert_eq!(reported(Some(Review), Some(Merged), turn_over), None);
         }
+    }
+
+    #[test]
+    fn tickets_are_seen_to_once_none_is_open_or_one_more_merged() {
+        use Progress::*;
+        // The last open one merged, or closed while another had merged.
+        assert!(done_due(Some(Review), Some(Merged), true));
+        assert!(done_due(Some(Review), Some(Merged), false));
+        assert!(done_due(None, Some(Merged), true));
+        // One more merged among those that did: it may be the one that
+        // completes the ticket.
+        assert!(done_due(Some(Merged), Some(Merged), true));
+        assert!(!done_due(Some(Merged), Some(Merged), false));
+        // One merged while another is open: not yet.
+        assert!(!done_due(Some(Review), Some(Review), true));
+        assert!(!done_due(Some(Merged), Some(Review), false));
+        assert!(!done_due(None, None, false));
+        assert!(DONE_AGAIN_IN_MS.windows(2).all(|w| w[0] < w[1]));
     }
 
     #[test]

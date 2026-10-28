@@ -627,7 +627,7 @@ async fn take_up(
             .map(|t| &t.linear)
             .filter(|l| delegated && delegated_to_fctl && l.moves_started());
         let moved = match starts {
-            Some(l) => move_ticket(linear, &ticket.id, tk::Progress::Started, l).await,
+            Some(l) => start_ticket(linear, &ticket.id, key, l).await,
             None => None,
         };
         let message = TicketMessage {
@@ -735,7 +735,7 @@ async fn take_up(
     // Linear asks agents to start what is delegated to them: before the
     // session, so that its agent hears of it.
     let moved = if delegated && delegated_to_fctl && taker.linear.moves_started() {
-        move_ticket(linear, &ticket.id, tk::Progress::Started, &taker.linear).await
+        start_ticket(linear, &ticket.id, key, &taker.linear).await
     } else {
         None
     };
@@ -891,38 +891,50 @@ async fn suggested<'t>(
 
 /// Moves a ticket on in its team's workflow as far as `progress` takes it
 /// (`fctl_domain::tickets::next_state`), never back, while it is one of the
-/// tickets a project takes (`scope`): the state it moved to, or `None` when
-/// it stays where it is or Linear refused.
+/// tickets a project takes (`scope`): the state it moved to, `None` when it
+/// stays where it is, or Linear's error.
 async fn move_ticket(
     linear: &Linear<'_>,
     issue: &str,
     progress: tk::Progress,
     scope: &LinearTickets,
-) -> Option<TicketState> {
+) -> AppResult<Option<TicketState>> {
     let data = linear
         .graphql(lin::ISSUE_STATES, json!({ "id": issue }))
-        .await
-        .inspect_err(|e| worker::console_error!("reading a ticket's state: {}", e.0.message))
-        .ok()?;
-    let found = data.get("issue").filter(|v| lin::takes(scope, v))?;
+        .await?;
+    let Some(found) = data.get("issue").filter(|v| lin::takes(scope, v)) else {
+        return Ok(None);
+    };
     let current = found.get("state").and_then(lin::state);
-    let states = lin::states(found.get("team")?);
-    let target = tk::next_state(progress, current.as_ref(), &states)?.clone();
-    let key = found
-        .get("identifier")
-        .and_then(Value::as_str)
-        .unwrap_or(issue);
-    if let Err(e) = linear
+    let states = found.get("team").map(lin::states).unwrap_or_default();
+    let Some(target) = tk::next_state(progress, current.as_ref(), &states) else {
+        return Ok(None);
+    };
+    let Some(id) = target.id.as_deref() else {
+        return Ok(None);
+    };
+    linear
         .graphql(
             &lin::issue_update(),
-            json!({ "id": issue, "input": { "stateId": target.id.as_deref()? } }),
+            json!({ "id": issue, "input": { "stateId": id } }),
         )
+        .await?;
+    Ok(Some(target.clone()))
+}
+
+/// [`move_ticket`] as a session starts from a ticket: what Linear refuses
+/// is only logged, since the session starts all the same.
+async fn start_ticket(
+    linear: &Linear<'_>,
+    issue: &str,
+    key: &str,
+    scope: &LinearTickets,
+) -> Option<TicketState> {
+    move_ticket(linear, issue, tk::Progress::Started, scope)
         .await
-    {
-        worker::console_error!("moving {key} to {}: {}", target.name, e.0.message);
-        return None;
-    }
-    Some(target)
+        .inspect_err(|e| worker::console_error!("starting {key}: {}", e.0.message))
+        .ok()
+        .flatten()
 }
 
 /// Says in a session's transcript that fctl moved its ticket in Linear.
@@ -1552,30 +1564,32 @@ pub async fn pull_requests(env: &Env, session_id: &str, found: &[PullRequestRef]
 /// Moves the ticket of a session that answers in a Linear thread on, as far
 /// as `progress` takes it and its project lets fctl
 /// (`LinearTickets::move_started` and the rest), and says so in the
-/// transcript: as a turn ends with changes or a pull request up, and once
-/// its pull requests merged (`merged`: those that did), when one of them
-/// completes the ticket ([`completing`]).
+/// transcript: as its agent changes something, as a turn ends with a pull
+/// request up, and once its pull requests merged (`merged`: those that
+/// did), when one of them completes the ticket ([`completing`]). Returns
+/// whether that is settled: `false` when GitHub or Linear couldn't say,
+/// and asking again later may move it.
 pub async fn move_on(
     env: &Env,
     session_id: &str,
     progress: tk::Progress,
     merged: &[PullRequestRef],
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let cfg = Config::from_env(env);
     let db = env.d1("DB")?;
     let now = crate::ctx::now_ms();
     let Some(row) = crate::spec::session_row(&db, session_id).await? else {
-        return Ok(());
+        return Ok(true);
     };
     let Some(column) = row
         .ticket
         .as_deref()
         .and_then(|j| serde_json::from_str::<TicketColumn>(j).ok())
     else {
-        return Ok(());
+        return Ok(true);
     };
     let Some(project) = crate::spec::project_row(&db, &row.project_id).await? else {
-        return Ok(());
+        return Ok(true);
     };
     let settings = project.settings();
     // Only where the project still takes this Linear workspace's tickets.
@@ -1591,7 +1605,7 @@ pub async fn move_on(
                 .is_none_or(|o| o == l.organization)
         })
     else {
-        return Ok(());
+        return Ok(true);
     };
     let lets = match progress {
         tk::Progress::Started => l.moves_started(),
@@ -1599,34 +1613,46 @@ pub async fn move_on(
         tk::Progress::Merged => l.moves_done(),
     };
     let key = column.ticket.key.as_str();
-    if !lets
-        || progress == tk::Progress::Merged
-            && !completing(&cfg, &db, session_id, key, merged, now).await
-    {
-        return Ok(());
+    if !lets {
+        return Ok(true);
+    }
+    if progress == tk::Progress::Merged {
+        match completing(&cfg, &db, session_id, key, merged, now).await {
+            Some(true) => {}
+            Some(false) => return Ok(true),
+            None => return Ok(false),
+        }
     }
     let Some(a) = answering(&db, &cfg, session_id, now)
         .await?
         .filter(|a| a.thread.organization_id == l.organization)
     else {
-        return Ok(());
+        return Ok(true);
     };
-    if let Some(state) = move_ticket(&a.linear, &column.ticket.id, progress, l).await {
-        let link = TicketLink {
-            key: key.to_owned(),
-            title: column.ticket.title.clone().unwrap_or_default(),
-            url: column.ticket.url.clone(),
-            state: None,
-        };
-        moved_notice(env, session_id, link, state).await;
+    match move_ticket(&a.linear, &column.ticket.id, progress, l).await {
+        Ok(Some(state)) => {
+            let link = TicketLink {
+                key: key.to_owned(),
+                title: column.ticket.title.clone().unwrap_or_default(),
+                url: column.ticket.url.clone(),
+                state: None,
+            };
+            moved_notice(env, session_id, link, state).await;
+            Ok(true)
+        }
+        Ok(None) => Ok(true),
+        Err(e) => {
+            worker::console_error!("moving {key} on: {}", e.0.message);
+            Ok(false)
+        }
     }
-    Ok(())
 }
 
 /// Whether one of a session's `merged` pull requests completes ticket
 /// `key`, as GitHub has their titles, descriptions and branches now
 /// (`fctl_domain::tickets::completes`): among those the session may look
-/// up (`crate::pull_requests::track`). False when GitHub can't say.
+/// up (`crate::pull_requests::track`). `None` when D1 or GitHub couldn't
+/// say.
 async fn completing(
     cfg: &Config,
     db: &D1Database,
@@ -1634,14 +1660,14 @@ async fn completing(
     key: &str,
     merged: &[PullRequestRef],
     now: i64,
-) -> bool {
+) -> Option<bool> {
     #[derive(Deserialize)]
     struct Tracked {
         repo: String,
         #[serde(deserialize_with = "crate::db::int")]
         number: i64,
     }
-    let tracked: Vec<Tracked> = match q(
+    let tracked: Vec<Tracked> = q(
         db,
         &format!(
             "SELECT l.repo AS repo, l.number AS number FROM pull_request_sessions l \
@@ -1649,10 +1675,12 @@ async fn completing(
             crate::pull_requests::in_reach(None)
         ),
         &[s(session_id)],
-    ) {
-        Ok(query) => query.all().await.unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
+    )
+    .ok()?
+    .all()
+    .await
+    .inspect_err(|e| worker::console_error!("the pull requests of {session_id}: {}", e.0.message))
+    .ok()?;
     let mut accounts: BTreeMap<String, Vec<(RepoRef, u64)>> = BTreeMap::new();
     for pr in merged {
         let Some(repo) = pr
@@ -1673,9 +1701,11 @@ async fn completing(
                 .push((repo, pr.number));
         }
     }
-    let Ok(gh) = crate::github::from_config(cfg, now) else {
-        return false;
-    };
+    if accounts.is_empty() {
+        return Some(false);
+    }
+    let gh = crate::github::from_config(cfg, now).ok()?;
+    let mut unsure = false;
     for prs in accounts.values() {
         match gh
             .pull_requests(None, prs, fctl_domain::webhooks::Fields::Text)
@@ -1687,17 +1717,20 @@ async fn completing(
                         .is_some_and(|t| tk::completes(key, &t.title, &t.body, &t.branch))
                 });
                 if completes {
-                    return true;
+                    return Some(true);
                 }
             }
-            Ok(None) => {}
-            Err(e) => worker::console_error!(
-                "reading what the pull requests of {session_id} say: {}",
-                e.0.message
-            ),
+            Ok(None) => unsure = true,
+            Err(e) => {
+                worker::console_error!(
+                    "reading what the pull requests of {session_id} say: {}",
+                    e.0.message
+                );
+                unsure = true;
+            }
         }
     }
-    false
+    (!unsure).then_some(false)
 }
 
 fn pull_label(pr: &PullRequestRef) -> String {
