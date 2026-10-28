@@ -1827,6 +1827,42 @@ verified or what is worth confirming, the agent rewrites its description
 stands. Agents from before the setting describe pull requests as before
 ([ADR 0049](adr/0049-agents-write-balanced-pull-request-descriptions.md)).
 
+### Pull requests and issues
+
+Agents that may push and open pull requests are also told how to handle
+them and the issues they work on, in a section of the system prompt after
+the one on descriptions, with the tracker's lines
+([Ticket trackers](#ticket-trackers)) under it. fctl's defaults are a few
+rules for any repository, which give way to the repository's own
+instructions (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`) where those say
+otherwise:
+
+- read an issue with its comments before starting on it, and check that
+  no open pull request already does what it asks;
+- write `Fixes #12` only when a pull request does everything the issue
+  asks, and otherwise `Refs #12`, with a comment on the issue that says
+  what is done and what is left;
+- after a push, wait for the pull request's checks before ending the turn
+  (`gh pr checks --watch --fail-fast`), and fix what the changes broke;
+- answer each review comment in its thread;
+- merge only when asked, and push nothing more to a merged pull request's
+  branch.
+
+A project writes its own in their place (`pull_request_instructions`;
+Settings → Agents, which shows fctl's to start from; `fctl projects set
+--pr-instructions-file`), or empties them to tell its agents nothing of
+the kind. Unset, they are fctl's defaults as the agent's version has them
+(`DEFAULT_PULL_REQUEST_INSTRUCTIONS` in `fctl_proto::session`, which
+`cargo xtask gen` writes to `web/src/gen/defaults.ts` for the web app), so
+that they improve with fctl; the control plane stores a text that says
+what the defaults say as unset. The setting is always sent, as `null` for
+the defaults, and an update that leaves it out keeps what was stored. The
+section appears whether or not the project asks agents to open a pull
+request when they finish; agents that may only comment or read open none
+and don't get it, nor do review agents, and agents from before the setting
+are told none of it
+([ADR 0060](adr/0060-agents-follow-rules-for-pull-requests-and-issues-that-projects-can-change.md)).
+
 ### Model and effort
 
 A project's settings name the model its sessions run on (Claude's

@@ -310,6 +310,8 @@ fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
 fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
+fctl projects show my-app --pr-instructions > prs.md   # what agents are told about pull requests and issues: fctl's rules unless the project has its own
+fctl projects set -p my-app --pr-instructions-file prs.md   # the project's own instead (--pr-instructions default for fctl's, "" for none)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
 fctl projects set -p my-app --tickets linear --linear-team ENG   # its tickets are a Linear team's
 fctl projects use my-app
