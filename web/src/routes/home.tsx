@@ -150,15 +150,29 @@ function RepoText({ project }: { project: G.Project }) {
 
 /** The project a new session goes to: picked here last time, while it is still there. */
 const LAST_TARGET = "fctl:last-target";
+/** The project picked here last in each workspace, by the workspace's id. */
+const LAST_TARGETS = "fctl:last-targets";
+
+function lastTargets(): Record<string, string> {
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(LAST_TARGETS) ?? "{}");
+    return kept && typeof kept === "object" ? (kept as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
 
 function QuickStart({
   user,
   projects,
   workspaces,
+  workspace,
 }: {
   user: string;
   projects: G.Project[];
   workspaces: G.Workspace[];
+  /** The workspace whose work the page shows, by id, if only one's: the project follows it there. */
+  workspace?: string;
 }) {
   const index = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
   // Projects where you may start sessions, under their workspaces, in your order (the list's).
@@ -190,8 +204,10 @@ function QuickStart({
   }, [first, project, editable]);
   const pick = (slug: string) => {
     setProject(slug);
+    const w = editable.find((p) => p.slug === slug)?.workspace?.id;
     try {
       localStorage.setItem(LAST_TARGET, slug);
+      if (w) localStorage.setItem(LAST_TARGETS, JSON.stringify({ ...lastTargets(), [w]: slug }));
     } catch {}
   };
   const files = useAttachments(editable.length && project ? { project } : undefined, { keep });
@@ -203,6 +219,15 @@ function QuickStart({
   });
   // Once a session starts with the draft, it is forgotten.
   const { start, starting } = useStartSession(draft.forget);
+  // When the page shows one workspace's work, the project goes there too, unless it is there
+  // already: to the one picked there last, else its first. One picked here afterwards stays.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only showing another workspace moves it
+  useEffect(() => {
+    if (!workspace || starting || target?.workspace?.id === workspace) return;
+    const there = editable.filter((p) => p.workspace?.id === workspace);
+    const next = there.find((p) => p.slug === lastTargets()[workspace]) ?? there[0];
+    if (next) pick(next.slug);
+  }, [workspace]);
   const attach = (f: File[], pasted?: boolean) => {
     files.add(f, { pasted });
     ref.current?.focus();
@@ -718,6 +743,7 @@ export function Home() {
               user={me.user.id}
               projects={projects.data.projects}
               workspaces={workspaces.data.workspaces}
+              workspace={only}
             />
           )}
           {usage?.length ? <PlanUsageStrip usage={usage} className="mt-3" /> : null}

@@ -311,9 +311,12 @@ turns them off.
 ## 8. Follow along and steer
 
 The Agent Floor lists the sessions at work under **Working now**, and the
-latest that ended under **Recently**. A project's page lists its sessions
-the same way, with **Recently** for the ended ones that last moved in the
-past day and **Older** for the rest, the most recent first. There
+latest that ended under **Recently**. When you are in more than one
+workspace, choose one above them to list only its sessions: the task box
+moves to that workspace too, to the project you last chose there, else its
+first in the sidebar. A project's page lists its sessions the same way,
+with **Recently** for the ended ones that last moved in the past day and
+**Older** for the rest, the most recent first. There
 **Active** shows only the sessions at work, and **Mine** only the ones you
 started.
 

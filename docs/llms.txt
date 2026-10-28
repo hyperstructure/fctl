@@ -186,7 +186,7 @@ Each recipe says who does what: some steps take a person with a role in the proj
 
 ## Web app
 
-- **Agent Floor** (`/`): the task box (project, model, effort, GitHub access, files; ⌘Enter starts, **Schedule** turns the task into a schedule), sessions **Working now** and **Recently**, plan usage, invitations. ⌘K searches sessions, projects, workspaces and what sessions said.
+- **Agent Floor** (`/`): the task box (project, model, effort, GitHub access, files; ⌘Enter starts, **Schedule** turns the task into a schedule), sessions **Working now** and **Recently** (choosing one of your workspaces above them lists only its sessions and moves the task box there, to the project you last chose in it, else its first), plan usage, invitations. ⌘K searches sessions, projects, workspaces and what sessions said.
 - **Session page** (`/s/<id>`): the live transcript (tool calls fold into lines; the images the agent read show small under them for 7 days), the composer to message the agent, Interrupt, Stop and Resume, Share, the follow bell, Changes (the branch's diff), pull requests with checks, context and usage, retrospectives, ⌘F to find in the transcript, Open in Claude.
 - **Project page** (`/p/<slug>`): Sessions, Tickets, Schedules, Reviews, Memory, Retrospectives, Repositories and Members tabs; maintainers and owners also see Settings (agents, sandbox, GitHub, follow-ups…) and Secrets.
 - **Workspace page** (`/w/<slug>`): Projects, People, Runners (with the command and token that add one), GitHub, Linear, Settings, and the Audit log for admins.
