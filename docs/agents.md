@@ -70,14 +70,15 @@ says:
   link, check that the page shows the same code, and approve. The sign-in
   shows in the person's Settings → Devices, where revoking it signs the
   agent out at once.
-- **A token for one project**: the agent can start sessions in that
-  project, steer their agents, and read the project's sessions, memory and
-  retrospectives. It reaches nothing else: not the person's other
-  projects, their workspaces' people, settings and runners, their account
-  or their other tokens. The person makes the token, in Settings →
-  Access tokens (New access token: Run sessions, Only some, the project, an
-  expiry) or in a terminal, and gives it to the agent, which keeps it in
-  `FCTL_TOKEN` and doesn't repeat it in the conversation:
+- **A token for one project**: the agent can do in that project what an
+  editor does: start sessions and steer their agents, run its schedules,
+  keep its memory, and read its sessions and retrospectives. It reaches
+  nothing outside the project: not the person's other projects, their
+  workspaces' people, settings and runners, their account or their other
+  tokens. The person makes the token, in Settings → Access tokens (New
+  access token: Run sessions, Only some, the project, an expiry) or in a
+  terminal, and gives it to the agent, which keeps it in `FCTL_TOKEN` and
+  doesn't repeat it in the conversation:
 
   ```sh
   fctl token "Personal agent" --access run -p xyz123 --days 30   # the person runs this
@@ -85,10 +86,12 @@ says:
   fctl whoami                      # whose it is, and what it may do
   ```
 
-  `--access full` (Everything) also lets the agent change the project's
-  settings, secrets, members and schedules, as far as the person's role
-  there allows, and `--github comment` or `--github read` keeps the agents
-  of its sessions from pushing.
+  Adding `--github comment` or `--github read` keeps the agents of its
+  sessions from pushing. `--access full` (Everything) in place of `run`
+  also lets the agent change the project's settings, secrets, members and
+  schedules, as far as the person's role there allows, but takes no
+  `--github`: it could change the settings that say what the project's
+  agents may do.
 
 What the person asks is a hint. "I want to use the fctl.sh CLI to manage
 the xyz123 project" names one project, so they most likely want a token for
