@@ -14,5 +14,10 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "fsevents": false,
+    "workerd": true
   }
 }
