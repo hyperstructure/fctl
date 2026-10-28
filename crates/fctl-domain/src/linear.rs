@@ -522,6 +522,32 @@ pub const REPOSITORY_SUGGESTIONS: &str = "query($issueId: String!, $agentSession
 pub const CREATOR_TIMEZONE: &str =
     "query($id: String!) { agentSession(id: $id) { creator { timezone } } }";
 
+/// Every query and mutation fctl sends Linear, by the name of its constant
+/// or function: what the tests price, and what `cargo xtask linear check`
+/// checks against Linear's schema with the stand-in (xtask/linear).
+pub fn operations() -> Vec<(&'static str, String)> {
+    vec![
+        ("VIEWER", VIEWER.to_owned()),
+        ("TEAM_IDS", TEAM_IDS.to_owned()),
+        ("TEAMS", TEAMS.to_owned()),
+        ("TEAM", TEAM.to_owned()),
+        ("PROJECT", PROJECT.to_owned()),
+        ("TEAM_STATES", TEAM_STATES.to_owned()),
+        ("TEAM_LABELS", TEAM_LABELS.to_owned()),
+        ("issue_query", issue_query()),
+        ("issues_query", issues_query()),
+        ("search_query", search_query()),
+        ("issue_create", issue_create()),
+        ("issue_update", issue_update()),
+        ("COMMENT_CREATE", COMMENT_CREATE.to_owned()),
+        ("ACTIVITY_CREATE", ACTIVITY_CREATE.to_owned()),
+        ("SESSION_UPDATE", SESSION_UPDATE.to_owned()),
+        ("ATTACHMENT_LINK_URL", ATTACHMENT_LINK_URL.to_owned()),
+        ("REPOSITORY_SUGGESTIONS", REPOSITORY_SUGGESTIONS.to_owned()),
+        ("CREATOR_TIMEZONE", CREATOR_TIMEZONE.to_owned()),
+    ]
+}
+
 /// The time zone a [`CREATOR_TIMEZONE`] answer names, by its IANA name
 /// (`Europe/Stockholm`): `None` when the person has none in Linear, or the
 /// session no person.
@@ -1437,33 +1463,53 @@ mod tests {
 
     #[test]
     fn every_query_costs_well_under_linears_maximum() {
-        // Half of it at most, should Linear count more than its docs say.
-        let fits = |name: &str, query: &str, vars: &[(&str, u32)]| {
-            let cost = complexity(query, vars);
-            assert!(cost <= MAX_COMPLEXITY / 2, "{name} costs {cost} points");
-        };
         let list = [("first", crate::tickets::MAX_LIST)];
         let teams = [("first", u32::try_from(TEAMS_PAGE).unwrap_or(u32::MAX))];
-        fits("VIEWER", VIEWER, &[]);
-        fits("TEAM_IDS", TEAM_IDS, &[]);
-        fits("TEAMS", TEAMS, &teams);
-        fits("TEAM", TEAM, &[]);
-        fits("PROJECT", PROJECT, &[]);
-        fits("TEAM_STATES", TEAM_STATES, &[]);
-        fits("TEAM_LABELS", TEAM_LABELS, &[]);
-        fits("issue_query", &issue_query(), &[]);
-        fits("issues_query", &issues_query(), &list);
-        fits("search_query", &search_query(), &list);
-        fits("issue_create", &issue_create(), &[]);
-        fits("issue_update", &issue_update(), &[]);
-        fits("COMMENT_CREATE", COMMENT_CREATE, &[]);
-        fits("ACTIVITY_CREATE", ACTIVITY_CREATE, &[]);
-        fits("SESSION_UPDATE", SESSION_UPDATE, &[]);
-        fits("ATTACHMENT_LINK_URL", ATTACHMENT_LINK_URL, &[]);
-        fits("REPOSITORY_SUGGESTIONS", REPOSITORY_SUGGESTIONS, &[]);
-        fits("CREATOR_TIMEZONE", CREATOR_TIMEZONE, &[]);
+        for (name, query) in operations() {
+            let vars: &[(&str, u32)] = match name {
+                "TEAMS" => &teams,
+                "issues_query" | "search_query" => &list,
+                _ => &[],
+            };
+            // Half of it at most, should Linear count more than its docs say.
+            let cost = complexity(&query, vars);
+            assert!(cost <= MAX_COMPLEXITY / 2, "{name} costs {cost} points");
+        }
         assert_eq!(complexity(TEAM_IDS, &[]), 275);
         assert_eq!(complexity(TEAMS, &teams), 4_880);
+    }
+
+    /// Each constant and function above that holds GraphQL is in
+    /// [`operations`], which the cost and the schema are checked for.
+    #[test]
+    fn operations_lists_every_query() {
+        let source = include_str!("linear.rs");
+        let code = &source[..source.find("#[cfg(test)]").unwrap_or(source.len())];
+        let listed: Vec<&str> = operations().into_iter().map(|(name, _)| name).collect();
+        let mut found = Vec::new();
+        for (i, _) in code.match_indices("\npub const ") {
+            let rest = &code[i + "\npub const ".len()..];
+            let name = rest.split(':').next().unwrap_or_default();
+            let value = rest.split(';').next().unwrap_or_default();
+            if value.contains("\"query") || value.contains("\"mutation") {
+                found.push(name);
+            }
+        }
+        // Functions that take nothing and give GraphQL.
+        for (i, _) in code.match_indices("\npub fn ") {
+            let rest = &code[i + "\npub fn ".len()..];
+            let name = rest.split('(').next().unwrap_or_default();
+            let body = rest.split("\n}").next().unwrap_or_default();
+            if rest.starts_with(&format!("{name}() -> String"))
+                && (body.contains("\"query") || body.contains("\"mutation"))
+            {
+                found.push(name);
+            }
+        }
+        assert!(found.len() >= 18, "found only {found:?}");
+        for name in found {
+            assert!(listed.contains(&name), "operations() leaves out {name}");
+        }
     }
 
     #[test]

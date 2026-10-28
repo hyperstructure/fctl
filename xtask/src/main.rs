@@ -6,6 +6,7 @@ mod deploy;
 mod dev;
 mod dist;
 mod docs;
+mod linear;
 mod macho;
 mod release;
 mod serve;
@@ -19,10 +20,23 @@ cargo xtask <command>
 
 Develop
   dev [--no-host] [--no-vite] [--smoke] [--server <url>]
-                                Run everything locally: control plane, web app (hot reload)
-                                and a host whose agents run fake-claude; --smoke runs one
-                                session to the end and stops (CI); --server uses the control
-                                plane running there (started with FCTL_SETUP_TOKEN=dev-setup-token)
+                                Run everything locally: control plane, web app (hot reload),
+                                a host whose agents run fake-claude and a stand-in for Linear;
+                                --smoke runs one session to the end and a delegation in Linear,
+                                and stops (CI); --server uses the control plane running there
+                                (started with FCTL_SETUP_TOKEN=dev-setup-token), without Linear
+  linear delegate <issue | title> [--description <text>] [--as <person>]
+  linear mention <issue | title> [<text>] [--as <person>]
+  linear reply <issue> <text> [--as <person>]
+  linear stop <issue> [--as <person>]
+  linear show [<issue>]
+  linear uninstall              In the Linear stand-in of cargo xtask dev, someone (the dev
+                                owner, or grace) delegates an issue to fctl (a new one, given a
+                                title), mentions fctl, replies in the issue's agent session or
+                                presses stop, and this follows what fctl answers there; show
+                                shows what fctl did there; uninstall removes fctl's app
+  linear check                  Check every query and mutation fctl sends Linear against
+                                Linear's schema (xtask/linear/schema.graphql); check web does
   check [--quick] [lint|test|web]...
                                 What CI checks (fmt, types, lint, tests, builds): lint is
                                 rustfmt, web/src/gen and Clippy; test is cargo test; web is
@@ -97,6 +111,21 @@ fn main() -> Result<()> {
             };
             a.done()?;
             dev::dev(&root, opts)
+        }
+        "linear" => {
+            let action = a.positional(
+                "what to do: delegate, mention, reply, stop, show, uninstall or check",
+            )?;
+            if action == "check" {
+                a.done()?;
+                return linear::check(&root);
+            }
+            let who = a.value("--as")?;
+            let description = a.value("--description")?;
+            let target = a.optional();
+            let text = a.optional();
+            a.done()?;
+            linear::command(&action, target, text, who, description)
         }
         "demo" => {
             let opts = demo::DemoOpts {

@@ -14,6 +14,7 @@ cargo xtask check          # what CI checks; run it before you push
 cargo xtask check --quick  # the same without production builds
 cargo xtask check lint     # one part (lint, test, web), as one CI job runs it
 cargo xtask dev --smoke    # CI's other check: one session through the local stack
+cargo xtask linear delegate ENG-1   # in the dev stack's stand-in for Linear (docs/development.md)
 cargo xtask demo           # the demo cast's world, lived in, for screenshots (.claude/skills/demo)
 cargo xtask serve          # the control plane without Cloudflare, as its container runs it
 cargo xtask gen            # regenerate web/src/gen after changing crates/fctl-proto

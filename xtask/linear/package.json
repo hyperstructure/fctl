@@ -1,0 +1,22 @@
+{
+  "name": "@fctl/linear-standin",
+  "private": true,
+  "type": "module",
+  "description": "A stand-in for Linear in cargo xtask dev: its sign-in and GraphQL API, answered on Linear's own schema, and the webhook deliveries it signs",
+  "scripts": {
+    "start": "node standin.mjs",
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "test": "node --test",
+    "update-schema": "node update-schema.mjs"
+  },
+  "dependencies": {
+    "graphql": "17.0.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -14,8 +14,9 @@ pub enum Part {
     Lint,
     /// `cargo test`.
     Test,
-    /// Biome, TypeScript and the tests of the web app and the standalone
-    /// server, and the web app's production build.
+    /// Biome, TypeScript and the tests of the web app, the standalone
+    /// server and the Linear stand-in, fctl's Linear queries against
+    /// Linear's schema, and the web app's production build.
     Web,
 }
 
@@ -38,6 +39,10 @@ impl Part {
     }
 }
 
+/// The npm workspaces (the root package.json's), whose Biome and tests the
+/// web part runs.
+const WORKSPACES: [&str; 3] = ["web", "deploy/standalone", "xtask/linear"];
+
 /// Runs `parts`, or all of them when it is empty.
 pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
     let has = |part| parts.is_empty() || parts.contains(&part);
@@ -51,7 +56,7 @@ pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
         if !root.join("node_modules").exists() {
             util::npm_install(root)?;
         }
-        for workspace in ["web", "deploy/standalone"] {
+        for workspace in WORKSPACES {
             run(Command::new("npm")
                 .args(["run", "check", "--workspace", workspace])
                 .current_dir(root))?;
@@ -89,11 +94,12 @@ pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
             .current_dir(root))?;
     }
     if has(Part::Web) {
-        for workspace in ["web", "deploy/standalone"] {
+        for workspace in WORKSPACES {
             run(Command::new("npm")
                 .args(["test", "--workspace", workspace])
                 .current_dir(root))?;
         }
+        crate::linear::check(root)?;
         if !quick {
             util::build_web(root)?;
         }
