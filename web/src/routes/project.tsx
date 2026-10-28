@@ -1023,6 +1023,7 @@ function Settings({ project }: { project: G.Project }) {
                 value={shownInstructions(s.pull_request_instructions)}
                 onChange={(e) => set("pull_request_instructions", e.target.value)}
                 minRows={4}
+                maxRows={20}
                 placeholder="Nothing: agents follow the repository's own instructions."
               />
             )}
