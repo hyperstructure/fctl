@@ -1032,11 +1032,12 @@ pub fn couldnt_start(key: &str, why: Option<&str>) -> String {
 
 /// What fctl says in an agent session as its session pauses on a usage
 /// limit: when it carries on (`until`, when Claude said), in `zone`, the
-/// time zone of the person who made the agent session, or in UTC, saying
-/// so, when fctl doesn't know theirs.
-pub fn paused(until: Option<i64>, zone: Option<&dyn Zone>) -> String {
+/// time zone of the person who made the agent session, by its name and
+/// its rules, or in UTC when fctl doesn't know theirs. Either way it says
+/// which, for everyone else who reads the issue.
+pub fn paused(until: Option<i64>, zone: Option<(&str, &dyn Zone)>) -> String {
     let when = match (until, zone) {
-        (Some(at), Some(zone)) => format!(" until {}", stamp(zone, at)),
+        (Some(at), Some((name, zone))) => format!(" until {} ({name})", stamp(zone, at)),
         (Some(at), None) => format!(" until {} UTC", stamp(&Utc, at)),
         (None, _) => String::new(),
     };
@@ -1558,17 +1559,17 @@ mod tests {
         use crate::cron::tests::{Fixed, Stockholm, utc};
         let at = utc(2026, 10, 27, 18, 40);
         assert_eq!(
-            paused(Some(at), Some(&Stockholm)),
-            "The session pauses until Tuesday 27 October 2026 at 19:40: its Claude subscription reached a usage limit. It carries on by itself."
+            paused(Some(at), Some(("Europe/Stockholm", &Stockholm))),
+            "The session pauses until Tuesday 27 October 2026 at 19:40 (Europe/Stockholm): its Claude subscription reached a usage limit. It carries on by itself."
         );
         // Their day, which needn't be UTC's.
         assert_eq!(
-            paused(Some(at), Some(&Fixed(-10 * HOUR_MS))),
-            "The session pauses until Tuesday 27 October 2026 at 08:40: its Claude subscription reached a usage limit. It carries on by itself."
+            paused(Some(at), Some(("Pacific/Honolulu", &Fixed(-10 * HOUR_MS)))),
+            "The session pauses until Tuesday 27 October 2026 at 08:40 (Pacific/Honolulu): its Claude subscription reached a usage limit. It carries on by itself."
         );
         assert_eq!(
-            paused(Some(at), Some(&Fixed(6 * HOUR_MS))),
-            "The session pauses until Wednesday 28 October 2026 at 00:40: its Claude subscription reached a usage limit. It carries on by itself."
+            paused(Some(at), Some(("Asia/Dhaka", &Fixed(6 * HOUR_MS)))),
+            "The session pauses until Wednesday 28 October 2026 at 00:40 (Asia/Dhaka): its Claude subscription reached a usage limit. It carries on by itself."
         );
         assert_eq!(
             paused(Some(at), None),
@@ -1576,7 +1577,7 @@ mod tests {
         );
         // Claude didn't say when.
         let unsaid = "The session pauses: its Claude subscription reached a usage limit. It carries on by itself.";
-        assert_eq!(paused(None, Some(&Stockholm)), unsaid);
+        assert_eq!(paused(None, Some(("Europe/Stockholm", &Stockholm))), unsaid);
         assert_eq!(paused(None, None), unsaid);
     }
 

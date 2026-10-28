@@ -1428,7 +1428,11 @@ pub async fn halted(
             } else {
                 None
             };
-            lin::paused(until, zone.as_ref().map(|z| z as &dyn Zone))
+            lin::paused(
+                until,
+                zone.as_ref()
+                    .map(|(name, rules)| (name.as_str(), rules as &dyn Zone)),
+            )
         }
         _ => return Ok(()),
     };
@@ -1443,16 +1447,17 @@ pub async fn halted(
 }
 
 /// The time zone of the person who made a thread's agent session, from
-/// their Linear settings: `None` when they have none there, `Intl` doesn't
-/// know it, or Linear doesn't answer.
-async fn creator_zone(a: &Answering<'_>) -> Option<IntlZone> {
+/// their Linear settings, by its name and its rules: `None` when they have
+/// none there, `Intl` doesn't know it, or Linear doesn't answer.
+async fn creator_zone(a: &Answering<'_>) -> Option<(String, IntlZone)> {
     let answer = a
         .linear
         .graphql(lin::CREATOR_TIMEZONE, json!({ "id": a.thread.id }))
         .await
         .inspect_err(|e| worker::console_error!("reading a time zone in Linear: {}", e.0.message))
         .ok()?;
-    IntlZone::new(lin::creator_timezone(&answer)?)
+    let name = lin::creator_timezone(&answer)?;
+    Some((name.to_owned(), IntlZone::new(name)?))
 }
 
 /// A session that answers in a Linear thread found pull requests: Linear's
