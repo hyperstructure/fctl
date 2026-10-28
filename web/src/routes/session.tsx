@@ -760,7 +760,7 @@ function PullRequests({ prs, session }: { prs: G.PullRequestRef[]; session: G.Se
         return (
           <li
             key={pr.url}
-            className="overflow-hidden rounded-md border border-line transition-colors hover:border-line-strong"
+            className="rounded-md border border-line transition-colors hover:border-line-strong"
           >
             <a
               href={pr.url}

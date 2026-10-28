@@ -90,7 +90,11 @@ export function PullRequestReviewLine({ review }: { review: G.ReviewCheck }) {
       to="/s/$id"
       params={{ id: review.session_id }}
       title="Open the review's session"
-      className={cn(cls, "transition-colors hover:bg-hover hover:text-ink")}
+      // Its fill keeps to the card's rounded corners, inside its border.
+      className={cn(
+        cls,
+        "rounded-b-[calc(var(--radius-md)-1px)] transition-colors hover:bg-hover hover:text-ink",
+      )}
     >
       {content}
       <ArrowRight className="size-3 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover/review:translate-x-0.5 group-hover/review:opacity-100" />
