@@ -25,7 +25,7 @@ use fctl_proto::api::{FindingThread, PostedReview, Review, ReviewBot, ReviewStat
 use fctl_proto::event::{MessageSource, UserMessage};
 use fctl_proto::runner::{GithubCredential, StopReason};
 use fctl_proto::session::{
-    GithubAccess, PullRequestRef, RepoAccess, RepoRef, SessionStats, UserRef,
+    GithubAccess, PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef,
 };
 use fctl_proto::{ApiError, ErrorCode, SessionId, UserId};
 use serde::Deserialize;
@@ -214,6 +214,7 @@ impl ReviewRow {
             created_at: self.created_at,
             finished_at: self.finished_at,
             busy_ms: stats.busy_ms,
+            opened_by: None,
         })
     }
 }
@@ -281,6 +282,81 @@ pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, r
                 review_url: r.review_url.as_deref().and_then(rv::posted_link),
             };
             Some((r.session_id, kept))
+        })
+        .collect())
+}
+
+/// The sessions whose agents opened the pull requests of reviews `rows`,
+/// by review, as [`pass_on`] picks the one it sends findings to: where
+/// fctl's GitHub App opened one, of the first 20 sessions to list it, in
+/// the order they started, the one on its branch, else the first
+/// (`rv::opener`). Only those in their review's project.
+pub async fn openers(
+    db: &D1Database,
+    cfg: &Config,
+    rows: &[ReviewRow],
+) -> AppResult<BTreeMap<String, SessionRef>> {
+    /// A session that lists one of the pull requests.
+    #[derive(Deserialize)]
+    struct Lister {
+        repo: String,
+        #[serde(deserialize_with = "int")]
+        number: i64,
+        session_id: String,
+        project_id: String,
+        #[serde(deserialize_with = "int")]
+        session_number: i64,
+        title: String,
+        branch: Option<String>,
+    }
+    let app = app_login(cfg);
+    let asked: Vec<(&ReviewRow, (String, i64))> = rows
+        .iter()
+        .filter(|r| rv::by_app(r.author.as_deref(), app.as_deref()))
+        .filter_map(|r| Some((r, (crate::pull_requests::key(&r.repo()?), r.number))))
+        .collect();
+    if asked.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let pulls: BTreeSet<&(String, i64)> = asked.iter().map(|(_, pull)| pull).collect();
+    // As `crate::pull_requests::listed_by` lists them for one pull request.
+    let listed: Vec<Lister> = q(
+        db,
+        &format!(
+            "SELECT repo, number, session_id, project_id, session_number, title, branch FROM ( \
+             SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id, s.project_id AS project_id, \
+             s.number AS session_number, s.title AS title, s.branch AS branch, \
+             ROW_NUMBER() OVER (PARTITION BY l.repo, l.number ORDER BY s.created_at, s.id) AS place \
+             FROM json_each(?1) j \
+             JOIN pull_request_sessions l ON l.repo = json_extract(j.value, '$[0]') \
+             AND l.number = json_extract(j.value, '$[1]') \
+             JOIN sessions s ON s.id = l.session_id \
+             WHERE NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = l.session_id) AND {}) \
+             WHERE place <= 20 ORDER BY place",
+            crate::pull_requests::in_reach(None)
+        ),
+        &[s(&json!(pulls).to_string())],
+    )?
+    .all()
+    .await?;
+    let mut by_pull: BTreeMap<(&str, i64), Vec<&Lister>> = BTreeMap::new();
+    for l in &listed {
+        by_pull.entry((&l.repo, l.number)).or_default().push(l);
+    }
+    Ok(asked
+        .into_iter()
+        .filter_map(|(r, (repo, number))| {
+            let listing = by_pull.get(&(repo.as_str(), number))?;
+            let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
+            let opener = listing.get(rv::opener(&branches, r.head_ref.as_deref())?)?;
+            (opener.project_id == r.project_id).then(|| {
+                let session = SessionRef {
+                    id: SessionId(opener.session_id.clone()),
+                    number: count(opener.session_number),
+                    title: opener.title.clone(),
+                };
+                (r.session_id.clone(), session)
+            })
         })
         .collect())
 }

@@ -559,8 +559,11 @@ fn print_review(r: &Review) {
     let mut facts = vec![
         format!("commit {}", short(&r.head_sha)),
         format!("session #{}", r.session_number),
-        style::ago(r.created_at),
     ];
+    if let Some(by) = &r.opened_by {
+        facts.push(format!("pull request by session #{}", by.number));
+    }
+    facts.push(style::ago(r.created_at));
     if r.resolved > 0 {
         facts.insert(0, format!("{} fixed", r.resolved));
     }

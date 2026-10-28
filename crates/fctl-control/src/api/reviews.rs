@@ -13,7 +13,7 @@ use fctl_domain::reviews as rv;
 use fctl_domain::validate;
 use fctl_proto::ApiError;
 use fctl_proto::api::{
-    ReviewAgents, ReviewBotList, ReviewList, StartReviewRequest, UpdateReviewAgentsRequest,
+    Review, ReviewAgents, ReviewBotList, ReviewList, StartReviewRequest, UpdateReviewAgentsRequest,
 };
 use fctl_proto::session::RepoRef;
 use serde_json::json;
@@ -217,14 +217,13 @@ pub async fn bot(ctx: &Ctx, id: &str, name: &str) -> AppResult<Response> {
 pub async fn list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     if let Some(session) = http::query(req, "session") {
-        let row = reviews::of_session(&ctx.db, &session)
+        let rows: Vec<_> = reviews::of_session(&ctx.db, &session)
             .await?
-            .filter(|r| r.project_id == p.row.id);
+            .into_iter()
+            .filter(|r| r.project_id == p.row.id)
+            .collect();
         return http::ok(&ReviewList {
-            reviews: row
-                .iter()
-                .filter_map(reviews::ReviewRow::to_review)
-                .collect(),
+            reviews: to_reviews(ctx, &rows).await?,
             next_before: None,
         });
     }
@@ -242,11 +241,23 @@ pub async fn list(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
         } else {
             None
         },
-        reviews: rows
-            .iter()
-            .filter_map(reviews::ReviewRow::to_review)
-            .collect(),
+        reviews: to_reviews(ctx, &rows).await?,
     })
+}
+
+/// Reviews as the API shows them, each with the session in its project
+/// that opened its pull request, which callers who see the project see.
+async fn to_reviews(ctx: &Ctx, rows: &[reviews::ReviewRow]) -> AppResult<Vec<Review>> {
+    let mut openers = reviews::openers(&ctx.db, &ctx.cfg, rows).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            Some(Review {
+                opened_by: openers.remove(&r.session_id),
+                ..r.to_review()?
+            })
+        })
+        .collect())
 }
 
 /// `POST /api/v1/projects/{id}/reviews`: people who start sessions in the
@@ -297,9 +308,12 @@ pub async fn start(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Resp
             )));
         }
     };
-    let review = reviews::of_session(&ctx.db, &session)
+    let row = reviews::of_session(&ctx.db, &session)
         .await?
-        .and_then(|r| r.to_review())
+        .ok_or_else(|| crate::error::internal("the review vanished"))?;
+    let review = to_reviews(ctx, &[row])
+        .await?
+        .pop()
         .ok_or_else(|| crate::error::internal("the review vanished"))?;
     http::created(&review)
 }

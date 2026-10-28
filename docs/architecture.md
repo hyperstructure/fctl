@@ -1364,7 +1364,10 @@ skip, drafts too, and fctl posts what it found on GitHub
 The project's Reviews tab lists them, newest first, with their pull
 request, commit, outcome and the review on GitHub, and opens their
 sessions, whose page says what came of the review instead of offering a
-composer (`GET /api/v1/projects/{id}/reviews`, `fctl review`). Checks need
+composer (`GET /api/v1/projects/{id}/reviews`, `fctl review`). Its rail
+links the session whose agent opened the pull request (`opener`, as in
+step 6), whatever the review found, when that session is in the review's
+project, whose people see it too (`Review.opened_by`). Checks need
 the GitHub App's Checks permission (read and write): without it, reviews
 run and post, and say why their commit shows no check
 ([Self-hosting](self-hosting.md#connect-github-optional-recommended)).

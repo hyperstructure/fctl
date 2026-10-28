@@ -300,7 +300,7 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 | `PATCH`, `DELETE /api/v1/memories/{id}` | `{"text", "stale": true, "reason", "duplicate_of"}`: change, mark stale or current again, delete (editors) |
 | `GET /api/v1/projects/{project}/retrospectives` | newest first, `?outcome=completed` / `partial` / `blocked`, `?limit=`, `?before=`; the first page counts `outcomes` |
 | `GET`, `PATCH /api/v1/projects/{project}/review-agents` | its review agents: `{"enabled", "run_as_me", "model", "effort", "instructions", "bots", "skipped_repos"}` (owners turn them on, on their own subscription); `repos` are the repositories they review, `skipped_repos` those they don't (`["acme/shared-lib"]`, `[]` for none) |
-| `GET /api/v1/projects/{project}/reviews` | its reviews, newest first: `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), the pull request, `findings`, `review_url` |
+| `GET /api/v1/projects/{project}/reviews` | its reviews, newest first: `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), the pull request, `findings`, `review_url`, and `opened_by` (`id`, `number`, `title`): the project's session whose agent opened the pull request, if one did; `?session=` for one session's review |
 | `POST /api/v1/projects/{project}/reviews` | `{"pull_request": "12"}` (or `owner/name#12`, or its URL): review its head now |
 
 ## Everything else
