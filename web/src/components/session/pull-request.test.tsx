@@ -158,6 +158,21 @@ describe("reviewing a pull request again", () => {
     expect(again()?.disabled).toBe(false);
   });
 
+  it("says the review started when the line shows it before the answer comes", async () => {
+    let answer: (r: unknown) => void = () => {};
+    startReview.mockReturnValue(new Promise((r) => (answer = r)));
+    const { again, rerender } = await line(review("commented", { still_open: 1, project_id: "prj_web" }));
+    act(() => again()?.click());
+    await settle();
+    // GitHub's word of the new review comes first, and takes the button away.
+    const next = review("running", { waiting: true, session_id: "ses_next", project_id: "prj_web" });
+    rerender(<PullRequestReviewLine pr={pr(next)} review={next} />);
+    expect(again()).toBeNull();
+    answer({ repo: { owner: "hyperstructure", name: "fctl" }, number: 302, head_sha: "abc1234def" });
+    await settle();
+    expect(toast).toHaveBeenCalledWith("Reviewing fctl#302 at abc1234");
+  });
+
   it("says why the review didn't start, and can ask again", async () => {
     startReview.mockRejectedValue(
       new Error("Review agents are off in this project. Its owners turn them on under Reviews."),

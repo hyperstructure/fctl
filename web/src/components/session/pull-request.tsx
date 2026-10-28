@@ -4,7 +4,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, RotateCw } from "lucide-react";
-import { useState } from "react";
 import { ReviewStateIcon } from "@/components/review";
 import { ChecksIcon, PullRequestIcon, toast } from "@/components/ui";
 import type * as G from "@/gen";
@@ -133,30 +132,28 @@ function ReviewAgain({
   review: G.ReviewCheck;
   project: G.Project;
 }) {
-  // The review it was asked to repeat: the line shows the new one once GitHub says so.
-  const [asked, setAsked] = useState<string>();
-  const start = useMutation({
+  // What it is asked with: the review it repeats.
+  const start = useMutation<G.Review, Error, string | undefined>({
     mutationFn: () => api.startReview(project.id, { pull_request: pr.url }),
+    // Here, not in `mutate`: the line may show the new review, without this button, before the
+    // answer comes.
+    onSuccess: (r) => {
+      toast(`Reviewing ${pullRef(r)} at ${shortSha(r.head_sha)}`);
+      void queryClient.invalidateQueries({ queryKey: keys.reviews(project.id) });
+    },
     onError: (e) => toast(e.message, "error"),
   });
-  const done = asked !== undefined && asked === review.session_id;
+  const done = start.isSuccess && start.variables === review.session_id;
   return (
     <button
       type="button"
       aria-label="Review again"
       title="Review again"
       disabled={start.isPending || done}
-      onClick={() => {
-        const reviewed = review.session_id;
-        start.mutate(undefined, {
-          onSuccess: (r) => {
-            setAsked(reviewed);
-            toast(`Reviewing ${pullRef(r)} at ${shortSha(r.head_sha)}`);
-            void queryClient.invalidateQueries({ queryKey: keys.reviews(project.id) });
-          },
-        });
-      }}
-      className="relative -my-1 -mr-1.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-4 transition-colors duration-150 hover:bg-hover hover:text-ink active:scale-95 disabled:pointer-events-none disabled:opacity-60"
+      onClick={() => start.mutate(review.session_id)}
+      // Off, it still takes the pointer: a click that went through would open the review's
+      // session under it.
+      className="relative -my-1 -mr-1.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-4 transition-colors duration-150 enabled:hover:bg-hover enabled:hover:text-ink enabled:active:scale-95 disabled:cursor-default disabled:opacity-60"
     >
       <RotateCw className={cn("size-3", start.isPending && "motion-safe:animate-spin")} />
     </button>
