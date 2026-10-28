@@ -2,6 +2,41 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.25.0 (2026-10-28)
+
+### Features
+
+- **web:** Move the task box to the workspace the Agent Floor shows ([#296](https://github.com/hyperstructure/fctl/pull/296))
+- Add pull request and issue rules that projects can change ([#299](https://github.com/hyperstructure/fctl/pull/299))
+- **web:** Choose a project's repositories from a list ([#302](https://github.com/hyperstructure/fctl/pull/302))
+- Let admins reserve slugs, and give taken ones a random ending ([#305](https://github.com/hyperstructure/fctl/pull/305))
+- Show fctl's review of each pull request apart from its checks ([#310](https://github.com/hyperstructure/fctl/pull/310))
+- Let projects choose which repositories review agents review ([#309](https://github.com/hyperstructure/fctl/pull/309))
+- Link review sessions to the session that opened the pull request ([#316](https://github.com/hyperstructure/fctl/pull/316))
+- **xtask:** Add a Linear stand-in to cargo xtask dev and its smoke test ([#320](https://github.com/hyperstructure/fctl/pull/320))
+
+### Fixes
+
+- Catch a default or base branch the repository doesn't have ([#298](https://github.com/hyperstructure/fctl/pull/298))
+- **web:** Move the task box to a workspace's first project in your order ([#301](https://github.com/hyperstructure/fctl/pull/301))
+- **control:** Give Linear's pause note the delegator's time zone ([#297](https://github.com/hyperstructure/fctl/pull/297))
+- **host:** Say plainly when fctl host commands run without a host ([#304](https://github.com/hyperstructure/fctl/pull/304))
+- **web:** Let ⌘← and ⌘→ go back and forward from the Agent Floor ([#306](https://github.com/hyperstructure/fctl/pull/306))
+- **agent:** Say Playwright's browsers are shared only when they are ([#308](https://github.com/hyperstructure/fctl/pull/308))
+- **web:** Widen the session page's rail so fctl's review fits ([#311](https://github.com/hyperstructure/fctl/pull/311))
+- **host:** Read a Linux host's log from the journal ([#317](https://github.com/hyperstructure/fctl/pull/317))
+- **host:** Keep color codes out of the host's log ([#319](https://github.com/hyperstructure/fctl/pull/319))
+
+### Documentation
+
+- Drop the npm move from the roadmap and tick the real-Claude checks ([#295](https://github.com/hyperstructure/fctl/pull/295))
+
+### Other changes
+
+- Pin docs that a failed run left behind, and never older ones ([#307](https://github.com/hyperstructure/fctl/pull/307))
+- Approve esbuild's and workerd's npm install scripts ([#314](https://github.com/hyperstructure/fctl/pull/314))
+- Let npm 12 install the design package, a git dependency ([#315](https://github.com/hyperstructure/fctl/pull/315))
+
 ## 0.24.3 (2026-10-27)
 
 ### Features
