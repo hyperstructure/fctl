@@ -241,7 +241,7 @@ fn worker_target(root: &Path) -> PathBuf {
 /// The web app `wrangler dev` serves (Vite serves the live sources on top),
 /// and the local D1 with the migrations applied.
 fn web_and_d1(root: &Path, no_vite: bool, persist: Option<&Path>) -> Result<()> {
-    if !root.join("node_modules").exists() {
+    if !util::npm_installed(root) {
         util::npm_install(root)?;
     }
     if !root.join("web/dist/index.html").exists() || no_vite {

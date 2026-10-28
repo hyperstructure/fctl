@@ -53,7 +53,7 @@ pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
         types_are_current(root)?;
     }
     if has(Part::Web) {
-        if !root.join("node_modules").exists() {
+        if !util::npm_installed(root) {
             util::npm_install(root)?;
         }
         for workspace in WORKSPACES {

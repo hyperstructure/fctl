@@ -486,7 +486,7 @@ fn problems_note() -> Result<()> {
 /// control plane sends, against Linear's schema as the stand-in takes them
 /// (xtask/linear/check.mjs). Nothing runs, so it needs no stack.
 pub(crate) fn check(root: &Path) -> Result<()> {
-    if !root.join("node_modules/graphql").exists() {
+    if !util::npm_installed(root) {
         util::npm_install(root)?;
     }
     let mut operations = Vec::new();

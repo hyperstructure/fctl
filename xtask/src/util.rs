@@ -260,6 +260,13 @@ pub fn wrangler(root: &Path) -> Result<Command> {
     Ok(Command::new(bin))
 }
 
+/// Whether `npm ci` installed what the root package.json lists now: a
+/// `node_modules` from before the Linear stand-in's workspace lacks its link
+/// (and its graphql), which npm makes as it installs the workspaces.
+pub fn npm_installed(root: &Path) -> bool {
+    root.join("node_modules/@fctl/linear-standin").exists()
+}
+
 pub fn npm_install(root: &Path) -> Result<()> {
     if !has("npm") {
         bail!("npm is not installed (Node.js 22 or newer is needed for the web app and wrangler)");
