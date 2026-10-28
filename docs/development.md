@@ -194,20 +194,58 @@ yours, set a commit email
 (`cargo run -p fctl -- account set --commit-email 1+dev@users.noreply.github.com`);
 to see Claude's go, `cargo run -p fctl -- projects set --credit-claude off`.
 
-The dev instance has no Linear app either. To try Linear's side, point
-the control plane at a stand-in for Linear in `crates/fctl-control/.dev.vars`
-(read only as wrangler starts): `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`
-and `LINEAR_WEBHOOK_SECRET` with made-up values, and `LINEAR_API_URL` and
-`LINEAR_AUTHORIZE_URL` with the stand-in's address. It must answer
-`POST /oauth/token` and `/oauth/revoke`, the GraphQL queries and mutations
-in `crates/fctl-domain/src/linear.rs` at `POST /graphql`, and its authorize
-page by sending the browser back to `/api/v1/linear/installed` with a code
-and the `state` it got. Connect it on the workspace's Linear tab, choose a
-team in Playground's Tickets tab and link your account in Settings; then
-deliveries it signs with the webhook secret (`Linear-Signature`, the
-body's HMAC-SHA256 in hex, with a `webhookTimestamp` of now) at
-`/api/v1/linear/webhook` start and message sessions as Linear's do, and
-what fctl posts back arrives as its GraphQL mutations.
+Linear's side runs against a stand-in for Linear (`xtask/linear`), which
+`cargo xtask dev` starts at http://127.0.0.1:8790 and points the control
+plane's Linear app at (`LINEAR_API_URL` and the rest, as `--var`s of
+`wrangler dev`). It answers Linear's sign-in and GraphQL API for a made-up
+Linear workspace, Acme: the Engineering (ENG) and Design (DES) teams, a few
+issues, Dev Owner (the dev owner's Linear account) and Grace Hopper, whom
+fctl doesn't know. graphql-js runs each query on Linear's own schema
+(`xtask/linear/schema.graphql`), so that a query, a variable or an agent
+activity that Linear wouldn't take fails there too. `cargo xtask dev`
+connects the dev workspace to Acme through the redirects a browser follows,
+has Playground take Engineering's tickets and links the dev owner's
+account, unless they are already. The workspace's Linear tab, Playground's
+Tickets tab and Settings show them as they would with Linear, and connect
+and link through the stand-in. Acme, and a log of every request, live in
+`.fctl-dev/linear/`.
+
+`cargo xtask linear` acts in Acme as people there do: it sends the control
+plane the delivery Linear would, signed with the webhook's secret, and
+prints what fctl answers in the issue's agent session as it comes, until
+fctl waits for the person:
+
+```sh
+cargo xtask linear delegate ENG-1                       # Dev Owner delegates ENG-1 to fctl
+cargo xtask linear delegate "explore, then write notes.md"   # a new issue, delegated
+cargo xtask linear mention ENG-3 "what would this take?"
+cargo xtask linear reply ENG-1 "watch 60"               # a reply in ENG-1's agent session
+cargo xtask linear stop ENG-1                           # its stop button
+cargo xtask linear reply ENG-1 "Can I help?" --as grace # fctl asks Grace to link her account
+cargo xtask linear show ENG-1                           # what fctl did in its agent sessions
+cargo xtask linear uninstall                            # Acme uninstalls fctl's app
+```
+
+Nobody in Acme can delegate to fctl's app, or talk with it, while it isn't
+installed; the next `cargo xtask dev` installs it again.
+
+Issues and replies reach fake-claude as a session's task does, so its
+words work in them. In ENG-1 it writes `notes.md` and pushes it; ENG-3 is
+labeled `explore`, so fctl asks for an exploration, and fake-claude
+explores; in ENG-4 it hits the usage limit, and fctl says in Linear when
+the session carries on. DES-1 is in a team no project takes. http://127.0.0.1:8790 shows Acme's issues
+and what fctl did in each. The stand-in prints each change fctl makes in
+Acme, and as a problem what Linear would refuse, or what fctl didn't do in
+time: answer a delivery within five seconds, and say something in a new
+agent session within ten.
+
+`cargo xtask linear check` checks every query and mutation fctl sends
+Linear (`fctl_domain::linear::operations`), with variables of the kinds it
+sends, against Linear's schema, without the stack; `cargo xtask check web`
+runs it too. The schema is a copy of the one Linear publishes with its SDK
+(linear/linear, `packages/sdk/src/schema.graphql`): its first line names
+the commit it came from, and `npm run update-schema --workspace
+xtask/linear` brings it up to date.
 
 Notifications work locally too: `http://localhost:5173` is a secure
 context, so turn them on in Settings → Notifications, follow a session and
@@ -216,7 +254,8 @@ push service, so it needs the internet. A finished turn notifies you unless
 the session's tab is visible; `limit` pauses a session.
 
 `--no-host` skips the host; `--no-vite` serves the built web app from
-wrangler instead; `--smoke` runs one session and stops ([Checks](#checks)).
+wrangler instead; `--smoke` runs one session and a delegation in Linear's
+stand-in, and stops ([Checks](#checks)).
 Delete `.fctl-dev/` and `crates/fctl-control/.wrangler/` to start over.
 
 The hourly housekeeping job (`crates/fctl-control/src/housekeeping.rs`:
@@ -322,7 +361,7 @@ cargo xtask dev --smoke --server http://localhost:8787  # a host and a session t
 `--server` points `cargo xtask dev` at a control plane that already runs,
 instead of starting `wrangler dev`: it bootstraps the dev owner there with
 the dev setup token, and runs the host (and with `--smoke`, the session)
-against it. Give it the server's `FCTL_PUBLIC_URL`, the origin the server
+against it, without Linear's stand-in. Give it the server's `FCTL_PUBLIC_URL`, the origin the server
 accepts requests from. Its state goes in `.fctl-dev/server/`. Delete
 `.fctl-serve/` to start the server over.
 
@@ -348,9 +387,11 @@ cargo xtask dev --smoke    # and CI's other check: a session through the local s
 
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
 types, Biome and TypeScript for the web app, Biome for the standalone
-server, Clippy (native and wasm) with warnings as errors, `cargo test`, the
-web app's Vitest suite, the standalone server's tests (`node --test`), and
-a production build of the web app. It comes in three parts: `lint`
+server and the Linear stand-in, Clippy (native and wasm) with warnings as
+errors, `cargo test`, the web app's Vitest suite, the standalone server's
+and the Linear stand-in's tests (`node --test`), fctl's Linear queries
+against Linear's schema (`cargo xtask linear check`), and a production
+build of the web app. It comes in three parts: `lint`
 (formatting, the generated types and Clippy), `test` (`cargo test`) and
 `web` (the rest), and runs all three, in the order that fails fastest,
 when you name none. CI runs each part in a job of its own, at once, and
@@ -372,11 +413,24 @@ in a turn of its own, checks that the project's
 memory has the note and the session its one retrospective, completed and
 updated,
 then stops the session, checks the model and effort level it reports and
-that the project remembers the model it asked for, and stops everything
-else. It fails when any step does. CI runs it from a fresh
+that the project remembers the model it asked for. Then, in the Linear
+stand-in, Dev Owner delegates a new issue to fctl, and the smoke test
+waits until fctl has said in the issue's agent session that it looks at
+the issue and works on it in a session of Playground, moved the issue to
+In Progress, linked the session there and answered as the turn ended. A
+reply has the agent run `fctl ticket` commands, whose list, search, view,
+new sub-issue, comment and change of state, label and priority must reach
+Acme; another reply starts a turn, which Dev Owner's stop must interrupt,
+with fctl's word that it stopped; another hits the usage limit, and fctl's
+pause note must name Dev Owner's time zone; Grace's reply must get her
+asked to link her account; a mention of fctl in another issue must start
+a session that answers there; and an issue of a team no project takes
+must get fctl's refusal. The stand-in must have found nothing Linear would
+refuse, or fctl didn't do in time. The smoke test then stops the sessions
+and everything else. It fails when any step does. CI runs it from a fresh
 checkout, so its migrations, Worker, bootstrap, host and agent all run
 before a change can deploy. Locally it uses your `.fctl-dev/` state and
-ports 8787 and 5173: stop `cargo xtask dev` first.
+ports 8787, 8790 and 5173: stop `cargo xtask dev` first.
 
 `cargo xtask dev`, with `--smoke` or without, builds the CLI, the host
 and the agent, the Worker (`worker-build --dev`, in `target/worker`, so
@@ -418,9 +472,9 @@ that a long package name and its versions take past 72 characters
 (`build(deps): bump @cloudflare/workerd-linux-64 from …`) fails the
 Conventional Commits check: shorten it on the pull request, which reruns
 the check. GitHub also raises an alert for `web/package.json`,
-`deploy/standalone/package.json` and the crates' own `Cargo.toml` files,
-but Dependabot would update those without the lockfile, so their
-directories open none.
+`deploy/standalone/package.json`, `xtask/linear/package.json` and the
+crates' own `Cargo.toml` files, but Dependabot would update those without
+the lockfile, so their directories open none.
 
 ## Repository map
 
@@ -435,6 +489,7 @@ directories open none.
 | `crates/fctl` | The `fctl` binary: CLI plus `fctl host` |
 | `crates/fake-claude` | The scripted Claude stand-in |
 | `xtask` | `cargo xtask`: dev, check, gen, serve, deploy, secrets, dist, publish |
+| `xtask/linear` | The Linear stand-in: Linear's sign-in, GraphQL API (on Linear's schema) and webhook deliveries |
 | `web` | The web app (React, TanStack Router and Query, Tailwind, WebGL) |
 | `deploy/instances` | Instance descriptions for `cargo xtask deploy` |
 | `deploy/standalone` | The control plane without Cloudflare: its server, container image, Compose and Kubernetes examples |

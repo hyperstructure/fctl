@@ -4,17 +4,23 @@
 //!   local D1 and Durable Objects;
 //! - the web app under Vite with hot reload (http://localhost:5173);
 //! - a host with the process driver whose agents run fake-claude, a scripted
-//!   stand-in for Claude Code (no subscription, no network, deterministic).
+//!   stand-in for Claude Code (no subscription, no network, deterministic);
+//! - a stand-in for Linear (http://127.0.0.1:8790, xtask/linear), which the
+//!   control plane's Linear app signs in to (`crate::linear`).
 //!
 //! It builds the CLI, the host and the agent, the Worker and the web app at
 //! once, bootstraps an owner, a Claude credential, a workspace, a runner and
 //! a project the first time, and keeps its state in .fctl-dev/ (delete it to
-//! start over).
-//! With `--smoke` (CI), it runs one session to the end and stops.
+//! start over), and connects the workspace to the stand-in's Linear
+//! workspace.
+//! With `--smoke` (CI), it runs one session to the end, then a delegation
+//! in the stand-in, and stops.
 //! With `--server <url>`, the host and the smoke test use a control plane
 //! that already runs there instead (the standalone one, from `cargo xtask
-//! serve` or its container image), which bootstraps with the dev setup token.
+//! serve` or its container image), which bootstraps with the dev setup token,
+//! and has no Linear.
 
+use crate::linear;
 use crate::util::{self, run};
 use anyhow::{Context, Result, bail};
 use fctl_proto::api::{EventPage, MemoryList, RetrospectiveList};
@@ -107,10 +113,12 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
         let _ = SERVER.set(server.trim_end_matches('/').to_owned());
     }
     std::fs::create_dir_all(&state)?;
-    build(root, opts.server.is_none(), no_vite, None)?;
+    let local = opts.server.is_none();
+    build(root, local, no_vite, None)?;
     let mut children = Children(Vec::new());
-    if opts.server.is_none() {
-        wrangler_dev(root, &mut children, None, &[])?;
+    if local {
+        linear::start(root, &state.join("linear"), &mut children)?;
+        wrangler_dev(root, &mut children, None, &linear::vars())?;
     }
     wait_for(
         &format!("{}/api/v1/health", api()),
@@ -119,6 +127,9 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     )?;
 
     let token = bootstrap(&state)?;
+    if local {
+        linear::connect(root, &token)?;
+    }
     if !no_vite {
         // Vite itself, not `npm run dev`: npm doesn't pass SIGINT on, and
         // stopping npm leaves Vite serving.
@@ -146,7 +157,7 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
             )?;
         }
         eprintln!("\n\x1b[1mfctl dev is running\x1b[0m: starting one fake-claude session\n");
-        return smoke(root, &token, &mut children);
+        return smoke(root, &token, local, &mut children);
     }
 
     let api = api();
@@ -156,12 +167,21 @@ pub fn dev(root: &Path, opts: DevOpts) -> Result<()> {
     } else {
         ".fctl-dev"
     };
+    let linear = if local {
+        format!(
+            "  linear    {} (Acme): cargo xtask linear delegate ENG-1\n",
+            linear::STANDIN
+        )
+    } else {
+        String::new()
+    };
     eprintln!(
         "\n\x1b[1mfctl dev is running\x1b[0m\n\n  \
          app       {open}\n  \
          sign in   {DEV_EMAIL} / {DEV_PASSWORD}\n  \
          api       {api}/api/v1\n  \
-         cli       export FCTL_SERVER={api} FCTL_TOKEN=$(cat {state_dir}/token)\n\n\
+         cli       export FCTL_SERVER={api} FCTL_TOKEN=$(cat {state_dir}/token)\n\
+         {linear}\n\
          Agents run fake-claude: try a task like \"explore, then write notes.md\", \"rename Fix the login test\", \"screenshot\", \"remember Run npm ci first\", \"retro\", \"slow\", \"background 30\", \"delegate\", \"limit\" or \"crash\".\n\
          Ctrl-C stops everything. State lives in {state_dir}/.\n"
     );
@@ -221,7 +241,7 @@ fn worker_target(root: &Path) -> PathBuf {
 /// The web app `wrangler dev` serves (Vite serves the live sources on top),
 /// and the local D1 with the migrations applied.
 fn web_and_d1(root: &Path, no_vite: bool, persist: Option<&Path>) -> Result<()> {
-    if !root.join("node_modules").exists() {
+    if !util::npm_installed(root) {
         util::npm_install(root)?;
     }
     if !root.join("web/dist/index.html").exists() || no_vite {
@@ -283,8 +303,10 @@ pub(crate) fn wrangler_dev(
 /// working in the background and runs again while the agent takes each
 /// one's result in a turn of its own, the
 /// session stops when asked, it says which model and effort level Claude
-/// worked at, and the project remembers the model it asked for.
-fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
+/// worked at, and the project remembers the model it asked for. Then, with
+/// the control plane xtask started (`local`), a delegation in the Linear
+/// stand-in (`linear::smoke`).
+fn smoke(root: &Path, token: &str, local: bool, children: &mut Children) -> Result<()> {
     let fctl = || {
         let mut cmd = Command::new(util::target_dir(root).join("debug/fctl"));
         cmd.env("FCTL_SERVER", api()).env("FCTL_TOKEN", token);
@@ -310,13 +332,20 @@ fn smoke(root: &Path, token: &str, children: &mut Children) -> Result<()> {
         // The transcript shows how far it got.
         let _ = run(fctl().args(["logs", &id]));
     }
-    res
+    let mut passed = res?;
+    if local {
+        passed.push_str("; ");
+        passed.push_str(&linear::smoke(root, token, children)?);
+    }
+    eprintln!("\n\x1b[1msmoke test passed\x1b[0m: {passed}\n");
+    Ok(())
 }
 
 /// What the smoke test's agent keeps in the playground's memory.
 const SMOKE_NOTE: &str = "The smoke test's agent writes notes.md and pushes it.";
 
-fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
+/// The main session's checks: what they saw, for the smoke test's summary.
+fn finish(id: &str, token: &str, children: &mut Children) -> Result<String> {
     let auth = Auth::Bearer(token.to_owned());
     let mut seen = Seen::default();
     seen.until(
@@ -446,8 +475,8 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
         );
     }
     let subject = seen.commit.map(|c| c.subject).unwrap_or_default();
-    eprintln!(
-        "\n\x1b[1msmoke test passed\x1b[0m: the agent committed \"{subject}\" and \
+    Ok(format!(
+        "the agent committed \"{subject}\" and \
          pushed it, the session showed both before the turn ended, it kept \
          the image the agent read and gave it back, the agent \
          kept a note in the project's memory, recorded a retrospective and \
@@ -456,9 +485,8 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<()> {
          and subagent and ran again while the agent took each one's result \
          in a turn of its own, the session stopped, \
          it said Claude worked with haiku at medium effort, and the project \
-         remembers haiku\n"
-    );
-    Ok(())
+         remembers haiku"
+    ))
 }
 
 /// What a session's events have shown so far.
