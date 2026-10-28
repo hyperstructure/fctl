@@ -3,7 +3,7 @@ import { useEffect } from "react";
 // On Apple's systems shortcuts take ⌘ alone: there Ctrl moves the caret in text fields
 // (Ctrl+P goes up a line, Ctrl+K deletes to its end). Elsewhere they take Ctrl too, so ⌘
 // still works on a Mac whose browser says it is another system.
-const apple = () => /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent);
+export const apple = () => /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent);
 
 /**
  * Registers a keyboard shortcut like "mod+k" or "n" (ignored while typing, unless `inInputs`).

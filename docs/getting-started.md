@@ -259,12 +259,14 @@ the project page, or:
 fctl run "Add a dark mode toggle to the settings page"
 ```
 
-On a computer, the Agent Floor opens with the cursor in its task box. From
-anywhere in the app, ⌘K and then Enter take you there (Ctrl+K and Enter on
-Linux and Windows), and ⌘Enter (Ctrl+Enter) starts the session. ⌘K opens
-the search that jumps to sessions, projects and workspaces, and finds what
-sessions said (see [Follow along and steer](#8-follow-along-and-steer)),
-and ⌘P and ⌘⇧P open it too, as in code editors.
+On a computer, the Agent Floor opens with the cursor in its task box. On a
+Mac, ⌘← and ⌘→ still go back and forward while the box is empty; once it
+has text, they move the cursor. From anywhere in the app, ⌘K and then Enter
+take you to the box (Ctrl+K and Enter on Linux and Windows), and ⌘Enter
+(Ctrl+Enter) starts the session. ⌘K opens the search that jumps to
+sessions, projects and workspaces, and finds what sessions said (see
+[Follow along and steer](#8-follow-along-and-steer)), and ⌘P and ⌘⇧P open
+it too, as in code editors.
 
 The two lists by the Start button choose the model the session runs on
 (Opus, Sonnet, Haiku or Fable, each the latest of its family) and its
