@@ -16,6 +16,8 @@
 //! the session and from which it derives its state. It must answer the
 //! delivery within five seconds and send an activity within ten.
 
+use crate::cron::{Utc, Zone};
+use crate::schedules::stamp;
 use crate::validate::Result;
 use fctl_proto::ApiError;
 use fctl_proto::session::{LinearTickets, SessionTicket, Tracker};
@@ -515,6 +517,22 @@ pub const ATTACHMENT_LINK_URL: &str = "mutation($issueId: String!, $url: String!
 /// project could take.
 pub const REPOSITORY_SUGGESTIONS: &str = "query($issueId: String!, $agentSessionId: String, $candidates: [CandidateRepository!]!) { issueRepositorySuggestions(issueId: $issueId, agentSessionId: $agentSessionId, candidateRepositories: $candidates) { suggestions { repositoryFullName hostname confidence } } }";
 
+/// The time zone of the person who made an agent session, as their Linear
+/// settings have it ([`creator_timezone`]).
+pub const CREATOR_TIMEZONE: &str =
+    "query($id: String!) { agentSession(id: $id) { creator { timezone } } }";
+
+/// The time zone a [`CREATOR_TIMEZONE`] answer names, by its IANA name
+/// (`Europe/Stockholm`): `None` when the person has none in Linear, or the
+/// session no person.
+pub fn creator_timezone(answer: &Value) -> Option<&str> {
+    answer
+        .pointer("/agentSession/creator/timezone")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|z| !z.is_empty())
+}
+
 /// What a GraphQL answer says went wrong, if anything: Linear answers 200
 /// with `errors` for most failures, and 400 with `RATELIMITED` when it
 /// throttles.
@@ -1012,6 +1030,22 @@ pub fn couldnt_start(key: &str, why: Option<&str>) -> String {
     format!("fctl couldn't start on {key}: {why}. Reply here to try again.")
 }
 
+/// What fctl says in an agent session as its session pauses on a usage
+/// limit: when it carries on (`until`, when Claude said), in `zone`, the
+/// time zone of the person who made the agent session, by its name and
+/// its rules, or in UTC when fctl doesn't know theirs. Either way it says
+/// which, for everyone else who reads the issue.
+pub fn paused(until: Option<i64>, zone: Option<(&str, &dyn Zone)>) -> String {
+    let when = match (until, zone) {
+        (Some(at), Some((name, zone))) => format!(" until {} ({name})", stamp(zone, at)),
+        (Some(at), None) => format!(" until {} UTC", stamp(&Utc, at)),
+        (None, _) => String::new(),
+    };
+    format!(
+        "The session pauses{when}: its Claude subscription reached a usage limit. It carries on by itself."
+    )
+}
+
 fn quote(text: &str) -> String {
     text.lines()
         .map(|l| {
@@ -1427,6 +1461,7 @@ mod tests {
         fits("SESSION_UPDATE", SESSION_UPDATE, &[]);
         fits("ATTACHMENT_LINK_URL", ATTACHMENT_LINK_URL, &[]);
         fits("REPOSITORY_SUGGESTIONS", REPOSITORY_SUGGESTIONS, &[]);
+        fits("CREATOR_TIMEZONE", CREATOR_TIMEZONE, &[]);
         assert_eq!(complexity(TEAM_IDS, &[]), 275);
         assert_eq!(complexity(TEAMS, &teams), 4_880);
     }
@@ -1516,6 +1551,55 @@ mod tests {
             couldnt_start("ENG-3", Some(" ")),
             couldnt_start("ENG-3", None)
         );
+    }
+
+    #[test]
+    fn a_pause_says_when_it_carries_on_in_their_time_zone_or_in_utc() {
+        use crate::cron::HOUR_MS;
+        use crate::cron::tests::{Fixed, Stockholm, utc};
+        let at = utc(2026, 10, 27, 18, 40);
+        assert_eq!(
+            paused(Some(at), Some(("Europe/Stockholm", &Stockholm))),
+            "The session pauses until Tuesday 27 October 2026 at 19:40 (Europe/Stockholm): its Claude subscription reached a usage limit. It carries on by itself."
+        );
+        // Their day, which needn't be UTC's.
+        assert_eq!(
+            paused(Some(at), Some(("Pacific/Honolulu", &Fixed(-10 * HOUR_MS)))),
+            "The session pauses until Tuesday 27 October 2026 at 08:40 (Pacific/Honolulu): its Claude subscription reached a usage limit. It carries on by itself."
+        );
+        assert_eq!(
+            paused(Some(at), Some(("Asia/Dhaka", &Fixed(6 * HOUR_MS)))),
+            "The session pauses until Wednesday 28 October 2026 at 00:40 (Asia/Dhaka): its Claude subscription reached a usage limit. It carries on by itself."
+        );
+        assert_eq!(
+            paused(Some(at), None),
+            "The session pauses until Tuesday 27 October 2026 at 18:40 UTC: its Claude subscription reached a usage limit. It carries on by itself."
+        );
+        // Claude didn't say when.
+        let unsaid = "The session pauses: its Claude subscription reached a usage limit. It carries on by itself.";
+        assert_eq!(paused(None, Some(("Europe/Stockholm", &Stockholm))), unsaid);
+        assert_eq!(paused(None, None), unsaid);
+    }
+
+    #[test]
+    fn the_creators_time_zone_is_the_one_in_their_settings() {
+        let of = |tz: Value| json!({ "agentSession": { "creator": { "timezone": tz } } });
+        assert_eq!(
+            creator_timezone(&of(json!("Europe/Stockholm"))),
+            Some("Europe/Stockholm")
+        );
+        assert_eq!(
+            creator_timezone(&of(json!(" America/New_York "))),
+            Some("America/New_York")
+        );
+        assert_eq!(creator_timezone(&of(json!(""))), None);
+        assert_eq!(creator_timezone(&of(Value::Null)), None);
+        // A session that an automation made, without a person.
+        assert_eq!(
+            creator_timezone(&json!({ "agentSession": { "creator": null } })),
+            None
+        );
+        assert_eq!(creator_timezone(&Value::Null), None);
     }
 
     fn hmac_hex(secret: &str, body: &[u8]) -> String {
