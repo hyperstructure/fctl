@@ -471,6 +471,7 @@ teams).
 fctl review settings -p my-app --on --model opus --effort high   # a project owner: on their subscription
 fctl review settings -p my-app --instructions-file review.md
 fctl review settings -p my-app --bots dependabot,renovate         # apps whose pull requests start reviews
+fctl review settings -p my-app --description-summary on           # sum each pull request up in its description first
 fctl review start -p my-app 12                                    # review a pull request's head now
 fctl review -p my-app --json                                      # reviews and what came of each
 fctl projects set -p my-app --follow-ups all                      # comments, checks, conflicts, closed
@@ -478,7 +479,10 @@ fctl projects set -p my-app --follow-ups all                      # comments, ch
 
 Each new commit of a pull request in the project's writable repositories
 then gets a review; when an fctl agent opened the pull request, its session
-gets the findings, fixes what is real and answers in the threads. Sessions
+gets the findings, fixes what is real and answers in the threads. With
+`--description-summary on`, the review agent first sums the pull request
+up at the end of its description, which agents that rewrite their
+descriptions keep as it is. Sessions
 that list the pull request show how the review stands beside its checks,
 out of their count (`checks.review` in `fctl show --json`): waiting for a
 runner, reviewing, or how many issues it found. Once it ended, people who
@@ -577,6 +581,7 @@ fctl ticket comment ENG-123 "…"
 fctl publish after.png                       # where the project publishes screenshots
 fctl resolve PRRT_…                          # agents that comment: resolve a review thread
 fctl review threads && fctl review submit review.json   # review agents
+fctl review summarize summary.json           # review agents, first, where the project asks for a summary
 ```
 
 - The repository is at `~/workspace`, on the session's branch; other

@@ -570,9 +570,12 @@ they choose: their pull requests from the repository's branches get one
 by themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
-their threads. The project's owners turn them on (on their own
-subscription), take them over and say how they review; the person they
-run for may turn them off:
+their threads. Where the owners turn it on, the agent first sums the pull
+request up at the end of its description (how risky it looks, what it
+does and what deserves a closer look), in place of an earlier review's
+summary, and fctl leaves the rest of the description as it is. The
+project's owners turn them on (on their own subscription), take them over
+and say how they review; the person they run for may turn them off:
 
 ```sh
 fctl review settings -p my-app                 # on or off, on whose subscription, how
@@ -580,6 +583,7 @@ fctl review settings -p my-app --on --model opus --effort high
 fctl review settings -p my-app --instructions-file review.md   # what they're told besides fctl's own
 fctl review settings -p my-app --bots dependabot,renovate      # the apps whose pull requests start reviews (or none)
 fctl review settings -p my-app --skip-repos acme/shared-lib    # repositories whose pull requests get no review here (or none)
+fctl review settings -p my-app --description-summary on        # sum each pull request up in its description first
 fctl review bots -p my-app                     # the apps that opened the newest pull requests, and which start reviews
 fctl review bots -p my-app my-app-bot          # an app as GitHub shows it: its name and who makes it
 fctl review settings -p my-app --mine          # run them on your subscription from now on
@@ -596,6 +600,7 @@ request one reviews and what came of it. In a review agent's sandbox,
 
 ```sh
 fctl review threads                    # fctl's earlier findings on the pull request, with the answers
+fctl review summarize summary.json     # sum it up at the end of its description first, where the project asks: --help shows the file
 fctl review submit review.json         # post the review, once: --help shows the file
 ```
 

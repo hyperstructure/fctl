@@ -1260,9 +1260,11 @@ skip, drafts too, and fctl posts what it found on GitHub
    Another owner takes them over (`run_as_me`), and nobody puts them on
    someone else's subscription; the operator may always turn them off.
    Owners also choose their model and effort level (else the project's),
-   instructions that follow fctl's own, the GitHub Apps whose pull
-   requests start reviews by themselves (`bots`, below), and the
-   repositories they skip (`project_reviews.skipped_repos`,
+   instructions that follow fctl's own, whether their agents sum each
+   pull request up in its description first (`description_summary`,
+   `fctl review settings --description-summary`, off until they turn it
+   on; step 5), the GitHub Apps whose pull requests start reviews by
+   themselves (`bots`, below), and the repositories they skip (`project_reviews.skipped_repos`,
    `ReviewAgents.skipped_repos`, `fctl review settings --skip-repos`),
    where another project's review agents review them, say: those the
    project's agents may write to are reviewed until the owners skip them,
@@ -1357,7 +1359,34 @@ skip, drafts too, and fctl posts what it found on GitHub
    went from queued to in progress, so the control plane then looks the
    pull request up itself, and the sessions that list it see that the
    review runs ([Pull request state and checks](#pull-request-state-and-checks)).
-5. **Posting** (`fctl review submit`, an agent call). The agent hands its
+5. **A summary in the description** (`fctl review summarize`, an agent
+   call), where the project's owners turned it on
+   ([ADR 0067](adr/0067-review-agents-sum-pull-requests-up-in-their-descriptions.md)).
+   Before it reviews in depth, the agent reads the pull request's
+   description and skims its diff, and hands the control plane how risky
+   what it sets out to do looks (`Risk`: low, medium, high, or critical
+   where a serious security problem shows at first sight), why, what it
+   does, and what deserves a closer look (`PullRequestSummary`), judged
+   from what it changes rather than from bugs a review may find later.
+   The control plane checks it (`fctl_domain::reviews::check_summary`:
+   plain sentences, no lists, headings, code blocks or HTML) and, with
+   the review's writer, reads the description as GitHub has it at that
+   moment and writes it back with the summary at its end, between fctl's
+   marks (`<!-- FCTL_REVIEW_SUMMARY -->` and `<!--
+   /FCTL_REVIEW_SUMMARY -->`, each on a line of its own), in place of the
+   summary an earlier review left there, wherever that is
+   (`with_summary`): marks in code blocks are text, a code block the
+   description leaves open is closed first, and nothing else changes. The
+   summary is a GitHub alert (a note at low and medium risk, a warning at
+   high, a caution at critical) under a rule, each part led in bold, with
+   a line on the commit it sums up, the pull request's size and links to
+   the review and its settings (`summary_section`). `reviews` keeps it
+   (`pull_request_summary`), which the API's reviews carry, and as the
+   review posts, the control plane puts it back where something took it
+   out or changed it since: an agent that rewrote the description from
+   what it read before, say (`keep_summary`). The agent can't write the
+   description itself: its token only reads.
+6. **Posting** (`fctl review submit`, an agent call). The agent hands its
    findings (file, line, severity, title, a few sentences, an optional
    suggested change) and the earlier ones the new commits fixed to the
    control plane, which checks them (`fctl_domain::reviews::check`) and,
@@ -1382,7 +1411,7 @@ skip, drafts too, and fctl posts what it found on GitHub
    gets what the first posted. `fctl review threads` lists fctl's earlier
    findings, with what people answered. fctl-agent reminds an agent that
    ends its turn without posting, once.
-6. **Back to the agent that opened it.** Where one of the instance's own
+7. **Back to the agent that opened it.** Where one of the instance's own
    agents opened the pull request (its author is the GitHub App,
    `fctl_domain::reviews::by_app`), the control plane sends the new
    findings to that agent's session (`crate::reviews::pass_on`), so that
@@ -1414,7 +1443,7 @@ skip, drafts too, and fctl posts what it found on GitHub
    someone does. The review's `PostedReview.sent_to` names the session,
    and its transcript links it
    ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).
-7. **A review that ends otherwise** (superseded, stopped, failed) ends
+8. **A review that ends otherwise** (superseded, stopped, failed) ends
    its check as cancelled, saying why (`crate::reviews::ended`, from
    SessionObject; the hourly job catches what it missed).
 
@@ -1423,7 +1452,7 @@ request, commit, outcome and the review on GitHub, and opens their
 sessions, whose page says what came of the review instead of offering a
 composer (`GET /api/v1/projects/{id}/reviews`, `fctl review`). The
 page's rail links the session whose agent opened the pull request
-(`opener`, as in step 6), whatever the review found, when that session is
+(`opener`, as in step 7), whatever the review found, when that session is
 in the review's project, so that everyone who sees the review can open it
 (`Review.opened_by`). Checks need
 the Checks permission (read and write) of the app that posts them: without
@@ -2022,7 +2051,10 @@ pull request template where it has one; and a link to the session at the
 end. When later commits change what a pull request does, how it was
 verified or what is worth confirming, the agent rewrites its description
 (`gh pr edit --body-file`), so that it describes the pull request as it
-stands. Agents from before the setting describe pull requests as before
+stands, reading it again just before and keeping the summary fctl's
+review agents keep at its end as it is
+([Review agents](#review-agents), step 5). Agents from before the
+setting describe pull requests as before
 ([ADR 0049](adr/0049-agents-write-balanced-pull-request-descriptions.md)).
 
 ### Pull requests and issues

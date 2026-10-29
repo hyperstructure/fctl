@@ -570,7 +570,7 @@ or doesn't reach a repository, reviews post as the GitHub App, as before.
 
    | Permission | Access | Why |
    |---|---|---|
-   | Pull requests | Read and write | post reviews and their summaries, mark findings fixed |
+   | Pull requests | Read and write | post reviews and their summaries, mark findings fixed, sum pull requests up in their descriptions |
    | Checks | Read and write | the `fctl review` check |
    | Contents | Read and write | resolve fctl's earlier threads, as GitHub asks; without it, the GitHub App resolves them |
    | Metadata | Read | required |

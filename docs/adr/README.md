@@ -72,3 +72,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0064](0064-agents-call-people-what-they-choose-or-all-their-first-names.md) | Agents call people what they choose, or all their first names |
 | [0065](0065-projects-take-tickets-from-several-linear-teams.md) | Projects take tickets from several Linear teams |
 | [0066](0066-review-agents-post-as-a-github-app-of-their-own.md) | Review agents post as a GitHub App of their own |
+| [0067](0067-review-agents-sum-pull-requests-up-in-their-descriptions.md) | Review agents sum pull requests up in their descriptions |
