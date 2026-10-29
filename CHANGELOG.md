@@ -2,6 +2,26 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.26.0 (2026-10-29)
+
+### Features
+
+- Let projects take tickets from several Linear teams ([#331](https://github.com/hyperstructure/fctl/pull/331))
+- Let review agents post as a GitHub App of their own ([#332](https://github.com/hyperstructure/fctl/pull/332))
+- Flag paused review rounds and let people continue them ([#335](https://github.com/hyperstructure/fctl/pull/335))
+- Let review agents sum pull requests up in their descriptions ([#336](https://github.com/hyperstructure/fctl/pull/336))
+
+### Fixes
+
+- **web:** Keep the list of repositories to add in sight on phones ([#330](https://github.com/hyperstructure/fctl/pull/330))
+- **web:** Widen the session page's rail to 340px ([#333](https://github.com/hyperstructure/fctl/pull/333))
+- **host:** Keep what the control plane names to the host's own places ([#329](https://github.com/hyperstructure/fctl/pull/329))
+- **control:** Keep Linear lists, teams and ticket calls within reach ([#328](https://github.com/hyperstructure/fctl/pull/328))
+- **control:** Confirm it's you before connecting a Claude subscription ([#326](https://github.com/hyperstructure/fctl/pull/326))
+- **control:** Let invitations count only while their sender is an admin ([#325](https://github.com/hyperstructure/fctl/pull/325))
+- **control:** Stop sign-in leftovers from outliving roles and passwords ([#327](https://github.com/hyperstructure/fctl/pull/327))
+- Read GitHub App keys pasted on one line, and say why one fails ([#334](https://github.com/hyperstructure/fctl/pull/334))
+
 ## 0.25.1 (2026-10-28)
 
 ### Features
