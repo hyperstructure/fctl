@@ -66,6 +66,7 @@ import {
   withSource,
 } from "@/lib/images";
 import { ALIASES, asked, chosenModel, EFFORTS, type ModelChoice, modelChoice } from "@/lib/models";
+import { projectPlaceholder } from "@/lib/placeholders";
 import { areDefaults, shownInstructions } from "@/lib/pr-instructions";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
@@ -374,6 +375,8 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
   const keep = draftId(user, project.id);
   const [kept] = useState(() => loadText(keep));
   const [prompt, setPrompt] = useState(kept?.prompt ?? "");
+  // A line picked as the project opens, which keeps up with its name.
+  const [placeholder] = useState(projectPlaceholder);
   const { choice, picked, pick } = useStartChoice(project, kept);
   const ref = useRef<HTMLTextAreaElement>(null);
   const files = useAttachments({ project: project.slug }, { keep });
@@ -431,8 +434,9 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
             e.preventDefault();
             attach(pasted, true);
           }}
-          placeholder={`What should an agent do in ${project.name}?`}
+          placeholder={placeholder(project.name)}
           className="block px-5 pt-4 font-display text-[17px] leading-[1.5] placeholder:text-ink-4"
+          aria-label="Task for a new session"
         />
         {/* More room above the pickers where they take a line of their own. On a phone everything
             keeps one line, down to 360 px with a model named by its ID and the GitHub picker: the

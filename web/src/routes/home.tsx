@@ -44,6 +44,7 @@ import { draftId, forgetDraft, loadText } from "@/lib/draft";
 import { feed, useFeed } from "@/lib/feed";
 import { ago, lowOnDisk } from "@/lib/format";
 import { asked } from "@/lib/models";
+import { floorPlaceholder } from "@/lib/placeholders";
 import { keys, queryClient, useMe, useProjects, useRunners, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoSummary } from "@/lib/repos";
 import { ACTIVE } from "@/lib/sessions";
@@ -184,6 +185,8 @@ function QuickStart({
   const first = here(kept?.project) ?? here(remembered) ?? editable[0]?.slug;
   const [project, setProject] = useState(first ?? "");
   const [prompt, setPrompt] = useState(kept?.prompt ?? "");
+  // A line picked as the page opens.
+  const [placeholder] = useState(() => floorPlaceholder());
   const target = editable.find((p) => p.slug === project);
   const { choice, picked, pick: pickChoice } = useStartChoice(target, kept);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -262,7 +265,7 @@ function QuickStart({
             e.preventDefault();
             attach(pasted, true);
           }}
-          placeholder="What should an agent build next?"
+          placeholder={placeholder}
           className="block px-5 pt-4 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
           aria-label="Task for a new session"
         />
