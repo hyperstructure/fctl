@@ -585,7 +585,8 @@ fctl review threads && fctl review submit review.json   # review agents
   replaces at most 20 others. A session keeps at most 50 retrospectives and
   publishes at most 100 screenshots of 5 MB. In an hour, an agent comments
   on tickets at most 30 times, files at most 20, changes at most 60 and
-  reads its tracker at most 300 times.
+  reads its tracker at most 300 times, and writes nothing more after 60
+  writes that failed.
 - Agents in a session can't start other sessions: they hold no fctl
   credentials. A project secret with an access token would let them, on
   that token's person's subscription; treat that as giving every agent of

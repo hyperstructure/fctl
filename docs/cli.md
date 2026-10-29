@@ -476,7 +476,8 @@ fctl ticket labels
 ```
 
 In an hour, a session's agent comments at most 30 times, files at most 20
-tickets, changes at most 60 and reads its tracker at most 300 times.
+tickets, changes at most 60 and reads its tracker at most 300 times, and
+after 60 writes that failed it writes nothing more until the hour is up.
 Review agents reach no tracker.
 
 ### Memory and retrospectives
