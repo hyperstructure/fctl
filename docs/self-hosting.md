@@ -756,8 +756,9 @@ everything but `/llms.txt`. To have its sign-in page found, set `search_engines 
 its file in `deploy/instances` on Cloudflare, or `FCTL_SEARCH_ENGINES=1`
 for the server. `/robots.txt` then allows the sign-in page (and the early
 access page where there is one), `/llms.txt`, `/sitemap.xml`, `/favicon.ico`,
-`/favicon.svg` and `/apple-touch-icon.png`, and names `/sitemap.xml`, which lists them, for Google Search Console and the
-like.
+`/favicon.svg`, `/icon-maskable-512.png` (the favicon search results show)
+and `/apple-touch-icon.png`, and names `/sitemap.xml`, which lists the
+pages, for Google Search Console and the like.
 Everything else stays disallowed, and needs signing in anyway.
 
 ## Bring hosts online
