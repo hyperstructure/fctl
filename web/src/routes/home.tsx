@@ -230,7 +230,7 @@ function QuickStart({
           go();
         }}
         className={cn(
-          "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-accent/45 focus-within:shadow-[0_24px_80px_rgb(0_0_0/0.35),0_0_0_4px_var(--c-accent-soft)]",
+          "group relative rounded-2xl border border-line-strong bg-surface/85 shadow-(--composer-shadow) backdrop-blur-2xl transition-[border-color,box-shadow] duration-200 focus-within:border-ink-4/60 focus-within:shadow-(--composer-shadow-focus)",
           dragging && "border-accent/50",
         )}
       >
