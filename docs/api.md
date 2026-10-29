@@ -95,7 +95,7 @@ It answers with the session, `queued`. A session is:
 | `status`, `status_reason`, `resume_at` | `queued`, `provisioning`, `preparing`, `running`, `idle`, `paused`, `stopping`, `stopped` or `failed`, and why |
 | `created_by`, `created_at`, `started_at`, `ended_at`, `last_activity_at`, `updated_at` | who and when |
 | `branch`, `base_branch` | its branch and where it started from |
-| `pull_requests` | every pull request its agent opened or found: `url`, `number`, `repo`, `title`, `state` (`open`, `draft`, `queued`, `merged`, `closed`), `checks` (`passed`, `failed`, `pending`, and `review`: fctl's review of the newest commit, which the counts leave out, with its `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), `waiting` for a runner, `findings`, `still_open` from earlier reviews, `session_id`, its summary's `url` and the `project_id` whose review agents reviewed it, where `POST /api/v1/projects/{id}/reviews` reviews it again) |
+| `pull_requests` | every pull request its agent opened or found: `url`, `number`, `repo`, `title`, `state` (`open`, `draft`, `queued`, `merged`, `closed`), `checks` (`passed`, `failed`, `pending`, and `review`: fctl's review of the newest commit, which the counts leave out, with its `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), `waiting` for a runner, `findings`, `still_open` from earlier reviews, `session_id`, its summary's `url` and the `project_id` whose review agents reviewed it, where `POST /api/v1/projects/{id}/reviews` reviews it again; and `held_after` where fctl held its findings back from this session's agent, which got those of that many reviews in a row with no message from a person) |
 | `model`, `effort`, `github_access`, `github_issues` | what it runs with |
 | `stats` | turns, tool calls, changed files, additions and deletions, tokens, context |
 | `role`, `following`, `archived` | the caller's role in it, whether they follow it, and whether it is archived |
@@ -122,6 +122,7 @@ It answers with the session, `queued`. A session is:
 |---|---|---|
 | `POST /api/v1/sessions/{id}/messages` | `{"text": "…", "client_id": "…", "attachments": [...]}` | reaches the agent at its next step; resumes a stopped session on the subscription it ran on; `409` for a failed one. Answers `{"delivery_id": "dlv_…"}` |
 | `POST /api/v1/sessions/{id}/interrupt` | | stops the current turn |
+| `POST /api/v1/sessions/{id}/reviews/{review}/pass-on` | | passes on the findings of review `{review}` (its `session_id`) that fctl held back from the agent (`held_after`): the agent gets them as it would have, a stopped session resumes on the subscription it ran on, and it gets those of up to five reviews in a row again; `409` when fctl holds none of that review's back, or the session failed. Answers `{"delivery_id": "dlv_…"}` |
 | `POST /api/v1/sessions/{id}/stop` | | ends the session; its sandbox stays for a resume |
 | `POST /api/v1/sessions/{id}/resume` | `{"prompt": "…", "attachments": [...]}` | starts a stopped or failed session again, on the caller's subscription; `409` while it runs |
 | `PATCH /api/v1/sessions/{id}` | `{"title": "…", "description": "…", "archived": true}` | renames, describes or archives it (`""` clears the description) |

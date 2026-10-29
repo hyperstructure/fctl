@@ -1386,7 +1386,16 @@ skip, drafts too, and fctl posts what it found on GitHub
    good, a session gets the findings of at most five reviews in a row
    (`MAX_PASSED_ON`) while no person messages its agent; the next ones
    only say in its transcript what they found (`review_held`), until
-   someone does. The review's `PostedReview.sent_to` names the session,
+   someone does. The session keeps each pull request's newest held
+   review (`reviews::Held`, `hold`) and marks it on the pull request's
+   review check (`ReviewCheck::held_after`, `mark_held`, again after each
+   lookup on GitHub), so that its page says so under the pull request,
+   with a button that passes the findings on
+   (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`, SessionObject's
+   `/pass-on`, `fctl review pass-on`): the agent gets the message it would
+   have got, the transcript says who passed it on (`review_passed_on`),
+   and the count starts again with it. A person's message, here or on
+   GitHub, ends the pause too, and drops what was held. The review's `PostedReview.sent_to` names the session,
    and its transcript links it
    ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).
 7. **A review that ends otherwise** (superseded, stopped, failed) ends

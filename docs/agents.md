@@ -236,7 +236,7 @@ since the epoch. The kinds:
 | `status` | `status`, `reason`, `resume_at` |
 | `git` | the repositories' state: `branch`, `base`, `head`, `ahead`, `behind`, `files`, `uncommitted`, `pushed`, `last_commit`, `pull_requests`, and the other repositories in `repos` |
 | `log` | output of provisioning, the setup script and the supervisor |
-| `notice` | something to notice: a usage-limit pause, a runner that went away, a note added to memory, a retrospective, a follow-up held back |
+| `notice` | something to notice: a usage-limit pause, a runner that went away, a note added to memory, a retrospective, a follow-up held back, a review's findings held back or passed on |
 | `remote_control`, `interrupt` | Remote Control became available or not; someone interrupted a turn |
 
 Some useful filters:
