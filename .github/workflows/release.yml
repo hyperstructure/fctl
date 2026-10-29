@@ -11,7 +11,7 @@
 # archives from them, makes the GitHub release with the notes and publishes to
 # https://fctl.sh/releases. "Homebrew tap" then starts the brew bump workflow
 # of hyperstructure/homebrew-tap, which proposes the new formula in a pull
-# request there. "Standalone image" (standalone-image.yml) runs a session
+# request there and merges it once its checks pass. "Standalone image" (standalone-image.yml) runs a session
 # through the control plane without Cloudflare and publishes it,
 # ghcr.io/hyperstructure/fctl-control:<version>. Within the hour,
 # hyperstructure/sandbox publishes the release's sandbox image,
@@ -240,8 +240,8 @@ jobs:
   # hyperstructure/homebrew-tap's brew bump workflow runs every day, and GitHub
   # starts it hours late at times, so this starts it with the version. It
   # waits until livecheck finds that version on fctl.sh, then opens a pull
-  # request with the formula's URLs and checksums for every platform, which a
-  # code owner of the tap merges.
+  # request with the formula's URLs and checksums for every platform, and
+  # merges it once the checks that the tap's main requires pass.
   homebrew:
     name: Homebrew tap
     needs: [prepare, publish]
