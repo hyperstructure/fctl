@@ -53,7 +53,7 @@ import {
   modelLabel,
 } from "@/lib/models";
 import { keys, queryClient, useMe } from "@/lib/queries";
-import { postedAsGithubApp, postsAllAs } from "@/lib/review-app";
+import { postedAsGithubApp, postsAllAs, postsAs } from "@/lib/review-app";
 import { botView, sameBots } from "@/lib/review-bots";
 import {
   canAskForReview,
@@ -178,10 +178,10 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
     toast("Review agents are on: the next commit of each pull request gets a review"),
   );
   const repos = agents.repos.length > 0 ? repoList(agents.repos) : "this project's repositories";
-  // The app the reviews would post as, where one posts them all.
+  // The app the reviews would post as, where one posts them all (of those whose app is known).
   const reviewApp = useReviewApp(project.workspace?.id).data;
-  const all =
-    reviewApp?.configured && agents.repos.length > 0 ? postsAllAs(reviewApp, agents.repos) : undefined;
+  const known = reviewApp ? agents.repos.filter((repo) => postsAs(reviewApp, repo) !== undefined) : [];
+  const all = reviewApp?.configured && known.length > 0 ? postsAllAs(reviewApp, known) : undefined;
   const poster = all === "review" ? reviewApp?.app : all === "github" ? reviewApp?.github_app : undefined;
   return (
     <div className="grid animate-rise items-center gap-x-12 gap-y-10 py-2 md:grid-cols-[minmax(0,1fr)_320px]">
@@ -498,15 +498,20 @@ function Status({
 function PostedAs({ project, agents }: { project: G.Project; agents: G.ReviewAgents }) {
   const q = useReviewApp(project.workspace?.id);
   const r = q.data;
-  if (!r?.configured || !r.app || !r.github_app || agents.repos.length === 0) return null;
+  if (!r?.configured || !r.app || !r.github_app) return null;
   const { app, github_app: ours } = r;
-  const all = postsAllAs(r, agents.repos);
-  const elsewhere = postedAsGithubApp(r, agents.repos);
+  // Those whose app is known: not where GitHub didn't say, nor in accounts the workspace no longer
+  // works in, which get no reviews.
+  const repos = agents.repos.filter((repo) => postsAs(r, repo) !== undefined);
+  if (repos.length === 0) return null;
+  const all = postsAllAs(r, repos);
+  const elsewhere = postedAsGithubApp(r, repos);
   if (all !== "review" && elsewhere.repos.length === 0) return null;
   const [only] = elsewhere.accounts;
   const install = elsewhere.accounts.length === 1 ? only?.install_url : undefined;
   // Why the others post as the GitHub App: it isn't installed on their accounts, or doesn't reach them.
-  const uninstalled = elsewhere.accounts.every((a) => a.state === "not_installed");
+  const uninstalled =
+    elsewhere.accounts.length > 0 && elsewhere.accounts.every((a) => a.state === "not_installed");
   const accounts = someNames(elsewhere.accounts.map((a) => a.account));
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5 border-t border-line px-5 py-3 text-[13px] leading-relaxed text-ink-3">

@@ -264,6 +264,29 @@ describe("the app reviews post as on GitHub", () => {
     ).toBe("/w/$slug");
   });
 
+  it("leaves out the repositories of accounts the workspace no longer works in", async () => {
+    // acme/web and acme/api are reviewed; the workspace works in globex alone now.
+    queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
+      ...reviewApp({}),
+      accounts: [{ account: "globex", state: "not_installed", unreached: [] }],
+    });
+    const c = await render(inWorkspace);
+    expect(line(c)).toBeUndefined();
+    expect(c.textContent).not.toContain("isn't installed on .");
+  });
+
+  it("counts those in accounts it still works in alone", async () => {
+    state.agents = { ...state.agents, repos: [repo("web"), { owner: "globex", name: "site" }] };
+    queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
+      ...reviewApp({}),
+      accounts: [{ account: "globex", state: "not_installed", unreached: [] }],
+    });
+    const c = await render(inWorkspace);
+    expect(line(c)).toBe(
+      "On GitHub they post as fctl-sh, as your agents do: fctl-review isn't installed on globex.",
+    );
+  });
+
   it("isn't said without a review app", async () => {
     queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
       configured: false,

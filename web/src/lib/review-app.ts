@@ -14,11 +14,14 @@ export function accountOf(r: G.WorkspaceReviewApp, owner: string): G.ReviewAppAc
   return r.accounts.find((a) => a.account.toLowerCase() === o);
 }
 
-/** Which app posts the reviews of `repo`; `undefined` where GitHub didn't say. */
+/**
+ * Which app posts the reviews of `repo`; `undefined` where GitHub didn't say, and where the workspace
+ * doesn't work in its account (any more), whose repositories get no reviews.
+ */
 export function postsAs(r: G.WorkspaceReviewApp, repo: G.RepoRef): Poster | undefined {
   if (!r.configured || !r.app) return "github";
   const a = accountOf(r, repo.owner);
-  if (!a) return "github";
+  if (!a) return undefined;
   switch (a.state) {
     case "installed":
       return "review";

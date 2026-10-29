@@ -27,7 +27,7 @@ describe("which app posts a repository's reviews", () => {
     expect(postsAs(all, repo("initech", "web"))).toBe("github");
     // GitHub didn't say, and an account the workspace doesn't work in gets no reviews.
     expect(postsAs(all, repo("hooli", "web"))).toBeUndefined();
-    expect(postsAs(all, repo("umbrella", "web"))).toBe("github");
+    expect(postsAs(all, repo("umbrella", "web"))).toBeUndefined();
   });
 
   it("is the GitHub App without a review app", () => {

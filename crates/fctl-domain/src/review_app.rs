@@ -68,6 +68,19 @@ pub fn state(
     }
 }
 
+/// Whether GitHub's refusal of an installation token (`status`, `message`)
+/// says the installation is gone (404), suspended (403, saying so) or no
+/// longer reaches the repository (422), so that a review it started posts
+/// as the GitHub App: GitHub also answers 403 for a secondary rate limit,
+/// which passes, and then the review app writes it after all.
+pub fn gone(status: u16, message: &str) -> bool {
+    match status {
+        404 | 422 => true,
+        403 => message.to_ascii_lowercase().contains("suspended"),
+        _ => false,
+    }
+}
+
 /// Where GitHub installs app `slug` (the review app) on the account whose
 /// id is `target`, chosen already, on the repositories `repos` (GitHub's
 /// ids, at most 100) or, without them, on every repository; with
@@ -201,6 +214,24 @@ mod tests {
             state(Some(&all), None, None, &writable),
             (ReviewAppState::Installed, vec![])
         );
+    }
+
+    #[test]
+    fn only_an_installation_gone_hands_a_review_to_the_github_app() {
+        assert!(gone(404, "Not Found"));
+        assert!(gone(
+            422,
+            "There is at least one repository that does not exist or is not accessible to the parent installation."
+        ));
+        assert!(gone(403, "This installation has been suspended"));
+        // A secondary rate limit, bad credentials or GitHub failing pass.
+        assert!(!gone(
+            403,
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+        ));
+        assert!(!gone(401, "A JSON web token could not be decoded"));
+        assert!(!gone(500, "Server Error"));
+        assert!(!gone(429, "Too Many Requests"));
     }
 
     #[test]

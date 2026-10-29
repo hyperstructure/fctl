@@ -1347,13 +1347,16 @@ impl<'a> Writer<'a> {
                 }
                 // Uninstalled, suspended or no longer reaching the repository
                 // since: the GitHub App writes instead.
-                Err((404 | 403 | 422, msg)) => worker::console_error!(
-                    "{} can't write review {} any more: {msg}",
-                    review.slug(),
-                    row.session_id
-                ),
-                // Anything else may pass, and the GitHub App couldn't change
-                // the review app's check: the caller tries again.
+                Err((status, msg)) if fctl_domain::review_app::gone(status, &msg) => {
+                    worker::console_error!(
+                        "{} can't write review {} any more: {msg}",
+                        review.slug(),
+                        row.session_id
+                    );
+                }
+                // Anything else may pass, a secondary rate limit say, and the
+                // GitHub App couldn't change the review app's check: the
+                // caller tries again.
                 Err((status, msg)) => {
                     return Err(crate::error::unavailable(&format!(
                         "GitHub refused {}'s token ({status}): {msg}",
