@@ -46,7 +46,7 @@ or GitHub → Actions → Release → Run workflow. With the GitHub App API:
 `POST /repos/hyperstructure/fctl/actions/workflows/release.yml/dispatches`
 with `{"ref": "main", "inputs": {"bump": "auto"}}`.
 
-It runs in four steps, and a fifth beside them:
+It runs in five steps, and a sixth beside them:
 
 1. **Version and notes**: `cargo xtask release` sets the version in
    `Cargo.toml` and `Cargo.lock`, adds the notes to `CHANGELOG.md`, commits
@@ -64,28 +64,36 @@ It runs in four steps, and a fifth beside them:
    with the installer as a check.
 4. **Homebrew tap**: starts the brew bump workflow of
    [hyperstructure/homebrew-tap](https://github.com/hyperstructure/homebrew-tap)
-   with the version, using `HOMEBREW_TAP_TOKEN`. That workflow waits until
-   livecheck finds the release on fctl.sh, then opens a pull request,
-   `fctl X.Y.Z`, with the formula's new URLs and checksums for every
-   platform, and merges it once the tap's checks pass on it.
-5. **Standalone image**, beside Build and Publish: the Standalone image
+   with the version. That workflow waits until livecheck finds the release
+   on fctl.sh, then opens a pull request, `fctl X.Y.Z`, with the formula's
+   new URLs and checksums for every platform, and merges it once the tap's
+   checks pass on it.
+5. **Sandbox image**, beside Homebrew tap: runs the Image workflow of
+   [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox)
+   with the version and waits for it, failing when it fails. GitHub keeps
+   one run of that workflow waiting, so a newer one cancels it while it
+   waits; the job then starts it again, up to three times. It builds the
+   release's sandbox image from that repository's `main`, checks it, and
+   publishes `ghcr.io/hyperstructure/sandbox:X.Y.Z` for arm64 and amd64,
+   moving `X.Y` and `latest`. Hosts of the new version pull it; until it is
+   there, their sessions start from `latest`. The job's summary links the
+   run.
+6. **Standalone image**, beside Build and Publish: the Standalone image
    workflow (`.github/workflows/standalone-image.yml`) builds the control
    plane without Cloudflare (`deploy/standalone`) at the tag, runs a
    session through it, and only then publishes
    `ghcr.io/hyperstructure/fctl-control:X.Y.Z` for arm64 and amd64, moving
    `X.Y` and `latest` when the release is the newest they cover.
 
-Within the hour, the Image workflow of
-[hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) finds
-the release on fctl.sh and publishes its sandbox image,
-`ghcr.io/hyperstructure/sandbox:X.Y.Z`, for arm64 and amd64, moving `X.Y`
-and `latest`. Hosts of the new version pull it; until it is there, their
-sessions start from `latest`. To publish it at once:
-`gh workflow run image.yml -R hyperstructure/sandbox`.
+Homebrew tap and Sandbox image start those repositories' workflows with
+tokens of the organization's fctl-actions GitHub App, whose key is
+`FCTL_ACTIONS_PRIVATE_KEY` in the production environment: each token covers
+one repository, with Actions write alone.
 
 Follow it with `gh run watch` or in the Actions tab. Build and Publish
-take about 10 minutes; the standalone image takes a few more, since it runs
-a session before it publishes.
+take about 10 minutes, and the sandbox image about 7 more; the standalone
+image, which runs a session before it publishes, ends the run after about
+20.
 
 ## 3. After
 
@@ -95,7 +103,7 @@ a session before it publishes.
 - `https://app.fctl.sh/api/v1/health` reports the version once CI is done.
 - `docker buildx imagetools inspect ghcr.io/hyperstructure/fctl-control:X.Y.Z`
   lists linux/amd64 and linux/arm64.
-- Within the hour, `docker buildx imagetools inspect
+- Once the Sandbox image job passed, `docker buildx imagetools inspect
   ghcr.io/hyperstructure/sandbox:X.Y.Z` lists linux/amd64 and linux/arm64
   (`gh run list -R hyperstructure/sandbox --workflow image.yml` shows the
   runs).
@@ -131,18 +139,31 @@ a session before it publishes.
   workflow is at fault, fix it in a pull request, then publish the image
   on its own: a re-run uses the workflows of the commit its run started
   from, so it fails the same way.
-- **The sandbox image** (hyperstructure/sandbox's Image workflow failed, or
-  the release has no image after an hour): its `publish` skill says what
-  to do. Start it for the release with
+- **The fctl-actions app** (Homebrew tap or Sandbox image failed at
+  "Create a token for the fctl-actions app"): the release itself is out,
+  and the tap's daily run and the sandbox's hourly run catch up, hours
+  late at times. The error says why: `FCTL_ACTIONS_PRIVATE_KEY` is missing
+  from the production environment, or its key was deleted; the app isn't
+  installed on the repository ("Not Found"); or it lacks Actions read and
+  write ("The permissions requested are not granted to this
+  installation"). A person with admin access in the organization fixes
+  the app or its installation, or generates a key in the app's settings
+  and replaces the secret
+  (`gh secret set FCTL_ACTIONS_PRIVATE_KEY --env production -R hyperstructure/fctl < key.pem`),
+  then runs the failed jobs again.
+- **The sandbox image** (the Sandbox image job failed after it started a
+  run): the run its summary links says why, and hyperstructure/sandbox's
+  `publish` skill says what to do. The image is built from that
+  repository's `main`, so fixing it takes a pull request there, not an
+  fctl release; once merged, it publishes the newest release's image by
+  itself. If it was the infrastructure, run the failed job again, which
+  starts a new run; one that finds the image current publishes nothing. To
+  build the image without the job:
   `gh workflow run image.yml -R hyperstructure/sandbox -f version=X.Y.Z`.
-  The image is built from that repository's `main`, so fixing it takes a
-  pull request there, not an fctl release.
 - **The Homebrew tap** (the Homebrew tap job failed, or the tap has no
   pull request for the release): the release itself is out, and the tap's
-  daily run proposes it anyway. If `HOMEBREW_TAP_TOKEN` is missing or
-  expired, a person with admin access replaces it: a fine-grained token
-  for hyperstructure/homebrew-tap alone, with Actions read and write. Then
-  run the failed job again, or start the bump with
+  daily run proposes it anyway. Run the failed job again, or start the bump
+  with
   `gh workflow run autobump.yml -R hyperstructure/homebrew-tap -f version=X.Y.Z`.
   When the bump itself failed, its run in the tap says why
   (`gh run list -R hyperstructure/homebrew-tap --workflow autobump.yml`).
