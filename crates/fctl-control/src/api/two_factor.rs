@@ -743,9 +743,12 @@ pub fn fresh_sign_in(ctx: &Ctx) -> bool {
 
 /// What setting up an app takes (`policy::setup_proof`): the password,
 /// unless this browser signed in within the last 15 minutes. Without a
-/// password, a first app takes that sign-in, which nothing stands in for.
+/// password, or where password sign-ins ask for a passkey already, a
+/// first app takes that sign-in, which nothing stands in for.
 fn setup_proof(ctx: &Ctx, user: &UserRow, replacing: bool) -> AppResult<policy::SetupProof> {
-    match policy::setup_proof(replacing, user.has_password(), fresh_sign_in(ctx)) {
+    let settings = user.two_factor_settings(&ctx.settings());
+    let asks = policy::on(&settings, user.has_password(), user.factors());
+    match policy::setup_proof(replacing, user.has_password(), asks, fresh_sign_in(ctx)) {
         policy::SetupProof::FreshSignIn => Err(validation(
             "sign_in",
             "Setting up two-factor sign-in takes a sign-in from the last 15 minutes. Sign out and in again in the browser, then set it up.",

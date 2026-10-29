@@ -81,7 +81,8 @@ owner and purpose), so a value copied between rows does not decrypt.
   signs nobody in. Replacing the app, turning it off and getting new
   recovery codes take a current code; setting up an app takes the password
   unless the browser signed in within 15 minutes (with a CLI or access
-  token, always), and on an account without a password, that sign-in.
+  token, always), and on an account without a password, or whose password
+  sign-ins ask for a passkey already, that sign-in.
   Admins can require it:
   accounts that sign in with a password, and with Google sign-ins asking
   too every account, then can do nothing until they set it up, in the

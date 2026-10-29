@@ -216,9 +216,11 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    and the first app comes with ten recovery codes, of which D1 keeps the
    SHA-256. Setting up an app takes the password unless this browser
    signed in within the last 15 minutes (with a CLI or access token, it
-   always does). Without a password, a first app takes that sign-in, which
-   nothing stands in for: its codes then add passkeys, so a stolen session
-   or token must not set one up (`two_factor::setup_proof`). Replacing the
+   always does). Without a password, or where password sign-ins ask for a
+   passkey already, a first app takes that sign-in, which nothing stands
+   in for: its codes then add passkeys and get past the password, so a
+   stolen session or token, with the password or not, must not set one up
+   (`two_factor::setup_proof`). Replacing the
    app, turning two-factor off and getting new recovery codes take a
    current code, from the app or a recovery code.
 2. **Signing in.** A sign-in with a password then starts no web session. It
@@ -361,8 +363,11 @@ token can't do them alone
 Only the primary instance owner turns it on or off, and turning it off is
 one of those actions (`verify::check_verify_setting`). Turning off your
 own authenticator app, replacing it and new recovery codes take a current
-code already, and adding a passkey or an app the password or a recent
-sign-in ([Two-factor sign-in](#two-factor-sign-in)).
+code already, and adding a passkey or an app a recent sign-in or what a
+sign-in with the password takes: the password, and the authenticator
+app's code where the account has one, or a sign-in where passkeys are
+its second factor ([Two-factor sign-in](#two-factor-sign-in),
+[Passkeys](#passkeys)).
 
 1. **Who it asks.** People with a passkey or an authenticator app
    (`verify::required`). People with neither have nothing to confirm it

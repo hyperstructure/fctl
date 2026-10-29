@@ -4,7 +4,7 @@
 
 use crate::auth;
 use crate::ctx::Ctx;
-use crate::db::{n, os, q, s};
+use crate::db::{batch, n, os, q, s};
 use crate::error::{AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
 use crate::model::{AllowRow, UserRow, user_columns};
@@ -671,10 +671,16 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
     } else if workspaces.iter().any(|(_, role)| role.is_admin()) {
         ctx.verified(Sensitive::MakeWorkspaceAdmin)?;
     }
-    // Inviting someone also allows them.
+    // Inviting someone also allows them, with the invitation's role: an
+    // entry gives its role at sign-up as the invitation does (the lower of
+    // the two counts, `api::auth::signup`), so an admin's invitation makes
+    // a member's entry for the address an admin's, as an invitation's,
+    // which revoking it takes back (`revoke_invite`).
     q(
         &ctx.db,
-        "INSERT OR IGNORE INTO allowlist (id, pattern, role, note, created_by, created_at) VALUES (?, ?, ?, 'Invited', ?, ?)",
+        "INSERT INTO allowlist (id, pattern, role, note, created_by, created_at) VALUES (?, ?, ?, 'Invited', ?, ?) \
+         ON CONFLICT (pattern) DO UPDATE SET role = excluded.role, note = 'Invited' \
+         WHERE excluded.role = 'admin' AND allowlist.role != 'admin'",
         &[s(fctl_domain::ids::allow_id(ctx.now).as_str()), s(&email), s(role.as_str()), s(&actor.id), n(ctx.now)],
     )?
     .run()
@@ -800,15 +806,30 @@ pub async fn revoke_invite(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     // the invitation, unless the address has an account or another one, or
     // an admin allowed it on its own. Otherwise a Google sign-up, which
     // needs no invitation, would still let its holder in.
-    q(
+    batch(
         &ctx.db,
-        "DELETE FROM allowlist WHERE pattern = ?1 AND note = 'Invited' \
-         AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?1) \
-         AND NOT EXISTS (SELECT 1 FROM user_emails WHERE email = ?1) \
-         AND NOT EXISTS (SELECT 1 FROM invites WHERE email = ?1 AND accepted_at IS NULL AND expires_at > ?2)",
-        &[s(&revoked.email), n(ctx.now)],
-    )?
-    .run()
+        vec![
+            q(
+                &ctx.db,
+                "DELETE FROM allowlist WHERE pattern = ?1 AND note = 'Invited' \
+                 AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?1) \
+                 AND NOT EXISTS (SELECT 1 FROM user_emails WHERE email = ?1) \
+                 AND NOT EXISTS (SELECT 1 FROM invites WHERE email = ?1 AND accepted_at IS NULL AND expires_at > ?2)",
+                &[s(&revoked.email), n(ctx.now)],
+            )?,
+            // One the other invitations still need gives what they do: a
+            // member's, unless one of them is an admin's.
+            q(
+                &ctx.db,
+                "UPDATE allowlist SET role = 'member' WHERE pattern = ?1 AND note = 'Invited' AND role = 'admin' \
+                 AND NOT EXISTS (SELECT 1 FROM users WHERE email = ?1) \
+                 AND NOT EXISTS (SELECT 1 FROM user_emails WHERE email = ?1) \
+                 AND NOT EXISTS (SELECT 1 FROM invites WHERE email = ?1 AND role = 'admin' \
+                   AND accepted_at IS NULL AND expires_at > ?2)",
+                &[s(&revoked.email), n(ctx.now)],
+            )?,
+        ],
+    )
     .await?;
     ctx.audit("invite.revoked", Some(&revoked.email), None);
     let _ = InviteId(id.to_owned());

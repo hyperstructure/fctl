@@ -170,11 +170,15 @@ pub enum SetupProof {
 /// password, or, without one, nothing more when it replaces an app (which
 /// took a code from that one). A first app on an account without a password
 /// takes that fresh sign-in: its codes then prove it's the person, as when
-/// adding a passkey, so a stolen session or token must not set one up.
-pub fn setup_proof(replacing: bool, has_password: bool, fresh: bool) -> SetupProof {
+/// adding a passkey, so a stolen session or token must not set one up. So
+/// does a first app on an account whose password sign-ins ask for a second
+/// factor already ([`on`], `asks`): its passkeys, which the password alone
+/// doesn't get past, and which a stolen session with the password mustn't
+/// get round by setting up an app of its own.
+pub fn setup_proof(replacing: bool, has_password: bool, asks: bool, fresh: bool) -> SetupProof {
     if fresh {
         SetupProof::Nothing
-    } else if has_password {
+    } else if has_password && (replacing || !asks) {
         SetupProof::Password
     } else if replacing {
         SetupProof::Nothing
@@ -438,15 +442,27 @@ mod tests {
         use SetupProof::*;
         // A browser that signed in just now needs nothing more.
         for (replacing, has_password) in [(false, false), (false, true), (true, false)] {
-            assert_eq!(setup_proof(replacing, has_password, true), Nothing);
+            assert_eq!(setup_proof(replacing, has_password, false, true), Nothing);
+            assert_eq!(setup_proof(replacing, has_password, true, true), Nothing);
         }
         // Later, or with a CLI or access token: the password.
-        assert_eq!(setup_proof(false, true, false), Password);
-        assert_eq!(setup_proof(true, true, false), Password);
+        assert_eq!(setup_proof(false, true, false, false), Password);
+        assert_eq!(setup_proof(true, true, false, false), Password);
+        assert_eq!(setup_proof(true, true, true, false), Password);
         // Replacing an app took a code from it.
-        assert_eq!(setup_proof(true, false, false), Nothing);
+        assert_eq!(setup_proof(true, false, false, false), Nothing);
         // Without a password, nothing stands in for the sign-in: a stolen
         // session or token would set up an app, then add a passkey with it.
-        assert_eq!(setup_proof(false, false, false), FreshSignIn);
+        assert_eq!(setup_proof(false, false, false, false), FreshSignIn);
+    }
+
+    #[test]
+    fn a_first_app_where_passkeys_are_the_second_factor_takes_a_fresh_sign_in() {
+        // The password doesn't get past their password sign-ins alone, so
+        // it doesn't set up an app that would.
+        assert_eq!(
+            setup_proof(false, true, true, false),
+            SetupProof::FreshSignIn
+        );
     }
 }
