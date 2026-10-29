@@ -2247,7 +2247,7 @@ pub fn mark_held(prs: &mut [PullRequestRef], held: &[Held]) -> bool {
 /// to [`MAX_PASSED_ON`] in a row with these.
 pub fn passed_on_by(name: &str) -> String {
     format!(
-        "{} passed on the findings fctl held back: the agent gets those of up to {MAX_PASSED_ON} reviews in a row from here, these included, before fctl holds them back again.",
+        "{} passed on the findings fctl held back, for up to {MAX_PASSED_ON} more rounds of review.",
         name.trim()
     )
 }
@@ -3962,7 +3962,7 @@ mod tests {
         assert_eq!(
             passed_on_by(" Ada Lovelace "),
             format!(
-                "Ada Lovelace passed on the findings fctl held back: the agent gets those of up to {MAX_PASSED_ON} reviews in a row from here, these included, before fctl holds them back again."
+                "Ada Lovelace passed on the findings fctl held back, for up to {MAX_PASSED_ON} more rounds of review."
             )
         );
     }

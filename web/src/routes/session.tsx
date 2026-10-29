@@ -605,6 +605,7 @@ export function SessionPage() {
         <aside className="sticky top-0 hidden h-dvh w-[315px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
             session={session}
+            role={role}
             review={review}
             me={me?.user.id}
             git={s.git}
@@ -621,6 +622,7 @@ export function SessionPage() {
           <Overview session={session} workspace={workspace} notes={notes} />
           <Details
             session={session}
+            role={role}
             review={review}
             me={me?.user.id}
             git={s.git}
@@ -746,9 +748,21 @@ function ContextPart({ span, used, close }: ContextUse["parts"][number] & { clos
 
 /**
  * Every pull request of the session, with the repository of each, its state, its checks and how
- * fctl's review of it stands, which opens the review's session.
+ * fctl's review of it stands, which opens the review's session, and what fctl held back of it from
+ * the agent, which those who may message the agent pass on.
  */
-function PullRequests({ prs, session }: { prs: G.PullRequestRef[]; session: G.Session }) {
+function PullRequests({
+  prs,
+  session,
+  role,
+}: {
+  prs: G.PullRequestRef[];
+  session: G.Session;
+  role?: G.SessionRole;
+}) {
+  // A failed session takes nothing until it is resumed.
+  const passOnTo =
+    (role === "editor" || role === "owner") && session.status !== "failed" ? session.id : undefined;
   return (
     <ul className="flex flex-col gap-1.5">
       {prs.map((pr) => {
@@ -788,7 +802,7 @@ function PullRequests({ prs, session }: { prs: G.PullRequestRef[]; session: G.Se
               </span>
               <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-ink-4" />
             </a>
-            {reviewed && <PullRequestReviewLine pr={pr} review={reviewed} />}
+            {reviewed && <PullRequestReviewLine pr={pr} review={reviewed} passOnTo={passOnTo} />}
           </li>
         );
       })}
@@ -858,6 +872,7 @@ function Overview({
 /** What the rail shows beside the transcript, and the details sheet where the rail doesn't fit. */
 function Details({
   session,
+  role,
   review,
   me,
   git,
@@ -869,6 +884,8 @@ function Details({
   pullsFirst,
 }: {
   session: G.Session;
+  /** The signed-in person's, in the session. */
+  role?: G.SessionRole;
   /** What came of it, for a review agent's session. */
   review?: G.Review;
   /** The signed-in person. */
@@ -932,7 +949,7 @@ function Details({
   const hint = session.review ? undefined : followUpHint(project?.settings.follow_ups);
   const pulls = prs.length > 0 && (
     <RailSection title="Pull requests">
-      <PullRequests prs={prs} session={session} />
+      <PullRequests prs={prs} session={session} role={role} />
       {hint && (
         <p className="mt-3 flex gap-2 text-[12px] leading-relaxed text-ink-4">
           <Undo2 aria-hidden="true" className="mt-[3px] size-3 shrink-0" />

@@ -298,9 +298,7 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
         })
         .collect();
     if held.is_empty() {
-        bail!(
-            "fctl holds back no review's findings from the agent of {name}: it passes on those of up to five reviews in a row while nobody messages the agent"
-        );
+        bail!("fctl holds back no review's findings from the agent of {name}");
     }
     let mut passed = Vec::new();
     for (pr, sha, review, after) in held {
@@ -337,7 +335,7 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
         println!(
             "  {}",
             style::dim(&format!(
-                "It gets those of up to {after} reviews in a row from here, these included, before fctl holds them back again."
+                "It gets those of up to {after} reviews in a row, these included, before fctl holds them back again."
             ))
         );
     }
