@@ -285,9 +285,12 @@ decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
   or the card after a sign-in without one): `POST /api/v1/me/passkeys/options`
   returns WebAuthn's creation options, with a challenge of 256 random bits
   that works once, for ten minutes (`passkey_challenges`, by its SHA-256).
-  It takes the password unless this browser signed in within the last 15
-  minutes, or without a password a code from the authenticator app: a
-  passkey signs in without either, so a stolen session must not add one.
+  Unless this browser signed in within the last 15 minutes, it takes what
+  a sign-in with the password would: a code from the authenticator app
+  for an account that has one, a sign-in where passkeys are the second
+  factor a password sign-in asks for, else the password. A passkey signs
+  in without either, so neither a stolen session, nor one with the
+  password, must add one (`passkeys::prove`).
   `POST /api/v1/me/passkeys` checks the answer (the challenge, the origin,
   the relying party, user presence and verification) and keeps the public
   key (`passkeys`). The authenticator's model (AAGUID) names it: "1Password",

@@ -99,7 +99,9 @@ owner and purpose), so a value copied between rows does not decrypt.
   fctl keeps the public key, each challenge works once for ten minutes, and
   a counter that goes back (a copied passkey's would) refuses the sign-in.
   Adding one takes the password unless the browser signed in within 15
-  minutes, so a stolen session can't add a way in, and emails the person.
+  minutes, and a code from the authenticator app instead for an account
+  that has one, so a stolen session can't add a way in, even with the
+  password, and emails the person.
   Where two-factor is required, a passkey also counts as the second factor.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
