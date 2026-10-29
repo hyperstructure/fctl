@@ -1418,10 +1418,12 @@ pub fn check_summary(s: &PullRequestSummary) -> Result<PullRequestSummary> {
     let highlight = match &s.highlight {
         Some(h) if !(h.topic.trim().is_empty() && h.text.trim().is_empty()) => {
             let topic = validate::text("highlight.topic", &h.topic, 60)?;
-            // fctl ends it with a full stop, after what the agent ended it with.
+            // fctl puts it in bold and ends it with a full stop, in place of
+            // the agent's emphasis and what it ended it with.
             let topic = topic
+                .trim_matches(['*', '_'])
                 .trim_end_matches(['.', ':', ';', ',', '-', '–', '—'])
-                .trim_end()
+                .trim()
                 .to_owned();
             if topic.is_empty() || topic.contains('\n') {
                 return Err(ApiError::validation(
@@ -1700,11 +1702,11 @@ fn summaries_in(body: &str) -> InDescription {
             fence = Some(open);
             continue;
         }
-        let mark = text.trim_end();
+        // A mark is a line of its own, indented by three spaces at most.
         if text.len() - text.trim_start_matches(' ').len() > 3 {
             continue;
         }
-        match mark.trim_start() {
+        match text.trim_start_matches(' ').trim_end() {
             SUMMARY_START => start = Some(begin),
             SUMMARY_END => {
                 if let Some(s) = start.take() {
@@ -4320,6 +4322,17 @@ mod tests {
         );
         let h = s.highlight.unwrap_or_else(|| panic!("no highlight"));
         assert_eq!(h.topic, "Session cookies");
+        // fctl puts the topic in bold itself.
+        let mut bold = summary();
+        bold.highlight = Some(SummaryHighlight {
+            topic: "**Migration:**".into(),
+            text: "It adds a column.".into(),
+        });
+        let checked = check_summary(&bold).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(
+            checked.highlight.map(|h| h.topic).as_deref(),
+            Some("Migration")
+        );
         // Code in backticks may hold anything; emphasis and links pass.
         let mut fine = summary();
         fine.overview = "Turns `Vec<String>` into `HashSet<&str>` in `<Login />`, *quickly*, as [the issue](https://github.com/acme/web/issues/3) asks: a < b.".into();
@@ -4506,7 +4519,7 @@ mod tests {
         // Marks in code blocks are text, as in a description of this very
         // feature; so are marks within a line, and ones out of order.
         let quoted = format!(
-            "It writes:\n\n```markdown\n{old}\n```\n\n~~~\n{SUMMARY_START}\n~~~\n\nInline `{SUMMARY_START}` and {SUMMARY_END} stay.\n{SUMMARY_END}\n    {SUMMARY_START}\n    {SUMMARY_END}\n"
+            "It writes:\n\n```markdown\n{old}\n```\n\n~~~\n{SUMMARY_START}\n~~~\n\nInline `{SUMMARY_START}` and {SUMMARY_END} stay.\n{SUMMARY_END}\n    {SUMMARY_START}\n    {SUMMARY_END}\n\t{SUMMARY_START}\n\t{SUMMARY_END}\n"
         );
         assert_eq!(summary_in(&quoted), None);
         assert_eq!(
