@@ -24,6 +24,11 @@ use serde_json::Value;
 /// (`@fctl`, `@agent`), and at the start of a comment (`fctl:`, `agent,`).
 pub const NAMES: [&str; 2] = ["fctl", "agent"];
 
+/// Other names that address the agent as mentions, which fctl doesn't
+/// advertise: its GitHub Apps' logins (`@fctl-sh`, `@fctl-review`) and
+/// those without their hyphens.
+const MORE_MENTIONS: [&str; 4] = ["fctl-sh", "fctlsh", "fctl-review", "fctlreview"];
+
 /// How long a session gathers what comes about its pull requests before
 /// its agent hears of it, in one message: a review comes as a delivery for
 /// the review and one for each of its comments, and checks fail together.
@@ -57,7 +62,7 @@ const MAX_NAMES: usize = 6;
 // ───────────────────────────── addressing the agent ─────────────────────────────
 
 /// Whether a comment addresses the agent: it mentions `@fctl` or `@agent`
-/// anywhere, or starts with `fctl:`, `agent:`, `fctl,` or `agent,` and a
+/// (or one of [`MORE_MENTIONS`]) anywhere, or starts with `fctl:`, `agent:`, `fctl,` or `agent,` and a
 /// space or a new line, in any case. What it quotes (`>`), shows as code
 /// (in backticks or a fenced block) or hides in an HTML comment doesn't
 /// count: people quote a request, and say how to make one.
@@ -195,7 +200,7 @@ fn mentions(line: &str) -> bool {
             return false;
         }
         let after = &line[i + 1..];
-        NAMES.iter().any(|name| {
+        NAMES.iter().chain(&MORE_MENTIONS).any(|name| {
             after_name(after, name).is_some_and(|rest| {
                 rest.chars()
                     .next()
@@ -1137,6 +1142,11 @@ mod tests {
             "> They said no.\n\nagent: do it anyway",
             "<!-- a template -->\nagent: rename it",
             "```\nsome code\n```\nthen @fctl",
+            "@fctl-sh rename it",
+            "@fctlsh rename it",
+            "@FCTL-Review, look again",
+            "@fctlreview look again",
+            "@fctl-sh[bot] go",
         ] {
             assert!(addressed(yes), "{yes:?}");
         }
@@ -1151,7 +1161,10 @@ mod tests {
             "Agents, rename it",
             "write to me@fctl.sh",
             "see https://example.com/@fctl",
-            "@fctl-sh rename it",
+            "@fctl-bot rename it",
+            "@fctl-shop rename it",
+            "@fctl-reviewer rename it",
+            "fctl-sh: rename it",
             "@agents rename it",
             "@acme/fctl rename it",
             "@@fctl rename it",
