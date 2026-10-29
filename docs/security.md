@@ -209,10 +209,20 @@ owner and purpose), so a value copied between rows does not decrypt.
 
 ## Sandboxes
 
-Each session runs in its own Linux VM (Apple container or Lima) or container
-(Docker). The agent runs Claude Code with permission prompts off, because the
-sandbox is the boundary: it can do anything inside its VM, and nothing
-outside it except through these channels:
+Each session runs in its own Linux VM (Apple container, Firecracker or
+Lima) or container (Docker). The agent runs Claude Code with permission
+prompts off, because the sandbox is the boundary: it can do anything inside
+its VM, and nothing outside it except through these channels:
+
+- **Firecracker VMs** have a kernel of their own, as Apple's and Lima's
+  do, where a Docker container shares the host's: a kernel bug in the
+  sandbox stays there. They share no files with the host, and the host
+  runs what it runs in them through their vsock, not SSH. Firecracker runs
+  as the host's user, with its seccomp filters but without its jailer,
+  which needs root: a VM escape would run as that user, who can read the
+  runner's token, as a container escape can with Docker. Their images
+  unpack in a VM of their own, so a crafted layer can't reach the host's
+  filesystem.
 
 - **Lima VMs** get none of the mounts of Lima's templates, which give
   each VM the home directory of whoever runs the host (read only) and a
@@ -236,9 +246,11 @@ outside it except through these channels:
   workspace's; a Docker that can't make the network leaves them on its
   default one, and the host says so in its log. With Docker Desktop and
   OrbStack, containers still reach the host's loopback
-  (`host.docker.internal`). Apple's `container` VMs share its network: on
-  a runner that serves more than one workspace, keep to Docker where that
-  matters.
+  (`host.docker.internal`). Firecracker VMs each reach the network through
+  a `passt` of their own, which makes their connections the host's: they
+  reach neither each other nor the host's loopback. Apple's `container`
+  VMs share its network: on a runner that serves more than one workspace,
+  keep to Docker or Firecracker where that matters.
 - **GitHub.** Installation tokens for the project's repositories and no
   others, within the GitHub accounts and repositories its workspace may use,
   valid for an hour and refreshed on demand

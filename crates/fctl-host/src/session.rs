@@ -86,7 +86,7 @@ impl HostCtx {
 
     /// The images and builds this host's sessions may start from.
     pub fn images(&self) -> Images {
-        self.cfg.images(self.driver.uses_images())
+        self.cfg.images(self.driver.builds_images())
     }
 
     pub fn runner_id(&self) -> RunnerId {
@@ -116,7 +116,7 @@ impl HostCtx {
     pub async fn refresh_facts(&self) {
         let data_dir = self.cfg.data_dir();
         let (drivers, size, spot) = tokio::join!(
-            Driver::probe_all(&data_dir),
+            Driver::probe_all(&self.cfg),
             self.driver.measure(),
             self.driver.disk_spot(&data_dir)
         );
@@ -655,7 +655,7 @@ async fn prepare(
     let (image, fallback_image) = match want {
         // A sandbox that is here already keeps the image it was made from.
         ImageWant::Build(_)
-            if ctx.driver.uses_images() && !ctx.driver.sandbox_exists(&name).await? =>
+            if ctx.driver.builds_images() && !ctx.driver.sandbox_exists(&name).await? =>
         {
             uplink.state(state(
                 SessionStatus::Provisioning,

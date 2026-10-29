@@ -23,6 +23,15 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# The init of Firecracker microVMs (src/vm).
+[target.'cfg(target_os = "linux")'.dependencies]
+flate2.workspace = true
+nix = { workspace = true, features = ["hostname", "mount", "net", "reboot", "resource", "socket", "time"] }
+tar.workspace = true
+tokio-tun = "0.15.2"
+tokio-vsock = "0.7.2"
+vsock = "0.5.4"
+
 [dev-dependencies]
 tempfile = "3"
 

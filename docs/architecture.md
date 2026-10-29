@@ -24,10 +24,11 @@ boundary.
                 │                       │ control WS  │ session uplink WS (one per session)
                 │        ┌──────────────┴─────────────┴───────────────┐
                 │        │  fctl host  (Rust daemon on your machine)  │
-                │        │   ├─ drivers: apple · docker · lima · proc │
+                │        │   ├─ drivers: apple · docker · firecracker │
+                │        │   │  · lima · process                      │
                 │        │   └─ per session: sandbox + attach channel │
                 │        └──────────────┬─────────────────────────────┘
-                │                       │ framed JSON over exec/unix socket
+                │                       │ framed JSON over exec, a unix socket or a vsock
                 │        ┌──────────────┴─────────────────────────────┐
                 │        │  sandbox (VM)                               │
                 │        │   fctl-agent (supervisor, journal)          │
@@ -2787,8 +2788,8 @@ repository to build one from (`image_build`: a Dockerfile and its context,
 or a dev container configuration). Hosts send the images they run besides
 their own (`HostHello.allowed_images`: references, `/*` prefixes, digest
 pins; absent: any) and the repositories they build images from
-(`allowed_builds`; absent: none, and always absent with Lima or the process
-driver). FleetDO reads each queued session's image with its size
+(`allowed_builds`; absent: none, and always absent with Firecracker, Lima or
+the process driver). FleetDO reads each queued session's image with its size
 (`fctl_domain::image::ImageWant`) and only assigns it to a runner whose
 lists take it (`fctl_domain::schedule::pick`); a session that none online
 takes stays queued with the reason. The host checks its lists again before
@@ -2806,6 +2807,7 @@ be reached.
 | Driver | Isolation | Host |
 |---|---|---|
 | `apple` | one lightweight VM per session (Apple `container`) | Apple silicon, macOS 26+ |
+| `firecracker` | one microVM per session, with a kernel of its own ([Firecracker](#firecracker)) | Linux with KVM |
 | `lima` | one full VM per session | macOS, Linux |
 | `docker` | containers in Docker/OrbStack/Colima (a VM on macOS) | macOS, Linux |
 | `process` | none: a directory and a process | development, trusted hosts |
@@ -2821,7 +2823,8 @@ limits (older versions) take any size. The host passes the size it applied
 to fctl-agent (`AgentConfig.sandbox`), which tells Claude: with Docker,
 `nproc` and `free` show the VM, not the sandbox's cgroup limits, and with
 Apple's `container`, `nproc` counts one CPU more than the sandbox may use.
-The process driver limits nothing.
+A Firecracker sandbox is a VM of exactly that size. The process driver
+limits nothing.
 
 An Apple `container` sandbox is a VM of its own. Apple's runtime gives the
 VM one CPU and 128 MiB more than the sandbox's size, for the guest kernel
@@ -2901,7 +2904,7 @@ It also keeps `min_free_disk_gb` free on the disk where the sandboxes'
 files are: Apple's `container` app root (from `container system status`),
 Lima's home, Docker's root directory, or with Docker on macOS the disk in
 its VM, where `df` runs in a short-lived container of the host's image, and
-the data directory with the process driver. It measures every 30 seconds
+the data directory with Firecracker and the process driver. It measures every 30 seconds
 (in Docker's VM every five minutes). Below the floor:
 
 - The sweep removes the other stopped sandboxes too, those stopped longest
@@ -2924,6 +2927,75 @@ conversation to resume, so Claude starts a new one with the session's
 original task, and the agent numbers its events after the ones the control
 plane already has (`first_agent_seq`).
 
+### Firecracker
+
+On Linux hosts with KVM, the `firecracker` driver runs each sandbox in a
+[Firecracker](https://firecracker-microvm.github.io) microVM with a kernel
+of its own, from the same images as Docker, without Docker and without
+root ([ADR 0070](adr/0070-linux-hosts-run-sandboxes-in-firecracker-microvms.md),
+`crates/fctl-host/src/driver/firecracker`). A host's owner chooses it
+(`fctl host install --driver firecracker`; `auto` never does). It needs
+`/dev/kvm` (the `kvm` group), `passt` and `mkfs.ext4`; it downloads
+Firecracker itself, at the release fctl pins (1.17.0, checked against its
+SHA-256), and the VMs' kernel, Linux 6.18 with Firecracker's guest
+configuration, which hyperstructure/sandbox publishes as an image
+(`ghcr.io/hyperstructure/sandbox-kernel:<version>`), unless the
+`[firecracker]` table of `host.toml` names others. Everything it keeps is
+in `firecracker/` in the host's data directory.
+
+- **Images.** The host reads an image's manifest for its platform, its
+  config and its layers from the registry, each checked against its
+  digest (`registry.rs`): anonymously, or with the credentials of `docker
+  login` (its `auths`, not credential helpers), over plain HTTP only for a
+  registry on the machine itself. A VM booted for it (`fctl.mode=unpack`)
+  unpacks the layers onto a new ext4 filesystem, as root there, with their
+  whiteouts: owners, modes, setuid bits and capabilities stay the image's,
+  and no file of the image touches the host's filesystem. Each image keeps
+  its filesystem, read only, and what its config says about running it
+  (user, environment, working directory, labels), under its config's
+  digest, as Docker's image ID; names refer to images as Docker's tags do
+  (`images.rs`). A pull whose image is here already reads only its
+  manifest, so refreshing the default image works as with Docker. Removing
+  a name keeps the last one of an image that a sandbox uses. Images share
+  no layers, and the driver builds none.
+- **Sandboxes.** A sandbox is a directory with its own disk, a sparse ext4
+  file of `disk_gb` (64 GiB by default) that takes what the session
+  writes. Its VM's init lays it over the image's filesystem with overlayfs,
+  and the disk gives the host back what the session deletes (discard).
+  Stopping a sandbox keeps its disk; starting it again boots from it, with
+  the size the session asks for then.
+- **The VM's init** is fctl-agent, from an initramfs the host makes of its
+  own static fctl-agent (`crates/fctl-agent/src/vm`). It mounts the root,
+  copies itself to `/opt/fctl/bin/fctl-agent`, sets up what images don't
+  bring (the kernel's filesystems, the hostname, `/etc/hosts`,
+  `/etc/resolv.conf`, 1,048,576 open files), and keeps `fctl-agent
+  vm-serve` running and reaps the programs whose parents exit first. The
+  host talks to `vm-serve` through Firecracker's vsock socket
+  (`fctl_proto::vm`): it runs a program as `docker exec` would, as the
+  image's user with its environment and working directory, in a session of
+  its own, which it stops when the host goes away; it carries the
+  program's input and output in frames; and it stops the VM: every
+  program, then the disks written out, then a reset, which ends
+  Firecracker. The VM's clock follows the host's, which each request
+  carries.
+- **Network.** The VM's `eth0` is a TAP device inside the VM, with
+  `10.0.2.15/24`, whose frames `vm-serve` carries over the vsock to a
+  `passt` of the VM's own on the host, which turns them into the host's
+  own connections. The host has no bridge, TAP device or firewall rule for
+  it. A VM reaches the internet and the host's network as a Docker
+  container does, but neither other VMs nor the host's loopback, and
+  nothing reaches it from outside; DNS goes to the host's resolver.
+- **Processes.** Firecracker and `passt` run in process groups of their
+  own, as the process driver's agents do, so restarting or updating the
+  host leaves them running; the host finds a VM's processes by the ids it
+  keeps and the sockets in their command lines, in a private directory of
+  the user's in `/tmp` (sockets' paths are limited to about 100 bytes).
+  A VM's console goes to `console.log` in its directory.
+
+The VMs share no files with the host, so they get no
+[package caches](#package-caches). Firecracker runs as the host's user,
+without its jailer, which needs root: a VM escape would run as that user.
+
 ### Package caches
 
 A project can share its package managers' downloads between its sessions
@@ -2941,7 +3013,8 @@ and the host checks.
   `caches/<project id>`, that each sandbox bind-mounts: Apple's named
   volumes are ext4 images, which two running VMs must not mount at once.
   Both appear at `/var/cache/fctl`. The process driver's agents use the
-  directory where it is, and Lima's VMs get none. The mount is made with
+  directory where it is, and Firecracker's and Lima's VMs get none: they
+  share no files with the host. The mount is made with
   the sandbox, so a sandbox made before its project turned caches on gets
   none until the session's next one. Docker makes a new volume's root
   root's, so the host gives it to the image's user (`id -u` in the

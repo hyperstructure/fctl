@@ -14,6 +14,7 @@
 //! | [`uplink`] | SessionDO ⇄ hosts (one connection per session) |
 //! | [`agent`] | hosts ⇄ fctl-agent inside a sandbox, and `fctl` ⇄ fctl-agent within it |
 //! | [`tickets`] | tickets in a project's tracker, whatever the tracker, and Linear's connections |
+//! | [`vm`] | hosts ⇄ the init of a Firecracker microVM, over its vsock |
 
 pub mod agent;
 pub mod api;
@@ -25,6 +26,7 @@ pub mod session;
 pub mod tickets;
 pub mod uplink;
 pub mod viewer;
+pub mod vm;
 
 #[cfg(feature = "ts")]
 mod ts_export;

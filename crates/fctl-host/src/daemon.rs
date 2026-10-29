@@ -178,7 +178,7 @@ impl Daemon {
         std::fs::create_dir_all(&data)?;
         // What image builds left behind when the host last stopped.
         let _ = std::fs::remove_dir_all(data.join("builds"));
-        let driver = Driver::select(&cfg.driver, &data, cfg.agent_bin.clone()).await?;
+        let driver = Driver::select(&cfg.driver, &cfg).await?;
         let ctx = Arc::new(HostCtx::new(cfg, driver, token));
         ctx.refresh_facts().await;
         tracing::info!(

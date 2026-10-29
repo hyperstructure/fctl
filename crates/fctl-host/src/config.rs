@@ -3,7 +3,7 @@
 //! ```toml
 //! server = "https://app.fctl.sh"
 //! name = "studio-mac"
-//! driver = "auto"          # apple | docker | lima | process | auto
+//! driver = "auto"          # apple | docker | firecracker | lima | process | auto
 //! capacity = 4
 //! image = "ghcr.io/acme/agent:1"  # unset: the published image of this version
 //! cpus = 4                 # per sandbox, when its project sets none
@@ -23,6 +23,11 @@
 //! # Where `fctl host claude set-token` keeps your Claude token (unset: claude-token here).
 //! claude_token_file = "/run/secrets/claude-token"
 //! auto_update = true      # update fctl to the version the control plane runs
+//!
+//! [firecracker]            # the firecracker driver
+//! firecracker = "/usr/local/bin/firecracker"  # unset: the release fctl pins, downloaded
+//! kernel = "/var/lib/fctl/vmlinux"            # a file, or an image with /vmlinux (unset: the published one)
+//! disk_gb = 64             # each sandbox's own disk, which takes only what it holds
 //! ```
 //!
 //! The runner token lives next to it in `host-token`, and the Claude token
@@ -120,6 +125,44 @@ pub struct HostConfig {
     /// the version the control plane runs, once it is newer than this
     /// host's ([`crate::update`]).
     pub auto_update: bool,
+    /// The `firecracker` driver's settings.
+    #[serde(skip_serializing_if = "FirecrackerConfig::is_default")]
+    pub firecracker: FirecrackerConfig,
+}
+
+/// The `firecracker` driver's settings: `[firecracker]` in `host.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FirecrackerConfig {
+    /// Firecracker's binary. Unset: the release fctl pins, which the host
+    /// downloads.
+    pub firecracker: Option<PathBuf>,
+    /// The kernel the VMs boot: a file, or an image whose `/vmlinux` it is.
+    /// Unset: the one hyperstructure/sandbox publishes.
+    pub kernel: Option<String>,
+    /// `passt`, which gives the VMs their network. Unset: the one on the
+    /// PATH.
+    pub passt: Option<PathBuf>,
+    /// The disk each sandbox gets, in GiB: a sparse file, which takes only
+    /// what the session writes.
+    pub disk_gb: u32,
+}
+
+impl Default for FirecrackerConfig {
+    fn default() -> Self {
+        Self {
+            firecracker: None,
+            kernel: None,
+            passt: None,
+            disk_gb: 64,
+        }
+    }
+}
+
+impl FirecrackerConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Default for HostConfig {
@@ -152,6 +195,7 @@ impl Default for HostConfig {
             max_build_mb: 20 * 1024,
             claude_token_file: None,
             auto_update: true,
+            firecracker: FirecrackerConfig::default(),
         }
     }
 }
@@ -336,12 +380,12 @@ impl HostConfig {
     }
 
     /// The images and builds this host's sessions may start from. Builds
-    /// need a `driver` that makes sandboxes from images.
-    pub fn images(&self, driver_uses_images: bool) -> Images {
+    /// need a driver that builds images (`driver_builds`).
+    pub fn images(&self, driver_builds: bool) -> Images {
         Images {
             own: self.image(),
             allowed: self.allowed_images.clone(),
-            builds: if driver_uses_images {
+            builds: if driver_builds {
                 self.allowed_builds.clone()
             } else {
                 None

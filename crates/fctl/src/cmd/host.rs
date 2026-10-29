@@ -20,7 +20,7 @@ pub enum HostCmd {
         /// Runner name (default: the hostname).
         #[arg(long)]
         name: Option<String>,
-        /// apple, docker, lima, process, or auto.
+        /// apple, docker, firecracker, lima, process, or auto.
         #[arg(long, default_value = "auto")]
         driver: String,
         /// Maximum concurrent sessions.
@@ -220,10 +220,13 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 Some(config::api(Some(&server)).context(SIGN_IN)?)
             };
             // `auto` picks like the daemon does, except that it never settles for
-            // the process driver.
+            // the process driver; neither picks Firecracker, which a host's
+            // owner chooses.
             let driver = if driver == "auto" {
-                let infos = Driver::probe_all(&cfg.data_dir()).await;
-                let runtimes = infos.iter().filter(|i| i.name != "process");
+                let infos = Driver::probe_all(&cfg).await;
+                let runtimes = infos
+                    .iter()
+                    .filter(|i| i.name != "process" && i.name != "firecracker");
                 match runtimes.clone().find(|i| i.available) {
                     Some(info) => info.name.clone(),
                     None => {
@@ -233,6 +236,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                             let detail = info.detail.as_deref().unwrap_or_default();
                             why.push_str(&format!("\n  {}: {detail}", info.name));
                         }
+                        if infos.iter().any(|i| i.name == "firecracker" && i.available) {
+                            why.push_str("\nFirecracker is ready: --driver firecracker runs each session in a microVM of its own.");
+                        }
                         bail!(
                             "{why}\nInstall one, or pass --driver process to run agents without isolation."
                         );
@@ -241,7 +247,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             } else {
                 driver
             };
-            let d = Driver::select(&driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
+            let d = Driver::select(&driver, &cfg).await?;
             if build_image {
                 fctl_host::image::build(&d, &cfg.image(), &cfg.download_base, None).await?;
             }
@@ -313,7 +319,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         cfg.image()
                     ))
                 );
-                let images = cfg.images(true);
+                let images = cfg.images(d.builds_images());
                 println!(
                     "{}",
                     style::dim(&format!(
@@ -357,9 +363,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         HostCmd::Status => {
             let cfg = HostConfig::load()?;
             let (installed, running) = service::status();
-            let driver = Driver::select(&cfg.driver, &cfg.data_dir(), None)
-                .await
-                .ok();
+            let driver = Driver::select(&cfg.driver, &cfg).await.ok();
             let (sandbox, (spot, free)) = match &driver {
                 Some(d) => (
                     Some(cfg.sandbox_limits(d.resources().await)),
@@ -417,7 +421,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("updates:  {}", updates_line(&cfg));
             println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
-                let images = cfg.images(d.uses_images());
+                let images = cfg.images(d.builds_images());
                 println!(
                     "images:   {}; {}",
                     image::describe_allowed(images.allowed.as_deref()),
@@ -470,7 +474,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         },
         HostCmd::Image(ImageCmd::Pull) => {
             let cfg = HostConfig::load().unwrap_or_default();
-            let d = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
+            let d = Driver::select(&cfg.driver, &cfg).await?;
             if !d.uses_images() {
                 bail!(
                     "The {} driver doesn't use images{}",
@@ -536,7 +540,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         }) => {
             let cfg = HostConfig::load().unwrap_or_default();
             let name = driver.unwrap_or(cfg.driver.clone());
-            let d = Driver::select(&name, &cfg.data_dir(), cfg.agent_bin.clone()).await?;
+            let d = Driver::select(&name, &cfg).await?;
             let tag = tag.unwrap_or_else(|| cfg.image());
             fctl_host::image::build(&d, &tag, &cfg.download_base, source.as_deref()).await
         }
@@ -762,7 +766,7 @@ async fn running_sandboxes() -> usize {
     let Ok(cfg) = HostConfig::load() else {
         return 0;
     };
-    let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await else {
+    let Ok(d) = Driver::select(&cfg.driver, &cfg).await else {
         return 0;
     };
     d.list()
@@ -781,7 +785,7 @@ async fn stop_sandboxes_here(json: bool) {
     let Ok(cfg) = HostConfig::load() else {
         return;
     };
-    let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), cfg.agent_bin.clone()).await else {
+    let Ok(d) = Driver::select(&cfg.driver, &cfg).await else {
         return;
     };
     let Ok(list) = d.list().await else { return };
@@ -1192,7 +1196,7 @@ async fn doctor() -> Result<()> {
             );
         }
     }
-    for d in Driver::probe_all(&cfg.data_dir()).await {
+    for d in Driver::probe_all(&cfg).await {
         let line = format!(
             "driver {}: {}",
             d.name,
@@ -1204,7 +1208,7 @@ async fn doctor() -> Result<()> {
             println!("{} {}", style::dim("·"), style::dim(&line));
         }
     }
-    if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await
+    if let Ok(d) = Driver::select(&cfg.driver, &cfg).await
         && d.uses_images()
         && d.probe().await.available
     {
@@ -1245,19 +1249,19 @@ async fn doctor() -> Result<()> {
         &problems_with_images.join("; "),
     );
     if cfg.allowed_builds.is_some()
-        && let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await
-        && !d.uses_images()
+        && let Ok(d) = Driver::select(&cfg.driver, &cfg).await
+        && !d.builds_images()
     {
         println!(
             "{} {}",
             style::dim("·"),
             style::dim(&format!(
-                "allowed_builds: the {} driver uses no images, so this host builds none",
+                "allowed_builds: the {} driver builds no images, so this host builds none",
                 d.name()
             ))
         );
     }
-    if let Ok(d) = Driver::select(&cfg.driver, &cfg.data_dir(), None).await
+    if let Ok(d) = Driver::select(&cfg.driver, &cfg).await
         && let (Some(spot), free) = disk_here(&cfg, &d).await
     {
         match (free, cfg.min_free_disk_mb()) {

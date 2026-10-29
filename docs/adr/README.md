@@ -75,3 +75,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0067](0067-review-agents-sum-pull-requests-up-in-their-descriptions.md) | Review agents sum pull requests up in their descriptions |
 | [0068](0068-projects-choose-whether-drafts-get-reviews.md) | Projects choose whether drafts get reviews |
 | [0069](0069-releases-start-their-sandbox-image-and-homebrew-bump-as-a-github-app.md) | Releases start their sandbox image and Homebrew bump, as a GitHub App |
+| [0070](0070-linux-hosts-run-sandboxes-in-firecracker-microvms.md) | Linux hosts run sandboxes in Firecracker microVMs |

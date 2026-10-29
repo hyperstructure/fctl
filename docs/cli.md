@@ -390,7 +390,8 @@ only what is new. The runner keeps them for the project up to its owner's
 limit, 10 GiB unless `host.toml` says otherwise, empties them past it, and
 removes them two weeks after a session last used them ([Hosts](#hosts)).
 Sessions get them on runners with the Docker or Apple container driver
-(and the process driver), not Lima, and review agents never do. A session
+(and the process driver), not Firecracker or Lima, and review agents never
+do. A session
 in a sandbox made before the project turned them on gets them in its next
 sandbox.
 
@@ -708,6 +709,7 @@ your secrets manager writes.
 ```sh
 fctl host install                # register this machine and start the service
 fctl host install --driver lima --capacity 2 --build-image
+fctl host install --driver firecracker   # Linux with KVM: each session in a microVM of its own
 fctl host install --cpus 4 --memory 8g --max-cpus 8 --max-memory 12g   # sandbox sizes
 fctl host install --name studio-mac --image ghcr.io/acme/agent:1   # its name (default: the hostname), and the image for projects that choose none
 fctl host install --allow-image 'ghcr.io/acme/*' --allow-build 'acme/*'   # what projects may run and build
@@ -760,14 +762,15 @@ prints the end of it on both.
 `fctl host install` checks the driver before it registers anything: if the
 driver can't run sessions (Apple's `container` or Lima isn't installed, a
 service isn't running), it says what to fix and stops. `--driver auto` (the
-default) picks the first ready one of apple, docker and lima, never the
-process driver, and the driver it checked goes into the host's settings in
+default) picks the first ready one of apple, docker and lima, never
+firecracker, which a host's owner chooses, or the process driver, and the
+driver it checked goes into the host's settings in
 `~/.config/fctl/host.toml`:
 
 ```toml
 server = "https://app.fctl.sh"
 name = "studio-mac"
-driver = "apple"         # apple | lima | docker | process | auto (picks at every start)
+driver = "apple"         # apple | lima | docker | firecracker | process | auto (picks at every start)
 capacity = 4             # concurrent sessions
 # image = "ghcr.io/acme/agent:1"   # unset: the published image of the host's version
 cpus = 4                 # per sandbox, when the project sets none
@@ -783,7 +786,29 @@ keep_caches_days = 14    # then remove the caches of a project with no session h
 build_timeout_minutes = 60
 max_build_mb = 20480     # the largest image a build may make
 auto_update = true       # update fctl to the version the control plane runs (false: `fctl self update`)
+
+[firecracker]            # with the firecracker driver
+# firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads
+# kernel = "/var/lib/fctl/vmlinux"             # a file, or an image whose /vmlinux it is (unset: the published one)
+disk_gb = 64             # each sandbox's own disk, which takes only what its session writes
 ```
+
+On Linux, `--driver firecracker` runs each session in a
+[Firecracker](https://firecracker-microvm.github.io) microVM with a kernel
+of its own, from the same images as Docker, with nothing running as root.
+It needs KVM that your user may use, and two packages:
+
+```sh
+sudo usermod -aG kvm $USER   # then log in again; `ls -l /dev/kvm` shows the group
+sudo apt install passt e2fsprogs   # or dnf, pacman: passt gives the VMs their network
+fctl host install --driver firecracker
+```
+
+The host downloads Firecracker and the VMs' kernel itself, and pulls
+images without Docker: a short-lived VM unpacks each, so its first pull
+takes a little longer than Docker's. Its sandboxes get no package caches
+and it builds no images; projects' own images run as with Docker.
+[Architecture](architecture.md#firecracker) has the details.
 
 Sessions start from their project's image or, without one, the host's:
 unless `image` sets another, the published image of the host's own version,
@@ -825,7 +850,8 @@ shows its 512 GiB disk image rather than what the Mac has free.
 The host keeps `min_free_disk_gb` free (20 GiB unless `host.toml` says
 otherwise) on the disk where its sandboxes are: Apple's `container` app
 root, Lima's `~/.lima`, Docker's root directory or, with Docker on macOS,
-the disk inside its VM, and the data directory with the process driver. It
+the disk inside its VM, and the data directory with Firecracker and the
+process driver. It
 measures every 30 seconds (inside Docker's VM every five minutes, since
 that starts a container). With less free than that:
 

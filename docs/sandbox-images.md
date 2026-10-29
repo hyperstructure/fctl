@@ -81,6 +81,11 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   image build` prepares with the image's provisioning script, on Lima's
   Debian 13 (Debian 12 with Lima older than 2.0, which lacks it). The
   process driver uses no image.
+- **Firecracker** hosts pull the same images without Docker, and unpack
+  each in a short-lived microVM into a filesystem that the sandboxes made
+  from it share, read only; they boot a kernel that hyperstructure/sandbox
+  publishes too, `ghcr.io/hyperstructure/sandbox-kernel:<version>`. They
+  build no images ([Architecture](architecture.md#firecracker)).
 - **Disk.** The host removes the default images that sessions no longer
   start from: builds that a newer one replaced, other versions' images, and
   `latest` once the version's image is there. It does that when it starts,
@@ -92,7 +97,7 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   newer one replaced keeps the name `<tag>-replaced-<the start of its ID>`
   until then. Apple's `container` gives each sandbox its own copy of the
   image's filesystem, so the host removes them right away, and stopped
-  sandboxes still start.
+  sandboxes still start. Firecracker keeps them as Docker does.
 
 ## Its layout
 
@@ -220,10 +225,13 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
    registry: run `docker login ghcr.io` (with Apple container,
    `container registry login ghcr.io`) on each host, as the user its
    service runs as. fctl sends no registry credentials. For GHCR, a token
-   with `read:packages` is enough.
+   with `read:packages` is enough. Firecracker hosts read the credentials
+   `docker login` keeps in `~/.docker/config.json` (but not those of a
+   credential helper), so `docker login` there needs Docker's CLI only.
 
 Lima runners don't use images: their sessions run in a clone of the VM
-`fctl host image build` prepared. The process driver uses none either.
+`fctl host image build` prepared. The process driver uses none either, and
+Firecracker runners build none.
 
 ## Building it from the repository
 
