@@ -81,6 +81,16 @@ pub fn gone(status: u16, message: &str) -> bool {
     }
 }
 
+/// Whether GitHub's refusal of a request (`status`, `message`) may pass, so
+/// that asking again later can work: GitHub failed (5xx), or the request
+/// hit a rate limit (429, or 403 saying so). Anything else, such as a check
+/// that is gone or another app's, stays as it is.
+pub fn passes(status: u16, message: &str) -> bool {
+    status >= 500
+        || status == 429
+        || (status == 403 && message.to_ascii_lowercase().contains("rate limit"))
+}
+
 /// Where GitHub installs app `slug` (the review app) on the account whose
 /// id is `target`, chosen already, on the repositories `repos` (GitHub's
 /// ids, at most 100) or, without them, on every repository; with
@@ -232,6 +242,19 @@ mod tests {
         assert!(!gone(401, "A JSON web token could not be decoded"));
         assert!(!gone(500, "Server Error"));
         assert!(!gone(429, "Too Many Requests"));
+    }
+
+    #[test]
+    fn failures_and_rate_limits_pass_and_refusals_stay() {
+        assert!(passes(502, "Server Error"));
+        assert!(passes(429, "Too Many Requests"));
+        assert!(passes(
+            403,
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+        ));
+        assert!(!passes(403, "Resource not accessible by integration"));
+        assert!(!passes(404, "Not Found"));
+        assert!(!passes(422, "Validation Failed"));
     }
 
     #[test]

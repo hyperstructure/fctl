@@ -1159,14 +1159,14 @@ impl<'a> Github<'a> {
         })
     }
 
-    /// Changes a review's check. Says why GitHub refused.
+    /// Changes a review's check. GitHub's status and why it refused.
     pub async fn update_check(
         &self,
         token: &GithubCredential,
         repo: &RepoRef,
         id: u64,
         body: Value,
-    ) -> AppResult<Result<(), String>> {
+    ) -> AppResult<Result<(), (u16, String)>> {
         let (status, v) = self
             .with_token(
                 token,
@@ -1178,7 +1178,7 @@ impl<'a> Github<'a> {
         Ok(if status == 200 {
             Ok(())
         } else {
-            Err(github_message(status, &v))
+            Err((status, github_message(status, &v)))
         })
     }
 

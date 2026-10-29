@@ -1246,7 +1246,7 @@ async fn supersede(
             for (session_id, check) in checks {
                 let url = cfg.url(&format!("/s/{session_id}"));
                 let body = rv::check_ended(ReviewState::Superseded, &because, &url);
-                if let Ok(Err(why)) = gh.update_check(&token, &repo, check, body).await {
+                if let Ok(Err((_, why))) = gh.update_check(&token, &repo, check, body).await {
                     worker::console_error!("ending a superseded review's check: {why}");
                 }
             }
@@ -1271,6 +1271,14 @@ struct Writer<'a> {
     no_checks: Option<String>,
     /// It's the app review agents post as (`Config::github_review`).
     review: bool,
+}
+
+/// What came of finding a review's writer ([`Writer::of`]).
+enum Written<'a> {
+    /// The app that writes it, and the reviewed repository.
+    Writer(RepoRef, Writer<'a>),
+    /// Nothing can write it any more, and why: its check stays as it is.
+    Gone(String),
 }
 
 impl<'a> Writer<'a> {
@@ -1323,12 +1331,17 @@ impl<'a> Writer<'a> {
     /// The writer of review `row`, the app it started with, and the
     /// repository: the GitHub App once the review app's installation is
     /// gone or no longer reaches the repository, though only the review app
-    /// could change the check it created. Fails when GitHub doesn't answer,
-    /// or refuses the review app's token otherwise.
-    async fn of(cfg: &'a Config, row: &ReviewRow) -> AppResult<(RepoRef, Writer<'a>)> {
-        let repo = row
-            .repo()
-            .ok_or_else(|| crate::error::internal("a review without a repository"))?;
+    /// could change the check it created. [`Written::Gone`] when nothing can
+    /// write it for good: GitHub refuses the GitHub App's token too, as
+    /// gone (`fctl_domain::review_app::gone`), or the instance has no GitHub
+    /// App. Fails when GitHub doesn't answer, or refuses a token otherwise,
+    /// which may pass: the agent submits its review again, and a review
+    /// that ended stays under way for the hourly job to end it (`ended`,
+    /// `sweep`).
+    async fn of(cfg: &'a Config, row: &ReviewRow) -> AppResult<Written<'a>> {
+        let Some(repo) = row.repo() else {
+            return Ok(Written::Gone("it names no repository".into()));
+        };
         let now = now_ms();
         let review_at = row
             .review_installation_id
@@ -1343,7 +1356,7 @@ impl<'a> Writer<'a> {
                         no_checks,
                         review: true,
                     };
-                    return Ok((repo, writer));
+                    return Ok(Written::Writer(repo, writer));
                 }
                 // Uninstalled, suspended or no longer reaching the repository
                 // since: the GitHub App writes instead.
@@ -1355,10 +1368,7 @@ impl<'a> Writer<'a> {
                     );
                 }
                 // Anything else may pass, a secondary rate limit say, and the
-                // GitHub App couldn't change the review app's check: the step
-                // fails. The agent submits its review again, and a review
-                // that ended stays under way for the hourly job to end it
-                // (`ended`, `sweep`).
+                // GitHub App couldn't change the review app's check.
                 Err((status, msg)) => {
                     return Err(crate::error::unavailable(&format!(
                         "GitHub refused {}'s token ({status}): {msg}",
@@ -1367,20 +1377,31 @@ impl<'a> Writer<'a> {
                 }
             }
         }
-        let gh = github::from_config(cfg, now)?;
-        let inst = row
-            .installation_id
-            .and_then(|i| u64::try_from(i).ok())
-            .ok_or_else(|| crate::error::internal("a review without an installation"))?;
-        let (token, no_checks) = gh.review_token(inst, &repo).await?;
-        let writer = Writer {
-            gh,
-            inst,
-            token,
-            no_checks,
-            review: false,
+        let Ok(gh) = github::from_config(cfg, now) else {
+            return Ok(Written::Gone("the instance has no GitHub App".into()));
         };
-        Ok((repo, writer))
+        let Some(inst) = row.installation_id.and_then(|i| u64::try_from(i).ok()) else {
+            return Ok(Written::Gone("it names no installation".into()));
+        };
+        match gh.try_review_token(inst, &repo).await? {
+            Ok((token, no_checks)) => {
+                let writer = Writer {
+                    gh,
+                    inst,
+                    token,
+                    no_checks,
+                    review: false,
+                };
+                Ok(Written::Writer(repo, writer))
+            }
+            Err((status, msg)) if fctl_domain::review_app::gone(status, &msg) => Ok(Written::Gone(
+                format!("GitHub refused {}'s token: {msg}", gh.slug()),
+            )),
+            Err((status, msg)) => Err(crate::error::unavailable(&format!(
+                "GitHub refused {}'s token ({status}): {msg}",
+                gh.slug()
+            ))),
+        }
     }
 
     /// The instance's other app, for fctl's earlier comments on `repo`
@@ -1472,7 +1493,13 @@ pub async fn started(env: &Env, session_id: &str) -> AppResult<()> {
     if row.state() != ReviewState::Running {
         return Ok(());
     }
-    let (repo, writer) = Writer::of(&cfg, &row).await?;
+    let (repo, writer) = match Writer::of(&cfg, &row).await? {
+        Written::Writer(repo, writer) => (repo, writer),
+        Written::Gone(why) => {
+            worker::console_error!("starting review {session_id}'s check: {why}");
+            return Ok(());
+        }
+    };
     let url = cfg.url(&format!("/s/{session_id}"));
     let r = writer
         .gh
@@ -1484,7 +1511,7 @@ pub async fn started(env: &Env, session_id: &str) -> AppResult<()> {
         )
         .await;
     writer.revoke().await;
-    if let Ok(Err(why)) = r {
+    if let Ok(Err((_, why))) = r {
         worker::console_error!("starting a review's check: {why}");
     }
     look_again(env, &cfg, &db, &repo, row.number()).await;
@@ -1536,10 +1563,11 @@ pub async fn ended(
             "The review session ended before its agent posted a review.".to_owned(),
         )
     };
-    // Its check first, then how it went: a check that couldn't be ended
-    // (GitHub gave no token, or no answer) leaves the review under way, for
-    // the hourly job to end it again (`sweep`). One GitHub refused stays as
-    // it is.
+    // Its check first, then how it went: a check GitHub couldn't be asked
+    // to end for now (no answer, a failure or a rate limit) leaves the
+    // review under way, for the hourly job to end it again (`sweep`). One
+    // nothing can end any more (its app's installation is gone, or GitHub
+    // refuses for good) stays as it is.
     let Some(row) = of_session(&db, session_id).await? else {
         return Ok(());
     };
@@ -1548,24 +1576,35 @@ pub async fn ended(
     }
     let mut checked = None;
     if let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) {
-        let (repo, writer) = Writer::of(&cfg, &row).await?;
-        let url = cfg.url(&format!("/s/{session_id}"));
-        let r = writer
-            .gh
-            .update_check(
-                &writer.token,
-                &repo,
-                check,
-                rv::check_ended(state, &why, &url),
-            )
-            .await;
-        writer.revoke().await;
-        match r {
-            Ok(Ok(())) => {}
-            Ok(Err(why)) => worker::console_error!("ending a review's check: {why}"),
-            Err(e) => return Err(e),
+        match Writer::of(&cfg, &row).await? {
+            Written::Writer(repo, writer) => {
+                let url = cfg.url(&format!("/s/{session_id}"));
+                let r = writer
+                    .gh
+                    .update_check(
+                        &writer.token,
+                        &repo,
+                        check,
+                        rv::check_ended(state, &why, &url),
+                    )
+                    .await;
+                writer.revoke().await;
+                match r {
+                    Ok(Ok(())) => {}
+                    Ok(Err((status, why))) if fctl_domain::review_app::passes(status, &why) => {
+                        return Err(crate::error::unavailable(&format!(
+                            "GitHub didn't end review {session_id}'s check: {why}"
+                        )));
+                    }
+                    Ok(Err((_, why))) => worker::console_error!("ending a review's check: {why}"),
+                    Err(e) => return Err(e),
+                }
+                checked = Some(repo);
+            }
+            Written::Gone(why) => {
+                worker::console_error!("not ending review {session_id}'s check: {why}");
+            }
         }
-        checked = Some(repo);
     }
     let changed = q(
         &db,
@@ -1660,7 +1699,11 @@ pub async fn cancel_project(ctx: &Ctx, project_id: &str) {
             };
             // Nothing tries again: the reviews go with the project.
             let (repo, writer) = match Writer::of(&cfg, &row).await {
-                Ok(w) => w,
+                Ok(Written::Writer(repo, writer)) => (repo, writer),
+                Ok(Written::Gone(why)) => {
+                    worker::console_error!("ending review {}'s check: {why}", row.session_id);
+                    continue;
+                }
                 Err(e) => {
                     worker::console_error!(
                         "ending review {}'s check: {}",
@@ -1779,7 +1822,14 @@ pub async fn submit(
         ));
     }
     let posted = async {
-        let (repo, writer) = Writer::of(&ctx.cfg, &row).await?;
+        let (repo, writer) = match Writer::of(&ctx.cfg, &row).await? {
+            Written::Writer(repo, writer) => (repo, writer),
+            Written::Gone(why) => {
+                return Err(forbidden(&format!(
+                    "fctl can't post this review on GitHub any more: {why}"
+                )));
+            }
+        };
         let posted = post(ctx, &writer, &row, &repo, &sub).await;
         writer.revoke().await;
         posted.map(|p| (p, repo))
@@ -2196,7 +2246,7 @@ async fn post(
         );
         match gh.update_check(token, repo, check, body).await {
             Ok(Ok(())) => {}
-            Ok(Err(why)) => worker::console_error!("completing a review's check: {why}"),
+            Ok(Err((_, why))) => worker::console_error!("completing a review's check: {why}"),
             Err(e) => worker::console_error!("completing a review's check: {}", e.0.message),
         }
     }
