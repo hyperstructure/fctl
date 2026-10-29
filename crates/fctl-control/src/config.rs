@@ -15,6 +15,8 @@
 //! | `GITHUB_CLIENT_SECRET` | secret | Its client secret: signing in to GitHub to connect accounts |
 //! | `GITHUB_WEBHOOK_SECRET` | secret | Its webhook's secret: GitHub tells the control plane when pull requests and their checks change |
 //! | `GITHUB_DEFAULT_OWNER` | var | Organization new repositories are created in |
+//! | `GITHUB_REVIEW_APP_ID`, `GITHUB_REVIEW_APP_SLUG` | var | The GitHub App review agents post their reviews as where it's installed (optional; `fctl-review` on app.fctl.sh) |
+//! | `GITHUB_REVIEW_APP_PRIVATE_KEY` | secret | Its private key (PKCS#8 PEM) |
 //! | `LINEAR_CLIENT_ID` | var | fctl's Linear app (optional): its OAuth client |
 //! | `LINEAR_CLIENT_SECRET` | secret | Its client secret |
 //! | `LINEAR_WEBHOOK_SECRET` | secret | Its webhook's signing secret: Linear tells the control plane when people delegate issues to fctl |
@@ -31,6 +33,9 @@ use worker::Env;
 pub struct GithubConfig {
     pub app_id: String,
     pub slug: String,
+    /// The variable its private key comes from, which errors about the key
+    /// name.
+    pub key_var: &'static str,
     /// The app's OAuth client, which signs people in to GitHub when they
     /// connect an account to a workspace (`api::github`).
     pub client_id: Option<String>,
@@ -96,6 +101,14 @@ pub struct Config {
     pub master_key: Option<[u8; 32]>,
     pub setup_token: Option<String>,
     pub github: Option<GithubConfig>,
+    /// The GitHub App review agents post their reviews as, where it's
+    /// installed on the reviewed repository (`fctl-review`), so that people
+    /// tell them apart from what the instance's agents write as `github`'s
+    /// app; where it isn't, they post as that one. Only with `github`. It
+    /// has no OAuth client or webhook of its own: installing it on an
+    /// account is all it takes, since fctl uses it only on repositories a
+    /// workspace connected through `github`'s app (`crate::reviews`).
+    pub github_review: Option<GithubConfig>,
     pub linear: Option<LinearConfig>,
     pub google: Option<GoogleConfig>,
     pub email: Option<EmailConfig>,
@@ -135,12 +148,33 @@ impl Config {
             (Some(app_id), Some(private_key_pem)) => Some(GithubConfig {
                 app_id,
                 slug: var(env, "GITHUB_APP_SLUG").unwrap_or_else(|| "fctl".to_owned()),
+                key_var: "GITHUB_APP_PRIVATE_KEY",
                 client_id: var(env, "GITHUB_CLIENT_ID"),
                 client_secret: var(env, "GITHUB_CLIENT_SECRET"),
                 private_key_pem,
                 default_owner: var(env, "GITHUB_DEFAULT_OWNER"),
                 webhook_secret: var(env, "GITHUB_WEBHOOK_SECRET"),
             }),
+            _ => None,
+        };
+        let github_review = match (
+            &github,
+            var(env, "GITHUB_REVIEW_APP_ID"),
+            var(env, "GITHUB_REVIEW_APP_PRIVATE_KEY"),
+        ) {
+            (Some(main), Some(app_id), Some(private_key_pem)) if app_id != main.app_id => {
+                Some(GithubConfig {
+                    app_id,
+                    slug: var(env, "GITHUB_REVIEW_APP_SLUG")
+                        .unwrap_or_else(|| format!("{}-review", main.slug)),
+                    key_var: "GITHUB_REVIEW_APP_PRIVATE_KEY",
+                    client_id: None,
+                    client_secret: None,
+                    private_key_pem,
+                    default_owner: None,
+                    webhook_secret: None,
+                })
+            }
             _ => None,
         };
         let linear = match (
@@ -185,6 +219,7 @@ impl Config {
             master_key,
             setup_token: var(env, "FCTL_SETUP_TOKEN"),
             github,
+            github_review,
             linear,
             google,
             email,

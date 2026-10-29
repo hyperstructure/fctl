@@ -158,7 +158,7 @@ pub fn uri(issuer: &str, account: &str, secret_b32: &str) -> String {
 
 /// Percent-encodes all but RFC 3986's unreserved characters (spaces become
 /// `%20`, which every app reads, where some show a `+` as it is).
-fn percent(text: &str) -> String {
+pub(crate) fn percent(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for b in text.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
