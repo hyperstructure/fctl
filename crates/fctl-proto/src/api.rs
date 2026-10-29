@@ -2536,6 +2536,14 @@ pub struct ReviewAgents {
     /// control planes before it.
     #[serde(default)]
     pub skipped_repos: Vec<RepoRef>,
+    /// Before each review in depth, the agent sums the pull request up at
+    /// the end of its description ([`PullRequestSummary`]): how risky it
+    /// looks, what it does and what deserves a closer look, in place of the
+    /// summary an earlier review left there. fctl writes it between its
+    /// marks, and the rest of the description stays as it is. False from
+    /// control planes before it.
+    #[serde(default)]
+    pub description_summary: bool,
     /// Why no review starts now (they are on), or would start once they
     /// are on: no GitHub webhook, their person's Claude connection is gone…
     pub problem: Option<String>,
@@ -2570,6 +2578,9 @@ pub struct UpdateReviewAgentsRequest {
     /// them. Repositories linked later are reviewed until the owners skip
     /// them.
     pub skipped_repos: Option<Vec<String>>,
+    /// Whether they sum each pull request up at the end of its
+    /// description before they review it in depth.
+    pub description_summary: Option<bool>,
 }
 
 /// A GitHub App that opens pull requests, as the project's owners see it
@@ -2710,6 +2721,11 @@ pub struct Review {
     /// one fctl passes the review's findings on to. Absent otherwise, and
     /// from control planes before it.
     pub opened_by: Option<SessionRef>,
+    /// What its agent said of the pull request at first sight, which fctl
+    /// put at the end of its description
+    /// ([`ReviewAgents::description_summary`]); absent where it summed
+    /// nothing up.
+    pub pull_request_summary: Option<PullRequestSummary>,
 }
 
 /// `GET /api/v1/projects/{id}/reviews`: newest first. With `?session=`, that
@@ -2790,6 +2806,80 @@ pub struct ResolvedFinding {
     pub thread: String,
     /// What changed, in a sentence.
     pub note: String,
+}
+
+/// How much could go wrong with what a pull request sets out to do, as a
+/// review agent judges it at first sight: from what it changes and where,
+/// not from bugs a review may find later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Risk {
+    /// Small and contained: docs, tests, copy, a local fix.
+    Low,
+    /// It changes behavior that people or other code rely on.
+    Medium,
+    /// It reaches security, data, money or many people at once, or is hard
+    /// to undo.
+    High,
+    /// A serious security problem shows at first sight.
+    Critical,
+}
+
+impl Risk {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// What a review agent says of a pull request at first sight, before it
+/// reviews it in depth (`fctl review summarize`): fctl puts it at the end
+/// of the pull request's description, in place of the one an earlier
+/// review left there.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct PullRequestSummary {
+    pub risk: Risk,
+    /// Why, in a sentence or two: what it touches, and what could go wrong.
+    pub risk_reason: String,
+    /// What it does and why, in a few plain sentences: a paragraph or two.
+    pub overview: String,
+    /// What deserves a reviewer's closer look before merging, where
+    /// something does.
+    pub highlight: Option<SummaryHighlight>,
+}
+
+/// What deserves a closer look, in a pull request's summary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SummaryHighlight {
+    /// A few words, which lead in bold: `Database migration`.
+    pub topic: String,
+    /// A sentence or two.
+    pub text: String,
+}
+
+/// What fctl did with a review agent's summary of its pull request.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SummarizedPullRequest {
+    pub repo: RepoRef,
+    pub number: u64,
+    /// The pull request on GitHub, whose description ends with it now.
+    pub url: String,
+    /// The summary, as fctl checked it.
+    pub summary: PullRequestSummary,
+    /// It took the place of the summary an earlier review left there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub replaced: bool,
 }
 
 /// One of the review threads fctl started on a pull request: an earlier
@@ -3213,6 +3303,15 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(as = "Option<Vec<ResolvedFinding>>", optional))]
         resolved: Vec<ResolvedFinding>,
     },
+    /// Puts a review session's summary of its pull request at the end of
+    /// the pull request's description (`fctl review summarize`), before
+    /// the review in depth, in place of the one an earlier review left
+    /// there: fctl writes it between its marks, and the rest of the
+    /// description stays as it is. Only for review sessions in projects
+    /// whose review agents sum pull requests up
+    /// ([`ReviewAgents::description_summary`]); fctl-agents and control
+    /// planes from before it refuse it.
+    SummarizePullRequest { summary: PullRequestSummary },
     /// Reads or writes the project's ticket tracker (`fctl ticket`): a
     /// [`crate::tickets::TicketRequest`], which hosts and fctl-agent pass
     /// on as it is, so that what `fctl ticket` does grows with the control
@@ -3263,6 +3362,11 @@ pub enum AgentAnswer {
     /// What fctl posted.
     ReviewPosted {
         review: PostedReview,
+    },
+    /// The pull request whose description ends with the review agent's
+    /// summary now.
+    PullRequestSummarized {
+        summarized: SummarizedPullRequest,
     },
     /// The tracker's answer to a [`AgentCall::Ticket`]: a
     /// [`crate::tickets::TicketAnswer`], passed on as it is.

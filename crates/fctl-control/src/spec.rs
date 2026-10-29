@@ -530,6 +530,7 @@ async fn review_spec(
         review,
         &branch,
         &base,
+        conf.as_ref().is_some_and(|c| c.description_summary),
         conf.as_ref().and_then(|c| c.instructions.as_deref()),
     );
     Ok(SessionSpec {

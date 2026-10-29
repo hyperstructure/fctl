@@ -458,6 +458,7 @@ impl Supervisor {
             memory: None,
             retrospective: None,
             review: None,
+            summarized: None,
             follow_up: None,
         }));
     }
@@ -703,7 +704,11 @@ impl Supervisor {
                     "This session's agent only reads on GitHub, so it can't resolve review threads.",
                 ));
             }
-            AgentCall::ReviewThreads | AgentCall::SubmitReview { .. } if spec.review.is_none() => {
+            AgentCall::ReviewThreads
+            | AgentCall::SubmitReview { .. }
+            | AgentCall::SummarizePullRequest { .. }
+                if spec.review.is_none() =>
+            {
                 return Err(ApiError::forbidden(
                     "This session doesn't review a pull request: `fctl review` is for review agents' sessions.",
                 ));
@@ -2178,6 +2183,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         memory: None,
         retrospective: None,
         review: None,
+        summarized: None,
         follow_up: None,
     }
 }
@@ -2199,6 +2205,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         memory: None,
         retrospective: None,
         review: None,
+        summarized: None,
         follow_up: None,
     };
     match answer {
@@ -2246,6 +2253,10 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
             ..notice("review_posted", posted_message(review))
         }],
         AgentAnswer::ReviewPosted { .. } => vec![],
+        AgentAnswer::PullRequestSummarized { summarized } => vec![Notice {
+            summarized: Some(summarized.clone()),
+            ..notice("pull_request_summarized", summarized_message(summarized))
+        }],
         // The control plane adds what fctl did in the tracker itself.
         AgentAnswer::Ticket { .. } => vec![],
     }
@@ -2280,6 +2291,23 @@ fn posted_message(r: &fctl_proto::api::PostedReview) -> String {
         );
     }
     s
+}
+
+/// What the transcript says of the summary fctl put in a reviewed pull
+/// request's description.
+fn summarized_message(s: &fctl_proto::api::SummarizedPullRequest) -> String {
+    format!(
+        "fctl put the review agent's summary at the end of the description of {}#{} ({}){}: {} risk.",
+        s.repo.full_name(),
+        s.number,
+        s.url,
+        if s.replaced {
+            ", in place of an earlier review's"
+        } else {
+            ""
+        },
+        s.summary.risk.as_str()
+    )
 }
 
 /// Asks Claude which effort level it works at; the answer comes back as
@@ -4135,6 +4163,75 @@ done
         r.sent_to = Some(SessionId("ses_7".into()));
         assert!(posted_message(&r).ends_with(
             " fctl sent the findings to the agent of the session that opened the pull request."
+        ));
+    }
+
+    fn summarize() -> AgentCall {
+        AgentCall::SummarizePullRequest {
+            summary: fctl_proto::api::PullRequestSummary {
+                risk: fctl_proto::api::Risk::High,
+                risk_reason: "It changes who may delete projects.".into(),
+                overview: "Lets maintainers delete projects.".into(),
+                highlight: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn only_review_agents_sum_their_pull_requests_up() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        let refused = sup.call(None, summarize()).err().map(|e| e.message);
+        assert_eq!(
+            refused.as_deref(),
+            Some(
+                "This session doesn't review a pull request: `fctl review` is for review agents' sessions."
+            )
+        );
+        let (mut sup, mut host) = reviewing(dir.path())?;
+        assert!(sup.call(None, summarize()).is_ok());
+        assert!(sent(&mut host).iter().any(|f| matches!(
+            f,
+            AgentToHost::Call {
+                call: AgentCall::SummarizePullRequest { .. },
+                ..
+            }
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn summaries_show_in_the_transcript() {
+        let AgentCall::SummarizePullRequest { summary } = summarize() else {
+            panic!("not a summary");
+        };
+        let mut summarized = fctl_proto::api::SummarizedPullRequest {
+            repo: fctl_proto::session::RepoRef {
+                owner: "acme".into(),
+                name: "web".into(),
+            },
+            number: 12,
+            url: "https://github.com/acme/web/pull/12".into(),
+            summary,
+            replaced: false,
+        };
+        let answer =
+            |s: &fctl_proto::api::SummarizedPullRequest| AgentAnswer::PullRequestSummarized {
+                summarized: s.clone(),
+            };
+        let notices = kept_notices(&answer(&summarized));
+        let [n] = &notices[..] else {
+            panic!("{notices:?}");
+        };
+        assert_eq!(n.code, "pull_request_summarized");
+        assert_eq!(n.summarized.as_ref(), Some(&summarized));
+        assert_eq!(
+            n.message,
+            "fctl put the review agent's summary at the end of the description of acme/web#12 (https://github.com/acme/web/pull/12): high risk."
+        );
+        summarized.replaced = true;
+        assert!(summarized_message(&summarized).ends_with(
+            "(https://github.com/acme/web/pull/12), in place of an earlier review's: high risk."
         ));
     }
 }

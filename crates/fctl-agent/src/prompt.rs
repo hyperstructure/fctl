@@ -556,6 +556,7 @@ For every pull request you open:
 - If the repository has a pull request template (such as `.github/pull_request_template.md`), fill it in, at this level of detail.
 - End the description with a link to this session: `[fctl session]({session})`.
 - Keep the description up to date: when later commits change what the pull request does, how you verified it or what is worth confirming, rewrite the description to match. `gh pr view N --json body --jq .body` prints it, and `gh pr edit N --body-file FILE` replaces it. Describe the pull request as it now stands, rather than adding notes on what changed since.
+- fctl's review agent may keep a summary at the end of the description, from `<!-- FCTL_REVIEW_SUMMARY -->` to `<!-- /FCTL_REVIEW_SUMMARY -->`, which it rewrites for each new commit: when you rewrite the description, read it again just before and keep that part as it is.
 "#;
 
 /// `~/AGENTS.md` for a review agent: fctl names its session, and its
@@ -570,6 +571,9 @@ pull request it reviews: leave its title as it is.
   people answered.
 - `fctl review submit review.json` posts your review, once, at the end. The
   system prompt says what goes in the file.
+- `fctl review summarize summary.json` puts your summary of the pull request
+  at the end of its description, before you review it in depth, where the
+  system prompt asks for one.
 "#;
 
 /// What a review agent that ended its turn without posting is told.
@@ -1190,6 +1194,7 @@ mod tests {
             "- End the description with a link to this session: `[fctl session](https://fctl.test/s/ses_test)`.\n",
             "- Keep the description up to date: when later commits change what the pull request does, how you verified it or what is worth confirming, rewrite the description to match.",
             "`gh pr edit N --body-file FILE` replaces it",
+            "from `<!-- FCTL_REVIEW_SUMMARY -->` to `<!-- /FCTL_REVIEW_SUMMARY -->`, which it rewrites for each new commit: when you rewrite the description, read it again just before and keep that part as it is.",
         ];
         let balanced = describing(Verbosity::Balanced);
         assert_eq!(describing(Verbosity::default()), balanced);
@@ -1703,5 +1708,6 @@ mod tests {
         assert!(gone.contains("which GitHub no longer has: the branch was rewritten since"));
         assert!(!gone.contains("This sandbox has"));
         assert!(REVIEW_AGENTS_MD.contains("fctl review submit review.json"));
+        assert!(REVIEW_AGENTS_MD.contains("fctl review summarize summary.json"));
     }
 }

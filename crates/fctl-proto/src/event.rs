@@ -474,9 +474,10 @@ pub struct Notice {
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
     /// `api_key_refused`, `credential_expired`, `runner_lost`,
     /// `screenshot_published`, `memory_added`, `memory_stale`,
-    /// `retrospective`, `review_posted`, `review_held`, `follow_up_held`,
-    /// `ticket_created`, `ticket_commented`, `ticket_updated`,
-    /// `ticket_replied`, `ticket_moved`, `ticket_failed`.
+    /// `retrospective`, `review_posted`, `review_held`,
+    /// `pull_request_summarized`, `follow_up_held`, `ticket_created`,
+    /// `ticket_commented`, `ticket_updated`, `ticket_replied`,
+    /// `ticket_moved`, `ticket_failed`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -493,6 +494,10 @@ pub struct Notice {
     /// What fctl posted for a review agent, in a `review_posted` notice.
     /// Clients from before it show the message.
     pub review: Option<crate::api::PostedReview>,
+    /// The summary fctl put at the end of a reviewed pull request's
+    /// description, in a `pull_request_summarized` notice. Clients from
+    /// before it show the message.
+    pub summarized: Option<crate::api::SummarizedPullRequest>,
     /// What happened to a pull request that fctl didn't pass on to the
     /// agent, in a `follow_up_held` notice. Clients from before it show the
     /// message.
@@ -648,6 +653,7 @@ mod tests {
             memory: None,
             retrospective: None,
             review: None,
+            summarized: None,
             follow_up: None,
         };
         let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;

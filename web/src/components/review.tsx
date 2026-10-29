@@ -1,16 +1,28 @@
 // A review agent's review, wherever it shows: its state as the icon GitHub's checks use, what fctl
-// posted for it in the session's transcript, and on the session's page, what came of it.
+// posted for it in the session's transcript, the summary it put in its pull request's description,
+// and on the session's page, what came of it.
 
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Info, OctagonAlert, TriangleAlert } from "lucide-react";
+import type { ReactNode } from "react";
+import { Markdown } from "@/components/markdown";
 import { ChecksIcon, EyeIcon, ReviewIcon } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { githubLink } from "@/lib/pulls";
 import { keys } from "@/lib/queries";
-import { earlierFindings, type ReviewLook, reviewLook, reviewOutcome, shortSha } from "@/lib/reviews";
+import {
+  earlierFindings,
+  type ReviewLook,
+  RISKS,
+  type RiskAlert,
+  reviewLook,
+  reviewOutcome,
+  shortSha,
+  summaryMarkdown,
+} from "@/lib/reviews";
 
 /**
  * How a review stands, wherever it shows: an eye while it waits for a runner, reading as it
@@ -94,6 +106,77 @@ export function ReviewPostedNotice({ posted }: { posted: G.PostedReview }) {
   );
 }
 
+/** How each risk reads where the app names it: calm while low, amber when high, red when critical. */
+export const RISK_TONE: Record<G.Risk, string> = {
+  low: "text-ink-3",
+  medium: "text-ink-2",
+  high: "text-amber",
+  critical: "text-danger",
+};
+
+const ALERTS: Record<RiskAlert, { title: string; icon: ReactNode; border: string; text: string }> = {
+  note: { title: "Note", icon: <Info />, border: "border-blue", text: "text-blue" },
+  warning: { title: "Warning", icon: <TriangleAlert />, border: "border-amber", text: "text-amber" },
+  caution: { title: "Caution", icon: <OctagonAlert />, border: "border-danger", text: "text-danger" },
+};
+
+/**
+ * A pull request's summary as GitHub shows it at the end of its description: in an alert whose kind
+ * says how risky the pull request looks, with how risky and why, what it does, and what deserves a
+ * closer look.
+ */
+export function SummaryAlert({ summary, className }: { summary: G.PullRequestSummary; className?: string }) {
+  const alert = ALERTS[RISKS[summary.risk].alert];
+  return (
+    <div className={cn("border-l-[3px] py-0.5 pl-3.5", alert.border, className)}>
+      <p className={cn("flex items-center gap-1.5 text-[12.5px] font-semibold [&_svg]:size-3.5", alert.text)}>
+        {alert.icon}
+        {alert.title}
+      </p>
+      <Markdown
+        text={summaryMarkdown(summary)}
+        className="mt-1.5 text-[13px] leading-relaxed text-ink-2 [&_p+p]:mt-2 [&_strong]:text-ink"
+      />
+    </div>
+  );
+}
+
+/**
+ * The summary fctl put at the end of the reviewed pull request's description, as the transcript
+ * shows it: as it reads there, with a link to it on GitHub.
+ */
+export function PullRequestSummarizedNotice({ summarized }: { summarized: G.SummarizedPullRequest }) {
+  const ref = `${summarized.repo.name}#${summarized.number}`;
+  const url = githubLink(summarized.url);
+  return (
+    <div className="my-2 animate-rise rounded-xl border border-line bg-raised/30 px-4 py-3">
+      <div className="flex items-start gap-3">
+        <p className="min-w-0 flex-1 text-[13.5px] text-ink">
+          {summarized.replaced
+            ? `Summary updated in ${ref}'s description`
+            : `Summary added to ${ref}'s description`}
+          <span className="block text-[12.5px] text-ink-3">
+            {summarized.replaced
+              ? "In place of an earlier review's, before the review in depth. The rest of the description stays as it was."
+              : "At its end, before the review in depth. The rest of the description stays as it was."}
+          </span>
+        </p>
+        {url && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          >
+            View on GitHub <ArrowUpRight className="size-3.5" />
+          </a>
+        )}
+      </div>
+      <SummaryAlert summary={summarized.summary} className="mt-3" />
+    </div>
+  );
+}
+
 /** What came of a review agent's session: its review, as the project's list has it. */
 export function useSessionReview(session?: G.Session): G.Review | undefined {
   const id = session?.id ?? "";
@@ -170,6 +253,7 @@ export function ReviewFacts({ session, review }: { session: G.Session; review?: 
   const look = review ? reviewLook(review) : undefined;
   const earlier = review ? earlierFindings(review) : [];
   const opener = review?.opened_by;
+  const summary = review?.pull_request_summary;
   return (
     <div className="flex flex-col gap-2.5 text-[12.5px]">
       {review && look && (
@@ -182,6 +266,14 @@ export function ReviewFacts({ session, review }: { session: G.Session; review?: 
               <p className="mt-0.5 leading-relaxed text-ink-3 [overflow-wrap:anywhere]">{review.reason}</p>
             )}
           </div>
+        </div>
+      )}
+      {summary && (
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-ink-4">First look</span>
+          <span title={summary.risk_reason} className={cn("font-medium", RISK_TONE[summary.risk])}>
+            {RISKS[summary.risk].label}
+          </span>
         </div>
       )}
       <div className="flex items-baseline justify-between gap-3">

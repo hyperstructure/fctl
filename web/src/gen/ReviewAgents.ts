@@ -47,6 +47,15 @@ repos: Array<RepoRef>,
  */
 skipped_repos: Array<RepoRef>, 
 /**
+ * Before each review in depth, the agent sums the pull request up at
+ * the end of its description ([`PullRequestSummary`]): how risky it
+ * looks, what it does and what deserves a closer look, in place of the
+ * summary an earlier review left there. fctl writes it between its
+ * marks, and the rest of the description stays as it is. False from
+ * control planes before it.
+ */
+description_summary: boolean, 
+/**
  * Why no review starts now (they are on), or would start once they
  * are on: no GitHub webhook, their person's Claude connection is gone…
  */

@@ -5,12 +5,14 @@ import {
   canManageReviews,
   earlierFindings,
   pullRef,
+  RISKS,
   repoList,
   reviewLook,
   reviewOutcome,
   reviewRepos,
   sameRepos,
   shortSha,
+  summaryMarkdown,
 } from "./reviews";
 
 const review = (r: Partial<G.Review> = {}): G.Review => ({
@@ -90,5 +92,32 @@ describe("reviews", () => {
     expect(canAskForReview("editor")).toBe(true);
     expect(canAskForReview("viewer")).toBe(false);
     expect(canAskForReview(undefined)).toBe(false);
+  });
+
+  it("sum pull requests up as the note in their description reads", () => {
+    const summary: G.PullRequestSummary = {
+      risk: "high",
+      risk_reason: "It changes who may delete projects.",
+      overview: "Lets maintainers delete projects.\n\nOwners get an email when one goes.",
+      highlight: { topic: "Data loss", text: "A deleted project's sessions go with it." },
+    };
+    expect(summaryMarkdown(summary)).toBe(
+      "**High risk.** It changes who may delete projects.\n\n**What it does.** Lets maintainers delete projects.\n\nOwners get an email when one goes.\n\n**Data loss.** A deleted project's sessions go with it.",
+    );
+    expect(
+      summaryMarkdown({
+        ...summary,
+        overview: "Lets maintainers delete projects.",
+        highlight: { topic: "Why now?", text: "Owners asked." },
+      }),
+    ).toBe(
+      "**High risk.** It changes who may delete projects.\n\n**What it does.** Lets maintainers delete projects.\n\n**Why now?** Owners asked.",
+    );
+    expect(Object.entries(RISKS).map(([risk, r]) => `${risk}: ${r.alert}`)).toEqual([
+      "low: note",
+      "medium: note",
+      "high: warning",
+      "critical: caution",
+    ]);
   });
 });

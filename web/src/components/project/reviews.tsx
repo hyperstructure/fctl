@@ -18,7 +18,7 @@ import {
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { BotMark, ReviewBots } from "@/components/project/review-bots";
 import { ReviewRepos } from "@/components/project/review-repos";
-import { ReviewStateIcon } from "@/components/review";
+import { ReviewStateIcon, RISK_TONE, SummaryAlert } from "@/components/review";
 import {
   Avatar,
   Banner,
@@ -35,6 +35,7 @@ import {
   Select,
   type SelectOption,
   Skeleton,
+  Switch,
   Textarea,
   toast,
 } from "@/components/ui";
@@ -61,6 +62,7 @@ import {
   commitUrl,
   earlierFindings,
   pullRef,
+  RISKS,
   repoList,
   repoName,
   reviewLook,
@@ -420,6 +422,8 @@ function Status({
                       They skip <span className="text-ink-2">{repoList(agents.skipped_repos)}</span>.{" "}
                     </>
                   )}
+                  {agents.description_summary &&
+                    "Before each review, they sum the pull request up at the end of its description. "}
                   <Waiting bots={agents.bots} />
                 </>
               )}
@@ -638,6 +642,7 @@ function SettingsForm({
   const [effort, setEffort] = useState(agents.effort ?? "");
   const [instructions, setInstructions] = useState(agents.instructions ?? "");
   const [bots, setBots] = useState<string[]>(agents.bots);
+  const [summary, setSummary] = useState(agents.description_summary);
   const repos = reviewRepos(agents, project.repo);
   const [skipped, setSkipped] = useState<string[]>(agents.skipped_repos.map(repoName));
   // Those the project's agents may still write to, should a repository leave meanwhile.
@@ -655,6 +660,7 @@ function SettingsForm({
     effort !== (agents.effort ?? "") ||
     instructions.trim() !== (agents.instructions ?? "").trim() ||
     !sameBots(bots, agents.bots) ||
+    summary !== agents.description_summary ||
     skipsChanged;
   return (
     <form
@@ -669,6 +675,7 @@ function SettingsForm({
           effort,
           instructions,
           bots,
+          description_summary: summary,
           ...(skipsChanged && { skipped_repos: skips }),
         });
       }}
@@ -760,6 +767,7 @@ function SettingsForm({
           />
         )}
       </Field>
+      <DescriptionSummary on={summary} onChange={setSummary} />
       <ReviewBots project={project} value={bots} saved={agents.bots} onChange={setBots} error={err("bots")} />
       {save.error && !(save.error as { field?: string }).field && (
         <Banner tone="error">{save.error.message}</Banner>
@@ -778,6 +786,49 @@ function SettingsForm({
         </div>
       </div>
     </form>
+  );
+}
+
+/** What the preview of a summary says: of the pull request the finding in the intro's preview is in. */
+const EXAMPLE: G.PullRequestSummary = {
+  risk: "medium",
+  risk_reason:
+    "It changes how uploads retry, which every sync goes through, though only for uploads that fail.",
+  overview:
+    "Makes the upload worker give up after five failed attempts and wait longer between them, so that a server that stays down no longer keeps the worker busy for good.",
+};
+
+/**
+ * Whether review agents sum each pull request up at the end of its description before they review
+ * it, and what that looks like on GitHub, once it's on.
+ */
+function DescriptionSummary({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p id={id} className="text-[12.5px] font-medium text-ink-2">
+            Summary in the description
+          </p>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
+            Before reviewing in depth, the agent adds how risky the pull request looks, what it does and what
+            deserves a closer look at the end of its description, and rewrites it for each new commit. The
+            rest of the description stays as people wrote it.
+          </p>
+        </div>
+        <Switch checked={on} onChange={onChange} label="Sum up pull requests in their descriptions" />
+      </div>
+      {on && (
+        <div aria-hidden="true" className="animate-rise rounded-lg border border-line bg-surface px-4 py-3.5">
+          <SummaryAlert summary={EXAMPLE} />
+          <p className="mt-2.5 pl-[17.5px] text-[11.5px] text-ink-4">
+            fctl review's first look at <span className="font-mono">3f2a1c9</span> · 3 files, +120 −4 · Review
+            agent settings
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -968,6 +1019,17 @@ function ReviewRow({ r }: { r: G.Review }) {
               node: <span className={cn("font-medium", OUTCOME_TONE[look])}>{reviewOutcome(r)}</span>,
             },
             ...earlier.map((e) => ({ key: e, node: e })),
+            r.pull_request_summary && {
+              key: "risk",
+              node: (
+                <span
+                  title={`At first sight: ${r.pull_request_summary.risk_reason}`}
+                  className={RISK_TONE[r.pull_request_summary.risk]}
+                >
+                  {RISKS[r.pull_request_summary.risk].label}
+                </span>
+              ),
+            },
             r.busy_ms > 0 &&
               (look === "passed" || look === "commented") && {
                 key: "time",

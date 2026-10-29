@@ -2,7 +2,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
-import { ReviewFacts } from "./review";
+import { PullRequestSummarizedNotice, ReviewFacts } from "./review";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
@@ -92,5 +92,56 @@ describe("ReviewFacts", () => {
     expect(c.textContent).not.toContain("Opened by");
     // Nor while its review loads.
     expect(render(<ReviewFacts session={session} />).textContent).not.toContain("Opened by");
+  });
+});
+
+const summary: G.PullRequestSummary = {
+  risk: "high",
+  risk_reason: "It changes who may delete projects.",
+  overview: "Lets maintainers delete projects, with `delete_project` checking their role.",
+  highlight: { topic: "Data loss", text: "A deleted project's sessions go with it." },
+};
+
+describe("a review's summary of its pull request", () => {
+  it("shows in the rail as the risk it saw at first sight", () => {
+    const c = render(<ReviewFacts session={session} review={review({ pull_request_summary: summary })} />);
+    const risk = [...c.querySelectorAll("span")].find((s) => s.textContent === "High risk");
+    expect(risk?.parentElement?.textContent).toBe("First lookHigh risk");
+    expect(risk?.getAttribute("title")).toBe("It changes who may delete projects.");
+    expect(risk?.className).toContain("text-amber");
+    expect(render(<ReviewFacts session={session} review={review()} />).textContent).not.toContain(
+      "First look",
+    );
+  });
+
+  it("shows in the transcript as it reads on GitHub", () => {
+    const summarized: G.SummarizedPullRequest = {
+      repo: { owner: "acme", name: "web" },
+      number: 12,
+      url: "https://github.com/acme/web/pull/12",
+      summary,
+    };
+    const c = render(<PullRequestSummarizedNotice summarized={summarized} />);
+    const text = c.textContent ?? "";
+    expect(text).toContain("Summary added to web#12's description");
+    // A warning, at high risk, as GitHub shows it.
+    expect(text).toContain("Warning");
+    expect([...c.querySelectorAll("strong")].map((b) => b.textContent)).toEqual([
+      "High risk.",
+      "What it does.",
+      "Data loss.",
+    ]);
+    expect(c.querySelector("code")?.textContent).toBe("delete_project");
+    expect(c.querySelector('a[href="https://github.com/acme/web/pull/12"]')?.textContent).toContain(
+      "View on GitHub",
+    );
+    const again = render(
+      <PullRequestSummarizedNotice
+        summarized={{ ...summarized, replaced: true, summary: { ...summary, risk: "critical" } }}
+      />,
+    );
+    expect(again.textContent).toContain("Summary updated in web#12's description");
+    expect(again.textContent).toContain("Caution");
+    expect(again.textContent).toContain("Critical risk.");
   });
 });

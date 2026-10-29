@@ -24,7 +24,7 @@ import { type MouseEvent, memo, useId, useLayoutEffect, useMemo, useRef, useStat
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
-import { ReviewPostedNotice } from "@/components/review";
+import { PullRequestSummarizedNotice, ReviewPostedNotice } from "@/components/review";
 import {
   Avatar,
   Button,
@@ -548,6 +548,7 @@ const ItemView = memo(function ItemView({
       if (item.notice.retrospective)
         return <RetrospectiveNotice r={item.notice.retrospective} findKey={item.key} />;
       if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
+      if (item.notice.summarized) return <PullRequestSummarizedNotice summarized={item.notice.summarized} />;
       if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
       if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
       if (item.notice.memory)

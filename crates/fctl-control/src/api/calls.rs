@@ -257,6 +257,9 @@ pub async fn runner_call(
             )
             .await?,
         },
+        AgentCall::SummarizePullRequest { summary } => AgentAnswer::PullRequestSummarized {
+            summarized: crate::reviews::summarize(ctx, &session.id, &summary).await?,
+        },
     };
     http::ok(&answer)
 }

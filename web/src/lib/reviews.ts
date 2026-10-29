@@ -112,3 +112,32 @@ export function sameRepos(a: readonly string[], b: readonly string[]): boolean {
   const y = new Set(b.map((r) => r.toLowerCase()));
   return x.size === y.size && [...x].every((r) => y.has(r));
 }
+
+/** The GitHub alert that fctl's summary of a pull request is in: a note, a warning or a caution. */
+export type RiskAlert = "note" | "warning" | "caution";
+
+/**
+ * How a pull request's risk reads where fctl sums it up at the end of its description: in a note at
+ * low and medium risk, a warning at high risk, and a caution where a serious security problem shows
+ * at first sight, as on GitHub.
+ */
+export const RISKS: Record<G.Risk, { label: string; alert: RiskAlert }> = {
+  low: { label: "Low risk", alert: "note" },
+  medium: { label: "Medium risk", alert: "note" },
+  high: { label: "High risk", alert: "warning" },
+  critical: { label: "Critical risk", alert: "caution" },
+};
+
+/**
+ * The summary as GitHub shows it in the alert, as Markdown: how risky the pull request looks and
+ * why, what it does, and what deserves a closer look, each led in bold.
+ */
+export function summaryMarkdown(s: G.PullRequestSummary): string {
+  const [first = "", ...rest] = s.overview.split("\n\n");
+  const parts = [`**${RISKS[s.risk].label}.** ${s.risk_reason}`, `**What it does.** ${first}`, ...rest];
+  if (s.highlight) {
+    const stop = /[?!]$/.test(s.highlight.topic) ? "" : ".";
+    parts.push(`**${s.highlight.topic}${stop}** ${s.highlight.text}`);
+  }
+  return parts.join("\n\n");
+}
