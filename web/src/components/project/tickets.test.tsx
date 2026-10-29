@@ -7,9 +7,20 @@ import { keys, queryClient } from "@/lib/queries";
 import type { LinearOutcome } from "@/lib/tickets";
 import { TicketsTab } from "./tickets";
 
-// No request is answered: the tab shows what the cache holds.
+// No request is answered: the tab shows what the cache holds. Each call is noted.
+const calls = vi.hoisted(() => [] as { name: string; args: unknown[] }[]);
 vi.mock("@/lib/api", () => {
-  const never = new Proxy({}, { get: () => () => new Promise(() => {}) });
+  const never = new Proxy(
+    {},
+    {
+      get:
+        (_, name) =>
+        (...args: unknown[]) => {
+          calls.push({ name: String(name), args });
+          return new Promise(() => {});
+        },
+    },
+  );
   return {
     api: never,
     workspaces: never,
@@ -27,6 +38,7 @@ const roots: (() => void)[] = [];
 afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
   queryClient.clear();
+  calls.splice(0);
 });
 
 function render(node: ReactNode) {
@@ -54,7 +66,39 @@ const settings: G.ProjectSettings = {
 const workspace: G.WorkspaceRef = { id: "wsp_1", slug: "acme", name: "Acme", color: "yellow" };
 const ORG = "3f1d9d7c-1111-4c2e-9a5b-0d2f6c8e7a10";
 const TEAM = "8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d20";
+const DESIGN = "8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d30";
+const WEBSITE = "c0000000-0000-4000-8000-000000000101";
+const POSTERS = "c0000000-0000-4000-8000-000000000201";
 const linear: G.LinearTickets = { organization: ORG, team: TEAM, team_key: "ENG", team_name: "Engineering" };
+/** Engineering's tickets, and Design's of its Posters project. */
+const both: G.LinearTickets = {
+  ...linear,
+  more_teams: [
+    { team: DESIGN, team_key: "DES", team_name: "Design", project: POSTERS, project_name: "Posters" },
+  ],
+};
+const engineering: G.LinearTeam = {
+  id: TEAM,
+  key: "ENG",
+  name: "Engineering",
+  color: "#5e6ad2",
+  states: [],
+  start_state: "In Progress",
+  review_state: "Code review",
+  done_state: "Shipped",
+  projects: [{ id: WEBSITE, name: "Website" }],
+};
+const design: G.LinearTeam = {
+  id: DESIGN,
+  key: "DES",
+  name: "Design",
+  color: "#f2994a",
+  states: [],
+  start_state: "In Progress",
+  review_state: "In Review",
+  done_state: "Done",
+  projects: [{ id: POSTERS, name: "Posters" }],
+};
 
 const project = (over: Partial<G.Project> = {}): G.Project => ({
   id: "prj_1",
@@ -102,11 +146,14 @@ function tab(
     status = {},
     role = "member",
     connections = [connection],
+    teams = [engineering],
     returned,
   }: {
     status?: Partial<G.ProjectTickets>;
     role?: G.WorkspaceRole;
     connections?: G.LinearConnection[];
+    /** The teams fctl's app reaches, as the cache holds them; `null`: none listed. */
+    teams?: G.LinearTeam[] | null;
     returned?: LinearOutcome;
   } = {},
 ) {
@@ -121,20 +168,7 @@ function tab(
     webhook: true,
     connections,
   });
-  queryClient.setQueryData<G.LinearTeamList>(keys.linearTeams(workspace.id, ORG), {
-    teams: [
-      {
-        id: TEAM,
-        key: "ENG",
-        name: "Engineering",
-        states: [],
-        start_state: "In Progress",
-        review_state: "Code review",
-        done_state: "Shipped",
-        projects: [{ id: "c0000000-0000-4000-8000-000000000101", name: "Website" }],
-      },
-    ],
-  });
+  if (teams) queryClient.setQueryData<G.LinearTeamList>(keys.linearTeams(workspace.id, ORG), { teams });
   queryClient.setQueryData<G.ProjectTickets>(keys.projectTickets(p.id), {
     tracker: p.settings.tickets?.tracker ?? "github",
     scope: "GitHub issues of acme/web",
@@ -148,6 +182,44 @@ function tab(
 
 const radios = (c: HTMLElement) => [...c.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
 const checked = (c: HTMLElement) => radios(c).find((r) => r.checked)?.value;
+
+/** A Linear project of the tab's, as it saves it. */
+const linearProject = (l: G.LinearTickets = linear, role: G.ProjectRole = "maintainer") =>
+  project({ role, settings: { ...settings, tickets: { tracker: "linear", linear: l } } });
+const linearStatus: Partial<G.ProjectTickets> = {
+  tracker: "linear",
+  scope: "Linear team ENG (Acme)",
+  via: "fctl",
+  linear: connection,
+  linked: true,
+};
+
+/** The list of teams: each row's words, as a person reads them. */
+const rows = (c: HTMLElement) =>
+  [...c.querySelectorAll<HTMLElement>('ul[aria-label="Teams"] > li')].map((li) => {
+    const [name, note] = [...li.querySelectorAll("p")];
+    const words = [...(name?.children ?? [])].map((w) => w.textContent).join(" ");
+    return note ? `${words} · ${note.textContent}` : words;
+  });
+const combobox = (c: HTMLElement, label: string) =>
+  c.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`);
+/** Opens the select called `label` and picks its option that reads `text`. */
+function pick(c: HTMLElement, label: string, text: string) {
+  act(() => combobox(c, label)?.click());
+  const option = [...c.querySelectorAll<HTMLElement>('[role="option"]')].find(
+    (o) => o.querySelector(".truncate")?.textContent === text,
+  );
+  if (!option) throw new Error(`${label} has no option ${text}`);
+  act(() => option.click());
+}
+const button = (c: HTMLElement, label: string) =>
+  [...c.querySelectorAll<HTMLButtonElement>("button")].find(
+    (b) => b.getAttribute("aria-label") === label || b.textContent === label,
+  );
+/** What the tab saved: the tickets of the settings it sent. */
+const sent = () =>
+  (calls.find((x) => x.name === "updateProject")?.args[1] as { settings: G.ProjectSettings } | undefined)
+    ?.settings.tickets;
 
 describe("the Tickets tab", () => {
   it("offers the three trackers, with GitHub Issues for a project from before them", () => {
@@ -210,7 +282,7 @@ describe("the Tickets tab", () => {
     expect(c.textContent).toContain("Linear is connected");
     expect(checked(c)).toBe("linear");
     expect(c.textContent).toContain("Choose a team");
-    expect(c.textContent).toContain("Choose the team first.");
+    expect(c.textContent).toContain("Choose a team first.");
   });
 
   it("comes back from a Linear sign-in that failed with Linear still chosen, to try again", () => {
@@ -319,6 +391,115 @@ describe("the Tickets tab", () => {
       },
     });
     expect(c.textContent).toContain("assign one of ENG's issues to fctl-sh, or mention @fctl-sh");
+  });
+
+  it("lists the project's teams, each with the issues of it the project takes", () => {
+    const c = tab(linearProject(both), { status: linearStatus, teams: [engineering, design] });
+    expect(rows(c)).toEqual(["Engineering ENG", "Design DES"]);
+    expect(combobox(c, "Issues of Engineering")?.textContent).toContain("Every issue");
+    expect(combobox(c, "Issues of Design")?.textContent).toContain("Only Posters");
+    expect(combobox(c, "Team agents file new tickets in")?.textContent).toContain("Engineering");
+    expect(c.textContent).toContain("Teams");
+    expect(c.textContent).toContain("assign one of ENG's or DES's issues to fctl");
+    expect(c.textContent).not.toContain("Save");
+  });
+
+  it("adds a team, marked new until it is saved, and saves every team", async () => {
+    const c = tab(linearProject(), { status: linearStatus, teams: [engineering, design] });
+    expect(rows(c)).toEqual(["Engineering ENG"]);
+    expect(combobox(c, "Team agents file new tickets in")).toBeNull();
+    pick(c, "Add a team", "Design");
+    expect(rows(c)).toEqual(["Engineering ENG", "Design DES New"]);
+    // Every team fctl's app reaches is on the list now.
+    expect(combobox(c, "Add a team")).toBeNull();
+    expect(c.textContent).toContain("fctl's app reaches no other team.");
+    pick(c, "Issues of Design", "Posters");
+    await act(async () => button(c, "Save")?.click());
+    expect(sent()?.linear).toMatchObject({
+      team: TEAM,
+      more_teams: [
+        { team: DESIGN, team_key: "DES", team_name: "Design", project: POSTERS, project_name: "Posters" },
+      ],
+    });
+  });
+
+  it("takes a team off when it is saved, which Undo brings back as it was", async () => {
+    const c = tab(linearProject(both), { status: linearStatus, teams: [engineering, design] });
+    // In the page, where buttons take focus.
+    document.body.append(c);
+    roots.push(() => c.remove());
+    act(() => button(c, "Take Design off")?.focus());
+    act(() => button(c, "Take Design off")?.click());
+    expect(rows(c)).toEqual([
+      "Engineering ENG",
+      "Design DES · Its tickets start no sessions here once you save",
+    ]);
+    // The keys go on from the row's Undo.
+    expect(document.activeElement?.textContent).toBe("Undo");
+    expect(c.textContent).toContain("Save");
+    await act(async () => button(c, "Save")?.click());
+    expect(sent()?.linear?.more_teams).toEqual([]);
+    act(() => button(c, "Undo")?.click());
+    expect(rows(c)).toEqual(["Engineering ENG", "Design DES"]);
+    expect(combobox(c, "Issues of Design")?.textContent).toContain("Only Posters");
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Take Design off");
+  });
+
+  it("asks for a team before it saves one taken off as the only one", () => {
+    const c = tab(linearProject(), { status: linearStatus, teams: [engineering, design] });
+    act(() => button(c, "Take Engineering off")?.click());
+    expect(c.textContent).toContain("Choose a team first.");
+    expect(button(c, "Save")?.disabled).toBe(true);
+    // Another team, or Engineering again with Undo.
+    pick(c, "Choose a team", "Design");
+    expect(rows(c)).toEqual([
+      "Design DES New",
+      "Engineering ENG · Its tickets start no sessions here once you save",
+    ]);
+    expect(button(c, "Save")?.disabled).toBe(false);
+  });
+
+  it("files new tickets in the team people choose, which goes first", async () => {
+    const c = tab(linearProject(both), { status: linearStatus, teams: [engineering, design] });
+    pick(c, "Team agents file new tickets in", "Design");
+    expect(rows(c)).toEqual(["Design DES", "Engineering ENG"]);
+    await act(async () => button(c, "Save")?.click());
+    expect(sent()?.linear).toMatchObject({
+      team: DESIGN,
+      team_key: "DES",
+      project: POSTERS,
+      more_teams: [{ team: TEAM, team_key: "ENG", team_name: "Engineering" }],
+    });
+  });
+
+  it("names the states each team's workflow has for a move", () => {
+    const c = tab(linearProject(both), { status: linearStatus, teams: [engineering, design] });
+    const labels = [...c.querySelectorAll('button[role="switch"]')].map((s) => s.getAttribute("aria-label"));
+    expect(labels).toEqual([
+      "Move a ticket to In Progress as its session starts",
+      "Move a ticket to Code review or In Review when its pull request is up",
+      "Move a ticket to Shipped or Done once its pull requests merge",
+    ]);
+    expect(c.textContent).toContain("through their team's workflow, never back");
+    expect(c.textContent).toContain("does for these teams already");
+  });
+
+  it("says which team fctl's app no longer reaches", () => {
+    const c = tab(linearProject(both), { status: linearStatus, teams: [engineering] });
+    expect(rows(c)[1]).toBe(
+      "Design DES · fctl's app no longer reaches it: take it off, or give the app the team in Linear's settings",
+    );
+    expect(combobox(c, "Issues of Design")?.disabled).toBe(true);
+  });
+
+  it("shows the teams as saved to those who don't choose, without asking Linear for its teams", () => {
+    const c = tab(linearProject(both, "editor"), { status: linearStatus, teams: null });
+    expect(rows(c)).toEqual(["Engineering ENG", "Design DES"]);
+    expect(combobox(c, "Issues of Design")?.textContent).toContain("Only Posters");
+    expect(combobox(c, "Issues of Design")?.disabled).toBe(true);
+    expect(button(c, "Take Design off")).toBeUndefined();
+    expect(combobox(c, "Add a team")).toBeNull();
+    expect(calls.some((x) => x.name === "linearTeams")).toBe(false);
   });
 
   it("lists the sessions tickets started lately", () => {

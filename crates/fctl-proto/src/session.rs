@@ -749,21 +749,23 @@ pub struct Tickets {
     /// write to: their tokens then reach no issues, and `fctl ticket` reads
     /// and writes these. Absent: those of every repository they write to.
     pub repo: Option<RepoRef>,
-    /// Linear's team, and what fctl does there. Kept while another tracker
+    /// Linear's teams, and what fctl does there. Kept while another tracker
     /// is chosen, so that choosing Linear again finds it.
     pub linear: Option<LinearTickets>,
 }
 
-/// The Linear team whose issues a project's agents work on, in a Linear
+/// The Linear teams whose issues a project's agents work on, in a Linear
 /// workspace connected to the project's workspace: issues delegated to
-/// fctl there, or that mention it, start sessions of the project.
+/// fctl there, or that mention it, start sessions of the project. Its
+/// first team (`team`) is where agents file new tickets unless they name
+/// another; `more_teams` holds the others.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct LinearTickets {
     /// The Linear workspace (Linear's organization), by Linear's id.
     pub organization: String,
-    /// The team, by Linear's id.
+    /// The first team, by Linear's id.
     pub team: String,
     /// Its key (`ENG`) and name as they were when chosen, for display.
     pub team_key: Option<String>,
@@ -772,6 +774,11 @@ pub struct LinearTickets {
     /// whole team's.
     pub project: Option<String>,
     pub project_name: Option<String>,
+    /// The project's other teams in the Linear workspace, after the first,
+    /// each once. Absent: none; in an update, the ones stored (in the same
+    /// Linear workspace), so that a client from before them keeps them,
+    /// and an empty list for none.
+    pub more_teams: Option<Vec<LinearTeamChoice>>,
     /// Move a ticket to the team's first started state (In Progress) when
     /// its session starts work on it, if it hasn't started yet. Absent: yes.
     pub move_started: Option<bool>,
@@ -790,7 +797,64 @@ pub struct LinearTickets {
     pub explore_label: Option<String>,
 }
 
+/// A team a project takes tickets from besides its first
+/// ([`LinearTickets::more_teams`]), as [`LinearTickets`] has its first.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct LinearTeamChoice {
+    /// The team, by Linear's id.
+    pub team: String,
+    /// Its key (`DES`) and name as they were when chosen, for display.
+    pub team_key: Option<String>,
+    pub team_name: Option<String>,
+    /// Only the issues of this Linear project, by Linear's id; absent: the
+    /// whole team's.
+    pub project: Option<String>,
+    pub project_name: Option<String>,
+}
+
+impl LinearTeamChoice {
+    /// What people call it: its key, else its name.
+    pub fn label(&self) -> &str {
+        self.team_key
+            .as_deref()
+            .or(self.team_name.as_deref())
+            .unwrap_or("a team")
+    }
+}
+
 impl LinearTickets {
+    /// Every team it takes tickets from, its first first.
+    pub fn teams(&self) -> Vec<LinearTeamChoice> {
+        let first = LinearTeamChoice {
+            team: self.team.clone(),
+            team_key: self.team_key.clone(),
+            team_name: self.team_name.clone(),
+            project: self.project.clone(),
+            project_name: self.project_name.clone(),
+        };
+        std::iter::once(first)
+            .chain(self.more_teams.iter().flatten().cloned())
+            .collect()
+    }
+
+    /// The same with `teams` as its teams, the first where new tickets go:
+    /// `None` without any.
+    pub fn with_teams(&self, teams: Vec<LinearTeamChoice>) -> Option<Self> {
+        let mut teams = teams.into_iter();
+        let first = teams.next()?;
+        Some(Self {
+            team: first.team,
+            team_key: first.team_key,
+            team_name: first.team_name,
+            project: first.project,
+            project_name: first.project_name,
+            more_teams: Some(teams.collect()),
+            ..self.clone()
+        })
+    }
+
     /// Whether sessions move their tickets to started.
     pub fn moves_started(&self) -> bool {
         self.move_started.unwrap_or(true)

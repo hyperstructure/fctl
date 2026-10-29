@@ -514,6 +514,7 @@ fn samples(name: &str) -> Option<Vec<Value>> {
     use fctl_domain::linear::{self as lin, Act};
     // Linear's ids are UUIDs; the check looks none of them up.
     const TEAM: &str = "0ab655aa-2e07-486f-ac77-e8c0ae7a5af4";
+    const OTHER_TEAM: &str = "c4d7a3e2-6b1f-4f0e-9a8d-5e2b7c9f1a36";
     const PROJECT: &str = "79a8a551-4658-4e5b-9bda-03b655e25b2a";
     const ISSUE: &str = "2f48112c-0dff-4a10-b0f1-feb30ba83f6e";
     const SESSION: &str = "144dd6dd-5480-43f8-8f3d-78207d73753f";
@@ -527,6 +528,14 @@ fn samples(name: &str) -> Option<Vec<Value>> {
         "state": { "type": { "in": ["triage", "backlog", "unstarted", "started"] } },
         "labels": { "name": { "eqIgnoreCase": "bug" } },
     });
+    // A project's teams, one of them narrowed to a Linear project.
+    let teams = json!({
+        "or": [
+            { "team": { "id": { "eq": TEAM } }, "project": { "id": { "eq": PROJECT } } },
+            { "team": { "id": { "eq": OTHER_TEAM } } },
+        ],
+        "state": { "type": { "in": ["completed", "canceled", "duplicate"] } },
+    });
     let pull = "https://github.com/acme/web/pull/12";
     Some(match name {
         "VIEWER" | "TEAM_IDS" => vec![json!({})],
@@ -535,11 +544,18 @@ fn samples(name: &str) -> Option<Vec<Value>> {
             json!({ "first": 20, "after": "cursor" }),
         ],
         "TEAM" | "TEAM_STATES" | "TEAM_LABELS" => vec![json!({ "id": TEAM })],
+        "teams_states" | "teams_labels" => vec![json!({ "ids": [TEAM, OTHER_TEAM] })],
         "PROJECT" => vec![json!({ "id": PROJECT })],
         "issue_query" => vec![json!({ "id": "ENG-123" }), json!({ "id": ISSUE })],
         "ISSUE_STATES" => vec![json!({ "id": ISSUE })],
-        "issues_query" => vec![json!({ "filter": filter, "first": 50 })],
-        "search_query" => vec![json!({ "term": "footer links", "filter": filter, "first": 50 })],
+        "issues_query" => vec![
+            json!({ "filter": filter, "first": 50 }),
+            json!({ "filter": teams, "first": 20 }),
+        ],
+        "search_query" => vec![
+            json!({ "term": "footer links", "filter": filter, "first": 50 }),
+            json!({ "term": "footer links", "filter": teams, "first": 20 }),
+        ],
         "issue_create" => vec![json!({ "input": {
             "teamId": TEAM, "title": "Fix the footer's links", "description": "Two links lead nowhere.",
             "projectId": PROJECT, "parentId": ISSUE, "labelIds": [LABEL], "stateId": STATE,

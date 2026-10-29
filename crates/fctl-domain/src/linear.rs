@@ -522,6 +522,74 @@ pub const ISSUE_STATES: &str = "query($id: String!) { issue(id: $id) { id identi
 /// The labels a team's issues can have: its own and the workspace's.
 pub const TEAM_LABELS: &str = "query($id: String!) { team(id: $id) { labels(first: 100) { nodes { id name } } } issueLabels(first: 100, filter: { team: { null: true } }) { nodes { id name } } }";
 
+/// The workflow states of a project's teams, by their ids, for one that
+/// takes the tickets of several ([`crate::tickets::MAX_TEAMS`] at most).
+pub fn teams_states() -> String {
+    format!(
+        "query($ids: [ID!]!) {{ teams(first: {}, filter: {{ id: {{ in: $ids }} }}) {{ nodes {{ id key states(first: 50) {{ nodes {{ id name type position }} }} }} }} }}",
+        crate::tickets::MAX_TEAMS
+    )
+}
+
+/// The labels the issues of a project's teams can have, for one that takes
+/// the tickets of several: their own and the workspace's.
+pub fn teams_labels() -> String {
+    format!(
+        "query($ids: [ID!]!) {{ teams(first: {}, filter: {{ id: {{ in: $ids }} }}) {{ nodes {{ id labels(first: 100) {{ nodes {{ id name }} }} }} }} issueLabels(first: 100, filter: {{ team: {{ null: true }} }}) {{ nodes {{ id name }} }} }}",
+        crate::tickets::MAX_TEAMS
+    )
+}
+
+/// The workflow states of every team a [`teams_states`] answer has, in
+/// their order: a state that several of them have (by its name and kind)
+/// once, without an id, which differs from team to team. Agents name
+/// states by their names, which fctl finds in each ticket's own team.
+pub fn teams_workflow(d: &Value) -> Vec<TicketState> {
+    let workflows: Vec<Vec<TicketState>> = nodes(d, "teams").map(states).collect();
+    let mut out: Vec<TicketState> = Vec::new();
+    for kind in workflows
+        .iter()
+        .flatten()
+        .map(|s| s.kind)
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        for s in workflows.iter().flatten().filter(|s| s.kind == kind) {
+            match out
+                .iter_mut()
+                .find(|o| o.kind == kind && o.name.eq_ignore_ascii_case(&s.name))
+            {
+                Some(o) if o.id != s.id => o.id = None,
+                Some(_) => {}
+                None => out.push(s.clone()),
+            }
+        }
+    }
+    out
+}
+
+/// The labels the issues of a team can have, by their ids and names: those
+/// of every team in a [`TEAM_LABELS`] or [`teams_labels`] answer and the
+/// workspace's, each name once.
+pub fn labels(d: &Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let teams: Vec<&Value> = match d.get("team") {
+        Some(t) if !t.is_null() => vec![t],
+        _ => nodes(d, "teams").collect(),
+    };
+    let all = teams
+        .into_iter()
+        .flat_map(|t| nodes(t, "labels"))
+        .chain(nodes(d, "issueLabels"));
+    for n in all {
+        if let (Some(id), Some(name)) = (s(n, "id"), s(n, "name"))
+            && !out.iter().any(|(_, x)| x.eq_ignore_ascii_case(&name))
+        {
+            out.push((id, name));
+        }
+    }
+    out
+}
+
 /// An issue's fields, as [`ticket`] reads them.
 const ISSUE_FIELDS: &str = "id identifier title description url priority priorityLabel estimate dueDate createdAt updatedAt \
     state { id name type } team { id key name } project { id name } cycle { name number } \
@@ -595,6 +663,8 @@ pub fn operations() -> Vec<(&'static str, String)> {
         ("TEAM_STATES", TEAM_STATES.to_owned()),
         ("ISSUE_STATES", ISSUE_STATES.to_owned()),
         ("TEAM_LABELS", TEAM_LABELS.to_owned()),
+        ("teams_states", teams_states()),
+        ("teams_labels", teams_labels()),
         ("issue_query", issue_query()),
         ("issues_query", issues_query()),
         ("search_query", search_query()),
@@ -849,12 +919,18 @@ pub fn place(v: &Value) -> (Option<String>, Option<String>) {
 }
 
 /// Whether an issue filed in `team` (and `project`) is one a project takes
-/// tickets from.
+/// tickets from: of one of its teams, and of the Linear project it narrows
+/// that team to, if it does.
 pub fn in_scope(l: &LinearTickets, team: Option<&str>, project: Option<&str>) -> bool {
-    team.is_some_and(|t| t == l.team)
-        && l.project
-            .as_deref()
-            .is_none_or(|p| project.is_some_and(|q| q == p))
+    let Some(team) = team else {
+        return false;
+    };
+    l.teams().iter().any(|c| {
+        c.team == team
+            && c.project
+                .as_deref()
+                .is_none_or(|p| project.is_some_and(|q| q == p))
+    })
 }
 
 /// Whether issue `v` (as [`ISSUE_FIELDS`] reads it) is one a project takes
@@ -920,17 +996,24 @@ pub fn states(team: &Value) -> Vec<TicketState> {
     found.into_iter().map(|(_, s)| s).collect()
 }
 
-/// The state among `states` named `name`, in any case.
-pub fn state_named<'a>(states: &'a [TicketState], name: &str) -> Result<&'a TicketState> {
+/// The state among a team's `states` named `name`, in any case. `team`
+/// names the team, for a project that takes the tickets of several, whose
+/// workflows may differ.
+pub fn state_named<'a>(
+    states: &'a [TicketState],
+    name: &str,
+    team: Option<&str>,
+) -> Result<&'a TicketState> {
     states
         .iter()
         .find(|s| s.name.eq_ignore_ascii_case(name.trim()))
         .ok_or_else(|| {
             let names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
-            ApiError::validation(
-                "state",
-                format!("There is no state {name}: use {}", names.join(", ")),
-            )
+            let none = match team {
+                Some(team) => format!("{team} has no state {name}"),
+                None => format!("There is no state {name}"),
+            };
+            ApiError::validation("state", format!("{none}: use {}", names.join(", ")))
         })
 }
 
@@ -950,6 +1033,27 @@ pub struct Candidate {
     pub may_start: bool,
     /// The person may see it, so that fctl may name it to them.
     pub may_see: bool,
+}
+
+/// A project as [`Candidate`]s: one for each of its teams.
+pub fn candidates(
+    project_id: &str,
+    l: &LinearTickets,
+    repo: Option<&str>,
+    may_start: bool,
+    may_see: bool,
+) -> Vec<Candidate> {
+    l.teams()
+        .into_iter()
+        .map(|c| Candidate {
+            project_id: project_id.to_owned(),
+            team: c.team,
+            project: c.project,
+            repo: repo.map(str::to_owned),
+            may_start,
+            may_see,
+        })
+        .collect()
 }
 
 /// Which projects take an issue of `team` (and `project`) up for the person
@@ -1389,6 +1493,7 @@ mod tests {
             team_name: None,
             project: None,
             project_name: None,
+            more_teams: None,
             move_started: None,
             move_review: None,
             move_done: None,
@@ -1965,13 +2070,21 @@ mod tests {
         );
         let all = states(&team);
         assert_eq!(
-            state_named(&all, "in review")
+            state_named(&all, "in review", None)
                 .map(|s| s.id.clone())
                 .ok()
                 .flatten(),
             Some("r".into())
         );
-        assert!(state_named(&all, "Shipped").is_err());
+        assert!(state_named(&all, "Shipped", None).is_err());
+        assert_eq!(
+            state_named(&all, "Shipped", Some("DES"))
+                .err()
+                .map(|e| e.message),
+            Some(
+                "DES has no state Shipped: use Backlog, Todo, In Progress, In Review, Done".into()
+            )
+        );
     }
 
     fn scope(project: Option<&str>) -> LinearTickets {
@@ -1982,6 +2095,7 @@ mod tests {
             team_name: None,
             project: project.map(str::to_owned),
             project_name: None,
+            more_teams: None,
             move_started: None,
             move_review: None,
             move_done: None,
@@ -1997,6 +2111,126 @@ mod tests {
         assert!(in_scope(&scope(Some("p1")), Some("team1"), Some("p1")));
         assert!(!in_scope(&scope(Some("p1")), Some("team1"), None));
         assert!(!in_scope(&scope(Some("p1")), Some("team1"), Some("p2")));
+        assert!(!in_scope(&scope(None), None, None));
+    }
+
+    /// A project that takes team1's issues of project p1, and all of team2's.
+    fn two_teams() -> LinearTickets {
+        LinearTickets {
+            more_teams: Some(vec![fctl_proto::session::LinearTeamChoice {
+                team: "team2".into(),
+                team_key: Some("DES".into()),
+                team_name: Some("Design".into()),
+                project: None,
+                project_name: None,
+            }]),
+            ..scope(Some("p1"))
+        }
+    }
+
+    #[test]
+    fn projects_take_the_issues_of_each_of_their_teams_as_each_narrows_them() {
+        let l = two_teams();
+        assert!(in_scope(&l, Some("team1"), Some("p1")));
+        assert!(!in_scope(&l, Some("team1"), Some("p2")));
+        assert!(!in_scope(&l, Some("team1"), None));
+        assert!(in_scope(&l, Some("team2"), None));
+        assert!(in_scope(&l, Some("team2"), Some("p2")));
+        assert!(!in_scope(&l, Some("team3"), None));
+        // A parent and children in the second team stay; others go.
+        let issue = json!({
+            "id": "i1", "team": { "id": "team1" }, "project": { "id": "p1" },
+            "parent": { "id": "p", "identifier": "DES-1", "team": { "id": "team2" } },
+            "children": { "nodes": [
+                { "id": "c1", "identifier": "ENG-2", "team": { "id": "team1" } },
+                { "id": "c2", "identifier": "DES-3", "team": { "id": "team2" } },
+                { "id": "c3", "identifier": "OPS-4", "team": { "id": "team3" } }
+            ] }
+        });
+        assert!(takes(&l, &issue));
+        let kept = within(&l, issue);
+        assert!(kept.get("parent").is_some());
+        let children: Vec<&str> = nodes(&kept, "children")
+            .filter_map(|c| c.get("identifier").and_then(Value::as_str))
+            .collect();
+        assert_eq!(children, ["DES-3"]);
+    }
+
+    #[test]
+    fn a_project_is_a_candidate_for_each_of_its_teams() {
+        let mut all = candidates("web", &two_teams(), Some("acme/web"), true, true);
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|c| c.repo.as_deref() == Some("acme/web")));
+        all.extend(candidates("api", &scope(None), None, true, true));
+        // team1's issues of p1 go to web, which takes only those; its others
+        // to api; team2's to web.
+        assert_eq!(
+            ids(takers(&all, "team1", Some("p1"))),
+            ("these", vec!["web".into()])
+        );
+        assert_eq!(
+            ids(takers(&all, "team1", None)),
+            ("these", vec!["api".into()])
+        );
+        assert_eq!(
+            ids(takers(&all, "team2", Some("p9"))),
+            ("these", vec!["web".into()])
+        );
+    }
+
+    #[test]
+    fn several_teams_workflows_list_each_state_once() {
+        let d = json!({ "teams": { "nodes": [
+            { "id": "team1", "key": "ENG", "states": { "nodes": [
+                { "id": "e-todo", "name": "Todo", "type": "unstarted", "position": 1 },
+                { "id": "e-prog", "name": "In Progress", "type": "started", "position": 2 },
+                { "id": "e-rev", "name": "In Review", "type": "started", "position": 3 },
+                { "id": "e-done", "name": "Done", "type": "completed", "position": 4 }
+            ] } },
+            { "id": "team2", "key": "DES", "states": { "nodes": [
+                { "id": "d-done", "name": "Done", "type": "completed", "position": 3 },
+                { "id": "d-doing", "name": "Doing", "type": "started", "position": 2 },
+                { "id": "d-todo", "name": "todo", "type": "unstarted", "position": 1 }
+            ] } }
+        ] } });
+        let states = teams_workflow(&d);
+        let names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Todo", "In Progress", "In Review", "Doing", "Done"]);
+        // A state of one team keeps its id; one of both has none.
+        let id = |name: &str| {
+            states
+                .iter()
+                .find(|s| s.name == name)
+                .and_then(|s| s.id.clone())
+        };
+        assert_eq!(id("In Review"), Some("e-rev".into()));
+        assert_eq!(id("Doing"), Some("d-doing".into()));
+        assert_eq!(id("Todo"), None);
+        assert_eq!(id("Done"), None);
+    }
+
+    #[test]
+    fn labels_come_from_each_team_and_the_workspace_once_by_name() {
+        let one = json!({
+            "team": { "labels": { "nodes": [{ "id": "l1", "name": "Bug" }] } },
+            "issueLabels": { "nodes": [{ "id": "l2", "name": "bug" }, { "id": "l3", "name": "Docs" }] }
+        });
+        assert_eq!(
+            labels(&one),
+            [
+                ("l1".to_owned(), "Bug".to_owned()),
+                ("l3".to_owned(), "Docs".to_owned())
+            ]
+        );
+        let several = json!({
+            "teams": { "nodes": [
+                { "id": "team1", "labels": { "nodes": [{ "id": "l1", "name": "Bug" }] } },
+                { "id": "team2", "labels": { "nodes": [{ "id": "l4", "name": "Figma" }, { "id": "l5", "name": "BUG" }] } }
+            ] },
+            "issueLabels": { "nodes": [{ "id": "l3", "name": "Docs" }] }
+        });
+        let names: Vec<String> = labels(&several).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(names, ["Bug", "Figma", "Docs"]);
     }
 
     fn candidate(id: &str, team: &str, project: Option<&str>) -> Candidate {

@@ -24,8 +24,8 @@ use fctl_domain::repos;
 use fctl_domain::tickets::{self as tk, GithubIssues};
 use fctl_proto::runner::GithubCredential;
 use fctl_proto::session::{
-    GithubAccess, LinearTickets, ProjectSettings, RepoGrant, RepoRef, SessionTicket, Tickets,
-    Tracker,
+    GithubAccess, LinearTeamChoice, LinearTickets, ProjectSettings, RepoGrant, RepoRef,
+    SessionTicket, Tickets, Tracker,
 };
 use fctl_proto::tickets::{
     LinearConnection, LinearStatus, LinearTeam, ProjectTickets, StateFilter, Ticket, TicketAnswer,
@@ -155,6 +155,11 @@ pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<L
                             slug: u.slug.clone(),
                             name: u.name.clone(),
                             team_key: t.team_key.clone(),
+                            team_keys: t
+                                .teams()
+                                .iter()
+                                .filter_map(|c| c.team_key.clone())
+                                .collect(),
                         }
                     })
                 })
@@ -241,7 +246,7 @@ pub async fn status(ctx: &Ctx, project: &ProjectRow) -> AppResult<ProjectTickets
             _ => None,
         },
         Tracker::Linear => match (&t.linear, &connection) {
-            (None, _) => Some("Choose the Linear team whose tickets this project works on.".to_owned()),
+            (None, _) => Some("Choose the Linear teams whose tickets this project works on.".to_owned()),
             (Some(_), None) => Some(
                 "The Linear workspace this project chose isn't connected to its workspace any more: an admin connects it again."
                     .to_owned(),
@@ -349,14 +354,18 @@ pub async fn teams(linear: &Linear<'_>) -> AppResult<Vec<LinearTeam>> {
 }
 
 /// Checks a project's Linear choice as it is saved: its Linear workspace is
-/// connected to the project's workspace, and fctl's app reaches its team
-/// (and project) there, whose key and names it keeps for display.
+/// connected to the project's workspace, and fctl's app reaches each of its
+/// teams (and the Linear project it narrows each to) there, whose keys and
+/// names it keeps for display. A team that `checked`, the choice as it was
+/// checked before, had with the same project keeps what was found then, so
+/// that a change asks Linear only about what it changes.
 pub async fn check_linear(
     db: &D1Database,
     cfg: &Config,
     keys: &Keys,
     workspace_id: &str,
     l: &LinearTickets,
+    checked: Option<&LinearTickets>,
     now: i64,
 ) -> AppResult<LinearTickets> {
     let connected: Option<Count> = q(
@@ -386,31 +395,74 @@ pub async fn check_linear(
             }
         }
     };
-    let team = found(lin::TEAM, &l.team, "team").await?.ok_or_else(|| {
-        validation(
-            "settings.tickets.linear.team",
-            "fctl's app doesn't reach that team in Linear: choose another, or give the app the team in Linear's settings",
-        )
-    })?;
     let st = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
-    let mut out = l.clone();
-    out.team_key = st(&team, "key");
-    out.team_name = st(&team, "name");
-    out.project_name = match &l.project {
-        Some(p) => Some(
-            found(lin::PROJECT, p, "project")
-                .await?
-                .filter(|v| lin::open_project_of(v, &l.team))
-                .and_then(|v| st(&v, "name"))
-                .ok_or_else(|| {
-                    validation(
-                        "settings.tickets.linear.project",
-                        "That Linear project isn't one of the team's open projects",
-                    )
-                })?,
-        ),
-        None => None,
-    };
+    let before = checked
+        .filter(|c| c.organization == l.organization)
+        .map(LinearTickets::teams)
+        .unwrap_or_default();
+    let mut teams = Vec::new();
+    for (i, c) in l.teams().into_iter().enumerate() {
+        if let Some(b) = before
+            .iter()
+            .find(|b| b.team == c.team && b.project == c.project)
+        {
+            teams.push(b.clone());
+            continue;
+        }
+        let (team_field, project_field) = if i == 0 {
+            (
+                "settings.tickets.linear.team",
+                "settings.tickets.linear.project",
+            )
+        } else {
+            (
+                "settings.tickets.linear.more_teams",
+                "settings.tickets.linear.more_teams",
+            )
+        };
+        let team = found(lin::TEAM, &c.team, "team").await?.ok_or_else(|| {
+            validation(
+                team_field,
+                &format!(
+                    "fctl's app doesn't reach {} in Linear: choose another team, or give the app the team in Linear's settings",
+                    c.team_key.as_deref().unwrap_or("that team")
+                ),
+            )
+        })?;
+        let key = st(&team, "key");
+        let project_name = match &c.project {
+            Some(p) => Some(
+                found(lin::PROJECT, p, "project")
+                    .await?
+                    .filter(|v| lin::open_project_of(v, &c.team))
+                    .and_then(|v| st(&v, "name"))
+                    .ok_or_else(|| {
+                        validation(
+                            project_field,
+                            &format!(
+                                "That Linear project isn't one of {}'s open projects",
+                                key.as_deref().unwrap_or("the team")
+                            ),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        teams.push(LinearTeamChoice {
+            team: c.team,
+            team_key: key,
+            team_name: st(&team, "name"),
+            project: c.project,
+            project_name,
+        });
+    }
+    let mut out = l
+        .with_teams(teams)
+        .ok_or_else(|| internal("a Linear choice without a team"))?;
+    // Stored without the list when there are no more teams.
+    if out.more_teams.as_ref().is_some_and(Vec::is_empty) {
+        out.more_teams = None;
+    }
     Ok(out)
 }
 
@@ -596,12 +648,24 @@ fn check_body(field: &str, body: &str) -> AppResult<String> {
 
 // ───────────────────────────── Linear ─────────────────────────────
 
-/// The team's (and project's) issues as a filter, in a state.
+/// The issues of the project's teams (each of the Linear project it narrows
+/// it to, if it does) as a filter, in a state.
 fn linear_filter(l: &LinearTickets, state: StateFilter, label: Option<&str>) -> Value {
-    let mut f = json!({ "team": { "id": { "eq": l.team } } });
-    if let Some(p) = &l.project {
-        put(&mut f, "project", json!({ "id": { "eq": p } }));
-    }
+    let scopes: Vec<Value> = l
+        .teams()
+        .iter()
+        .map(|c| {
+            let mut f = json!({ "team": { "id": { "eq": c.team } } });
+            if let Some(p) = &c.project {
+                put(&mut f, "project", json!({ "id": { "eq": p } }));
+            }
+            f
+        })
+        .collect();
+    let mut f = match <[Value; 1]>::try_from(scopes) {
+        Ok([one]) => one,
+        Err(several) => json!({ "or": several }),
+    };
     match state {
         StateFilter::Open => put(
             &mut f,
@@ -634,11 +698,16 @@ async fn linear_issue(
     key: &str,
 ) -> AppResult<(Value, Ticket)> {
     let elsewhere = || {
+        let (have, their) = if l.teams().len() > 1 {
+            ("have", "their")
+        } else {
+            ("has", "its")
+        };
         AppError(ApiError::new(
             ErrorCode::NotFound,
             format!(
-                "{} has no ticket {key}: this project works on its tickets alone",
-                l.team_key.as_deref().unwrap_or("The project's team")
+                "{} {have} no ticket {key}: this project works on {their} tickets alone",
+                tk::linear_teams(l)
             ),
         ))
     };
@@ -665,38 +734,87 @@ async fn linear_issue(
     Ok((issue, ticket))
 }
 
-async fn linear_states(client: &Linear<'_>, l: &LinearTickets) -> AppResult<Vec<TicketState>> {
+/// The team of the project's that issue `v` (as [`linear_issue`] reads it)
+/// is filed in: its first, for one without a team.
+fn team_of(l: &LinearTickets, v: &Value) -> LinearTeamChoice {
+    let teams = l.teams();
+    let team = lin::place(v).0;
+    teams
+        .iter()
+        .find(|c| team.as_deref() == Some(c.team.as_str()))
+        .or(teams.first())
+        .cloned()
+        .unwrap_or_else(|| LinearTeamChoice {
+            team: l.team.clone(),
+            team_key: l.team_key.clone(),
+            team_name: l.team_name.clone(),
+            project: l.project.clone(),
+            project_name: l.project_name.clone(),
+        })
+}
+
+/// One team's workflow states.
+async fn linear_states(client: &Linear<'_>, team: &str) -> AppResult<Vec<TicketState>> {
     let d = client
-        .graphql(lin::TEAM_STATES, json!({ "id": l.team }))
+        .graphql(lin::TEAM_STATES, json!({ "id": team }))
         .await?;
     Ok(d.get("team").map(lin::states).unwrap_or_default())
 }
 
-/// The labels a team's issues can have: (id, name).
-async fn linear_labels(client: &Linear<'_>, l: &LinearTickets) -> AppResult<Vec<(String, String)>> {
+/// The state named `name` of `team`'s workflow, for a ticket filed there.
+async fn linear_state(
+    client: &Linear<'_>,
+    l: &LinearTickets,
+    team: &LinearTeamChoice,
+    name: &str,
+) -> AppResult<String> {
+    let states = linear_states(client, &team.team).await?;
+    let several = l.teams().len() > 1;
+    let state = lin::state_named(&states, name, several.then(|| team.label()))?;
+    state
+        .id
+        .clone()
+        .ok_or_else(|| internal("Linear's state has no id"))
+}
+
+/// The workflow states of every team of the project's, for `fctl ticket
+/// states`: those several have once.
+async fn linear_workflow(client: &Linear<'_>, l: &LinearTickets) -> AppResult<Vec<TicketState>> {
+    let teams = l.teams();
+    if let [one] = teams.as_slice() {
+        return linear_states(client, &one.team).await;
+    }
+    let ids: Vec<&str> = teams.iter().map(|c| c.team.as_str()).collect();
     let d = client
-        .graphql(lin::TEAM_LABELS, json!({ "id": l.team }))
+        .graphql(&lin::teams_states(), json!({ "ids": ids }))
         .await?;
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut take = |v: Option<&Value>| {
-        for n in v
-            .and_then(|c| c.get("nodes"))
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let (Some(id), Some(name)) = (
-                n.get("id").and_then(Value::as_str),
-                n.get("name").and_then(Value::as_str),
-            ) && !out.iter().any(|(_, x)| x.eq_ignore_ascii_case(name))
-            {
-                out.push((id.to_owned(), name.to_owned()));
-            }
-        }
-    };
-    take(d.get("team").and_then(|t| t.get("labels")));
-    take(d.get("issueLabels"));
-    Ok(out)
+    Ok(lin::teams_workflow(&d))
+}
+
+/// The labels one team's issues can have, its own and the workspace's:
+/// (id, name).
+async fn linear_labels(client: &Linear<'_>, team: &str) -> AppResult<Vec<(String, String)>> {
+    let d = client
+        .graphql(lin::TEAM_LABELS, json!({ "id": team }))
+        .await?;
+    Ok(lin::labels(&d))
+}
+
+/// The labels the issues of the project's teams can have, for `fctl ticket
+/// labels`: (id, name).
+async fn linear_all_labels(
+    client: &Linear<'_>,
+    l: &LinearTickets,
+) -> AppResult<Vec<(String, String)>> {
+    let teams = l.teams();
+    if let [one] = teams.as_slice() {
+        return linear_labels(client, &one.team).await;
+    }
+    let ids: Vec<&str> = teams.iter().map(|c| c.team.as_str()).collect();
+    let d = client
+        .graphql(&lin::teams_labels(), json!({ "ids": ids }))
+        .await?;
+    Ok(lin::labels(&d))
 }
 
 fn label_ids(all: &[(String, String)], names: &[String]) -> AppResult<Vec<String>> {
@@ -732,6 +850,7 @@ async fn linear_call(
                 about: TrackerAbout {
                     tracker: Tracker::Linear,
                     scope: tk::linear_scope(l, name.as_deref()),
+                    // Its first team, unless the agent names another.
                     files_in: Some(match (&l.team_key, &l.project_name) {
                         (Some(t), Some(p)) => format!("{t}, project {p}"),
                         (Some(t), None) => t.clone(),
@@ -771,7 +890,7 @@ async fn linear_call(
             };
             let c = d.get(key).cloned().unwrap_or(Value::Null);
             TicketAnswer::Tickets {
-                // Linear's filter keeps them to the team; this again, and
+                // Linear's filter keeps them to the teams; this again, and
                 // their parents too.
                 tickets: c
                     .get("nodes")
@@ -792,10 +911,10 @@ async fn linear_call(
             ticket: linear_issue(client, l, &key).await?.1,
         },
         TicketRequest::States => TicketAnswer::States {
-            states: linear_states(client, l).await?,
+            states: linear_workflow(client, l).await?,
         },
         TicketRequest::Labels => TicketAnswer::Labels {
-            labels: linear_labels(client, l)
+            labels: linear_all_labels(client, l)
                 .await?
                 .into_iter()
                 .map(|(_, n)| n)
@@ -808,9 +927,29 @@ async fn linear_call(
             labels,
             state,
             priority,
-            place: _,
+            place,
         } => {
-            let mut input = json!({ "teamId": l.team, "title": check_title(&title)? });
+            let parent = match parent.as_deref() {
+                Some(p) => Some(linear_issue(client, l, p).await?),
+                None => None,
+            };
+            // The team it names, else its parent's, else the first.
+            let team = match place.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                Some(p) => tk::linear_place(l, p).ok_or_else(|| {
+                    validation(
+                        "place",
+                        &format!(
+                            "{p} isn't a team of this project's: file the ticket in {}",
+                            tk::linear_teams(l).replace(" and ", " or ")
+                        ),
+                    )
+                })?,
+                None => match &parent {
+                    Some((v, _)) => team_of(l, v),
+                    None => team_of(l, &Value::Null),
+                },
+            };
+            let mut input = json!({ "teamId": team.team, "title": check_title(&title)? });
             if let Some(d) = description.as_deref() {
                 put(
                     &mut input,
@@ -818,29 +957,27 @@ async fn linear_call(
                     json!(check_body("description", d)?),
                 );
             }
-            if let Some(p) = &l.project {
+            if let Some(p) = &team.project {
                 put(&mut input, "projectId", json!(p));
             }
-            if let Some(parent) = parent.as_deref() {
-                put(
-                    &mut input,
-                    "parentId",
-                    json!(linear_issue(client, l, parent).await?.1.id),
-                );
+            if let Some((_, parent)) = &parent {
+                put(&mut input, "parentId", json!(parent.id));
             }
             if !labels.is_empty() {
                 put(
                     &mut input,
                     "labelIds",
-                    json!(label_ids(&linear_labels(client, l).await?, &labels)?),
+                    json!(label_ids(
+                        &linear_labels(client, &team.team).await?,
+                        &labels
+                    )?),
                 );
             }
             if let Some(state) = state.as_deref() {
-                let states = linear_states(client, l).await?;
                 put(
                     &mut input,
                     "stateId",
-                    json!(lin::state_named(&states, state)?.id),
+                    json!(linear_state(client, l, &team, state).await?),
                 );
             }
             if let Some(p) = priority.as_deref() {
@@ -933,7 +1070,9 @@ async fn linear_call(
             parent,
             priority,
         } => {
-            let (_, current) = linear_issue(client, l, &key).await?;
+            let (issue, current) = linear_issue(client, l, &key).await?;
+            // Its own team's states and labels.
+            let team = team_of(l, &issue);
             let mut input = json!({});
             if let Some(t) = title.as_deref() {
                 put(&mut input, "title", json!(check_title(t)?));
@@ -946,15 +1085,14 @@ async fn linear_call(
                 );
             }
             if let Some(st) = state.as_deref() {
-                let states = linear_states(client, l).await?;
                 put(
                     &mut input,
                     "stateId",
-                    json!(lin::state_named(&states, st)?.id),
+                    json!(linear_state(client, l, &team, st).await?),
                 );
             }
             if !add_labels.is_empty() || !remove_labels.is_empty() {
-                let all = linear_labels(client, l).await?;
+                let all = linear_labels(client, &team.team).await?;
                 if !add_labels.is_empty() {
                     put(
                         &mut input,
