@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.26.1 (2026-10-29)
+
+### Features
+
+- Let @fctl-sh and @fctl-review mentions address the agent ([#338](https://github.com/hyperstructure/fctl/pull/338))
+- **web:** Pick the task boxes' placeholders at random from fun lines ([#341](https://github.com/hyperstructure/fctl/pull/341))
+
+### Fixes
+
+- **web:** Show the composers' focus with their shadow, not a yellow ring ([#337](https://github.com/hyperstructure/fctl/pull/337))
+- **web:** Make the composers' focus shadow more subtle ([#339](https://github.com/hyperstructure/fctl/pull/339))
+
+### Documentation
+
+- **release:** Say the Homebrew tap merges its bump once checks pass ([#342](https://github.com/hyperstructure/fctl/pull/342))
+
 ## 0.26.0 (2026-10-29)
 
 ### Features
