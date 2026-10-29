@@ -30,7 +30,50 @@ const started: G.AuthenticatorSetup = {
 
 const me = { user: { id: "usr_ada", email: "ada@example.com", name: "Ada" }, emails: [] } as unknown as G.Me;
 
+function show() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  act(() =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <AuthenticatorSetup me={me} started={started} onDone={() => {}} />
+      </QueryClientProvider>,
+    ),
+  );
+  roots.push(() => act(() => root.unmount()));
+  return container;
+}
+
+async function enterCode(container: HTMLElement) {
+  const input = container.querySelector<HTMLInputElement>('input[autocomplete="one-time-code"]');
+  if (!input) throw new Error("no code input");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "123456");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {});
+}
+
 describe("setting up an authenticator app", () => {
+  it("asks for the password when confirming does, though setting up didn't", async () => {
+    const { ApiFailure } = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    server.confirmAuthenticator.mockRejectedValue(
+      new ApiFailure(422, {
+        code: "validation",
+        field: "password",
+        message: "Enter your password to confirm it's you",
+      }),
+    );
+    const container = show();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    await enterCode(container);
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+    expect(container.textContent).toContain("Enter your password to confirm it's you");
+  });
+
   it("says why a confirmation was refused when the form has no field for it", async () => {
     const { ApiFailure } = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
     server.confirmAuthenticator.mockRejectedValue(

@@ -135,6 +135,10 @@ function Scan({
 }) {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
+  // The password, as setting up asked for it, or as confirming did: a
+  // setup started within 15 minutes of signing in can outlast them.
+  const [askedForPassword, setAskedForPassword] = useState(false);
+  const needsPassword = setup.password_required || askedForPassword;
   const [errors, setErrors] = useState(0);
   const [showKey, setShowKey] = useState(false);
   const [touch] = useState(touchDevice);
@@ -145,10 +149,11 @@ function Scan({
       api.confirmAuthenticator({
         setup: setup.setup,
         code: c,
-        password: setup.password_required ? password : undefined,
+        password: needsPassword ? password : undefined,
       }),
     onSuccess: (r) => setTimeout(() => onConfirmed(r), 380),
     onError: (e: ApiFailure) => {
+      if (e.field === "password") setAskedForPassword(true);
       if (e.field === "code") {
         setErrors((n) => n + 1);
         setCode("");
@@ -160,7 +165,7 @@ function Scan({
   const expired = error?.field === "setup";
   const submit = (c = code) => {
     if (c.length !== CODE_LENGTH || confirm.isPending || confirm.isSuccess) return;
-    if (setup.password_required && !password) return;
+    if (needsPassword && !password) return;
     confirm.mutate(c);
   };
   const state = confirm.isSuccess
@@ -241,14 +246,14 @@ function Scan({
               value={code}
               onChange={setCode}
               onComplete={(c) => {
-                if (!setup.password_required || password) submit(c);
+                if (!needsPassword || password) submit(c);
               }}
               state={state}
               errors={errors}
               disabled={confirm.isSuccess}
               label="The six-digit code from your authenticator app"
               describedBy={hintId}
-              autoFocus={!touch && !setup.password_required}
+              autoFocus={!touch && !needsPassword}
             />
             <p
               id={hintId}
@@ -265,7 +270,7 @@ function Scan({
             </p>
           </div>
         </Step>
-        {setup.password_required && (
+        {needsPassword && (
           <Field
             label="Your password"
             hint="You signed in a while ago, so confirm it's you."
@@ -288,9 +293,7 @@ function Scan({
             type="submit"
             variant="primary"
             loading={confirm.isPending}
-            disabled={
-              code.length !== CODE_LENGTH || (setup.password_required && !password) || confirm.isSuccess
-            }
+            disabled={code.length !== CODE_LENGTH || (needsPassword && !password) || confirm.isSuccess}
             trailing={confirm.isPending ? undefined : <ArrowRight className="size-4" />}
           >
             {replacing ? "Use this app" : "Turn on two-factor"}
