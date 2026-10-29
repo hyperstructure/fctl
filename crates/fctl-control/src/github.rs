@@ -1400,6 +1400,54 @@ impl<'a> Github<'a> {
         })
     }
 
+    /// A pull request as GitHub has it now, its description and how much
+    /// it changes among it (`fctl_domain::reviews::description` reads
+    /// them), or GitHub's status and why it didn't say.
+    pub async fn pull_request(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+    ) -> AppResult<Result<Value, (u16, String)>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Get,
+                &format!("/repos/{}/{}/pulls/{number}", repo.owner, repo.name),
+                None,
+            )
+            .await?;
+        Ok(if status == 200 {
+            Ok(v)
+        } else {
+            Err((status, github_message(status, &v)))
+        })
+    }
+
+    /// Replaces a pull request's description. GitHub's status and why it
+    /// refused.
+    pub async fn edit_description(
+        &self,
+        token: &GithubCredential,
+        repo: &RepoRef,
+        number: u64,
+        body: &str,
+    ) -> AppResult<Result<(), (u16, String)>> {
+        let (status, v) = self
+            .with_token(
+                token,
+                Method::Patch,
+                &format!("/repos/{}/{}/pulls/{number}", repo.owner, repo.name),
+                Some(json!({ "body": body })),
+            )
+            .await?;
+        Ok(if status == 200 {
+            Ok(())
+        } else {
+            Err((status, github_message(status, &v)))
+        })
+    }
+
     /// Resolves review threads of `repo`, with one token that can write its
     /// contents, as GitHub asks, which does this alone, never leaves the
     /// control plane and is revoked after. Each thread's result, in order.

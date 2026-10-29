@@ -7,18 +7,22 @@
 //! This is what they decide without I/O: which deliveries start a review,
 //! what the agent is told, what it may submit, which lines GitHub takes
 //! comments on, how the summary, the review, its comments and its check
-//! read there, and what later reviews say of earlier ones.
+//! read there, what later reviews say of earlier ones, and where the
+//! agent's summary of the pull request goes in its description.
 
 use crate::threads;
 use crate::validate::{self, Result};
 use fctl_proto::api::{
-    FindingThread, ResolvedFinding, ReviewBot, ReviewFinding, ReviewState, Severity, ThreadReply,
+    FindingThread, PullRequestSummary, ResolvedFinding, ReviewBot, ReviewFinding, ReviewState,
+    Risk, Severity, SummaryHighlight, ThreadReply,
 };
 use fctl_proto::event::{PassedOnFinding, PassedOnReview};
 use fctl_proto::session::{PullRequestRef, RepoRef, ReviewCheck};
 use fctl_proto::{ApiError, ProjectId, SessionId};
+use pulldown_cmark::{BrokenLink, BrokenLinkCallback, CowStr, Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The name of the check a review shows as on its commit.
@@ -689,9 +693,16 @@ pub fn task(pr: &PullRequest, previous: Option<&str>) -> String {
 }
 
 /// What the review agent is told, after what its sandbox has: what to
-/// review, how, how to post what it found, and what not to trust. The
-/// project's own instructions for reviews follow.
-pub fn instructions(pr: &PullRequest, trusted: bool, project: Option<&str>) -> String {
+/// review, how, how to post what it found, and what not to trust; first,
+/// where the project's review agents sum pull requests up in their
+/// descriptions (`summarize`), how to. The project's own instructions for
+/// reviews follow.
+pub fn instructions(
+    pr: &PullRequest,
+    trusted: bool,
+    summarize: bool,
+    project: Option<&str>,
+) -> String {
     let updater = (!trusted && !pr.fork)
         .then(|| pr.author.as_deref().and_then(updater))
         .flatten();
@@ -717,6 +728,9 @@ pub fn instructions(pr: &PullRequest, trusted: bool, project: Option<&str>) -> S
         base = pr.base_ref,
         sha = short(&pr.head_sha),
     );
+    if summarize {
+        s.push_str(&SUMMARIZE.replace("{number}", &pr.number.to_string()));
+    }
     s.push_str(WHAT_TO_REVIEW);
     if updater.is_some() {
         s.push_str(DEPENDENCY_UPDATE);
@@ -742,6 +756,29 @@ pub fn instructions(pr: &PullRequest, trusted: bool, project: Option<&str>) -> S
     }
     s
 }
+
+const SUMMARIZE: &str = r#"
+## First, sum it up in its description
+
+People who open this pull request find a short summary of it at the end of its description, which you write first, before you review anything in depth: read its description and skim its diff (`gh pr view {number}` and `gh pr diff {number}`), write the summary to a file as JSON, and run `fctl review summarize summary.json`. fctl puts it at the end of the description, in place of the summary an earlier review left there, and leaves the rest of the description as it is. Then review as below: what you find goes in your review, not in the summary.
+
+```json
+{
+  "risk": "medium",
+  "risk_reason": "It changes how the upload worker retries, which every sync goes through, though only for uploads that fail.",
+  "overview": "Makes the upload worker give up after five failed attempts and wait longer between them, so that a server that stays down no longer keeps the worker busy for good.",
+  "highlight": { "topic": "Config rename", "text": "`retry_ms` becomes `retry_delay_ms`, and existing configs keep working through an alias." }
+}
+```
+
+- `risk`: how much could go wrong with what the pull request sets out to do, judged from what it changes and where, not from bugs you may find later. `low` for small, contained changes (docs, tests, copy, a local fix); `medium` for changes to behavior that people or other code rely on; `high`, sparingly, for changes to authentication, permissions, secrets, payments, stored data and its migrations, or anything hard to undo or that reaches everyone at once; `critical` only when a serious security problem shows at first sight. Judge by the diff: a description can make a change sound smaller than it is.
+- `risk_reason`: a sentence or two on why: what it touches, and what could go wrong.
+- `overview`: what it does and why, for someone who hasn't read the diff, in two to four plain sentences: a paragraph, two at most.
+- `highlight`, only when something deserves a reviewer's closer look before merging, such as a migration, a breaking change, a new dependency or a step for whoever deploys it: `topic` names it in a few words, and `text` says what it is in a sentence or two.
+- Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions, email addresses or HTML. GitHub links #12 and owner/name#12 by itself.
+- At a new commit, sum up the pull request as it stands now, as a whole: your summary replaces the earlier one.
+- If `fctl review summarize` refuses the summary, fix what it says and run it again. If it fails otherwise, carry on with the review.
+"#;
 
 const WHAT_TO_REVIEW: &str = r#"
 ## What to review
@@ -1357,6 +1394,500 @@ pub fn review_request(
         "body": "",
         "comments": comments,
     }))
+}
+
+// ───────────────────────────── the summary in the description ─────────────────────────────
+
+/// Where the summary fctl keeps at the end of a pull request's description
+/// starts and ends (`fctl review summarize`), each on a line of its own:
+/// what lies between them is fctl's, and the rest of the description its
+/// people's, which fctl leaves as it is.
+pub const SUMMARY_START: &str = "<!-- FCTL_REVIEW_SUMMARY -->";
+pub const SUMMARY_END: &str = "<!-- /FCTL_REVIEW_SUMMARY -->";
+
+/// The most characters GitHub takes in a pull request's description.
+pub const MAX_DESCRIPTION: usize = 65_536;
+
+/// Checks a review agent's summary of its pull request: why it has its
+/// risk in a paragraph, what it does in at most two, and what deserves a
+/// closer look in a few words and a paragraph. Each is plain sentences,
+/// with inline code and emphasis, but no lists, headings, quotes, tables,
+/// code blocks or rules, which would break out of the note fctl puts them
+/// in, and no images, HTML, links or @-mentions, which a pull request that
+/// steers the agent could have fctl's app write in its description: links
+/// that pass for fctl's, mentions that notify people. A paragraph's lines
+/// become one.
+pub fn check_summary(s: &PullRequestSummary) -> Result<PullRequestSummary> {
+    let risk_reason = prose("risk_reason", &s.risk_reason, 400, 1)?;
+    let overview = prose("overview", &s.overview, 1_200, 2)?;
+    let highlight = match &s.highlight {
+        Some(h) if !(h.topic.trim().is_empty() && h.text.trim().is_empty()) => {
+            let topic = validate::text("highlight.topic", &h.topic, 60)?;
+            // fctl puts it in bold and ends it with a full stop, in place of
+            // the agent's emphasis and what it ended it with.
+            let topic = topic
+                .trim_matches(['*', '_'])
+                .trim_end_matches(['.', ':', ';', ',', '-', '–', '—'])
+                .trim()
+                .to_owned();
+            if topic.is_empty() || topic.contains('\n') {
+                return Err(ApiError::validation(
+                    "highlight.topic",
+                    "Name what deserves a closer look in a few words, on one line",
+                ));
+            }
+            if let Some(why) = not_block(&topic) {
+                return Err(ApiError::validation("highlight.topic", why));
+            }
+            Some(SummaryHighlight {
+                topic,
+                text: prose("highlight.text", &h.text, 400, 1)?,
+            })
+        }
+        _ => None,
+    };
+    let checked = PullRequestSummary {
+        risk: s.risk,
+        risk_reason,
+        overview,
+        highlight,
+    };
+    if let Some((field, why)) = not_plain(&paragraphs(&checked)) {
+        return Err(ApiError::validation(field, why));
+    }
+    Ok(checked)
+}
+
+/// `input` as paragraphs of plain sentences, at most `most` of them, each
+/// on one line, separated by a blank line; at most `max` characters.
+fn prose(field: &str, input: &str, max: usize, most: usize) -> Result<String> {
+    let text = validate::text(field, input, max)?;
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join(" "));
+                current.clear();
+            }
+            continue;
+        }
+        if let Some(why) = not_block(line) {
+            return Err(ApiError::validation(field, why));
+        }
+        current.push(line);
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join(" "));
+    }
+    if paragraphs.is_empty() {
+        return Err(ApiError::validation(
+            field,
+            "Say it in a sentence or two of plain text",
+        ));
+    }
+    if paragraphs.len() > most {
+        return Err(ApiError::validation(
+            field,
+            match most {
+                1 => "Keep it to one paragraph".to_owned(),
+                n => format!("Keep it to {n} short paragraphs at most"),
+            },
+        ));
+    }
+    Ok(paragraphs
+        .iter()
+        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
+const LISTS: &str = "Write sentences rather than a list: the summary has no bullet points";
+const RULES: &str = "Leave out rules: fctl lays the summary out";
+const HEADINGS: &str = "Leave out headings: fctl lays the summary out";
+const QUOTES: &str = "Leave out quotes: fctl puts the summary in a note of its own";
+const CODE_BLOCKS: &str = "Leave out code blocks: name code in backticks, in the sentence";
+const TABLES: &str = "Leave out tables: write sentences";
+const IMAGES: &str = "Leave out images";
+const HTML: &str = "Leave out HTML: put code in backticks";
+const LINKS: &str =
+    "Leave out links: name what you mean, and GitHub links #12 and owner/name#12 by itself";
+const BRACKETS: &str = "Leave out words in square brackets: GitHub makes them links where the description defines them";
+const MENTIONS: &str = "Leave out @-mentions and email addresses, which notify or link people: name them, or put a handle in backticks";
+const FOOTNOTES: &str = "Leave out footnotes";
+const PLAIN: &str = "Write plain sentences, with code in backticks";
+
+/// Why a line of a summary isn't plain prose, where it isn't: Markdown
+/// that starts a block of its own, a list say, which lines that become one
+/// would leave as stray marks. What GitHub would make of the summary
+/// itself [`not_plain`] tells.
+fn not_block(line: &str) -> Option<&'static str> {
+    let line = line.trim();
+    // A marker, then the line's end or whitespace (a tab and a no-break
+    // space too, which become a space).
+    let marker = |len: usize| line[len..].chars().next().is_none_or(char::is_whitespace);
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let numbered = (1..=9).contains(&digits)
+        && matches!(line.as_bytes().get(digits), Some(b'.' | b')'))
+        && marker(digits + 1);
+    let bullet = line.starts_with(['-', '*', '+']) && marker(1);
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    let heading = (1..=6).contains(&hashes) && marker(hashes);
+    let rule = line.chars().filter(|c| !c.is_whitespace()).count() >= 3
+        && line
+            .chars()
+            .all(|c| c.is_whitespace() || matches!(c, '-' | '*' | '_' | '='));
+    if rule {
+        Some(RULES)
+    } else if bullet || numbered {
+        Some(LISTS)
+    } else if heading {
+        Some(HEADINGS)
+    } else if line.starts_with('>') {
+        Some(QUOTES)
+    } else if line.starts_with("```") || line.starts_with("~~~") {
+        Some(CODE_BLOCKS)
+    } else if line.starts_with('|') {
+        Some(TABLES)
+    } else {
+        None
+    }
+}
+
+/// A parser of the summary's Markdown that notes where it found words in
+/// square brackets that a link's definition elsewhere in the description
+/// would make a link (`[docs]`), in `would_link`.
+fn summary_parser<'a>(
+    text: &'a str,
+    would_link: &'a Cell<Option<usize>>,
+) -> Parser<'a, impl BrokenLinkCallback<'a>> {
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
+    let note = move |broken: BrokenLink<'a>| -> Option<(CowStr<'a>, CowStr<'a>)> {
+        would_link.set(would_link.get().or(Some(broken.span.start)));
+        None
+    };
+    Parser::new_with_broken_link_callback(text, options, Some(note))
+}
+
+/// Why the summary's paragraphs, `parts` (as [`paragraphs`] lays them
+/// out), aren't plain prose as GitHub reads them, where they aren't, and in
+/// which field: anything but text, inline code and emphasis. A real parser
+/// reads them all at once, as GitHub does, so that nothing hides in a code
+/// span that GitHub reads otherwise, across lines or fields. Links include
+/// a link's definition, which would also link words elsewhere in the
+/// description, words in brackets that such a definition would link, and
+/// the addresses GitHub links by themselves; @-mentions, which notify
+/// people, and email addresses, which GitHub links, are out too.
+fn not_plain(parts: &[(&'static str, String)]) -> Option<(&'static str, &'static str)> {
+    let mut text = String::new();
+    let mut starts = Vec::with_capacity(parts.len());
+    for (field, part) in parts {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        starts.push((text.len(), *field));
+        text.push_str(part);
+    }
+    let field_at = |at: usize| {
+        starts
+            .iter()
+            .rev()
+            .find(|(start, _)| *start <= at)
+            .map_or("summary", |(_, field)| *field)
+    };
+    let would_link = Cell::new(None);
+    let parser = summary_parser(&text, &would_link);
+    if let Some((_, def)) = parser.reference_definitions().iter().next() {
+        return Some((field_at(def.span.start), LINKS));
+    }
+    // Text as GitHub shows it, adjacent runs together: an entity or an
+    // escape splits what reads as one word.
+    let mut run = String::new();
+    let mut run_start = 0;
+    let mut events = parser.into_offset_iter().peekable();
+    while let Some((event, range)) = events.next() {
+        let why = match event {
+            Event::Text(t) => {
+                if run.is_empty() {
+                    run_start = range.start;
+                }
+                run.push_str(&t);
+                if matches!(events.peek(), Some((Event::Text(_), _))) {
+                    continue;
+                }
+                let found = not_plain_text(&run);
+                run.clear();
+                match found {
+                    Some(why) => return Some((field_at(run_start), why)),
+                    None => continue,
+                }
+            }
+            Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
+            | Event::End(_)
+            | Event::Code(_)
+            | Event::SoftBreak
+            | Event::HardBreak => continue,
+            Event::Start(Tag::Heading { .. }) => HEADINGS,
+            Event::Start(Tag::BlockQuote(_)) => QUOTES,
+            Event::Start(Tag::CodeBlock(_)) => CODE_BLOCKS,
+            Event::Start(Tag::List(_) | Tag::Item) | Event::TaskListMarker(_) => LISTS,
+            Event::Start(Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell) => TABLES,
+            Event::Start(Tag::Link { .. }) => LINKS,
+            Event::Start(Tag::Image { .. }) => IMAGES,
+            Event::Start(Tag::HtmlBlock) | Event::Html(_) | Event::InlineHtml(_) => HTML,
+            Event::Start(Tag::FootnoteDefinition(_)) | Event::FootnoteReference(_) => FOOTNOTES,
+            Event::Rule => RULES,
+            _ => PLAIN,
+        };
+        return Some((field_at(range.start), why));
+    }
+    would_link.get().map(|at| (field_at(at), BRACKETS))
+}
+
+/// Why text that GitHub shows as it is isn't plain prose, where it isn't:
+/// it holds an address GitHub links by itself, an @-mention or an email
+/// address.
+fn not_plain_text(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    if lower.contains("://") || lower.contains("www.") {
+        Some(LINKS)
+    } else if bytes
+        .windows(2)
+        .any(|w| w[0] == b'@' && w[1].is_ascii_alphanumeric())
+    {
+        Some(MENTIONS)
+    } else {
+        None
+    }
+}
+
+/// How much a pull request changes, as GitHub counts it, for the line
+/// under its summary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Size {
+    pub files: u64,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+/// The summary as fctl puts it in the description, between its marks: a
+/// rule, under which a GitHub alert (a note, a warning at high risk, a
+/// caution at critical) says how risky the pull request looks and why,
+/// what it does, and what deserves a closer look, each led in bold, and a
+/// line on the commit it sums up, its size (`size`, where GitHub said)
+/// and where it comes from.
+pub fn summary_section(s: &PullRequestSummary, size: Option<Size>, links: &Links<'_>) -> String {
+    let alert = match s.risk {
+        Risk::Low | Risk::Medium => "NOTE",
+        Risk::High => "WARNING",
+        Risk::Critical => "CAUTION",
+    };
+    let mut parts: Vec<String> = paragraphs(s).into_iter().map(|(_, p)| p).collect();
+    let mut facts = vec![format!(
+        "[fctl review]({})'s first look at [`{}`]({})",
+        links.session_url,
+        short(links.sha),
+        links.commit_url
+    )];
+    if let Some(size) = size {
+        facts.push(format!(
+            "{} {}, +{} −{}",
+            size.files,
+            if size.files == 1 { "file" } else { "files" },
+            size.additions,
+            size.deletions
+        ));
+    }
+    facts.push(format!("[Review agent settings]({})", links.settings_url));
+    parts.push(format!("<sub>{}</sub>", facts.join(" · ")));
+    let quoted: Vec<String> = parts.iter().map(|p| format!("> {p}")).collect();
+    format!(
+        "{SUMMARY_START}\n---\n\n> [!{alert}]\n{}\n\n{SUMMARY_END}",
+        quoted.join("\n>\n")
+    )
+}
+
+/// The summary's paragraphs as the note shows them, how risky, what it
+/// does and what deserves a closer look each led in bold, with the field
+/// each comes from.
+fn paragraphs(s: &PullRequestSummary) -> Vec<(&'static str, String)> {
+    let risk = match s.risk {
+        Risk::Low => "Low risk",
+        Risk::Medium => "Medium risk",
+        Risk::High => "High risk",
+        Risk::Critical => "Critical risk",
+    };
+    let mut out = vec![("risk_reason", format!("**{risk}.** {}", s.risk_reason))];
+    for (i, p) in s.overview.split("\n\n").enumerate() {
+        out.push((
+            "overview",
+            match i {
+                0 => format!("**What it does.** {p}"),
+                _ => p.to_owned(),
+            },
+        ));
+    }
+    if let Some(h) = &s.highlight {
+        let stop = if h.topic.ends_with(['?', '!']) {
+            ""
+        } else {
+            "."
+        };
+        out.push(("highlight", format!("**{}{stop}** {}", h.topic, h.text)));
+    }
+    out
+}
+
+/// What GitHub says of a pull request (`GET /repos/{owner}/{name}/pulls/{number}`):
+/// its description, empty where it has none, and how much it changes,
+/// where GitHub says.
+pub fn description(answer: &Value) -> (String, Option<Size>) {
+    let body = answer
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let count = |key: &str| answer.get(key).and_then(Value::as_u64);
+    let size = match (
+        count("changed_files"),
+        count("additions"),
+        count("deletions"),
+    ) {
+        (Some(files), Some(additions), Some(deletions)) => Some(Size {
+            files,
+            additions,
+            deletions,
+        }),
+        _ => None,
+    };
+    (body, size)
+}
+
+/// A fenced code block's fence: its character and how many of it.
+type Fence = (u8, usize);
+
+/// A fenced code block's opening line: its fence.
+fn fence_opens(line: &str) -> Option<Fence> {
+    let rest = line.trim_start_matches(' ');
+    if line.len() - rest.len() > 3 {
+        return None;
+    }
+    let ch = *rest.as_bytes().first()?;
+    if ch != b'`' && ch != b'~' {
+        return None;
+    }
+    let n = rest.bytes().take_while(|b| *b == ch).count();
+    // A backtick fence's info string has no backticks.
+    (n >= 3 && !(ch == b'`' && rest[n..].contains('`'))).then_some((ch, n))
+}
+
+/// Whether `line` closes a fenced code block that `fence` opened.
+fn fence_closes(line: &str, (ch, n): Fence) -> bool {
+    let rest = line.trim_start_matches(' ');
+    let m = rest.bytes().take_while(|b| *b == ch).count();
+    line.len() - rest.len() <= 3 && m >= n && rest[m..].trim().is_empty()
+}
+
+/// What [`summaries_in`] finds in a pull request's description.
+struct InDescription {
+    /// fctl's summaries, as byte ranges, oldest first.
+    summaries: Vec<(usize, usize)>,
+    /// The fence of a code block still open at its end.
+    open: Option<Fence>,
+}
+
+/// fctl's summaries in a pull request's description, as byte ranges of
+/// `body`, from the line of a start mark to the end of that of the end
+/// mark after it. Marks in fenced code blocks don't count, nor marks in a
+/// line with anything else, an end mark without a start mark before it,
+/// or a start mark without an end mark after it: such a mark is text,
+/// which stays as it is.
+fn summaries_in(body: &str) -> InDescription {
+    let mut found = Vec::new();
+    let mut fence = None;
+    let mut start = None;
+    let mut at = 0;
+    for line in body.split_inclusive('\n') {
+        let begin = at;
+        at += line.len();
+        let text = line.trim_end_matches(['\n', '\r']);
+        if let Some(open) = fence {
+            if fence_closes(text, open) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(open) = fence_opens(text) {
+            fence = Some(open);
+            continue;
+        }
+        // A mark is a line of its own, indented by three spaces at most.
+        if text.len() - text.trim_start_matches(' ').len() > 3 {
+            continue;
+        }
+        match text.trim_start_matches(' ').trim_end() {
+            SUMMARY_START => start = Some(begin),
+            SUMMARY_END => {
+                if let Some(s) = start.take() {
+                    found.push((s, begin + text.len()));
+                }
+            }
+            _ => {}
+        }
+    }
+    InDescription {
+        summaries: found,
+        open: fence,
+    }
+}
+
+/// The summary fctl keeps in a pull request's description, `body`, as it
+/// is there: the last one, where there are several.
+pub fn summary_in(body: &str) -> Option<&str> {
+    summaries_in(body)
+        .summaries
+        .last()
+        .map(|&(start, end)| &body[start..end])
+}
+
+/// Whether the summary in `body` is `section`, whatever line endings
+/// GitHub's editor gave it.
+pub fn has_summary(body: &str, section: &str) -> bool {
+    summary_in(body).is_some_and(|s| s.replace("\r\n", "\n") == section)
+}
+
+/// A pull request's description, `body`, with `section` in place of the
+/// summary fctl keeps there, where it is, or after it, at its end. Only
+/// fctl's summaries change: the text around them stays as it is, and of
+/// several, the others go. A code block that the description leaves open
+/// is closed before the summary, which it would take in.
+pub fn with_summary(body: &str, section: &str) -> String {
+    let InDescription { summaries, open } = summaries_in(body);
+    if let Some((&(start, end), others)) = summaries.split_last() {
+        let mut out = String::with_capacity(body.len() + section.len());
+        let mut from = 0;
+        for &(s, e) in others {
+            out.push_str(&body[from..s]);
+            from = e;
+        }
+        out.push_str(&body[from..start]);
+        out.push_str(section);
+        out.push_str(&body[end..]);
+        return out;
+    }
+    let kept = body.trim_end();
+    if kept.is_empty() {
+        return section.to_owned();
+    }
+    let close = match open {
+        Some((ch, n)) => format!("\n{}", char::from(ch).to_string().repeat(n)),
+        None => String::new(),
+    };
+    format!("{kept}{close}\n\n{section}")
 }
 
 // ───────────────────────────── the review's check ─────────────────────────────
@@ -2839,7 +3370,7 @@ mod tests {
 
     #[test]
     fn instructions_keep_reviews_on_the_change_and_out_of_untrusted_code() {
-        let text = instructions(&pr(), true, None);
+        let text = instructions(&pr(), true, false, None);
         assert!(text.contains("acme/web#12, “Fix the login redirect”, by @ada, who may write to the repository, from `fctl/12-fix-login` into `main`. You review its head commit, 3f2a1c9."));
         assert!(text.contains("Leave everything else alone, also in the files it changes"));
         assert!(text.contains("Don't nitpick"));
@@ -2856,7 +3387,7 @@ mod tests {
             fork: true,
             ..pr()
         };
-        let text = instructions(&untrusted, false, Some("  Check the migrations.  "));
+        let text = instructions(&untrusted, false, false, Some("  Check the migrations.  "));
         assert!(text.contains("“Fix the login redirect”, a draft, by @mallory, who can't write to the repository, from `fctl/12-fix-login` of a fork into `main`"));
         assert!(text.contains("Don't run any of the pull request's code"));
         assert!(!text.contains("It updates dependencies."));
@@ -2870,7 +3401,7 @@ mod tests {
             association: Some("NONE".into()),
             ..pr()
         };
-        let text = instructions(&dependabot, false, None);
+        let text = instructions(&dependabot, false, false, None);
         assert!(text.contains("“build(deps): bump vite from 8.3.4 to 8.3.5”, by Dependabot, which updates the repository's dependencies, from `dependabot/npm_and_yarn/vite-8.3.5` into `main`"));
         assert!(text.contains("It updates dependencies. Check that each manifest it changes has its lockfile changed to match"));
         assert!(text.contains("Don't run any of the pull request's code: no installs, builds, tests or scripts. Installing the dependencies it updates runs their new versions' code"));
@@ -2882,7 +3413,7 @@ mod tests {
             author: Some("renovate[bot]".into()),
             ..dependabot.clone()
         };
-        let text = instructions(&renovate, false, None);
+        let text = instructions(&renovate, false, false, None);
         assert!(text.contains("”, by Renovate, which updates the repository's dependencies, from"));
         assert!(text.contains("It updates dependencies."));
         // Other apps' agents run none of their code either.
@@ -2892,7 +3423,7 @@ mod tests {
             association: Some("NONE".into()),
             ..pr()
         };
-        let text = instructions(&app, false, None);
+        let text = instructions(&app, false, false, None);
         assert!(text.contains(
             "“chore: regenerate the API client”, by @acme-releaser[bot], a GitHub App, from"
         ));
@@ -2905,7 +3436,7 @@ mod tests {
             association: Some("NONE".into()),
             ..pr()
         };
-        let text = instructions(&ours, true, None);
+        let text = instructions(&ours, true, false, None);
         assert!(text.contains("by @fctl[bot], who may write to the repository"));
         assert!(text.contains("keep it small"));
     }
@@ -4065,5 +4596,358 @@ mod tests {
         assert_eq!(bare.title, None);
         assert_eq!(bare.summary_url, None);
         assert_eq!(bare.findings[2].url, None);
+    }
+
+    fn summary() -> PullRequestSummary {
+        PullRequestSummary {
+            risk: Risk::Medium,
+            risk_reason: "It changes how the login redirect\n  works for every user.".into(),
+            overview: " Sends people back to the page they came from after they sign in.\n\nThe old   default stays for links from outside.\n".into(),
+            highlight: Some(SummaryHighlight {
+                topic: "Session cookies:".into(),
+                text: "the cookie's path changes, so everyone signs in again once.".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn summaries_are_checked_and_tidied() {
+        let s = check_summary(&summary()).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(
+            s.risk_reason,
+            "It changes how the login redirect works for every user."
+        );
+        assert_eq!(
+            s.overview,
+            "Sends people back to the page they came from after they sign in.\n\nThe old default stays for links from outside."
+        );
+        let h = s.highlight.unwrap_or_else(|| panic!("no highlight"));
+        assert_eq!(h.topic, "Session cookies");
+        // fctl puts the topic in bold itself.
+        let mut bold = summary();
+        bold.highlight = Some(SummaryHighlight {
+            topic: "**Migration:**".into(),
+            text: "It adds a column.".into(),
+        });
+        let checked = check_summary(&bold).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(
+            checked.highlight.map(|h| h.topic).as_deref(),
+            Some("Migration")
+        );
+        // Code in backticks may hold anything, across a paragraph's lines
+        // too; emphasis, GitHub's references and addresses pass.
+        let mut fine = summary();
+        fine.overview = "Turns `Vec<String>` into `HashSet<&str>` in `<Login\n/>` and `@types/node` at `https://x.test`, *quickly* and **for good**, as #3 and acme/api#7 ask: a < b, a<b, 2 @ 3, \\`.\n\n#12 goes too, and C# 13's ~~old~~ new [cases.".into();
+        fine.highlight = Some(SummaryHighlight {
+            topic: " ".into(),
+            text: "".into(),
+        });
+        let checked = check_summary(&fine).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(checked.highlight, None);
+        let refused = |field: &str, text: &str| {
+            let mut s = summary();
+            match field {
+                "risk_reason" => s.risk_reason = text.into(),
+                "overview" => s.overview = text.into(),
+                "highlight.topic" => {
+                    s.highlight = Some(SummaryHighlight {
+                        topic: text.into(),
+                        text: "It matters.".into(),
+                    })
+                }
+                _ => {
+                    s.highlight = Some(SummaryHighlight {
+                        topic: "Migration".into(),
+                        text: text.into(),
+                    })
+                }
+            }
+            match check_summary(&s) {
+                Err(e) => {
+                    assert_eq!(e.field.as_deref(), Some(field), "{text:?}");
+                    e.message
+                }
+                Ok(s) => panic!("{text:?} passed: {s:?}"),
+            }
+        };
+        for list in [
+            "It does three things:\n- one\n- two",
+            "* one",
+            "1. First",
+            "2) Second",
+            "+ more",
+        ] {
+            assert!(
+                refused("overview", list).contains("no bullet points"),
+                "{list}"
+            );
+        }
+        assert!(refused("overview", "## Overview\nIt works.").contains("headings"));
+        assert!(refused("overview", "> quoted").contains("note of its own"));
+        assert!(refused("overview", "```rust\nfn x() {}\n```").contains("code blocks"));
+        assert!(refused("overview", "| a | b |").contains("tables"));
+        assert!(refused("overview", "It works.\n---").contains("rules"));
+        assert!(refused("overview", "See ![the chart](https://x.test/a.png).").contains("images"));
+        for html in [
+            "<!-- /FCTL_REVIEW_SUMMARY -->",
+            "It adds <details> to the page.",
+            "</sub> ends it",
+            "Fine.\n\n<div>Not fine.</div>",
+            // Code spans as GitHub reads them: one that a line opens and the
+            // next closes, escaped backticks, which open none, and runs of
+            // backticks of another length, which close none.
+            "a `b\nc` <img src=x.png> `d`",
+            "\\`<img src=https://evil.example/a.png> \\`",
+            "`<img src=x.png>``",
+        ] {
+            assert!(refused("overview", html).contains("HTML"), "{html}");
+        }
+        for link in [
+            "See [the fix](https://evil.example/login).",
+            "It moved to https://evil.example.",
+            "Read HTTP://EVIL.EXAMPLE first.",
+            "It lives at www.evil.example now.",
+            "Mail <ada@fctl.test> or see <https://evil.example>.",
+            "It moved to https&#58;//evil.example.",
+            "a `b\nc` [x](y) `d`",
+            "\\`https://evil.example \\`",
+            // A definition would link words elsewhere in the description too.
+            "See [a] now.\n\n[a]: //evil.example",
+            "It does.\n\n[docs]: https://evil.example",
+        ] {
+            assert!(
+                refused("overview", link).contains("Leave out links"),
+                "{link}"
+            );
+        }
+        for brackets in ["See [docs] for more.", "As [the guide][docs] says."] {
+            assert!(
+                refused("overview", brackets).contains("square brackets"),
+                "{brackets}"
+            );
+        }
+        for mention in [
+            "Thanks @ada.",
+            "It pings (@acme/web-team) on deploys.",
+            "@ada wrote it",
+            "Mail dev@fctl.test.",
+            "\\`@ada \\`",
+            "Ask &#64;ada.",
+        ] {
+            assert!(
+                refused("risk_reason", mention).contains("@-mentions"),
+                "{mention}"
+            );
+        }
+        assert!(refused("overview", "a `b\nc` ![x](y.png) `d`").contains("images"));
+        // List markers before a tab or a no-break space, which become spaces.
+        for list in [
+            "It does.\n\n-\tfoo",
+            "It does.\n\n1.\tfoo",
+            "It does.\n\n*\u{a0}foo",
+        ] {
+            assert!(
+                refused("overview", list).contains("no bullet points"),
+                "{list:?}"
+            );
+        }
+        assert!(refused("overview", "It does.\n\n# Overview").contains("headings"));
+        assert!(refused("overview", "It does[^1].\n\n[^1]: Really.").contains("footnotes"));
+        // #12 isn't a heading, at a line's start either.
+        let mut wrapped = summary();
+        wrapped.overview = "Fixes\n#12 too.".into();
+        assert_eq!(
+            check_summary(&wrapped).map(|s| s.overview).ok().as_deref(),
+            Some("Fixes #12 too.")
+        );
+        // Nor do a topic and its text, which share a paragraph, pair a code
+        // span around what lies between them.
+        let mut across = summary();
+        across.highlight = Some(SummaryHighlight {
+            topic: "a `b".into(),
+            text: "c` <img src=x.png> `d`".into(),
+        });
+        let e = check_summary(&across)
+            .err()
+            .unwrap_or_else(|| panic!("passed"));
+        assert_eq!(e.field.as_deref(), Some("highlight"));
+        assert!(e.message.contains("HTML"));
+        assert!(refused("overview", "  \n\n ").contains("plain text"));
+        assert!(refused("overview", "One.\n\nTwo.\n\nThree.").contains("2 short paragraphs"));
+        assert!(refused("risk_reason", "One.\n\nTwo.").contains("one paragraph"));
+        assert!(refused("risk_reason", &"a".repeat(401)).contains("400"));
+        assert!(refused("highlight.topic", "Two\nlines").contains("one line"));
+        assert!(refused("highlight.topic", "...").contains("a few words"));
+        assert!(refused("highlight.topic", "- Migration").contains("bullet points"));
+        assert!(refused("highlight.text", "").contains("plain text"));
+        assert!(refused("risk_reason", "Bell\u{7}").contains("control characters"));
+    }
+
+    #[test]
+    fn summaries_read_as_a_note_led_by_their_risk() {
+        let s = check_summary(&summary()).unwrap_or_else(|e| panic!("{e:?}"));
+        let size = Size {
+            files: 3,
+            additions: 120,
+            deletions: 4,
+        };
+        assert_eq!(
+            summary_section(&s, Some(size), &links()),
+            "<!-- FCTL_REVIEW_SUMMARY -->\n\
+             ---\n\
+             \n\
+             > [!NOTE]\n\
+             > **Medium risk.** It changes how the login redirect works for every user.\n\
+             >\n\
+             > **What it does.** Sends people back to the page they came from after they sign in.\n\
+             >\n\
+             > The old default stays for links from outside.\n\
+             >\n\
+             > **Session cookies.** the cookie's path changes, so everyone signs in again once.\n\
+             >\n\
+             > <sub>[fctl review](https://app.fctl.sh/s/ses_1)'s first look at [`3f2a1c9`](https://github.com/acme/web/pull/12/commits/3f2a1c9) · 3 files, +120 −4 · [Review agent settings](https://app.fctl.sh/p/web?tab=reviews)</sub>\n\
+             \n\
+             <!-- /FCTL_REVIEW_SUMMARY -->"
+        );
+        let alert = |risk: Risk| {
+            let section =
+                summary_section(&PullRequestSummary { risk, ..s.clone() }, None, &links());
+            let line = section.lines().nth(3).unwrap_or_default().to_owned();
+            let lead = section.lines().nth(4).unwrap_or_default().to_owned();
+            (
+                line,
+                lead.split(".**").next().unwrap_or_default().to_owned(),
+            )
+        };
+        assert_eq!(
+            alert(Risk::Low),
+            ("> [!NOTE]".into(), "> **Low risk".into())
+        );
+        assert_eq!(
+            alert(Risk::High),
+            ("> [!WARNING]".into(), "> **High risk".into())
+        );
+        assert_eq!(
+            alert(Risk::Critical),
+            ("> [!CAUTION]".into(), "> **Critical risk".into())
+        );
+        // Without a size, a highlight or a second paragraph.
+        let bare = PullRequestSummary {
+            overview: "Fixes a typo.".into(),
+            highlight: Some(SummaryHighlight {
+                topic: "Why now?".into(),
+                text: "The docs ship tomorrow.".into(),
+            }),
+            ..s.clone()
+        };
+        let section = summary_section(&bare, None, &links());
+        assert!(section.contains("\n>\n> **Why now?** The docs ship tomorrow.\n>\n"));
+        assert!(section.contains("[`3f2a1c9`](https://github.com/acme/web/pull/12/commits/3f2a1c9) · [Review agent settings]"));
+        let one = Size {
+            files: 1,
+            additions: 1,
+            deletions: 0,
+        };
+        assert!(summary_section(&s, Some(one), &links()).contains(" · 1 file, +1 −0 · "));
+        // Every line of the agent's text stays inside the note.
+        assert!(
+            section
+                .lines()
+                .skip(3)
+                .take_while(|l| !l.is_empty())
+                .all(|l| l.starts_with('>'))
+        );
+    }
+
+    #[test]
+    fn summaries_go_at_the_end_of_descriptions_and_keep_the_rest() {
+        let section = "<!-- FCTL_REVIEW_SUMMARY -->\n---\n\n> [!NOTE]\n> **Low risk.** New.\n\n<!-- /FCTL_REVIEW_SUMMARY -->";
+        let old = "<!-- FCTL_REVIEW_SUMMARY -->\n---\n\n> [!NOTE]\n> **High risk.** Old.\n\n<!-- /FCTL_REVIEW_SUMMARY -->";
+        // An empty description gets the summary alone; others get it after
+        // a blank line, whatever they ended with.
+        assert_eq!(with_summary("", section), section);
+        assert_eq!(with_summary(" \n\n", section), section);
+        assert_eq!(
+            with_summary("Fixes the redirect.", section),
+            format!("Fixes the redirect.\n\n{section}")
+        );
+        assert_eq!(
+            with_summary("Fixes the redirect.\n\n\n", section),
+            format!("Fixes the redirect.\n\n{section}")
+        );
+        // An earlier summary is replaced where it is, and nothing else moves.
+        let body = format!("## Summary\r\n\r\nFixes it.\r\n\r\n{old}\r\n\r\nFixes #3\r\n");
+        let new = with_summary(&body, section);
+        assert_eq!(
+            new,
+            format!("## Summary\r\n\r\nFixes it.\r\n\r\n{section}\r\n\r\nFixes #3\r\n")
+        );
+        assert_eq!(summary_in(&new), Some(section));
+        // Doing it again changes nothing.
+        assert_eq!(with_summary(&new, section), new);
+        // GitHub's editor sends a description back with CRLF line endings.
+        let edited = format!("Fixes it.\r\n\r\n{}", section.replace('\n', "\r\n"));
+        assert!(has_summary(&edited, section));
+        assert!(!has_summary(&edited, old));
+        assert!(!has_summary("Fixes it.", section));
+        assert_eq!(
+            with_summary(&edited, section),
+            format!("Fixes it.\r\n\r\n{section}")
+        );
+        // Marks in code blocks are text, as in a description of this very
+        // feature; so are marks within a line, and ones out of order.
+        let quoted = format!(
+            "It writes:\n\n```markdown\n{old}\n```\n\n~~~\n{SUMMARY_START}\n~~~\n\nInline `{SUMMARY_START}` and {SUMMARY_END} stay.\n{SUMMARY_END}\n    {SUMMARY_START}\n    {SUMMARY_END}\n\t{SUMMARY_START}\n\t{SUMMARY_END}\n"
+        );
+        assert_eq!(summary_in(&quoted), None);
+        assert_eq!(
+            with_summary(&quoted, section),
+            format!("{}\n\n{section}", quoted.trim_end())
+        );
+        let then = with_summary(&quoted, section);
+        assert_eq!(
+            with_summary(&then, old),
+            format!("{}\n\n{old}", quoted.trim_end())
+        );
+        // A start mark without an end stays as text, as does what follows it.
+        let cut = format!(
+            "Fixes it.\n\n{SUMMARY_START}\n---\n\n> [!NOTE]\n> Someone cut the end.\n\nMy notes."
+        );
+        let new = with_summary(&cut, section);
+        assert_eq!(new, format!("{cut}\n\n{section}"));
+        assert_eq!(with_summary(&new, old), format!("{cut}\n\n{old}"));
+        // Of several summaries, the last takes the new one and the others go.
+        let twice = format!("{old}\nBetween.\n{old}\nAfter.");
+        assert_eq!(
+            with_summary(&twice, section),
+            format!("\nBetween.\n{section}\nAfter.")
+        );
+        // A code block left open is closed first, or it would take the
+        // summary in, and the next summary replaces this one.
+        let open = "Logs:\n\n````\npanic at the disco\n``` not yet\n";
+        let new = with_summary(open, section);
+        assert_eq!(
+            new,
+            format!("Logs:\n\n````\npanic at the disco\n``` not yet\n````\n\n{section}")
+        );
+        assert_eq!(summary_in(&new), Some(section));
+        assert_eq!(
+            with_summary(&new, old),
+            format!("Logs:\n\n````\npanic at the disco\n``` not yet\n````\n\n{old}")
+        );
+    }
+
+    #[test]
+    fn review_agents_sum_pull_requests_up_first_where_asked() {
+        let text = instructions(&pr(), true, true, Some("Check the migrations."));
+        let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("no {s}"));
+        assert!(text.contains("`gh pr view 12` and `gh pr diff 12`"));
+        assert!(text.contains("run `fctl review summarize summary.json`"));
+        assert!(text.contains("not from bugs you may find later"));
+        assert!(at("## First, sum it up in its description") < at("## What to review"));
+        assert!(at("## What to review") < at("## The project's instructions for reviews"));
+        let without = instructions(&pr(), true, false, None);
+        assert!(!without.contains("fctl review summarize"));
+        assert!(!without.contains("## First, sum it up"));
     }
 }

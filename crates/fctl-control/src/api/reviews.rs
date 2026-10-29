@@ -40,6 +40,7 @@ async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<Revi
         bots: reviews::bots(conf.as_ref()),
         repos: repos.reviewed,
         skipped_repos: repos.skipped,
+        description_summary: conf.as_ref().is_some_and(|c| c.description_summary),
         problem,
         updated_by: conf.as_ref().and_then(reviews::SettingsRow::updater),
         updated_at: conf.as_ref().map(|c| c.updated_at),
@@ -64,7 +65,8 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         && body.effort.is_none()
         && body.instructions.is_none()
         && body.bots.is_none()
-        && body.skipped_repos.is_none();
+        && body.skipped_repos.is_none()
+        && body.description_summary.is_none();
     if !fctl_domain::perm::can_own_project(p.role) && !(mine && only_off) {
         return Err(forbidden(
             "Only the project's owners and its workspace's admins change its review agents. They run on your Claude subscription: you can turn them off.",
@@ -143,13 +145,18 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         instructions,
         conf.as_ref().and_then(|c| c.instructions.clone()),
     );
+    let description_summary = body
+        .description_summary
+        .unwrap_or_else(|| conf.as_ref().is_some_and(|c| c.description_summary));
     q(
         &ctx.db,
         "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, skipped_repos, \
-         updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT (project_id) DO UPDATE SET \
+         description_summary, updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+         ON CONFLICT (project_id) DO UPDATE SET \
          enabled = excluded.enabled, operator_id = excluded.operator_id, model = excluded.model, effort = excluded.effort, \
          instructions = excluded.instructions, bots = excluded.bots, skipped_repos = excluded.skipped_repos, \
-         updated_by = excluded.updated_by, updated_at = excluded.updated_at",
+         description_summary = excluded.description_summary, updated_by = excluded.updated_by, \
+         updated_at = excluded.updated_at",
         &[
             s(&p.row.id),
             crate::db::b(enabled),
@@ -159,6 +166,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             os(instructions.as_deref()),
             s(&serde_json::to_string(&bots)?),
             s(&serde_json::to_string(&skipped)?),
+            crate::db::b(description_summary),
             s(&me.id),
             n(ctx.now),
         ],
@@ -182,6 +190,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             "effort": effort,
             "bots": bots,
             "skipped_repos": skipped,
+            "description_summary": description_summary,
         })),
     );
     http::ok(&agents(ctx, &p.row).await?)

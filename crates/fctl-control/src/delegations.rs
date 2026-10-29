@@ -1386,6 +1386,7 @@ pub async fn notice(
         memory: None,
         retrospective: None,
         review: None,
+        summarized: None,
         follow_up: None,
         ticket: Some(ticket),
     };

@@ -6,12 +6,14 @@
 use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
+use clap::builder::BoolishValueParser;
 use clap::{Args, Subcommand};
 use fctl_domain::reviews::short;
 use fctl_proto::agent::{SessionReply, SessionRequest};
 use fctl_proto::api::{
-    AgentAnswer, AgentCall, FindingThread, PostedReview, ResolvedFinding, Review, ReviewAgents,
-    ReviewFinding, ReviewState, StartReviewRequest, UpdateReviewAgentsRequest,
+    AgentAnswer, AgentCall, FindingThread, PostedReview, PullRequestSummary, ResolvedFinding,
+    Review, ReviewAgents, ReviewFinding, ReviewState, Risk, StartReviewRequest,
+    SummarizedPullRequest, SummaryHighlight, UpdateReviewAgentsRequest,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::{DeliveryId, SessionId};
@@ -66,7 +68,7 @@ pub enum ReviewCmd {
     /// how they review (the project's owners; the person they run for may
     /// turn them off).
     #[command(
-        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --mine\n  fctl review settings --off"
+        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --description-summary on\n  fctl review settings --mine\n  fctl review settings --off"
     )]
     Settings {
         /// Turn them on, on your Claude subscription.
@@ -105,6 +107,12 @@ pub enum ReviewCmd {
         /// all of them. Another project's review agents review them, say.
         #[arg(long, value_name = "LIST", value_parser = repos_arg)]
         skip_repos: Option<Repos>,
+        /// Sum each pull request up at the end of its description before
+        /// the review in depth: how risky it looks, what it does and what
+        /// deserves a closer look, rewritten for each new commit. The rest
+        /// of the description stays as it is (off by default).
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        description_summary: Option<bool>,
     },
     /// The apps that opened the newest pull requests in the project's
     /// repositories, and which of them start reviews by themselves; with a
@@ -120,6 +128,18 @@ pub enum ReviewCmd {
     /// with their ids, whether they are resolved and what people answered
     /// (review agents, in their session's sandbox).
     Threads,
+    /// Put this session's summary of its pull request at the end of the
+    /// pull request's description, before the review in depth (review
+    /// agents whose project sums pull requests up, in their session's
+    /// sandbox): how risky it looks, what it does and what deserves a
+    /// closer look, in place of the summary an earlier review left there.
+    #[command(
+        after_help = "The file holds JSON:\n\n  {\n    \"risk\": \"medium\",\n    \"risk_reason\": \"Why, in a sentence or two.\",\n    \"overview\": \"What it does and why, in a few plain sentences.\",\n    \"highlight\": {\n      \"topic\": \"Optional: a few words\",\n      \"text\": \"What deserves a closer look before merging.\"\n    }\n  }\n\nrisk is low, medium, high or critical (a serious security problem at first sight). Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions, email addresses or HTML. fctl writes the summary between its marks, <!-- FCTL_REVIEW_SUMMARY --> and <!-- /FCTL_REVIEW_SUMMARY -->, and leaves the rest of the description as it is; running it again replaces it."
+    )]
+    Summarize {
+        /// The summary, as JSON (`-` reads it from stdin).
+        file: PathBuf,
+    },
     /// Post this session's review, once, at the end (review agents, in
     /// their session's sandbox): what it found, and the earlier findings
     /// the new commits fixed.
@@ -171,6 +191,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             instructions_file,
             bots,
             skip_repos,
+            description_summary,
         } => {
             let api = config::api(server)?;
             let project = super::sessions::project_or_default(args.project)?;
@@ -201,6 +222,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
                 instructions,
                 bots: bots.map(|b| b.0),
                 skipped_repos: skip_repos.map(|r| r.0),
+                description_summary,
             };
             let changes = req != UpdateReviewAgentsRequest::default();
             let agents = if changes {
@@ -217,6 +239,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
         ReviewCmd::PassOn { session } => pass_on(server, &session, json).await,
         ReviewCmd::Bots { name } => bots(server, args.project, name, json).await,
         ReviewCmd::Threads => threads(json).await,
+        ReviewCmd::Summarize { file } => summarize(&file, json).await,
         ReviewCmd::Submit { file } => submit(&file, json).await,
     }
 }
@@ -474,7 +497,7 @@ async fn list(server: Option<&str>, project: Option<String>, limit: u32, json: b
             call(&socket, &session, AgentCall::ReviewThreads).await
     {
         bail!(
-            "This is a review agent's sandbox: `fctl review threads` lists fctl's earlier findings on its pull request, and `fctl review submit` posts its review."
+            "This is a review agent's sandbox: `fctl review threads` lists fctl's earlier findings on its pull request, `fctl review summarize` sums it up in its description, and `fctl review submit` posts its review."
         );
     }
     let api = config::api(server)?;
@@ -597,6 +620,14 @@ fn print_settings(project: &str, a: &ReviewAgents) {
             format!("{}: their pull requests start reviews", a.bots.join(", "))
         },
     );
+    row(
+        "Summaries",
+        if a.description_summary {
+            "at the end of each pull request's description, before the review".into()
+        } else {
+            "off: descriptions stay as people wrote them".into()
+        },
+    );
     match a.instructions.as_deref() {
         Some(text) => {
             println!("  {}", style::dim("Instructions"));
@@ -657,6 +688,9 @@ fn print_review(r: &Review) {
     facts.push(style::ago(r.created_at));
     if r.resolved > 0 {
         facts.insert(0, format!("{} fixed", r.resolved));
+    }
+    if let Some(s) = &r.pull_request_summary {
+        facts.insert(0, format!("{} risk", s.risk.as_str()));
     }
     println!("  {}", style::dim(&facts.join(" · ")));
     if let Some(url) = &r.review_url {
@@ -747,6 +781,88 @@ fn print_thread(t: &FindingThread) {
             println!("    {line}");
         }
     }
+}
+
+/// What `fctl review summarize` reads: [`PullRequestSummary`], with
+/// nothing else, so that a field misnamed doesn't go missing unsaid.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Summary {
+    risk: Risk,
+    risk_reason: String,
+    overview: String,
+    #[serde(default)]
+    highlight: Option<Highlight>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Highlight {
+    topic: String,
+    text: String,
+}
+
+async fn summarize(file: &Path, json: bool) -> Result<()> {
+    let (socket, session) = sandbox("summarize")?;
+    let text = read(file)?;
+    let s: Summary = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "{} isn't a summary: it holds JSON with `risk`, `risk_reason`, `overview` and, optionally, `highlight`, as `fctl review summarize --help` shows",
+            file.display()
+        )
+    })?;
+    let summary = PullRequestSummary {
+        risk: s.risk,
+        risk_reason: s.risk_reason,
+        overview: s.overview,
+        highlight: s.highlight.map(|h| SummaryHighlight {
+            topic: h.topic,
+            text: h.text,
+        }),
+    };
+    let answer = match call(
+        &socket,
+        &session,
+        AgentCall::SummarizePullRequest { summary },
+    )
+    .await
+    {
+        Ok(answer) => answer,
+        // fctl-agent comes with its host, which may be older.
+        Err(e) if e.to_string().contains("did not understand the request") => bail!(
+            "This sandbox's fctl-agent is older than `fctl review summarize`, so the pull request's description stays as it is: carry on with the review."
+        ),
+        Err(e) => return Err(e),
+    };
+    let summarized = match answer {
+        AgentAnswer::PullRequestSummarized { summarized } => summarized,
+        _ => bail!("fctl-agent answered another request"),
+    };
+    if json {
+        return style::print_json(&summarized);
+    }
+    print_summarized(&summarized);
+    Ok(())
+}
+
+fn print_summarized(s: &SummarizedPullRequest) {
+    println!(
+        "{} Put the summary at the end of the description of {}#{}{}: {} risk.",
+        style::accent("✓"),
+        s.repo.full_name(),
+        s.number,
+        if s.replaced {
+            ", in place of an earlier review's"
+        } else {
+            ""
+        },
+        s.summary.risk.as_str()
+    );
+    println!("  {}", style::dim(&style::terminal_safe(&s.url)));
+    println!(
+        "  {}",
+        style::dim("Now review it in depth, and post what you find with `fctl review submit`.")
+    );
 }
 
 /// What `fctl review submit` reads.

@@ -45,7 +45,7 @@
 //! | `effort <level>` | works at that effort level from then on (`low` … `max`, or `none` as a model that takes none), as Claude Code does after `/effort <level>`, which it takes too; `get_settings` says so |
 //! | `context <tokens>` | fills its context to that many tokens (`150000` or `150k`, at most its window) before it answers, as reading large files does |
 //! | `compact` | compacts the conversation before it answers, as Claude Code does after `/compact`, which it takes too |
-//! | a review session's task (`Review acme/web#12, … at commit …`) | reviews the pull request checked out as a review agent does: reads its commits and diff and fctl's earlier findings (`fctl review threads`), then posts with `fctl review submit`: earlier findings still open as fixed, and without any, an issue on the first line the pull request adds |
+//! | a review session's task (`Review acme/web#12, … at commit …`) | reviews the pull request checked out as a review agent does: reads its commits and diff, sums it up in its description first where its system prompt asks for `fctl review summarize` (low risk, medium past 50 added lines), reads fctl's earlier findings (`fctl review threads`), then posts with `fctl review submit`: earlier findings still open as fixed, and without any, an issue on the first line the pull request adds |
 //! | fctl's message about a review of the agent's pull request (`fctl's review agent reviewed commit …`) | looks at the pull request's commits and says what it decided about each finding: it leaves them as they are, and says how it would answer them in their threads without calling GitHub; no other word in the message counts |
 //! | fctl's message about what happened to the agent's pull request on GitHub (`On GitHub, …`: a comment, failed checks, a merge) | looks at the branch's commits and says what it would do about each part, without calling GitHub; no other word in the message counts |
 //! | (attached files) | says how many images the message holds and checks that each listed file is on disk |
@@ -178,6 +178,9 @@ struct Session {
     /// The replays it plays (`--replays`), and the one under way.
     library: Option<replay::Library>,
     playing: Option<replay::Playing>,
+    /// Its system prompt asks a review agent to sum the pull request up in
+    /// its description (`fctl review summarize`).
+    summarizes: bool,
 }
 
 /// A shell command Claude Code runs with `run_in_background`, or a
@@ -773,6 +776,9 @@ impl Session {
             &diff,
             false,
         );
+        if self.summarizes {
+            self.summarize(&diff);
+        }
         let threads = self
             .fctl(
                 &["review", "threads", "--json"],
@@ -812,6 +818,37 @@ impl Session {
         self.fctl(
             &["review", "submit", &path.display().to_string()],
             "Post the review",
+        );
+    }
+
+    /// Sums the pull request up in its description, as a review agent does
+    /// before it reviews in depth (`fctl review summarize`): low risk, or
+    /// medium past 50 added lines.
+    fn summarize(&mut self, diff: &str) {
+        let added = diff
+            .lines()
+            .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+            .count();
+        let summary = json!({
+            "risk": if added > 50 { "medium" } else { "low" },
+            "risk_reason": format!("It adds {added} lines, which fake-claude reads as a change to behavior people rely on past 50."),
+            "overview": "fake-claude sums up what the pull request changes before it reviews it, as review agents do where their project asks.",
+            "highlight": first_added_line(diff).map(|(path, _)| json!({
+                "topic": "Where it starts",
+                "text": format!("The first line it adds is in `{path}`."),
+            })),
+        });
+        let dir = std::env::temp_dir().join(format!("fake-claude-{}", std::process::id()));
+        let path = dir.join("summary.json");
+        let written =
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, summary.to_string()));
+        if let Err(e) = written {
+            self.stream_text(&format!("I couldn't write the summary: {e}"));
+            return;
+        }
+        self.fctl(
+            &["review", "summarize", &path.display().to_string()],
+            "Sum the pull request up in its description",
         );
     }
 
@@ -1836,6 +1873,8 @@ fn main() {
         },
         library: arg("--replays").map(|dir| replay::Library::load(std::path::Path::new(&dir))),
         playing: None,
+        summarizes: arg("--append-system-prompt")
+            .is_some_and(|p| p.contains("fctl review summarize")),
     };
     // stdin is read on its own thread so interrupts arrive during a turn.
     let (tx, rx) = mpsc::channel::<Value>();

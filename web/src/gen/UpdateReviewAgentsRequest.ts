@@ -39,4 +39,9 @@ bots?: Array<string>,
  * them. Repositories linked later are reviewed until the owners skip
  * them.
  */
-skipped_repos?: Array<string>, };
+skipped_repos?: Array<string>, 
+/**
+ * Whether they sum each pull request up at the end of its
+ * description before they review it in depth.
+ */
+description_summary?: boolean, };

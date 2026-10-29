@@ -1067,6 +1067,7 @@ impl FleetObject {
             memory: None,
             retrospective: None,
             review: None,
+            summarized: None,
             follow_up: None,
         };
         if let Ok(stub) = internal::session_stub(&self.env, id) {

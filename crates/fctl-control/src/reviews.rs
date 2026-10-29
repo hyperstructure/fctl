@@ -29,7 +29,10 @@ use crate::internal::{self, InitSession, Schedule, Stop};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use crate::workspaces::ConnectionRow;
 use fctl_domain::reviews::{self as rv, Links, PullRequest};
-use fctl_proto::api::{FindingThread, PostedReview, Review, ReviewBot, ReviewState};
+use fctl_proto::api::{
+    FindingThread, PostedReview, PullRequestSummary, Review, ReviewBot, ReviewState,
+    SummarizedPullRequest,
+};
 use fctl_proto::event::{MessageSource, UserMessage};
 use fctl_proto::runner::{GithubCredential, StopReason};
 use fctl_proto::session::{
@@ -58,6 +61,10 @@ pub struct SettingsRow {
     /// The repositories whose pull requests they don't review, as JSON.
     #[serde(default)]
     pub skipped_repos: Option<String>,
+    /// Their agents sum each pull request up at the end of its description
+    /// before they review it in depth.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub description_summary: bool,
     pub updated_by: Option<String>,
     pub updater_name: Option<String>,
     pub updater_avatar: Option<String>,
@@ -97,7 +104,8 @@ pub async fn settings(db: &D1Database, project_id: &str) -> AppResult<Option<Set
     q(
         db,
         "SELECT r.enabled, r.operator_id, ou.name AS operator_name, ou.avatar_url AS operator_avatar, \
-         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.updated_by, uu.name AS updater_name, \
+         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.description_summary, r.updated_by, \
+         uu.name AS updater_name, \
          uu.avatar_url AS updater_avatar, r.updated_at FROM project_reviews r \
          LEFT JOIN users ou ON ou.id = r.operator_id LEFT JOIN users uu ON uu.id = r.updated_by \
          WHERE r.project_id = ?",
@@ -164,6 +172,9 @@ pub struct ReviewRow {
     /// The pull request's branch, which its session is named after.
     #[serde(default)]
     pub head_ref: Option<String>,
+    /// The summary it put in the pull request's description, as JSON.
+    #[serde(default)]
+    pub pull_request_summary: Option<String>,
 }
 
 /// SELECT for [`ReviewRow`]; `WHERE` and `ORDER BY` follow.
@@ -171,6 +182,7 @@ const REVIEW_SELECT: &str = "SELECT rv.session_id, rv.project_id, rv.repo, rv.nu
     rv.title, rv.author, rv.draft, rv.fork, rv.trusted, rv.previous_sha, rv.installation_id, rv.review_installation_id, \
     rv.check_run_id, rv.check_error, rv.state, \
     rv.reason, rv.findings, rv.resolved, rv.still_open, rv.review_url, rv.created_at, rv.finished_at, \
+    rv.pull_request_summary, \
     s.number AS session_number, s.status AS status, s.stats AS stats, s.created_by AS operator_id, \
     u.name AS operator_name, u.avatar_url AS operator_avatar, s.branch AS head_ref \
     FROM reviews rv JOIN sessions s ON s.id = rv.session_id LEFT JOIN users u ON u.id = s.created_by";
@@ -189,6 +201,13 @@ impl ReviewRow {
 
     pub fn number(&self) -> u64 {
         u64::try_from(self.number).unwrap_or_default()
+    }
+
+    /// The summary it put in the pull request's description, where it did.
+    pub fn summary(&self) -> Option<PullRequestSummary> {
+        self.pull_request_summary
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
     }
 
     pub fn to_review(&self) -> Option<Review> {
@@ -228,6 +247,7 @@ impl ReviewRow {
             finished_at: self.finished_at,
             busy_ms: stats.busy_ms,
             opened_by: None,
+            pull_request_summary: self.summary(),
         })
     }
 }
@@ -1047,11 +1067,13 @@ fn apps(cfg: &Config) -> Vec<&str> {
         .collect()
 }
 
-/// What a review's agent is told and checks out (`SessionSpec::review`).
+/// What a review's agent is told and checks out (`SessionSpec::review`):
+/// with `summarize`, to sum the pull request up in its description first.
 pub fn spec_of(
     row: &ReviewRow,
     head_ref: &str,
     base_ref: &str,
+    summarize: bool,
     project: Option<&str>,
 ) -> Option<fctl_proto::runner::ReviewSpec> {
     let repo = row.repo()?;
@@ -1071,7 +1093,7 @@ pub fn spec_of(
         updated_at: None,
     };
     Some(fctl_proto::runner::ReviewSpec {
-        instructions: rv::instructions(&pr, row.trusted, project),
+        instructions: rv::instructions(&pr, row.trusted, summarize, project),
         repo,
         number: pr.number,
         url: pr.url,
@@ -1764,8 +1786,10 @@ pub async fn threads(ctx: &Ctx, session_id: &str) -> AppResult<Vec<FindingThread
 /// show go in the summary); the earlier findings it says the new commits
 /// fixed, marked fixed and resolved; atop earlier reviews' summaries, how
 /// the issues they found stand, hiding those whose issues are all
-/// addressed as outdated; and its check, passed with nothing to look at,
-/// neutral otherwise. A second submission gets what the first posted.
+/// addressed as outdated; its check, passed with nothing to look at,
+/// neutral otherwise; and the summary the review put in the pull request's
+/// description, back where something took it out meanwhile. A second
+/// submission gets what the first posted.
 pub async fn submit(
     ctx: &Ctx,
     session_id: &str,
@@ -1831,6 +1855,9 @@ pub async fn submit(
             }
         };
         let posted = post(ctx, &writer, &row, &repo, &sub).await;
+        if posted.is_ok() {
+            keep_summary(ctx, &writer, &row, &repo).await;
+        }
         writer.revoke().await;
         posted.map(|p| (p, repo))
     }
@@ -1877,6 +1904,174 @@ pub async fn submit(
         sent_to,
         ..posting.review
     })
+}
+
+/// Puts a review agent's summary of its pull request at the end of the
+/// pull request's description (`fctl review summarize`), before the review
+/// in depth: between fctl's marks, in place of the summary an earlier
+/// review left there, and with the rest of the description as GitHub has
+/// it at that moment. Only while the review runs, in a project whose
+/// review agents sum pull requests up; doing it again replaces it.
+pub async fn summarize(
+    ctx: &Ctx,
+    session_id: &str,
+    summary: &PullRequestSummary,
+) -> AppResult<SummarizedPullRequest> {
+    let row = for_agent(&ctx.db, session_id).await?;
+    match row.state() {
+        ReviewState::Running => {}
+        ReviewState::Superseded => {
+            return Err(conflict(&format!(
+                "{} Its summary is that review's to write.",
+                row.reason
+                    .as_deref()
+                    .unwrap_or("A newer review took this one's place.")
+            )));
+        }
+        _ => {
+            return Err(conflict(
+                "This review ended already: the pull request's description stays as it is.",
+            ));
+        }
+    }
+    let on = settings(&ctx.db, &row.project_id)
+        .await?
+        .is_some_and(|c| c.description_summary);
+    if !on {
+        return Err(forbidden(
+            "This project's review agents don't sum pull requests up in their descriptions: carry on with the review.",
+        ));
+    }
+    let summary = rv::check_summary(summary)?;
+    let (repo, writer) = match Writer::of(&ctx.cfg, &row).await? {
+        Written::Writer(repo, writer) => (repo, writer),
+        Written::Gone(why) => {
+            return Err(forbidden(&format!(
+                "fctl can't write this pull request's description any more: {why}"
+            )));
+        }
+    };
+    let described = describe(ctx, &writer, &row, &repo, &summary).await;
+    writer.revoke().await;
+    let described = described?;
+    q(
+        &ctx.db,
+        "UPDATE reviews SET pull_request_summary = ? WHERE session_id = ?",
+        &[s(&serde_json::to_string(&summary)?), s(session_id)],
+    )?
+    .run()
+    .await?;
+    ctx.audit_in(
+        None,
+        "review.summarized",
+        Some(session_id),
+        Some(json!({
+            "pull_request": format!("{}#{}", repo.full_name(), row.number),
+            "commit": row.head_sha,
+            "risk": summary.risk.as_str(),
+        })),
+    );
+    Ok(SummarizedPullRequest {
+        number: row.number(),
+        url: row.url.clone(),
+        repo,
+        summary,
+        replaced: described == Described::Replaced,
+    })
+}
+
+/// What putting a summary in a pull request's description did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Described {
+    /// It's at the end, where there was none.
+    Added,
+    /// It took the place of the summary fctl kept there.
+    Replaced,
+    /// It was there already, as it is.
+    Already,
+}
+
+/// Puts `summary`, review `row`'s, in its pull request's description, as
+/// GitHub has the description now: between fctl's marks, in place of the
+/// summary fctl keeps there, with the rest as it is. GitHub's word on the
+/// pull request comes just before the change, so that what people wrote
+/// meanwhile stays.
+async fn describe(
+    ctx: &Ctx,
+    writer: &Writer<'_>,
+    row: &ReviewRow,
+    repo: &RepoRef,
+    summary: &PullRequestSummary,
+) -> AppResult<Described> {
+    let (gh, token) = (&writer.gh, &writer.token);
+    let pages = Pages::of(ctx, row).await?;
+    let unavailable = |why: String| AppError(ApiError::new(ErrorCode::Unavailable, why));
+    let answer = gh
+        .pull_request(token, repo, row.number())
+        .await?
+        .map_err(|(_, why)| unavailable(format!("GitHub didn't show the pull request: {why}")))?;
+    let (body, size) = rv::description(&answer);
+    let section = rv::summary_section(summary, size, &pages.links(row));
+    if rv::has_summary(&body, &section) {
+        return Ok(Described::Already);
+    }
+    let had = rv::summary_in(&body).is_some();
+    let new = rv::with_summary(&body, &section);
+    if new.chars().count() > rv::MAX_DESCRIPTION {
+        return Err(AppError(ApiError::validation(
+            "summary",
+            format!(
+                "The pull request's description is too long for GitHub to take the summary at its end ({} characters at most): carry on with the review.",
+                rv::MAX_DESCRIPTION
+            ),
+        )));
+    }
+    gh.edit_description(token, repo, row.number(), &new)
+        .await?
+        .map_err(|(_, why)| unavailable(format!("GitHub refused the new description: {why}")))?;
+    Ok(if had {
+        Described::Replaced
+    } else {
+        Described::Added
+    })
+}
+
+/// Puts review `row`'s summary back in its pull request's description as
+/// the review posts, where something took it out or changed it since: an
+/// agent that rewrote the description from what it read before the summary
+/// was there, say, or the summary of a review this one took the place of,
+/// which got there late. Only while the project's review agents sum pull
+/// requests up. What goes wrong only gets logged: the review is posted.
+async fn keep_summary(ctx: &Ctx, writer: &Writer<'_>, row: &ReviewRow, repo: &RepoRef) {
+    let Some(summary) = row.summary() else {
+        return;
+    };
+    match settings(&ctx.db, &row.project_id).await {
+        Ok(Some(c)) if c.description_summary => {}
+        Ok(_) => return,
+        Err(e) => {
+            worker::console_error!(
+                "reading review {}'s settings: {}",
+                row.session_id,
+                e.0.message
+            );
+            return;
+        }
+    }
+    match describe(ctx, writer, row, repo, &summary).await {
+        Ok(Described::Already) => {}
+        Ok(_) => worker::console_log!(
+            "put review {}'s summary back in {}#{}'s description",
+            row.session_id,
+            repo.full_name(),
+            row.number
+        ),
+        Err(e) => worker::console_error!(
+            "putting review {}'s summary back in its description: {}",
+            row.session_id,
+            e.0.message
+        ),
+    }
 }
 
 /// What [`post`] posted: what the review agent hears, and where each
@@ -2022,17 +2217,8 @@ async fn post(
 ) -> AppResult<Posting> {
     let (gh, token) = (&writer.gh, &writer.token);
     let number = row.number();
-    let session_url = ctx.cfg.url(&format!("/s/{}", row.session_id));
-    let commit_url = format!("{}/commits/{}", row.url, row.head_sha);
-    let project_slug = project_slug(&ctx.db, &row.project_id).await?;
-    let settings_url = ctx.cfg.url(&format!("/p/{project_slug}?tab=reviews"));
-    let links = Links {
-        sha: &row.head_sha,
-        commit_url: &commit_url,
-        session: &row.session_id,
-        session_url: &session_url,
-        settings_url: &settings_url,
-    };
+    let pages = Pages::of(ctx, row).await?;
+    let links = pages.links(row);
     // fctl's threads on the pull request: those it may resolve, and those
     // still open after; and its summaries of earlier reviews.
     let answer = gh.graphql(token, rv::posting_query(repo, number)).await?;
@@ -2293,6 +2479,37 @@ async fn resolve(
                 .await
         }
         resolved => resolved,
+    }
+}
+
+/// The pages that what fctl writes on GitHub for a review links to.
+struct Pages {
+    /// The review's session.
+    session: String,
+    /// The reviewed commit, on GitHub.
+    commit: String,
+    /// The project's review agents.
+    settings: String,
+}
+
+impl Pages {
+    async fn of(ctx: &Ctx, row: &ReviewRow) -> AppResult<Self> {
+        let project_slug = project_slug(&ctx.db, &row.project_id).await?;
+        Ok(Self {
+            session: ctx.cfg.url(&format!("/s/{}", row.session_id)),
+            commit: format!("{}/commits/{}", row.url, row.head_sha),
+            settings: ctx.cfg.url(&format!("/p/{project_slug}?tab=reviews")),
+        })
+    }
+
+    fn links<'a>(&'a self, row: &'a ReviewRow) -> Links<'a> {
+        Links {
+            sha: &row.head_sha,
+            commit_url: &self.commit,
+            session: &row.session_id,
+            session_url: &self.session,
+            settings_url: &self.settings,
+        }
     }
 }
 

@@ -566,8 +566,9 @@ fn call(
 
 /// Retries what may pass, where asking twice changes nothing: reading the
 /// memory, the session's retrospectives, a review's threads or the
-/// project's tickets, marking a note stale, updating a retrospective and
-/// resolving a review thread. A
+/// project's tickets, marking a note stale, updating a retrospective,
+/// resolving a review thread and putting a review's summary in its pull
+/// request's description, which takes the place of the one there. A
 /// new note, retrospective or review that may have reached the control
 /// plane isn't sent again, so that none is kept or posted twice; the agent
 /// hears what went wrong and can ask again.
@@ -582,7 +583,8 @@ async fn ask(
         | AgentCall::Retrospectives
         | AgentCall::UpdateRetrospective { .. }
         | AgentCall::ResolveThread { .. }
-        | AgentCall::ReviewThreads => true,
+        | AgentCall::ReviewThreads
+        | AgentCall::SummarizePullRequest { .. } => true,
         // What reads the tracker; a request this host doesn't know may write.
         AgentCall::Ticket { request } => {
             serde_json::from_value::<fctl_proto::tickets::TicketRequest>(request.clone())

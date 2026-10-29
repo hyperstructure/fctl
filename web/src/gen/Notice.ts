@@ -5,6 +5,7 @@ import type { NoticeLevel } from "./NoticeLevel";
 import type { PostedReview } from "./PostedReview";
 import type { PublishedFile } from "./PublishedFile";
 import type { Retrospective } from "./Retrospective";
+import type { SummarizedPullRequest } from "./SummarizedPullRequest";
 import type { TicketNotice } from "./TicketNotice";
 
 export type Notice = { level: NoticeLevel, 
@@ -13,8 +14,9 @@ export type Notice = { level: NoticeLevel,
  * `api_key_refused`, `credential_expired`, `runner_lost`,
  * `screenshot_published`, `memory_added`, `memory_stale`,
  * `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
- * `follow_up_held`, `ticket_created`, `ticket_commented`,
- * `ticket_updated`, `ticket_replied`, `ticket_moved`, `ticket_failed`.
+ * `pull_request_summarized`, `follow_up_held`, `ticket_created`,
+ * `ticket_commented`, `ticket_updated`, `ticket_replied`,
+ * `ticket_moved`, `ticket_failed`.
  */
 code: string, message: string, 
 /**
@@ -41,6 +43,12 @@ retrospective?: Retrospective,
  * Clients from before it show the message.
  */
 review?: PostedReview, 
+/**
+ * The summary fctl put at the end of a reviewed pull request's
+ * description, in a `pull_request_summarized` notice. Clients from
+ * before it show the message.
+ */
+summarized?: SummarizedPullRequest, 
 /**
  * What happened to a pull request that fctl didn't pass on to the
  * agent, in a `follow_up_held` notice. Clients from before it show the

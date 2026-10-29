@@ -12,6 +12,7 @@ const me = { id: "usr_ada" as G.UserId, name: "Ada" };
 // The project's review agents, as the control plane keeps them: what each PATCH sends is kept too.
 const state = vi.hoisted(() => ({
   agents: undefined as unknown as G.ReviewAgents,
+  reviews: [] as G.Review[],
   sent: [] as G.UpdateReviewAgentsRequest[],
   /** How often the form asked which apps opened pull requests lately. */
   botsAsked: 0,
@@ -23,7 +24,7 @@ vi.mock("@/lib/api", () => {
     ApiFailure,
     api: {
       reviewAgents: async () => state.agents,
-      reviews: async () => ({ reviews: [] }),
+      reviews: async () => ({ reviews: state.reviews }),
       reviewBots: async () => {
         state.botsAsked++;
         return { bots: [] };
@@ -38,6 +39,7 @@ vi.mock("@/lib/api", () => {
         state.agents = {
           ...state.agents,
           ...(b.instructions !== undefined && { instructions: b.instructions || undefined }),
+          ...(b.description_summary !== undefined && { description_summary: b.description_summary }),
           ...(skipped && {
             repos: all.filter((r) => !skipped.includes(`${r.owner}/${r.name}`.toLowerCase())),
             skipped_repos: all.filter((r) => skipped.includes(`${r.owner}/${r.name}`.toLowerCase())),
@@ -57,6 +59,7 @@ vi.mock("@tanstack/react-router", () => ({
 const roots: (() => void)[] = [];
 beforeEach(() => {
   state.sent = [];
+  state.reviews = [];
   state.botsAsked = 0;
   state.agents = {
     enabled: true,
@@ -64,6 +67,7 @@ beforeEach(() => {
     bots: ["dependabot[bot]"],
     repos: [repo("web"), repo("api")],
     skipped_repos: [repo("shared-lib")],
+    description_summary: false,
   };
 });
 afterEach(() => {
@@ -325,5 +329,76 @@ describe("the app reviews post as on GitHub", () => {
     } satisfies G.WorkspaceReviewApp);
     const c = await render(inWorkspace);
     expect(line(c)).toBeUndefined();
+  });
+});
+
+describe("summaries in pull requests' descriptions", () => {
+  const summarySwitch = (c: HTMLElement) =>
+    c.querySelector(
+      '[role="switch"][aria-label="Sum up pull requests in their descriptions"]',
+    ) as HTMLElement;
+
+  it("are off until the owners turn them on, which shows what they add", async () => {
+    const c = await render();
+    expect(c.textContent).not.toContain("they sum the pull request up");
+    await openSettings(c);
+    expect(summarySwitch(c).getAttribute("aria-checked")).toBe("false");
+    expect(c.textContent).not.toContain("What it does.");
+    click(summarySwitch(c));
+    expect(summarySwitch(c).getAttribute("aria-checked")).toBe("true");
+    // What it looks like on GitHub: a note, led by the risk.
+    const text = c.textContent ?? "";
+    expect(text).toContain("NoteMedium risk. It changes how uploads retry");
+    expect(text).toContain("What it does. Makes the upload worker give up");
+    await save(c);
+    expect(state.sent.at(-1)?.description_summary).toBe(true);
+    expect(c.textContent).toContain(
+      "Before each review, they sum the pull request up at the end of its description.",
+    );
+  });
+
+  it("are turned off as they were turned on", async () => {
+    state.agents = { ...state.agents, description_summary: true };
+    const c = await render();
+    expect(c.textContent).toContain("they sum the pull request up at the end of its description");
+    await openSettings(c);
+    expect(button(c, "Save").disabled).toBe(true);
+    click(summarySwitch(c));
+    expect(button(c, "Save").disabled).toBe(false);
+    await save(c);
+    expect(state.sent.at(-1)?.description_summary).toBe(false);
+    expect(c.textContent).not.toContain("they sum the pull request up");
+  });
+
+  it("say how risky each reviewed pull request looked at first sight", async () => {
+    const reviewed = (n: number, risk?: G.Risk): G.Review => ({
+      session_id: `ses_${n}` as G.SessionId,
+      session_number: n,
+      status: "stopped",
+      state: "passed",
+      repo: repo("web"),
+      number: n,
+      url: `https://github.com/acme/web/pull/${n}`,
+      title: `Pull request ${n}`,
+      draft: false,
+      head_sha: "3f2a1c9d00000000000000000000000000000000",
+      findings: 0,
+      resolved: 0,
+      still_open: 0,
+      operator: me,
+      created_at: 1,
+      busy_ms: 0,
+      ...(risk && {
+        pull_request_summary: { risk, risk_reason: `Why ${risk}.`, overview: "It does things." },
+      }),
+    });
+    state.reviews = [reviewed(1, "critical"), reviewed(2)];
+    const c = await render();
+    const rows = [...c.querySelectorAll("li")].filter((li) => li.textContent?.includes("Pull request"));
+    const risk = rows[0]?.querySelector('[title^="At first sight"]');
+    expect(risk?.textContent).toBe("Critical risk");
+    expect(risk?.getAttribute("title")).toBe("At first sight: Why critical.");
+    expect(risk?.className).toContain("text-danger");
+    expect(rows[1]?.textContent).not.toContain("risk");
   });
 });

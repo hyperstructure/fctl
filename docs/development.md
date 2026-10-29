@@ -147,9 +147,10 @@ level it works at (`low` … `max`, or `none` as a model that takes none),
 way to where it compacts), `compact` (or Claude Code's `/compact`)
 compacts the conversation,
 a review session's task (`Review acme/web#12, … at commit …`) reviews as a
-review agent does: it reads the pull request's commits and diff and fctl's
-earlier findings (`fctl review threads`), then posts with `fctl review
-submit`, marking earlier findings still open fixed, and without any,
+review agent does: it reads the pull request's commits and diff, sums it
+up in its description first where its system prompt asks for `fctl review
+summarize` (low risk, medium past 50 added lines), reads fctl's earlier
+findings (`fctl review threads`), then posts with `fctl review submit`, marking earlier findings still open fixed, and without any,
 finding an issue on the first line the pull request adds (the dev
 instance has no GitHub App, so no review starts there by itself),
 fctl's message about a review of the agent's own pull request (`fctl's
