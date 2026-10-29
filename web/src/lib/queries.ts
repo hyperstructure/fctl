@@ -65,6 +65,8 @@ export const keys = {
   workspaceMembers: (id: string) => ["workspace", id, "members"] as const,
   workspaceRunners: (id: string) => ["workspace", id, "runners"] as const,
   workspaceGithub: (id: string) => ["workspace", id, "github"] as const,
+  /** Under the workspace's GitHub, so that what changes its accounts asks again. */
+  workspaceReviewApp: (id: string) => ["workspace", id, "github", "review-app"] as const,
   workspaceLinear: (id: string) => ["workspace", id, "linear"] as const,
   /** The teams fctl's app reaches in a Linear workspace a workspace works in. */
   linearTeams: (id: string, organization: string) =>

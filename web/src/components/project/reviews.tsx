@@ -23,6 +23,7 @@ import {
   Avatar,
   Banner,
   Button,
+  buttonClass,
   Dialog,
   EffortIcon,
   Empty,
@@ -37,6 +38,7 @@ import {
   Textarea,
   toast,
 } from "@/components/ui";
+import { AppAvatar, someNames, useReviewApp } from "@/components/workspace/review-app";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -51,6 +53,7 @@ import {
   modelLabel,
 } from "@/lib/models";
 import { keys, queryClient, useMe } from "@/lib/queries";
+import { postedAsGithubApp, postsAllAs } from "@/lib/review-app";
 import { botView, sameBots } from "@/lib/review-bots";
 import {
   canAskForReview,
@@ -175,6 +178,11 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
     toast("Review agents are on: the next commit of each pull request gets a review"),
   );
   const repos = agents.repos.length > 0 ? repoList(agents.repos) : "this project's repositories";
+  // The app the reviews would post as, where one posts them all.
+  const reviewApp = useReviewApp(project.workspace?.id).data;
+  const all =
+    reviewApp?.configured && agents.repos.length > 0 ? postsAllAs(reviewApp, agents.repos) : undefined;
+  const poster = all === "review" ? reviewApp?.app : all === "github" ? reviewApp?.github_app : undefined;
   return (
     <div className="grid animate-rise items-center gap-x-12 gap-y-10 py-2 md:grid-cols-[minmax(0,1fr)_320px]">
       <div>
@@ -222,7 +230,7 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
           </p>
         )}
       </div>
-      <Preview />
+      <Preview app={poster} />
     </div>
   );
 }
@@ -294,14 +302,21 @@ function AppNames({ bots }: { bots: readonly string[] }) {
   );
 }
 
-/** What a review looks like on GitHub: a finding on the line it's about, and the check on the commit. */
-function Preview() {
+/**
+ * What a review looks like on GitHub: a finding on the line it's about, and the check on the commit;
+ * by `app`, the GitHub App it posts as, where that's known.
+ */
+function Preview({ app }: { app?: G.GithubAppRef }) {
   return (
     <div aria-hidden="true" className="relative select-none max-md:max-w-sm">
       <div className="overflow-hidden rounded-xl border border-line bg-surface shadow-[0_18px_50px_-24px_rgb(0_0_0/0.35)]">
         <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5 text-[12px]">
-          <Logo withWord={false} className="[&_svg]:size-[18px]" />
-          <span className="font-semibold text-ink">fctl</span>
+          {app ? (
+            <AppAvatar app={app} size={18} />
+          ) : (
+            <Logo withWord={false} className="[&_svg]:size-[18px]" />
+          )}
+          <span className="font-semibold text-ink">{app?.slug ?? "fctl"}</span>
           <span className="text-ink-4">reviewed</span>
         </div>
         <div className="border-b border-line bg-sunken/60 px-3.5 py-2 font-mono text-[11px] text-ink-3">
@@ -443,6 +458,7 @@ function Status({
             )}
           </div>
         </div>
+        {agents.enabled && <PostedAs project={project} agents={agents} />}
         {open && owner && (
           <div id={panel} className="animate-rise border-t border-line px-5 py-5">
             <SettingsForm
@@ -470,6 +486,72 @@ function Status({
           setOpen(false);
         }}
       />
+    </div>
+  );
+}
+
+/**
+ * Which GitHub App the reviews post as: the review app where it's installed (fctl-review), apart
+ * from what agents write as the GitHub App (fctl-sh), which posts them elsewhere; with the way to
+ * install it where it isn't, for the workspace's admins, or where they do it for the others.
+ */
+function PostedAs({ project, agents }: { project: G.Project; agents: G.ReviewAgents }) {
+  const q = useReviewApp(project.workspace?.id);
+  const r = q.data;
+  if (!r?.configured || !r.app || !r.github_app || agents.repos.length === 0) return null;
+  const { app, github_app: ours } = r;
+  const all = postsAllAs(r, agents.repos);
+  const elsewhere = postedAsGithubApp(r, agents.repos);
+  if (all !== "review" && elsewhere.repos.length === 0) return null;
+  const [only] = elsewhere.accounts;
+  const install = elsewhere.accounts.length === 1 ? only?.install_url : undefined;
+  // Why the others post as the GitHub App: it isn't installed on their accounts, or doesn't reach them.
+  const uninstalled = elsewhere.accounts.every((a) => a.state === "not_installed");
+  const accounts = someNames(elsewhere.accounts.map((a) => a.account));
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5 border-t border-line px-5 py-3 text-[13px] leading-relaxed text-ink-3">
+      <AppAvatar app={all === "github" ? ours : app} size={18} />
+      <p className="min-w-0 flex-1 basis-64">
+        {all === "review" ? (
+          <>
+            On GitHub they post as <span className="font-medium text-ink-2">{app.slug}</span>, apart from what
+            your agents write as {ours.slug}.
+          </>
+        ) : all === "github" ? (
+          <>
+            On GitHub they post as <span className="font-medium text-ink-2">{ours.slug}</span>, as your agents
+            do: {app.slug}{" "}
+            {uninstalled ? `isn't installed on ${accounts}` : `doesn't reach ${repoList(elsewhere.repos)}`}.
+          </>
+        ) : (
+          <>
+            On GitHub they post as <span className="font-medium text-ink-2">{app.slug}</span>, but as{" "}
+            {ours.slug} in {repoList(elsewhere.repos)}
+            {uninstalled ? `: it isn't installed on ${accounts}` : ", which it doesn't reach"}.
+          </>
+        )}
+      </p>
+      {elsewhere.repos.length > 0 &&
+        (install && only ? (
+          <a href={install} className={buttonClass({ size: "sm" })}>
+            <AppAvatar app={app} size={14} />
+            {only.state === "partly"
+              ? `Add ${only.unreached.length === 1 ? only.unreached[0] : "repositories"}`
+              : `Install ${app.slug}`}
+          </a>
+        ) : (
+          project.workspace && (
+            <Link
+              to="/w/$slug"
+              params={{ slug: project.workspace.slug }}
+              search={{ tab: "github" }}
+              className="inline-flex items-center gap-1 text-[12.5px] text-ink-2 hover:text-ink hover:underline"
+            >
+              {elsewhere.accounts.some((a) => a.install_url) ? `Install ${app.slug}` : "Where it's installed"}
+              <ArrowRight className="size-3.5" />
+            </Link>
+          )
+        ))}
     </div>
   );
 }

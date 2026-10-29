@@ -83,7 +83,7 @@ const project = {
 /** Lets queries and mutations answer. */
 const settle = () => act(() => new Promise<void>((r) => setTimeout(r, 0)));
 
-async function render() {
+async function render(p: G.Project = project) {
   queryClient.setQueryData(keys.me, { user: me } as G.Me);
   const container = document.createElement("div");
   document.body.append(container);
@@ -91,7 +91,7 @@ async function render() {
   act(() =>
     root.render(
       <QueryClientProvider client={queryClient}>
-        <ReviewsTab project={project} />
+        <ReviewsTab project={p} />
       </QueryClientProvider>,
     ),
   );
@@ -208,5 +208,69 @@ describe("the repositories review agents review", () => {
     expect(status).toMatch(/They run on \w?your Claude subscription\./);
     expect(status).toContain("They skip each of this project's repositories");
     expect(status).not.toContain("They review each new commit");
+  });
+});
+
+describe("the app reviews post as on GitHub", () => {
+  const inWorkspace = {
+    ...project,
+    workspace: { id: "wsp_1", slug: "acme-co", name: "Acme", color: "yellow" },
+  } as G.Project;
+  const app = (slug: string): G.GithubAppRef => ({ slug });
+  const reviewApp = (acme: Partial<G.ReviewAppAccount>): G.WorkspaceReviewApp => ({
+    configured: true,
+    app: app("fctl-review"),
+    github_app: app("fctl-sh"),
+    accounts: [{ account: "acme", state: "installed", unreached: [], ...acme }],
+  });
+  const line = (c: HTMLElement) =>
+    [...c.querySelectorAll("p")].find((p) => p.textContent?.startsWith("On GitHub"))?.textContent;
+
+  it("is the review app where it reaches each repository they review", async () => {
+    queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), reviewApp({}));
+    const c = await render(inWorkspace);
+    expect(line(c)).toBe("On GitHub they post as fctl-review, apart from what your agents write as fctl-sh.");
+    expect(c.querySelector('a[href*="github-review"]')).toBeNull();
+  });
+
+  it("says where it isn't, with the way to install it", async () => {
+    queryClient.setQueryData(
+      keys.workspaceReviewApp("wsp_1"),
+      reviewApp({ state: "not_installed", install_url: "/api/v1/github-review/install?state=s" }),
+    );
+    const c = await render(inWorkspace);
+    expect(line(c)).toBe(
+      "On GitHub they post as fctl-sh, as your agents do: fctl-review isn't installed on acme.",
+    );
+    const install = c.querySelector('a[href*="github-review"]');
+    expect(install?.textContent).toBe("Install fctl-review");
+  });
+
+  it("names the repositories it doesn't reach, and sends the others to the workspace's admins", async () => {
+    queryClient.setQueryData(
+      keys.workspaceReviewApp("wsp_1"),
+      reviewApp({ state: "partly", unreached: ["api"] }),
+    );
+    const c = await render(inWorkspace);
+    expect(line(c)).toBe(
+      "On GitHub they post as fctl-review, but as fctl-sh in acme/api, which it doesn't reach.",
+    );
+    // No link of their own: the GitHub tab, where its admins add it.
+    expect(c.querySelector('a[href*="github-review"]')).toBeNull();
+    expect(
+      [...c.querySelectorAll("a")]
+        .find((a) => a.textContent === "Where it's installed")
+        ?.getAttribute("href"),
+    ).toBe("/w/$slug");
+  });
+
+  it("isn't said without a review app", async () => {
+    queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
+      configured: false,
+      github_app: app("fctl-sh"),
+      accounts: [],
+    } satisfies G.WorkspaceReviewApp);
+    const c = await render(inWorkspace);
+    expect(line(c)).toBeUndefined();
   });
 });

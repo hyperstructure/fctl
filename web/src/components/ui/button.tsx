@@ -32,6 +32,25 @@ const sizes: Record<Size, string> = {
   lg: "h-11 px-5 text-[15px] gap-2.5 rounded-lg",
 };
 
+/** A Button's look, for a link that goes where a button would: on to another site, say. */
+export function buttonClass({
+  variant = "secondary",
+  size = "md",
+  className,
+}: {
+  variant?: Variant;
+  size?: Size;
+  className?: string;
+} = {}) {
+  return cn(
+    "relative inline-flex select-none items-center justify-center font-medium whitespace-nowrap",
+    "transition-[background-color,border-color,color,transform,box-shadow] duration-150 ease-out active:scale-[0.97]",
+    variants[variant],
+    sizes[size],
+    className,
+  );
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = "secondary", size = "md", loading, icon, trailing, className, children, disabled, ...rest },
   ref,
@@ -40,13 +59,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       disabled={disabled || loading}
-      className={cn(
-        "relative inline-flex select-none items-center justify-center font-medium whitespace-nowrap",
-        "transition-[background-color,border-color,color,transform,box-shadow] duration-150 ease-out active:scale-[0.97]",
-        variants[variant],
-        sizes[size],
-        className,
-      )}
+      className={buttonClass({ variant, size, className })}
       {...rest}
     >
       {loading ? <Spinner className="size-3.5" /> : icon}
