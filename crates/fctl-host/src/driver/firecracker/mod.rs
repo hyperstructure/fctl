@@ -1,6 +1,5 @@
 //! The `firecracker` driver (Linux hosts with KVM): each sandbox is a
-//! Firecracker microVM with a kernel of its own
-//! ([ADR 0068](../../../../../docs/adr/0068-linux-hosts-run-sandboxes-in-firecracker-microvms.md)).
+//! Firecracker microVM with a kernel of its own (ADR 0069).
 //!
 //! - **Images** are pulled from their registries as Docker pulls them
 //!   ([`registry`]), and their layers unpacked onto an ext4 filesystem in a
@@ -955,8 +954,9 @@ mod tests {
         }
     }
 
-    /// Boots a sandbox from an image of Docker Hub, on a host with KVM,
-    /// Firecracker's needs and a static fctl-agent:
+    /// Boots a sandbox from an image of Docker Hub (or
+    /// `FCTL_TEST_FIRECRACKER_IMAGE`), on a host with KVM, Firecracker's
+    /// needs and a static fctl-agent:
     ///
     /// ```sh
     /// cargo build --release -p fctl-agent --target "$(uname -m)-unknown-linux-musl"
@@ -992,9 +992,11 @@ mod tests {
             "fctl-test-{}",
             hex::encode(fctl_domain::random_bytes::<4>())
         );
+        const DEBIAN: &str = "docker.io/library/debian:trixie-slim";
+        let image = std::env::var("FCTL_TEST_FIRECRACKER_IMAGE").unwrap_or_else(|_| DEBIAN.into());
         let spec = SandboxSpec {
             name: name.clone(),
-            image: "docker.io/library/debian:trixie-slim".into(),
+            image: image.clone(),
             fallback_image: None,
             cpus: 2,
             memory_mb: 1024,
@@ -1006,7 +1008,11 @@ mod tests {
         let result = async {
             // As the image says, with the VM's name, and its network.
             let out = d.exec(&sb, "id -u; hostname; echo $HOME; pwd").await?;
-            assert_eq!(out, format!("0\n{name}\n/root\n/\n"));
+            eprintln!("as {:?}", out.lines().collect::<Vec<_>>());
+            if image == DEBIAN {
+                assert_eq!(out, format!("0\n{name}\n/root\n/\n"));
+            }
+            assert_eq!(out.lines().nth(1), Some(name.as_str()));
             let resolved = d.exec(&sb, "getent hosts example.com").await?;
             assert!(!resolved.trim().is_empty());
             let fetched = d
@@ -1038,12 +1044,12 @@ mod tests {
             assert_eq!(n, 1, "fctl-agent said nothing");
             drop(io);
             // A stopped sandbox keeps its disk, and starts again from it.
-            d.exec(&sb, "echo kept > /root/note").await?;
+            d.exec(&sb, "echo kept > \"$HOME/note\"").await?;
             d.stop(&sb).await?;
             let listed = d.list().await?;
             assert!(listed.iter().any(|s| s.name == name && !s.running), "{listed:?}");
             d.ensure(&spec, &log).await?;
-            assert_eq!(d.exec(&sb, "cat /root/note").await?, "kept\n");
+            assert_eq!(d.exec(&sb, "cat \"$HOME/note\"").await?, "kept\n");
             Ok::<_, anyhow::Error>(())
         }
         .await;

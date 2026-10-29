@@ -121,5 +121,5 @@ this file is the overview. Order within a section is priority.
       verified with a GitHub sign-in, without an instance admin's approval
 - [ ] GitHub sign-in as a way to sign in to fctl
 - [ ] Merging two accounts into one with both their addresses
-- [ ] Linux hosts with Firecracker microVMs
+- [x] Linux hosts with Firecracker microVMs: the `firecracker` driver, experimental
 - [ ] Windows hosts through WSL 2

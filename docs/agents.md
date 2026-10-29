@@ -523,8 +523,9 @@ archive SESSION` takes it out of the lists.
 ### Bring a machine online
 
 On the machine, by its owner: install a driver (Apple's `container` on
-macOS 26 with Apple silicon, then `container system start`; Lima; or
-Docker), then:
+macOS 26 with Apple silicon, then `container system start`; Lima; Docker;
+or on Linux with KVM, `passt` and `e2fsprogs` for `fctl host install
+--driver firecracker`), then:
 
 ```sh
 curl -fsSL https://fctl.sh/install | sh

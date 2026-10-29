@@ -74,3 +74,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0066](0066-review-agents-post-as-a-github-app-of-their-own.md) | Review agents post as a GitHub App of their own |
 | [0067](0067-review-agents-sum-pull-requests-up-in-their-descriptions.md) | Review agents sum pull requests up in their descriptions |
 | [0068](0068-projects-choose-whether-drafts-get-reviews.md) | Projects choose whether drafts get reviews |
+| [0069](0069-linux-hosts-run-sandboxes-in-firecracker-microvms.md) | Linux hosts run sandboxes in Firecracker microVMs |

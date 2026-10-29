@@ -25,7 +25,7 @@ const FIRECRACKER_ARCHIVES: [(&str, &str); 2] = [
 /// The kernel VMs boot unless `host.toml` names another: Firecracker's
 /// guest configuration for Linux 6.18, built and published by
 /// hyperstructure/sandbox, as `/vmlinux` in an image.
-pub const KERNEL_IMAGE: &str = "ghcr.io/hyperstructure/sandbox-kernel:6.18";
+pub const KERNEL_IMAGE: &str = "ghcr.io/hyperstructure/sandbox-kernel:6.18.59";
 
 /// Where the release archive of Firecracker `version` is.
 fn firecracker_url(version: &str, arch: &str) -> String {

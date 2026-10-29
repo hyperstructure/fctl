@@ -158,7 +158,10 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    ```
 
    On older macOS, install [Lima](https://lima-vm.io) (`brew install lima`)
-   instead; on Linux, Docker.
+   instead; on Linux, Docker, or for a microVM of its own for each session,
+   KVM and `passt` ([Firecracker](cli.md#hosts): `sudo usermod -aG kvm
+   $USER`, `sudo apt install passt e2fsprogs`, and `--driver firecracker`
+   below).
 
 2. Register the machine for a workspace you are in, and start the host
    service (or pass `--token` with a runner token from the workspace's
