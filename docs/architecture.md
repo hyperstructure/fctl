@@ -1499,8 +1499,9 @@ off:
    `pull_request_review` and `pull_request_review_comment` deliveries,
    `crate::follow_ups::on_comment`): a new comment on the pull request's
    conversation, a review, or a comment on its lines, that mentions
-   `@fctl` or `@agent`, or starts with `fctl:`, `agent:`, `fctl,` or
-   `agent,`, in any case (`fctl_domain::follow_ups::addressed`; what it
+   `@fctl` or `@agent` (or, unadvertised, the GitHub Apps' logins
+   `@fctl-sh` and `@fctl-review`, with or without their hyphens), or
+   starts with `fctl:`, `agent:`, `fctl,` or `agent,`, in any case (`fctl_domain::follow_ups::addressed`; what it
    quotes, shows as code or hides in an HTML comment doesn't count, nor do
    edits). Only a person's (GitHub's `User`, not an app's bot, so not
    fctl's own review agents, whose findings come back on their own),
