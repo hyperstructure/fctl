@@ -2,6 +2,8 @@
 //!
 //! - `fctl-agent serve` runs the supervisor (started detached by the host).
 //! - `fctl-agent attach` connects stdin/stdout to it (the host's channel).
+//! - As PID 1 it is a Firecracker microVM's init, and `vm-serve` and
+//!   `vm-run` run what the host asks there (src/vm).
 //!
 //! See docs/architecture.md and crates/fctl-proto/src/agent.rs.
 
@@ -16,6 +18,8 @@ mod prompt;
 mod refresh;
 mod supervisor;
 mod tasks;
+#[cfg(target_os = "linux")]
+mod vm;
 mod workspace;
 
 use clap::{Parser, Subcommand};
@@ -59,10 +63,42 @@ enum Command {
         )]
         socket: PathBuf,
     },
+    /// Run what the host asks in a Firecracker microVM, under its init.
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    VmServe,
+    /// Run a program as a user, in a session of its own (for vm-serve).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    VmRun {
+        uid: u32,
+        gid: u32,
+        /// Supplementary groups, separated by commas.
+        groups: String,
+        cwd: String,
+        #[arg(last = true, required = true)]
+        argv: Vec<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
+    // As a microVM's PID 1, fctl-agent is its init.
+    #[cfg(target_os = "linux")]
+    if std::process::id() == 1 {
+        vm::init();
+    }
     let cli = Cli::parse();
+    #[cfg(target_os = "linux")]
+    if let Command::VmRun {
+        uid,
+        gid,
+        groups,
+        cwd,
+        argv,
+    } = &cli.command
+    {
+        return vm::run_as(*uid, *gid, groups, cwd, argv);
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -77,6 +113,13 @@ fn main() -> anyhow::Result<()> {
             r
         }
         Command::Attach { socket } => rt.block_on(link::attach(&socket)),
+        #[cfg(target_os = "linux")]
+        Command::VmServe => {
+            init_logging(None)?;
+            rt.block_on(vm::serve())
+        }
+        #[cfg(target_os = "linux")]
+        Command::VmRun { .. } => Ok(()),
     }
 }
 

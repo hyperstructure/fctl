@@ -89,10 +89,7 @@ async fn login(
     let stderr = child.stderr.take().context("login stderr")?;
     let mut stdin = child.stdin.take().context("login stdin")?;
     let (line_tx, mut line_rx) = mpsc::unbounded_channel::<String>();
-    for reader in [
-        Box::new(stdout) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
-        Box::new(stderr),
-    ] {
+    for reader in [stdout, stderr] {
         let tx = line_tx.clone();
         tokio::spawn(async move {
             // The CLI prompts without a newline; split on prompts too.

@@ -5,18 +5,21 @@
 //! |---|---|---|
 //! | `apple` | a lightweight VM per session | Apple `container`, Apple silicon, macOS 26+ |
 //! | `docker` | a container per session | Docker, OrbStack, Colima, Podman (`docker` CLI) |
+//! | `firecracker` | a microVM per session | Linux with KVM; experimental |
 //! | `lima` | a VM per session, cloned from `fctl-base` | experimental |
 //! | `process` | none | development and trusted hosts |
 
 pub mod container;
 #[cfg(test)]
 pub(crate) mod fake;
+pub mod firecracker;
 pub mod lima;
 pub mod process;
 
 pub use container::ImageInfo;
 
 use crate::caches::{self, Spot};
+use crate::config::HostConfig;
 use anyhow::Result;
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use std::path::{Path, PathBuf};
@@ -93,6 +96,59 @@ impl std::fmt::Display for DiskSpot {
     }
 }
 
+/// A program running in a sandbox, with its input and output piped.
+pub struct Running {
+    pub stdin: Option<Box<dyn AsyncWrite + Unpin + Send>>,
+    pub stdout: Option<Box<dyn AsyncRead + Unpin + Send>>,
+    pub stderr: Option<Box<dyn AsyncRead + Unpin + Send>>,
+    exit: Exit,
+}
+
+enum Exit {
+    /// The runtime's command (`docker exec`, `limactl shell`), or the
+    /// program itself with the process driver; killed when dropped.
+    Child(tokio::process::Child),
+    /// A program in a microVM, whose exit code comes over the vsock.
+    Vm(tokio::sync::oneshot::Receiver<Option<i32>>),
+}
+
+impl Running {
+    pub fn child(mut child: tokio::process::Child) -> Self {
+        Self {
+            stdin: child
+                .stdin
+                .take()
+                .map(|s| Box::new(s) as Box<dyn AsyncWrite + Unpin + Send>),
+            stdout: child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn AsyncRead + Unpin + Send>),
+            stderr: child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn AsyncRead + Unpin + Send>),
+            exit: Exit::Child(child),
+        }
+    }
+
+    pub fn vm(started: firecracker::vsock::Started) -> Self {
+        Self {
+            stdin: Some(Box::new(started.stdin)),
+            stdout: Some(Box::new(started.stdout)),
+            stderr: Some(Box::new(started.stderr)),
+            exit: Exit::Vm(started.exit),
+        }
+    }
+
+    /// Waits for it to exit; its exit code, when it says one.
+    pub async fn wait(&mut self) -> Result<Option<i32>> {
+        match &mut self.exit {
+            Exit::Child(child) => Ok(child.wait().await?.code()),
+            Exit::Vm(exit) => Ok(exit.await.ok().flatten()),
+        }
+    }
+}
+
 /// A byte channel to fctl-agent.
 pub struct AgentIo {
     pub reader: Box<dyn AsyncRead + Unpin + Send>,
@@ -151,12 +207,17 @@ pub fn attach_script(agent: &str) -> String {
 pub enum Driver {
     Process(process::ProcessDriver),
     Container(container::ContainerDriver),
+    Firecracker(firecracker::FirecrackerDriver),
     Lima(lima::LimaDriver),
 }
 
 impl Driver {
-    /// The driver named in the configuration (`auto` picks the best available).
-    pub async fn select(name: &str, data_dir: &Path, agent_bin: Option<PathBuf>) -> Result<Self> {
+    /// The driver `name`, with `cfg`'s settings (`auto` picks the best
+    /// available; it never picks Firecracker, which hosts choose).
+    pub async fn select(name: &str, cfg: &HostConfig) -> Result<Self> {
+        let data_dir = cfg.data_dir();
+        let data_dir = data_dir.as_path();
+        let agent_bin = cfg.agent_bin.clone();
         let pick = |n: &str| -> Option<Driver> {
             match n {
                 "process" => Some(Driver::Process(process::ProcessDriver::new(
@@ -165,6 +226,9 @@ impl Driver {
                 ))),
                 "apple" => Some(Driver::Container(container::ContainerDriver::apple())),
                 "docker" => Some(Driver::Container(container::ContainerDriver::docker())),
+                "firecracker" => Some(Driver::Firecracker(firecracker::FirecrackerDriver::new(
+                    cfg,
+                ))),
                 "lima" => Some(Driver::Lima(lima::LimaDriver::new())),
                 _ => None,
             }
@@ -172,7 +236,7 @@ impl Driver {
         if name != "auto" {
             return pick(name).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "unknown driver `{name}` (use apple, docker, lima, process or auto)"
+                    "unknown driver `{name}` (use apple, docker, firecracker, lima, process or auto)"
                 )
             });
         }
@@ -190,22 +254,29 @@ impl Driver {
     }
 
     /// Every driver this host could use, for the runner's hello.
-    pub async fn probe_all(data_dir: &Path) -> Vec<DriverInfo> {
-        let (apple, docker, lima, process) = (
+    pub async fn probe_all(cfg: &HostConfig) -> Vec<DriverInfo> {
+        let (apple, docker, firecracker, lima, process) = (
             container::ContainerDriver::apple(),
             container::ContainerDriver::docker(),
+            firecracker::FirecrackerDriver::new(cfg),
             lima::LimaDriver::new(),
-            process::ProcessDriver::new(data_dir, None),
+            process::ProcessDriver::new(&cfg.data_dir(), None),
         );
-        let (apple, docker, lima, process) =
-            tokio::join!(apple.probe(), docker.probe(), lima.probe(), process.probe());
-        vec![apple, docker, lima, process]
+        let (apple, docker, firecracker, lima, process) = tokio::join!(
+            apple.probe(),
+            docker.probe(),
+            firecracker.probe(),
+            lima.probe(),
+            process.probe()
+        );
+        vec![apple, docker, firecracker, lima, process]
     }
 
     pub fn name(&self) -> &'static str {
         match self {
             Self::Process(_) => "process",
             Self::Container(c) => c.flavor_name(),
+            Self::Firecracker(_) => "firecracker",
             Self::Lima(_) => "lima",
         }
     }
@@ -218,6 +289,12 @@ impl Driver {
     /// Whether sandboxes are made from images (Lima clones its base VM, and
     /// the process driver has none).
     pub fn uses_images(&self) -> bool {
+        matches!(self, Self::Container(_) | Self::Firecracker(_))
+    }
+
+    /// Whether it builds images from Dockerfiles (Firecracker pulls them
+    /// only).
+    pub fn builds_images(&self) -> bool {
         matches!(self, Self::Container(_))
     }
 
@@ -225,6 +302,7 @@ impl Driver {
     pub async fn has_image(&self, image: &str) -> bool {
         match self {
             Self::Container(d) => d.has_image(image).await,
+            Self::Firecracker(d) => d.has_image(image).await,
             _ => false,
         }
     }
@@ -233,6 +311,7 @@ impl Driver {
     pub async fn pull(&self, image: &str, progress: bool) -> Result<()> {
         match self {
             Self::Container(d) => d.pull(image, progress).await,
+            Self::Firecracker(d) => d.pull(image, progress).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
         }
     }
@@ -248,6 +327,7 @@ impl Driver {
     ) -> Result<String> {
         match self {
             Self::Container(d) => d.pull_or_fallback(image, fallback, progress, log).await,
+            Self::Firecracker(d) => d.pull_or_fallback(image, fallback, progress, log).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
         }
     }
@@ -256,6 +336,7 @@ impl Driver {
     pub async fn image(&self, image: &str) -> Result<Option<ImageInfo>> {
         match self {
             Self::Container(d) => d.image(image).await,
+            Self::Firecracker(d) => d.image(image).await,
             _ => Ok(None),
         }
     }
@@ -264,6 +345,7 @@ impl Driver {
     pub async fn tag_image(&self, image: &str, name: &str) -> Result<()> {
         match self {
             Self::Container(d) => d.tag_image(image, name).await,
+            Self::Firecracker(d) => d.tag_image(image, name).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
         }
     }
@@ -272,6 +354,7 @@ impl Driver {
     pub async fn images(&self, repository: &str) -> Result<Vec<String>> {
         match self {
             Self::Container(d) => d.images(repository).await,
+            Self::Firecracker(d) => d.images(repository).await,
             _ => Ok(Vec::new()),
         }
     }
@@ -284,6 +367,7 @@ impl Driver {
     ) -> Result<()> {
         match self {
             Self::Container(d) => d.build(job, log).await,
+            Self::Firecracker(_) => anyhow::bail!("the firecracker driver builds no images"),
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
         }
     }
@@ -292,6 +376,7 @@ impl Driver {
     pub async fn image_size(&self, image: &str) -> Option<u64> {
         match self {
             Self::Container(d) => d.image_size(image).await,
+            Self::Firecracker(d) => d.image_size(image).await,
             _ => None,
         }
     }
@@ -301,6 +386,7 @@ impl Driver {
     pub async fn remove_image(&self, image: &str) -> Result<()> {
         match self {
             Self::Container(d) => d.remove_image(image).await,
+            Self::Firecracker(d) => d.remove_image(image).await,
             _ => Ok(()),
         }
     }
@@ -309,6 +395,7 @@ impl Driver {
     pub async fn sandbox_exists(&self, name: &str) -> Result<bool> {
         match self {
             Self::Container(d) => d.exists(name).await,
+            Self::Firecracker(d) => d.exists(name).await,
             _ => Ok(false),
         }
     }
@@ -317,6 +404,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.probe().await,
             Self::Container(d) => d.probe().await,
+            Self::Firecracker(d) => d.probe().await,
             Self::Lima(d) => d.probe().await,
         }
     }
@@ -339,12 +427,13 @@ impl Driver {
 
     /// Where sandboxes keep their files: Apple's `container` its app root,
     /// Lima its home, Docker its root directory (on macOS inside its VM),
-    /// and the process driver `data_dir`. `None` when the Docker daemon
-    /// doesn't answer.
+    /// Firecracker and the process driver `data_dir`. `None` when the Docker
+    /// daemon doesn't answer.
     pub async fn disk_spot(&self, data_dir: &Path) -> Option<DiskSpot> {
         match self {
             Self::Process(_) => Some(DiskSpot::Dir(data_dir.to_owned())),
             Self::Container(d) => d.disk_spot(data_dir).await,
+            Self::Firecracker(d) => Some(d.disk_spot(data_dir)),
             Self::Lima(_) => Some(DiskSpot::Dir(
                 lima::home()
                     .filter(|h| h.is_dir())
@@ -372,9 +461,10 @@ impl Driver {
 
     /// Where `project`'s package caches are with this driver: a Docker
     /// volume, or a directory in `data_dir`, which Apple's `container`
-    /// mounts and the process driver's agents use. `None` with Lima, and
-    /// for a directory that Apple's `container` can't mount, whose path has
-    /// a comma.
+    /// mounts and the process driver's agents use. `None` with Lima and
+    /// Firecracker, whose VMs share no files with the host, and for a
+    /// directory that Apple's `container` can't mount, whose path has a
+    /// comma.
     pub fn cache_spot(&self, project: &str, data_dir: &Path) -> Option<Spot> {
         let dir = caches::dir(data_dir, project);
         match self {
@@ -383,7 +473,7 @@ impl Driver {
             }
             Self::Container(_) => (!dir.to_string_lossy().contains(',')).then_some(Spot::Dir(dir)),
             Self::Process(_) => Some(Spot::Dir(dir)),
-            Self::Lima(_) => None,
+            Self::Firecracker(_) | Self::Lima(_) => None,
         }
     }
 
@@ -400,7 +490,7 @@ impl Driver {
         match self {
             Self::Container(d) if d.flavor_name() == "docker" => d.cache_volumes().await,
             Self::Container(_) | Self::Process(_) => Ok(caches::dirs(data_dir)),
-            Self::Lima(_) => Ok(Vec::new()),
+            Self::Firecracker(_) | Self::Lima(_) => Ok(Vec::new()),
         }
     }
 
@@ -445,6 +535,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.ensure(spec).await,
             Self::Container(d) => d.ensure(spec, log).await,
+            Self::Firecracker(d) => d.ensure(spec, log).await,
             Self::Lima(d) => d.ensure(spec, log).await,
         }
     }
@@ -454,6 +545,7 @@ impl Driver {
         match self {
             Self::Process(_) => Ok(()),
             Self::Container(d) => d.install_agent(sb, binary).await,
+            Self::Firecracker(d) => d.install_agent(sb, binary).await,
             Self::Lima(d) => d.install_agent(sb, binary).await,
         }
     }
@@ -463,6 +555,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.start_agent(sb).await,
             Self::Container(d) => d.start_agent(sb).await,
+            Self::Firecracker(d) => d.start_agent(sb).await,
             Self::Lima(d) => d.start_agent(sb).await,
         }
     }
@@ -472,6 +565,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.attach(sb).await,
             Self::Container(d) => d.attach(sb).await,
+            Self::Firecracker(d) => d.attach(sb).await,
             Self::Lima(d) => d.attach(sb).await,
         }
     }
@@ -481,16 +575,18 @@ impl Driver {
         match self {
             Self::Process(d) => d.exec(sb, script).await,
             Self::Container(d) => d.exec(sb, script).await,
+            Self::Firecracker(d) => d.exec(sb, script).await,
             Self::Lima(d) => d.exec(sb, script).await,
         }
     }
 
     /// Runs an interactive command (stdin/stdout piped).
-    pub async fn spawn(&self, sb: &Sandbox, script: &str) -> Result<tokio::process::Child> {
+    pub async fn spawn(&self, sb: &Sandbox, script: &str) -> Result<Running> {
         match self {
-            Self::Process(d) => d.spawn(sb, script).await,
-            Self::Container(d) => d.spawn(sb, script).await,
-            Self::Lima(d) => d.spawn(sb, script).await,
+            Self::Process(d) => d.spawn(sb, script).await.map(Running::child),
+            Self::Container(d) => d.spawn(sb, script).await.map(Running::child),
+            Self::Firecracker(d) => d.spawn(sb, script).await,
+            Self::Lima(d) => d.spawn(sb, script).await.map(Running::child),
         }
     }
 
@@ -500,6 +596,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.stop(sb).await,
             Self::Container(d) => d.stop(sb).await,
+            Self::Firecracker(d) => d.stop(sb).await,
             Self::Lima(d) => d.stop(sb).await,
         }
     }
@@ -508,6 +605,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.remove(sb).await,
             Self::Container(d) => d.remove(sb).await,
+            Self::Firecracker(d) => d.remove(sb).await,
             Self::Lima(d) => d.remove(sb).await,
         }
     }
@@ -517,6 +615,7 @@ impl Driver {
         match self {
             Self::Process(d) => d.list().await,
             Self::Container(d) => d.list().await,
+            Self::Firecracker(d) => d.list().await,
             Self::Lima(d) => d.list().await,
         }
     }
