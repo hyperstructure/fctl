@@ -362,10 +362,32 @@ impl<'a> Github<'a> {
             match status {
                 200 => return Ok(serde_json::from_value::<Installation>(v)?.info()),
                 404 => {}
-                _ => return Err(unavailable("GitHub did not answer")),
+                _ => return Err(unanswered(status, &v)),
             }
         }
         Ok(None)
+    }
+
+    /// What keeps fctl from signing in to GitHub as the app, asked once a
+    /// call it signed failed: fctl can't sign with its private key, or
+    /// GitHub refuses it (401). `None` when GitHub takes it, or doesn't say.
+    pub async fn key_problem(&self) -> Option<String> {
+        let jwt = match self.app_jwt().await {
+            Ok(jwt) => jwt,
+            Err(e) if e.0.code == ErrorCode::NotConfigured => return Some(e.0.message),
+            Err(_) => return None,
+        };
+        match self
+            .call(Method::Get, "/app", &format!("Bearer {jwt}"), None)
+            .await
+        {
+            Ok((401, v)) => Some(format!(
+                "GitHub refused the key in {} ({})",
+                self.cfg.key_var,
+                v.get("message").and_then(Value::as_str).unwrap_or("401")
+            )),
+            _ => None,
+        }
     }
 
     /// The installation that reaches `repo`, when the app is installed on
@@ -381,7 +403,7 @@ impl<'a> Github<'a> {
         match status {
             200 => Ok(serde_json::from_value::<Installation>(v)?.info()),
             404 => Ok(None),
-            _ => Err(unavailable("GitHub did not answer")),
+            _ => Err(unanswered(status, &v)),
         }
     }
 
@@ -1631,6 +1653,11 @@ struct Reach {
 
 fn refused(msg: &str) -> AppError {
     unavailable(&format!("GitHub refused a token: {msg}"))
+}
+
+/// GitHub's answer (`status`, `v`) to a lookup that takes only 200 or 404.
+fn unanswered(status: u16, v: &Value) -> AppError {
+    unavailable(&format!("GitHub answered {}", github_message(status, v)))
 }
 
 /// What GitHub said when it refused a request: its message, and the first

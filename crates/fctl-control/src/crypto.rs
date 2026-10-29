@@ -14,7 +14,7 @@ use crate::error::{AppError, AppResult, internal};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use fctl_domain::random_bytes;
 use fctl_proto::ApiError;
 use hmac::{Hmac, Mac};
@@ -158,40 +158,32 @@ pub fn subtle() -> AppResult<web_sys::SubtleCrypto> {
     Ok(crypto.subtle())
 }
 
-/// Signs `data` with RSASSA-PKCS1-v1_5 / SHA-256 using a PKCS#8 PEM key,
-/// from the variable `var`.
+/// Signs `data` with RSASSA-PKCS1-v1_5 / SHA-256 using a PKCS#8 PEM key
+/// (`fctl_domain::private_key`), from the variable `var`: `NotConfigured`,
+/// naming it, when it isn't a key WebCrypto imports.
 pub async fn rs256_sign(pem: &str, data: &[u8], var: &str) -> AppResult<Vec<u8>> {
-    let der = pem_to_der(pem, var)?;
+    let unusable = |why: String| AppError(ApiError::new(fctl_proto::ErrorCode::NotConfigured, why));
+    let der = fctl_domain::private_key::der(pem).map_err(|e| unusable(e.message(var)))?;
     let subtle = subtle()?;
     let algo = js_sys::Object::new();
     js_sys::Reflect::set(&algo, &"name".into(), &"RSASSA-PKCS1-v1_5".into())?;
     js_sys::Reflect::set(&algo, &"hash".into(), &"SHA-256".into())?;
     let usages = js_sys::Array::of1(&"sign".into());
     let key_data = js_sys::Uint8Array::from(der.as_slice());
-    let promise = subtle.import_key_with_object("pkcs8", &key_data, &algo, false, &usages)?;
-    let key: web_sys::CryptoKey = JsFuture::from(promise).await?.dyn_into()?;
+    let imported = match subtle.import_key_with_object("pkcs8", &key_data, &algo, false, &usages) {
+        Ok(promise) => JsFuture::from(promise).await,
+        Err(e) => Err(e),
+    };
+    let key: web_sys::CryptoKey = imported
+        .map_err(|e| {
+            worker::console_error!("importing {var}: {e:?}");
+            unusable(format!("{var} isn't an RSA private key WebCrypto imports"))
+        })?
+        .dyn_into()?;
     let data_vec = data.to_vec();
     let sig = subtle.sign_with_str_and_u8_array("RSASSA-PKCS1-v1_5", &key, &data_vec)?;
     let buf = JsFuture::from(sig).await?;
     Ok(js_sys::Uint8Array::new(&buf).to_vec())
-}
-
-/// `pem`'s key, from the variable `var`, which an error about it names.
-fn pem_to_der(pem: &str, var: &str) -> AppResult<Vec<u8>> {
-    if pem.contains("BEGIN RSA PRIVATE KEY") {
-        return Err(AppError(ApiError::new(
-            fctl_proto::ErrorCode::NotConfigured,
-            format!(
-                "{var} must be PKCS#8 (convert with: openssl pkcs8 -topk8 -nocrypt -in key.pem)"
-            ),
-        )));
-    }
-    let body: String = pem
-        .lines()
-        .filter(|l| !l.starts_with("-----"))
-        .flat_map(|l| l.trim().chars())
-        .collect();
-    STANDARD.decode(body).map_err(internal)
 }
 
 /// Whether `signature` is a passkey's over `data`, with WebCrypto: ES256

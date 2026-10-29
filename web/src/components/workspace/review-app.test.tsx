@@ -118,6 +118,29 @@ describe("ReviewAppSection", () => {
     expect(done.textContent).not.toContain("admins install");
   });
 
+  it("says why when fctl can't sign in as it, and that the GitHub App posts every review", () => {
+    const problem =
+      "fctl can't sign in to GitHub as fctl-review, so every review posts as fctl-sh: GitHub refused the key in GITHUB_REVIEW_APP_PRIVATE_KEY (A JSON web token could not be decoded).";
+    const c = render(<ReviewAppSection w={w} admin />, {
+      ...reviewApp([
+        {
+          account: "acme",
+          state: "unknown",
+          unreached: [],
+          install_url: "/api/v1/github-review/install?state=a",
+        },
+        { account: "hooli", state: "unknown", unreached: [] },
+      ]),
+      problem,
+    });
+    expect(c.querySelector('[role="alert"]')?.textContent).toBe(problem);
+    expect(rows(c)).toEqual([
+      "acmefctl can't tell whether fctl-review is installed here.Posts asfctl-sh",
+      "hoolifctl can't tell whether fctl-review is installed here.Posts asfctl-sh",
+    ]);
+    expect(links(c)).toEqual([["", "/api/v1/github-review/install?state=a"]]);
+  });
+
   it("shows nothing without a review app, or an account", () => {
     const none = render(<ReviewAppSection w={w} admin />, {
       configured: false,

@@ -83,6 +83,7 @@ pub async fn workspace(ctx: &Ctx, id: &str) -> AppResult<Response> {
             app: None,
             github_app,
             accounts: Vec::new(),
+            problem: None,
         });
     };
     let connections: Vec<ConnectionRow> = ws::connections(&ctx.db, a.id())
@@ -114,11 +115,26 @@ pub async fn workspace(ctx: &Ctx, id: &str) -> AppResult<Response> {
             install_url,
         });
     }
+    // Where GitHub didn't say, the review app's own key may be what fails:
+    // then nothing works as it, and every review posts as the GitHub App.
+    let mut problem = None;
+    if accounts.iter().any(|a| a.state == ReviewAppState::Unknown) {
+        problem = review.key_problem().await.map(|why| {
+            let ours = github_app
+                .as_ref()
+                .map_or("the GitHub App", |g| g.slug.as_str());
+            format!(
+                "fctl can't sign in to GitHub as {}, so every review posts as {ours}: {why}.",
+                review.slug()
+            )
+        });
+    }
     http::ok(&WorkspaceReviewApp {
         configured: true,
         app: Some(app_ref(review_cfg)),
         github_app,
         accounts,
+        problem,
     })
 }
 

@@ -60,6 +60,9 @@ test("GitHub's PKCS#1 keys become PKCS#8", () => {
   const pkcs8 = githubKey(pkcs1);
   assert.match(pkcs8, /^-----BEGIN PRIVATE KEY-----\n/);
   assert.equal(githubKey(pkcs1.trim().replaceAll("\n", "\\n")), pkcs8);
+  // Pasted on one line, its line breaks turned into spaces or dropped.
+  assert.equal(githubKey(pkcs1.trim().replaceAll("\n", " ")), pkcs8);
+  assert.equal(githubKey(pkcs8.trim().replaceAll("\n", "")), pkcs8);
   assert.throws(() => githubKey("not a key"), ConfigError);
   // The review app's too, which an error names.
   const { vars } = readConfig({

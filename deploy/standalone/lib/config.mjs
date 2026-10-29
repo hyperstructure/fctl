@@ -98,16 +98,25 @@ function trustProxy(raw) {
 /**
  * A GitHub App's private key as PKCS#8 PEM, which is what WebCrypto
  * imports. GitHub hands out PKCS#1 (`BEGIN RSA PRIVATE KEY`); a key pasted
- * into one line with `\n` for its line breaks works too. `name`: the
- * variable it came from, which an error names.
+ * into one line works too, with `\n` for its line breaks, spaces or
+ * nothing. `name`: the variable it came from, which an error names.
  */
 export function githubKey(pem, name = "GITHUB_APP_PRIVATE_KEY") {
-  const text = pem.includes("\n") ? pem : pem.replaceAll("\\n", "\n");
+  const text = lines(pem.includes("\n") ? pem : pem.replaceAll("\\n", "\n"));
   try {
     return createPrivateKey(text).export({ type: "pkcs8", format: "pem" });
   } catch {
     throw new ConfigError(`${name} is not a PEM private key`);
   }
+}
+
+/** A PEM key on one line, its line breaks turned into spaces or dropped, with them again. */
+function lines(pem) {
+  if (pem.includes("\n")) return pem;
+  const m = /^(-----BEGIN [A-Z ]+-----)(.+?)(-----END [A-Z ]+-----)$/.exec(pem.trim());
+  if (!m) return pem;
+  const body = m[2].replace(/\s+/g, "").match(/.{1,64}/g) ?? [];
+  return [m[1], ...body, m[3], ""].join("\n");
 }
 
 /**

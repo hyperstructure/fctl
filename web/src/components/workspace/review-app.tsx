@@ -110,28 +110,46 @@ export function ReviewAppSection({ w, admin }: { w: G.Workspace; admin: boolean 
         </div>
         <Thread app={app} ours={ours} />
       </div>
+      {r.problem && (
+        <Banner tone="error" className="mt-6">
+          {r.problem}
+        </Banner>
+      )}
       <ul className="mt-6 border-t border-line">
         {r.accounts.map((a) => (
-          <AccountRow key={a.account} w={w} a={a} app={app} ours={ours} admin={admin} />
+          <AccountRow
+            key={a.account}
+            w={w}
+            a={a}
+            app={app}
+            ours={ours}
+            admin={admin}
+            unusable={!!r.problem}
+          />
         ))}
       </ul>
     </section>
   );
 }
 
-/** One account: which app posts the reviews there, and for admins, the way to change that on GitHub. */
+/**
+ * One account: which app posts the reviews there, and for admins, the way to change that on GitHub.
+ * `unusable`: fctl can't sign in to GitHub as the review app, so the GitHub App posts every review.
+ */
 function AccountRow({
   w,
   a,
   app,
   ours,
   admin,
+  unusable,
 }: {
   w: G.Workspace;
   a: G.ReviewAppAccount;
   app: G.GithubAppRef;
   ours: G.GithubAppRef;
   admin: boolean;
+  unusable: boolean;
 }) {
   const url = admin ? a.install_url : undefined;
   const line = {
@@ -147,9 +165,16 @@ function AccountRow({
       </>
     ),
     not_installed: <>{app.slug} isn't installed here.</>,
-    unknown: <>GitHub didn't say whether {app.slug} is installed here.</>,
+    unknown: unusable ? (
+      <>fctl can't tell whether {app.slug} is installed here.</>
+    ) : (
+      <>GitHub didn't say whether {app.slug} is installed here.</>
+    ),
   }[a.state];
-  const poster = a.state === "not_installed" ? ours : app;
+  // Where GitHub didn't say, nobody knows who posts, but while fctl can't sign in as the review app, the
+  // GitHub App posts every review.
+  const poster = a.state === "not_installed" || a.state === "unknown" ? ours : app;
+  const unsure = a.state === "unknown" && !unusable;
   return (
     <li className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 border-b border-line py-3.5">
       <GithubAvatar account={a.account} />
@@ -158,7 +183,7 @@ function AccountRow({
         <p className="mt-0.5 text-[12px] leading-relaxed text-ink-4">{line}</p>
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2 max-sm:w-full max-sm:pl-[46px]">
-        {a.state !== "unknown" && (
+        {!unsure && (
           <span
             className={cn(
               "inline-flex items-center gap-1.5 text-[12.5px]",
