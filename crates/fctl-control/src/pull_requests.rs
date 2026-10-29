@@ -58,12 +58,15 @@ pub fn enabled(cfg: &Config) -> bool {
         .is_some_and(|g| g.webhook_secret.is_some())
 }
 
-/// GitHub's id of the instance's GitHub App, whose review checks lookups
-/// tell apart from the others (`webhooks::looked_up`).
-fn app_id(cfg: &Config) -> Option<u64> {
+/// GitHub's ids of the instance's GitHub App and of the app review agents
+/// post as, whose review checks lookups tell apart from the others
+/// (`webhooks::looked_up`).
+fn app_ids(cfg: &Config) -> Vec<u64> {
     cfg.github
-        .as_ref()
-        .and_then(|g| g.app_id.trim().parse().ok())
+        .iter()
+        .chain(&cfg.github_review)
+        .filter_map(|g| g.app_id.trim().parse().ok())
+        .collect()
 }
 
 /// How `pull_request_sessions` names a repository.
@@ -271,7 +274,7 @@ pub async fn hook(
             let hints = payload.map(webhooks::Payload::hints).unwrap_or_default();
             let looked = answer
                 .as_ref()
-                .and_then(|a| webhooks::looked_up(a, i, now, hints, app_id(cfg)))
+                .and_then(|a| webhooks::looked_up(a, i, now, hints, &app_ids(cfg)))
                 .or_else(|| {
                     payload.map(|p| Looked {
                         pr: p.seen.clone(),
@@ -316,7 +319,7 @@ pub async fn hook(
             for (i, (repo, number)) in others.into_iter().enumerate() {
                 let looked = answer
                     .as_ref()
-                    .and_then(|a| webhooks::looked_up(a, i, now, Hints::default(), app_id(cfg)));
+                    .and_then(|a| webhooks::looked_up(a, i, now, Hints::default(), &app_ids(cfg)));
                 if looked.is_some() {
                     seen.push(Seen {
                         repo,
@@ -541,7 +544,7 @@ pub async fn refresh(
                     repo: repo.clone(),
                     number: *number,
                     looked: answer.as_ref().ok().and_then(|a| {
-                        webhooks::looked_up(a, i, now, Hints::default(), app_id(cfg))
+                        webhooks::looked_up(a, i, now, Hints::default(), &app_ids(cfg))
                     }),
                     checks: true,
                 })
@@ -679,7 +682,7 @@ pub async fn ask_again(
             .map(|(i, (repo, number))| Seen {
                 repo,
                 number,
-                looked: webhooks::looked_up(&answer, i, now, Hints::default(), app_id(cfg)),
+                looked: webhooks::looked_up(&answer, i, now, Hints::default(), &app_ids(cfg)),
                 checks: false,
             })
             .collect();

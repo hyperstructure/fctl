@@ -1563,12 +1563,37 @@ pub fn said(r: &ReviewCheck) -> String {
 
 // ───────────────────────────── earlier reviews ─────────────────────────────
 
-/// A pull request's review threads, with the first comments of each, and
-/// whether the token's app wrote them.
-const THREADS: &str = "reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine comments(first: 20) { nodes { id url body viewerDidAuthor author { login } } } } }";
+/// A pull request's review threads, with the first comments of each and
+/// who wrote them.
+const THREADS: &str = "reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine comments(first: 20) { nodes { id url body author { __typename login } } } } }";
 
 /// The newest comments on a pull request, among them fctl's summaries.
-const COMMENTS: &str = "comments(last: 100) { nodes { id body isMinimized viewerDidAuthor } }";
+const COMMENTS: &str =
+    "comments(last: 100) { nodes { id body isMinimized author { __typename login } } }";
+
+/// Which of the instance's GitHub Apps `apps` wrote a comment, as
+/// [`THREADS`] and [`COMMENTS`] have it: GraphQL names an app's bot by its
+/// slug, without `[bot]`, and nobody else is a `Bot` by that name. Going by
+/// the author rather than by whether the token's app wrote it, the reviews
+/// one of them posted are fctl's when the other reads them: those of the
+/// GitHub App from before the app review agents post as was installed,
+/// and the review app's when it's gone again.
+fn written_by<'a>(comment: &Value, apps: &[&'a str]) -> Option<&'a str> {
+    if comment
+        .pointer("/author/__typename")
+        .and_then(Value::as_str)
+        != Some("Bot")
+    {
+        return None;
+    }
+    let login = comment.pointer("/author/login").and_then(Value::as_str)?;
+    let login = login.strip_suffix("[bot]").unwrap_or(login);
+    apps.iter().copied().find(|app| {
+        app.strip_suffix("[bot]")
+            .unwrap_or(app)
+            .eq_ignore_ascii_case(login)
+    })
+}
 
 fn pull_request_query(repo: &RepoRef, number: u64, fields: &str) -> Value {
     json!({
@@ -1582,7 +1607,7 @@ fn pull_request_query(repo: &RepoRef, number: u64, fields: &str) -> Value {
 }
 
 /// The GraphQL query for a pull request's review threads, with the first
-/// comments of each, and whether the token's app wrote them.
+/// comments of each and who wrote them.
 pub fn threads_query(repo: &RepoRef, number: u64) -> Value {
     pull_request_query(repo, number, THREADS)
 }
@@ -1606,8 +1631,11 @@ pub struct Thread {
     pub comment_id: String,
     pub body: String,
     pub url: Option<String>,
-    /// fctl's review agents started it: the token's app wrote its first
-    /// comment, which ends with [`MARKER`].
+    /// The instance's app that wrote its first comment, by its slug as
+    /// [`threads`] was given it, where one did.
+    pub by: Option<String>,
+    /// fctl's review agents started it: one of the instance's apps wrote
+    /// its first comment, which ends with [`MARKER`].
     pub ours: bool,
     /// The review session that started it, as fctl notes in its first
     /// comment ([`Note`]); none in fctl's from before it did.
@@ -1615,8 +1643,10 @@ pub struct Thread {
     pub replies: Vec<ThreadReply>,
 }
 
-/// The threads in GitHub's answer to [`threads_query`].
-pub fn threads(answer: &Value) -> Vec<Thread> {
+/// The threads in GitHub's answer to [`threads_query`]. `apps`: the
+/// instance's GitHub Apps, by slug (`fctl`, or `fctl[bot]`): its GitHub
+/// App, and the one review agents post as where it's installed.
+pub fn threads(answer: &Value, apps: &[&str]) -> Vec<Thread> {
     let nodes = answer
         .pointer("/data/repository/pullRequest/reviewThreads/nodes")
         .and_then(Value::as_array);
@@ -1627,10 +1657,7 @@ pub fn threads(answer: &Value) -> Vec<Thread> {
             let comments = t.pointer("/comments/nodes")?.as_array()?;
             let first = comments.first()?;
             let body = first.get("body")?.as_str()?.to_owned();
-            let mine = first
-                .get("viewerDidAuthor")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            let by = written_by(first, apps);
             let line = |key: &str| {
                 t.get(key)
                     .and_then(Value::as_u64)
@@ -1647,7 +1674,8 @@ pub fn threads(answer: &Value) -> Vec<Thread> {
                 line: line("line").or_else(|| line("originalLine")),
                 comment_id: first.get("id")?.as_str()?.to_owned(),
                 url: first.get("url").and_then(Value::as_str).map(str::to_owned),
-                ours: mine && body.contains(MARKER),
+                ours: by.is_some() && body.contains(MARKER),
+                by: by.map(str::to_owned),
                 session: Note::of(&body).map(|n| n.session),
                 body,
                 replies: comments
@@ -1701,6 +1729,9 @@ pub struct Summary {
     /// GitHub's node id of the comment.
     pub id: String,
     pub body: String,
+    /// The instance's app that wrote it, by its slug as [`summaries`] was
+    /// given it.
+    pub by: String,
     /// GitHub hides it: as outdated, once the issues it sums up were
     /// addressed, or because someone hid it.
     pub minimized: bool,
@@ -1708,10 +1739,10 @@ pub struct Summary {
 }
 
 /// fctl's summaries in GitHub's answer to [`posting_query`]: the comments
-/// the token's app wrote with fctl's mark and a note of the issues they
-/// sum up. The reviews fctl posted before it wrote summaries of their own
-/// have none.
-pub fn summaries(answer: &Value) -> Vec<Summary> {
+/// one of the instance's apps (`apps`, as for [`threads`]) wrote with
+/// fctl's mark and a note of the issues they sum up. The reviews fctl
+/// posted before it wrote summaries of their own have none.
+pub fn summaries(answer: &Value, apps: &[&str]) -> Vec<Summary> {
     let nodes = answer
         .pointer("/data/repository/pullRequest/comments/nodes")
         .and_then(Value::as_array);
@@ -1719,14 +1750,15 @@ pub fn summaries(answer: &Value) -> Vec<Summary> {
         .into_iter()
         .flatten()
         .filter_map(|c| {
-            let mine = c.get("viewerDidAuthor").and_then(Value::as_bool)?;
+            let by = written_by(c, apps)?;
             let body = c.get("body")?.as_str()?;
-            if !mine || !body.contains(MARKER) {
+            if !body.contains(MARKER) {
                 return None;
             }
             Some(Summary {
                 id: c.get("id")?.as_str()?.to_owned(),
                 body: body.to_owned(),
+                by: by.to_owned(),
                 minimized: c
                     .get("isMinimized")
                     .and_then(Value::as_bool)
@@ -3210,40 +3242,67 @@ mod tests {
         assert_eq!(r(Failed, false, 0, 0), "fctl's review failed");
     }
 
+    /// The instance's apps: its GitHub App and the one review agents post as.
+    const APPS: [&str; 2] = ["fctl", "fctl-review"];
+
     #[test]
     fn threads_show_ours_without_fctls_marks() {
         let mine = format!(
             "### Old finding\n\nbody\n\n<!-- fctl review: {{\"session\":\"ses_1\"}} -->\n{MARKER}"
         );
+        let bot = |login: &str| json!({ "__typename": "Bot", "login": login });
+        let person = |login: &str| json!({ "__typename": "User", "login": login });
         let answer = json!({ "data": { "repository": { "pullRequest": { "reviewThreads": { "nodes": [
             { "id": "PRRT_1", "isResolved": false, "isOutdated": true, "path": "a.rs", "line": null, "originalLine": 7,
               "comments": { "nodes": [
-                { "id": "PRRC_1", "url": "https://github.com/acme/web/pull/12#discussion_r1", "body": mine, "viewerDidAuthor": true, "author": { "login": "fctl" } },
-                { "id": "PRRC_2", "body": "That's intended.", "viewerDidAuthor": false, "author": { "login": "ada" } }
+                { "id": "PRRC_1", "url": "https://github.com/acme/web/pull/12#discussion_r1", "body": mine, "author": bot("fctl") },
+                { "id": "PRRC_2", "body": "That's intended.", "author": person("ada") }
               ] } },
             { "id": "PRRT_2", "isResolved": false, "isOutdated": false, "path": "b.rs", "line": 3,
               "comments": { "nodes": [
-                { "id": "PRRC_3", "body": "A person's comment", "viewerDidAuthor": false, "author": { "login": "ada" } }
+                { "id": "PRRC_3", "body": "A person's comment", "author": person("ada") }
               ] } },
             { "id": "PRRT_3", "isResolved": true, "isOutdated": false, "path": "c.rs", "line": 1,
               "comments": { "nodes": [
-                { "id": "PRRC_4", "body": "Another agent's comment, by the same app", "viewerDidAuthor": true, "author": { "login": "fctl" } }
-              ] } }
+                { "id": "PRRC_4", "body": "Another agent's comment, by the same app", "author": bot("fctl") }
+              ] } },
+            // The app review agents post as wrote this one.
+            { "id": "PRRT_4", "isResolved": false, "isOutdated": false, "path": "d.rs", "line": 2,
+              "comments": { "nodes": [
+                { "id": "PRRC_5", "body": mine, "author": bot("fctl-review") }
+              ] } },
+            // A person who calls themselves fctl, quoting fctl, and another
+            // instance's app: not ours.
+            { "id": "PRRT_5", "isResolved": false, "isOutdated": false, "path": "e.rs", "line": 2,
+              "comments": { "nodes": [ { "id": "PRRC_6", "body": mine, "author": person("fctl") } ] } },
+            { "id": "PRRT_6", "isResolved": false, "isOutdated": false, "path": "e.rs", "line": 3,
+              "comments": { "nodes": [ { "id": "PRRC_7", "body": mine, "author": bot("acme-fctl") } ] } },
+            { "id": "PRRT_7", "isResolved": false, "isOutdated": false, "path": "e.rs", "line": 4,
+              "comments": { "nodes": [ { "id": "PRRC_8", "body": mine, "author": null } ] } }
         ] } } } } });
-        let all = threads(&answer);
-        assert_eq!(all.len(), 3);
-        assert!(all[0].ours && !all[1].ours && !all[2].ours);
+        let all = threads(&answer, &APPS);
+        assert_eq!(all.len(), 7);
+        let ours: Vec<bool> = all.iter().map(|t| t.ours).collect();
+        assert_eq!(ours, [true, false, false, true, false, false, false]);
+        assert_eq!(all[0].by.as_deref(), Some("fctl"));
+        assert_eq!(all[2].by.as_deref(), Some("fctl"));
+        assert_eq!(all[3].by.as_deref(), Some("fctl-review"));
+        assert_eq!(all[1].by, None);
+        assert_eq!(all[4].by, None);
         assert_eq!(all[0].line, Some(7));
         assert_eq!(all[0].comment_id, "PRRC_1");
         assert_eq!(all[0].session.as_deref(), Some("ses_1"));
         assert_eq!(all[1].session, None);
+        // Without the review app, its threads are another app's.
+        assert!(!threads(&answer, &["fctl[bot]"])[3].ours);
+        assert!(threads(&answer, &["fctl[bot]"])[0].ours);
         let ours = finding_threads(&all);
-        assert_eq!(ours.len(), 1);
+        assert_eq!(ours.len(), 2);
         assert_eq!(ours[0].body, "### Old finding\n\nbody");
         assert!(ours[0].outdated);
         assert_eq!(ours[0].replies[0].author.as_deref(), Some("ada"));
         assert_eq!(ours[0].replies[0].body, "That's intended.");
-        assert!(threads(&json!({ "errors": [] })).is_empty());
+        assert!(threads(&json!({ "errors": [] }), &APPS).is_empty());
         let edit = edit_comment("PRRC_1", "new");
         assert_eq!(edit["variables"]["id"], "PRRC_1");
     }
@@ -3265,6 +3324,7 @@ mod tests {
             comment_id: format!("C_{id}"),
             body,
             url: None,
+            by: Some("fctl".into()),
             ours: true,
             session: Some(session.into()),
             replies: Vec::new(),
@@ -3287,6 +3347,7 @@ mod tests {
             id: "IC_1".into(),
             note: Note::of(&body).unwrap_or_default(),
             body,
+            by: "fctl".into(),
             minimized: false,
         }
     }
@@ -3312,28 +3373,37 @@ mod tests {
                 .contains("comments(last: 100)")
         );
         assert!(posting["query"].as_str().unwrap_or_default().ends_with(
-            "comments(last: 100) { nodes { id body isMinimized viewerDidAuthor } } } } }"
+            "comments(last: 100) { nodes { id body isMinimized author { __typename login } } } } } }"
         ));
 
         let ours = summary_of(2).body;
+        let fctl = json!({ "__typename": "Bot", "login": "fctl" });
         let answer = json!({ "data": { "repository": { "pullRequest": { "comments": { "nodes": [
-            { "id": "IC_1", "body": ours, "isMinimized": false, "viewerDidAuthor": true },
-            { "id": "IC_2", "body": ours, "isMinimized": true, "viewerDidAuthor": true },
+            { "id": "IC_1", "body": ours, "isMinimized": false, "author": fctl },
+            { "id": "IC_2", "body": ours, "isMinimized": true, "author": fctl },
             // A person quoting it, another agent of the same app, and an
             // older review's text: no summaries.
-            { "id": "IC_3", "body": ours, "isMinimized": false, "viewerDidAuthor": false },
-            { "id": "IC_4", "body": "I opened #12.", "isMinimized": false, "viewerDidAuthor": true },
-            { "id": "IC_5", "body": format!("**fctl reviewed it.**\n\n{MARKER}"), "isMinimized": false, "viewerDidAuthor": true },
+            { "id": "IC_3", "body": ours, "isMinimized": false, "author": { "__typename": "User", "login": "ada" } },
+            { "id": "IC_4", "body": "I opened #12.", "isMinimized": false, "author": fctl },
+            { "id": "IC_5", "body": format!("**fctl reviewed it.**\n\n{MARKER}"), "isMinimized": false, "author": fctl },
             // A finding's note, which counts no issues.
-            { "id": "IC_6", "body": format!("<!-- fctl review: {{\"session\":\"ses_1\"}} -->\n{MARKER}"), "isMinimized": false, "viewerDidAuthor": true }
+            { "id": "IC_6", "body": format!("<!-- fctl review: {{\"session\":\"ses_1\"}} -->\n{MARKER}"), "isMinimized": false, "author": fctl },
+            // The app review agents post as wrote this one.
+            { "id": "IC_7", "body": ours, "isMinimized": false, "author": { "__typename": "Bot", "login": "fctl-review" } }
         ] } } } } });
-        let found = summaries(&answer);
-        assert_eq!(found.len(), 2);
+        let found = summaries(&answer, &APPS);
+        assert_eq!(found.len(), 3);
         assert_eq!((found[0].id.as_str(), found[0].minimized), ("IC_1", false));
         assert_eq!((found[1].id.as_str(), found[1].minimized), ("IC_2", true));
+        assert_eq!(
+            (found[2].id.as_str(), found[2].by.as_str()),
+            ("IC_7", "fctl-review")
+        );
+        assert_eq!(found[0].by, "fctl");
         assert_eq!(found[0].note.session, "ses_1");
         assert_eq!(found[0].note.found, Some(2));
-        assert!(summaries(&json!({ "errors": [] })).is_empty());
+        assert_eq!(summaries(&answer, &["fctl"]).len(), 2);
+        assert!(summaries(&json!({ "errors": [] }), &APPS).is_empty());
 
         let edit = edit_summary("IC_1", "new");
         assert!(
@@ -3548,6 +3618,7 @@ mod tests {
             id: "IC_2".into(),
             note: Note::of(&body).unwrap_or_default(),
             body,
+            by: "fctl".into(),
             minimized: false,
         };
         let one = Standing {

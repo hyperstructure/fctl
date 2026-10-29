@@ -460,6 +460,8 @@ export const workspaces = {
   removeRunner: (id: string, runner: string) =>
     request<G.RunnerList>("DELETE", `/workspaces/${enc(id)}/runners/${enc(runner)}`),
   github: (id: string) => request<G.WorkspaceGithub>("GET", `/workspaces/${enc(id)}/github`),
+  // Which app posts review agents' reviews on each of its GitHub accounts.
+  reviewApp: (id: string) => request<G.WorkspaceReviewApp>("GET", `/workspaces/${enc(id)}/github/review-app`),
   // The link to the GitHub sign-in that connects the account.
   connectGithub: (id: string, b: G.ConnectGithubRequest) =>
     request<G.ConnectGithubLink>("POST", `/workspaces/${enc(id)}/github/connect`, b),

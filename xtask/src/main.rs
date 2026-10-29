@@ -57,7 +57,7 @@ Self-host without Cloudflare (deploy/standalone)
 Deploy (deploy/instances/<name>.toml)
   deploy <name> [--create] [--dry-run] [--skip-build]
                                 Build and deploy an instance (--create makes its D1 database)
-  secrets <name> [--github-key <pem>] [--set <NAME>]... [--new-setup-token]
+  secrets <name> [--github-key <pem>] [--github-review-key <pem>] [--set <NAME>]... [--new-setup-token]
                                 Set the instance's secrets; --set reads values from stdin
   site                          Where https://fctl.sh lives now (hyperstructure/fctl-site)
 
@@ -159,6 +159,7 @@ fn main() -> Result<()> {
         "secrets" => {
             let opts = deploy::SecretOpts {
                 github_key: a.value("--github-key")?.map(PathBuf::from),
+                github_review_key: a.value("--github-review-key")?.map(PathBuf::from),
                 set: a.values("--set")?,
                 new_setup_token: a.flag("--new-setup-token"),
             };

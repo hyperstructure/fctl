@@ -38,6 +38,7 @@ pub mod reconcile;
 pub mod remote_control;
 pub mod repos;
 pub mod retrospectives;
+pub mod review_app;
 pub mod reviews;
 pub mod schedule;
 pub mod schedules;

@@ -45,6 +45,7 @@ import {
 } from "@/components/ui";
 import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
 import { LinearTab } from "@/components/workspace/linear";
+import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
 import { avatarImage } from "@/lib/avatar-image";
@@ -1143,8 +1144,18 @@ export const GITHUB_OUTCOMES = [
   "other_user",
   "asked_owner",
   "installed",
+  // Installing the review app (`api::review_app`).
+  "review_installed",
+  "review_asked",
+  "review_changed",
+  "review_expired",
+  "review_failed",
 ] as const;
 export type GithubOutcome = (typeof GITHUB_OUTCOMES)[number];
+
+/** How installing the review app went, as GitHub's setup URL brings the browser back. */
+type ReviewAppOutcome = Extract<GithubOutcome, `review_${string}`>;
+const reviewAppOutcome = (o: GithubOutcome): o is ReviewAppOutcome => o.startsWith("review_");
 
 /** Why GitHub's answer let nothing be connected (`fctl_domain::github::Refusal`). */
 export const GITHUB_REFUSALS = ["no_installation", "no_admin", "not_admin", "unreachable"] as const;
@@ -1186,6 +1197,7 @@ function Returned({
   app: string;
 }) {
   const repos = connection?.repos;
+  if (reviewAppOutcome(outcome)) return <ReviewAppReturned w={w} outcome={outcome} account={account} />;
   switch (outcome) {
     case "choose":
       return choosing ? null : (
@@ -1589,6 +1601,7 @@ function Github({
           <li className="py-6 text-[13.5px] text-ink-4">{w.name} works in no GitHub account yet.</li>
         )}
       </ul>
+      <ReviewAppSection w={w} admin={admin} />
       {admin && g && !g.can_connect && (
         <Banner tone="info" className="mt-8">
           Connecting {another ? "another" : "an"} account takes signing in to GitHub, which this instance

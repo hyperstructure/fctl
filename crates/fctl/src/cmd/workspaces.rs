@@ -9,8 +9,8 @@ use clap::{ArgGroup, Subcommand, ValueEnum};
 use fctl_client::Api;
 use fctl_proto::api::{
     BaseRole, ConnectGithubRequest, CreateWorkspaceRequest, GithubConnectionStatus,
-    InviteToWorkspaceRequest, Runner, UpdateMembershipRequest, UpdateWorkspaceRequest, Workspace,
-    WorkspaceInvitation, WorkspaceMember,
+    InviteToWorkspaceRequest, ReviewAppAccount, ReviewAppState, Runner, UpdateMembershipRequest,
+    UpdateWorkspaceRequest, Workspace, WorkspaceInvitation, WorkspaceMember, WorkspaceReviewApp,
 };
 use fctl_proto::session::{WorkspaceColor, WorkspaceRole};
 use std::io::{BufRead, IsTerminal, Write};
@@ -281,6 +281,15 @@ pub enum WorkspacesCmd {
     },
     /// The GitHub accounts a workspace works in.
     Github {
+        /// The workspace (slug or id); default from `fctl workspaces use`,
+        /// else your only one.
+        #[arg(short, long)]
+        workspace: Option<String>,
+    },
+    /// Which GitHub App review agents post their reviews as on each of a
+    /// workspace's GitHub accounts: the instance's review app where it's
+    /// installed, else its GitHub App. Admins get links that install it.
+    ReviewApp {
         /// The workspace (slug or id); default from `fctl workspaces use`,
         /// else your only one.
         #[arg(short, long)]
@@ -999,6 +1008,13 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                     style::amber("waiting for you to choose, on its GitHub tab")
                 );
             }
+            // Which app posts the reviews, where the instance has a review app.
+            if !g.connections.is_empty()
+                && let Ok(r) = api.workspace_review_app(w.id.as_str()).await
+                && let Some(line) = reviews_post_as(&r)
+            {
+                println!("{}", style::dim(&line));
+            }
             if let Some(url) = &g.install_url {
                 println!(
                     "{}",
@@ -1014,6 +1030,55 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                         "Connecting accounts takes signing in to GitHub, which this instance isn't set up for: its admins add the GitHub App's client secret."
                     )
                 );
+            }
+        }
+        WorkspacesCmd::ReviewApp { workspace } => {
+            let w = resolve(&api, workspace).await?;
+            let r = api.workspace_review_app(w.id.as_str()).await?;
+            if json {
+                return style::print_json(&r);
+            }
+            let github_app = r
+                .github_app
+                .as_ref()
+                .map_or("the GitHub App", |a| a.slug.as_str());
+            let Some(app) = r.app.as_ref().filter(|_| r.configured) else {
+                println!(
+                    "This instance has no review app: review agents post their reviews as {github_app}, which its agents act as on GitHub."
+                );
+                return Ok(());
+            };
+            let app = app.slug.as_str();
+            println!(
+                "Review agents post their reviews as {} where it's installed, apart from what agents write as {github_app}; elsewhere as {github_app}.",
+                style::bold(app)
+            );
+            if r.accounts.is_empty() {
+                println!(
+                    "{} works in no GitHub account yet. Connect one with `fctl workspaces connect`.",
+                    w.name
+                );
+                return Ok(());
+            }
+            println!();
+            for a in &r.accounts {
+                let (posts, state) = review_app_state(a, app, github_app);
+                println!("{:<24} {:<14} {}", style::bold(&a.account), posts, state);
+            }
+            for a in &r.accounts {
+                let Some(url) = a.install_url.as_deref() else {
+                    continue;
+                };
+                let what = match a.state {
+                    ReviewAppState::NotInstalled => format!("Install {app} on {}", a.account),
+                    ReviewAppState::Partly => {
+                        format!("Give {app} the rest of {}'s repositories", a.account)
+                    }
+                    ReviewAppState::Installed | ReviewAppState::Unknown => continue,
+                };
+                println!();
+                println!("{what}, in a browser where you're signed in to fctl:");
+                println!("  {}", style::terminal_safe(url));
             }
         }
         WorkspacesCmd::Connect {
@@ -1432,4 +1497,121 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
         }
     }
     Ok(())
+}
+
+/// Which app posts the reviews on review app `r`'s accounts, in a line:
+/// `None` without a review app.
+fn reviews_post_as(r: &WorkspaceReviewApp) -> Option<String> {
+    let app = r.app.as_ref().filter(|_| r.configured)?.slug.as_str();
+    let github_app = r
+        .github_app
+        .as_ref()
+        .map_or("the GitHub App", |a| a.slug.as_str());
+    let of = |state: ReviewAppState| -> Vec<String> {
+        r.accounts
+            .iter()
+            .filter(|a| a.state == state)
+            .map(|a| a.account.clone())
+            .collect()
+    };
+    let (missing, partly) = (of(ReviewAppState::NotInstalled), of(ReviewAppState::Partly));
+    if missing.len() == r.accounts.len() {
+        return Some(format!(
+            "Review agents post their reviews as {github_app}, as agents act on GitHub; installing {app} tells them apart: `fctl workspaces review-app`."
+        ));
+    }
+    let mut elsewhere: Vec<String> = missing;
+    elsewhere.extend(partly.iter().map(|a| format!("some repositories of {a}")));
+    Some(match elsewhere.as_slice() {
+        [] => format!("Review agents post their reviews as {app}."),
+        _ => format!(
+            "Review agents post their reviews as {app}, but as {github_app} in {}: `fctl workspaces review-app` says more.",
+            elsewhere.join(" and ")
+        ),
+    })
+}
+
+/// Which app posts the reviews on an account, and how the review app
+/// stands there, for `fctl workspaces review-app`.
+fn review_app_state(a: &ReviewAppAccount, app: &str, github_app: &str) -> (String, String) {
+    match a.state {
+        ReviewAppState::Installed => (app.to_owned(), style::accent("installed")),
+        ReviewAppState::Partly => (
+            app.to_owned(),
+            style::amber(&format!(
+                "it doesn't reach {}, whose reviews post as {github_app}",
+                a.unreached.join(", ")
+            )),
+        ),
+        ReviewAppState::NotInstalled => (
+            github_app.to_owned(),
+            style::dim(&format!("{app} isn't installed there")),
+        ),
+        ReviewAppState::Unknown => (
+            "?".to_owned(),
+            style::dim(&format!(
+                "GitHub didn't say whether {app} is installed there"
+            )),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fctl_proto::api::GithubAppRef;
+
+    fn review_app(states: &[(&str, ReviewAppState)]) -> WorkspaceReviewApp {
+        let app = |slug: &str| GithubAppRef {
+            slug: slug.into(),
+            avatar_url: None,
+        };
+        WorkspaceReviewApp {
+            configured: true,
+            app: Some(app("fctl-review")),
+            github_app: Some(app("fctl-sh")),
+            accounts: states
+                .iter()
+                .map(|(account, state)| ReviewAppAccount {
+                    account: (*account).into(),
+                    state: *state,
+                    unreached: Vec::new(),
+                    install_url: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn says_which_app_posts_the_reviews() {
+        use ReviewAppState::*;
+        let line = |states: &[(&str, ReviewAppState)]| reviews_post_as(&review_app(states));
+        assert_eq!(
+            line(&[("acme", Installed)]).as_deref(),
+            Some("Review agents post their reviews as fctl-review.")
+        );
+        assert_eq!(
+            line(&[
+                ("acme", Installed),
+                ("globex", NotInstalled),
+                ("initech", Partly)
+            ])
+            .as_deref(),
+            Some(
+                "Review agents post their reviews as fctl-review, but as fctl-sh in globex and some repositories of initech: `fctl workspaces review-app` says more."
+            )
+        );
+        assert_eq!(
+            line(&[("acme", NotInstalled)]).as_deref(),
+            Some(
+                "Review agents post their reviews as fctl-sh, as agents act on GitHub; installing fctl-review tells them apart: `fctl workspaces review-app`."
+            )
+        );
+        let none = WorkspaceReviewApp {
+            configured: false,
+            app: None,
+            ..review_app(&[])
+        };
+        assert_eq!(reviews_post_as(&none), None);
+    }
 }

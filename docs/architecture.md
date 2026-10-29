@@ -637,6 +637,26 @@ the runner the session runs on only, so that disconnecting an account takes
 it from running sessions at their next refresh, within the hour. New
 repositories are created in an organization the workspace uses all of.
 
+The instance may have a second app, which review agents post their
+reviews as where it's installed (the review app, `GITHUB_REVIEW_APP_ID`
+and the like, `Config::github_review`; app.fctl.sh's is `fctl-review`), so
+that people tell a review agent's findings apart from what agents write as
+the GitHub App ([Review agents](#review-agents)). Nothing connects it, and
+it signs nobody in: fctl uses it only on repositories a workspace connected
+through the GitHub App, where its installation on the same account (by
+GitHub's id) reaches the repository, so installing it on the account is all
+it takes. The workspace's GitHub tab says where it is on each of the
+workspace's accounts (`GET /api/v1/workspaces/{id}/github/review-app`,
+`fctl workspaces review-app`): installed, missing some of the repositories
+the workspace's projects write to, which it names, or not installed
+(`fctl_domain::review_app::state`). Its admins get a link
+(`/api/v1/github-review/install`) that goes on to GitHub to install it on
+the account, on the repositories the workspace connected there, or to its
+installation's settings where it's installed already, keeping the
+workspace in a signed cookie (`__Host-fctl-github-review-install`, for an
+hour) for its setup URL (`…/api/v1/github-review/installed`, with Redirect
+on update), which changes nothing and brings the browser back to the tab.
+
 ### Runners and workspaces
 
 A runner belongs to the person who registered it (`runners.created_by`) and
@@ -1145,7 +1165,8 @@ session that stopped looks up nothing, so GitHub tells the control plane
    every run of a check, but the pull request shows its latest run alone,
    so a run that a re-run, or the next run of its workflow for the same
    commit, replaced counts no more. The instance's own review check
-   (`fctl review`, run by its GitHub App) counts in none of them: GitHub
+   (`fctl review`, run by its GitHub App or its review app) counts in
+   none of them: GitHub
    counts its neutral conclusion as passed, which is how a review that
    found issues ends ([Review agents](#review-agents)). The lookup says
    how the review stands instead (`checks.review`,
@@ -1300,7 +1321,14 @@ skip, drafts too, and fctl posts what it found on GitHub
    reaction to the pull request and a check on the commit, `fctl review`,
    queued until a runner takes the session and in progress after
    (`crate::reviews::started`), with a link to the session, which is also
-   its `external_id`. GitHub's webhook says nothing of a check that only
+   its `external_id`. It writes them, and all the review posts later, as
+   the [review app](#github-accounts) where that reaches the repository on
+   the account the workspace connected, else as the GitHub App, and keeps
+   which (`reviews.review_installation_id`, `crate::reviews::Writer`):
+   only the app that created a check may change it, so a review keeps its
+   app to the end, and posts as the GitHub App only once the review app's
+   installation is gone
+   ([ADR 0066](adr/0066-review-agents-post-as-a-github-app-of-their-own.md)). GitHub's webhook says nothing of a check that only
    went from queued to in progress, so the control plane then looks the
    pull request up itself, and the sessions that list it see that the
    review runs ([Pull request state and checks](#pull-request-state-and-checks)).
@@ -1316,8 +1344,10 @@ skip, drafts too, and fctl posts what it found on GitHub
    lines (`place`), so that GitHub shows the summary above them, on the
    web and in its apps alike; marks each earlier finding it names fixed
    in this commit, its title struck through, and resolves its thread, for
-   fctl's own threads alone (the token's app wrote them, and they carry
-   fctl's mark); puts atop each earlier review's summary how the issues
+   fctl's own threads alone (one of the instance's apps wrote them, by
+   their author, and they carry fctl's mark), each comment edited by the
+   app that wrote it, which GitHub is sure to let, so that reviews posted
+   before the review app was installed are marked and summed up too; puts atop each earlier review's summary how the issues
    it found stand (`restated`: fixed, or resolved by someone, going by
    the threads its session started, which fctl notes out of sight in
    every comment it posts), and hides the summary as outdated once all of
@@ -1371,8 +1401,8 @@ page's rail links the session whose agent opened the pull request
 (`opener`, as in step 6), whatever the review found, when that session is
 in the review's project, so that everyone who sees the review can open it
 (`Review.opened_by`). Checks need
-the GitHub App's Checks permission (read and write): without it, reviews
-run and post, and say why their commit shows no check
+the Checks permission (read and write) of the app that posts them: without
+it, reviews run and post, and say why their commit shows no check
 ([Self-hosting](self-hosting.md#connect-github-optional-recommended)).
 
 ### Follow-ups

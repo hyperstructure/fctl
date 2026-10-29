@@ -458,7 +458,7 @@ pub async fn dismiss(ctx: &mut Ctx, id: &str, account: &str) -> AppResult<Respon
 // ───────────────────────────── signing in to GitHub ─────────────────────────────
 
 /// Sends people who aren't signed in to fctl to sign in first, and back here.
-fn sign_in_first(req: &Request) -> AppResult<Response> {
+pub(crate) fn sign_in_first(req: &Request) -> AppResult<Response> {
     let here = req.url()?;
     let next: String = url::form_urlencoded::byte_serialize(
         format!("{}?{}", here.path(), here.query().unwrap_or_default()).as_bytes(),
@@ -467,8 +467,9 @@ fn sign_in_first(req: &Request) -> AppResult<Response> {
     http::redirect(&format!("/login?next={next}"))
 }
 
-/// The workspace's GitHub tab, saying how connecting `account` went.
-fn back(
+/// The workspace's GitHub tab, saying how connecting `account` went, or
+/// installing the review app there (`crate::api::review_app`).
+pub(crate) fn back(
     row: &WorkspaceRow,
     outcome: &str,
     account: Option<&str>,

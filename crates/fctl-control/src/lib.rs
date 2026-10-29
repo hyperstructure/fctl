@@ -263,6 +263,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::workspaces::remove_runner(ctx, id, runner).await
         }
         (Get, ["workspaces", id, "github"]) => api::github::workspace(ctx, id).await,
+        (Get, ["workspaces", id, "github", "review-app"]) => {
+            api::review_app::workspace(ctx, id).await
+        }
         (Post, ["workspaces", id, "github"]) => {
             api::github::connect_from_older_cli(ctx, req, id).await
         }
@@ -290,6 +293,8 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Get, ["github", "installed"]) => api::github::installed(ctx, req).await,
         (Get, ["github", "connect"]) => api::github::connect_link(ctx, req).await,
         (Get, ["github", "authorized"]) => api::github::authorized(ctx, req).await,
+        (Get, ["github-review", "install"]) => api::review_app::install(ctx, req).await,
+        (Get, ["github-review", "installed"]) => api::review_app::installed(ctx, req).await,
         // GitHub's webhook: signed with its secret, not by a person.
         (Post, ["github", "webhook"]) => api::webhooks::receive(ctx, req).await,
         (Get, ["linear", "connect"]) => api::linear::connect_link(ctx, req).await,

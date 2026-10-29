@@ -5,6 +5,10 @@
 //! for an hour: one that can write (the primary repository and the other
 //! writable ones) and one that can only read. Hosts ask for fresh ones
 //! through the runner connection.
+//!
+//! The same client speaks for the app review agents post their reviews as,
+//! where the instance has one ([`review_app`]): only its JWT and tokens
+//! differ.
 
 use crate::config::GithubConfig;
 use crate::crypto;
@@ -29,7 +33,8 @@ const API: &str = "https://api.github.com";
 const WEB: &str = "https://github.com";
 
 thread_local! {
-    /// owner (lowercase) → its installation, and when it was found, per isolate.
+    /// app id and owner (lowercase) → the app's installation there, and
+    /// when it was found, per isolate.
     static INSTALLATIONS: RefCell<HashMap<String, (Found, i64)>> = RefCell::new(HashMap::new());
     /// installation id → the token the control plane looks pull requests up
     /// with, per isolate, while it has a while left.
@@ -181,9 +186,21 @@ pub fn from_config(cfg: &crate::config::Config, now: i64) -> AppResult<Github<'_
         .ok_or_else(|| not_configured("No GitHub App is configured on this instance"))
 }
 
+/// The app review agents post their reviews as where it's installed
+/// (`crate::config::Config::github_review`), when the instance has one.
+pub fn review_app(cfg: &crate::config::Config, now: i64) -> Option<Github<'_>> {
+    cfg.github.as_ref()?;
+    cfg.github_review.as_ref().map(|g| Github { cfg: g, now })
+}
+
 impl<'a> Github<'a> {
     pub fn default_owner(&self) -> Option<&str> {
         self.cfg.default_owner.as_deref()
+    }
+
+    /// The app's slug: its bot is `<slug>[bot]`.
+    pub fn slug(&self) -> &str {
+        &self.cfg.slug
     }
 
     /// An app JWT (RS256, valid 9 minutes, backdated 60 s for clock skew).
@@ -196,7 +213,12 @@ impl<'a> Github<'a> {
                 .as_bytes(),
         );
         let signing_input = format!("{header}.{claims}");
-        let sig = crypto::rs256_sign(&self.cfg.private_key_pem, signing_input.as_bytes()).await?;
+        let sig = crypto::rs256_sign(
+            &self.cfg.private_key_pem,
+            signing_input.as_bytes(),
+            self.cfg.key_var,
+        )
+        .await?;
         Ok(format!("{signing_input}.{}", crypto::b64url(&sig)))
     }
 
@@ -239,7 +261,7 @@ impl<'a> Github<'a> {
     /// The installation on an account (organization or user), by its
     /// login, and the id of the account that has the login now.
     pub async fn installation(&self, owner: &str) -> AppResult<Found> {
-        let key = owner.to_lowercase();
+        let key = format!("{}:{}", self.cfg.app_id, owner.to_lowercase());
         if let Some(found) = INSTALLATIONS.with(|m| {
             m.borrow()
                 .get(&key)
@@ -325,6 +347,81 @@ impl<'a> Github<'a> {
                 return Ok(inst.info());
             }
         }
+        Ok(None)
+    }
+
+    /// The installation on `owner`, when the app is installed there, as
+    /// [`Self::installation_on`] finds it, but failing when GitHub doesn't
+    /// say.
+    pub async fn account_installation(&self, owner: &str) -> AppResult<Option<InstallationInfo>> {
+        for path in [
+            format!("/orgs/{owner}/installation"),
+            format!("/users/{owner}/installation"),
+        ] {
+            let (status, v) = self.app_call(Method::Get, &path, None).await?;
+            match status {
+                200 => return Ok(serde_json::from_value::<Installation>(v)?.info()),
+                404 => {}
+                _ => return Err(unavailable("GitHub did not answer")),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The installation that reaches `repo`, when the app is installed on
+    /// its account with it among the repositories it reaches.
+    pub async fn installation_of(&self, repo: &RepoRef) -> AppResult<Option<InstallationInfo>> {
+        let (status, v) = self
+            .app_call(
+                Method::Get,
+                &format!("/repos/{}/{}/installation", repo.owner, repo.name),
+                None,
+            )
+            .await?;
+        match status {
+            200 => Ok(serde_json::from_value::<Installation>(v)?.info()),
+            404 => Ok(None),
+            _ => Err(unavailable("GitHub did not answer")),
+        }
+    }
+
+    /// The names of the repositories installation `inst` reaches, in
+    /// lowercase: `None` when they are more than its first 1,000.
+    pub async fn reached_names(&self, inst: u64) -> AppResult<Option<HashSet<String>>> {
+        #[derive(Deserialize)]
+        struct Named {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct NamedList {
+            repositories: Vec<Named>,
+        }
+        let token = self.installation_token(inst, None, None).await?;
+        let mut out = HashSet::new();
+        for page in 1..=10 {
+            let (status, v) = self
+                .call(
+                    Method::Get,
+                    &format!("/installation/repositories?per_page=100&page={page}"),
+                    &format!("token {}", token.token),
+                    None,
+                )
+                .await?;
+            if status != 200 {
+                self.revoke_installation_token(&token).await;
+                return Err(unavailable(
+                    "GitHub did not list the installation's repositories",
+                ));
+            }
+            let list: NamedList = serde_json::from_value(v)?;
+            let n = list.repositories.len();
+            out.extend(list.repositories.into_iter().map(|r| r.name.to_lowercase()));
+            if n < 100 {
+                self.revoke_installation_token(&token).await;
+                return Ok(Some(out));
+            }
+        }
+        self.revoke_installation_token(&token).await;
         Ok(None)
     }
 
@@ -960,26 +1057,43 @@ impl<'a> Github<'a> {
         inst: u64,
         repo: &RepoRef,
     ) -> AppResult<(GithubCredential, Option<String>)> {
+        self.try_review_token(inst, repo)
+            .await?
+            .map_err(|(_, msg)| refused(&msg))
+    }
+
+    /// [`Self::review_token`], with GitHub's refusal as
+    /// `Ok(Err((status, message)))`: 404 for an installation that is gone,
+    /// 403 for a suspended one, 422 for one that doesn't reach `repo`.
+    pub async fn try_review_token(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+    ) -> AppResult<Result<(GithubCredential, Option<String>), (u16, String)>> {
         let names = [repo.name.as_str()];
         match self
             .mint(inst, Some(&names), Some(repos::review_permissions(true)))
             .await?
         {
-            Ok(token) => return Ok((token, None)),
+            Ok(token) => return Ok(Ok((token, None))),
             // "The permissions requested are not granted to this installation."
             Err((422, _)) => {}
-            Err((_, msg)) => return Err(refused(&msg)),
+            Err(refusal) => return Ok(Err(refusal)),
         }
-        let token = self
-            .installation_token(inst, Some(&names), Some(repos::review_permissions(false)))
-            .await?;
-        Ok((
+        let token = match self
+            .mint(inst, Some(&names), Some(repos::review_permissions(false)))
+            .await?
+        {
+            Ok(token) => token,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
             token,
             Some(format!(
                 "The {} GitHub App can't write checks on {}: its installation there needs the Checks permission (read and write), which the app's owners add and the account accepts.",
                 self.cfg.slug, repo.owner
             )),
-        ))
+        )))
     }
 
     /// Revokes an installation token the control plane minted for itself.
@@ -1045,14 +1159,14 @@ impl<'a> Github<'a> {
         })
     }
 
-    /// Changes a review's check. Says why GitHub refused.
+    /// Changes a review's check. GitHub's status and why it refused.
     pub async fn update_check(
         &self,
         token: &GithubCredential,
         repo: &RepoRef,
         id: u64,
         body: Value,
-    ) -> AppResult<Result<(), String>> {
+    ) -> AppResult<Result<(), (u16, String)>> {
         let (status, v) = self
             .with_token(
                 token,
@@ -1064,7 +1178,7 @@ impl<'a> Github<'a> {
         Ok(if status == 200 {
             Ok(())
         } else {
-            Err(github_message(status, &v))
+            Err((status, github_message(status, &v)))
         })
     }
 

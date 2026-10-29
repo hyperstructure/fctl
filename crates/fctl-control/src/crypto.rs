@@ -158,9 +158,10 @@ pub fn subtle() -> AppResult<web_sys::SubtleCrypto> {
     Ok(crypto.subtle())
 }
 
-/// Signs `data` with RSASSA-PKCS1-v1_5 / SHA-256 using a PKCS#8 PEM key.
-pub async fn rs256_sign(pem: &str, data: &[u8]) -> AppResult<Vec<u8>> {
-    let der = pem_to_der(pem)?;
+/// Signs `data` with RSASSA-PKCS1-v1_5 / SHA-256 using a PKCS#8 PEM key,
+/// from the variable `var`.
+pub async fn rs256_sign(pem: &str, data: &[u8], var: &str) -> AppResult<Vec<u8>> {
+    let der = pem_to_der(pem, var)?;
     let subtle = subtle()?;
     let algo = js_sys::Object::new();
     js_sys::Reflect::set(&algo, &"name".into(), &"RSASSA-PKCS1-v1_5".into())?;
@@ -175,11 +176,14 @@ pub async fn rs256_sign(pem: &str, data: &[u8]) -> AppResult<Vec<u8>> {
     Ok(js_sys::Uint8Array::new(&buf).to_vec())
 }
 
-fn pem_to_der(pem: &str) -> AppResult<Vec<u8>> {
+/// `pem`'s key, from the variable `var`, which an error about it names.
+fn pem_to_der(pem: &str, var: &str) -> AppResult<Vec<u8>> {
     if pem.contains("BEGIN RSA PRIVATE KEY") {
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::NotConfigured,
-            "GITHUB_APP_PRIVATE_KEY must be PKCS#8 (convert with: openssl pkcs8 -topk8 -nocrypt -in key.pem)",
+            format!(
+                "{var} must be PKCS#8 (convert with: openssl pkcs8 -topk8 -nocrypt -in key.pem)"
+            ),
         )));
     }
     let body: String = pem

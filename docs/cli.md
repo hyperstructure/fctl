@@ -245,6 +245,7 @@ fctl workspaces add-runner studio-mac --personal   # only your sessions there (a
 fctl workspaces remove-runner studio-mac   # the ones running there stop and resume elsewhere
 
 fctl workspaces github                     # the GitHub accounts it works in
+fctl workspaces review-app                 # which app review agents post as on each, with links that install the review app (admins)
 fctl workspaces connect                    # opens a GitHub sign-in; you choose what it works in on its GitHub tab
 fctl workspaces connect acme               # the same, for acme only
 fctl workspaces connect acme --repo web --repo design   # only these repositories of it, without the choice

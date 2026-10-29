@@ -61,6 +61,18 @@ test("GitHub's PKCS#1 keys become PKCS#8", () => {
   assert.match(pkcs8, /^-----BEGIN PRIVATE KEY-----\n/);
   assert.equal(githubKey(pkcs1.trim().replaceAll("\n", "\\n")), pkcs8);
   assert.throws(() => githubKey("not a key"), ConfigError);
+  // The review app's too, which an error names.
+  const { vars } = readConfig({
+    GITHUB_REVIEW_APP_ID: "2",
+    GITHUB_REVIEW_APP_SLUG: "acme-review",
+    GITHUB_REVIEW_APP_PRIVATE_KEY: pkcs1,
+  });
+  assert.equal(vars.GITHUB_REVIEW_APP_PRIVATE_KEY, pkcs8);
+  assert.deepEqual([vars.GITHUB_REVIEW_APP_ID, vars.GITHUB_REVIEW_APP_SLUG], ["2", "acme-review"]);
+  assert.throws(
+    () => readConfig({ GITHUB_REVIEW_APP_PRIVATE_KEY: "not a key" }),
+    /GITHUB_REVIEW_APP_PRIVATE_KEY/,
+  );
 });
 
 test("the master key is made once and kept", () => {
