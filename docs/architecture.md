@@ -1368,11 +1368,13 @@ skip, drafts too, and fctl posts what it found on GitHub
    where a serious security problem shows at first sight), why, what it
    does, and what deserves a closer look (`PullRequestSummary`), judged
    from what it changes rather than from bugs a review may find later.
-   The control plane checks it (`fctl_domain::reviews::check_summary`:
-   plain sentences, no lists, headings, code blocks, HTML, links or
-   @-mentions, as GitHub reads each paragraph) and, with
-   the review's writer, reads the description as GitHub has it at that
-   moment and writes it back with the summary at its end, between fctl's
+   The control plane checks it (`fctl_domain::reviews::check_summary`):
+   a Markdown parser reads it as GitHub will, and only text, inline code
+   and emphasis pass, so no lists, headings, code blocks, HTML, links
+   (link definitions and the addresses GitHub links by itself included),
+   @-mentions or email addresses. Then, with the review's writer, it
+   reads the description as GitHub has it at that moment and writes it
+   back with the summary at its end, between fctl's
    marks (`<!-- FCTL_REVIEW_SUMMARY -->` and `<!--
    /FCTL_REVIEW_SUMMARY -->`, each on a line of its own), in place of the
    summary an earlier review left there, wherever that is

@@ -122,7 +122,7 @@ pub enum ReviewCmd {
     /// sandbox): how risky it looks, what it does and what deserves a
     /// closer look, in place of the summary an earlier review left there.
     #[command(
-        after_help = "The file holds JSON:\n\n  {\n    \"risk\": \"medium\",\n    \"risk_reason\": \"Why, in a sentence or two.\",\n    \"overview\": \"What it does and why, in a few plain sentences.\",\n    \"highlight\": {\n      \"topic\": \"Optional: a few words\",\n      \"text\": \"What deserves a closer look before merging.\"\n    }\n  }\n\nrisk is low, medium, high or critical (a serious security problem at first sight). Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions or HTML. fctl writes the summary between its marks, <!-- FCTL_REVIEW_SUMMARY --> and <!-- /FCTL_REVIEW_SUMMARY -->, and leaves the rest of the description as it is; running it again replaces it."
+        after_help = "The file holds JSON:\n\n  {\n    \"risk\": \"medium\",\n    \"risk_reason\": \"Why, in a sentence or two.\",\n    \"overview\": \"What it does and why, in a few plain sentences.\",\n    \"highlight\": {\n      \"topic\": \"Optional: a few words\",\n      \"text\": \"What deserves a closer look before merging.\"\n    }\n  }\n\nrisk is low, medium, high or critical (a serious security problem at first sight). Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions, email addresses or HTML. fctl writes the summary between its marks, <!-- FCTL_REVIEW_SUMMARY --> and <!-- /FCTL_REVIEW_SUMMARY -->, and leaves the rest of the description as it is; running it again replaces it."
     )]
     Summarize {
         /// The summary, as JSON (`-` reads it from stdin).

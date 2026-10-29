@@ -401,7 +401,8 @@ outside it except through these channels:
   Where the owners turn summaries on, what the agent says of a pull
   request goes in that pull request's own description, which fctl writes
   between its marks, as plain sentences in a GitHub alert, without HTML,
-  links or @-mentions, and the rest of the description stays as it is: a
+  links, @-mentions or email addresses as a Markdown parser reads them,
+  and the rest of the description stays as it is: a
   steered agent can mislabel a pull request's risk there, as it can in
   its findings, but not change what people wrote, link them elsewhere or
   notify anyone

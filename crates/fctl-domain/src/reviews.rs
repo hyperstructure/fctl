@@ -19,8 +19,10 @@ use fctl_proto::api::{
 use fctl_proto::event::{PassedOnFinding, PassedOnReview};
 use fctl_proto::session::{PullRequestRef, RepoRef, ReviewCheck};
 use fctl_proto::{ApiError, ProjectId, SessionId};
+use pulldown_cmark::{BrokenLink, BrokenLinkCallback, CowStr, Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The name of the check a review shows as on its commit.
@@ -773,7 +775,7 @@ People who open this pull request find a short summary of it at the end of its d
 - `risk_reason`: a sentence or two on why: what it touches, and what could go wrong.
 - `overview`: what it does and why, for someone who hasn't read the diff, in two to four plain sentences: a paragraph, two at most.
 - `highlight`, only when something deserves a reviewer's closer look before merging, such as a migration, a breaking change, a new dependency or a step for whoever deploys it: `topic` names it in a few words, and `text` says what it is in a sentence or two.
-- Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions or HTML. GitHub links #12 and owner/name#12 by itself.
+- Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions, email addresses or HTML. GitHub links #12 and owner/name#12 by itself.
 - At a new commit, sum up the pull request as it stands now, as a whole: your summary replaces the earlier one.
 - If `fctl review summarize` refuses the summary, fix what it says and run it again. If it fails otherwise, carry on with the review.
 "#;
@@ -1450,12 +1452,8 @@ pub fn check_summary(s: &PullRequestSummary) -> Result<PullRequestSummary> {
         overview,
         highlight,
     };
-    // As GitHub reads them, in the note: a code span runs on across a
-    // paragraph's lines, and the highlight's topic and text share one.
-    for (field, paragraph) in paragraphs(&checked) {
-        if let Some(why) = not_inline(&paragraph) {
-            return Err(ApiError::validation(field, why));
-        }
+    if let Some((field, why)) = not_plain(&paragraphs(&checked)) {
+        return Err(ApiError::validation(field, why));
     }
     Ok(checked)
 }
@@ -1504,98 +1502,167 @@ fn prose(field: &str, input: &str, max: usize, most: usize) -> Result<String> {
         .join("\n\n"))
 }
 
+const LISTS: &str = "Write sentences rather than a list: the summary has no bullet points";
+const RULES: &str = "Leave out rules: fctl lays the summary out";
+const HEADINGS: &str = "Leave out headings: fctl lays the summary out";
+const QUOTES: &str = "Leave out quotes: fctl puts the summary in a note of its own";
+const CODE_BLOCKS: &str = "Leave out code blocks: name code in backticks, in the sentence";
+const TABLES: &str = "Leave out tables: write sentences";
+const IMAGES: &str = "Leave out images";
+const HTML: &str = "Leave out HTML: put code in backticks";
+const LINKS: &str =
+    "Leave out links: name what you mean, and GitHub links #12 and owner/name#12 by itself";
+const BRACKETS: &str = "Leave out words in square brackets: GitHub makes them links where the description defines them";
+const MENTIONS: &str = "Leave out @-mentions and email addresses, which notify or link people: name them, or put a handle in backticks";
+const FOOTNOTES: &str = "Leave out footnotes";
+const PLAIN: &str = "Write plain sentences, with code in backticks";
+
 /// Why a line of a summary isn't plain prose, where it isn't: Markdown
-/// that starts a block of its own, which would break out of the note fctl
-/// puts it in.
+/// that starts a block of its own, a list say, which lines that become one
+/// would leave as stray marks. What GitHub would make of the summary
+/// itself [`not_plain`] tells.
 fn not_block(line: &str) -> Option<&'static str> {
     let line = line.trim();
-    let numbered = {
-        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
-        digits > 0
-            && matches!(line.as_bytes().get(digits), Some(b'.' | b')'))
-            && matches!(line.as_bytes().get(digits + 1), None | Some(b' '))
-    };
-    let bullet =
-        ["- ", "* ", "+ "].iter().any(|b| line.starts_with(b)) || ["-", "*", "+"].contains(&line);
+    // A marker, then the line's end or whitespace (a tab and a no-break
+    // space too, which become a space).
+    let marker = |len: usize| line[len..].chars().next().is_none_or(char::is_whitespace);
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let numbered = (1..=9).contains(&digits)
+        && matches!(line.as_bytes().get(digits), Some(b'.' | b')'))
+        && marker(digits + 1);
+    let bullet = line.starts_with(['-', '*', '+']) && marker(1);
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    let heading = (1..=6).contains(&hashes) && marker(hashes);
     let rule = line.chars().filter(|c| !c.is_whitespace()).count() >= 3
         && line
             .chars()
             .all(|c| c.is_whitespace() || matches!(c, '-' | '*' | '_' | '='));
-    if bullet || numbered {
-        Some("Write sentences rather than a list: the summary has no bullet points")
-    } else if rule {
-        Some("Leave out rules: fctl lays the summary out")
-    } else if line.starts_with('#') {
-        Some("Leave out headings: fctl lays the summary out")
+    if rule {
+        Some(RULES)
+    } else if bullet || numbered {
+        Some(LISTS)
+    } else if heading {
+        Some(HEADINGS)
     } else if line.starts_with('>') {
-        Some("Leave out quotes: fctl puts the summary in a note of its own")
+        Some(QUOTES)
     } else if line.starts_with("```") || line.starts_with("~~~") {
-        Some("Leave out code blocks: name code in backticks, in the sentence")
+        Some(CODE_BLOCKS)
     } else if line.starts_with('|') {
-        Some("Leave out tables: write sentences")
+        Some(TABLES)
     } else {
         None
     }
 }
 
-/// Why a paragraph of a summary, as the note shows it, isn't plain prose,
-/// where it isn't: an image, HTML, a link or an @-mention outside its code
-/// spans. HTML could pass for fctl's marks too.
-fn not_inline(paragraph: &str) -> Option<&'static str> {
-    let outside = without_code(paragraph);
-    let bytes = outside.as_bytes();
-    let html = bytes.windows(2).any(|w| {
-        w[0] == b'<' && (w[1].is_ascii_alphabetic() || matches!(w[1], b'/' | b'!' | b'?'))
-    });
-    let lower = outside.to_ascii_lowercase();
-    let link = ["](", "http://", "https://", "www."]
-        .iter()
-        .any(|l| lower.contains(l));
-    // As GitHub reads a mention: `@` and a name's first character, after
-    // anything that can't end a word or an address.
-    let mention = bytes.iter().enumerate().any(|(i, &b)| {
-        let before = i.checked_sub(1).map(|j| bytes[j]);
-        b == b'@'
-            && bytes.get(i + 1).is_some_and(u8::is_ascii_alphanumeric)
-            && before.is_none_or(|c| {
-                !(c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-' | b'+' | b'/' | b'@'))
-            })
-    });
-    if outside.contains("![") {
-        Some("Leave out images")
-    } else if html {
-        Some("Leave out HTML: put code in backticks")
-    } else if link {
-        Some(
-            "Leave out links: name what you mean, and GitHub links #12 and owner/name#12 by itself",
-        )
-    } else if mention {
-        Some("Leave out @-mentions, which notify people: name them, or put a handle in backticks")
-    } else {
+/// A parser of the summary's Markdown that notes where it found words in
+/// square brackets that a link's definition elsewhere in the description
+/// would make a link (`[docs]`), in `would_link`.
+fn summary_parser<'a>(
+    text: &'a str,
+    would_link: &'a Cell<Option<usize>>,
+) -> Parser<'a, impl BrokenLinkCallback<'a>> {
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
+    let note = move |broken: BrokenLink<'a>| -> Option<(CowStr<'a>, CowStr<'a>)> {
+        would_link.set(would_link.get().or(Some(broken.span.start)));
         None
-    }
+    };
+    Parser::new_with_broken_link_callback(text, options, Some(note))
 }
 
-/// `line` without its code spans, whose text GitHub shows as it is.
-fn without_code(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(i) = rest.find('`') {
-        out.push_str(&rest[..i]);
-        let run = rest[i..].bytes().take_while(|b| *b == b'`').count();
-        let fence = &rest[i..i + run];
-        let after = &rest[i + run..];
-        match after.find(fence) {
-            // The span, to the same run of backticks.
-            Some(end) => rest = &after[end + run..],
-            None => {
-                out.push_str(fence);
-                rest = after;
-            }
+/// Why the summary's paragraphs, `parts` (as [`paragraphs`] lays them
+/// out), aren't plain prose as GitHub reads them, where they aren't, and in
+/// which field: anything but text, inline code and emphasis. A real parser
+/// reads them all at once, as GitHub does, so that nothing hides in a code
+/// span that GitHub reads otherwise, across lines or fields. Links include
+/// a link's definition, which would also link words elsewhere in the
+/// description, words in brackets that such a definition would link, and
+/// the addresses GitHub links by themselves; @-mentions, which notify
+/// people, and email addresses, which GitHub links, are out too.
+fn not_plain(parts: &[(&'static str, String)]) -> Option<(&'static str, &'static str)> {
+    let mut text = String::new();
+    let mut starts = Vec::with_capacity(parts.len());
+    for (field, part) in parts {
+        if !text.is_empty() {
+            text.push_str("\n\n");
         }
+        starts.push((text.len(), *field));
+        text.push_str(part);
     }
-    out.push_str(rest);
-    out
+    let field_at = |at: usize| {
+        starts
+            .iter()
+            .rev()
+            .find(|(start, _)| *start <= at)
+            .map_or("summary", |(_, field)| *field)
+    };
+    let would_link = Cell::new(None);
+    let parser = summary_parser(&text, &would_link);
+    if let Some((_, def)) = parser.reference_definitions().iter().next() {
+        return Some((field_at(def.span.start), LINKS));
+    }
+    // Text as GitHub shows it, adjacent runs together: an entity or an
+    // escape splits what reads as one word.
+    let mut run = String::new();
+    let mut run_start = 0;
+    let mut events = parser.into_offset_iter().peekable();
+    while let Some((event, range)) = events.next() {
+        let why = match event {
+            Event::Text(t) => {
+                if run.is_empty() {
+                    run_start = range.start;
+                }
+                run.push_str(&t);
+                if matches!(events.peek(), Some((Event::Text(_), _))) {
+                    continue;
+                }
+                let found = not_plain_text(&run);
+                run.clear();
+                match found {
+                    Some(why) => return Some((field_at(run_start), why)),
+                    None => continue,
+                }
+            }
+            Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
+            | Event::End(_)
+            | Event::Code(_)
+            | Event::SoftBreak
+            | Event::HardBreak => continue,
+            Event::Start(Tag::Heading { .. }) => HEADINGS,
+            Event::Start(Tag::BlockQuote(_)) => QUOTES,
+            Event::Start(Tag::CodeBlock(_)) => CODE_BLOCKS,
+            Event::Start(Tag::List(_) | Tag::Item) | Event::TaskListMarker(_) => LISTS,
+            Event::Start(Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell) => TABLES,
+            Event::Start(Tag::Link { .. }) => LINKS,
+            Event::Start(Tag::Image { .. }) => IMAGES,
+            Event::Start(Tag::HtmlBlock) | Event::Html(_) | Event::InlineHtml(_) => HTML,
+            Event::Start(Tag::FootnoteDefinition(_)) | Event::FootnoteReference(_) => FOOTNOTES,
+            Event::Rule => RULES,
+            _ => PLAIN,
+        };
+        return Some((field_at(range.start), why));
+    }
+    would_link.get().map(|at| (field_at(at), BRACKETS))
+}
+
+/// Why text that GitHub shows as it is isn't plain prose, where it isn't:
+/// it holds an address GitHub links by itself, an @-mention or an email
+/// address.
+fn not_plain_text(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    if lower.contains("://") || lower.contains("www.") {
+        Some(LINKS)
+    } else if bytes
+        .windows(2)
+        .any(|w| w[0] == b'@' && w[1].is_ascii_alphanumeric())
+    {
+        Some(MENTIONS)
+    } else {
+        None
+    }
 }
 
 /// How much a pull request changes, as GitHub counts it, for the line
@@ -4392,7 +4459,7 @@ mod tests {
         // Code in backticks may hold anything, across a paragraph's lines
         // too; emphasis, GitHub's references and addresses pass.
         let mut fine = summary();
-        fine.overview = "Turns `Vec<String>` into `HashSet<&str>` in `<Login\n/>` and `@types/node` at `https://x.test`, *quickly*, as #3 and acme/api#7 ask, for dev@fctl.test: a < b, 2 @ 3.".into();
+        fine.overview = "Turns `Vec<String>` into `HashSet<&str>` in `<Login\n/>` and `@types/node` at `https://x.test`, *quickly* and **for good**, as #3 and acme/api#7 ask: a < b, a<b, 2 @ 3, \\`.\n\n#12 goes too, and C# 13's ~~old~~ new [cases.".into();
         fine.highlight = Some(SummaryHighlight {
             topic: " ".into(),
             text: "".into(),
@@ -4447,10 +4514,13 @@ mod tests {
             "<!-- /FCTL_REVIEW_SUMMARY -->",
             "It adds <details> to the page.",
             "</sub> ends it",
-            "a<b",
-            // A code span that a line opens and the next closes leaves out
-            // what follows it, as GitHub reads the joined lines.
+            "Fine.\n\n<div>Not fine.</div>",
+            // Code spans as GitHub reads them: one that a line opens and the
+            // next closes, escaped backticks, which open none, and runs of
+            // backticks of another length, which close none.
             "a `b\nc` <img src=x.png> `d`",
+            "\\`<img src=https://evil.example/a.png> \\`",
+            "`<img src=x.png>``",
         ] {
             assert!(refused("overview", html).contains("HTML"), "{html}");
         }
@@ -4459,17 +4529,32 @@ mod tests {
             "It moved to https://evil.example.",
             "Read HTTP://EVIL.EXAMPLE first.",
             "It lives at www.evil.example now.",
+            "Mail <ada@fctl.test> or see <https://evil.example>.",
+            "It moved to https&#58;//evil.example.",
             "a `b\nc` [x](y) `d`",
+            "\\`https://evil.example \\`",
+            // A definition would link words elsewhere in the description too.
+            "See [a] now.\n\n[a]: //evil.example",
+            "It does.\n\n[docs]: https://evil.example",
         ] {
             assert!(
                 refused("overview", link).contains("Leave out links"),
                 "{link}"
             );
         }
+        for brackets in ["See [docs] for more.", "As [the guide][docs] says."] {
+            assert!(
+                refused("overview", brackets).contains("square brackets"),
+                "{brackets}"
+            );
+        }
         for mention in [
             "Thanks @ada.",
             "It pings (@acme/web-team) on deploys.",
             "@ada wrote it",
+            "Mail dev@fctl.test.",
+            "\\`@ada \\`",
+            "Ask &#64;ada.",
         ] {
             assert!(
                 refused("risk_reason", mention).contains("@-mentions"),
@@ -4477,6 +4562,26 @@ mod tests {
             );
         }
         assert!(refused("overview", "a `b\nc` ![x](y.png) `d`").contains("images"));
+        // List markers before a tab or a no-break space, which become spaces.
+        for list in [
+            "It does.\n\n-\tfoo",
+            "It does.\n\n1.\tfoo",
+            "It does.\n\n*\u{a0}foo",
+        ] {
+            assert!(
+                refused("overview", list).contains("no bullet points"),
+                "{list:?}"
+            );
+        }
+        assert!(refused("overview", "It does.\n\n# Overview").contains("headings"));
+        assert!(refused("overview", "It does[^1].\n\n[^1]: Really.").contains("footnotes"));
+        // #12 isn't a heading, at a line's start either.
+        let mut wrapped = summary();
+        wrapped.overview = "Fixes\n#12 too.".into();
+        assert_eq!(
+            check_summary(&wrapped).map(|s| s.overview).ok().as_deref(),
+            Some("Fixes #12 too.")
+        );
         // Nor do a topic and its text, which share a paragraph, pair a code
         // span around what lies between them.
         let mut across = summary();

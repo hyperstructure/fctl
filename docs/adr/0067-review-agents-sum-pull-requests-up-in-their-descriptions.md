@@ -41,12 +41,15 @@ own rather than copy another review agent's.
   them out under a rule as a GitHub alert, each part led in bold as fctl's
   findings are (**Medium risk.**, **What it does.**), with a line of what
   fctl knows for sure: the commit it sums up, the pull request's size and
-  links to the review and its settings. Lists, headings, code blocks,
-  HTML, links and @-mentions are refused, as GitHub reads each paragraph:
-  they would break out of the alert or pass for fctl's marks, and a pull
-  request that steers the agent could have fctl's app link people
-  anywhere from it, or notify them. GitHub's own references (#12) still
-  link.
+  links to the review and its settings. A CommonMark parser reads the
+  summary as GitHub will, all of it at once, and only text, inline code
+  and emphasis pass: lists, headings, code blocks and HTML would break out
+  of the alert or pass for fctl's marks, and through links (link
+  definitions and bare addresses included), @-mentions and email
+  addresses, a pull request that steers the agent could have fctl's app
+  link people anywhere or notify them. GitHub's own references (#12)
+  still link. Reading the Markdown by hand missed what GitHub reads
+  otherwise, such as escaped backticks.
 - **Only between fctl's marks.** `<!-- FCTL_REVIEW_SUMMARY -->` and
   `<!-- /FCTL_REVIEW_SUMMARY -->`, each on a line of its own, bound
   fctl's part. fctl reads the description just before it writes it, and
