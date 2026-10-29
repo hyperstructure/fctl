@@ -1044,14 +1044,19 @@ impl SessionObject {
                 "The session failed. Resume it to continue.",
             ));
         }
-        let mut kept = self.held_reviews();
-        let Some(at) = kept.iter().position(|h| h.review == b.review) else {
+        // Only a review that its pull request shows as held: not one that a
+        // newer review of the pull request took the place of.
+        let held = self
+            .held_reviews()
+            .into_iter()
+            .find(|h| h.review == b.review)
+            .filter(|_| fctl_domain::reviews::shows_held(&s.pull_requests, &b.review));
+        let Some(held) = held else {
             return Err(api_err(
                 ErrorCode::Conflict,
-                "fctl holds back no findings of this review: the agent got them, or someone has written to it since.",
+                "fctl holds back no findings of this review: the agent got them, someone has written to it since, or a newer review of its pull request came.",
             ));
         };
-        let held = kept.remove(at);
         let now = now_ms();
         let key = format!("review:{}", b.review);
         // The review's key says fctl held its findings back, unless an
@@ -1079,9 +1084,15 @@ impl SessionObject {
             }
         }
         self.set_meta(REVIEWS_PASSED_ON, "1");
+        // Listed until the agent has them, so that someone can try again
+        // when the session fails to resume.
         let delivered = self
             .deliver_findings(key, held.text, held.shown, now)
             .await?;
+        // The list as it is now: a message, or another held review, may have
+        // come while the session resumed.
+        let mut kept = self.held_reviews();
+        kept.retain(|h| h.review != b.review);
         self.keep_held_reviews(&kept, now).await;
         Ok(delivered)
     }

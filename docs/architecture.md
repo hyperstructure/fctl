@@ -1419,7 +1419,9 @@ skip, drafts too, and fctl posts what it found on GitHub
    (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`, SessionObject's
    `/pass-on`, `fctl review pass-on`): the agent gets the message it would
    have got, the transcript says who passed it on (`review_passed_on`),
-   and the count starts again with it. A person's message, here or on
+   and the count starts again with it. Only a review its pull request
+   shows as held passes on (`shows_held`), not one a newer review of it
+   took the place of. A person's message, here or on
    GitHub, ends the pause too, and drops what was held. The review's `PostedReview.sent_to` names the session,
    and its transcript links it
    ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).

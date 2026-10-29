@@ -2242,6 +2242,15 @@ pub fn mark_held(prs: &mut [PullRequestRef], held: &[Held]) -> bool {
     changed
 }
 
+/// Whether a session's pull requests show `review` as held ([`mark_held`]):
+/// its pull request's check is that review's, so no newer review of it took
+/// its place.
+pub fn shows_held(prs: &[PullRequestRef], review: &SessionId) -> bool {
+    prs.iter()
+        .filter_map(|p| p.checks.as_ref()?.review.as_ref())
+        .any(|r| r.held_after.is_some() && r.session_id.as_ref() == Some(review))
+}
+
 /// What the transcript says when `name` passes on the findings fctl held
 /// back: the agent gets them now, and those of the reviews after them, up
 /// to [`MAX_PASSED_ON`] in a row with these.
@@ -3955,6 +3964,12 @@ mod tests {
         assert!(mark_held(&mut prs, &held));
         assert_eq!(marks(&prs), [Some(MAX_PASSED_ON), None, None, None]);
         assert!(!mark_held(&mut prs, &held));
+        // Only what they show as held passes on: not the review of a pull
+        // request that a newer review took the place of.
+        let id = |s: &str| SessionId(s.into());
+        assert!(shows_held(&prs, &id("ses_r3")));
+        assert!(!shows_held(&prs, &id("ses_r2")));
+        assert!(!shows_held(&prs, &id("ses_r9")));
         // Passed on, or a person wrote to the agent: unmarked.
         assert!(mark_held(&mut prs, &[]));
         assert_eq!(marks(&prs), [None; 4]);

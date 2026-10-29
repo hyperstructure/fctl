@@ -572,8 +572,9 @@ When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
 their threads: those of up to five reviews in a row while nobody messages
 the agent. fctl holds the next ones back, and the session's page says so
-under the pull request, with a button that passes them on for five more
-rounds; a message to the agent ends the pause too. The project's owners
+under the pull request, with a button that continues for five more
+rounds: the agent gets the held findings, then those of up to four more
+reviews in a row. A message to the agent ends the pause too. The project's owners
 turn them on (on their own subscription), take them over and say how
 they review; the person they run for may turn them off:
 
