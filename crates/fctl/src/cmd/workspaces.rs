@@ -82,8 +82,8 @@ pub enum LinearCmd {
         /// or its id.
         organization: String,
     },
-    /// The teams fctl's app reaches in a Linear workspace, for a project to
-    /// choose (`fctl projects set --tickets linear --linear-team KEY`).
+    /// The teams fctl's app reaches in a Linear workspace, for projects to
+    /// choose (`fctl projects set --tickets linear --linear-team KEY[,KEY…]`).
     Teams {
         /// The Linear workspace (default: the only one).
         organization: Option<String>,
@@ -1371,11 +1371,22 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
                     state
                 );
                 for p in &c.projects {
+                    // From control planes before several teams, the first.
+                    let keys: Vec<String> = if p.team_keys.is_empty() {
+                        p.team_key.iter().map(|t| format!("{t}'s")).collect()
+                    } else {
+                        p.team_keys.iter().map(|t| format!("{t}'s")).collect()
+                    };
+                    let teams = match keys.as_slice() {
+                        [] => None,
+                        [one] => Some(one.clone()),
+                        [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+                    };
                     println!(
                         "  {} {}",
                         style::dim("→"),
-                        style::terminal_safe(&match &p.team_key {
-                            Some(t) => format!("{} takes {t}'s tickets", p.slug),
+                        style::terminal_safe(&match teams {
+                            Some(t) => format!("{} takes {t} tickets", p.slug),
                             None => p.slug.clone(),
                         })
                     );
@@ -1416,7 +1427,7 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
             println!(
                 "{}",
                 style::dim(
-                    "Then choose a project's team with `fctl projects set --tickets linear --linear-team KEY`."
+                    "Then choose a project's teams with `fctl projects set --tickets linear --linear-team KEY[,KEY…]`."
                 )
             );
         }

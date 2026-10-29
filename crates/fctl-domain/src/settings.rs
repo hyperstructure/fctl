@@ -75,9 +75,11 @@ pub fn for_new_project(settings: &mut ProjectSettings, sent: &Value) {
 /// balanced; for `pull_request_instructions`, fctl's defaults (send `null`
 /// to choose them); for each of `follow_ups`, off; for `tickets`, GitHub
 /// Issues of the repositories agents write to, which would reach issues the
-/// project keeps its agents away from. An `image_build` it leaves out stays
-/// unless it chooses an image instead (send `null` for none). `sent` is the
-/// update's `settings` object as it arrived.
+/// project keeps its agents away from; for the Linear teams of `tickets`
+/// besides the first (`more_teams`), none, while the first stays in the same
+/// Linear workspace (send `[]` for none). An `image_build` it leaves out
+/// stays unless it chooses an image instead (send `null` for none). `sent`
+/// is the update's `settings` object as it arrived.
 pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sent: &Value) {
     let follow_ups = sent.get("follow_ups");
     let unsent = |key: &str| follow_ups.and_then(|f| f.get(key)).is_none();
@@ -133,6 +135,16 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("tickets").is_none() {
         settings.tickets = stored.tickets.clone();
+    }
+    if let (Some(l), Some(was)) = (settings.tickets.linear.as_mut(), &stored.tickets.linear)
+        && l.more_teams.is_none()
+        && l.organization == was.organization
+    {
+        // Less the one it makes the first, which it may have been.
+        l.more_teams = was
+            .more_teams
+            .as_ref()
+            .map(|more| more.iter().filter(|c| c.team != l.team).cloned().collect());
     }
 }
 
@@ -475,6 +487,46 @@ mod tests {
                     .map(str::to_owned)
             );
         }
+    }
+
+    #[test]
+    fn updates_without_more_linear_teams_keep_them_in_the_same_linear_workspace() {
+        let tickets = |organization: &str, team: &str, more: Option<&[&str]>| {
+            json!({ "tracker": "linear", "linear": {
+                "organization": organization, "team": team,
+                "more_teams": more.map(|m| m.iter().map(|t| json!({ "team": t })).collect::<Vec<_>>()),
+            } })
+        };
+        let parse = |sent: &Value| -> ProjectSettings {
+            serde_json::from_value(sent.clone()).unwrap_or_default()
+        };
+        let stored = parse(&json!({ "tickets": tickets("acme", "eng", Some(&["des", "ops"])) }));
+        let more = |s: &ProjectSettings| -> Option<Vec<String>> {
+            s.tickets
+                .linear
+                .as_ref()?
+                .more_teams
+                .as_ref()
+                .map(|m| m.iter().map(|c| c.team.clone()).collect())
+        };
+        // An older client changes the first team without knowing the others:
+        // they stay, less the one it makes the first.
+        let sent = json!({ "tickets": tickets("acme", "des", None) });
+        let mut s = parse(&sent);
+        keep_unsent(&mut s, &stored, &sent);
+        assert_eq!(more(&s), Some(vec!["ops".to_owned()]));
+        // A newer one says which, none included.
+        for (list, kept) in [(&["ops"][..], vec!["ops".to_owned()]), (&[][..], vec![])] {
+            let sent = json!({ "tickets": tickets("acme", "eng", Some(list)) });
+            let mut s = parse(&sent);
+            keep_unsent(&mut s, &stored, &sent);
+            assert_eq!(more(&s), Some(kept));
+        }
+        // Another Linear workspace's teams are none of these.
+        let sent = json!({ "tickets": tickets("other", "eng", None) });
+        let mut s = parse(&sent);
+        keep_unsent(&mut s, &stored, &sent);
+        assert_eq!(more(&s), None);
     }
 
     #[test]

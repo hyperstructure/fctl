@@ -78,7 +78,7 @@ pub enum ProjectsCmd {
     /// start or resume.
     #[command(
         group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -208,15 +208,19 @@ pub enum ProjectsCmd {
         /// repository they write to.
         #[arg(long, value_name = "OWNER/NAME|all")]
         tickets_repo: Option<String>,
-        /// For Linear: the team whose issues the project works on, by its
-        /// key (ENG), in the Linear workspace its workspace works in
-        /// (`fctl workspaces linear teams`).
-        #[arg(long, value_name = "KEY")]
+        /// For Linear: the teams whose issues the project works on, by their
+        /// keys (ENG, or ENG,DES for several: the first is where agents
+        /// file new tickets), in the Linear workspace its workspace works
+        /// in (`fctl workspaces linear teams`). Teams it keeps keep their
+        /// Linear projects.
+        #[arg(long, value_name = "KEY[,KEY…]")]
         linear_team: Option<String>,
-        /// For Linear: only the issues of this Linear project of the team,
-        /// by name, or "all" for the whole team's.
-        #[arg(long, value_name = "NAME|all")]
-        linear_project: Option<String>,
+        /// For Linear: only the issues of this Linear project of a team, by
+        /// name, or "all" for the whole team's. With several teams, a name
+        /// finds the team that has it, or name the team too (DES:Website,
+        /// DES:all); repeat it for more.
+        #[arg(long, value_name = "[KEY:]NAME|all")]
+        linear_project: Vec<String>,
         /// For Linear: move a ticket to the team's first started state (In
         /// Progress) as its session starts work on it (on by default).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
@@ -1131,7 +1135,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             let tracker_changed = tickets.is_some()
                 || tickets_repo.is_some()
                 || linear_team.is_some()
-                || linear_project.is_some()
+                || !linear_project.is_empty()
                 || linear_start.is_some()
                 || linear_review.is_some()
                 || linear_done.is_some()
@@ -1144,8 +1148,8 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     TrackerChange {
                         tracker: tickets,
                         repo: tickets_repo,
-                        team: linear_team,
-                        project: linear_project,
+                        teams: linear_team,
+                        projects: linear_project,
                         start: linear_start,
                         review: linear_review,
                         done: linear_done,
@@ -1531,8 +1535,10 @@ pub enum TrackerArg {
 struct TrackerChange {
     tracker: Option<TrackerArg>,
     repo: Option<String>,
-    team: Option<String>,
-    project: Option<String>,
+    /// Linear's teams by their keys, comma-separated.
+    teams: Option<String>,
+    /// Linear projects, as `--linear-project` names them.
+    projects: Vec<String>,
     start: Option<bool>,
     review: Option<bool>,
     done: Option<bool>,
@@ -1547,7 +1553,7 @@ async fn tracker(
     mut t: fctl_proto::session::Tickets,
     c: TrackerChange,
 ) -> Result<fctl_proto::session::Tickets> {
-    use fctl_proto::session::{LinearTickets, RepoRef, Tracker};
+    use fctl_proto::session::{LinearTeamChoice, LinearTickets, RepoRef, Tracker};
     if let Some(tr) = c.tracker {
         t.tracker = match tr {
             TrackerArg::None => Tracker::None,
@@ -1562,13 +1568,13 @@ async fn tracker(
             Some(RepoRef::parse(r).context("--tickets-repo takes owner/name, or all")?)
         };
     }
-    if c.team.is_some() || c.project.is_some() {
+    if c.teams.is_some() || !c.projects.is_empty() {
         let Some(w) = p.workspace.as_ref() else {
             bail!("{} belongs to no workspace", p.slug);
         };
         let l = api.workspace_linear(w.id.as_str()).await?;
         let conn = match (l.connections.as_slice(), &t.linear) {
-            (_, Some(current)) if c.team.is_none() => l
+            (_, Some(current)) if c.teams.is_none() => l
                 .connections
                 .iter()
                 .find(|x| x.organization == current.organization)
@@ -1589,59 +1595,54 @@ async fn tracker(
             .linear
             .clone()
             .filter(|l| l.organization == conn.organization);
-        let team = match c.team.as_deref().map(str::trim) {
-            Some(key) => teams
-                .teams
-                .iter()
-                .find(|x| x.key.eq_ignore_ascii_case(key) || x.name.eq_ignore_ascii_case(key))
-                .with_context(|| {
-                    format!(
-                        "fctl's app reaches no team {key} in {}: `fctl workspaces linear teams` lists them",
-                        conn.name
-                    )
-                })?,
-            None => {
-                let id = current
-                    .as_ref()
-                    .map(|l| l.team.clone())
-                    .context("choose the team first, with --linear-team")?;
-                teams
-                    .teams
-                    .iter()
-                    .find(|x| x.id == id)
-                    .context("fctl's app no longer reaches the project's team: choose another with --linear-team")?
-            }
-        };
-        let keep_project = current
+        let now: Vec<LinearTeamChoice> = current
             .as_ref()
-            .filter(|l| l.team == team.id)
-            .and_then(|l| l.project.clone());
-        let project = match c.project.as_deref().map(str::trim) {
-            Some(n) if n.eq_ignore_ascii_case("all") => None,
-            Some(n) => Some(
-                team.projects
-                    .iter()
-                    .find(|x| x.name.eq_ignore_ascii_case(n))
-                    .map(|x| x.id.clone())
-                    .with_context(|| format!("{} has no open project called {n}", team.key))?,
-            ),
-            None => keep_project,
-        };
-        t.linear = Some(LinearTickets {
+            .map(LinearTickets::teams)
+            .unwrap_or_default();
+        let chosen = linear_teams(&teams.teams, c.teams.as_deref(), &now, &conn.name)?;
+        // Teams it keeps keep their Linear projects, unless named.
+        let mut projects: Vec<Option<String>> = chosen
+            .iter()
+            .map(|team| {
+                now.iter()
+                    .find(|n| n.team == team.id)
+                    .and_then(|n| n.project.clone())
+            })
+            .collect();
+        for arg in &c.projects {
+            let (i, project) = linear_project(&chosen, arg)?;
+            for i in i {
+                projects[i] = project.clone();
+            }
+        }
+        let base = current.unwrap_or_else(|| LinearTickets {
             organization: conn.organization.clone(),
-            team: team.id.clone(),
-            team_key: Some(team.key.clone()),
-            team_name: Some(team.name.clone()),
-            project_name: project
-                .as_ref()
-                .and_then(|id| team.projects.iter().find(|x| &x.id == id))
-                .map(|x| x.name.clone()),
-            project,
-            move_started: current.as_ref().and_then(|l| l.move_started),
-            move_review: current.as_ref().and_then(|l| l.move_review),
-            move_done: current.as_ref().and_then(|l| l.move_done),
-            explore_label: current.as_ref().and_then(|l| l.explore_label.clone()),
+            team: String::new(),
+            team_key: None,
+            team_name: None,
+            project: None,
+            project_name: None,
+            more_teams: None,
+            move_started: None,
+            move_review: None,
+            move_done: None,
+            explore_label: None,
         });
+        let choices = chosen
+            .iter()
+            .zip(projects)
+            .map(|(team, project)| LinearTeamChoice {
+                team: team.id.clone(),
+                team_key: Some(team.key.clone()),
+                team_name: Some(team.name.clone()),
+                project_name: project
+                    .as_ref()
+                    .and_then(|id| team.projects.iter().find(|x| &x.id == id))
+                    .map(|x| x.name.clone()),
+                project,
+            })
+            .collect();
+        t.linear = base.with_teams(choices);
     }
     if c.start.is_some() || c.review.is_some() || c.done.is_some() || c.explore_label.is_some() {
         let Some(l) = t.linear.as_mut() else {
@@ -1661,6 +1662,122 @@ async fn tracker(
         }
     }
     Ok(t)
+}
+
+/// The teams `--linear-team` names, by their keys or names, among those
+/// fctl's app reaches (`all`): without it, the project's teams `now`.
+fn linear_teams<'a>(
+    all: &'a [fctl_proto::tickets::LinearTeam],
+    named: Option<&str>,
+    now: &[fctl_proto::session::LinearTeamChoice],
+    workspace: &str,
+) -> Result<Vec<&'a fctl_proto::tickets::LinearTeam>> {
+    let mut out: Vec<&fctl_proto::tickets::LinearTeam> = Vec::new();
+    let Some(named) = named else {
+        if now.is_empty() {
+            bail!("choose the team first, with --linear-team");
+        }
+        for n in now {
+            out.push(all.iter().find(|x| x.id == n.team).with_context(|| {
+                format!(
+                    "fctl's app no longer reaches {}: choose the project's teams again with --linear-team",
+                    n.label()
+                )
+            })?);
+        }
+        return Ok(out);
+    };
+    for key in named.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+        let team = all
+            .iter()
+            .find(|x| x.key.eq_ignore_ascii_case(key) || x.name.eq_ignore_ascii_case(key))
+            .with_context(|| {
+                format!(
+                    "fctl's app reaches no team {key} in {workspace}: `fctl workspaces linear teams` lists them"
+                )
+            })?;
+        if out.iter().any(|t| t.id == team.id) {
+            bail!("--linear-team names {} twice", team.key);
+        }
+        out.push(team);
+    }
+    if out.is_empty() {
+        bail!("--linear-team takes the keys of the project's teams, like ENG or ENG,DES");
+    }
+    if out.len() > fctl_domain::tickets::MAX_TEAMS {
+        bail!(
+            "a project takes the tickets of {} Linear teams at most",
+            fctl_domain::tickets::MAX_TEAMS
+        );
+    }
+    Ok(out)
+}
+
+/// What `--linear-project` says: which of the `chosen` teams it narrows
+/// (by their places there), and to which of its open Linear projects
+/// (`None` for all of the team's issues). `DES:Website` names the team;
+/// `Website` finds the team that has it; `all` alone is every team's.
+fn linear_project(
+    chosen: &[&fctl_proto::tickets::LinearTeam],
+    arg: &str,
+) -> Result<(Vec<usize>, Option<String>)> {
+    let arg = arg.trim();
+    let named = arg.split_once(':').and_then(|(key, name)| {
+        let i = chosen
+            .iter()
+            .position(|t| t.key.eq_ignore_ascii_case(key.trim()))?;
+        Some((i, name.trim()))
+    });
+    let find = |i: usize, name: &str| -> Result<Option<String>> {
+        let team = chosen[i];
+        if name.eq_ignore_ascii_case("all") {
+            return Ok(None);
+        }
+        team.projects
+            .iter()
+            .find(|x| x.name.eq_ignore_ascii_case(name))
+            .map(|x| Some(x.id.clone()))
+            .with_context(|| format!("{} has no open project called {name}", team.key))
+    };
+    let having: Vec<usize> = (0..chosen.len())
+        .filter(|&i| {
+            chosen[i]
+                .projects
+                .iter()
+                .any(|x| x.name.eq_ignore_ascii_case(arg))
+        })
+        .collect();
+    if let Some((i, name)) = named {
+        return match find(i, name) {
+            Ok(found) => Ok((vec![i], found)),
+            // A project's own name may hold a key and a colon ("ENG: Q3").
+            Err(_) if !having.is_empty() => linear_project_named(chosen, &having, arg, &find),
+            Err(e) => Err(e),
+        };
+    }
+    if arg.eq_ignore_ascii_case("all") {
+        return Ok(((0..chosen.len()).collect(), None));
+    }
+    linear_project_named(chosen, &having, arg, &find)
+}
+
+/// The team of `chosen` that has an open Linear project called `arg`, of
+/// those `having` one, and that project.
+fn linear_project_named(
+    chosen: &[&fctl_proto::tickets::LinearTeam],
+    having: &[usize],
+    arg: &str,
+    find: &dyn Fn(usize, &str) -> Result<Option<String>>,
+) -> Result<(Vec<usize>, Option<String>)> {
+    match having {
+        [i] => Ok((vec![*i], find(*i, arg)?)),
+        [] if chosen.len() == 1 => Ok((vec![0], find(0, arg)?)),
+        [] => bail!("none of the project's teams has an open project called {arg}"),
+        [first, ..] => bail!(
+            "several of the project's teams have an open project called {arg}: name the team, like {}:{arg}",
+            chosen[*first].key
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1960,5 +2077,135 @@ mod tests {
             }),
             "come back to their pull requests for failed checks, conflicts with their base branch and being merged or closed"
         );
+    }
+
+    fn team(
+        id: &str,
+        key: &str,
+        name: &str,
+        projects: &[(&str, &str)],
+    ) -> fctl_proto::tickets::LinearTeam {
+        fctl_proto::tickets::LinearTeam {
+            id: id.into(),
+            key: key.into(),
+            name: name.into(),
+            color: None,
+            states: Vec::new(),
+            start_state: None,
+            review_state: None,
+            done_state: None,
+            projects: projects
+                .iter()
+                .map(|(id, name)| fctl_proto::tickets::LinearProject {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn linear_teams_are_named_by_their_keys_the_first_first() {
+        let all = [
+            team("t1", "ENG", "Engineering", &[("p1", "Website")]),
+            team(
+                "t2",
+                "DES",
+                "Design",
+                &[("p2", "Website"), ("p3", "Posters")],
+            ),
+        ];
+        let ids = |r: Result<Vec<&fctl_proto::tickets::LinearTeam>>| {
+            r.map(|v| v.iter().map(|t| t.id.clone()).collect::<Vec<_>>())
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            ids(linear_teams(&all, Some("des, eng"), &[], "Acme")),
+            Ok(vec!["t2".into(), "t1".into()])
+        );
+        assert_eq!(
+            ids(linear_teams(&all, Some("Engineering"), &[], "Acme")),
+            Ok(vec!["t1".into()])
+        );
+        let twice = ids(linear_teams(&all, Some("ENG,eng"), &[], "Acme"));
+        assert_eq!(twice, Err("--linear-team names ENG twice".into()));
+        assert!(
+            ids(linear_teams(&all, Some("OPS"), &[], "Acme"))
+                .is_err_and(|e| e.contains("no team OPS in Acme"))
+        );
+        assert!(ids(linear_teams(&all, Some(" , "), &[], "Acme")).is_err());
+        // Without the option, the project's teams as they are.
+        let now = [fctl_proto::session::LinearTeamChoice {
+            team: "t2".into(),
+            team_key: Some("DES".into()),
+            team_name: None,
+            project: None,
+            project_name: None,
+        }];
+        assert_eq!(
+            ids(linear_teams(&all, None, &now, "Acme")),
+            Ok(vec!["t2".into()])
+        );
+        assert!(ids(linear_teams(&all, None, &[], "Acme")).is_err());
+    }
+
+    #[test]
+    fn linear_projects_narrow_the_team_that_has_them_or_the_one_named() {
+        let eng = team("t1", "ENG", "Engineering", &[("p1", "Website")]);
+        let des = team(
+            "t2",
+            "DES",
+            "Design",
+            &[("p2", "Website"), ("p3", "Posters")],
+        );
+        let chosen = [&eng, &des];
+        let said = |arg: &str| linear_project(&chosen, arg).map_err(|e| e.to_string());
+        assert_eq!(said("posters"), Ok((vec![1], Some("p3".into()))));
+        assert_eq!(said("DES:Website"), Ok((vec![1], Some("p2".into()))));
+        assert_eq!(said("eng:all"), Ok((vec![0], None)));
+        assert_eq!(said("all"), Ok((vec![0, 1], None)));
+        assert!(said("Website").is_err_and(|e| e.contains("like ENG:Website")));
+        assert!(said("Mobile").is_err_and(|e| e.contains("none of the project's teams")));
+        assert!(
+            said("DES:Mobile").is_err_and(|e| e.contains("DES has no open project called Mobile"))
+        );
+        // A project whose own name holds a team's key and a colon.
+        let q3 = team("t3", "OPS", "Operations", &[("p4", "ENG: Q3")]);
+        let with_q3 = [&eng, &q3];
+        assert_eq!(
+            linear_project(&with_q3, "ENG: Q3").map_err(|e| e.to_string()),
+            Ok((vec![1], Some("p4".into())))
+        );
+        // With one team, as it always was: a project of it, or all of it.
+        let one = [&eng];
+        assert_eq!(
+            linear_project(&one, "Website").ok(),
+            Some((vec![0], Some("p1".into())))
+        );
+        assert!(linear_project(&one, "Posters").is_err_and(|e| {
+            e.to_string()
+                .contains("ENG has no open project called Posters")
+        }));
+    }
+
+    #[test]
+    fn linear_projects_and_teams_go_on_the_command_line() {
+        let Some(ProjectsCmd::Set {
+            linear_team,
+            linear_project,
+            ..
+        }) = set(&[
+            "--linear-team",
+            "ENG,DES",
+            "--linear-project",
+            "DES:Website",
+            "--linear-project",
+            "ENG:all",
+        ])
+        else {
+            panic!("fctl projects set takes Linear's teams and projects");
+        };
+        assert_eq!(linear_team.as_deref(), Some("ENG,DES"));
+        assert_eq!(linear_project, ["DES:Website", "ENG:all"]);
     }
 }

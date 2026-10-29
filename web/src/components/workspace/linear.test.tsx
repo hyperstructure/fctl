@@ -63,6 +63,12 @@ describe("LinearTab", () => {
     expect(c.textContent).not.toContain("isn't connected");
   });
 
+  it("names every team a project takes tickets from", () => {
+    const projects = [{ slug: "web", name: "Web", team_key: "ENG", team_keys: ["ENG", "DES"] }];
+    const c = tab({ configured: true, webhook: true, connections: [{ ...connection, projects }] });
+    expect(c.textContent).toContain("WebENG · DES");
+  });
+
   it("says plainly that a new workspace isn't connected, and what connecting one leads to", () => {
     const admin = tab({ configured: true, webhook: true, connections: [] });
     expect(admin.textContent).toContain("Acme isn't connected to Linear yet");

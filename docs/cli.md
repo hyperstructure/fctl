@@ -314,7 +314,7 @@ fctl projects set -p my-app --pr-descriptions brief   # pull requests described 
 fctl projects show my-app --pr-instructions > prs.md   # what agents are told about pull requests and issues: fctl's rules unless the project has its own
 fctl projects set -p my-app --pr-instructions-file prs.md   # the project's own instead (--pr-instructions default for fctl's, "" for none)
 fctl projects set -p my-app --follow-ups comments,checks,conflicts   # agents come back for @fctl comments, failed checks and conflicts
-fctl projects set -p my-app --tickets linear --linear-team ENG   # its tickets are a Linear team's
+fctl projects set -p my-app --tickets linear --linear-team ENG,DES   # its tickets are these Linear teams'
 fctl projects use my-app
 fctl projects order my-app site        # these first in their workspace, the others after them
 fctl projects delete my-app            # with its sessions; asks you to type the slug
@@ -397,7 +397,7 @@ sandbox.
 ### Ticket trackers
 
 A project's ticket tracker is where its agents read and write tickets,
-and what they are told to use: GitHub Issues, a Linear team, or none.
+and what they are told to use: GitHub Issues, Linear teams, or none.
 Projects that never chose one have GitHub Issues of the repositories
 their agents write to, as agents always worked:
 
@@ -408,16 +408,18 @@ fctl projects set -p my-app --tickets github --tickets-repo my-org/my-app   # on
 fctl projects set -p my-app --tickets none     # no tracker at all, GitHub's issues included
 fctl workspaces linear teams                   # the Linear teams fctl's app reaches
 fctl projects set -p my-app --tickets linear --linear-team ENG
-fctl projects set -p my-app --linear-project "Mobile app"   # only that Linear project's issues ("all": the team's)
+fctl projects set -p my-app --linear-team ENG,DES   # two teams' tickets; agents file new ones in the first
+fctl projects set -p my-app --linear-project "Mobile app"   # only that Linear project's issues of the team that has it ("all": every team's)
+fctl projects set -p my-app --linear-project DES:Website --linear-project ENG:all   # each team's, by its key
 fctl projects set -p my-app --linear-start off # tickets stay in their state as their sessions start
 fctl projects set -p my-app --linear-review off --linear-done off   # leave In Review and Done to Linear's GitHub integration
 fctl projects set -p my-app --explore-label plan   # the label that asks for a plan first ("" for none)
 ```
 
 With the issues of every repository they write to, agents use `gh`, as
-before. With one repository's, or a Linear team's, they use `fctl
-ticket`, which fctl answers for them: it holds the tracker's access and
-refuses tickets outside the project's choice as tickets that don't exist.
+before. With one repository's, or Linear teams', they use `fctl ticket`,
+which fctl answers for them: it holds the tracker's access and refuses
+tickets outside the project's choice as tickets that don't exist.
 With none, their GitHub tokens carry no issues permission and they are
 told to leave every tracker alone; a public repository's issues stay
 readable to anyone, though. A token covers all its repositories with one
@@ -434,8 +436,11 @@ writes to, as with GitHub Issues of all of them, for as long as it runs,
 and its agent is told to use those issues only as its task asks. It
 reaches the project's tracker as other sessions do.
 
-A Linear team takes a Linear workspace the project's workspace works in
-([Workspaces](#workspaces): `fctl workspaces linear connect`). There,
+Linear teams take a Linear workspace the project's workspace works in
+([Workspaces](#workspaces): `fctl workspaces linear connect`). A project
+takes the tickets of one team or several there (at most 20), each of all
+its issues or of one of its Linear projects; agents file new tickets in
+the first, or in another with `fctl ticket create --in DES`. There,
 people assign an issue to fctl, which makes fctl its delegate, or mention
 fctl in a comment, and fctl starts a session of the project that takes
 the issue's team, on the subscription of whoever asked, once they have
@@ -468,11 +473,12 @@ fctl ticket view ENG-123                   # its description, parent, sub-ticket
 fctl ticket create --title "Add a test for retries" --parent ENG-123 --description-file notes.md
 fctl ticket create --title "…" --label Tests --state Todo --priority High   # state and priority: Linear
 fctl ticket create --title "…" --in my-org/api   # which repository, for the GitHub issues of several
+fctl ticket create --title "…" --in DES      # which team, for Linear teams of several (else the first, or a sub-ticket's parent's)
 fctl ticket comment ENG-123 "The fix needs a migration first: should it run in the deploy?"
 fctl ticket comment ENG-123 --reply-to 2f6c… --file answer.md   # answer a comment, where trackers thread them
 fctl ticket update ENG-123 --state "In Review" --add-label Bug
 fctl ticket update ENG-123 --remove-label Triage --parent none --priority Low
-fctl ticket states                         # the states tickets can be in, in order
+fctl ticket states                         # the states tickets can be in, in order (of several teams: each name once)
 fctl ticket labels
 ```
 

@@ -63,10 +63,12 @@ fctl starts the sessions itself, without a schedule, a token or a relay:
 1. **Connect Linear** on the workspace's **Linear** tab, or with `fctl
    workspaces linear connect`: an admin of the workspace who is an admin
    in Linear installs fctl's app there and chooses the teams it sees.
-2. **Choose the team** in the project's **Tickets** tab, or with `fctl
-   projects set -p web --tickets linear --linear-team ENG`, and if you
-   like one Linear project of it. Its agents then read and write that
-   team's tickets with `fctl ticket`, and no other tracker.
+2. **Choose the teams** in the project's **Tickets** tab, or with `fctl
+   projects set -p web --tickets linear --linear-team ENG` (`ENG,DES`
+   for several), and if you like one Linear project of each. Its agents
+   then read and write those teams' tickets with `fctl ticket`, and no
+   other tracker, and file new ones in the first team unless one belongs
+   in another.
 3. **Link your Linear account**, once, in Settings or with `fctl account
    linear connect`. Until you do, what you delegate waits an hour for you,
    with a button in Linear that links it.

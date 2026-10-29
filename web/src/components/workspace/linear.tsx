@@ -52,7 +52,7 @@ export function LinearTab({ w, returned }: { w: G.Workspace; returned?: LinearOu
       {outcome && (
         <Banner tone={outcome.tone} className="-mb-4">
           {returned === "connected"
-            ? `Linear is connected: fctl's app is installed in your Linear workspace. Choose the team each project takes tickets from, in its Tickets tab.`
+            ? `Linear is connected: fctl's app is installed in your Linear workspace. Choose the teams each project takes tickets from, in its Tickets tab.`
             : outcome.text}
         </Banner>
       )}
@@ -231,7 +231,12 @@ function Connection({
                   className="inline-flex items-center gap-1.5 rounded-full border border-line px-2 py-0.5 text-[12px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
                 >
                   {p.name}
-                  {p.team_key && <span className="font-mono text-[11px] text-ink-4">{p.team_key}</span>}
+                  {/* Its teams' keys; its first alone from control planes before several. */}
+                  {(p.team_keys?.length || p.team_key) && (
+                    <span className="font-mono text-[11px] text-ink-4">
+                      {p.team_keys?.length ? p.team_keys.join(" · ") : p.team_key}
+                    </span>
+                  )}
                   <ArrowRight className="size-3 text-ink-4" />
                 </Link>
               </li>
@@ -296,7 +301,7 @@ function OnceConnected() {
   const steps: { icon: ReactNode; text: ReactNode }[] = [
     {
       icon: <Ticket />,
-      text: "Each project chooses the Linear team it takes tickets from, in its Tickets tab.",
+      text: "Each project chooses the Linear teams it takes tickets from, in its Tickets tab.",
     },
     {
       icon: <Link2 />,

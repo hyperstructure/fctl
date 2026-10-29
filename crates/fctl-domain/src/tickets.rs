@@ -17,12 +17,16 @@ use crate::validate::Result;
 use fctl_proto::ApiError;
 use fctl_proto::session::PullRequestRef;
 use fctl_proto::session::{
-    GithubAccess, LinearTickets, RepoAccess, RepoGrant, RepoRef, SessionTicket, Tickets, Tracker,
+    GithubAccess, LinearTeamChoice, LinearTickets, RepoAccess, RepoGrant, RepoRef, SessionTicket,
+    Tickets, Tracker,
 };
 use fctl_proto::tickets::{StateKind, TicketState, TicketsVia};
 
 /// The longest a label that asks for an exploration may be.
 pub const MAX_LABEL: usize = 80;
+
+/// The most Linear teams a project takes tickets from.
+pub const MAX_TEAMS: usize = 20;
 
 /// The most tickets `fctl ticket list` shows at once.
 pub const MAX_LIST: u32 = 50;
@@ -262,22 +266,83 @@ pub fn scope(
     }
 }
 
-/// A Linear team (and project) in words: "Linear team ENG, project Website
-/// (Acme)".
+/// A project's Linear teams (and projects) in words: "Linear team ENG,
+/// project Website (Acme)", "Linear teams ENG and DES (Acme)", "Linear
+/// team ENG and team DES's project Website (Acme)".
 pub fn linear_scope(l: &LinearTickets, workspace: Option<&str>) -> String {
-    let team = l
-        .team_key
-        .as_deref()
-        .or(l.team_name.as_deref())
-        .unwrap_or("of the project");
-    let mut s = format!("Linear team {team}");
-    if let Some(p) = l.project_name.as_deref().filter(|p| !p.is_empty()) {
-        s.push_str(&format!(", project {p}"));
-    }
+    let teams = l.teams();
+    let project = |c: &LinearTeamChoice| c.project_name.clone().filter(|p| !p.is_empty());
+    let mut s = match teams.as_slice() {
+        [one] => {
+            let team = one
+                .team_key
+                .as_deref()
+                .or(one.team_name.as_deref())
+                .unwrap_or("of the project");
+            let mut s = format!("Linear team {team}");
+            if let Some(p) = project(one) {
+                s.push_str(&format!(", project {p}"));
+            }
+            s
+        }
+        _ if teams.iter().any(|c| project(c).is_some()) => {
+            let each: Vec<String> = teams
+                .iter()
+                .map(|c| match project(c) {
+                    Some(p) => format!("team {}'s project {p}", c.label()),
+                    None => format!("team {}", c.label()),
+                })
+                .collect();
+            format!("Linear {}", listed(&each))
+        }
+        _ => {
+            let keys: Vec<String> = teams.iter().map(|c| c.label().to_owned()).collect();
+            format!("Linear teams {}", listed(&keys))
+        }
+    };
     if let Some(w) = workspace.filter(|w| !w.is_empty()) {
         s.push_str(&format!(" ({w})"));
     }
     s
+}
+
+/// A project's Linear teams by their keys: "ENG", "ENG and DES".
+pub fn linear_teams(l: &LinearTickets) -> String {
+    let keys: Vec<String> = l.teams().iter().map(|c| c.label().to_owned()).collect();
+    listed(&keys)
+}
+
+/// The same as a choice: "ENG", "ENG or DES".
+pub fn linear_teams_or(l: &LinearTickets) -> String {
+    let keys: Vec<String> = l.teams().iter().map(|c| c.label().to_owned()).collect();
+    listed_with(&keys, "or")
+}
+
+/// Words in a list: "a", "a and b", "a, b and c".
+fn listed(items: &[String]) -> String {
+    listed_with(items, "and")
+}
+
+fn listed_with(items: &[String], conjunction: &str) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} {conjunction} {last}", rest.join(", ")),
+    }
+}
+
+/// The team of a project's that `place` names, by its key or its name, in
+/// any case: where `fctl ticket create --in DES` files a ticket.
+pub fn linear_place(l: &LinearTickets, place: &str) -> Option<LinearTeamChoice> {
+    let place = place.trim();
+    l.teams().into_iter().find(|c| {
+        c.team_key
+            .as_deref()
+            .is_some_and(|k| k.eq_ignore_ascii_case(place))
+            || c.team_name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(place))
+    })
 }
 
 /// Checks and cleans a project's tracker before it is stored: a repository
@@ -337,6 +402,54 @@ pub fn check(t: &Tickets, primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Re
                 "Choose a project from the list",
             ));
         }
+        let more = l.more_teams.take().unwrap_or_default();
+        if more.len() >= MAX_TEAMS {
+            return Err(ApiError::validation(
+                "settings.tickets.linear.more_teams",
+                format!("Choose at most {MAX_TEAMS} teams"),
+            ));
+        }
+        let mut seen = vec![l.team.as_str()];
+        for c in &more {
+            if !is_linear_id(&c.team) {
+                return Err(ApiError::validation(
+                    "settings.tickets.linear.more_teams",
+                    "Choose a team from the list",
+                ));
+            }
+            if c.project.as_deref().is_some_and(|p| !is_linear_id(p)) {
+                return Err(ApiError::validation(
+                    "settings.tickets.linear.more_teams",
+                    format!("Choose one of {}'s projects from the list", c.label()),
+                ));
+            }
+            if seen.contains(&c.team.as_str()) {
+                // As the choice names it where it has a key.
+                let key = c
+                    .team_key
+                    .as_deref()
+                    .or_else(|| {
+                        (c.team == l.team)
+                            .then_some(l.team_key.as_deref())
+                            .flatten()
+                    })
+                    .or_else(|| {
+                        more.iter()
+                            .filter(|m| m.team == c.team)
+                            .find_map(|m| m.team_key.as_deref())
+                    });
+                let twice = match key {
+                    Some(key) => format!("{key} is chosen twice"),
+                    None => "A team is chosen twice".to_owned(),
+                };
+                return Err(ApiError::validation(
+                    "settings.tickets.linear.more_teams",
+                    format!("{twice}: choose each team once"),
+                ));
+            }
+            seen.push(&c.team);
+        }
+        l.more_teams = (!more.is_empty()).then_some(more);
     }
     Ok(t)
 }
@@ -542,8 +655,16 @@ pub fn instructions(t: &Told<'_>) -> String {
                 } else {
                     String::new()
                 };
+                let filing = match l.teams().as_slice() {
+                    [first, other, ..] if writes => format!(
+                        " Tickets you file go to {}, and a sub-ticket to its parent's team, unless you name another of the project's teams (`fctl ticket create --in {}`).",
+                        first.label(),
+                        other.label()
+                    ),
+                    _ => String::new(),
+                };
                 s.push_str(&format!(
-                    "- This project tracks its work in Linear, in {scope}: {how}. {github}{moving}\n"
+                    "- This project tracks its work in Linear, in {scope}: {how}. {github}{filing}{moving}\n"
                 ));
             }
         },
@@ -670,8 +791,18 @@ fn moves(t: &Told<'_>, from: &StartedFrom<'_>) -> String {
         ),
     };
     if on(LinearTickets::moves_done) && writes(t.access) {
+        let several = t
+            .tickets
+            .linear
+            .as_ref()
+            .is_some_and(|l| l.teams().len() > 1);
+        let states = if several {
+            "the states of the project's teams"
+        } else {
+            "its team's states"
+        };
         s.push_str(&format!(
-            " When the ticket needs no pull request and you have done all it asks, move it to Done yourself: `fctl ticket update {key} --state Done` (`fctl ticket states` lists its team's states)."
+            " When the ticket needs no pull request and you have done all it asks, move it to Done yourself: `fctl ticket update {key} --state Done` (`fctl ticket states` lists {states})."
         ));
     }
     s
@@ -1106,6 +1237,7 @@ mod tests {
                 team_name: Some("Engineering".into()),
                 project: None,
                 project_name: None,
+                more_teams: None,
                 move_started: None,
                 move_review: None,
                 move_done: None,
@@ -1245,6 +1377,120 @@ mod tests {
             l.team = "ENG".into();
         }
         assert!(check(&t, None, &[]).is_err());
+    }
+
+    /// A Linear team besides the first, `n` telling their ids apart.
+    fn another(n: u8, key: &str, project: Option<(&str, &str)>) -> LinearTeamChoice {
+        LinearTeamChoice {
+            team: format!("8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d{n:02}"),
+            team_key: Some(key.into()),
+            team_name: None,
+            project: project.map(|(id, _)| id.to_owned()),
+            project_name: project.map(|(_, name)| name.to_owned()),
+        }
+    }
+
+    /// [`linear`] with these teams after ENG.
+    fn linear_with(more: Vec<LinearTeamChoice>) -> Tickets {
+        let mut t = linear();
+        if let Some(l) = t.linear.as_mut() {
+            l.more_teams = Some(more);
+        }
+        t
+    }
+
+    #[test]
+    fn linear_takes_each_of_several_teams_once() {
+        let des = another(30, "DES", None);
+        let more = |t: &Tickets| {
+            t.linear
+                .as_ref()
+                .and_then(|l| l.more_teams.clone())
+                .map(|m| m.len())
+        };
+        let checked = check(&linear_with(vec![des.clone()]), None, &[]);
+        assert_eq!(checked.as_ref().ok().and_then(more), Some(1));
+        // No more teams are none at all.
+        let checked = check(&linear_with(vec![]), None, &[]);
+        assert_eq!(checked.as_ref().ok().map(more), Some(None));
+        // Each team once, the first included.
+        let first = LinearTeamChoice {
+            team: "8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d20".into(),
+            ..des.clone()
+        };
+        let first = LinearTeamChoice {
+            team_key: None,
+            ..first
+        };
+        for (twice, said) in [
+            (
+                vec![des.clone(), des.clone()],
+                "DES is chosen twice: choose each team once",
+            ),
+            (vec![first], "ENG is chosen twice: choose each team once"),
+        ] {
+            let e = check(&linear_with(twice), None, &[]).err();
+            assert_eq!(
+                e.map(|e| (e.field, e.message)),
+                Some((
+                    Some("settings.tickets.linear.more_teams".into()),
+                    said.to_owned()
+                ))
+            );
+        }
+        // Teams and projects from the list, by Linear's ids.
+        let made_up = LinearTeamChoice {
+            team: "DES".into(),
+            ..des.clone()
+        };
+        assert!(check(&linear_with(vec![made_up]), None, &[]).is_err());
+        let project = LinearTeamChoice {
+            project: Some("Website".into()),
+            ..des
+        };
+        assert!(check(&linear_with(vec![project]), None, &[]).is_err());
+        // At most MAX_TEAMS of them.
+        let all: Vec<LinearTeamChoice> = (0..MAX_TEAMS)
+            .map(|n| another(u8::try_from(n).unwrap_or(0), "T", None))
+            .collect();
+        assert!(check(&linear_with(all[1..].to_vec()), None, &[]).is_ok());
+        assert!(check(&linear_with(all), None, &[]).is_err());
+    }
+
+    #[test]
+    fn several_linear_teams_in_words_and_where_tickets_go() {
+        let t = linear_with(vec![
+            another(
+                30,
+                "DES",
+                Some(("5d7e9a1b-3333-4e4f-9b2c-2d4f6b8c0e30", "Website")),
+            ),
+            another(40, "OPS", None),
+        ]);
+        let Some(l) = t.linear.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(
+            linear_scope(l, Some("Acme")),
+            "Linear team ENG, team DES's project Website and team OPS (Acme)"
+        );
+        assert_eq!(linear_teams(l), "ENG, DES and OPS");
+        assert_eq!(linear_teams_or(l), "ENG, DES or OPS");
+        assert_eq!(
+            linear_place(l, "des").map(|c| c.team),
+            Some("8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d30".into())
+        );
+        assert_eq!(
+            linear_place(l, " Engineering ").map(|c| c.team),
+            Some(l.team.clone())
+        );
+        assert!(linear_place(l, "QA").is_none());
+        // One team, as it always read.
+        let Some(one) = linear().linear else {
+            unreachable!()
+        };
+        assert_eq!(linear_scope(&one, None), "Linear team ENG");
+        assert_eq!(linear_teams(&one), "ENG");
     }
 
     #[test]
@@ -1646,6 +1892,15 @@ mod tests {
         let lin = told(&linear(), GithubAccess::Push);
         assert!(lin.contains("Linear team ENG (Acme)"));
         assert!(lin.contains("`fctl ticket comment ENG-123"));
+        assert!(!lin.contains("--in"));
+        // With several teams, where the tickets agents file go.
+        let several = linear_with(vec![another(30, "DES", None)]);
+        let lin = told(&several, GithubAccess::Push);
+        assert!(lin.contains("Linear teams ENG and DES (Acme)"));
+        assert!(lin.contains(
+            "Tickets you file go to ENG, and a sub-ticket to its parent's team, unless you name another of the project's teams (`fctl ticket create --in DES`)."
+        ));
+        assert!(!told(&several, GithubAccess::Read).contains("--in"));
         // A workspace that disconnected Linear reaches none of its tickets.
         let gone = instructions(&Told {
             tickets: &linear(),

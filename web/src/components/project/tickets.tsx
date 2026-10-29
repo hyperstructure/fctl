@@ -1,5 +1,5 @@
 // A project's ticket tracker: where its agents read and write tickets (none, GitHub Issues or
-// Linear), and for Linear, the team whose issues people delegate to fctl there, how a ticket
+// Linear), and for Linear, the teams whose issues people delegate to fctl there, how a ticket
 // becomes a session, and the sessions tickets started lately. The project's maintainers choose;
 // everyone in it sees what was chosen, and links their own Linear account here.
 
@@ -14,9 +14,11 @@ import {
   GitPullRequestArrow,
   MessagesSquare,
   Play,
+  Plus,
   RotateCcw,
+  X,
 } from "lucide-react";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { type ReactNode, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StateDot } from "@/components/session/ticket";
 import {
   Avatar,
@@ -24,6 +26,7 @@ import {
   Button,
   Field,
   GithubIcon,
+  IconButton,
   Input,
   LinearIcon,
   Logo,
@@ -46,6 +49,9 @@ const DEFAULT_EXPLORE = "explore";
 
 /** The choice of every repository, or every issue of a team, in a select (an empty value reads as none). */
 const ALL = "all";
+
+/** The most Linear teams a project takes tickets from (`fctl_domain::tickets::MAX_TEAMS`). */
+export const MAX_TEAMS = 20;
 
 export function TicketsTab({ project, returned }: { project: G.Project; returned?: LinearOutcome }) {
   const manage = project.role === "owner" || project.role === "maintainer";
@@ -76,7 +82,7 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
     setDraft(project.settings.tickets ?? {});
   }
   const tracker = draft.tracker ?? "github";
-  const dirty = JSON.stringify(normalized(draft)) !== JSON.stringify(normalized(saved));
+  const dirty = JSON.stringify(comparable(draft)) !== JSON.stringify(comparable(saved));
   const save = useMutation({
     mutationFn: () =>
       api.updateProject(project.id, { settings: { ...project.settings, tickets: normalized(draft) } }),
@@ -141,6 +147,7 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
               admin={admin}
               workspaceName={workspace?.name ?? project.workspace?.name ?? "the workspace"}
               draft={draft}
+              saved={saved}
               onChange={setDraft}
               disabled={!manage}
               error={save.error}
@@ -153,7 +160,7 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
             disabled={tracker === "linear" && !draft.linear?.team}
             hint={
               tracker === "linear" && !draft.linear?.team
-                ? "Choose the team first."
+                ? "Choose a team first."
                 : "Running sessions take it within the hour."
             }
             onSave={() => save.mutate()}
@@ -182,16 +189,76 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
   );
 }
 
-/** What a draft comes to as settings: Linear's choice is kept while another tracker is chosen. */
+/**
+ * What a draft comes to as settings, its fields in one order: Linear's choice is kept while another
+ * tracker is chosen, and names its teams besides the first, none included, so that a save keeps no
+ * others.
+ */
 function normalized(t: G.Tickets): G.Tickets {
   const out: G.Tickets = { tracker: t.tracker ?? "github" };
   if (t.repo) out.repo = t.repo;
-  if (t.linear) out.linear = t.linear;
+  const l = t.linear;
+  if (l) {
+    const [first, ...more] = teamsOf(l).map(choice);
+    out.linear = {
+      organization: l.organization,
+      ...(first ?? { team: l.team }),
+      more_teams: more,
+      move_started: l.move_started,
+      move_review: l.move_review,
+      move_done: l.move_done,
+      explore_label: l.explore_label,
+    };
+  }
+  return out;
+}
+
+/** A draft as it compares with what is stored: which team comes first counts, the order of the others doesn't. */
+function comparable(t: G.Tickets): G.Tickets {
+  const out = normalized(t);
+  if (out.linear?.more_teams)
+    out.linear.more_teams = [...out.linear.more_teams].sort((a, b) => a.team.localeCompare(b.team));
   return out;
 }
 
 function fieldError(error: Error | null, field: string): string | undefined {
   return error instanceof ApiFailure && error.field?.startsWith(field) ? error.message : undefined;
+}
+
+/** Every team a project's Linear choice takes tickets from, its first first. */
+export function teamsOf(l?: G.LinearTickets): G.LinearTeamChoice[] {
+  if (!l?.team) return [];
+  return [choice(l), ...(l.more_teams ?? [])];
+}
+
+/** A team of a Linear choice, its fields in one order. */
+function choice(c: G.LinearTeamChoice): G.LinearTeamChoice {
+  return {
+    team: c.team,
+    team_key: c.team_key,
+    team_name: c.team_name,
+    project: c.project,
+    project_name: c.project_name,
+  };
+}
+
+/** A Linear choice's fields for `teams`, the first where agents file new tickets. */
+function withTeams(teams: G.LinearTeamChoice[]): Partial<G.LinearTickets> {
+  const [first, ...more] = teams;
+  return {
+    team: first?.team ?? "",
+    team_key: first?.team_key,
+    team_name: first?.team_name,
+    project: first?.project,
+    project_name: first?.project_name,
+    more_teams: more,
+  };
+}
+
+/** Teams' keys (or names) as a list: "ENG", "ENG or DES", "ENG, DES or OPS". */
+function either(words: string[]): string {
+  if (words.length < 2) return words[0] ?? "";
+  return `${words.slice(0, -1).join(", ")} or ${words[words.length - 1]}`;
 }
 
 // ───────────────────────────── the choice ─────────────────────────────
@@ -433,6 +500,7 @@ function LinearDetails({
   admin,
   workspaceName,
   draft,
+  saved,
   onChange,
   disabled,
   error,
@@ -444,6 +512,8 @@ function LinearDetails({
   admin: boolean;
   workspaceName: string;
   draft: G.Tickets;
+  /** The tracker as it is stored. */
+  saved: G.Tickets;
   onChange: (t: G.Tickets) => void;
   disabled: boolean;
   error: Error | null;
@@ -489,6 +559,7 @@ function LinearDetails({
                   linear: {
                     organization: v,
                     team: "",
+                    more_teams: [],
                     move_started: draft.linear?.move_started,
                     move_review: draft.linear?.move_review,
                     move_done: draft.linear?.move_done,
@@ -546,6 +617,7 @@ function LinearDetails({
           project={project}
           connection={chosen}
           draft={draft}
+          saved={saved}
           onChange={onChange}
           disabled={disabled}
           error={error}
@@ -583,7 +655,7 @@ function ConnectCard({
           ) : (
             <>
               {workspaceName}'s admins connect Linear: installing fctl's app there takes an admin of both. Ask
-              one of them, then choose the team here.
+              one of them, then choose the teams here.
             </>
           )}
         </p>
@@ -602,11 +674,12 @@ function ConnectCard({
   );
 }
 
-/** The team, the Linear project, and what fctl does with what is delegated. */
+/** The teams, the issues of each that the project takes, and what fctl does with what is delegated. */
 function LinearChoice({
   project,
   connection,
   draft,
+  saved,
   onChange,
   disabled,
   error,
@@ -614,19 +687,23 @@ function LinearChoice({
   project: G.Project;
   connection: G.LinearConnection;
   draft: G.Tickets;
+  saved: G.Tickets;
   onChange: (t: G.Tickets) => void;
   disabled: boolean;
   error: Error | null;
 }) {
   const workspace = project.workspace?.id ?? "";
+  // The teams to choose from, for those who choose: the workspace's admins and the project's
+  // maintainers. Others see the choice as it was saved.
   const teams = useQuery({
     queryKey: keys.linearTeams(workspace, connection.organization),
     queryFn: () => workspaces.linearTeams(workspace, connection.organization),
-    enabled: connection.status === "active",
+    enabled: connection.status === "active" && !disabled,
     staleTime: 60_000,
   });
-  const current = draft.linear?.organization === connection.organization ? draft.linear : undefined;
-  const team = teams.data?.teams.find((t) => t.id === current?.team);
+  const ours = (t: G.Tickets) => (t.linear?.organization === connection.organization ? t.linear : undefined);
+  const current = ours(draft);
+  const chosen = teamsOf(current);
   const set = (l: Partial<G.LinearTickets>) =>
     onChange({
       ...draft,
@@ -637,86 +714,37 @@ function LinearChoice({
         ...l,
       },
     });
-  const teamOptions: SelectOption[] = (teams.data?.teams ?? []).map((t) => ({
-    value: t.id,
-    label: t.name,
-    short: t.key,
-    description: t.key,
-    icon: (
-      <span
-        aria-hidden="true"
-        className="size-2.5 rounded-[3px]"
-        style={{ backgroundColor: t.color ?? "var(--c-ink-4)" }}
-      />
-    ),
-  }));
-  if (current?.team && !team && current.team_name)
-    teamOptions.push({
-      value: current.team,
-      label: current.team_name,
-      description: "fctl's app no longer reaches it",
-    });
-  const projectOptions: SelectOption[] = [
-    { value: ALL, label: team ? `Every issue of ${team.name}` : "Every issue of the team" },
-    ...(team?.projects ?? []).map((p) => ({
-      value: p.id,
-      label: p.name,
-      description: "Only this project's issues",
-    })),
-  ];
   const label = current?.explore_label ?? DEFAULT_EXPLORE;
   const err = (f: string) => fieldError(error, f);
+  // Linear's connection itself, rather than one of its fields.
+  const connectionError =
+    error instanceof ApiFailure && error.field === "settings.tickets.linear" ? error.message : undefined;
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid items-start gap-4 sm:grid-cols-2">
-        <Field label="Team" error={err("settings.tickets.linear.team") ?? err("settings.tickets.linear")}>
-          {(id) =>
-            teams.isPending && connection.status === "active" ? (
-              <Skeleton className="h-9.5" />
-            ) : (
-              <Select
-                id={id}
-                value={current?.team || undefined}
-                onChange={(v) => {
-                  const t = teams.data?.teams.find((x) => x.id === v);
-                  set({
-                    team: v,
-                    team_key: t?.key,
-                    team_name: t?.name,
-                    project: undefined,
-                    project_name: undefined,
-                  });
-                }}
-                options={teamOptions}
-                placeholder="Choose a team"
-                disabled={disabled || connection.status !== "active"}
-                className="w-full"
-              />
-            )
-          }
-        </Field>
-        <Field
-          label="Issues of"
-          hint={team && team.projects.length === 0 ? `${team.name} has no open projects.` : undefined}
-          error={err("settings.tickets.linear.project")}
-        >
-          {(id) => (
-            <Select
-              id={id}
-              value={current?.project ?? ALL}
-              onChange={(v) => {
-                const p = team?.projects.find((x) => x.id === v);
-                set({ project: v === ALL ? undefined : v, project_name: p?.name });
-              }}
-              options={projectOptions}
-              disabled={disabled || !team}
-              className="w-full"
-            />
-          )}
-        </Field>
-      </div>
+      <LinearTeams
+        chosen={chosen}
+        saved={teamsOf(ours(saved))}
+        teams={teams.data?.teams}
+        loading={teams.isLoading}
+        disabled={disabled || connection.status !== "active"}
+        error={
+          err("settings.tickets.linear.team") ??
+          err("settings.tickets.linear.project") ??
+          err("settings.tickets.linear.more_teams") ??
+          connectionError
+        }
+        onChange={(list) => set(withTeams(list))}
+      />
       {teams.error && <Banner tone="error">{teams.error.message}</Banner>}
-      <TicketMoves current={current} team={team} set={set} disabled={disabled || !current?.team} />
+      <TicketMoves
+        current={current}
+        teams={chosen.map((c) => {
+          const info = teams.data?.teams.find((t) => t.id === c.team);
+          return { name: teamName(c, info), info };
+        })}
+        set={set}
+        disabled={disabled || chosen.length === 0}
+      />
       <Field
         label="Label that asks for an exploration"
         error={err("settings.tickets.linear.explore_label")}
@@ -739,7 +767,7 @@ function LinearChoice({
               value={label}
               onChange={(e) => set({ explore_label: e.target.value })}
               placeholder="No label"
-              disabled={disabled || !current?.team}
+              disabled={disabled || chosen.length === 0}
               autoComplete="off"
               spellCheck={false}
             />
@@ -747,6 +775,330 @@ function LinearChoice({
         )}
       </Field>
     </div>
+  );
+}
+
+/** A team as people know it: its name, else its key. */
+const teamName = (c: G.LinearTeamChoice, info?: G.LinearTeam) =>
+  info?.name ?? c.team_name ?? c.team_key ?? "A team";
+
+/** A team to choose in a select: its name, key and color. */
+const teamOption = (t: G.LinearTeam): SelectOption => ({
+  value: t.id,
+  label: t.name,
+  description: t.key,
+  icon: <TeamColor color={t.color} />,
+});
+
+function TeamColor({ color, faded }: { color?: string; faded?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "size-2.5 shrink-0 rounded-[3px] transition-[background-color,opacity] duration-200",
+        faded && "opacity-40",
+      )}
+      style={{ backgroundColor: color ?? "var(--c-ink-4)" }}
+    />
+  );
+}
+
+/**
+ * The teams a project takes tickets from, as a list that grows and shrinks: each with the issues of it
+ * the project takes; those added since it was saved marked new, and those taken off struck through,
+ * to undo, until it is saved. Agents file new tickets in the first team, which the line under the
+ * list chooses once there are several.
+ */
+function LinearTeams({
+  chosen,
+  saved,
+  teams,
+  loading,
+  disabled,
+  error,
+  onChange,
+}: {
+  chosen: G.LinearTeamChoice[];
+  /** The teams as they are stored, to tell what changed. */
+  saved: G.LinearTeamChoice[];
+  /** The teams fctl's app reaches, once listed. */
+  teams?: G.LinearTeam[];
+  loading: boolean;
+  disabled: boolean;
+  error?: string;
+  onChange: (teams: G.LinearTeamChoice[]) => void;
+}) {
+  const id = useId();
+  const [said, setSaid] = useState("");
+  const info = (c: G.LinearTeamChoice) => teams?.find((t) => t.id === c.team);
+  const has = (list: G.LinearTeamChoice[], team: string) => list.some((c) => c.team === team);
+  const removed = saved.filter((c) => !has(chosen, c.team));
+  // Teams taken off come back with Undo, as they were.
+  const left = (teams ?? []).filter((t) => !has(chosen, t.id) && !has(removed, t.id));
+  const full = chosen.length >= MAX_TEAMS;
+  const add = (team: string) => {
+    const t = teams?.find((x) => x.id === team);
+    if (!t) return;
+    onChange([...chosen, { team: t.id, team_key: t.key, team_name: t.name }]);
+    setSaid(`${t.name} added: its tickets start sessions here once you save.`);
+  };
+  const remove = (c: G.LinearTeamChoice) => {
+    onChange(chosen.filter((x) => x.team !== c.team));
+    setSaid(`${teamName(c, info(c))} taken off: its tickets start no sessions here once you save.`);
+  };
+  const undo = (c: G.LinearTeamChoice) => {
+    // Back in its place as saved: after the last team that came before it there, else before the first
+    // that came after it, so that undoing every change, in any order, gives the saved list again.
+    const rank = (team: string) => {
+      const i = saved.findIndex((x) => x.team === team);
+      return i < 0 ? saved.length : i;
+    };
+    const mine = rank(c.team);
+    const before = chosen.findLastIndex((x) => rank(x.team) < mine);
+    const after = chosen.findIndex((x) => rank(x.team) > mine);
+    const next = [...chosen];
+    next.splice(before >= 0 ? before + 1 : after >= 0 ? after : next.length, 0, c);
+    onChange(next);
+    setSaid(`${teamName(c, info(c))} is back.`);
+  };
+  const narrow = (c: G.LinearTeamChoice, project?: G.LinearProject) =>
+    onChange(
+      chosen.map((x) =>
+        x.team === c.team ? { ...x, project: project?.id, project_name: project?.name } : x,
+      ),
+    );
+  const first = (team: string) => {
+    const c = chosen.find((x) => x.team === team);
+    if (c) onChange([c, ...chosen.filter((x) => x.team !== team)]);
+  };
+  const adding = !disabled && !full && (loading || left.length > 0);
+  const rows: { c: G.LinearTeamChoice; state: "kept" | "added" | "removed" }[] = [
+    ...chosen.map((c) => ({ c, state: has(saved, c.team) ? ("kept" as const) : ("added" as const) })),
+    ...removed.map((c) => ({ c, state: "removed" as const })),
+  ];
+  return (
+    <fieldset aria-describedby={`${id}-hint`} className="flex min-w-0 flex-col gap-1.5">
+      <legend className="mb-1.5 text-[12.5px] font-medium text-ink-2">
+        {chosen.length > 1 ? "Teams" : "Team"}
+      </legend>
+      <p id={`${id}-hint`} className="max-w-2xl text-[12.5px] leading-relaxed text-ink-3">
+        Delegating one of {chosen.length > 1 ? "their" : "its"} issues to fctl, or mentioning fctl on one,
+        starts a session here.
+      </p>
+      {rows.length > 0 && (
+        <ul
+          aria-label="Teams"
+          className="mt-1.5 divide-y divide-line overflow-hidden rounded-lg border border-line"
+        >
+          {/* One list, so that a row taken off or back keeps its place in the DOM, and its focus. */}
+          {rows.map(({ c, state }) => (
+            <TeamRow
+              key={c.team}
+              choice={c}
+              info={info(c)}
+              listed={!!teams}
+              state={state}
+              disabled={disabled}
+              onNarrow={(p) => narrow(c, p)}
+              onRemove={() => remove(c)}
+              onUndo={() => undo(c)}
+            />
+          ))}
+        </ul>
+      )}
+      {adding &&
+        (loading ? (
+          <Skeleton className="mt-1.5 h-9.5 w-full sm:w-72" />
+        ) : (
+          <Select
+            value={undefined}
+            icon={chosen.length > 0 ? <Plus /> : undefined}
+            placeholder={chosen.length > 0 ? "Add a team" : "Choose a team"}
+            options={left.map(teamOption)}
+            onChange={add}
+            aria-label={chosen.length > 0 ? "Add a team" : "Choose a team"}
+            className="mt-1.5 w-full sm:w-72"
+          />
+        ))}
+      {!disabled && teams && !full && left.length === 0 && chosen.length > 0 && removed.length === 0 && (
+        <p className="mt-1 text-[12.5px] text-ink-4">
+          fctl's app reaches no other team. Linear's admins give it more in Linear's settings.
+        </p>
+      )}
+      {!disabled && full && (
+        <p className="mt-1 text-[12.5px] text-ink-4">
+          A project takes the tickets of {MAX_TEAMS} teams at most.
+        </p>
+      )}
+      {chosen.length > 1 && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[12.5px] text-ink-3">
+          <span>Agents file new tickets in</span>
+          <Select
+            value={chosen[0]?.team}
+            options={chosen.map((c) => ({
+              value: c.team,
+              label: teamName(c, info(c)),
+              description: c.team_key,
+              icon: <TeamColor color={info(c)?.color} />,
+            }))}
+            onChange={first}
+            size="sm"
+            disabled={disabled}
+            aria-label="Team agents file new tickets in"
+          />
+          <span>unless a ticket belongs in another of these teams.</span>
+        </div>
+      )}
+      {error && (
+        <p className="mt-1 animate-rise text-[12.5px] text-danger [overflow-wrap:anywhere]" role="alert">
+          {error}
+        </p>
+      )}
+      <p className="sr-only" aria-live="polite">
+        {said}
+      </p>
+    </fieldset>
+  );
+}
+
+/**
+ * A team on the list: its color, name and key, the issues of it the project takes, and a button that
+ * takes it off; or, taken off since the project was saved, Undo. Focus goes from one button to the
+ * other, so that the keys go on from where they were.
+ */
+function TeamRow({
+  choice: c,
+  info,
+  listed,
+  state,
+  disabled,
+  onNarrow,
+  onRemove,
+  onUndo,
+}: {
+  choice: G.LinearTeamChoice;
+  info?: G.LinearTeam;
+  /** fctl's app's teams are listed, so that one missing there is one it no longer reaches. */
+  listed: boolean;
+  state: "kept" | "added" | "removed";
+  disabled: boolean;
+  onNarrow?: (project?: G.LinearProject) => void;
+  onRemove?: () => void;
+  onUndo?: () => void;
+}) {
+  const name = teamName(c, info);
+  const removed = state === "removed";
+  const gone = listed && !info;
+  const row = useRef<HTMLLIElement>(null);
+  const refocus = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: it runs as the row is taken off or back
+  useLayoutEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    row.current?.querySelector<HTMLButtonElement>("[data-row-action]")?.focus();
+  }, [removed]);
+  const projects = info?.projects ?? [];
+  const options: SelectOption[] = [
+    { value: ALL, label: "Every issue", description: `All of ${name}'s issues` },
+    ...projects.map((p) => ({
+      value: p.id,
+      label: `Only ${p.name}`,
+      item: p.name,
+      description: "Only this Linear project's issues",
+    })),
+  ];
+  // A project it narrowed to that closed since, or that isn't listed for those who don't choose.
+  if (c.project && !projects.some((p) => p.id === c.project))
+    options.push({
+      value: c.project,
+      label: `Only ${c.project_name ?? "its project"}`,
+      item: c.project_name ?? "Its project",
+      description: listed ? "No longer one of its open projects" : "Only this Linear project's issues",
+    });
+  const note = removed
+    ? "Its tickets start no sessions here once you save"
+    : gone
+      ? "fctl's app no longer reaches it: take it off, or give the app the team in Linear's settings"
+      : undefined;
+  return (
+    <li
+      ref={row}
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-2.5 transition-colors duration-200",
+        state === "added" && "animate-rise bg-accent-soft/35 [animation-duration:280ms]",
+      )}
+    >
+      <TeamColor color={info?.color} faded={removed} />
+      <div className="min-w-0 flex-1">
+        <p className="flex min-w-0 items-baseline gap-2">
+          <span
+            className={cn(
+              "truncate text-[13.5px] font-medium text-ink transition-colors duration-200",
+              removed && "text-ink-4 line-through",
+            )}
+          >
+            {name}
+          </span>
+          {c.team_key && c.team_key !== name && (
+            <span className="shrink-0 font-mono text-[11.5px] text-ink-4">{c.team_key}</span>
+          )}
+          {state === "added" && (
+            <span className="shrink-0 self-center rounded-sm bg-highlight px-1.5 py-px text-[11px] font-medium text-highlight-ink">
+              New
+            </span>
+          )}
+        </p>
+        {note && <p className={cn("text-[12px]", gone && !removed ? "text-amber" : "text-ink-4")}>{note}</p>}
+      </div>
+      {removed ? (
+        !disabled && (
+          <Button
+            data-row-action=""
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              refocus.current = true;
+              onUndo?.();
+            }}
+          >
+            Undo
+          </Button>
+        )
+      ) : (
+        <>
+          <Select
+            value={c.project ?? ALL}
+            options={options}
+            onChange={(v) =>
+              onNarrow?.(
+                v === ALL
+                  ? undefined
+                  : (projects.find((p) => p.id === v) ?? { id: v, name: c.project_name ?? "" }),
+              )
+            }
+            size="sm"
+            disabled={disabled || gone}
+            aria-label={`Issues of ${name}`}
+            className="order-last w-full sm:order-none sm:w-56"
+          />
+          {!disabled && (
+            <IconButton
+              data-row-action=""
+              type="button"
+              label={`Take ${name} off`}
+              onClick={() => {
+                refocus.current = true;
+                onRemove?.();
+              }}
+              className="-my-1 -mr-1.5"
+            >
+              <X className="size-4" />
+            </IconButton>
+          )}
+        </>
+      )}
+    </li>
   );
 }
 
@@ -785,7 +1137,9 @@ function SaveBar({
 /** How a Linear ticket becomes a session, with a picture of it in Linear, and the caller's own link. */
 function Delegating({ project, status }: { project: G.Project; status?: G.ProjectTickets }) {
   const l = project.settings.tickets?.linear;
-  const team = l?.team_key ?? l?.team_name ?? "the team";
+  const named = teamsOf(l).flatMap((c) => c.team_key ?? c.team_name ?? []);
+  const team = named[0] ?? "the team";
+  const whose = named.length > 0 ? either(named.map((t) => `${t}'s`)) : "the team's";
   // As people find fctl's app in Linear: the instance's Linear app may go by another name.
   const app = status?.linear?.app_name ?? "fctl";
   const handle = status?.linear?.app_handle ?? "fctl";
@@ -804,7 +1158,7 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
       icon: <AtSign />,
       text: (
         <>
-          In Linear, assign one of {team}'s issues to <span className="font-medium text-ink">{app}</span>, or
+          In Linear, assign one of {whose} issues to <span className="font-medium text-ink">{app}</span>, or
           mention <span className="font-mono text-[12.5px] text-ink">@{handle}</span> in a comment on one.
         </>
       ),
@@ -899,52 +1253,62 @@ type Move = {
 };
 
 /**
- * The states fctl moves a project's tickets to as their sessions work, each with a switch: the team's
+ * The states fctl moves a project's tickets to as their sessions work, each with a switch: their team's
  * first started one as a session starts, its review one when a pull request is up, and its first
- * completed one once they merged (`fctl_domain::tickets::next_state`).
+ * completed one once they merged (`fctl_domain::tickets::next_state`). With several teams, each
+ * names the states their workflows have for it.
  */
 function TicketMoves({
   current,
-  team,
+  teams,
   set,
   disabled,
 }: {
   current?: G.LinearTickets;
-  team?: G.LinearTeam;
+  /** The project's teams, with what fctl's app found of them once their list came. */
+  teams: { name: string; info?: G.LinearTeam }[];
   set: (l: Partial<G.LinearTickets>) => void;
   disabled: boolean;
 }) {
   const id = useId();
+  /** The states the teams have for a move, once each: "In Review", "In Review or Code review". */
+  const named = (pick: (t: G.LinearTeam) => string | undefined, otherwise: string) => {
+    const names = [...new Set(teams.flatMap((t) => (t.info && pick(t.info)) || []))];
+    return names.length > 0 ? either(names) : otherwise;
+  };
   const moves: Move[] = [
     {
       key: "move_started",
       kind: "started",
-      state: team?.start_state ?? "In Progress",
+      state: named((t) => t.start_state, "In Progress"),
       when: "as its session starts",
       hint: "A delegated ticket at once, as Linear asks of agents; one that mentions fctl once its agent changes something.",
     },
     {
       key: "move_review",
       kind: "started",
-      state: team?.review_state ?? "In Review",
+      state: named((t) => t.review_state, "In Review"),
       when: "when its pull request is up",
       hint: "When a turn of its session ends with a pull request open for review.",
     },
     {
       key: "move_done",
       kind: "completed",
-      state: team?.done_state ?? "Done",
+      state: named((t) => t.done_state, "Done"),
       when: "once its pull requests merge",
       hint: "Once one that completes it (Fixes, not Part of) merged and none is open. Its agent moves a ticket that needs no pull request.",
     },
   ];
+  const [only] = teams;
+  const several = teams.length > 1;
   return (
     <fieldset aria-describedby={`${id}-hint`} className="flex min-w-0 flex-col gap-1.5">
       <legend className="mb-1.5 text-[12.5px] font-medium text-ink-2">Ticket states</legend>
       <p id={`${id}-hint`} className="text-[12.5px] leading-relaxed text-ink-3">
-        fctl moves the tickets its sessions work on through {team ? `${team.name}'s` : "the team's"} workflow,
-        never back and never out of done or canceled. Turn off what Linear's GitHub integration does for the
-        team already.
+        fctl moves the tickets its sessions work on through{" "}
+        {several ? "their team's" : only ? `${only.name}'s` : "the team's"} workflow, never back and never out
+        of done or canceled. Turn off what Linear's GitHub integration does for{" "}
+        {several ? "these teams" : "the team"} already.
       </p>
       <ul className="mt-1.5 divide-y divide-line overflow-hidden rounded-lg border border-line">
         {moves.map((m) => {

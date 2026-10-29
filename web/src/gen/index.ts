@@ -121,6 +121,7 @@ export type { LinearProject } from "./LinearProject";
 export type { LinearProjectUse } from "./LinearProjectUse";
 export type { LinearStatus } from "./LinearStatus";
 export type { LinearTeam } from "./LinearTeam";
+export type { LinearTeamChoice } from "./LinearTeamChoice";
 export type { LinearTeamList } from "./LinearTeamList";
 export type { LinearTickets } from "./LinearTickets";
 export type { LogLevel } from "./LogLevel";

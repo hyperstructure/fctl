@@ -64,6 +64,8 @@ export interface SelectProps<T extends string> {
   disabled?: boolean;
   /** Shown when no option has the value. */
   placeholder?: string;
+  /** Shown before the placeholder, as an option's icon is before its label: a plus, for a list to add from. */
+  icon?: ReactNode;
   className?: string;
   "aria-label"?: string;
 }
@@ -102,6 +104,7 @@ export function Select<T extends string>({
   id,
   disabled,
   placeholder,
+  icon,
   className,
   "aria-label": label,
 }: SelectProps<T>) {
@@ -350,7 +353,9 @@ export function Select<T extends string>({
         onBlur={hide}
       >
         {/* A flex box, so that an inline icon (an avatar) is centered rather than on the baseline. */}
-        {current?.icon && <span className="flex shrink-0 text-ink-3 [&_svg]:size-3.5">{current.icon}</span>}
+        {(current ? current.icon : icon) && (
+          <span className="flex shrink-0 text-ink-3 [&_svg]:size-3.5">{current ? current.icon : icon}</span>
+        )}
         <Value
           text={shown}
           index={selected}
