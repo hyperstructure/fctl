@@ -17,7 +17,7 @@ export function ReviewDrafts({ on, onChange }: { on: boolean; onChange: (on: boo
           <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
             {on
               ? "Each new commit of a draft gets a review, as other pull requests' commits do. Turn it off to wait until a draft is marked ready for review."
-              : "Drafts get no review until they're marked ready for review, which starts one of their newest commit. Until then, people who start sessions here can ask for one."}
+              : "Drafts get no review until they're marked ready for review, which starts a review of their newest commit. Until then, people who start sessions here can ask for one."}
           </p>
         </div>
         <Switch checked={on} onChange={onChange} label="Review drafts" />

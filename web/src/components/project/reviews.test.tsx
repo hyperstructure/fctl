@@ -385,7 +385,7 @@ describe("drafts", () => {
     state.agents = { ...state.agents, drafts: false };
     const c = await render();
     expect(c.textContent).toContain(
-      "The next commit pushed to a pull request in acme/web and acme/api that isn't a draft starts one.",
+      "The next commit pushed to a pull request in acme/web and acme/api that isn't a draft starts one, as does marking a draft ready for review.",
     );
   });
 });

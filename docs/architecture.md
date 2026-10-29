@@ -1321,8 +1321,9 @@ posts what it found on GitHub
    it.
    A commit that has its review
    gets no other from a delivery, so marking a draft ready reviews it only
-   when its head is new, as it always is where the project leaves drafts;
-   merged, closed and queued pull requests get none.
+   when its head is new, as it is where the project leaves drafts unless
+   someone asked for a review of it; merged, closed and queued pull
+   requests get none.
    People who start sessions in the project ask for one of a pull
    request's head (the Reviews tab, `fctl review start`, `POST
    /api/v1/projects/{id}/reviews`), outsiders' too, once they have looked

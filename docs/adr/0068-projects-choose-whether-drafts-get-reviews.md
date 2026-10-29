@@ -29,8 +29,8 @@ reviews, for the whole project rather than for each repository.
 - **Off, a draft waits until it's ready.** Deliveries about a draft start
   no review in the project (`crate::reviews::on_delivery`,
   `fctl_domain::reviews::waits_until_ready`). Marking it ready for review
-  starts one of its newest commit, unless someone asked for one of that
-  commit already; later commits get reviews as other pull requests' do.
+  starts a review of its newest commit, unless someone asked for one of
+  that commit already; later commits get reviews as other pull requests' do.
   Other projects that review the repository decide for themselves.
 - **People may still ask.** Someone who starts sessions in the project
   asks for a review of a draft (the Reviews tab's **Review a pull

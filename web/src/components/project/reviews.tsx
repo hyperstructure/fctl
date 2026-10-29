@@ -109,7 +109,7 @@ export function ReviewsTab({ project }: { project: G.Project }) {
         {items.length === 0 ? (
           <Empty title="No reviews yet" icon={<ReviewIcon kind="comment" className="size-7" />}>
             {a.repos.length > 0 &&
-              `The next commit pushed to a pull request in ${repoList(a.repos)}${a.drafts ? "" : " that isn't a draft"} starts one. Its check shows on the commit, and its findings on the pull request.`}
+              `The next commit pushed to a pull request in ${repoList(a.repos)}${a.drafts ? " starts one" : " that isn't a draft starts one, as does marking a draft ready for review"}. Its check shows on the commit, and its findings on the pull request.`}
           </Empty>
         ) : (
           <ul className="border-t border-line">
