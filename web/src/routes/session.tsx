@@ -602,7 +602,7 @@ export function SessionPage() {
       </div>
 
       {rail && session && (
-        <aside className="sticky top-0 hidden h-dvh w-[315px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
+        <aside className="sticky top-0 hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
             session={session}
             review={review}
