@@ -249,6 +249,29 @@ describe("Select", () => {
     expect(label?.classList.contains("text-ink-4")).toBe(true);
   });
 
+  it("shows its icon before the placeholder, and an option's own once it has one", () => {
+    const options = [
+      { value: "eng", label: "Engineering", icon: <b>E</b> },
+      { value: "des", label: "Design" },
+    ];
+    const shown = (value?: string) => {
+      const container = render(
+        <Select
+          aria-label="Add a team"
+          value={value}
+          options={options}
+          placeholder="Add a team"
+          icon={<i>+</i>}
+          onChange={() => {}}
+        />,
+      );
+      return container.querySelector('[role="combobox"] > span.flex')?.textContent;
+    };
+    expect(shown()).toBe("+");
+    expect(shown("eng")).toBe("E");
+    expect(shown("des")).toBeUndefined();
+  });
+
   it("lists options in sections by their item, and shows the full label once picked", () => {
     const options: SelectOption[] = [
       {

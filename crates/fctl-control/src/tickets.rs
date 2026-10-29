@@ -753,6 +753,12 @@ fn team_of(l: &LinearTickets, v: &Value) -> LinearTeamChoice {
         })
 }
 
+/// A team's key, for what fctl says of it in a project of several teams,
+/// whose states and labels may differ.
+fn among<'a>(l: &LinearTickets, team: &'a LinearTeamChoice) -> Option<&'a str> {
+    (l.teams().len() > 1).then(|| team.label())
+}
+
 /// One team's workflow states.
 async fn linear_states(client: &Linear<'_>, team: &str) -> AppResult<Vec<TicketState>> {
     let d = client
@@ -769,8 +775,7 @@ async fn linear_state(
     name: &str,
 ) -> AppResult<String> {
     let states = linear_states(client, &team.team).await?;
-    let several = l.teams().len() > 1;
-    let state = lin::state_named(&states, name, several.then(|| team.label()))?;
+    let state = lin::state_named(&states, name, among(l, team))?;
     state
         .id
         .clone()
@@ -817,7 +822,14 @@ async fn linear_all_labels(
     Ok(lin::labels(&d))
 }
 
-fn label_ids(all: &[(String, String)], names: &[String]) -> AppResult<Vec<String>> {
+/// The ids of the labels `names` names among `all`, a team's. `team` names
+/// the team, for a project of several, where `fctl ticket labels` lists the
+/// labels of every team and another team's aren't this ticket's to have.
+fn label_ids(
+    all: &[(String, String)],
+    names: &[String],
+    team: Option<&str>,
+) -> AppResult<Vec<String>> {
     names
         .iter()
         .map(|name| {
@@ -825,10 +837,22 @@ fn label_ids(all: &[(String, String)], names: &[String]) -> AppResult<Vec<String
                 .find(|(_, n)| n.eq_ignore_ascii_case(name.trim()))
                 .map(|(id, _)| id.clone())
                 .ok_or_else(|| {
-                    validation(
-                        "labels",
-                        &format!("There is no label {name}: `fctl ticket labels` lists them"),
-                    )
+                    let message = match team {
+                        Some(team) if all.is_empty() => format!("{team} has no labels"),
+                        Some(team) => {
+                            let some: Vec<&str> =
+                                all.iter().take(20).map(|(_, n)| n.as_str()).collect();
+                            let more = if all.len() > some.len() { ", …" } else { "" };
+                            format!(
+                                "{team} has no label {name}: its tickets take {}{more}",
+                                some.join(", ")
+                            )
+                        }
+                        None => {
+                            format!("There is no label {name}: `fctl ticket labels` lists them")
+                        }
+                    };
+                    validation("labels", &message)
                 })
         })
         .collect()
@@ -969,7 +993,8 @@ async fn linear_call(
                     "labelIds",
                     json!(label_ids(
                         &linear_labels(client, &team.team).await?,
-                        &labels
+                        &labels,
+                        among(l, &team),
                     )?),
                 );
             }
@@ -1097,14 +1122,14 @@ async fn linear_call(
                     put(
                         &mut input,
                         "addedLabelIds",
-                        json!(label_ids(&all, &add_labels)?),
+                        json!(label_ids(&all, &add_labels, among(l, &team))?),
                     );
                 }
                 if !remove_labels.is_empty() {
                     put(
                         &mut input,
                         "removedLabelIds",
-                        json!(label_ids(&all, &remove_labels)?),
+                        json!(label_ids(&all, &remove_labels, among(l, &team))?),
                     );
                 }
             }

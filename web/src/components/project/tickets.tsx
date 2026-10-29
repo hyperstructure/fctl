@@ -14,6 +14,7 @@ import {
   GitPullRequestArrow,
   MessagesSquare,
   Play,
+  Plus,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -866,8 +867,8 @@ function LinearTeams({
         {chosen.length > 1 ? "Teams" : "Team"}
       </legend>
       <p id={`${id}-hint`} className="max-w-2xl text-[12.5px] leading-relaxed text-ink-3">
-        Delegating one of {chosen.length > 1 ? "these teams'" : "the team's"} issues to fctl, or mentioning
-        fctl on one, starts a session here. Agents reach no other team's tickets.
+        Delegating one of {chosen.length > 1 ? "their" : "its"} issues to fctl, or mentioning fctl on one,
+        starts a session here.
       </p>
       {rows.length > 0 && (
         <ul
@@ -896,6 +897,7 @@ function LinearTeams({
         ) : (
           <Select
             value={undefined}
+            icon={chosen.length > 0 ? <Plus /> : undefined}
             placeholder={chosen.length > 0 ? "Add a team" : "Choose a team"}
             options={left.map(teamOption)}
             onChange={add}

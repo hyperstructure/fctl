@@ -267,8 +267,8 @@ pub fn scope(
 }
 
 /// A project's Linear teams (and projects) in words: "Linear team ENG,
-/// project Website (Acme)", "Linear teams ENG (project Website) and DES
-/// (Acme)".
+/// project Website (Acme)", "Linear teams ENG and DES (Acme)", "Linear
+/// team ENG and team DES's project Website (Acme)".
 pub fn linear_scope(l: &LinearTickets, workspace: Option<&str>) -> String {
     let teams = l.teams();
     let project = |c: &LinearTeamChoice| c.project_name.clone().filter(|p| !p.is_empty());
@@ -285,15 +285,19 @@ pub fn linear_scope(l: &LinearTickets, workspace: Option<&str>) -> String {
             }
             s
         }
-        _ => {
+        _ if teams.iter().any(|c| project(c).is_some()) => {
             let each: Vec<String> = teams
                 .iter()
                 .map(|c| match project(c) {
-                    Some(p) => format!("{} (project {p})", c.label()),
-                    None => c.label().to_owned(),
+                    Some(p) => format!("team {}'s project {p}", c.label()),
+                    None => format!("team {}", c.label()),
                 })
                 .collect();
-            format!("Linear teams {}", listed(&each))
+            format!("Linear {}", listed(&each))
+        }
+        _ => {
+            let keys: Vec<String> = teams.iter().map(|c| c.label().to_owned()).collect();
+            format!("Linear teams {}", listed(&keys))
         }
     };
     if let Some(w) = workspace.filter(|w| !w.is_empty()) {
@@ -410,9 +414,27 @@ pub fn check(t: &Tickets, primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Re
                 ));
             }
             if seen.contains(&c.team.as_str()) {
+                // As the choice names it where it has a key.
+                let key = c
+                    .team_key
+                    .as_deref()
+                    .or_else(|| {
+                        (c.team == l.team)
+                            .then_some(l.team_key.as_deref())
+                            .flatten()
+                    })
+                    .or_else(|| {
+                        more.iter()
+                            .filter(|m| m.team == c.team)
+                            .find_map(|m| m.team_key.as_deref())
+                    });
+                let twice = match key {
+                    Some(key) => format!("{key} is chosen twice"),
+                    None => "A team is chosen twice".to_owned(),
+                };
                 return Err(ApiError::validation(
                     "settings.tickets.linear.more_teams",
-                    format!("{} is chosen twice: choose each team once", c.label()),
+                    format!("{twice}: choose each team once"),
                 ));
             }
             seen.push(&c.team);
@@ -1386,11 +1408,24 @@ mod tests {
             team: "8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d20".into(),
             ..des.clone()
         };
-        for twice in [vec![des.clone(), des.clone()], vec![first]] {
+        let first = LinearTeamChoice {
+            team_key: None,
+            ..first
+        };
+        for (twice, said) in [
+            (
+                vec![des.clone(), des.clone()],
+                "DES is chosen twice: choose each team once",
+            ),
+            (vec![first], "ENG is chosen twice: choose each team once"),
+        ] {
             let e = check(&linear_with(twice), None, &[]).err();
             assert_eq!(
-                e.and_then(|e| e.field),
-                Some("settings.tickets.linear.more_teams".into())
+                e.map(|e| (e.field, e.message)),
+                Some((
+                    Some("settings.tickets.linear.more_teams".into()),
+                    said.to_owned()
+                ))
             );
         }
         // Teams and projects from the list, by Linear's ids.
@@ -1427,7 +1462,7 @@ mod tests {
         };
         assert_eq!(
             linear_scope(l, Some("Acme")),
-            "Linear teams ENG, DES (project Website) and OPS (Acme)"
+            "Linear team ENG, team DES's project Website and team OPS (Acme)"
         );
         assert_eq!(linear_teams(l), "ENG, DES and OPS");
         assert_eq!(
