@@ -313,6 +313,10 @@ mod tests {
             message(Sensitive::NewToken, BOTH),
             "Confirm it's you to make an access token, with your passkey or a code from your authenticator app."
         );
+        assert_eq!(
+            message(Sensitive::ConnectClaude, APP),
+            "Confirm it's you to connect a Claude subscription, with a code from your authenticator app."
+        );
     }
 
     #[test]

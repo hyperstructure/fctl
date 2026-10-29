@@ -1987,9 +1987,9 @@ function SensitiveActions({
             Confirm sensitive actions
             <span className="block text-[12.5px] leading-relaxed text-ink-4">
               Inviting and promoting admins, turning two-factor sign-in off, adding a runner to a workspace,
-              new access tokens and CLI sign-ins, exporting data, and deleting accounts, projects and
-              workspaces ask for a passkey or a code first. A browser or CLI that confirmed isn't asked again
-              for 15 minutes.
+              new access tokens and CLI sign-ins, connecting a Claude subscription, exporting data, and
+              deleting accounts, projects and workspaces ask for a passkey or a code first. A browser or CLI
+              that confirmed isn't asked again for 15 minutes.
             </span>
           </span>
           <Switch

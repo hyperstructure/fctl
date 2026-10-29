@@ -141,7 +141,8 @@ Other things that wait for input:
   running needs `--wait` or `--force` without a terminal.
 - **Confirming it's you.** Where the instance asks for it, sensitive actions
   (making access tokens, adding or registering runners, inviting admins,
-  exporting data, deleting accounts, projects and workspaces) fail with
+  connecting a Claude subscription, exporting data, deleting accounts,
+  projects and workspaces) fail with
   `verification_required` until the token confirmed within the last 15
   minutes: `fctl account verify --code 123456` with a code from the
   person's authenticator app. Limited tokens can't confirm, and of these

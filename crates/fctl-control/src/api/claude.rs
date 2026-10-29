@@ -65,9 +65,14 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     .run()
     .await?;
     ctx.audit("claude.token_added", Some(id.as_str()), None);
-    let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
-    let (subject, text) = connected_notice(&instance, &user.email, &ctx.cfg);
-    crate::email::notice(ctx, &user, &subject, text);
+    // Best effort: the token is connected, whatever the email does.
+    if ctx.cfg.email.is_some() {
+        let instance = crate::instance::name(&ctx.db, &ctx.cfg)
+            .await
+            .unwrap_or_else(|_| ctx.cfg.instance_name.clone());
+        let (subject, text) = connected_notice(&instance, &user.email, &ctx.cfg);
+        crate::email::notice(ctx, &user, &subject, text);
+    }
     let user = auth::user_by_id(ctx, &user.id)
         .await?
         .ok_or_else(|| not_found("User"))?;
@@ -260,8 +265,9 @@ impl JobRow {
 /// Starts `claude auth login` on a runner, for a full-scope login (Remote Control).
 pub async fn start_login(ctx: &mut Ctx) -> AppResult<Response> {
     let user = ctx.user()?.clone();
-    ctx.rate_limit(&format!("claude-login:{}", user.id)).await?;
+    // Before the rate limit, so that asking to confirm costs no sign-in.
     ctx.verified(Sensitive::ConnectClaude)?;
+    ctx.rate_limit(&format!("claude-login:{}", user.id)).await?;
     let id = fctl_domain::ids::login_job_id(ctx.now);
     let state = serde_json::to_string(&ClaudeLoginState::Pending)?;
     q(
