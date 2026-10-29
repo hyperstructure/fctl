@@ -347,9 +347,9 @@ token can't do them alone
 - making someone a workspace's admin, or inviting them as one, and
   handing over or giving a workspace's primary admin role;
 - making an access token, approving a CLI's sign-in, and connecting a
-  Claude subscription, with a token or a sign-in: the person's sessions
-  then run on it, and a full login's Claude account sees them (Remote
-  Control);
+  Claude subscription, with a token, a sign-in or the token kept on their
+  runners: the person's sessions then run on it, and a full login's Claude
+  account sees them (Remote Control);
 - exporting your data, and deleting your account, someone else's, a
   project or a workspace;
 - making someone a password reset link on an instance that sends no

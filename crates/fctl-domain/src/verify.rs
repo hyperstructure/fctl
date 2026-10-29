@@ -59,10 +59,11 @@ pub enum Sensitive {
     DeleteProject,
     /// Making an access token.
     NewToken,
-    /// Connecting a Claude subscription, with a token or a sign-in: the
-    /// sessions the person starts then run on it, and its Claude account
-    /// sees them (Remote Control), so a stolen session or token could
-    /// otherwise have their sessions run where it watches, for good.
+    /// Connecting a Claude subscription, with a token, a sign-in or the
+    /// token kept on their runners: the sessions the person starts then run
+    /// on it, and a full login's Claude account sees them (Remote Control),
+    /// so a stolen session or token could otherwise have their sessions run
+    /// where it watches, for good.
     ConnectClaude,
     /// Approving a CLI's sign-in, or confirming it's you for a CLI that is
     /// signed in already.
