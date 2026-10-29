@@ -97,7 +97,14 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   user. Inviting an address adds its entry, which revoking the invitation
   removes again while no account has the address; an entry gives the role
   it names, so demoting or removing an admin makes those of their addresses
-  give a member's. The first account is created through a one-time setup link
+  give a member's, as disconnecting an address from an account makes its
+  own; and an invitation's admin role holds at sign-up only while the
+  entry that admits the address gives it. An admin's invitation makes an
+  earlier invitation's member entry for its address an admin's, and
+  revoking it, or its running out unused (the hourly job), takes that
+  back, but leaves an entry an admin added by hand alone: an admin's
+  invitation to an address such an entry allows as a member is refused
+  until the entry is removed. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
   primary instance owner.
 - **Early access**, where the deployment turns it on (as app.fctl.sh's
@@ -214,9 +221,11 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    and the first app comes with ten recovery codes, of which D1 keeps the
    SHA-256. Setting up an app takes the password unless this browser
    signed in within the last 15 minutes (with a CLI or access token, it
-   always does). Without a password, a first app takes that sign-in, which
-   nothing stands in for: its codes then add passkeys, so a stolen session
-   or token must not set one up (`two_factor::setup_proof`). Replacing the
+   always does). Without a password, or where password sign-ins ask for a
+   passkey already, a first app takes that sign-in, which nothing stands
+   in for: its codes then add passkeys and get past the password, so a
+   stolen session or token, with the password or not, must not set one up
+   (`two_factor::setup_proof`). Replacing the
    app, turning two-factor off and getting new recovery codes take a
    current code, from the app or a recovery code.
 2. **Signing in.** A sign-in with a password then starts no web session. It
@@ -283,9 +292,12 @@ decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
   or the card after a sign-in without one): `POST /api/v1/me/passkeys/options`
   returns WebAuthn's creation options, with a challenge of 256 random bits
   that works once, for ten minutes (`passkey_challenges`, by its SHA-256).
-  It takes the password unless this browser signed in within the last 15
-  minutes, or without a password a code from the authenticator app: a
-  passkey signs in without either, so a stolen session must not add one.
+  Unless this browser signed in within the last 15 minutes, it takes what
+  a sign-in with the password would: a code from the authenticator app
+  for an account that has one, a sign-in where passkeys are the second
+  factor a password sign-in asks for, else the password. A passkey signs
+  in without either, so neither a stolen session, nor one with the
+  password, must add one (`passkeys::prove`).
   `POST /api/v1/me/passkeys` checks the answer (the challenge, the origin,
   the relying party, user presence and verification) and keeps the public
   key (`passkeys`). The authenticator's model (AAGUID) names it: "1Password",
@@ -338,7 +350,8 @@ token can't do them alone
   owner's role;
 - turning off what makes people prove it's them: requiring two-factor
   sign-in, of the instance or a workspace, asking for codes on Google
-  sign-in, and this confirmation itself; resetting someone's two-factor
+  sign-in, everyone's or your own (which also emails you), and this
+  confirmation itself; resetting someone's two-factor
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
   everyone's sessions there, registering a new one for a workspace (as
@@ -358,8 +371,11 @@ token can't do them alone
 Only the primary instance owner turns it on or off, and turning it off is
 one of those actions (`verify::check_verify_setting`). Turning off your
 own authenticator app, replacing it and new recovery codes take a current
-code already, and adding a passkey or an app the password or a recent
-sign-in ([Two-factor sign-in](#two-factor-sign-in)).
+code already, and adding a passkey or an app a recent sign-in or what a
+sign-in with the password takes: the password, and the authenticator
+app's code where the account has one, or a sign-in where passkeys are
+its second factor ([Two-factor sign-in](#two-factor-sign-in),
+[Passkeys](#passkeys)).
 
 1. **Who it asks.** People with a passkey or an authenticator app
    (`verify::required`). People with neither have nothing to confirm it
@@ -570,7 +586,9 @@ fctl writes to the person. A workspace knows its member by the address they
 joined as (`workspace_members.email`), the only one its people see:
 project members, shares and invitations look people up by it
 (`api::auth::member_by_email`). Disconnecting an address
-(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it.
+(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it,
+and uses up the account's waiting password reset links, since one may
+have gone to it.
 
 ### GitHub accounts
 

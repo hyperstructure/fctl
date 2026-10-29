@@ -41,7 +41,14 @@ owner and purpose), so a value copied between rows does not decrypt.
   tokens. Revoking an invitation takes back the entry it added, and
   demoting or removing an admin turns the entries that admitted their
   addresses as an admin into a member's, so that a Google sign-up, which
-  needs no invitation, can't bring them back as one.
+  needs no invitation, can't bring them back as one; disconnecting an
+  address from an account does too, and an invitation signs up an admin
+  only while the entry that admits its address still says admin; an
+  admin's invitation that runs out unused leaves its address a member's
+  entry.
+  Disconnecting an address also uses up the account's password reset
+  links, and revoking someone's tokens (a new password, a reset) refuses
+  the CLI sign-ins they approved that no CLI has picked up yet.
 - **Workspaces** keep their projects, sessions, files and secrets to their
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
@@ -79,7 +86,8 @@ owner and purpose), so a value copied between rows does not decrypt.
   signs nobody in. Replacing the app, turning it off and getting new
   recovery codes take a current code; setting up an app takes the password
   unless the browser signed in within 15 minutes (with a CLI or access
-  token, always), and on an account without a password, that sign-in.
+  token, always), and on an account without a password, or whose password
+  sign-ins ask for a passkey already, that sign-in.
   Admins can require it:
   accounts that sign in with a password, and with Google sign-ins asking
   too every account, then can do nothing until they set it up, in the
@@ -97,12 +105,15 @@ owner and purpose), so a value copied between rows does not decrypt.
   fctl keeps the public key, each challenge works once for ten minutes, and
   a counter that goes back (a copied passkey's would) refuses the sign-in.
   Adding one takes the password unless the browser signed in within 15
-  minutes, so a stolen session can't add a way in, and emails the person.
+  minutes, and a code from the authenticator app instead for an account
+  that has one, so a stolen session can't add a way in, even with the
+  password, and emails the person.
   Where two-factor is required, a passkey also counts as the second factor.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
-  roles, turning two-factor sign-in or this off, resetting someone's
+  roles, turning two-factor sign-in, codes on Google sign-in or this off,
+  resetting someone's
   two-factor sign-in, removing a passkey, adding or registering a runner
   for a workspace and replacing its token, new access tokens and CLI
   sign-ins, connecting a Claude subscription (whose account a full login's

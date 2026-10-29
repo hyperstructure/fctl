@@ -216,12 +216,26 @@ pub async fn remove(ctx: &mut Ctx, email: &str) -> AppResult<Response> {
             Some(serde_json::json!({ "email": email, "disconnected": true })),
         );
     }
-    q(
+    batch(
         &ctx.db,
-        "DELETE FROM user_emails WHERE email = ? AND user_id = ?",
-        &[s(&email), s(&user.id)],
-    )?
-    .run()
+        vec![
+            q(
+                &ctx.db,
+                "DELETE FROM user_emails WHERE email = ? AND user_id = ?",
+                &[s(&email), s(&user.id)],
+            )?,
+            // An entry that admitted it as an admin would make whoever signs
+            // up with it an admin (with Google, which needs no invitation),
+            // and demoting or deleting this account, which no longer has
+            // it, would leave it as it is (`api::admin::demote_allowed`).
+            q(
+                &ctx.db,
+                "UPDATE allowlist SET role = 'member' WHERE role = 'admin' AND pattern = ?",
+                &[s(&email)],
+            )?,
+            forget_resets(ctx, &user.id)?,
+        ],
+    )
     .await?;
     ctx.audit(
         "user.email_disconnected",
@@ -230,6 +244,17 @@ pub async fn remove(ctx: &mut Ctx, email: &str) -> AppResult<Response> {
     );
     crate::workspaces::changed(ctx, vec![user.id.clone()]);
     me(ctx, &user.id).await
+}
+
+/// Uses up the password reset links waiting for `user_id`: one may have
+/// gone to an address that leaves their account, whose mailbox can't sign
+/// in as them from then on.
+fn forget_resets(ctx: &Ctx, user_id: &str) -> AppResult<crate::db::Query> {
+    q(
+        &ctx.db,
+        "UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL",
+        &[n(ctx.now), s(user_id)],
+    )
 }
 
 /// Disconnects `email` from someone's account because no allowlist entry
@@ -323,6 +348,7 @@ pub async fn disallow(
                 "DELETE FROM user_emails WHERE email = ? AND user_id = ?",
                 &[s(email), s(user_id)],
             )?,
+            forget_resets(ctx, user_id)?,
         ],
     )
     .await?;

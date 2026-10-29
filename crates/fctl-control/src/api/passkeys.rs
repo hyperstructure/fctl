@@ -278,24 +278,15 @@ async fn claim(ctx: &Ctx, challenge: &[u8], purpose: Purpose) -> AppResult<Chall
 // ───────────────────────────── making one ─────────────────────────────
 
 /// Making a passkey takes proof it's the person: a sign-in in this browser
-/// within the last 15 minutes, or else the password, or else, without one,
-/// a code from the authenticator app. A passkey signs in without either,
-/// so a stolen session must not be able to add one.
+/// within the last 15 minutes, or else what a sign-in with the password
+/// takes, which a passkey stands in for: a code from the authenticator
+/// app, for an account that has one; a sign-in, where its passkeys are the
+/// second factor a password sign-in asks for; else the password, or
+/// without one a sign-in. A passkey signs in without a password or code,
+/// so neither a stolen session, nor one with the password, which the
+/// account's second factor keeps out, must be able to add one.
 async fn prove(ctx: &Ctx, user: &UserRow, body: &PasskeyOptionsRequest) -> AppResult<()> {
     if crate::api::two_factor::fresh_sign_in(ctx) {
-        return Ok(());
-    }
-    if let Some(phc) = user.password_hash.as_deref() {
-        let given = body.password.as_deref().unwrap_or_default();
-        if given.is_empty() {
-            return Err(validation(
-                "password",
-                "Enter your password to add a passkey",
-            ));
-        }
-        if !auth::verify_password(given, phc) {
-            return Err(validation("password", "That isn't your password"));
-        }
         return Ok(());
     }
     if user.has_second_factor() {
@@ -310,6 +301,21 @@ async fn prove(ctx: &Ctx, user: &UserRow, body: &PasskeyOptionsRequest) -> AppRe
                 )
             })?;
         crate::api::two_factor::confirm_code(ctx, user, code).await?;
+        return Ok(());
+    }
+    let settings = user.two_factor_settings(&ctx.settings());
+    let asks = fctl_domain::two_factor::on(&settings, user.has_password(), user.factors());
+    if let Some(phc) = user.password_hash.as_deref().filter(|_| !asks) {
+        let given = body.password.as_deref().unwrap_or_default();
+        if given.is_empty() {
+            return Err(validation(
+                "password",
+                "Enter your password to add a passkey",
+            ));
+        }
+        if !auth::verify_password(given, phc) {
+            return Err(validation("password", "That isn't your password"));
+        }
         return Ok(());
     }
     Err(validation(

@@ -94,6 +94,13 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateTwoFactorRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     if let Some(google) = body.google {
+        // No longer asking for a code on Google sign-in lets whoever has the
+        // person's Google account in without one: a stolen session or token
+        // can't turn it off alone, as the instance's own setting can't be.
+        let stops = user.two_factor_google && !google;
+        if stops {
+            ctx.verified(fctl_domain::verify::Sensitive::StopGoogleCodes)?;
+        }
         q(
             &ctx.db,
             "UPDATE users SET two_factor_google = ?, updated_at = ? WHERE id = ?",
@@ -106,6 +113,19 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             Some(&user.id),
             Some(serde_json::json!({ "google": google })),
         );
+        if stops {
+            let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+            crate::email::notice(
+                ctx,
+                &user,
+                "Google sign-ins no longer ask for a code",
+                format!(
+                    "Signing in to your {instance} account ({}) with Google no longer asks for a code from your authenticator app.\n\nIf you didn't turn that off, turn it on again in Settings now and change your password: {}",
+                    user.email,
+                    ctx.cfg.url("/settings")
+                ),
+            );
+        }
     }
     me(ctx, &user.id).await
 }
@@ -439,6 +459,7 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
                 "DELETE FROM tokens WHERE user_id = ?",
                 &[s(&user.id)],
             )?,
+            crate::auth::refuse_device_codes(&ctx.db, &user.id)?,
             q(
                 &ctx.db,
                 "DELETE FROM sign_in_challenges WHERE user_id = ?",
@@ -722,9 +743,12 @@ pub fn fresh_sign_in(ctx: &Ctx) -> bool {
 
 /// What setting up an app takes (`policy::setup_proof`): the password,
 /// unless this browser signed in within the last 15 minutes. Without a
-/// password, a first app takes that sign-in, which nothing stands in for.
+/// password, or where password sign-ins ask for a passkey already, a
+/// first app takes that sign-in, which nothing stands in for.
 fn setup_proof(ctx: &Ctx, user: &UserRow, replacing: bool) -> AppResult<policy::SetupProof> {
-    match policy::setup_proof(replacing, user.has_password(), fresh_sign_in(ctx)) {
+    let settings = user.two_factor_settings(&ctx.settings());
+    let asks = policy::on(&settings, user.has_password(), user.factors());
+    match policy::setup_proof(replacing, user.has_password(), asks, fresh_sign_in(ctx)) {
         policy::SetupProof::FreshSignIn => Err(validation(
             "sign_in",
             "Setting up two-factor sign-in takes a sign-in from the last 15 minutes. Sign out and in again in the browser, then set it up.",

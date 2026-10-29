@@ -180,7 +180,7 @@ export const api = {
     request<G.Me>("POST", "/me/two-factor/authenticator/remove", b),
   newRecoveryCodes: (b: G.TwoFactorCodeRequest) =>
     request<G.RecoveryCodes>("POST", "/me/two-factor/recovery-codes", b),
-  /** What the browser needs to make a passkey; takes the password unless this browser just signed in. */
+  /** What the browser needs to make a passkey; unless this browser just signed in, it takes what a password sign-in does: a code from the authenticator app where there is one, else the password. */
   passkeyOptions: (b: G.PasskeyOptionsRequest = {}) =>
     request<G.PasskeyCreationOptions>("POST", "/me/passkeys/options", b),
   addPasskey: (b: G.AddPasskeyRequest) => request<G.Me>("POST", "/me/passkeys", b),

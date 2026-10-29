@@ -196,6 +196,18 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         ("DELETE FROM passkey_challenges WHERE expires_at < ?", now),
         ("DELETE FROM device_codes WHERE expires_at < ?", now),
         ("DELETE FROM github_offers WHERE expires_at < ?", now),
+        // An invitation's admin role lasts as long as an admin's invitation
+        // to the address: once none is left and no account has it, its
+        // entry gives a member's, as revoking the invitation makes it, so
+        // that a Google sign-up, which needs no invitation, makes no admin.
+        (
+            "UPDATE allowlist SET role = 'member' WHERE note = 'Invited' AND role = 'admin' \
+             AND NOT EXISTS (SELECT 1 FROM users WHERE email = allowlist.pattern) \
+             AND NOT EXISTS (SELECT 1 FROM user_emails WHERE email = allowlist.pattern) \
+             AND NOT EXISTS (SELECT 1 FROM invites WHERE email = allowlist.pattern AND role = 'admin' \
+               AND accepted_at IS NULL AND expires_at > ?)",
+            now,
+        ),
         ("DELETE FROM invites WHERE expires_at < ?", now),
         (
             "DELETE FROM workspace_invitations WHERE expires_at < ?",

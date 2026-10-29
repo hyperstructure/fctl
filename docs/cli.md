@@ -886,6 +886,7 @@ of.
 fctl admin users                           # with their other addresses, how many workspaces, when last active
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
+fctl admin invite grace@example.com --admin   # where you allowed her as a member by hand, after fctl admin disallow grace@example.com
 fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
 fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
@@ -976,7 +977,7 @@ fctl account two-factor                    # what you have, and what the instanc
 fctl account two-factor enable             # prints a QR code, asks for the app's code, shows recovery codes
 fctl account two-factor enable --code 123456   # replace your app: a code from it, or a recovery code
 fctl account two-factor recovery-codes     # ten new ones; the old ones stop working
-fctl account two-factor google on          # Google sign-ins ask you for a code too
+fctl account two-factor google on          # Google sign-ins ask you for a code too (off asks to confirm it's you, and emails you)
 fctl account two-factor disable            # asks for a code (not while the instance requires it)
 ```
 
@@ -985,7 +986,8 @@ the setup (the key, the `otpauth://` link and the QR code's rows), and
 `fctl account two-factor confirm --setup … --code …` finishes it.
 
 Where the primary instance owner turns it on, sensitive actions (inviting
-and promoting admins, turning two-factor sign-in off, adding or
+and promoting admins, turning two-factor sign-in or codes on Google
+sign-in off, adding or
 registering a runner for a workspace (`fctl host install` too), new access
 tokens, connecting a Claude subscription, exporting your data, and deleting accounts,
 projects and workspaces) ask you to confirm it's you first. In a terminal

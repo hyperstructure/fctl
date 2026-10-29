@@ -769,9 +769,11 @@ pub struct PasskeyAssertion {
     pub kind: String,
 }
 
-/// `POST /api/v1/me/passkeys/options`. Making a passkey takes the password
-/// unless this browser signed in within the last 15 minutes; without a
-/// password, a code from the authenticator app.
+/// `POST /api/v1/me/passkeys/options`. Making a passkey takes, unless this
+/// browser signed in within the last 15 minutes, what a sign-in with the
+/// password takes: a code from the authenticator app for an account that
+/// has one, a sign-in where passkeys are the second factor, else the
+/// password.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
