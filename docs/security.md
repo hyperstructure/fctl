@@ -45,7 +45,10 @@ owner and purpose), so a value copied between rows does not decrypt.
 - **Workspaces** keep their projects, sessions, files and secrets to their
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
-  admins see inside only the ones they are members of. Starting a session
+  admins see inside only the ones they are members of. An invitation to a
+  workspace counts only while the admin who sent it is still one, so
+  that an admin who is removed, demoted or disabled can't come back
+  through an invitation to another address of theirs. Starting a session
   makes someone its owner only while they may start sessions in its
   project: one made a viewer of it, or taken out of it, can't go on
   messaging its agent, resuming it or sharing it. On an instance that

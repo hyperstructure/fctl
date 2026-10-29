@@ -500,7 +500,11 @@ five or more. Anyone on the instance creates one, as its primary admin.
   told so, and send the instance's invitation together with their
   workspaces'. People invited before they had an account join when they
   make it, or connect the address, as far as the limit and two-factor
-  allow; the rest keep waiting.
+  allow; the rest keep waiting. An invitation counts only while whoever
+  sent it is an active admin of the workspace
+  (`workspaces::INVITER_STILL_ADMIN`): an admin who is removed, demoted or
+  disabled takes their invitations with them, so that none brings them
+  back, or back as an admin, through another address they hold.
 - **Your preferences.** Each member chooses the Claude connection their
   sessions in it run on (`workspace_members.credential_id`), else their
   default one, so that a company's seat pays for the company's work. They

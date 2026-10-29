@@ -11,7 +11,9 @@ use crate::model::{
     PROJECT_ORDER, PROJECT_VISIBLE, RUNNER_SELECT, RunnerRow, RunnerView, UserRow, WORKSPACE_ORDER,
 };
 use crate::slugs::{self, Of};
-use crate::workspaces::{self as ws, INVITATION_SELECT, InvitationRow, WorkspaceRow};
+use crate::workspaces::{
+    self as ws, INVITATION_SELECT, INVITER_STILL_ADMIN, InvitationRow, WorkspaceRow,
+};
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_domain::verify::{self, Sensitive};
@@ -459,7 +461,7 @@ pub async fn members(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let invitations: Vec<InvitationRow> = if role.is_admin() {
         q(
             &ctx.db,
-            &format!("{INVITATION_SELECT} WHERE i.workspace_id = ? AND i.expires_at > ? ORDER BY i.created_at DESC"),
+            &format!("{INVITATION_SELECT} WHERE i.workspace_id = ? AND i.expires_at > ?{INVITER_STILL_ADMIN} ORDER BY i.created_at DESC"),
             &[s(a.id()), n(ctx.now)],
         )?
         .all()
@@ -551,6 +553,14 @@ pub async fn set_member_role(
         for r in &runners {
             runner_changed(ctx, &r.runner_id);
         }
+        // The invitations they sent count no more (`ws::INVITER_STILL_ADMIN`).
+        q(
+            &ctx.db,
+            "DELETE FROM workspace_invitations WHERE workspace_id = ? AND invited_by = ?",
+            &[s(a.id()), s(user_id)],
+        )?
+        .run()
+        .await?;
     }
     ctx.audit_in(
         Some(a.id()),
@@ -663,11 +673,12 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
                 &[s(workspace_id), s(user_id)],
             )?,
             // So do the invitations of their other addresses, which would
-            // let them back in.
+            // let them back in, and those they sent, which count no more
+            // (`ws::INVITER_STILL_ADMIN`).
             q(
                 &ctx.db,
-                "DELETE FROM workspace_invitations WHERE workspace_id = ? AND email IN \
-                 (SELECT email FROM user_emails WHERE user_id = ?)",
+                "DELETE FROM workspace_invitations WHERE workspace_id = ?1 AND (invited_by = ?2 \
+                 OR email IN (SELECT email FROM user_emails WHERE user_id = ?2))",
                 &[s(workspace_id), s(user_id)],
             )?,
             q(
@@ -1118,7 +1129,7 @@ async fn my_invitation(ctx: &Ctx, id: &str) -> AppResult<InvitationRow> {
     q(
         &ctx.db,
         &format!(
-            "{INVITATION_SELECT} WHERE i.id = ?1 AND i.expires_at > ?2 \
+            "{INVITATION_SELECT} WHERE i.id = ?1 AND i.expires_at > ?2{INVITER_STILL_ADMIN} \
              AND i.email IN (SELECT email FROM user_emails WHERE user_id = ?3)"
         ),
         &[s(id), n(ctx.now), s(&user.id)],
