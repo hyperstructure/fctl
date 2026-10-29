@@ -751,11 +751,10 @@ impl FirecrackerDriver {
         Ok(sb)
     }
 
-    /// A new sandbox's directory, disk and record.
-    /// A new sandbox's directory and record. The record comes first, so
-    /// that a disk is never without one: a disk without a record is a
-    /// sandbox whose record something else removed, which the host leaves
-    /// alone.
+    /// A new sandbox's directory and record, which come before its disk
+    /// ([`make_disk`](Self::make_disk)), so that a disk is never without a
+    /// record: a disk without one is a sandbox whose record something else
+    /// removed, which the host leaves alone.
     async fn create(&self, spec: &SandboxSpec, vm: &Vm, log: Log<'_>) -> Result<Record> {
         if vm.dir.join("disk.ext4").exists() {
             bail!(
