@@ -150,18 +150,18 @@
 
 /* The home page composer's shadow (routes/home.tsx), which lifts it off the
    page. A soft black shadow hardly shows on the dark canvas, so dark's is
-   denser and closer to the box. Focused, the shadow deepens, in place of a
-   ring in the accent. */
+   denser and closer to the box. Focused, the shadow deepens a little, in
+   place of a ring in the accent. */
 :root,
 :root[data-theme="dark"] {
   --composer-shadow:
     0 8px 23px rgb(0 0 0 / 0.25), 0 24px 50px rgb(0 0 0 / 0.25), 0 12px 70px rgb(0 0 0 / 0.125);
   --composer-shadow-focus:
-    0 8px 23px rgb(0 0 0 / 0.4), 0 28px 56px rgb(0 0 0 / 0.4), 0 16px 90px rgb(0 0 0 / 0.25);
+    0 8px 23px rgb(0 0 0 / 0.3), 0 25px 52px rgb(0 0 0 / 0.3), 0 13px 76px rgb(0 0 0 / 0.16);
 }
 :root[data-theme="light"] {
   --composer-shadow: 0 24px 80px rgb(0 0 0 / 0.35);
-  --composer-shadow-focus: 0 6px 18px rgb(0 0 0 / 0.08), 0 28px 90px rgb(0 0 0 / 0.42);
+  --composer-shadow-focus: 0 4px 14px rgb(0 0 0 / 0.04), 0 25px 84px rgb(0 0 0 / 0.38);
 }
 
 /* A hairline that fades at both ends. */
