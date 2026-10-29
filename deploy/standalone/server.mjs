@@ -12,7 +12,7 @@
 // so that whatever runs it starts it again.
 
 import { execFile, spawn } from "node:child_process";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -123,10 +123,17 @@ async function main() {
     );
   }
 
-  // One an older server made: as far as this user may change it.
+  // One an older server made, as far as this user may change it; the log
+  // says when other users of the machine can still read it.
   try {
     chmodSync(state, 0o700);
-  } catch {}
+  } catch (e) {
+    if ((statSync(state).mode & 0o077) !== 0) {
+      log(
+        `Couldn't keep ${state} to this server's user (${e.code}): other users of the machine can read the instance's data there. Make it theirs alone (chmod 700).`,
+      );
+    }
+  }
 
   const lock = await acquire(cfg.dataDir, {
     log,

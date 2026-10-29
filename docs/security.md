@@ -565,7 +565,8 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
 - **The data directory** holds D1 and every Durable Object as SQLite
   files: password hashes, encrypted credentials and secrets, transcripts
   and attached files. Encryption at rest is the disk's, and the server
-  keeps the SQLite files' directory (`state`) to its own user (mode 0700).
+  keeps the SQLite files' directory (`state`) to its own user (mode 0700),
+  or says in its log that it couldn't, for one another user owns.
   One server at a time uses it (`server.lock`): two would each run the
   same sessions.
 - Errors the Worker throws come back as plain 500s, without the stack
