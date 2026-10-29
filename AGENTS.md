@@ -137,13 +137,15 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   matching change there.
 - [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox): the
   default sandbox image, `ghcr.io/hyperstructure/sandbox`, published for
-  every release. Hosts pull it, and `fctl host image build` builds its
-  `main`. The host relies on its layout (the `agent` user, the PATH,
-  `/opt/fctl/bin`), on `Dockerfile` and `provision.sh` at its root, and on
-  the `org.opencontainers.image.revision` label that only its Image
-  workflow sets (hosts pull again over, and remove, only images that have
-  it): change those there, together with `docs/sandbox-images.md` here.
-  Its Rust is the one in `rust-toolchain.toml`; bump the two together.
+  every release: the Release workflow runs its Image workflow (`image.yml`,
+  with the `version` input) as the fctl-actions GitHub App. Hosts pull it,
+  and `fctl host image build` builds its `main`. The host relies on its
+  layout (the `agent` user, the PATH, `/opt/fctl/bin`), on `Dockerfile` and
+  `provision.sh` at its root, and on the `org.opencontainers.image.revision`
+  label that only its Image workflow sets (hosts pull again over, and
+  remove, only images that have it): change those there, together with
+  `docs/sandbox-images.md` here. Its Rust is the one in
+  `rust-toolchain.toml`; bump the two together.
 - [hyperstructure/homebrew-tap](https://github.com/hyperstructure/homebrew-tap):
   the Homebrew formula, `brew install hyperstructure/tap/fctl`. The Release
   workflow starts its brew bump workflow, which proposes each release's

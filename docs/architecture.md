@@ -2763,8 +2763,10 @@ running Linux sandbox and can exec processes in it with piped stdio.
 The image is the project's or, without one, the host's: unless `host.toml`
 sets another, the default image of the host's own version,
 `ghcr.io/hyperstructure/sandbox:<version>`. hyperstructure/sandbox's Image
-workflow publishes it for arm64 and amd64 within the hour after every
-release, and rebuilds the latest release's when Claude Code has a newer
+workflow publishes it for arm64 and amd64 minutes after every release,
+when fctl's Release workflow starts it
+([ADR 0069](adr/0069-releases-start-their-sandbox-image-and-homebrew-bump-as-a-github-app.md)),
+and rebuilds the latest release's when Claude Code has a newer
 release, since fctl turns off Claude Code's auto-updater. The host pulls the
 image when it starts and when a sandbox needs one it doesn't have, and falls
 back to `latest` when its version's can't be pulled. On the default image,

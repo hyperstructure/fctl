@@ -509,7 +509,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 println!(
                     "  {}",
                     style::dim(&format!(
-                        "Sessions start from it until {image} can be pulled: a release's image is published within the hour after the release."
+                        "Sessions start from it until {image} can be pulled: a release's image is published minutes after the release."
                     ))
                 );
             }

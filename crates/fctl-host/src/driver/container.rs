@@ -1390,7 +1390,7 @@ mod tests {
         assert_eq!(cli.calls(), [format!("pull {VERSION_IMAGE}")]);
         assert!(logged().is_empty());
 
-        // A release's image is published within the hour after the release.
+        // A release's image is published minutes after the release.
         let cli = FakeCli::new(&[], &[LATEST_IMAGE])?;
         let docker = cli.driver(Flavor::Docker);
         let pulled = docker

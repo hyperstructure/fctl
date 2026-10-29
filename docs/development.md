@@ -598,7 +598,7 @@ at 768 px.
 |---|---|---|
 | [hyperstructure/design](https://github.com/hyperstructure/design) | Tokens, fonts, WebGL scenes, the marks | `web/` depends on a tag; bumps arrive as pull requests |
 | [hyperstructure/fctl-site](https://github.com/hyperstructure/fctl-site) | fctl.sh: landing page, these docs, `/install`, `/releases` | renders `docs/` at the commit in its `fctl-docs.ref`, which this repository's CI moves on to a newer commit of `main` once that commit passes its checks, if its `docs/` differ; serves the releases `cargo xtask publish` writes to the KV namespace in `deploy/releases.toml` |
-| [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) | The default sandbox image, `ghcr.io/hyperstructure/sandbox` | its Image workflow publishes an image for each fctl release it finds on fctl.sh; hosts pull it, and `fctl host image build` builds its `main` ([Sandbox images](sandbox-images.md)) |
+| [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox) | The default sandbox image, `ghcr.io/hyperstructure/sandbox` | its Image workflow publishes an image for each fctl release, which the Release workflow starts; hosts pull it, and `fctl host image build` builds its `main` ([Sandbox images](sandbox-images.md)) |
 
 ## Releasing
 
@@ -615,11 +615,15 @@ release with the notes and publishes to `https://fctl.sh/releases`
 workflow runs a session through the release's standalone control plane and
 then publishes its image to `ghcr.io/hyperstructure/fctl-control`;
 `gh workflow run standalone-image.yml --ref main -f tag=v0.1.2` publishes
-a release's image again. Within the hour,
+a release's image again. Once the release is on fctl.sh, the Release
+workflow starts two workflows elsewhere, as the organization's fctl-actions
+GitHub App: the Image workflow of
 [hyperstructure/sandbox](https://github.com/hyperstructure/sandbox), where
-the default sandbox image lives, publishes the release's image to
-`ghcr.io/hyperstructure/sandbox`: its Image workflow looks for new releases
-on fctl.sh every hour.
+the default sandbox image lives, which publishes the release's image to
+`ghcr.io/hyperstructure/sandbox` (the Release workflow waits for it), and
+the brew bump of
+[hyperstructure/homebrew-tap](https://github.com/hyperstructure/homebrew-tap),
+which updates the Homebrew formula.
 
 ```sh
 cargo xtask release --dry-run   # the next version and its notes
@@ -642,10 +646,10 @@ build <fctl|fctl-agent> --target <triple>` for each binary, into
 hyperstructure/fctl-site). The jobs that deploy, make and publish releases
 or pin fctl.sh's docs run in the `production` environment, which holds
 their secrets (the Cloudflare token, the deploy keys that push release
-commits here and docs pins to fctl-site, and the token that starts the
-Homebrew tap's bump) and which only `main` may use, so workflows on other
-branches cannot read them. Rulesets keep everything else off `main` and
-off the `v*` tags
+commits here and docs pins to fctl-site, and the fctl-actions GitHub App's
+key, which starts the Homebrew tap's bump and the sandbox image's build)
+and which only `main` may use, so workflows on other branches cannot read
+them. Rulesets keep everything else off `main` and off the `v*` tags
 ([ADR 0021](adr/0021-rulesets-protect-main-and-release-tags.md)). By hand:
 
 ```sh
