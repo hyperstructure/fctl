@@ -312,12 +312,22 @@ pub fn linear_teams(l: &LinearTickets) -> String {
     listed(&keys)
 }
 
+/// The same as a choice: "ENG", "ENG or DES".
+pub fn linear_teams_or(l: &LinearTickets) -> String {
+    let keys: Vec<String> = l.teams().iter().map(|c| c.label().to_owned()).collect();
+    listed_with(&keys, "or")
+}
+
 /// Words in a list: "a", "a and b", "a, b and c".
 fn listed(items: &[String]) -> String {
+    listed_with(items, "and")
+}
+
+fn listed_with(items: &[String], conjunction: &str) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [rest @ .., last] => format!("{} {conjunction} {last}", rest.join(", ")),
     }
 }
 
@@ -1465,6 +1475,7 @@ mod tests {
             "Linear team ENG, team DES's project Website and team OPS (Acme)"
         );
         assert_eq!(linear_teams(l), "ENG, DES and OPS");
+        assert_eq!(linear_teams_or(l), "ENG, DES or OPS");
         assert_eq!(
             linear_place(l, "des").map(|c| c.team),
             Some("8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d30".into())

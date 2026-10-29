@@ -953,6 +953,11 @@ async fn linear_call(
             priority,
             place,
         } => {
+            let title = check_title(&title)?;
+            let description = description
+                .as_deref()
+                .map(|d| check_body("description", d))
+                .transpose()?;
             let parent = match parent.as_deref() {
                 Some(p) => Some(linear_issue(client, l, p).await?),
                 None => None,
@@ -964,22 +969,15 @@ async fn linear_call(
                         "place",
                         &format!(
                             "{p} isn't a team of this project's: file the ticket in {}",
-                            tk::linear_teams(l).replace(" and ", " or ")
+                            tk::linear_teams_or(l)
                         ),
                     )
                 })?,
-                None => match &parent {
-                    Some((v, _)) => team_of(l, v),
-                    None => team_of(l, &Value::Null),
-                },
+                None => team_of(l, parent.as_ref().map_or(&Value::Null, |(v, _)| v)),
             };
-            let mut input = json!({ "teamId": team.team, "title": check_title(&title)? });
-            if let Some(d) = description.as_deref() {
-                put(
-                    &mut input,
-                    "description",
-                    json!(check_body("description", d)?),
-                );
+            let mut input = json!({ "teamId": team.team, "title": title });
+            if let Some(d) = description {
+                put(&mut input, "description", json!(d));
             }
             if let Some(p) = &team.project {
                 put(&mut input, "projectId", json!(p));
