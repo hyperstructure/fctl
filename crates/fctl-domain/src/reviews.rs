@@ -1642,8 +1642,11 @@ pub fn description(answer: &Value) -> (String, Option<Size>) {
     (body, size)
 }
 
-/// A fenced code block's opening line: its character and how many.
-fn fence_opens(line: &str) -> Option<(u8, usize)> {
+/// A fenced code block's fence: its character and how many of it.
+type Fence = (u8, usize);
+
+/// A fenced code block's opening line: its fence.
+fn fence_opens(line: &str) -> Option<Fence> {
     let rest = line.trim_start_matches(' ');
     if line.len() - rest.len() > 3 {
         return None;
@@ -1658,20 +1661,27 @@ fn fence_opens(line: &str) -> Option<(u8, usize)> {
 }
 
 /// Whether `line` closes a fenced code block that `fence` opened.
-fn fence_closes(line: &str, (ch, n): (u8, usize)) -> bool {
+fn fence_closes(line: &str, (ch, n): Fence) -> bool {
     let rest = line.trim_start_matches(' ');
     let m = rest.bytes().take_while(|b| *b == ch).count();
     line.len() - rest.len() <= 3 && m >= n && rest[m..].trim().is_empty()
 }
 
+/// What [`summaries_in`] finds in a pull request's description.
+struct InDescription {
+    /// fctl's summaries, as byte ranges, oldest first.
+    summaries: Vec<(usize, usize)>,
+    /// The fence of a code block still open at its end.
+    open: Option<Fence>,
+}
+
 /// fctl's summaries in a pull request's description, as byte ranges of
 /// `body`, from the line of a start mark to the end of that of the end
-/// mark after it, oldest first. Marks in fenced code blocks don't count,
-/// nor marks in a line with anything else, an end mark without a start
-/// mark before it, or a start mark without an end mark after it: such a
-/// mark is text, which stays as it is. Also the fence still open at the
-/// end, where one is.
-fn summaries_in(body: &str) -> (Vec<(usize, usize)>, Option<(u8, usize)>) {
+/// mark after it. Marks in fenced code blocks don't count, nor marks in a
+/// line with anything else, an end mark without a start mark before it,
+/// or a start mark without an end mark after it: such a mark is text,
+/// which stays as it is.
+fn summaries_in(body: &str) -> InDescription {
     let mut found = Vec::new();
     let mut fence = None;
     let mut start = None;
@@ -1704,14 +1714,19 @@ fn summaries_in(body: &str) -> (Vec<(usize, usize)>, Option<(u8, usize)>) {
             _ => {}
         }
     }
-    (found, fence)
+    InDescription {
+        summaries: found,
+        open: fence,
+    }
 }
 
 /// The summary fctl keeps in a pull request's description, `body`, as it
 /// is there: the last one, where there are several.
 pub fn summary_in(body: &str) -> Option<&str> {
-    let (found, _) = summaries_in(body);
-    found.last().map(|&(start, end)| &body[start..end])
+    summaries_in(body)
+        .summaries
+        .last()
+        .map(|&(start, end)| &body[start..end])
 }
 
 /// Whether the summary in `body` is `section`, whatever line endings
@@ -1726,8 +1741,8 @@ pub fn has_summary(body: &str, section: &str) -> bool {
 /// several, the others go. A code block that the description leaves open
 /// is closed before the summary, which it would take in.
 pub fn with_summary(body: &str, section: &str) -> String {
-    let (found, fence) = summaries_in(body);
-    if let Some((&(start, end), others)) = found.split_last() {
+    let InDescription { summaries, open } = summaries_in(body);
+    if let Some((&(start, end), others)) = summaries.split_last() {
         let mut out = String::with_capacity(body.len() + section.len());
         let mut from = 0;
         for &(s, e) in others {
@@ -1743,7 +1758,7 @@ pub fn with_summary(body: &str, section: &str) -> String {
     if kept.is_empty() {
         return section.to_owned();
     }
-    let close = match fence {
+    let close = match open {
         Some((ch, n)) => format!("\n{}", char::from(ch).to_string().repeat(n)),
         None => String::new(),
     };
