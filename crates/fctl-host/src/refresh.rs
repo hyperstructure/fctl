@@ -495,7 +495,7 @@ mod tests {
     async fn latest_goes_once_the_versions_image_is_here() -> Result<()> {
         let cfg = HostConfig::default();
         let (image, cli, driver) = setup(Flavor::Docker)?;
-        // A release's image is published within the hour after the release.
+        // A release's image is published minutes after the release.
         cli.publish(LATEST, &id("previous release"), "2.1.302")?;
         refresh(&driver, &cfg).await;
         assert_eq!(cli.images()?, [(LATEST.to_owned(), id("previous release"))]);

@@ -188,8 +188,11 @@ deployment opens it (`search_engines` in `deploy/instances`, which sets
 `FCTL_SEARCH_ENGINES`; app.fctl.sh's does): closed, `/robots.txt`
 disallows everything but `/llms.txt` and there is no sitemap. Open, `/robots.txt` allows
 `/`, `/login`, `/early-access` (with early access), `/llms.txt` and
-`/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` and `/sitemap.xml` itself (Google honours `robots.txt` when it fetches a
-sitemap), disallows the rest and names `/sitemap.xml`, which lists those
+`/favicon.ico`, `/favicon.svg`, `/icon-maskable-512.png` (the favicon
+Google Search shows: it takes no SVG, and fills its circle only with an
+icon opaque to its edges), `/apple-touch-icon.png` and `/sitemap.xml`
+itself (Google honours `robots.txt` when it fetches a sitemap or a
+favicon), disallows the rest and names `/sitemap.xml`, which lists those
 pages at `FCTL_PUBLIC_URL`. Published screenshots carry `noindex` either way.
 
 ### Plain HTTP
@@ -2764,8 +2767,10 @@ running Linux sandbox and can exec processes in it with piped stdio.
 The image is the project's or, without one, the host's: unless `host.toml`
 sets another, the default image of the host's own version,
 `ghcr.io/hyperstructure/sandbox:<version>`. hyperstructure/sandbox's Image
-workflow publishes it for arm64 and amd64 within the hour after every
-release, and rebuilds the latest release's when Claude Code has a newer
+workflow publishes it for arm64 and amd64 minutes after every release,
+when fctl's Release workflow starts it
+([ADR 0069](adr/0069-releases-start-their-sandbox-image-and-homebrew-bump-as-a-github-app.md)),
+and rebuilds the latest release's when Claude Code has a newer
 release, since fctl turns off Claude Code's auto-updater. The host pulls the
 image when it starts and when a sandbox needs one it doesn't have, and falls
 back to `latest` when its version's can't be pulled. On the default image,
@@ -2927,7 +2932,7 @@ plane already has (`first_agent_seq`).
 On Linux hosts with KVM, the `firecracker` driver runs each sandbox in a
 [Firecracker](https://firecracker-microvm.github.io) microVM with a kernel
 of its own, from the same images as Docker, without Docker and without
-root ([ADR 0069](adr/0069-linux-hosts-run-sandboxes-in-firecracker-microvms.md),
+root ([ADR 0070](adr/0070-linux-hosts-run-sandboxes-in-firecracker-microvms.md),
 `crates/fctl-host/src/driver/firecracker`). A host's owner chooses it
 (`fctl host install --driver firecracker`; `auto` never does). It needs
 `/dev/kvm` (the `kvm` group), `passt` and `mkfs.ext4`; it downloads

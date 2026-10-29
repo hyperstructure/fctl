@@ -573,6 +573,29 @@ client_id = "lin_client"
         assert!(example["vars"].get("FCTL_SEARCH_ENGINES").is_none());
     }
 
+    /// Search engines take a site's favicon from its home page's head, and
+    /// fetch it only where `/robots.txt` lets them.
+    #[test]
+    fn an_open_instance_lets_search_engines_fetch_the_icons_the_app_links() {
+        let robots = fctl_domain::crawlers::robots_txt("https://app.fctl.sh", true, true);
+        let icons: Vec<&str> = include_str!("../../web/index.html")
+            .split("<link ")
+            .skip(1)
+            .filter_map(|link| link.split('>').next())
+            .filter(|link| {
+                link.contains(r#"rel="icon""#) || link.contains(r#"rel="apple-touch-icon""#)
+            })
+            .filter_map(|link| link.split(r#"href=""#).nth(1)?.split('"').next())
+            .collect();
+        assert!(icons.contains(&"/icon-maskable-512.png"), "{icons:?}");
+        for icon in icons {
+            assert!(
+                robots.lines().any(|line| line == format!("Allow: {icon}")),
+                "/robots.txt keeps search engines from {icon}, which web/index.html links"
+            );
+        }
+    }
+
     #[test]
     fn app_fctl_sh_redirects_plain_http_to_https() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

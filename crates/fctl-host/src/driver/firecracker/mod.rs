@@ -1,5 +1,5 @@
 //! The `firecracker` driver (Linux hosts with KVM): each sandbox is a
-//! Firecracker microVM with a kernel of its own (ADR 0069).
+//! Firecracker microVM with a kernel of its own (ADR 0070).
 //!
 //! - **Images** are pulled from their registries as Docker pulls them
 //!   ([`registry`]), and their layers unpacked onto an ext4 filesystem in a

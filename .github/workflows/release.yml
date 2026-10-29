@@ -9,13 +9,14 @@
 # redeploys app.fctl.sh. The "Build" jobs then cross-compile the release
 # binaries, all at once (`cargo xtask dist build`), and "Publish" makes the
 # archives from them, makes the GitHub release with the notes and publishes to
-# https://fctl.sh/releases. "Homebrew tap" then starts the brew bump workflow
-# of hyperstructure/homebrew-tap, which proposes the new formula in a pull
-# request there and merges it once its checks pass. "Standalone image" (standalone-image.yml) runs a session
-# through the control plane without Cloudflare and publishes it,
-# ghcr.io/hyperstructure/fctl-control:<version>. Within the hour,
-# hyperstructure/sandbox publishes the release's sandbox image,
-# ghcr.io/hyperstructure/sandbox:<version>.
+# https://fctl.sh/releases. Then, with tokens of the fctl-actions GitHub App,
+# "Homebrew tap" starts the brew bump workflow of hyperstructure/homebrew-tap,
+# which proposes the new formula in a pull request there and merges it once
+# its checks pass, and "Sandbox image" runs the Image workflow of
+# hyperstructure/sandbox, which publishes the release's sandbox image,
+# ghcr.io/hyperstructure/sandbox:<version>. "Standalone image"
+# (standalone-image.yml) runs a session through the control plane without
+# Cloudflare and publishes it, ghcr.io/hyperstructure/fctl-control:<version>.
 # `tag` rebuilds an existing release tag from main; `dry_run` only shows what
 # would ship. Every run starts from main, a dry run too: its jobs use the
 # production environment, which only main may use. Tags pushed by hand
@@ -248,15 +249,82 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
-    # HOMEBREW_TAP_TOKEN, a fine-grained token with Actions write access to
-    # hyperstructure/homebrew-tap alone, is a secret of the production
-    # environment, which only main may use.
+    # FCTL_ACTIONS_PRIVATE_KEY is a secret of the production environment,
+    # which only main may use.
     environment: production
     steps:
+      # The organization's fctl-actions GitHub App (App ID 5532905; a client
+      # ID isn't secret), installed on hyperstructure/homebrew-tap and
+      # hyperstructure/sandbox. Each job's token covers one repository with
+      # Actions: write alone, which starts its workflows, and is revoked as
+      # the job ends.
+      - name: Create a token for the fctl-actions app
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liYuTStOtwhK2Xk3
+          private-key: ${{ secrets.FCTL_ACTIONS_PRIVATE_KEY }}
+          owner: hyperstructure
+          repositories: homebrew-tap
+          permission-actions: write
       - name: Start the tap's brew bump
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh workflow run autobump.yml -R hyperstructure/homebrew-tap -f version="${TAG#v}"
+
+  # hyperstructure/sandbox's Image workflow looks for new releases on fctl.sh
+  # every hour, and GitHub starts it hours late at times, so this runs it with
+  # the version and waits for it. It builds the release's image from the
+  # sandbox's main for amd64 and arm64, checks it and publishes it as
+  # ghcr.io/hyperstructure/sandbox:<version>, moving :<major>.<minor> and
+  # :latest; a run that finds the image current publishes nothing. Until it
+  # is out, hosts of the new version start sessions from :latest.
+  sandbox:
+    name: Sandbox image
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    # The run takes about 7 minutes, longer when it waits for another run of
+    # the Image workflow; the app's token lasts an hour.
+    timeout-minutes: 60
+    permissions: {}
+    # For FCTL_ACTIONS_PRIVATE_KEY, as in Homebrew tap.
+    environment: production
+    steps:
+      - name: Create a token for the fctl-actions app
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: Iv23liYuTStOtwhK2Xk3
+          private-key: ${{ secrets.FCTL_ACTIONS_PRIVATE_KEY }}
+          owner: hyperstructure
+          repositories: sandbox
+          permission-actions: write
+      - name: Run the sandbox's Image workflow
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          [ -n "$GH_TOKEN" ] || { echo "::error::HOMEBREW_TAP_TOKEN is not set in the production environment"; exit 1; }
-          gh workflow run autobump.yml -R hyperstructure/homebrew-tap -f version="${TAG#v}"
+          version=${TAG#v}
+          # The Image workflow runs one at a time, and GitHub keeps one run
+          # waiting: a newer run cancels one that still waits, so this starts
+          # it again (when there is nothing left to do, it finds the image
+          # current).
+          for attempt in 1 2 3; do
+            run=$(gh workflow run image.yml -R hyperstructure/sandbox -f version="$version")
+            if [ -z "$run" ]; then
+              echo "::warning::GitHub started the Image workflow without saying which run it is: gh run list -R hyperstructure/sandbox --workflow image.yml"
+              exit 0
+            fi
+            # Not gh run watch, which also reads the run's annotations: they
+            # take Checks: read, which the app hasn't got.
+            echo "Waiting for $run"
+            until [ "$(gh run view "${run##*/}" -R hyperstructure/sandbox --json status --jq .status)" = completed ]; do
+              sleep 30
+            done
+            conclusion=$(gh run view "${run##*/}" -R hyperstructure/sandbox --json conclusion --jq .conclusion)
+            if [ "$conclusion" != cancelled ] || [ "$attempt" = 3 ]; then break; fi
+            echo "::warning::$run was cancelled, by a newer run of the Image workflow while it waited or by someone: starting it again."
+          done
+          echo "fctl $version's sandbox image: [hyperstructure/sandbox's Image workflow]($run) ended with $conclusion." >> "$GITHUB_STEP_SUMMARY"
+          [ "$conclusion" = success ] || { echo "::error::The Image workflow's run ended with '$conclusion': $run"; exit 1; }

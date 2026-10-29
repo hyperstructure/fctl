@@ -1,4 +1,4 @@
-# 0069: Linux hosts run sandboxes in Firecracker microVMs
+# 0070: Linux hosts run sandboxes in Firecracker microVMs
 
 2026-10-29 · accepted
 

@@ -21,8 +21,9 @@ published for arm64 (Apple silicon) and amd64.
 | `latest` | The newest release's. |
 
 The sandbox repository's Image workflow builds every tag from its `main`
-branch, with that release of fctl and the newest Claude Code. It looks for
-new fctl releases every hour, so a release's image follows within the hour.
+branch, with that release of fctl and the newest Claude Code. fctl's
+Release workflow starts it for each release, so a release's image follows
+minutes after the release is published.
 fctl turns off Claude Code's auto-updater, so an image's Claude Code is as
 old as the image: every day, the workflow rebuilds the latest release's
 image when Claude Code has a newer release, and once the image is a week
@@ -50,7 +51,7 @@ A host whose `host.toml` sets no `image` uses the default image of its own
 version, so a host that updates, by itself or with `fctl self update`,
 moves its new sessions to the new version's image. The host pulls the image in the background when
 it starts, and a session that starts before it has the image pulls it
-itself. When the image can't be pulled, as in the hour after a release
+itself. When the image can't be pulled, as in the minutes after a release
 before its image is published, the host pulls `latest` instead, and
 sessions start from it and say so in their log. The first session after the
 version's image is published pulls it.
