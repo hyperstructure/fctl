@@ -706,6 +706,10 @@ impl FirecrackerDriver {
                 self.create(spec, &vm, log).await?
             }
         };
+        // A sandbox whose making stopped after its record has no disk yet.
+        if !vm.dir.join("disk.ext4").exists() {
+            self.make_disk(&vm).await?;
+        }
         let image = self.store.image(&record.image).with_context(|| {
             format!(
                 "the image {} that {} was made from is gone",
@@ -748,11 +752,14 @@ impl FirecrackerDriver {
     }
 
     /// A new sandbox's directory, disk and record.
+    /// A new sandbox's directory and record. The record comes first, so
+    /// that a disk is never without one: a disk without a record is a
+    /// sandbox whose record something else removed, which the host leaves
+    /// alone.
     async fn create(&self, spec: &SandboxSpec, vm: &Vm, log: Log<'_>) -> Result<Record> {
-        let disk = vm.dir.join("disk.ext4");
-        if disk.exists() {
+        if vm.dir.join("disk.ext4").exists() {
             bail!(
-                "{} has a disk but no record of the image it was made from ({} is missing or damaged), so the host leaves it as it is",
+                "{} has a disk but no record of the image it was made from ({} is missing), so the host leaves it as it is",
                 spec.name,
                 vm.dir.join("sandbox.json").display()
             );
@@ -768,28 +775,31 @@ impl FirecrackerDriver {
         std::fs::create_dir_all(&vm.dir)?;
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&vm.dir, std::fs::Permissions::from_mode(0o700));
-        let made = async {
-            make_fs(
-                &vm.dir.join("disk.ext4"),
-                u64::from(self.cfg().disk_gb.max(1)),
-                "fctl-disk",
-                true,
-            )
-            .await?;
-            let record = Record {
-                image: image.id.clone(),
-                reference: image.reference.clone(),
-                created_ms: vsock::now_ms(),
-                agent: None,
-            };
-            self.save_record(&spec.name, &record)?;
-            Ok::<_, anyhow::Error>(record)
-        }
-        .await;
-        if made.is_err() {
-            let _ = std::fs::remove_dir_all(&vm.dir);
-        }
-        made
+        let record = Record {
+            image: image.id.clone(),
+            reference: image.reference.clone(),
+            created_ms: vsock::now_ms(),
+            agent: None,
+        };
+        self.save_record(&spec.name, &record)?;
+        Ok(record)
+    }
+
+    /// The sandbox's own disk, made under another name and then put in
+    /// place, so that one that stopped halfway is never booted.
+    async fn make_disk(&self, vm: &Vm) -> Result<()> {
+        let disk = vm.dir.join("disk.ext4");
+        let new = vm.dir.join("disk.ext4.new");
+        let _ = std::fs::remove_file(&new);
+        make_fs(
+            &new,
+            u64::from(self.cfg().disk_gb.max(1)),
+            "fctl-disk",
+            true,
+        )
+        .await?;
+        std::fs::rename(&new, &disk)?;
+        Ok(())
     }
 
     /// How programs run in the sandbox `name`: as its image says.
@@ -1030,6 +1040,15 @@ mod tests {
         };
         d.save_record("fctl-ses-01abc", &record)?;
         assert_eq!(d.record("fctl-ses-01abc"), Some(record));
+        // A sandbox whose disk was being made when the host stopped gets a
+        // new one, never the half-made one.
+        if find_program("mkfs.ext4").is_some() {
+            std::fs::remove_file(&disk)?;
+            std::fs::write(vm.dir.join("disk.ext4.new"), b"half made")?;
+            d.make_disk(&vm).await?;
+            assert!(!vm.dir.join("disk.ext4.new").exists());
+            assert!(std::fs::metadata(&disk)?.len() > 1024 * 1024);
+        }
         Ok(())
     }
 
