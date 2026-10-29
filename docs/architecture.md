@@ -99,7 +99,11 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   it names, so demoting or removing an admin makes those of their addresses
   give a member's, as disconnecting an address from an account makes its
   own; and an invitation's admin role holds at sign-up only while the
-  entry that admits the address gives it. The first account is created through a one-time setup link
+  entry that admits the address gives it. An admin's invitation makes an
+  earlier invitation's member entry for its address an admin's, and
+  revoking it takes that back, but leaves an entry an admin added by hand
+  alone: an admin's invitation to an address such an entry allows as a
+  member is refused until the entry is removed. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
   primary instance owner.
 - **Early access**, where the deployment turns it on (as app.fctl.sh's

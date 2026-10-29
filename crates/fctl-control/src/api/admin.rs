@@ -680,7 +680,7 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
         .await?;
         if hand_made.is_some_and(|c| c.n > 0) {
             return Err(conflict(&format!(
-                "{email} is allowed as a member by an entry an admin added. Remove it under Admin → Access first, then invite them as an admin."
+                "{email} is allowed as a member by an entry an admin added. Remove it under Admin → Access (or with `fctl admin disallow {email}`) first, then invite them as an admin."
             )));
         }
     }
