@@ -56,7 +56,9 @@ pub const MAX_RESOLVED: usize = 100;
 /// The `pull_request` actions that start a review: a pull request opened
 /// or opened again, pushed to, or marked ready for review. A review of the
 /// commit an earlier delivery started one for isn't repeated, so marking a
-/// draft ready reviews it only when no review of its head ran.
+/// draft ready reviews it only when no review of its head ran: in projects
+/// that leave drafts until they are ready ([`waits_until_ready`]), none
+/// did unless someone asked for one.
 pub const ACTIONS: [&str; 4] = ["opened", "reopened", "synchronize", "ready_for_review"];
 
 /// A pull request, as a review needs it.
@@ -127,6 +129,14 @@ pub fn delivered(payload: &Value) -> Option<(String, PullRequest)> {
 /// ones get none, while a review already under way carries on.
 pub fn starts_review(action: &str, pr: &PullRequest) -> bool {
     ACTIONS.contains(&action) && pr.open && is_sha(&pr.head_sha)
+}
+
+/// Whether a delivery about `pr` leaves it unreviewed in a project whose
+/// review agents review drafts or not (`drafts`, `project_reviews.drafts`):
+/// a draft waits there until it is marked ready for review, whose delivery
+/// starts a review of its head, or until someone asks for one.
+pub fn waits_until_ready(pr: &PullRequest, drafts: bool) -> bool {
+    pr.draft && !drafts
 }
 
 /// Whether `s` is a commit's full SHA-1 or SHA-256 in hex.
@@ -2883,13 +2893,17 @@ mod tests {
     }
 
     fn payload(action: &str) -> Value {
+        payload_with(action, true)
+    }
+
+    fn payload_with(action: &str, draft: bool) -> Value {
         json!({
             "action": action,
             "repository": { "full_name": "acme/web", "owner": { "id": 7 } },
             "installation": { "id": 99 },
             "pull_request": {
                 "number": 12, "html_url": "https://github.com/acme/web/pull/12",
-                "title": "Fix the login redirect", "state": "open", "draft": true,
+                "title": "Fix the login redirect", "state": "open", "draft": draft,
                 "updated_at": "2026-10-22T10:00:00Z",
                 "merged": false, "author_association": "CONTRIBUTOR",
                 "user": { "login": "mallory" },
@@ -2922,6 +2936,13 @@ mod tests {
         ] {
             assert!(!starts_review(a, &pr), "{a}");
         }
+        // Where the project's owners leave drafts until they're ready,
+        // their commits wait; marked ready, the pull request is no draft.
+        assert!(!waits_until_ready(&pr, true));
+        assert!(waits_until_ready(&pr, false));
+        let (action, ready) =
+            delivered(&payload_with("ready_for_review", false)).unwrap_or_else(|| panic!("parsed"));
+        assert!(starts_review(&action, &ready) && !waits_until_ready(&ready, false));
         // Merged or closed: nothing new starts.
         let mut merged = payload("synchronize");
         merged["pull_request"]["merged"] = json!(true);

@@ -2542,6 +2542,13 @@ pub struct ReviewAgents {
     /// control planes before it.
     #[serde(default)]
     pub skipped_repos: Vec<RepoRef>,
+    /// Each new commit of a draft starts a review, as other pull requests'
+    /// commits do. False: drafts wait until they are marked ready for
+    /// review, which starts a review of their newest commit, or until
+    /// someone asks for one. True by default, and from control planes
+    /// before it.
+    #[serde(default = "reviews_drafts")]
+    pub drafts: bool,
     /// Before each review in depth, the agent sums the pull request up at
     /// the end of its description ([`PullRequestSummary`]): how risky it
     /// looks, what it does and what deserves a closer look, in place of the
@@ -2584,9 +2591,18 @@ pub struct UpdateReviewAgentsRequest {
     /// them. Repositories linked later are reviewed until the owners skip
     /// them.
     pub skipped_repos: Option<Vec<String>>,
+    /// Whether each new commit of a draft starts a review; `false`: drafts
+    /// wait until they are marked ready for review, or someone asks.
+    pub drafts: Option<bool>,
     /// Whether they sum each pull request up at the end of its
     /// description before they review it in depth.
     pub description_summary: Option<bool>,
+}
+
+/// [`ReviewAgents::drafts`] from control planes before it, which reviewed
+/// drafts.
+fn reviews_drafts() -> bool {
+    true
 }
 
 /// A GitHub App that opens pull requests, as the project's owners see it

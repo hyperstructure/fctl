@@ -1253,7 +1253,8 @@ review's session.
 Where a project turns them on, an agent reviews each new commit of the
 pull requests in the repositories its agents may write to (its primary
 repository and those it lists as read and write), but those its owners
-skip, drafts too, and fctl posts what it found on GitHub
+skip, drafts too unless they leave them until they are ready, and fctl
+posts what it found on GitHub
 ([ADR 0040](adr/0040-review-agents-review-pull-requests-on-an-owners-subscription.md)):
 
 1. **Settings** (`project_reviews`, the project's **Reviews** tab, `fctl
@@ -1279,6 +1280,12 @@ skip, drafts too, and fctl posts what it found on GitHub
    only, or no longer its primary repository) leaves the list
    (`crate::reviews::unskip`), so that linked again it is reviewed
    ([ADR 0062](adr/0062-projects-choose-which-of-their-repositories-review-agents-review.md)).
+   They choose whether drafts get reviews, for every repository
+   (`project_reviews.drafts`, `ReviewAgents.drafts`, `fctl review
+   settings --drafts`, on by default): off, a draft gets none from
+   deliveries until it is marked ready for review, while people may still
+   ask for one
+   ([ADR 0068](adr/0068-projects-choose-whether-drafts-get-reviews.md)).
    The settings say why no review starts, where none would (`problem`):
    no GitHub App or webhook, no repository to review or every one
    skipped, or an operator who left, can no longer start sessions in the
@@ -1287,7 +1294,8 @@ skip, drafts too, and fctl posts what it found on GitHub
    (`opened`, `reopened`, `synchronize`, `ready_for_review`) about an
    open pull request starts a review of its head in each project whose
    review agents are on and that may write to its repository and doesn't
-   skip it, through the installation its workspace connected
+   skip it, nor leave drafts until they are ready where it is one
+   (`waits_until_ready`), through the installation its workspace connected
    (`crate::reviews::on_delivery`,
    `fctl_domain::reviews::starts_review`), when its author may write to
    the repository or it is fctl's own app (`trusted`, below), or one of
@@ -1313,7 +1321,8 @@ skip, drafts too, and fctl posts what it found on GitHub
    it.
    A commit that has its review
    gets no other from a delivery, so marking a draft ready reviews it only
-   when its head is new; merged, closed and queued pull requests get none.
+   when its head is new, as it always is where the project leaves drafts;
+   merged, closed and queued pull requests get none.
    People who start sessions in the project ask for one of a pull
    request's head (the Reviews tab, `fctl review start`, `POST
    /api/v1/projects/{id}/reviews`), outsiders' too, once they have looked

@@ -68,7 +68,7 @@ pub enum ReviewCmd {
     /// how they review (the project's owners; the person they run for may
     /// turn them off).
     #[command(
-        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --description-summary on\n  fctl review settings --mine\n  fctl review settings --off"
+        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names. With --drafts off, drafts wait until they're marked ready for review, which starts a review of their newest commit; fctl review start reviews one sooner.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --drafts off\n  fctl review settings --description-summary on\n  fctl review settings --mine\n  fctl review settings --off"
     )]
     Settings {
         /// Turn them on, on your Claude subscription.
@@ -107,6 +107,11 @@ pub enum ReviewCmd {
         /// all of them. Another project's review agents review them, say.
         #[arg(long, value_name = "LIST", value_parser = repos_arg)]
         skip_repos: Option<Repos>,
+        /// Review each new commit of a draft, as of other pull requests (on
+        /// by default). Off: drafts wait until they're marked ready for
+        /// review, which starts a review of their newest commit.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        drafts: Option<bool>,
         /// Sum each pull request up at the end of its description before
         /// the review in depth: how risky it looks, what it does and what
         /// deserves a closer look, rewritten for each new commit. The rest
@@ -191,6 +196,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             instructions_file,
             bots,
             skip_repos,
+            drafts,
             description_summary,
         } => {
             let api = config::api(server)?;
@@ -222,6 +228,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
                 instructions,
                 bots: bots.map(|b| b.0),
                 skipped_repos: skip_repos.map(|r| r.0),
+                drafts,
                 description_summary,
             };
             let changes = req != UpdateReviewAgentsRequest::default();
@@ -612,6 +619,14 @@ fn print_settings(project: &str, a: &ReviewAgents) {
             ),
         );
     }
+    row(
+        "Drafts",
+        if a.drafts {
+            "reviewed at each new commit, as other pull requests are".into()
+        } else {
+            "wait until they're marked ready for review, or someone asks".into()
+        },
+    );
     row(
         "Bots",
         if a.bots.is_empty() {
@@ -1041,5 +1056,21 @@ mod tests {
         assert_eq!(set("none"), Some(Repos(Vec::new())));
         assert_eq!(set(" None "), Some(Repos(Vec::new())));
         assert_eq!(set(" , "), None);
+    }
+
+    #[test]
+    fn drafts_turn_on_or_off() {
+        let set = |args: &[&str]| {
+            let argv = ["fctl", "settings"].iter().chain(args).copied();
+            match Fctl::try_parse_from(argv).map(|f| f.review.cmd) {
+                Ok(Some(ReviewCmd::Settings { drafts, .. })) => Ok(drafts),
+                _ => Err(()),
+            }
+        };
+        assert_eq!(set(&["--drafts", "off"]), Ok(Some(false)));
+        assert_eq!(set(&["--drafts", "on"]), Ok(Some(true)));
+        assert_eq!(set(&["--drafts=no"]), Ok(Some(false)));
+        assert_eq!(set(&[]), Ok(None));
+        assert_eq!(set(&["--drafts", "later"]), Err(()));
     }
 }

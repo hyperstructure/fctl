@@ -1,6 +1,6 @@
 # 0040: Review agents review pull requests on an owner's subscription, and fctl posts for them
 
-2026-10-22 · accepted · outsiders' pull requests wait to be asked for since [0047](0047-review-agents-review-outsiders-pull-requests-when-asked.md), and projects choose which of their repositories they review since [0062](0062-projects-choose-which-of-their-repositories-review-agents-review.md)
+2026-10-22 · accepted · outsiders' pull requests wait to be asked for since [0047](0047-review-agents-review-outsiders-pull-requests-when-asked.md), projects choose which of their repositories they review since [0062](0062-projects-choose-which-of-their-repositories-review-agents-review.md), and whether drafts get reviews since [0068](0068-projects-choose-whether-drafts-get-reviews.md)
 
 ## Context
 
