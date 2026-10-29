@@ -158,9 +158,22 @@ async fn check_tickets(
         && let Some(l) = t.linear.clone()
     {
         let keys = ctx.keys()?;
+        // What was checked as it was saved, while the tracker was Linear.
+        let checked = old
+            .linear
+            .as_ref()
+            .filter(|_| old.tracker == fctl_proto::session::Tracker::Linear);
         t.linear = Some(
-            crate::tickets::check_linear(&ctx.db, &ctx.cfg, &keys, workspace_id, &l, ctx.now)
-                .await?,
+            crate::tickets::check_linear(
+                &ctx.db,
+                &ctx.cfg,
+                &keys,
+                workspace_id,
+                &l,
+                checked,
+                ctx.now,
+            )
+            .await?,
         );
     }
     Ok(t)
@@ -345,6 +358,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                             &keys,
                             workspace.id(),
                             l,
+                            None,
                             ctx.now,
                         )
                         .await?,

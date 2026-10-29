@@ -70,3 +70,5 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0062](0062-projects-choose-which-of-their-repositories-review-agents-review.md) | Projects choose which of their repositories review agents review |
 | [0063](0063-fctl-moves-linear-tickets-through-their-teams-workflow-as-sessions-work.md) | fctl moves Linear tickets through their team's workflow as sessions work |
 | [0064](0064-agents-call-people-what-they-choose-or-all-their-first-names.md) | Agents call people what they choose, or all their first names |
+| [0065](0065-projects-take-tickets-from-several-linear-teams.md) | Projects take tickets from several Linear teams |
+| [0066](0066-review-agents-post-as-a-github-app-of-their-own.md) | Review agents post as a GitHub App of their own |

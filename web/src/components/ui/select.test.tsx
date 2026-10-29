@@ -1,7 +1,7 @@
 import { act, type ReactNode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Select, type SelectOption, step, typeahead } from "./select";
+import { placeList, Select, type SelectOption, step, typeahead } from "./select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -50,6 +50,35 @@ describe("typeahead", () => {
 
   it("finds nothing when nothing matches", () => {
     expect(typeahead(labels, "x", 0)).toBe(-1);
+  });
+});
+
+describe("placeList", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const k of ["clientWidth", "clientHeight"]) Reflect.deleteProperty(document.documentElement, k);
+  });
+
+  /** A field 320 px down a phone's page, 874 px tall, and a list 300 px tall. */
+  function place(sight: number) {
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 402 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 874 });
+    vi.stubGlobal("visualViewport", { offsetTop: 0, height: sight });
+    const trigger = document.createElement("div");
+    trigger.getBoundingClientRect = () => DOMRect.fromRect({ x: 16, y: 320, width: 370, height: 40 });
+    const list = document.createElement("div");
+    placeList(trigger, list, 300);
+    return list.style;
+  }
+
+  it("puts the list under its trigger when it fits", () => {
+    const s = place(874);
+    expect([s.top, s.bottom, s.maxHeight]).toEqual(["366px", "auto", "384px"]);
+  });
+
+  it("puts it over its trigger when the keyboard takes the room under it", () => {
+    const s = place(480);
+    expect([s.top, s.bottom, s.maxHeight]).toEqual(["auto", "calc(100% - 314px)", "306px"]);
   });
 });
 
@@ -247,6 +276,29 @@ describe("Select", () => {
     );
     expect(label?.textContent).toBe("Claude's default");
     expect(label?.classList.contains("text-ink-4")).toBe(true);
+  });
+
+  it("shows its icon before the placeholder, and an option's own once it has one", () => {
+    const options = [
+      { value: "eng", label: "Engineering", icon: <b>E</b> },
+      { value: "des", label: "Design" },
+    ];
+    const shown = (value?: string) => {
+      const container = render(
+        <Select
+          aria-label="Add a team"
+          value={value}
+          options={options}
+          placeholder="Add a team"
+          icon={<i>+</i>}
+          onChange={() => {}}
+        />,
+      );
+      return container.querySelector('[role="combobox"] > span.flex')?.textContent;
+    };
+    expect(shown()).toBe("+");
+    expect(shown("eng")).toBe("E");
+    expect(shown("des")).toBeUndefined();
   });
 
   it("lists options in sections by their item, and shows the full label once picked", () => {

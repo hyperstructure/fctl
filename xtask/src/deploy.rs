@@ -55,6 +55,18 @@ pub struct Github {
     pub app_slug: String,
     pub client_id: Option<String>,
     pub default_owner: Option<String>,
+    /// The app review agents post their reviews as where it's installed
+    /// (`GITHUB_REVIEW_APP_PRIVATE_KEY` is a secret).
+    pub review: Option<GithubReview>,
+}
+
+/// The GitHub App review agents post their reviews as, apart from the
+/// GitHub App the instance's agents act as.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GithubReview {
+    pub app_id: String,
+    pub app_slug: String,
 }
 
 /// fctl's Linear app: its OAuth client ID (`LINEAR_CLIENT_SECRET` and
@@ -125,6 +137,10 @@ impl Instance {
             }
             if let Some(o) = &g.default_owner {
                 vars.push(("GITHUB_DEFAULT_OWNER", o.clone()));
+            }
+            if let Some(r) = &g.review {
+                vars.push(("GITHUB_REVIEW_APP_ID", r.app_id.clone()));
+                vars.push(("GITHUB_REVIEW_APP_SLUG", r.app_slug.clone()));
             }
         }
         if let Some(l) = &self.linear {
@@ -354,6 +370,8 @@ fn missing_secrets(root: &Path, config: &Path) -> Result<Vec<&'static str>> {
 pub struct SecretOpts {
     /// A GitHub App private key (.pem, PKCS#1 or PKCS#8).
     pub github_key: Option<PathBuf>,
+    /// The review app's private key, likewise.
+    pub github_review_key: Option<PathBuf>,
     /// Names whose values are read from stdin, one per line, in order.
     pub set: Vec<String>,
     /// Replace the setup token (prints a new setup link).
@@ -394,6 +412,9 @@ pub fn secrets(root: &Path, name: &str, opts: SecretOpts) -> Result<()> {
     }
     if let Some(pem) = &opts.github_key {
         put("GITHUB_APP_PRIVATE_KEY", &pkcs8(pem)?)?;
+    }
+    if let Some(pem) = &opts.github_review_key {
+        put("GITHUB_REVIEW_APP_PRIVATE_KEY", &pkcs8(pem)?)?;
     }
     if !opts.set.is_empty() {
         let mut lines = std::io::stdin().lines();
@@ -496,6 +517,7 @@ client_id = "lin_client"
             Some("SearchObject")
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
+        assert!(doc["vars"].get("GITHUB_REVIEW_APP_ID").is_none());
         assert!(doc["vars"].get("FCTL_EARLY_ACCESS").is_none());
         assert!(doc["vars"].get("FCTL_SEARCH_ENGINES").is_none());
         assert!(doc["vars"].get("FCTL_HTTPS_ONLY").is_none());
@@ -507,6 +529,25 @@ client_id = "lin_client"
                 .filter_map(|p| p.as_str())
                 .collect::<Vec<_>>(),
             ["/api/*", "/robots.txt", "/sitemap.xml"]
+        );
+    }
+
+    #[test]
+    fn app_fctl_sh_posts_reviews_as_its_review_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let doc: toml::Table =
+            toml::from_str(&load(&root, "fctl-sh").unwrap().wrangler_toml()).unwrap();
+        assert_eq!(
+            doc["vars"]["GITHUB_REVIEW_APP_ID"].as_str(),
+            Some("5527664")
+        );
+        assert_eq!(
+            doc["vars"]["GITHUB_REVIEW_APP_SLUG"].as_str(),
+            Some("fctl-review")
+        );
+        assert_ne!(
+            doc["vars"]["GITHUB_REVIEW_APP_ID"],
+            doc["vars"]["GITHUB_APP_ID"]
         );
     }
 

@@ -18,7 +18,7 @@ export type Tickets = { tracker?: Tracker,
  */
 repo?: RepoRef, 
 /**
- * Linear's team, and what fctl does there. Kept while another tracker
+ * Linear's teams, and what fctl does there. Kept while another tracker
  * is chosen, so that choosing Linear again finds it.
  */
 linear?: LinearTickets, };

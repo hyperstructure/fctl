@@ -227,7 +227,7 @@ pub enum StateFilter {
 /// fctl-agent pass on as it is, so that what `fctl ticket` can do grows
 /// with the control plane. Tickets are named by their key (`ENG-123`;
 /// `#12` or `acme/web#12` on GitHub). The control plane keeps every call to
-/// the tickets the project chose (its Linear team, its repositories), and
+/// the tickets the project chose (its Linear teams, its repositories), and
 /// writes in the name of fctl's own app.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,8 +253,9 @@ pub enum TicketRequest {
     /// One ticket, with its comments.
     View { key: String },
     /// A new ticket. Without `place`, where the project files them (its
-    /// Linear team, its GitHub repository); `place` names a repository
-    /// for GitHub Issues of several.
+    /// first Linear team, or a sub-ticket's parent's; its GitHub
+    /// repository); `place` names a repository for GitHub Issues of
+    /// several, or a team by its key for Linear of several.
     Create {
         title: String,
         #[cfg_attr(feature = "ts", ts(optional))]
@@ -306,7 +307,8 @@ pub enum TicketRequest {
         priority: Option<String>,
     },
     /// The states tickets can be in, in their order: Linear's team's
-    /// workflow; open and closed on GitHub.
+    /// workflow (those of several teams, each name once); open and closed
+    /// on GitHub.
     States,
     /// The labels tickets can have.
     Labels,
@@ -508,14 +510,19 @@ pub enum LinearStatus {
     Revoked,
 }
 
-/// A project that takes tickets from a team of a connected Linear workspace.
+/// A project that takes tickets from teams of a connected Linear workspace.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct LinearProjectUse {
     pub slug: String,
     pub name: String,
+    /// Its first team's key.
     pub team_key: Option<String>,
+    /// The keys of all its teams, its first first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub team_keys: Vec<String>,
 }
 
 /// `GET /api/v1/workspaces/{id}/linear`: the Linear workspaces it is

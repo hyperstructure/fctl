@@ -253,7 +253,7 @@ const PULL: &str = "number url title state isDraft createdAt updatedAt mergedAt 
 /// What a lookup of [`Fields::All`] asks besides: the checks of its head
 /// commit counted by their state, with the first 100 checks among them, in
 /// which [`replaced`] finds the runs that a later run of the same check
-/// replaced, [`failing`] the checks that failed, and [`review_run`] the
+/// replaced, [`failing`] the checks that failed, and [`review_runs`] the
 /// instance's review of the commit.
 const CHECKS: &str = "commits(last: 1) {
     nodes {
@@ -419,15 +419,17 @@ impl Mergeable {
 
 /// What GitHub's answer to [`query`], asked at `at`, says of the `i`th pull
 /// request it asked about, with what the webhook that asked says (`hints`);
-/// `None` when GitHub has none. `app`: GitHub's id of the instance's GitHub
-/// App, whose `fctl review` check is the instance's review of the commit,
-/// which the checks say apart from the others' counts ([`review_run`]).
+/// `None` when GitHub has none. `apps`: GitHub's ids of the instance's
+/// GitHub Apps (its GitHub App, and the one review agents post as where
+/// it's installed), whose `fctl review` check is the instance's review of
+/// the commit, which the checks say apart from the others' counts
+/// ([`review_runs`]).
 pub fn looked_up(
     answer: &Value,
     i: usize,
     at: Millis,
     hints: Hints<'_>,
-    app: Option<u64>,
+    apps: &[u64],
 ) -> Option<Looked> {
     let pr = answer.pointer(&format!("/data/pr{i}/pullRequest"))?;
     let text = |key: &str| pr.get(key).and_then(Value::as_str);
@@ -486,12 +488,21 @@ pub fn looked_up(
                 *n = n.saturating_sub(1);
             }
         }
-        // The instance's review says how it went in place of a count.
-        if let Some(run) = app.and_then(|app| review_run(contexts, app)) {
+        // The instance's review says how it went in place of a count: the
+        // latest run of its check, whichever of its apps ran it. GitHub
+        // counts each app's check apart, the one a review started as the
+        // GitHub App before the review app was installed too.
+        let runs = review_runs(contexts, apps);
+        for run in &runs {
             if let Some(check) = run_state(run).and_then(check_state) {
                 let n = check.of(&mut checks);
                 *n = n.saturating_sub(1);
             }
+        }
+        if let Some(run) = runs
+            .iter()
+            .max_by_key(|run| run.get("databaseId").and_then(Value::as_u64))
+        {
             checks.review = Some(review_of(run));
         }
         checks
@@ -632,25 +643,35 @@ fn run_state(run: &Value) -> Option<&str> {
 }
 
 /// The latest run among `contexts`' nodes of the review check
-/// (`crate::reviews::CHECK_NAME`) of GitHub App `app`: the instance's
-/// review of the commit. Another instance's app, or any other, may name a
-/// check so too, and counts as any check. Only the first 100 checks are
-/// among the nodes: of a commit with more, the review may be missing, and
-/// its check counts as any.
-fn review_run(contexts: Option<&Value>, app: u64) -> Option<&Value> {
-    contexts
+/// (`crate::reviews::CHECK_NAME`) of each of the GitHub Apps `apps` that
+/// ran it: the instance's reviews of the commit. Another instance's app, or
+/// any other, may name a check so too, and counts as any check. Only the
+/// first 100 checks are among the nodes: of a commit with more, the review
+/// may be missing, and its check counts as any.
+fn review_runs<'a>(contexts: Option<&'a Value>, apps: &[u64]) -> Vec<&'a Value> {
+    let nodes: Vec<&Value> = contexts
         .and_then(|c| c.get("nodes"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|run| {
-            run.get("name").and_then(Value::as_str) == Some(crate::reviews::CHECK_NAME)
-                && run
-                    .pointer("/checkSuite/app/databaseId")
-                    .and_then(Value::as_u64)
-                    == Some(app)
+        .filter(|run| run.get("name").and_then(Value::as_str) == Some(crate::reviews::CHECK_NAME))
+        .collect();
+    let mut apps = apps.to_vec();
+    apps.sort_unstable();
+    apps.dedup();
+    apps.iter()
+        .filter_map(|app| {
+            nodes
+                .iter()
+                .copied()
+                .filter(|run| {
+                    run.pointer("/checkSuite/app/databaseId")
+                        .and_then(Value::as_u64)
+                        == Some(*app)
+                })
+                .max_by_key(|run| run.get("databaseId").and_then(Value::as_u64))
         })
-        .max_by_key(|run| run.get("databaseId").and_then(Value::as_u64))
+        .collect()
 }
 
 /// What a review's check run says of it (`crate::reviews::check_running`,
@@ -933,7 +954,7 @@ mod tests {
 
     #[test]
     fn lookups_say_the_state_and_count_the_checks() {
-        let looked = looked_up(&answer(), 0, 1_000, Hints::default(), None)
+        let looked = looked_up(&answer(), 0, 1_000, Hints::default(), &[])
             .unwrap_or_else(|| panic!("no found"));
         assert_eq!(looked.head.as_deref(), Some("9f8e7d"));
         let pr = looked.pr;
@@ -956,7 +977,7 @@ mod tests {
         let mut none = answer();
         none["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"] =
             Value::Null;
-        let c = looked_up(&none, 0, 1_000, Hints::default(), None)
+        let c = looked_up(&none, 0, 1_000, Hints::default(), &[])
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         assert_eq!(
@@ -969,7 +990,7 @@ mod tests {
             json!({ "data": { "pr0": null } }),
             json!({ "errors": [{ "message": "Bad credentials" }] }),
         ] {
-            assert_eq!(looked_up(&nothing, 0, 1, Hints::default(), None), None);
+            assert_eq!(looked_up(&nothing, 0, 1, Hints::default(), &[]), None);
         }
     }
 
@@ -1011,7 +1032,7 @@ mod tests {
         a["data"]["pr2"]["pullRequest"]["number"] = json!(171);
         a["data"]["pr2"]["pullRequest"]["url"] =
             json!("https://github.com/hyperstructure/fctl/pull/171");
-        let number = |i| looked_up(&a, i, 1, Hints::default(), None).map(|l| l.pr.number);
+        let number = |i| looked_up(&a, i, 1, Hints::default(), &[]).map(|l| l.pr.number);
         assert_eq!(
             [number(0), number(1), number(2), number(3)],
             [Some(170), None, Some(171), None]
@@ -1069,7 +1090,7 @@ mod tests {
         let pr = &mut queued["data"]["pr0"]["pullRequest"];
         pr["isDraft"] = json!(false);
         pr["mergeQueueEntry"] = json!({ "enqueuedAt": "2026-10-21T16:45:00Z" });
-        let looked = looked_up(&queued, 0, 1, Hints::default(), None)
+        let looked = looked_up(&queued, 0, 1, Hints::default(), &[])
             .unwrap_or_else(|| panic!("no found"))
             .pr;
         assert_eq!(looked.state.as_deref(), Some("queued"));
@@ -1081,14 +1102,14 @@ mod tests {
             action: Some(action),
             mergeable_state: None,
         };
-        let state = |v: &Value, h| looked_up(v, 0, 1, h, None).and_then(|l| l.pr.state);
+        let state = |v: &Value, h| looked_up(v, 0, 1, h, &[]).and_then(|l| l.pr.state);
         assert_eq!(state(&open, hints("enqueued")).as_deref(), Some("queued"));
         assert_eq!(state(&open, hints("dequeued")).as_deref(), Some("open"));
         // Merged beats queued.
         let mut merged = queued.clone();
         merged["data"]["pr0"]["pullRequest"]["state"] = json!("MERGED");
         merged["data"]["pr0"]["pullRequest"]["mergedAt"] = json!("2026-10-21T16:50:00Z");
-        let pr = looked_up(&merged, 0, 1, hints("enqueued"), None)
+        let pr = looked_up(&merged, 0, 1, hints("enqueued"), &[])
             .unwrap_or_else(|| panic!("no found"))
             .pr;
         assert_eq!(
@@ -1111,7 +1132,7 @@ mod tests {
             a["data"]["pr0"]["pullRequest"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
                 ["contexts"] =
                 json!({ "checkRunCountsByState": runs, "statusContextCountsByState": statuses });
-            let c = looked_up(&a, 0, 1, Hints::default(), None)
+            let c = looked_up(&a, 0, 1, Hints::default(), &[])
                 .and_then(|l| l.pr.checks)
                 .unwrap_or_else(|| panic!("no checks"));
             (c.passed, c.failed, c.pending)
@@ -1209,21 +1230,21 @@ mod tests {
             json!({}),
         ]);
         let looked =
-            looked_up(&a, 0, 1, Hints::default(), None).unwrap_or_else(|| panic!("no found"));
+            looked_up(&a, 0, 1, Hints::default(), &[]).unwrap_or_else(|| panic!("no found"));
         // GraphQL names an app's bot without `[bot]`, which REST adds.
         assert_eq!(looked.author.as_deref(), Some("fctl-sh[bot]"));
         let mut person = a.clone();
         person["data"]["pr0"]["pullRequest"]["author"] =
             json!({ "login": "fctl-sh", "__typename": "User" });
-        let by = looked_up(&person, 0, 1, Hints::default(), None).and_then(|l| l.author);
+        let by = looked_up(&person, 0, 1, Hints::default(), &[]).and_then(|l| l.author);
         assert_eq!(by.as_deref(), Some("fctl-sh"));
         assert_eq!(looked.head_ref.as_deref(), Some("fctl/119-agent-floor"));
         assert_eq!(looked.base_ref.as_deref(), Some("main"));
         // In the order of their latest runs.
         assert_eq!(looked.failing, ["Timed out", "Rust tests", "ci/deploy"]);
         // A lookup from before the fields: none of them.
-        let looked = looked_up(&answer(), 0, 1, Hints::default(), None)
-            .unwrap_or_else(|| panic!("no found"));
+        let looked =
+            looked_up(&answer(), 0, 1, Hints::default(), &[]).unwrap_or_else(|| panic!("no found"));
         assert_eq!(
             (looked.author, looked.head_ref, looked.failing.len()),
             (None, None, 0)
@@ -1238,7 +1259,7 @@ mod tests {
         let with = |state: Value| {
             let mut a = answer();
             a["data"]["pr0"]["pullRequest"]["mergeable"] = state;
-            looked_up(&a, 0, 1, Hints::default(), None).and_then(|l| l.mergeable)
+            looked_up(&a, 0, 1, Hints::default(), &[]).and_then(|l| l.mergeable)
         };
         assert_eq!(with(json!("MERGEABLE")), Some(Mergeable::Yes));
         assert_eq!(with(json!("CONFLICTING")), Some(Mergeable::Conflicts));
@@ -1260,7 +1281,7 @@ mod tests {
         pr.as_object_mut().map(|o| o.remove("commits"));
         pr["mergeable"] = json!("CONFLICTING");
         let looked =
-            looked_up(&a, 0, 1, Hints::default(), None).unwrap_or_else(|| panic!("no found"));
+            looked_up(&a, 0, 1, Hints::default(), &[]).unwrap_or_else(|| panic!("no found"));
         assert_eq!(looked.head.as_deref(), Some("9f8e7d"));
         assert_eq!(looked.pr.checks, None);
         assert_eq!(looked.mergeable, Some(Mergeable::Conflicts));
@@ -1301,7 +1322,7 @@ mod tests {
     fn a_check_that_ran_again_counts_by_its_latest_run() {
         // GitHub counts the cancelled run too; its pull request shows 9
         // checks, all passed or skipped.
-        let c = looked_up(&answer_216(), 0, 1, Hints::default(), None)
+        let c = looked_up(&answer_216(), 0, 1, Hints::default(), &[])
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         assert_eq!((c.passed, c.failed, c.pending), (9, 0, 0));
@@ -1345,7 +1366,7 @@ mod tests {
             "statusContextCountsByState": [],
             "nodes": nodes,
         });
-        let c = looked_up(&a, 0, 1, Hints::default(), None)
+        let c = looked_up(&a, 0, 1, Hints::default(), &[])
             .and_then(|l| l.pr.checks)
             .unwrap_or_else(|| panic!("no checks"));
         (c.passed, c.failed, c.pending)
@@ -1389,11 +1410,12 @@ mod tests {
     #[test]
     fn the_instances_review_says_how_it_went_apart_from_the_counts() {
         const FCTL: u64 = 404;
+        const REVIEW: u64 = 406;
         const OTHER: u64 = 405;
         const SESSION: &str = "ses_01M61C19MFRK8D17MFXBGV2Q7P";
         // Check runs (name, `databaseId`, app, state), with two passed CI
         // checks: the review's runs are its session's.
-        let lookup = |runs: &[(&str, u64, u64, &str)], app: Option<u64>| {
+        let lookup = |runs: &[(&str, u64, u64, &str)], apps: &[u64]| {
             let ci = [("lint", 1, 15368, "SUCCESS"), ("test", 2, 15368, "SUCCESS")];
             let mut states = std::collections::BTreeMap::<&str, u64>::new();
             let nodes: Vec<Value> = ci
@@ -1422,7 +1444,7 @@ mod tests {
                 "statusContextCountsByState": [],
                 "nodes": nodes,
             });
-            let c = looked_up(&a, 0, 1, Hints::default(), app)
+            let c = looked_up(&a, 0, 1, Hints::default(), apps)
                 .and_then(|l| l.pr.checks)
                 .unwrap_or_else(|| panic!("no checks"));
             let review = c.review.map(|r| {
@@ -1434,25 +1456,25 @@ mod tests {
         let review = |state| [("fctl review", 9, FCTL, state)];
         // Waiting for a runner, then reviewing: not a check still to finish.
         assert_eq!(
-            lookup(&review("QUEUED"), Some(FCTL)),
+            lookup(&review("QUEUED"), &[FCTL]),
             ((2, 0, 0), Some((ReviewState::Running, true)))
         );
         assert_eq!(
-            lookup(&review("IN_PROGRESS"), Some(FCTL)),
+            lookup(&review("IN_PROGRESS"), &[FCTL]),
             ((2, 0, 0), Some((ReviewState::Running, false)))
         );
         // Findings make its check neutral, which counts as passed.
         assert_eq!(
-            lookup(&review("NEUTRAL"), Some(FCTL)),
+            lookup(&review("NEUTRAL"), &[FCTL]),
             ((2, 0, 0), Some((ReviewState::Commented, false)))
         );
         assert_eq!(
-            lookup(&review("SUCCESS"), Some(FCTL)),
+            lookup(&review("SUCCESS"), &[FCTL]),
             ((2, 0, 0), Some((ReviewState::Passed, false)))
         );
         // Stopped, superseded or failed, it is cancelled: no failed check.
         assert_eq!(
-            lookup(&review("CANCELLED"), Some(FCTL)),
+            lookup(&review("CANCELLED"), &[FCTL]),
             ((2, 0, 0), Some((ReviewState::Stopped, false)))
         );
         // Asked for again, the newer review is the one.
@@ -1461,14 +1483,38 @@ mod tests {
             ("fctl review", 9, FCTL, "CANCELLED"),
         ];
         assert_eq!(
-            lookup(&again, Some(FCTL)),
+            lookup(&again, &[FCTL]),
             ((2, 0, 0), Some((ReviewState::Running, false)))
+        );
+        // The app review agents post as is the instance's too: its review
+        // counts in no check, nor does the GitHub App's earlier one of the
+        // same commit, and the newer of them is the one.
+        let both = [
+            ("fctl review", 12, REVIEW, "IN_PROGRESS"),
+            ("fctl review", 9, FCTL, "NEUTRAL"),
+        ];
+        assert_eq!(
+            lookup(&both, &[FCTL, REVIEW]),
+            ((2, 0, 0), Some((ReviewState::Running, false)))
+        );
+        assert_eq!(
+            lookup(&[("fctl review", 9, REVIEW, "SUCCESS")], &[FCTL, REVIEW]),
+            ((2, 0, 0), Some((ReviewState::Passed, false)))
+        );
+        // Without it, its check is any other app's.
+        assert_eq!(
+            lookup(&both, &[FCTL]),
+            ((2, 0, 1), Some((ReviewState::Commented, false)))
         );
         // Another app's check of that name, or a lookup that doesn't know
         // the instance's app, counts it as any check.
         let elsewhere = [("fctl review", 9, OTHER, "NEUTRAL")];
-        assert_eq!(lookup(&elsewhere, Some(FCTL)), ((3, 0, 0), None));
-        assert_eq!(lookup(&review("QUEUED"), None), ((2, 0, 1), None));
-        assert_eq!(lookup(&[], Some(FCTL)), ((2, 0, 0), None));
+        assert_eq!(lookup(&elsewhere, &[FCTL, REVIEW]), ((3, 0, 0), None));
+        assert_eq!(lookup(&review("QUEUED"), &[]), ((2, 0, 1), None));
+        assert_eq!(
+            lookup(&review("QUEUED"), &[FCTL, FCTL]).1,
+            Some((ReviewState::Running, true))
+        );
+        assert_eq!(lookup(&[], &[FCTL, REVIEW]), ((2, 0, 0), None));
     }
 }

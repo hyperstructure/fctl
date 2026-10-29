@@ -1519,6 +1519,13 @@ impl Api {
         self.get(&format!("/workspaces/{}/github", enc(id))).await
     }
 
+    /// Where the app review agents post their reviews as is installed among
+    /// the GitHub accounts a workspace works in.
+    pub async fn workspace_review_app(&self, id: &str) -> Result<WorkspaceReviewApp> {
+        self.get(&format!("/workspaces/{}/github/review-app", enc(id)))
+            .await
+    }
+
     /// The link to the GitHub sign-in that connects an account the app is
     /// installed on to a workspace, with what GitHub says you may.
     pub async fn connect_github(

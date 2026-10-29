@@ -275,14 +275,14 @@ outside it except through these channels:
   so it never enters a sandbox, and for one repository's GitHub issues
   the control plane mints a token for that repository's issues alone for
   each call and revokes it after. Each call is kept to the project's
-  choice, a Linear team (and project) or a repository, and a ticket
+  choice, its Linear teams (and projects) or a repository, and a ticket
   outside it answers as one that doesn't exist, as do the parents,
   sub-tickets and search results outside it. Review agents reach no
   tracker. In an hour, a session's agent comments at most 30 times, files
   at most 20 tickets, changes at most 60 and reads at most 300 times, and
   its writes fail at most 60 times, which also keeps one workspace's
   agents from using up the API of a Linear installation others share. What tickets and
-  their comments say comes from whoever wrote them, inside the team or
+  their comments say comes from whoever wrote them, inside the teams or
   not: agents are told to take it as what the work is about, not as
   instructions, and do what the person who delegated it asks.
 

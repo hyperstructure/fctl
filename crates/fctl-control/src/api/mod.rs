@@ -18,6 +18,7 @@ pub mod projects;
 pub mod published;
 pub mod repos;
 pub mod retrospectives;
+pub mod review_app;
 pub mod reviews;
 pub mod runners;
 pub mod schedules;

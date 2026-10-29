@@ -118,6 +118,7 @@ Docker and Kubernetes secrets do.
 | `FCTL_SEARCH_ENGINES` | `0` | `1` lets search engines index the sign-in page ([search engines](#search-engines)) |
 | `FCTL_TRUST_PROXY` | `0` | How many [reverse proxies](#https-and-reverse-proxies) in front add `X-Forwarded-For` |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, `GITHUB_WEBHOOK_SECRET` | | [The GitHub App](#connect-github-optional-recommended) |
+| `GITHUB_REVIEW_APP_ID`, `GITHUB_REVIEW_APP_SLUG`, `GITHUB_REVIEW_APP_PRIVATE_KEY` | | [The app review agents post as](#a-review-app-optional) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, `LINEAR_WEBHOOK_SECRET` | | [Linear](#connect-linear-optional) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | | [Google sign-in](#google-sign-in-optional) |
 | `RESEND_API_KEY`, `FCTL_EMAIL_FROM` | | [Email](#email-optional) |
@@ -262,8 +263,8 @@ This sets, once:
   the primary instance owner; after that, the link does nothing.
   `--new-setup-token` prints a fresh one.
 
-Other secrets go in with `--set`, and the GitHub App's key with
-`--github-key` (below).
+Other secrets go in with `--set`, the GitHub App's key with
+`--github-key` and the review app's with `--github-review-key` (below).
 
 ### Operating it
 
@@ -538,8 +539,9 @@ A review agent's session gets one token, which only reads, for the
 reviewed repository and the project's others. The control plane posts
 its review with a token of its own, for that repository alone: pull
 requests and checks: write, contents: read; and resolves fctl's earlier
-threads with one that can write contents. Neither leaves the control
-plane, and both are revoked once used.
+threads with one that can write contents. Both are the [review
+app](#a-review-app-optional)'s where it's installed. Neither leaves the
+control plane, and both are revoked once used.
 
 Agents may write only to repositories that are named: reading a whole
 account is as far as an owner-wide grant goes. A listed repository the
@@ -547,6 +549,67 @@ installation no longer reaches (removed from it, renamed or deleted) is left
 out of the tokens, and the session says so; a session whose primary
 repository is out of reach does not start. People manage the list under the
 project's **Repositories** tab or with `fctl projects repos`.
+
+### A review app (optional)
+
+Review agents post their reviews as the GitHub App, which agents write
+their own comments and replies as. With a second app, they post as that
+one where it's installed, so that a pull request shows a review agent's
+findings apart from what the agent that opened it answers (app.fctl.sh's
+are `fctl-review` and `fctl-sh`). Where it isn't installed on an account,
+or doesn't reach a repository, reviews post as the GitHub App, as before.
+
+1. Create a second app under your organization, as in step 1 above, with
+   a name and logo of its own. Untick **Active** under **Webhook** (the
+   GitHub App's webhook tells fctl everything), and add no callback URL:
+   it signs nobody in. Set its **Setup URL** to
+   `https://fctl.acme.dev/api/v1/github-review/installed` (your
+   `FCTL_PUBLIC_URL` followed by `/api/v1/github-review/installed`) and
+   tick **Redirect on update**, so that people who install it from a
+   workspace come back there. Repository permissions:
+
+   | Permission | Access | Why |
+   |---|---|---|
+   | Pull requests | Read and write | post reviews and their summaries, mark findings fixed |
+   | Checks | Read and write | the `fctl review` check |
+   | Contents | Read and write | resolve fctl's earlier threads, as GitHub asks; without it, the GitHub App resolves them |
+   | Metadata | Read | required |
+
+   Make it public too where the GitHub App is (**Advanced → Make public**),
+   so that the same accounts can install it.
+2. Generate a **private key**, and tell the control plane about the app.
+   On your own machine, set `GITHUB_REVIEW_APP_ID`,
+   `GITHUB_REVIEW_APP_SLUG` and `GITHUB_REVIEW_APP_PRIVATE_KEY`, and start
+   the server again. On Cloudflare, add it to the instance file's
+   `[github]`:
+
+   ```toml
+   [github.review]
+   app_id = "234567"
+   app_slug = "acme-fctl-review"
+   ```
+
+   Then store the key and redeploy:
+
+   ```sh
+   cargo xtask secrets acme --github-review-key ~/Downloads/acme-fctl-review.private-key.pem
+   cargo xtask deploy acme
+   ```
+
+3. Install it on the accounts the GitHub App is installed on. Nobody
+   connects it: fctl uses it only on repositories a workspace connected
+   through the GitHub App, so installing it is all it takes. Each
+   workspace's **GitHub** tab says which app posts the reviews on each of
+   its accounts, and its admins install the review app there from the tab,
+   on the repositories the workspace connected (`fctl workspaces
+   review-app` prints the links); a project's **Reviews** tab says which
+   app its reviews post as.
+
+Which app writes a review is settled as the review starts, since only the
+app that created a check may change it: a review that started before the
+app was installed finishes as the GitHub App. The findings either app
+posted are fctl's to mark fixed, resolve and sum up later, each comment
+edited by the app that wrote it.
 
 ## Connect Linear (optional)
 
@@ -616,7 +679,7 @@ each workspace's admins install in their Linear workspace from fctl.
 3. A workspace's admin connects their Linear workspace under the
    workspace's **Linear** tab, or a project's **Tickets** tab: Linear asks
    one of its admins to install the app and to choose the teams it sees.
-   Each project then chooses its team. People link their Linear accounts
+   Each project then chooses its teams. People link their Linear accounts
    (Settings, the project's Tickets tab, or Linear's own button the first
    time they delegate an issue), and fctl starts sessions only for people
    it knows there, as them.

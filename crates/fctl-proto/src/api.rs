@@ -1736,6 +1736,80 @@ pub struct ChooseGithubRepos {
     pub repos: Option<Vec<String>>,
 }
 
+/// `GET /api/v1/workspaces/{id}/github/review-app`: the GitHub App review
+/// agents post their reviews as where it's installed (`fctl-review` on
+/// app.fctl.sh), so that people tell them apart from what the instance's
+/// agents write as its GitHub App, and where it is among the accounts the
+/// workspace works in. Where it isn't, reviews post as the GitHub App.
+/// Installing it on an account is all it takes: fctl uses it only on the
+/// repositories the workspace connected through the GitHub App.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct WorkspaceReviewApp {
+    /// The instance has a review app. Without one, every review posts as
+    /// the GitHub App.
+    pub configured: bool,
+    /// The review app.
+    pub app: Option<GithubAppRef>,
+    /// The instance's GitHub App, which its agents act as on GitHub, and
+    /// which posts the reviews where the review app isn't installed.
+    pub github_app: Option<GithubAppRef>,
+    /// Where the review app is, on each account the workspace works in, in
+    /// the order it connected them. Empty without a review app.
+    pub accounts: Vec<ReviewAppAccount>,
+}
+
+/// A GitHub App of the instance's.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct GithubAppRef {
+    /// Its slug: its bot is `<slug>[bot]` and its page
+    /// `https://github.com/apps/<slug>`.
+    pub slug: String,
+    /// Its logo, on avatars.githubusercontent.com.
+    pub avatar_url: Option<String>,
+}
+
+/// The review app on one of a workspace's GitHub accounts
+/// ([`WorkspaceReviewApp`]).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ReviewAppAccount {
+    /// The account's login, as the workspace connected it.
+    pub account: String,
+    pub state: ReviewAppState,
+    /// The repositories of the account that the workspace's projects may
+    /// write to and the review app doesn't reach, whose reviews post as
+    /// the GitHub App: where it's installed on some of the account's
+    /// repositories (`partly`).
+    #[serde(default)]
+    pub unreached: Vec<String>,
+    /// Installs the review app on the account, or chooses its repositories
+    /// there where it's installed, on GitHub, which comes back to the
+    /// workspace's GitHub tab: for the workspace's admins.
+    pub install_url: Option<String>,
+}
+
+/// Whether the review app is installed on one of a workspace's accounts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewAppState {
+    /// It's installed there and reaches every repository there that the
+    /// workspace's projects may write to: their reviews post as it.
+    Installed,
+    /// It's installed there, but doesn't reach some of those repositories
+    /// ([`ReviewAppAccount::unreached`]).
+    Partly,
+    /// It isn't installed there: reviews post as the GitHub App.
+    NotInstalled,
+    /// GitHub didn't say.
+    Unknown,
+}
+
 /// `POST /api/v1/workspaces/{id}/github/connect` (admins): connect an
 /// account the instance's GitHub App is installed on. The answer is a link
 /// ([`ConnectGithubLink`]) to a GitHub sign-in that shows fctl what you

@@ -540,17 +540,17 @@ async fn take_up(
     // projects of other fctl workspaces connected to this Linear workspace
     // aren't (`fctl_domain::linear::takers`).
     let settings = crate::instance::settings(db).await?;
-    let mut candidates = Vec::with_capacity(all.len());
+    let mut candidates: Vec<Candidate> = Vec::with_capacity(all.len());
     for t in &all {
         let role = role_in(db, &user, &settings, &t.row).await?;
-        candidates.push(Candidate {
-            project_id: t.row.id.clone(),
-            team: t.linear.team.clone(),
-            project: t.linear.project.clone(),
-            repo: t.row.repo().map(|r| r.full_name()),
-            may_start: fctl_domain::perm::can_start_sessions(role),
-            may_see: role.is_some(),
-        });
+        // One for each of its teams.
+        candidates.extend(lin::candidates(
+            &t.row.id,
+            &t.linear,
+            t.row.repo().map(|r| r.full_name()).as_deref(),
+            fctl_domain::perm::can_start_sessions(role),
+            role.is_some(),
+        ));
     }
     let team_name = || {
         ticket
@@ -570,7 +570,7 @@ async fn take_up(
         lin::Takers::Nobody => {
             let team_name = team_name();
             return refuse(format!(
-                "No fctl project takes {team_name}'s tickets yet. In fctl, choose Linear as a project's ticket tracker, with {team_name}, in its Tickets tab: {}",
+                "No fctl project takes {team_name}'s tickets yet. In fctl, a project's maintainers add {team_name} to its Linear teams in its Tickets tab: {}",
                 cfg.url("/")
             ))
             .await;

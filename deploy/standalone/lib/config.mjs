@@ -18,6 +18,8 @@ const VARS = [
   "GITHUB_CLIENT_SECRET",
   "GITHUB_DEFAULT_OWNER",
   "GITHUB_WEBHOOK_SECRET",
+  "GITHUB_REVIEW_APP_ID",
+  "GITHUB_REVIEW_APP_SLUG",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
   "LINEAR_CLIENT_ID",
@@ -94,16 +96,17 @@ function trustProxy(raw) {
 }
 
 /**
- * The GitHub App's private key as PKCS#8 PEM, which is what WebCrypto
+ * A GitHub App's private key as PKCS#8 PEM, which is what WebCrypto
  * imports. GitHub hands out PKCS#1 (`BEGIN RSA PRIVATE KEY`); a key pasted
- * into one line with `\n` for its line breaks works too.
+ * into one line with `\n` for its line breaks works too. `name`: the
+ * variable it came from, which an error names.
  */
-export function githubKey(pem) {
+export function githubKey(pem, name = "GITHUB_APP_PRIVATE_KEY") {
   const text = pem.includes("\n") ? pem : pem.replaceAll("\\n", "\n");
   try {
     return createPrivateKey(text).export({ type: "pkcs8", format: "pem" });
   } catch {
-    throw new ConfigError("GITHUB_APP_PRIVATE_KEY is not a PEM private key");
+    throw new ConfigError(`${name} is not a PEM private key`);
   }
 }
 
@@ -147,8 +150,10 @@ export function readConfig(env) {
     const v = value(env, name);
     if (v !== undefined) vars[name] = v;
   }
-  const key = value(env, "GITHUB_APP_PRIVATE_KEY");
-  if (key) vars.GITHUB_APP_PRIVATE_KEY = githubKey(key);
+  for (const name of ["GITHUB_APP_PRIVATE_KEY", "GITHUB_REVIEW_APP_PRIVATE_KEY"]) {
+    const key = value(env, name);
+    if (key) vars[name] = githubKey(key, name);
+  }
   // Made up when not given: it only matters until the first account exists.
   const setupToken = value(env, "FCTL_SETUP_TOKEN") ?? randomBytes(24).toString("base64url");
   vars.FCTL_SETUP_TOKEN = setupToken;

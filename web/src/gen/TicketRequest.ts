@@ -7,7 +7,7 @@ import type { StateFilter } from "./StateFilter";
  * fctl-agent pass on as it is, so that what `fctl ticket` can do grows
  * with the control plane. Tickets are named by their key (`ENG-123`;
  * `#12` or `acme/web#12` on GitHub). The control plane keeps every call to
- * the tickets the project chose (its Linear team, its repositories), and
+ * the tickets the project chose (its Linear teams, its repositories), and
  * writes in the name of fctl's own app.
  */
 export type TicketRequest = { "op": "about" } | { "op": "list", state: StateFilter, 

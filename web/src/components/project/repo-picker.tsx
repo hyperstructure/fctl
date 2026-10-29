@@ -15,7 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { GithubIcon, placeList, SelectChevron, step } from "@/components/ui";
+import { followViewport, GithubIcon, placeList, SelectChevron, step } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { CHOICES_SHOWN, type RepoChoice } from "@/lib/repos";
 
@@ -162,8 +162,9 @@ export function RepoPicker({
   };
 
   // The list joins the top layer, as wide as the field and under it (over it when there is more
-  // room above), and follows it as the page scrolls or the field grows. It closes on a press
-  // elsewhere, which iOS doesn't blur the field for.
+  // room above, which a phone's keyboard takes), and follows it as the page scrolls, the keyboard
+  // shows or hides, or the field grows. It closes on a press elsewhere, which iOS doesn't blur the
+  // field for; a touch only once it lifts, so that a swipe scrolls the page without closing it.
   const put = () => {
     const el = popup.current;
     const b = box.current;
@@ -190,19 +191,33 @@ export function RepoPicker({
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(put);
     };
+    // A touch or a pen outside, until it lifts.
+    let touch: { id: number; x: number; y: number } | null = null;
     const outside = (e: PointerEvent) => {
       const target = e.target as Node;
       if (el.contains(target) || b.contains(target)) return;
-      hide();
+      if (e.pointerType === "touch" || e.pointerType === "pen")
+        touch = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      else hide();
     };
-    window.addEventListener("resize", follow);
-    window.addEventListener("scroll", follow, true);
+    // A tap closes the list; a swipe that scrolled the page leaves it open. The browser cancels a
+    // touch that scrolls, but not always on iOS, so one that moved isn't a tap either.
+    const lifted = (e: PointerEvent) => {
+      if (touch?.id !== e.pointerId) return;
+      const moved = Math.hypot(e.clientX - touch.x, e.clientY - touch.y);
+      touch = null;
+      if (e.type === "pointerup" && moved < 10) hide();
+    };
+    const unfollow = followViewport(follow);
     document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("pointerup", lifted, true);
+    document.addEventListener("pointercancel", lifted, true);
     return () => {
       cancelAnimationFrame(frame);
-      window.removeEventListener("resize", follow);
-      window.removeEventListener("scroll", follow, true);
+      unfollow();
       document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("pointerup", lifted, true);
+      document.removeEventListener("pointercancel", lifted, true);
     };
   }, [mounted]);
   // The list changes as people type and choose, and the field grows with what's chosen.

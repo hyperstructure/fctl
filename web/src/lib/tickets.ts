@@ -56,7 +56,7 @@ export function linearOutcome(o: LinearOutcome): { tone: "ok" | "warn" | "error"
     case "connected":
       return {
         tone: "ok",
-        text: "Linear is connected: fctl's app is installed in your Linear workspace. Choose the team this project works on.",
+        text: "Linear is connected: fctl's app is installed in your Linear workspace. Choose the teams this project works on.",
       };
     case "linked":
       return {
