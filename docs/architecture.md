@@ -649,7 +649,11 @@ it takes. The workspace's GitHub tab says where it is on each of the
 workspace's accounts (`GET /api/v1/workspaces/{id}/github/review-app`,
 `fctl workspaces review-app`): installed, missing some of the repositories
 the workspace's projects write to, which it names, or not installed
-(`fctl_domain::review_app::state`). Its admins get a link
+(`fctl_domain::review_app::state`). Where GitHub doesn't say, the control
+plane asks whether GitHub takes the app's key at all (`GET /app`): when
+fctl can't read `GITHUB_REVIEW_APP_PRIVATE_KEY` (`fctl_domain::private_key`)
+or GitHub refuses it, every review posts as the GitHub App, and the tab
+says why (`problem`). Its admins get a link
 (`/api/v1/github-review/install`) that goes on to GitHub to install it on
 the account, on the repositories the workspace connected there, or to its
 installation's settings where it's installed already, keeping the

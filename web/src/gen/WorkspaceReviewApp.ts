@@ -34,7 +34,8 @@ accounts: Array<ReviewAppAccount>,
 /**
  * Why fctl can't sign in to GitHub as the review app, so that every
  * review posts as the GitHub App and its accounts are `unknown`: its
- * private key isn't one fctl reads, or GitHub refuses it. For the
- * instance's admins to fix; absent from control planes before it.
+ * private key isn't one fctl reads, or GitHub refuses it. It names
+ * what the instance's admins fix, for everyone who sees the accounts;
+ * absent from control planes before it.
  */
 problem?: string, };

@@ -1013,7 +1013,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 && let Ok(r) = api.workspace_review_app(w.id.as_str()).await
                 && let Some(line) = reviews_post_as(&r)
             {
-                println!("{}", style::dim(&line));
+                println!("{}", style::dim(&style::terminal_safe(&line)));
             }
             if let Some(url) = &g.install_url {
                 println!(
