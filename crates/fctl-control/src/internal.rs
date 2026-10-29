@@ -86,6 +86,18 @@ pub struct ReviewFindings {
     pub shown: Option<fctl_proto::event::PassedOnReview>,
 }
 
+/// Someone passes on the findings of a review that fctl held back from the
+/// session's agent (`/pass-on`, from `api::sessions::pass_on`): its agent
+/// gets them in the message from fctl it would have got, and the reviews in
+/// a row count from this one, as after a person's message.
+#[derive(Serialize, Deserialize)]
+pub struct PassOn {
+    /// The review's session.
+    pub review: SessionId,
+    /// Who passes them on, whom the transcript names.
+    pub by: UserRef,
+}
+
 /// What came of [`ReviewFindings`].
 #[derive(Serialize, Deserialize)]
 pub struct FindingsTold {

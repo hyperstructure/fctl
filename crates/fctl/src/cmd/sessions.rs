@@ -347,18 +347,31 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
     let label = if prs.len() > 1 { "prs:" } else { "pr:" };
     prs.iter()
         .enumerate()
-        .map(|(i, pr)| {
+        .flat_map(|(i, pr)| {
             let repo = pr.repo.clone().or_else(|| pulls::repo_of(&pr.url));
             let name = repo.as_ref().map_or("", |r| r.name.as_str());
             let label = if i == 0 { label } else { "" };
             let state = pull_request_state(pr, now)
                 .map(|st| format!(" {st}"))
                 .unwrap_or_default();
-            format!(
+            let line = format!(
                 "{label:<10}{name}#{}{state} {}",
                 pr.number,
                 style::terminal_safe(&pr.url)
-            )
+            );
+            // Findings fctl held back from the agent wait for a person.
+            let held = pr
+                .checks
+                .as_ref()
+                .and_then(|c| c.review.as_ref()?.held_after)
+                .map(|n| {
+                    let hint = format!(
+                        "held back from the agent after {n} reviews in a row: fctl review pass-on {}#{} passes them on",
+                        s.project_slug, s.number
+                    );
+                    format!("{:<10}{}", "", style::amber(&hint))
+                });
+            std::iter::once(line).chain(held)
         })
         .collect()
 }
@@ -1132,6 +1145,21 @@ mod tests {
             pull_request_lines(&s, 0),
             [
                 "prs:      app#12 https://github.com/acme/app/pull/12",
+                "          lib#3 https://github.com/acme/lib/pull/3"
+            ]
+        );
+        // Findings fctl held back from the agent, under their pull request.
+        s.pull_requests[0].state = Some("open".into());
+        s.pull_requests[0].checks = serde_json::from_value(serde_json::json!({
+            "passed": 0, "failed": 0, "pending": 0, "at": 1,
+            "review": { "state": "commented", "findings": 2, "still_open": 0,
+              "session_id": "ses_2", "held_after": 5 }
+        }))?;
+        assert_eq!(
+            pull_request_lines(&s, 0),
+            [
+                "prs:      app#12 open, fctl's review agent found 2 issues https://github.com/acme/app/pull/12",
+                "          held back from the agent after 5 reviews in a row: fctl review pass-on app#1 passes them on",
                 "          lib#3 https://github.com/acme/lib/pull/3"
             ]
         );

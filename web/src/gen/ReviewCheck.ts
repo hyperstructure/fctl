@@ -39,4 +39,14 @@ url?: string,
  * /api/v1/projects/{id}/reviews`). Absent where the control plane
  * kept no record of the review, and from control planes before it.
  */
-project_id?: ProjectId, };
+project_id?: ProjectId, 
+/**
+ * Where fctl held its findings back from the agent of the session
+ * whose pull request this is, since that agent got the findings of
+ * this many reviews in a row with no message from a person in between
+ * (`fctl_domain::reviews::MAX_PASSED_ON`): only that session's pull
+ * requests say so, until a person messages its agent or passes the
+ * findings on (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`).
+ * Absent otherwise, and from control planes before it.
+ */
+held_after?: number, };

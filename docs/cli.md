@@ -570,9 +570,13 @@ they choose: their pull requests from the repository's branches get one
 by themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
-their threads. The project's owners turn them on (on their own
-subscription), take them over and say how they review; the person they
-run for may turn them off:
+their threads: those of up to five reviews in a row while nobody messages
+the agent. fctl holds the next ones back, and the session's page says so
+under the pull request, with a button that continues for five more
+rounds: the agent gets the held findings, then those of up to four more
+reviews in a row. A message to the agent ends the pause too. The project's owners
+turn them on (on their own subscription), take them over and say how
+they review; the person they run for may turn them off:
 
 ```sh
 fctl review settings -p my-app                 # on or off, on whose subscription, how
@@ -588,6 +592,7 @@ fctl review settings -p my-app --off           # reviews under way finish
 fctl review -p my-app                          # the reviews, newest first, with what came of each
 fctl review start -p my-app 12                 # review a pull request's head now (or acme/api#7, or its link)
 fctl review list -p my-app --limit 50          # more of them (20 unless --limit says)
+fctl review pass-on my-app#12                  # pass on the findings fctl held back from a session's agent
 ```
 
 Review sessions take no messages: `fctl show my-app#12` says which pull

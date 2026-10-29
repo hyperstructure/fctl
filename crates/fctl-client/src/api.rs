@@ -1011,6 +1011,18 @@ impl Api {
         .await
     }
 
+    /// Passes on to a session's agent the findings of `review` (its
+    /// session) that fctl held back from it (`ReviewCheck::held_after`):
+    /// the agent gets them, and those of the reviews after them, up to
+    /// `fctl_domain::reviews::MAX_PASSED_ON` in a row.
+    pub async fn pass_on_review(&self, session: &str, review: &str) -> Result<SendMessageResponse> {
+        self.post(
+            &format!("/sessions/{}/reviews/{}/pass-on", enc(session), enc(review)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     pub async fn stop(&self, session: &str) -> Result<Session> {
         self.post(
             &format!("/sessions/{}/stop", enc(session)),
