@@ -878,6 +878,7 @@ of.
 fctl admin users                           # with their other addresses, how many workspaces, when last active
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
+fctl admin invite grace@example.com --admin   # where you allowed her as a member by hand, after fctl admin disallow grace@example.com
 fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
 fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
@@ -893,8 +894,6 @@ fctl admin allowlist
 fctl admin allow ada@example.com           # also creates an invite link
 fctl admin allow '*@example.com'           # a whole domain
 fctl admin allow grace@example.com --admin
-# An admin's invitation to an address you allowed as a member by hand waits
-# until you remove that entry: fctl admin disallow grace@example.com
 fctl admin disallow '*@example.com'        # its addresses lose access (and accounts with no other)
 fctl admin reserved                        # the slugs held for later, which no new workspace or project takes
 fctl admin reserve home me                 # a name that makes one gets a random ending instead: home-829d34
