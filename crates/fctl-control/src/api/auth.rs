@@ -152,8 +152,9 @@ pub async fn invite_preview(ctx: &Ctx, token: &str) -> AppResult<Response> {
     let workspaces: Vec<crate::workspaces::InvitationRow> = q(
         &ctx.db,
         &format!(
-            "{} WHERE i.email = ? AND i.expires_at > ? ORDER BY i.created_at",
-            crate::workspaces::INVITATION_SELECT
+            "{} WHERE i.email = ? AND i.expires_at > ?{} ORDER BY i.created_at",
+            crate::workspaces::INVITATION_SELECT,
+            crate::workspaces::INVITER_STILL_ADMIN
         ),
         &[s(&invite.email), n(ctx.now)],
     )?
