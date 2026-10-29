@@ -82,7 +82,7 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
     setDraft(project.settings.tickets ?? {});
   }
   const tracker = draft.tracker ?? "github";
-  const dirty = JSON.stringify(normalized(draft)) !== JSON.stringify(normalized(saved));
+  const dirty = JSON.stringify(comparable(draft)) !== JSON.stringify(comparable(saved));
   const save = useMutation({
     mutationFn: () =>
       api.updateProject(project.id, { settings: { ...project.settings, tickets: normalized(draft) } }),
@@ -210,6 +210,14 @@ function normalized(t: G.Tickets): G.Tickets {
       explore_label: l.explore_label,
     };
   }
+  return out;
+}
+
+/** A draft as it compares with what is stored: which team comes first counts, the order of the others doesn't. */
+function comparable(t: G.Tickets): G.Tickets {
+  const out = normalized(t);
+  if (out.linear?.more_teams)
+    out.linear.more_teams = [...out.linear.more_teams].sort((a, b) => a.team.localeCompare(b.team));
   return out;
 }
 
@@ -839,10 +847,17 @@ function LinearTeams({
     setSaid(`${teamName(c, info(c))} taken off: its tickets start no sessions here once you save.`);
   };
   const undo = (c: G.LinearTeamChoice) => {
-    // Back in its place, as far as the list allows.
-    const at = saved.findIndex((x) => x.team === c.team);
+    // Back in its place as saved: after the last team that came before it there, else before the first
+    // that came after it, so that undoing every change, in any order, gives the saved list again.
+    const rank = (team: string) => {
+      const i = saved.findIndex((x) => x.team === team);
+      return i < 0 ? saved.length : i;
+    };
+    const mine = rank(c.team);
+    const before = chosen.findLastIndex((x) => rank(x.team) < mine);
+    const after = chosen.findIndex((x) => rank(x.team) > mine);
     const next = [...chosen];
-    next.splice(at < 0 ? next.length : Math.min(at, next.length), 0, c);
+    next.splice(before >= 0 ? before + 1 : after >= 0 ? after : next.length, 0, c);
     onChange(next);
     setSaid(`${teamName(c, info(c))} is back.`);
   };

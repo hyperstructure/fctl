@@ -88,6 +88,22 @@ const engineering: G.LinearTeam = {
   done_state: "Shipped",
   projects: [{ id: WEBSITE, name: "Website" }],
 };
+const PLATFORM = "8b2a4c6e-2222-4d3f-8e1a-1c3e5a7b9d40";
+const platform: G.LinearTeam = {
+  id: PLATFORM,
+  key: "PLT",
+  name: "Platform",
+  states: [],
+  projects: [],
+};
+/** Engineering's, Design's and Platform's tickets. */
+const three: G.LinearTickets = {
+  ...linear,
+  more_teams: [
+    { team: DESIGN, team_key: "DES", team_name: "Design" },
+    { team: PLATFORM, team_key: "PLT", team_name: "Platform" },
+  ],
+};
 const design: G.LinearTeam = {
   id: DESIGN,
   key: "DES",
@@ -443,6 +459,38 @@ describe("the Tickets tab", () => {
     expect(rows(c)).toEqual(["Engineering ENG", "Design DES"]);
     expect(combobox(c, "Issues of Design")?.textContent).toContain("Only Posters");
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Take Design off");
+  });
+
+  it("comes back to the saved teams when every change is undone, in any order", () => {
+    const c = tab(linearProject(three), { status: linearStatus, teams: [engineering, design, platform] });
+    for (const order of [
+      ["Engineering", "Design"],
+      ["Design", "Engineering"],
+    ]) {
+      act(() => button(c, "Take Engineering off")?.click());
+      act(() => button(c, "Take Design off")?.click());
+      expect(c.textContent).toContain("Save");
+      for (const name of order) {
+        const row = [...c.querySelectorAll('ul[aria-label="Teams"] > li')].find((li) =>
+          li.textContent?.startsWith(name),
+        );
+        act(() => row?.querySelector<HTMLButtonElement>("[data-row-action]")?.click());
+      }
+      expect(rows(c)).toEqual(["Engineering ENG", "Design DES", "Platform PLT"]);
+      expect(c.textContent).not.toContain("Save");
+    }
+  });
+
+  it("counts only which team comes first, not the order of the others", async () => {
+    const c = tab(linearProject(three), { status: linearStatus, teams: [engineering, design, platform] });
+    pick(c, "Team agents file new tickets in", "Platform");
+    expect(rows(c)).toEqual(["Platform PLT", "Engineering ENG", "Design DES"]);
+    expect(c.textContent).toContain("Save");
+    // Once the list has closed.
+    await act(() => new Promise((done) => setTimeout(done, 500)));
+    pick(c, "Team agents file new tickets in", "Engineering");
+    expect(rows(c)).toEqual(["Engineering ENG", "Platform PLT", "Design DES"]);
+    expect(c.textContent).not.toContain("Save");
   });
 
   it("asks for a team before it saves one taken off as the only one", () => {

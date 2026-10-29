@@ -301,7 +301,7 @@ function OnceConnected() {
   const steps: { icon: ReactNode; text: ReactNode }[] = [
     {
       icon: <Ticket />,
-      text: "Each project chooses the Linear team it takes tickets from, in its Tickets tab.",
+      text: "Each project chooses the Linear teams it takes tickets from, in its Tickets tab.",
     },
     {
       icon: <Link2 />,

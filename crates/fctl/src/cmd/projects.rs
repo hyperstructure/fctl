@@ -1739,12 +1739,6 @@ fn linear_project(
             .map(|x| Some(x.id.clone()))
             .with_context(|| format!("{} has no open project called {name}", team.key))
     };
-    if let Some((i, name)) = named {
-        return Ok((vec![i], find(i, name)?));
-    }
-    if arg.eq_ignore_ascii_case("all") {
-        return Ok(((0..chosen.len()).collect(), None));
-    }
     let having: Vec<usize> = (0..chosen.len())
         .filter(|&i| {
             chosen[i]
@@ -1753,7 +1747,29 @@ fn linear_project(
                 .any(|x| x.name.eq_ignore_ascii_case(arg))
         })
         .collect();
-    match having.as_slice() {
+    if let Some((i, name)) = named {
+        return match find(i, name) {
+            Ok(found) => Ok((vec![i], found)),
+            // A project's own name may hold a key and a colon ("ENG: Q3").
+            Err(_) if !having.is_empty() => linear_project_named(chosen, &having, arg, &find),
+            Err(e) => Err(e),
+        };
+    }
+    if arg.eq_ignore_ascii_case("all") {
+        return Ok(((0..chosen.len()).collect(), None));
+    }
+    linear_project_named(chosen, &having, arg, &find)
+}
+
+/// The team of `chosen` that has an open Linear project called `arg`, of
+/// those `having` one, and that project.
+fn linear_project_named(
+    chosen: &[&fctl_proto::tickets::LinearTeam],
+    having: &[usize],
+    arg: &str,
+    find: &dyn Fn(usize, &str) -> Result<Option<String>>,
+) -> Result<(Vec<usize>, Option<String>)> {
+    match having {
         [i] => Ok((vec![*i], find(*i, arg)?)),
         [] if chosen.len() == 1 => Ok((vec![0], find(0, arg)?)),
         [] => bail!("none of the project's teams has an open project called {arg}"),
@@ -2152,6 +2168,13 @@ mod tests {
         assert!(said("Mobile").is_err_and(|e| e.contains("none of the project's teams")));
         assert!(
             said("DES:Mobile").is_err_and(|e| e.contains("DES has no open project called Mobile"))
+        );
+        // A project whose own name holds a team's key and a colon.
+        let q3 = team("t3", "OPS", "Operations", &[("p4", "ENG: Q3")]);
+        let with_q3 = [&eng, &q3];
+        assert_eq!(
+            linear_project(&with_q3, "ENG: Q3").map_err(|e| e.to_string()),
+            Ok((vec![1], Some("p4".into())))
         );
         // With one team, as it always was: a project of it, or all of it.
         let one = [&eng];
