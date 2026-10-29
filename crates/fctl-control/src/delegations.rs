@@ -272,7 +272,15 @@ pub async fn prompted(
         .creator_id
         .as_deref()
         .or(session.creator.as_ref().map(|c| c.id.as_str()));
-    let Some(t) = thread(db, &session.id).await? else {
+    let t = thread(db, &session.id).await?;
+    // Only a thread of the Linear workspace the delivery comes from: one of
+    // another's is never this delivery's to move on.
+    if t.as_ref()
+        .is_some_and(|t| t.organization_id != e.organization_id)
+    {
+        return Ok(());
+    }
+    let Some(t) = t else {
         // A session fctl never heard begin (its webhook was off, or it went
         // with its fctl session): as new, when whoever made it says so.
         if session.issue.is_some() && replier.is_some() && replier == creator {

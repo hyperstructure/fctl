@@ -619,10 +619,12 @@ function LinearChoice({
   error: Error | null;
 }) {
   const workspace = project.workspace?.id ?? "";
+  // The teams to choose from, for those who choose: the workspace's admins
+  // and the project's maintainers. Others see the choice as it was saved.
   const teams = useQuery({
     queryKey: keys.linearTeams(workspace, connection.organization),
     queryFn: () => workspaces.linearTeams(workspace, connection.organization),
-    enabled: connection.status === "active",
+    enabled: connection.status === "active" && !disabled,
     staleTime: 60_000,
   });
   const current = draft.linear?.organization === connection.organization ? draft.linear : undefined;
@@ -654,7 +656,7 @@ function LinearChoice({
     teamOptions.push({
       value: current.team,
       label: current.team_name,
-      description: "fctl's app no longer reaches it",
+      description: teams.data ? "fctl's app no longer reaches it" : undefined,
     });
   const projectOptions: SelectOption[] = [
     { value: ALL, label: team ? `Every issue of ${team.name}` : "Every issue of the team" },
@@ -664,6 +666,12 @@ function LinearChoice({
       description: "Only this project's issues",
     })),
   ];
+  if (current?.project && current.project_name && !team?.projects.some((p) => p.id === current.project))
+    projectOptions.push({
+      value: current.project,
+      label: current.project_name,
+      description: "Only this project's issues",
+    });
   const label = current?.explore_label ?? DEFAULT_EXPLORE;
   const err = (f: string) => fieldError(error, f);
   return (
@@ -671,7 +679,7 @@ function LinearChoice({
       <div className="grid items-start gap-4 sm:grid-cols-2">
         <Field label="Team" error={err("settings.tickets.linear.team") ?? err("settings.tickets.linear")}>
           {(id) =>
-            teams.isPending && connection.status === "active" ? (
+            teams.isLoading ? (
               <Skeleton className="h-9.5" />
             ) : (
               <Select
