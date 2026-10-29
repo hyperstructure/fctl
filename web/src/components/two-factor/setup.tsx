@@ -13,6 +13,9 @@ import { CODE_LENGTH, groupKey, touchDevice } from "@/lib/two-factor";
 import { QrCode } from "./qr-code";
 import { RecoveryCodes } from "./recovery-codes";
 
+/** The fields whose errors the form shows beside them; others (a sign-in that's too old) show as a banner. */
+const INLINE = ["code", "password", "setup"];
+
 const APPS =
   "Any authenticator app works: 1Password, Google Authenticator, Microsoft Authenticator, Authy, or the passwords app on your phone.";
 
@@ -279,7 +282,7 @@ function Scan({
             )}
           </Field>
         )}
-        {error && !error.field && <Banner tone="error">{error.message}</Banner>}
+        {error && !INLINE.includes(error.field ?? "") && <Banner tone="error">{error.message}</Banner>}
         <div className="flex items-center gap-2">
           <Button
             type="submit"
