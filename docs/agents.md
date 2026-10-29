@@ -439,8 +439,9 @@ fctl schedules runs "Weekly dependencies" -p my-app
 1. A workspace admin who administers the Linear workspace connects it: `fctl
    workspaces linear connect` (opens Linear, where they install fctl's app
    and choose the teams it sees).
-2. A project maintainer chooses the team: `fctl workspaces linear teams`,
-   then `fctl projects set -p my-app --tickets linear --linear-team ENG`
+2. A project maintainer chooses the team: `fctl workspaces linear teams`
+   (which lists them for the workspace's admins and its projects'
+   maintainers alone), then `fctl projects set -p my-app --tickets linear --linear-team ENG`
    (`--linear-project "Mobile app"` for one Linear project of it).
 3. Each person links their Linear account once: `fctl account linear
    connect`.

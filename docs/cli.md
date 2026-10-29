@@ -251,9 +251,9 @@ fctl workspaces connect acme --repo web --repo design   # only these repositorie
 fctl workspaces connect --no-browser       # print the link to open where you are signed in (linear connect takes it too)
 fctl workspaces disconnect acme
 
-fctl workspaces linear                     # the Linear workspaces it works in, and which projects take their tickets
+fctl workspaces linear                     # the Linear workspaces it works in, and which of your projects take their tickets
 fctl workspaces linear connect             # opens Linear, where one of its admins installs fctl's app
-fctl workspaces linear teams               # the teams fctl's app reaches there, for projects to choose
+fctl workspaces linear teams               # the teams fctl's app reaches there, for projects to choose (its admins and projects' maintainers)
 fctl workspaces linear disconnect acme     # its projects take no more tickets from it
 
 fctl workspaces audit                      # what happened in it (admins)
@@ -405,7 +405,7 @@ fctl projects tickets -p my-app                # its tracker, how agents reach i
 fctl projects set -p my-app --tickets github   # the issues of every repository its agents write to
 fctl projects set -p my-app --tickets github --tickets-repo my-org/my-app   # one of them only
 fctl projects set -p my-app --tickets none     # no tracker at all, GitHub's issues included
-fctl workspaces linear teams                   # the Linear teams fctl's app reaches
+fctl workspaces linear teams                   # the Linear teams fctl's app reaches (maintainers and the workspace's admins)
 fctl projects set -p my-app --tickets linear --linear-team ENG
 fctl projects set -p my-app --linear-project "Mobile app"   # only that Linear project's issues ("all": the team's)
 fctl projects set -p my-app --linear-start off # tickets stay in their state as their sessions start
