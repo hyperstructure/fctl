@@ -30,4 +30,12 @@ github_app?: GithubAppRef,
  * Where the review app is, on each account the workspace works in, in
  * the order it connected them. Empty without a review app.
  */
-accounts: Array<ReviewAppAccount>, };
+accounts: Array<ReviewAppAccount>, 
+/**
+ * Why fctl can't sign in to GitHub as the review app, so that every
+ * review posts as the GitHub App and its accounts are `unknown`: its
+ * private key isn't one fctl reads, or GitHub refuses it. It names
+ * what the instance's admins fix, for everyone who sees the accounts;
+ * absent from control planes before it.
+ */
+problem?: string, };

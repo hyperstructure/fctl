@@ -60,6 +60,16 @@ test("GitHub's PKCS#1 keys become PKCS#8", () => {
   const pkcs8 = githubKey(pkcs1);
   assert.match(pkcs8, /^-----BEGIN PRIVATE KEY-----\n/);
   assert.equal(githubKey(pkcs1.trim().replaceAll("\n", "\\n")), pkcs8);
+  // Pasted on one line, its line breaks turned into spaces, dropped or written
+  // as `\r\n`; in quotes, as an env file keeps them, or after other text; or
+  // the base64 alone: as the Worker reads it.
+  assert.equal(githubKey(pkcs1.trim().replaceAll("\n", " ")), pkcs8);
+  assert.equal(githubKey(pkcs8.trim().replaceAll("\n", "")), pkcs8);
+  assert.equal(githubKey(`"${pkcs8.trim().replaceAll("\n", "\\r\\n")}"`), pkcs8);
+  assert.equal(githubKey(`key: ${pkcs8}`), pkcs8);
+  const base64 = pkcs8.split("\n").filter((l) => l && !l.startsWith("-----"));
+  assert.equal(githubKey(base64.join("\n")), pkcs8);
+  assert.throws(() => githubKey("-----BEGIN PRIVATE KEY-----"), ConfigError);
   assert.throws(() => githubKey("not a key"), ConfigError);
   // The review app's too, which an error names.
   const { vars } = readConfig({

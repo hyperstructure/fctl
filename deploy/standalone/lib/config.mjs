@@ -98,16 +98,30 @@ function trustProxy(raw) {
 /**
  * A GitHub App's private key as PKCS#8 PEM, which is what WebCrypto
  * imports. GitHub hands out PKCS#1 (`BEGIN RSA PRIVATE KEY`); a key pasted
- * into one line with `\n` for its line breaks works too. `name`: the
- * variable it came from, which an error names.
+ * into one line works too, as the Worker reads it (`fctl_domain::private_key`).
+ * `name`: the variable it came from, which an error names.
  */
 export function githubKey(pem, name = "GITHUB_APP_PRIVATE_KEY") {
-  const text = pem.includes("\n") ? pem : pem.replaceAll("\\n", "\n");
   try {
-    return createPrivateKey(text).export({ type: "pkcs8", format: "pem" });
+    return createPrivateKey(armored(pem)).export({ type: "pkcs8", format: "pem" });
   } catch {
     throw new ConfigError(`${name} is not a PEM private key`);
   }
+}
+
+/**
+ * A PEM key in lines, as OpenSSL reads it, however it came: on one line, its
+ * line breaks turned into spaces, dropped or written as `\n` (or `\r\n`), in
+ * quotes, after other text, or the base64 alone, which is PKCS#8's.
+ */
+function armored(pem) {
+  const m = /-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/.exec(pem);
+  if (!m && pem.includes("-----")) return pem;
+  const [label, body] = m ? [m[1], m[2]] : ["PRIVATE KEY", pem];
+  // Base64 has no backslash: one is a line break written as `\n`.
+  const base64 = body.replace(/\\[rn]/g, "").replace(/\s+/g, "");
+  const lines = base64.match(/.{1,64}/g) ?? [];
+  return [`-----BEGIN ${label}-----`, ...lines, `-----END ${label}-----`, ""].join("\n");
 }
 
 /**

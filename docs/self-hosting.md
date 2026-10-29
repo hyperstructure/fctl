@@ -395,9 +395,11 @@ installed on that are connected to the workspace.
    ```
 
 The key is stored as PKCS#8, which WebCrypto imports (`cargo xtask secrets`
-and the server convert it); it never reaches a host or a sandbox. Without
-the client secret, a workspace keeps the accounts it has but can't connect
-a new one, and its GitHub tab says so.
+and the server convert it); it never reaches a host or a sandbox. fctl
+reads it also on one line, as a form can store it, its line breaks turned
+into spaces, dropped or written as `\n`. Without the client secret, a
+workspace keeps the accounts it has but can't connect a new one, and its
+GitHub tab says so.
 
 ### Pull request state and checks
 
@@ -603,7 +605,10 @@ or doesn't reach a repository, reviews post as the GitHub App, as before.
    its accounts, and its admins install the review app there from the tab,
    on the repositories the workspace connected (`fctl workspaces
    review-app` prints the links); a project's **Reviews** tab says which
-   app its reviews post as.
+   app its reviews post as. When fctl can't sign in to GitHub as the
+   review app, because it can't read `GITHUB_REVIEW_APP_PRIVATE_KEY` or
+   GitHub refuses the key, every review posts as the GitHub App, and the
+   **GitHub** tab says why.
 
 Which app writes a review is settled as the review starts, since only the
 app that created a check may change it: a review that started before the

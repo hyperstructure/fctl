@@ -1014,7 +1014,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 && let Ok(r) = api.workspace_review_app(w.id.as_str()).await
                 && let Some(line) = reviews_post_as(&r)
             {
-                println!("{}", style::dim(&line));
+                println!("{}", style::dim(&style::terminal_safe(&line)));
             }
             if let Some(url) = &g.install_url {
                 println!(
@@ -1054,6 +1054,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 "Review agents post their reviews as {} where it's installed, apart from what agents write as {github_app}; elsewhere as {github_app}.",
                 style::bold(app)
             );
+            if let Some(problem) = &r.problem {
+                println!("{}", style::amber(&style::terminal_safe(problem)));
+            }
             if r.accounts.is_empty() {
                 println!(
                     "{} works in no GitHub account yet. Connect one with `fctl workspaces connect`.",
@@ -1063,7 +1066,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             println!();
             for a in &r.accounts {
-                let (posts, state) = review_app_state(a, app, github_app);
+                let (posts, state) = review_app_state(a, app, github_app, r.problem.is_some());
                 println!("{:<24} {:<14} {}", style::bold(&a.account), posts, state);
             }
             for a in &r.accounts {
@@ -1504,6 +1507,9 @@ async fn linear(api: &Api, w: &Workspace, cmd: LinearCmd, json: bool) -> Result<
 /// `None` without a review app.
 fn reviews_post_as(r: &WorkspaceReviewApp) -> Option<String> {
     let app = r.app.as_ref().filter(|_| r.configured)?.slug.as_str();
+    if let Some(problem) = &r.problem {
+        return Some(problem.clone());
+    }
     let github_app = r
         .github_app
         .as_ref()
@@ -1533,8 +1539,14 @@ fn reviews_post_as(r: &WorkspaceReviewApp) -> Option<String> {
 }
 
 /// Which app posts the reviews on an account, and how the review app
-/// stands there, for `fctl workspaces review-app`.
-fn review_app_state(a: &ReviewAppAccount, app: &str, github_app: &str) -> (String, String) {
+/// stands there, for `fctl workspaces review-app`; `unusable` when fctl
+/// can't sign in to GitHub as the review app (`WorkspaceReviewApp::problem`).
+fn review_app_state(
+    a: &ReviewAppAccount,
+    app: &str,
+    github_app: &str,
+    unusable: bool,
+) -> (String, String) {
     match a.state {
         ReviewAppState::Installed => (app.to_owned(), style::accent("installed")),
         ReviewAppState::Partly => (
@@ -1547,6 +1559,10 @@ fn review_app_state(a: &ReviewAppAccount, app: &str, github_app: &str) -> (Strin
         ReviewAppState::NotInstalled => (
             github_app.to_owned(),
             style::dim(&format!("{app} isn't installed there")),
+        ),
+        ReviewAppState::Unknown if unusable => (
+            github_app.to_owned(),
+            style::dim(&format!("fctl can't tell whether {app} is installed there")),
         ),
         ReviewAppState::Unknown => (
             "?".to_owned(),
@@ -1580,6 +1596,7 @@ mod tests {
                     install_url: None,
                 })
                 .collect(),
+            problem: None,
         }
     }
 
@@ -1614,5 +1631,24 @@ mod tests {
             ..review_app(&[])
         };
         assert_eq!(reviews_post_as(&none), None);
+        // fctl can't sign in as the review app: why, rather than where.
+        let problem = "fctl can't sign in to GitHub as fctl-review, so every review posts as fctl-sh: GitHub refused the key in GITHUB_REVIEW_APP_PRIVATE_KEY (A JSON web token could not be decoded).";
+        let unusable = WorkspaceReviewApp {
+            problem: Some(problem.into()),
+            ..review_app(&[("acme", Unknown)])
+        };
+        assert_eq!(reviews_post_as(&unusable).as_deref(), Some(problem));
+    }
+
+    #[test]
+    fn an_account_says_why_nobody_knows_where_the_review_app_is() {
+        let a = &review_app(&[("acme", ReviewAppState::Unknown)]).accounts[0];
+        let (posts, state) = review_app_state(a, "fctl-review", "fctl-sh", false);
+        assert_eq!(posts, "?");
+        assert!(state.contains("GitHub didn't say whether fctl-review is installed there"));
+        // Every review posts as the GitHub App while fctl can't sign in as it.
+        let (posts, state) = review_app_state(a, "fctl-review", "fctl-sh", true);
+        assert_eq!(posts, "fctl-sh");
+        assert!(state.contains("fctl can't tell whether fctl-review is installed there"));
     }
 }
