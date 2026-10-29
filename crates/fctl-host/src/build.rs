@@ -49,9 +49,15 @@ pub enum Recipe {
 /// fctl leaves out of a dev container configuration, for the log.
 pub fn recipe(setting: &ImageBuild, file: &[u8]) -> Result<(Recipe, Vec<String>)> {
     if !setting.is_devcontainer() {
+        // In the repository, as the control plane checked them
+        // (`fctl_domain::validate::image_build`) and as a dev container's
+        // are: whatever a control plane sends, the build reads nothing of
+        // the host's.
         let recipe = Recipe::Build {
-            dockerfile: setting.file.clone(),
-            context: setting.context.clone().unwrap_or_default(),
+            dockerfile: join("", &setting.file)
+                .with_context(|| format!("The project's Dockerfile, {}", setting.file))?,
+            context: join("", setting.context.as_deref().unwrap_or_default())
+                .with_context(|| "The directory the project's image builds in")?,
             args: BTreeMap::new(),
             target: None,
         };
@@ -867,6 +873,17 @@ mod tests {
         let (r, _) = recipe(&setting("Dockerfile", Some("app")), b"FROM x")?;
         assert_eq!(r, build("Dockerfile", "app"));
         Ok(())
+    }
+
+    #[test]
+    fn a_dockerfile_and_its_context_stay_in_the_repository() {
+        assert!(recipe(&setting("../Dockerfile", None), b"FROM x").is_err());
+        assert!(recipe(&setting("Dockerfile", Some("../..")), b"FROM x").is_err());
+        assert!(recipe(&setting("Dockerfile", Some("app/../../home")), b"FROM x").is_err());
+        assert!(matches!(
+            recipe(&setting("Dockerfile", Some("app/../web")), b"FROM x"),
+            Ok((r, _)) if r == build("Dockerfile", "web")
+        ));
     }
 
     #[test]

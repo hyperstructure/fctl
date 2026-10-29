@@ -12,7 +12,7 @@
 // so that whatever runs it starts it again.
 
 import { execFile, spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -111,7 +111,10 @@ async function main() {
   const cfg = readConfig(process.env);
   const state = join(cfg.dataDir, "state");
   try {
-    mkdirSync(state, { recursive: true });
+    // Its own alone: D1 and every Durable Object, with password hashes,
+    // encrypted credentials and transcripts, are SQLite files in it, which
+    // other users of the machine have no business reading.
+    mkdirSync(state, { recursive: true, mode: 0o700 });
   } catch (e) {
     if (e.code !== "EACCES" && e.code !== "EROFS" && e.code !== "EPERM") throw e;
     // A directory from the host, mounted at /data, keeps the host's owner.
@@ -119,6 +122,11 @@ async function main() {
       `Can't write to ${cfg.dataDir} (${e.code}): make it writable for user ${process.getuid?.() ?? "?"}, which runs this server`,
     );
   }
+
+  // One an older server made: as far as this user may change it.
+  try {
+    chmodSync(state, 0o700);
+  } catch {}
 
   const lock = await acquire(cfg.dataDir, {
     log,
