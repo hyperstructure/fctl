@@ -53,7 +53,7 @@ import {
   modelLabel,
 } from "@/lib/models";
 import { keys, queryClient, useMe } from "@/lib/queries";
-import { postedAsGithubApp, postsAllAs, postsAs } from "@/lib/review-app";
+import { accountOf, postedAsGithubApp, postsAllAs, postsAs } from "@/lib/review-app";
 import { botView, sameBots } from "@/lib/review-bots";
 import {
   canAskForReview,
@@ -178,9 +178,10 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
     toast("Review agents are on: the next commit of each pull request gets a review"),
   );
   const repos = agents.repos.length > 0 ? repoList(agents.repos) : "this project's repositories";
-  // The app the reviews would post as, where one posts them all (of those whose app is known).
+  // The app the reviews would post as, where one posts them all: of those in accounts the workspace
+  // works in, and none where GitHub didn't say.
   const reviewApp = useReviewApp(project.workspace?.id).data;
-  const known = reviewApp ? agents.repos.filter((repo) => postsAs(reviewApp, repo) !== undefined) : [];
+  const known = reviewApp ? agents.repos.filter((repo) => accountOf(reviewApp, repo.owner)) : [];
   const all = reviewApp?.configured && known.length > 0 ? postsAllAs(reviewApp, known) : undefined;
   const poster = all === "review" ? reviewApp?.app : all === "github" ? reviewApp?.github_app : undefined;
   return (
@@ -500,10 +501,11 @@ function PostedAs({ project, agents }: { project: G.Project; agents: G.ReviewAge
   const r = q.data;
   if (!r?.configured || !r.app || !r.github_app) return null;
   const { app, github_app: ours } = r;
-  // Those whose app is known: not where GitHub didn't say, nor in accounts the workspace no longer
-  // works in, which get no reviews.
-  const repos = agents.repos.filter((repo) => postsAs(r, repo) !== undefined);
+  // Not those of accounts the workspace no longer works in, which get no reviews.
+  const repos = agents.repos.filter((repo) => accountOf(r, repo.owner));
   if (repos.length === 0) return null;
+  // Where GitHub didn't say for some, nothing is said of all of them.
+  const unsure = repos.some((repo) => postsAs(r, repo) === undefined);
   const all = postsAllAs(r, repos);
   const elsewhere = postedAsGithubApp(r, repos);
   if (all !== "review" && elsewhere.repos.length === 0) return null;
@@ -515,12 +517,21 @@ function PostedAs({ project, agents }: { project: G.Project; agents: G.ReviewAge
   const accounts = someNames(elsewhere.accounts.map((a) => a.account));
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5 border-t border-line px-5 py-3 text-[13px] leading-relaxed text-ink-3">
-      <AppAvatar app={all === "github" ? ours : app} size={18} />
+      <AppAvatar app={all === "github" || unsure ? ours : app} size={18} />
       <p className="min-w-0 flex-1 basis-64">
         {all === "review" ? (
           <>
             On GitHub they post as <span className="font-medium text-ink-2">{app.slug}</span>, apart from what
             your agents write as {ours.slug}.
+          </>
+        ) : unsure ? (
+          <>
+            On GitHub, reviews in {repoList(elsewhere.repos)} post as{" "}
+            <span className="font-medium text-ink-2">{ours.slug}</span>
+            {uninstalled
+              ? `: ${app.slug} isn't installed on ${accounts}`
+              : `, which ${app.slug} doesn't reach`}
+            .
           </>
         ) : all === "github" ? (
           <>

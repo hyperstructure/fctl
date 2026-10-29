@@ -1355,8 +1355,10 @@ impl<'a> Writer<'a> {
                     );
                 }
                 // Anything else may pass, a secondary rate limit say, and the
-                // GitHub App couldn't change the review app's check: the
-                // caller tries again.
+                // GitHub App couldn't change the review app's check: the step
+                // fails. The agent submits its review again, and a review
+                // that ended stays under way for the hourly job to end it
+                // (`ended`, `sweep`).
                 Err((status, msg)) => {
                     return Err(crate::error::unavailable(&format!(
                         "GitHub refused {}'s token ({status}): {msg}",
@@ -1510,7 +1512,7 @@ async fn look_again(env: &Env, cfg: &Config, db: &D1Database, repo: &RepoRef, nu
 
 /// A review session stopped or failed before its agent posted a review:
 /// the review ended that way, and its check says why. From SessionObject,
-/// and the hourly job for those it missed.
+/// and the hourly job for those it missed or whose check it couldn't end.
 pub async fn ended(
     env: &Env,
     session_id: &str,
@@ -1534,6 +1536,37 @@ pub async fn ended(
             "The review session ended before its agent posted a review.".to_owned(),
         )
     };
+    // Its check first, then how it went: a check that couldn't be ended
+    // (GitHub gave no token, or no answer) leaves the review under way, for
+    // the hourly job to end it again (`sweep`). One GitHub refused stays as
+    // it is.
+    let Some(row) = of_session(&db, session_id).await? else {
+        return Ok(());
+    };
+    if row.state != "running" {
+        return Ok(());
+    }
+    let mut checked = None;
+    if let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) {
+        let (repo, writer) = Writer::of(&cfg, &row).await?;
+        let url = cfg.url(&format!("/s/{session_id}"));
+        let r = writer
+            .gh
+            .update_check(
+                &writer.token,
+                &repo,
+                check,
+                rv::check_ended(state, &why, &url),
+            )
+            .await;
+        writer.revoke().await;
+        match r {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => worker::console_error!("ending a review's check: {why}"),
+            Err(e) => return Err(e),
+        }
+        checked = Some(repo);
+    }
     let changed = q(
         &db,
         "UPDATE reviews SET state = ?, reason = ?, finished_at = ? WHERE session_id = ? AND state = 'running'",
@@ -1541,36 +1574,17 @@ pub async fn ended(
     )?
     .run()
     .await?;
-    if changed == 0 {
-        return Ok(());
+    if changed > 0
+        && let Some(repo) = checked
+    {
+        look_again(env, &cfg, &db, &repo, row.number()).await;
     }
-    let Some(row) = of_session(&db, session_id).await? else {
-        return Ok(());
-    };
-    let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) else {
-        return Ok(());
-    };
-    let (repo, writer) = Writer::of(&cfg, &row).await?;
-    let url = cfg.url(&format!("/s/{session_id}"));
-    let r = writer
-        .gh
-        .update_check(
-            &writer.token,
-            &repo,
-            check,
-            rv::check_ended(state, &why, &url),
-        )
-        .await;
-    writer.revoke().await;
-    if let Ok(Err(why)) = r {
-        worker::console_error!("ending a review's check: {why}");
-    }
-    look_again(env, &cfg, &db, &repo, row.number()).await;
     Ok(())
 }
 
 /// Reviews still under way whose sessions ended without SessionObject
-/// saying so (an error, a deploy in between): from the hourly job.
+/// saying so (an error, a deploy in between), or whose checks GitHub
+/// couldn't be asked to end then: from the hourly job.
 pub async fn sweep(env: &Env, db: &D1Database) -> AppResult<usize> {
     #[derive(Deserialize)]
     struct Ended {
@@ -1644,7 +1658,18 @@ pub async fn cancel_project(ctx: &Ctx, project_id: &str) {
             let Some(check) = row.check_run_id.and_then(|c| u64::try_from(c).ok()) else {
                 continue;
             };
-            let (repo, writer) = Writer::of(&cfg, &row).await?;
+            // Nothing tries again: the reviews go with the project.
+            let (repo, writer) = match Writer::of(&cfg, &row).await {
+                Ok(w) => w,
+                Err(e) => {
+                    worker::console_error!(
+                        "ending review {}'s check: {}",
+                        row.session_id,
+                        e.0.message
+                    );
+                    continue;
+                }
+            };
             let url = cfg.url(&format!("/s/{}", row.session_id));
             let body = rv::check_ended(
                 ReviewState::Stopped,

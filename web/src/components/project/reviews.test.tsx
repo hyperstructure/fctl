@@ -287,6 +287,36 @@ describe("the app reviews post as on GitHub", () => {
     );
   });
 
+  it("claims nothing of all of them where GitHub didn't say for some", async () => {
+    const hooli = { owner: "hooli", name: "web" };
+    state.agents = { ...state.agents, repos: [repo("web"), hooli] };
+    queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
+      ...reviewApp({}),
+      accounts: [
+        { account: "acme", state: "installed", unreached: [] },
+        { account: "hooli", state: "unknown", unreached: [] },
+      ],
+    });
+    const c = await render(inWorkspace);
+    expect(line(c)).toBeUndefined();
+  });
+
+  it("names those that post as the GitHub App alone where GitHub didn't say for others", async () => {
+    const hooli = { owner: "hooli", name: "web" };
+    state.agents = { ...state.agents, repos: [repo("web"), hooli] };
+    queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
+      ...reviewApp({ state: "not_installed" }),
+      accounts: [
+        { account: "acme", state: "not_installed", unreached: [] },
+        { account: "hooli", state: "unknown", unreached: [] },
+      ],
+    });
+    const c = await render(inWorkspace);
+    expect(line(c)).toBe(
+      "On GitHub, reviews in acme/web post as fctl-sh: fctl-review isn't installed on acme.",
+    );
+  });
+
   it("isn't said without a review app", async () => {
     queryClient.setQueryData(keys.workspaceReviewApp("wsp_1"), {
       configured: false,
