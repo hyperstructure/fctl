@@ -69,7 +69,10 @@ test("GitHub's PKCS#1 keys become PKCS#8", () => {
   });
   assert.equal(vars.GITHUB_REVIEW_APP_PRIVATE_KEY, pkcs8);
   assert.deepEqual([vars.GITHUB_REVIEW_APP_ID, vars.GITHUB_REVIEW_APP_SLUG], ["2", "acme-review"]);
-  assert.throws(() => readConfig({ GITHUB_REVIEW_APP_PRIVATE_KEY: "not a key" }), /GITHUB_REVIEW_APP_PRIVATE_KEY/);
+  assert.throws(
+    () => readConfig({ GITHUB_REVIEW_APP_PRIVATE_KEY: "not a key" }),
+    /GITHUB_REVIEW_APP_PRIVATE_KEY/,
+  );
 });
 
 test("the master key is made once and kept", () => {
