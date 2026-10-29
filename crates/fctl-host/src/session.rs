@@ -655,7 +655,7 @@ async fn prepare(
     let (image, fallback_image) = match want {
         // A sandbox that is here already keeps the image it was made from.
         ImageWant::Build(_)
-            if ctx.driver.uses_images() && !ctx.driver.sandbox_exists(&name).await? =>
+            if ctx.driver.builds_images() && !ctx.driver.sandbox_exists(&name).await? =>
         {
             uplink.state(state(
                 SessionStatus::Provisioning,

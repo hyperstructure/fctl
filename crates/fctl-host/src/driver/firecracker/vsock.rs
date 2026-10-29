@@ -18,6 +18,11 @@ use tokio::sync::oneshot;
 
 pub type Reader = BufReader<OwnedReadHalf>;
 
+/// How long the VM may take to take a request and answer it, what follows
+/// aside: an init that takes longer is stuck, and nothing that waits for it
+/// may hang with it.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Connects to `port` in the VM whose vsock socket is `socket`.
 pub async fn connect(socket: &Path, port: u32) -> Result<(Reader, OwnedWriteHalf)> {
     let stream = UnixStream::connect(socket)
@@ -44,18 +49,34 @@ pub async fn read_reply(r: &mut Reader) -> Result<Reply> {
     serde_json::from_slice(&line).context("reading the VM's reply")
 }
 
-/// Sends `request` to the init; returns the connection and its first reply,
-/// or the error it says.
+/// Sends `request` to the init within [`REQUEST_TIMEOUT`]; returns the
+/// connection and the init's first reply, or the error it says.
 pub async fn request(socket: &Path, request: &Request) -> Result<(Reader, OwnedWriteHalf)> {
-    let (mut r, mut w) = connect(socket, PORT).await?;
-    let mut line = serde_json::to_vec(request)?;
-    line.push(b'\n');
-    w.write_all(&line).await?;
-    let reply = read_reply(&mut r).await?;
+    let (r, w, reply) = ask(socket, request).await?;
     if let Some(e) = reply.error {
         bail!("{e}");
     }
     Ok((r, w))
+}
+
+/// Sends `request` and reads the first reply, within [`REQUEST_TIMEOUT`].
+async fn ask(socket: &Path, request: &Request) -> Result<(Reader, OwnedWriteHalf, Reply)> {
+    let asking = async {
+        let (mut r, mut w) = connect(socket, PORT).await?;
+        let mut line = serde_json::to_vec(request)?;
+        line.push(b'\n');
+        w.write_all(&line).await?;
+        let reply = read_reply(&mut r).await?;
+        Ok::<_, anyhow::Error>((r, w, reply))
+    };
+    tokio::time::timeout(REQUEST_TIMEOUT, asking)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the VM didn't answer within {} seconds",
+                REQUEST_TIMEOUT.as_secs()
+            )
+        })?
 }
 
 /// The host's clock, which VMs follow.
@@ -65,13 +86,10 @@ pub fn now_ms() -> i64 {
 
 /// The init's version, when it answers.
 pub async fn hello(socket: &Path) -> Result<String> {
-    let (mut r, mut w) = connect(socket, PORT).await?;
-    let mut line = serde_json::to_vec(&Request::Hello {
+    let hello = Request::Hello {
         now_ms: Some(now_ms()),
-    })?;
-    line.push(b'\n');
-    w.write_all(&line).await?;
-    let reply = read_reply(&mut r).await?;
+    };
+    let (_, _, reply) = ask(socket, &hello).await?;
     Ok(reply.version.unwrap_or_default())
 }
 

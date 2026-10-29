@@ -219,8 +219,9 @@ fn login_in(config: &str, registry: &str) -> Option<String> {
 /// A registry client for one pull.
 pub struct Registry {
     http: HttpClient,
-    /// Tokens for the repositories this pull read, by repository.
-    tokens: Mutex<BTreeMap<String, String>>,
+    /// Tokens for the repositories this pull read, by repository, with the
+    /// challenge each answers, to ask for another when one runs out.
+    tokens: Mutex<BTreeMap<String, (String, String)>>,
 }
 
 impl Default for Registry {
@@ -238,7 +239,20 @@ impl Registry {
     }
 
     fn token(&self, repository: &str) -> Option<String> {
-        self.tokens.lock().ok()?.get(repository).cloned()
+        Some(self.tokens.lock().ok()?.get(repository)?.0.clone())
+    }
+
+    fn challenge(&self, repository: &str) -> Option<String> {
+        Some(self.tokens.lock().ok()?.get(repository)?.1.clone())
+    }
+
+    /// Signs in for `repository` with `challenge`, and keeps the token.
+    async fn renew(&self, registry: &str, repository: &str, challenge: &str) -> Result<()> {
+        let token = self.sign_in(registry, repository, challenge).await?;
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.insert(repository.to_owned(), (token, challenge.to_owned()));
+        }
+        Ok(())
     }
 
     /// A GET of `url` for `name`, asking the registry's token service for a
@@ -264,10 +278,7 @@ impl Registry {
                     .get(http::header::WWW_AUTHENTICATE)
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or_default();
-                let token = self.sign_in(registry, repository, header).await?;
-                if let Ok(mut tokens) = self.tokens.lock() {
-                    tokens.insert(repository.to_owned(), token);
-                }
+                self.renew(registry, repository, header).await?;
                 signed_in = true;
                 continue;
             }
@@ -395,14 +406,32 @@ impl Registry {
             .with_context(|| format!("{reference} isn't an image reference"))?;
         let (base, repository) = endpoint(&r.name)?;
         let url = format!("{base}/blobs/{}", layer.digest);
-        // A layer of an image that wants no token yet, after its manifest
-        // did, gets one: tokens are per repository.
-        let token = self.token(repository);
+        let registry = r.name.split('/').next().unwrap_or_default();
         let http = HttpClient::new(LAYER_TIME);
-        let size = http
-            .download_to(&url, token.as_deref(), &[], to, MAX_LAYER, LAYER_TIME)
-            .await
-            .with_context(|| format!("downloading {}", layer.digest))?;
+        let mut renewed = false;
+        let size = loop {
+            let token = self.token(repository);
+            match http
+                .download_to(&url, token.as_deref(), &[], to, MAX_LAYER, LAYER_TIME)
+                .await
+            {
+                Ok(size) => break size,
+                // Tokens run out, minutes after they came: the layers of a
+                // large image may take longer.
+                Err(fctl_client::Error::Status { status: 401, .. }) if !renewed => {
+                    let challenge = self.challenge(repository).with_context(|| {
+                        format!("{registry} refused {} without a token", layer.digest)
+                    })?;
+                    self.renew(registry, repository, &challenge).await?;
+                    renewed = true;
+                }
+                Err(e) => {
+                    return Err(
+                        anyhow::Error::from(e).context(format!("downloading {}", layer.digest))
+                    );
+                }
+            }
+        };
         if layer.size > 0 && size != layer.size {
             bail!(
                 "{} is {size} bytes rather than the {} its manifest says",
@@ -533,6 +562,100 @@ mod tests {
         );
         let bare: ConfigFile = serde_json::from_str(r#"{"config":{"Env":null}}"#)?;
         assert_eq!(bare.config, Config::default());
+        Ok(())
+    }
+
+    /// A registry on this machine that wants a token, whose first one runs
+    /// out after the manifest and the config: the layer needs another.
+    #[tokio::test]
+    async fn signs_in_again_when_a_token_runs_out() -> Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let layer = b"layer bytes".to_vec();
+        let config = br#"{"config":{"User":"agent"}}"#.to_vec();
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"digest":"{}","size":{}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{}","size":{}}}]}}"#,
+            digest_of(&config),
+            config.len(),
+            digest_of(&layer),
+            layer.len()
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let tokens_given = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let given = tokens_given.clone();
+        let (manifest_c, config_c, layer_c) = (manifest.clone(), config.clone(), layer.clone());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (given, manifest, config, layer) = (
+                    given.clone(),
+                    manifest_c.clone(),
+                    config_c.clone(),
+                    layer_c.clone(),
+                );
+                tokio::spawn(async move {
+                    let (r, mut w) = stream.into_split();
+                    let mut r = BufReader::new(r);
+                    let mut first = String::new();
+                    let _ = r.read_line(&mut first).await;
+                    let mut auth = String::new();
+                    loop {
+                        let mut line = String::new();
+                        if r.read_line(&mut line).await.unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        if let Some(v) = line.to_ascii_lowercase().strip_prefix("authorization: ") {
+                            auth = v.trim().to_owned();
+                        }
+                    }
+                    let path = first
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_owned();
+                    // Token 1 is good for two requests, token 2 for the rest.
+                    let good = auth == "bearer token-2" || auth == "bearer token-1";
+                    let (status, body, extra) = if path.starts_with("/token") {
+                        let n = given.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        (
+                            "200 OK",
+                            format!(r#"{{"token":"token-{n}"}}"#).into_bytes(),
+                            String::new(),
+                        )
+                    } else if !good
+                        || (path.contains("/blobs/")
+                            && path.ends_with(&digest_of(&layer))
+                            && auth == "bearer token-1")
+                    {
+                        let challenge = format!(
+                            "WWW-Authenticate: Bearer realm=\"http://127.0.0.1:{port}/token\",service=\"fake\"\r\n"
+                        );
+                        ("401 Unauthorized", b"{}".to_vec(), challenge)
+                    } else if path.contains("/manifests/") {
+                        ("200 OK", manifest.into_bytes(), String::new())
+                    } else if path.ends_with(&digest_of(&config)) {
+                        ("200 OK", config, String::new())
+                    } else {
+                        ("200 OK", layer, String::new())
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
+                        body.len()
+                    );
+                    let _ = w.write_all(head.as_bytes()).await;
+                    let _ = w.write_all(&body).await;
+                });
+            }
+        });
+        let reference = format!("127.0.0.1:{port}/acme/agent:1");
+        let registry = Registry::new();
+        let resolved = registry.resolve(&reference, "aarch64").await?;
+        assert_eq!(resolved.id, digest_of(&config));
+        assert_eq!(resolved.config.user.as_deref(), Some("agent"));
+        let dir = tempfile::tempdir()?;
+        let to = dir.path().join("layer");
+        registry.blob(&reference, &resolved.layers[0], &to).await?;
+        assert_eq!(std::fs::read(&to)?, layer);
+        assert_eq!(tokens_given.load(std::sync::atomic::Ordering::SeqCst), 2);
         Ok(())
     }
 }

@@ -8,7 +8,7 @@ use fctl_proto::vm::{Layer, MAX_LINE, PORT, Reply, Request};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener};
+use vsock::{VMADDR_CID_ANY, VMADDR_CID_HOST, VsockAddr, VsockListener};
 
 /// What unpacking wrote.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -22,7 +22,10 @@ pub fn serve(root: &Path) -> Result<()> {
     let listener = VsockListener::bind(&VsockAddr::new(VMADDR_CID_ANY, PORT))
         .context("listening on the vsock")?;
     loop {
-        let (conn, _) = listener.accept().context("taking a connection")?;
+        let (conn, peer) = listener.accept().context("taking a connection")?;
+        if peer.cid() != VMADDR_CID_HOST {
+            continue;
+        }
         let mut reader = BufReader::new(conn.try_clone()?);
         let mut writer = conn;
         let mut line = Vec::new();

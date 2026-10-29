@@ -12,7 +12,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
-use tokio_vsock::{VMADDR_CID_ANY, VsockAddr, VsockListener, VsockStream};
+use tokio_vsock::{VMADDR_CID_ANY, VMADDR_CID_HOST, VsockAddr, VsockListener, VsockStream};
 
 /// The PATH a program gets when the image sets none, as with Docker.
 const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -22,7 +22,13 @@ pub async fn serve() -> Result<()> {
     let listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, PORT))
         .context("listening on the vsock")?;
     loop {
-        let (conn, _) = listener.accept().await.context("taking a connection")?;
+        let (conn, peer) = listener.accept().await.context("taking a connection")?;
+        // Only the host, not a program in the VM through the vsock's
+        // loopback, which would run what it liked as anyone.
+        if peer.cid() != VMADDR_CID_HOST {
+            tracing::warn!("refused a connection from vsock CID {}", peer.cid());
+            continue;
+        }
         tokio::spawn(async move {
             if let Err(e) = handle(conn).await {
                 tracing::debug!("a request from the host: {e:#}");

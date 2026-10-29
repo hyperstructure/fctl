@@ -220,10 +220,13 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 Some(config::api(Some(&server)).context(SIGN_IN)?)
             };
             // `auto` picks like the daemon does, except that it never settles for
-            // the process driver.
+            // the process driver; neither picks Firecracker, which a host's
+            // owner chooses.
             let driver = if driver == "auto" {
                 let infos = Driver::probe_all(&cfg).await;
-                let runtimes = infos.iter().filter(|i| i.name != "process");
+                let runtimes = infos
+                    .iter()
+                    .filter(|i| i.name != "process" && i.name != "firecracker");
                 match runtimes.clone().find(|i| i.available) {
                     Some(info) => info.name.clone(),
                     None => {
@@ -232,6 +235,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         for info in runtimes {
                             let detail = info.detail.as_deref().unwrap_or_default();
                             why.push_str(&format!("\n  {}: {detail}", info.name));
+                        }
+                        if infos.iter().any(|i| i.name == "firecracker" && i.available) {
+                            why.push_str("\nFirecracker is ready: --driver firecracker runs each session in a microVM of its own.");
                         }
                         bail!(
                             "{why}\nInstall one, or pass --driver process to run agents without isolation."
@@ -313,7 +319,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         cfg.image()
                     ))
                 );
-                let images = cfg.images(true);
+                let images = cfg.images(d.builds_images());
                 println!(
                     "{}",
                     style::dim(&format!(
@@ -415,7 +421,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             println!("updates:  {}", updates_line(&cfg));
             println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
-                let images = cfg.images(d.uses_images());
+                let images = cfg.images(d.builds_images());
                 println!(
                     "images:   {}; {}",
                     image::describe_allowed(images.allowed.as_deref()),
@@ -1244,13 +1250,13 @@ async fn doctor() -> Result<()> {
     );
     if cfg.allowed_builds.is_some()
         && let Ok(d) = Driver::select(&cfg.driver, &cfg).await
-        && !d.uses_images()
+        && !d.builds_images()
     {
         println!(
             "{} {}",
             style::dim("·"),
             style::dim(&format!(
-                "allowed_builds: the {} driver uses no images, so this host builds none",
+                "allowed_builds: the {} driver builds no images, so this host builds none",
                 d.name()
             ))
         );

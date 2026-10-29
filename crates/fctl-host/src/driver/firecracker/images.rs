@@ -46,12 +46,32 @@ pub fn canonical(reference: &str) -> Option<String> {
 
 /// The images under `dir`: `refs.json`, and a directory for each image
 /// named after its ID's hex digits, with `image.json` and `rootfs.ext4`.
+/// What changes names or removes images holds [`Store::lock`].
 #[derive(Clone, Debug)]
 pub struct Store {
     pub dir: PathBuf,
 }
 
 impl Store {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    /// Waits for the store's lock, which the returned file holds until it
+    /// goes: between the host and `fctl host image pull` too, which run in
+    /// processes of their own.
+    pub fn lock(&self) -> Result<std::fs::File> {
+        std::fs::create_dir_all(&self.dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.dir.join(".lock"))?;
+        file.lock()
+            .with_context(|| format!("locking {}", self.dir.display()))?;
+        Ok(file)
+    }
+
     fn refs_path(&self) -> PathBuf {
         self.dir.join("refs.json")
     }
@@ -65,7 +85,9 @@ impl Store {
 
     fn save_refs(&self, refs: &BTreeMap<String, String>) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let tmp = self.refs_path().with_extension("tmp");
+        let tmp = self
+            .refs_path()
+            .with_extension(format!("{}.tmp", std::process::id()));
         std::fs::write(&tmp, serde_json::to_vec_pretty(refs)?)?;
         std::fs::rename(&tmp, self.refs_path())?;
         Ok(())
@@ -113,7 +135,8 @@ impl Store {
         self.tag(&image.reference, &image.id)
     }
 
-    /// Names the image `id` `reference`, in place of what that named.
+    /// Names the image `id` `reference`, in place of what that named (with
+    /// the lock held).
     pub fn tag(&self, reference: &str, id: &str) -> Result<()> {
         let key = canonical(reference)
             .with_context(|| format!("{reference} isn't an image reference"))?;
@@ -122,7 +145,8 @@ impl Store {
         self.save_refs(&refs)
     }
 
-    /// Takes the name `reference` away; returns the image it named.
+    /// Takes the name `reference` away; returns the image it named (with
+    /// the lock held).
     pub fn untag(&self, reference: &str) -> Result<Option<String>> {
         let Some(key) = canonical(reference) else {
             return Ok(None);
@@ -204,9 +228,7 @@ mod tests {
     #[test]
     fn names_refer_to_images_as_tags_do() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let store = Store {
-            dir: dir.path().join("images"),
-        };
+        let store = Store::new(dir.path().join("images"));
         let image = Image {
             id: format!("sha256:{}", "1".repeat(64)),
             reference: "ghcr.io/hyperstructure/sandbox:0.26.0".into(),
@@ -250,6 +272,21 @@ mod tests {
         store.remove(&image.id)?;
         assert_eq!(store.image(&image.id), None);
         assert!(store.ids().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn one_process_at_a_time_holds_the_lock() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path().join("images"));
+        let held = store.lock()?;
+        // Another open of the file, as another process's would be.
+        let other = std::fs::OpenOptions::new()
+            .write(true)
+            .open(store.dir.join(".lock"))?;
+        assert!(other.try_lock().is_err());
+        drop(held);
+        assert!(other.try_lock().is_ok());
         Ok(())
     }
 }

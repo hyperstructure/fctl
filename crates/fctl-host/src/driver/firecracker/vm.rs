@@ -120,7 +120,7 @@ impl Vm {
     /// The process `what` started for this VM, while it runs: its id file
     /// names it, and its command line has this VM's sockets, which a process
     /// that took the id later wouldn't. One that is still being started has
-    /// no command line yet, for a moment.
+    /// no command line yet, for a moment, but an executable.
     fn pid(&self, what: &str) -> Option<u32> {
         let pid: u32 = std::fs::read_to_string(self.pid_file(what))
             .ok()?
@@ -133,7 +133,9 @@ impl Vm {
             .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'));
         let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
         let ours = self.run.display().to_string();
-        let mine = cmdline.is_empty()
+        // A kernel thread, which may take the id too, has no executable.
+        let starting = cmdline.is_empty() && std::fs::read_link(format!("/proc/{pid}/exe")).is_ok();
+        let mine = starting
             || cmdline
                 .split(|b| *b == 0)
                 .any(|arg| String::from_utf8_lossy(arg).starts_with(&ours));
@@ -145,10 +147,25 @@ impl Vm {
         self.pid("firecracker").is_some()
     }
 
-    /// Starts `passt`, if the VM gets a network, and Firecracker.
+    /// Starts `passt`, if the VM gets a network, and Firecracker, after
+    /// stopping what an earlier boot left: the `passt` of a VM that powered
+    /// off, say. What it started goes again when it fails.
     pub async fn start(&self, spec: &Spec, firecracker: &Path, passt: Option<&Path>) -> Result<()> {
+        self.kill().await;
+        let started = self.start_processes(spec, firecracker, passt).await;
+        if started.is_err() {
+            self.kill().await;
+        }
+        started
+    }
+
+    async fn start_processes(
+        &self,
+        spec: &Spec,
+        firecracker: &Path,
+        passt: Option<&Path>,
+    ) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let _ = std::fs::remove_dir_all(&self.run);
         std::fs::create_dir_all(&self.run)?;
         if spec.network {
             let passt = passt.context("the VM needs passt for its network")?;
@@ -436,6 +453,56 @@ mod tests {
         assert!(!vm.running());
         child.kill()?;
         child.wait()?;
+        Ok(())
+    }
+
+    /// Stand-ins: a `passt` that makes its socket's path and waits, and a
+    /// Firecracker that waits.
+    #[tokio::test]
+    async fn starting_again_stops_what_the_last_boot_left() -> Result<()> {
+        use crate::driver::fake::write_script;
+        let dir = tempfile::tempdir()?;
+        let passt = dir.path().join("passt");
+        // Without `exec`, so that their command lines keep the sockets.
+        write_script(
+            &passt,
+            "#!/bin/sh\nfor a; do [ \"$prev\" = --socket ] && touch \"$a\"; prev=$a; done\nsleep 60\n",
+        )?;
+        let firecracker = dir.path().join("firecracker");
+        write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
+        let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
+        let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
+        let spec = Spec {
+            network: true,
+            ..spec
+        };
+        vm.start(&spec, &firecracker, Some(&passt)).await?;
+        let first_passt = vm.pid("passt");
+        assert!(first_passt.is_some() && vm.running());
+        // Firecracker ends by itself (its VM powered off), and passt stays.
+        if let Some(pid) = vm.pid("firecracker") {
+            crate::driver::run_cmd("kill", &["-KILL", &pid.to_string()]).await?;
+        }
+        while vm.running() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(vm.pid("passt"), first_passt);
+        vm.start(&spec, &firecracker, Some(&passt)).await?;
+        let alive = |pid: u32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                !s.rsplit_once(')')
+                    .is_some_and(|(_, r)| r.trim_start().starts_with('Z'))
+            })
+        };
+        assert!(
+            first_passt.is_some_and(|p| !alive(p)),
+            "the first passt still runs"
+        );
+        assert!(vm.pid("passt").is_some() && vm.running());
+        // A start that fails leaves nothing running.
+        let missing = dir.path().join("no-firecracker");
+        assert!(vm.start(&spec, &missing, Some(&passt)).await.is_err());
+        assert!(vm.pid("passt").is_none() && !vm.running());
         Ok(())
     }
 }

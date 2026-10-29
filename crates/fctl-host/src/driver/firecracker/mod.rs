@@ -40,6 +40,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 use vm::{Drive, Spec, Vm};
 
 /// The size of an image's filesystem: a sparse file, which takes only what
@@ -99,10 +100,15 @@ fn kvm_problem() -> Option<String> {
 }
 
 /// Makes an ext4 filesystem in a new sparse file of `gb` GiB at `path`,
-/// whose root is root's, labelled `label`, with a journal or not.
+/// whose root is root's, labelled `label`, with a journal or not. It never
+/// writes over a file there, a sandbox's disk say.
 async fn make_fs(path: &Path, gb: u64, label: &str, journal: bool) -> Result<()> {
     let mkfs = find_program("mkfs.ext4").context("mkfs.ext4 is not installed (e2fsprogs)")?;
-    let file = std::fs::File::create(path).with_context(|| format!("making {}", path.display()))?;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("making {}", path.display()))?;
     file.set_len(gb * 1024 * 1024 * 1024)?;
     drop(file);
     let features = if journal {
@@ -137,12 +143,31 @@ impl FirecrackerDriver {
         let root = host.data_dir().join("firecracker");
         Self {
             host: host.clone(),
-            store: Store {
-                dir: root.join("images"),
-            },
+            store: Store::new(root.join("images")),
             root,
             locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The image store's lock ([`Store::lock`]), held while names move
+    /// between images, images go, and a new sandbox records the image it is
+    /// made from, so that none goes from under it.
+    async fn lock_images(&self) -> Result<std::fs::File> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.lock()).await?
+    }
+
+    /// Makes the driver's directory, which only this user may read: it
+    /// holds the sandboxes' disks.
+    fn make_root(&self) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(&self.root)
+            .with_context(|| format!("making {}", self.root.display()))?;
+        let mode = std::fs::metadata(&self.root)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            std::fs::set_permissions(&self.root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
 
     fn cfg(&self) -> &FirecrackerConfig {
@@ -168,9 +193,13 @@ impl FirecrackerDriver {
         serde_json::from_slice(&bytes).ok()
     }
 
+    /// Writes the record whole or not at all: a sandbox whose record can't
+    /// be read is one the host can't start.
     fn save_record(&self, name: &str, record: &Record) -> Result<()> {
         let path = self.sandboxes().join(name).join("sandbox.json");
-        std::fs::write(&path, serde_json::to_vec_pretty(record)?)?;
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_vec_pretty(record)?)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
 
@@ -192,6 +221,7 @@ impl FirecrackerDriver {
                 p.display()
             ),
             None => {
+                self.make_root()?;
                 let lock = self.lock("firecracker");
                 let _held = lock.lock().await;
                 assets::download_firecracker(&self.root.join("bin"), log).await
@@ -205,6 +235,7 @@ impl FirecrackerDriver {
             .kernel
             .clone()
             .unwrap_or_else(|| assets::KERNEL_IMAGE.into());
+        self.make_root()?;
         let lock = self.lock("kernel");
         let _held = lock.lock().await;
         assets::kernel(&kernel, &self.root.join("kernels"), log).await
@@ -215,6 +246,7 @@ impl FirecrackerDriver {
         let agent = crate::agentbin::linux_agent(&self.host)
             .await
             .context("getting fctl-agent for the VMs")?;
+        self.make_root()?;
         let dir = self.root.join("initrd");
         let lock = self.lock("initrd");
         let _held = lock.lock().await;
@@ -356,6 +388,7 @@ impl FirecrackerDriver {
     }
 
     pub async fn tag_image(&self, image: &str, name: &str) -> Result<()> {
+        let _images = self.lock_images().await?;
         let here = self
             .store
             .lookup(image)
@@ -383,6 +416,7 @@ impl FirecrackerDriver {
     /// without force: as Docker, it keeps the last name of an image that a
     /// sandbox uses, and fails.
     pub async fn remove_image(&self, image: &str) -> Result<()> {
+        let _images = self.lock_images().await?;
         let here = self
             .store
             .lookup(image)
@@ -464,11 +498,13 @@ impl FirecrackerDriver {
     async fn pull_with(&self, image: &str, log: Log<'_>) -> Result<()> {
         let key = images::canonical(image)
             .with_context(|| format!("{image} isn't an image reference"))?;
+        self.make_root()?;
         let lock = self.lock(&format!("pull {key}"));
         let _held = lock.lock().await;
         let registry = registry::Registry::new();
         let resolved = registry.resolve(image, std::env::consts::ARCH).await?;
         if self.store.image(&resolved.id).is_some() {
+            let _images = self.lock_images().await?;
             self.store.tag(image, &resolved.id)?;
             self.remove_unused();
             return Ok(());
@@ -499,13 +535,14 @@ impl FirecrackerDriver {
                 bytes,
                 pulled_ms: vsock::now_ms(),
             };
+            let _images = self.lock_images().await?;
             self.store.add(&pulled, &rootfs)?;
+            self.remove_unused();
             Ok::<_, anyhow::Error>((files, bytes))
         }
         .await;
         let _ = std::fs::remove_dir_all(&downloads);
         let (files, bytes) = result?;
-        self.remove_unused();
         log(format!(
             "Pulled {image}: {files} files, {} MB",
             bytes.div_ceil(1_000_000)
@@ -530,6 +567,8 @@ impl FirecrackerDriver {
         }
         log(format!("Unpacking {image} in a VM"));
         let rootfs = downloads.join("rootfs.ext4");
+        // What a pull that stopped halfway left.
+        let _ = std::fs::remove_file(&rootfs);
         make_fs(&rootfs, IMAGE_FS_GB, "fctl-image", false).await?;
         let layers: Vec<fctl_proto::vm::Layer> = resolved
             .layers
@@ -638,11 +677,14 @@ impl FirecrackerDriver {
             name: spec.name.clone(),
             root: None,
         };
+        self.make_root()?;
         let lock = self.lock(&format!("sandbox {}", spec.name));
         let _held = lock.lock().await;
         let vm = self.vm(&spec.name)?;
         if vm.running() {
-            if vsock::hello(&vm.vsock()).await.is_ok() {
+            let socket = vm.vsock();
+            let answers = tokio::time::timeout(Duration::from_secs(10), vsock::hello(&socket));
+            if matches!(answers.await, Ok(Ok(_))) {
                 return Ok(sb);
             }
             log(format!(
@@ -707,12 +749,25 @@ impl FirecrackerDriver {
 
     /// A new sandbox's directory, disk and record.
     async fn create(&self, spec: &SandboxSpec, vm: &Vm, log: Log<'_>) -> Result<Record> {
-        let image = self.image_for(spec, log).await?;
+        let disk = vm.dir.join("disk.ext4");
+        if disk.exists() {
+            bail!(
+                "{} has a disk but no record of the image it was made from ({} is missing or damaged), so the host leaves it as it is",
+                spec.name,
+                vm.dir.join("sandbox.json").display()
+            );
+        }
+        let pulled = self.image_for(spec, log).await?;
+        // Until the record says which image the sandbox has, nothing removes it.
+        let _images = self.lock_images().await?;
+        let image = self
+            .store
+            .image(&pulled.id)
+            .with_context(|| format!("{} went as the sandbox was made", pulled.reference))?;
+        self.make_root()?;
         std::fs::create_dir_all(&vm.dir)?;
         use std::os::unix::fs::PermissionsExt;
-        for dir in [&self.root, &vm.dir] {
-            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-        }
+        let _ = std::fs::set_permissions(&vm.dir, std::fs::Permissions::from_mode(0o700));
         let made = async {
             make_fs(
                 &vm.dir.join("disk.ext4"),
@@ -853,6 +908,7 @@ impl FirecrackerDriver {
         let lock = self.lock(&format!("sandbox {}", sb.name));
         let _held = lock.lock().await;
         self.vm(&sb.name)?.remove().await?;
+        let _images = self.lock_images().await?;
         self.remove_unused();
         Ok(())
     }
@@ -941,6 +997,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn never_makes_a_sandbox_over_a_disk_it_has_no_record_of() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let vm = d.vm("fctl-ses-01abc")?;
+        std::fs::create_dir_all(&vm.dir)?;
+        let disk = vm.dir.join("disk.ext4");
+        std::fs::write(&disk, b"the session's files")?;
+        std::fs::write(vm.dir.join("sandbox.json"), b"{ half written")?;
+        let spec = SandboxSpec {
+            name: "fctl-ses-01abc".into(),
+            image: "docker.io/library/debian:trixie-slim".into(),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: None,
+        };
+        let log = |_: String| {};
+        let e = d
+            .create(&spec, &vm, &log)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(e.is_some_and(|e| e.contains("has a disk but no record")));
+        assert_eq!(std::fs::read(&disk)?, b"the session's files");
+        // Records are written whole.
+        let record = Record {
+            image: "sha256:1".into(),
+            reference: "x".into(),
+            created_ms: 1,
+            agent: None,
+        };
+        d.save_record("fctl-ses-01abc", &record)?;
+        assert_eq!(d.record("fctl-ses-01abc"), Some(record));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn probes_what_the_host_lacks() {
         let dir = tempfile::tempdir().ok();
         let d = driver(dir.as_ref().map_or(Path::new("/nonexistent"), |d| d.path()));
@@ -966,7 +1059,8 @@ mod tests {
     /// ```
     ///
     /// `FCTL_TEST_FIRECRACKER_DATA` keeps the host's files (the image, and
-    /// Firecracker) between runs.
+    /// Firecracker) between runs, and `FCTL_TEST_FIRECRACKER_RUN` is a
+    /// command whose output it shows (`claude --version`, say).
     #[tokio::test]
     #[ignore = "needs KVM, passt, a kernel and a static fctl-agent"]
     async fn boots_a_sandbox() -> Result<()> {
@@ -1013,6 +1107,9 @@ mod tests {
                 assert_eq!(out, format!("0\n{name}\n/root\n/\n"));
             }
             assert_eq!(out.lines().nth(1), Some(name.as_str()));
+            if let Ok(command) = std::env::var("FCTL_TEST_FIRECRACKER_RUN") {
+                eprintln!("{command}: {}", d.exec(&sb, &command).await?.trim());
+            }
             let resolved = d.exec(&sb, "getent hosts example.com").await?;
             assert!(!resolved.trim().is_empty());
             let fetched = d
