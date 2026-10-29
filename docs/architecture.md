@@ -1590,7 +1590,7 @@ Linear's tickets start them through fctl's own integration
 A project chooses where its agents read and write tickets
 (`ProjectSettings::tickets`, the project's **Tickets** tab, `fctl projects
 set --tickets`, [ADR 0052](adr/0052-projects-choose-a-ticket-tracker-and-linear-delegates-tickets-to-fctl.md)):
-none, GitHub Issues, or a team in Linear. Projects from before it, and new
+none, GitHub Issues, or teams in Linear. Projects from before it, and new
 ones, use GitHub Issues of the repositories their agents write to, as
 agents always did. Agents reach the one chosen alone, and fctl keeps them
 to it twice: what their tokens can reach, and what they are told
@@ -1601,7 +1601,7 @@ to it twice: what their tokens can reach, and what they are told
 | None | no issues permission | they reach none, and are told to keep away from trackers and leave issue references out of commits and pull requests |
 | GitHub Issues of the repositories they write to | issues as before: written where they push or comment, read where they read | `gh issue` |
 | GitHub Issues of one repository, one they write to | issues only on a write token for that repository alone; none on the read-only token | `gh issue` where that repository is the only one they write to, else `fctl ticket` |
-| Linear, a team (and optionally one of its projects) | no issues permission | `fctl ticket` |
+| Linear, one team or several (each optionally narrowed to one of its projects) | no issues permission | `fctl ticket` |
 
 A GitHub token carries one set of permissions for all its repositories,
 so the issues of one repository among several go on no session token;
@@ -1638,8 +1638,12 @@ session, so that a task that needs them ends with a way on.
    people, a parent and children) and the rest as named fields (an
    estimate, a cycle, a milestone), so that a tracker added later fits it.
    The control plane keeps each call to the project's choice: a Linear
-   issue of another team, or a GitHub issue of another repository, is
-   refused as one that doesn't exist. It writes in the name of fctl's own
+   issue of a team it doesn't take, or a GitHub issue of another
+   repository, is refused as one that doesn't exist. A new ticket goes
+   where the agent names (`fctl ticket create --in DES`, a team of the
+   project's or a repository), else to the first of them, or for Linear
+   to a sub-ticket's parent's team, and a ticket's state and labels come
+   from its own team's. It writes in the name of fctl's own
    app: with the Linear workspace's token ([Linear](#linear)), or with a
    token of the GitHub App's for that repository's issues alone, which
    never leaves it and which it revokes at once. Agents that only read on
@@ -1692,12 +1696,22 @@ issue's delegate (the person stays its assignee), and mention.
    it and reaches none of its tickets, whatever other workspaces do; once
    no fctl workspace works in it, fctl revokes the app's token there (the
    hourly job catches deleted workspaces).
-2. **Choosing a team.** A project's maintainers choose a team, and
-   optionally one of its open Linear projects, among those the app sees in
-   a Linear workspace connected to the project's workspace
+2. **Choosing teams** ([ADR 0065](adr/0065-projects-take-tickets-from-several-linear-teams.md)).
+   A project's maintainers choose one team or several, at most 20, each
+   optionally narrowed to one of its open Linear projects, among those the
+   app sees in a Linear workspace connected to the project's workspace
    (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`), which the
    control plane checks with Linear as the choice is saved
-   (`tickets::check_linear`). Linear prices a query by how much it asks
+   (`tickets::check_linear`): only what changed, since a team checked
+   before keeps what Linear said of it. The first team stays where
+   projects from before several kept their one (`LinearTickets::team`),
+   and agents file new tickets there unless they name another; the others
+   follow it (`more_teams`), which an update that leaves them out keeps,
+   so that a client from before them can't drop them
+   (`fctl_domain::settings::keep_unsent`). Each move of a ticket
+   (step 8) goes to the states of the ticket's own team, whose workflow
+   may differ from the others'; `fctl ticket states` lists those of every
+   team, each name once. Linear prices a query by how much it asks
    for, whatever it finds, and refuses one of more than 10,000 points, so
    the control plane counts the teams first (up to 250) and then asks for
    their workflows and open projects 50 teams at a time, under 5,000
@@ -1736,9 +1750,10 @@ issue's delegate (the person stays its assignee), and mention.
    account (an elicitation with Linear's `auth` signal, whose link starts
    their sign-in) and keeps the delivery for an hour: once they link it,
    the session starts, and their browser goes on to it. The project is the
-   one that takes the issue's team, in a workspace connected to the Linear
-   workspace, whose tracker is Linear: one that takes the issue's Linear
-   project comes before those that take the whole team; among several,
+   one that takes the issue's team, among its teams, in a workspace
+   connected to the Linear workspace, whose tracker is Linear: one that
+   takes only the issue's Linear project of it comes before those that
+   take the whole team (`fctl_domain::linear::takers`); among several,
    Linear's repository suggestions for the issue choose, by the projects'
    primary repositories, and when they don't, fctl asks which in the agent
    session (an elicitation with the `select` signal) and waits for the

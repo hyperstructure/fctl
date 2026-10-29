@@ -616,7 +616,7 @@ each workspace's admins install in their Linear workspace from fctl.
 3. A workspace's admin connects their Linear workspace under the
    workspace's **Linear** tab, or a project's **Tickets** tab: Linear asks
    one of its admins to install the app and to choose the teams it sees.
-   Each project then chooses its team. People link their Linear accounts
+   Each project then chooses its teams. People link their Linear accounts
    (Settings, the project's Tickets tab, or Linear's own button the first
    time they delegate an issue), and fctl starts sessions only for people
    it knows there, as them.

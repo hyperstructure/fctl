@@ -77,9 +77,11 @@ pub enum TicketCmd {
         /// Urgent, High, Medium or Low (Linear).
         #[arg(long)]
         priority: Option<String>,
-        /// The repository to file it in, for GitHub issues of several
-        /// (owner/name).
-        #[arg(long = "in", value_name = "OWNER/NAME")]
+        /// Where to file it, in a project of several places: a repository
+        /// for GitHub issues (owner/name), a team for Linear (its key).
+        /// Without it, the project's first, or in Linear a sub-ticket's
+        /// parent's team.
+        #[arg(long = "in", value_name = "OWNER/NAME|TEAM")]
         place: Option<String>,
     },
     /// Comment on a ticket (Markdown; or pipe it in).
