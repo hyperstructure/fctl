@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.27.0 (2026-10-29)
+
+### Features
+
+- Let projects choose whether drafts get reviews ([#340](https://github.com/hyperstructure/fctl/pull/340))
+- **host:** Run sessions in Firecracker microVMs on Linux hosts ([#344](https://github.com/hyperstructure/fctl/pull/344))
+
+### Fixes
+
+- Let Google Search show the app's favicon, yellow to the edges ([#347](https://github.com/hyperstructure/fctl/pull/347))
+
+### Other changes
+
+- **deps:** Bump seroval from 1.6.9 to 1.7.5 ([#343](https://github.com/hyperstructure/fctl/pull/343))
+- **release:** Build the sandbox image as soon as a release is out ([#346](https://github.com/hyperstructure/fctl/pull/346))
+
 ## 0.26.1 (2026-10-29)
 
 ### Features
