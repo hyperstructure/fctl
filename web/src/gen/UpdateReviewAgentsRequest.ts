@@ -41,6 +41,11 @@ bots?: Array<string>,
  */
 skipped_repos?: Array<string>, 
 /**
+ * Whether each new commit of a draft starts a review; `false`: drafts
+ * wait until they are marked ready for review, or someone asks.
+ */
+drafts?: boolean, 
+/**
  * Whether they sum each pull request up at the end of its
  * description before they review it in depth.
  */

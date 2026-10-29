@@ -588,6 +588,7 @@ fctl review settings -p my-app --on --model opus --effort high
 fctl review settings -p my-app --instructions-file review.md   # what they're told besides fctl's own
 fctl review settings -p my-app --bots dependabot,renovate      # the apps whose pull requests start reviews (or none)
 fctl review settings -p my-app --skip-repos acme/shared-lib    # repositories whose pull requests get no review here (or none)
+fctl review settings -p my-app --drafts off                    # drafts wait until they're marked ready for review
 fctl review settings -p my-app --description-summary on        # sum each pull request up in its description first
 fctl review bots -p my-app                     # the apps that opened the newest pull requests, and which start reviews
 fctl review bots -p my-app my-app-bot          # an app as GitHub shows it: its name and who makes it

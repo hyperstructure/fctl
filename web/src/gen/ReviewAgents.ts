@@ -47,6 +47,14 @@ repos: Array<RepoRef>,
  */
 skipped_repos: Array<RepoRef>, 
 /**
+ * Each new commit of a draft starts a review, as other pull requests'
+ * commits do. False: drafts wait until they are marked ready for
+ * review, which starts a review of their newest commit, or until
+ * someone asks for one. True by default, and from control planes
+ * before it.
+ */
+drafts: boolean, 
+/**
  * Before each review in depth, the agent sums the pull request up at
  * the end of its description ([`PullRequestSummary`]): how risky it
  * looks, what it does and what deserves a closer look, in place of the

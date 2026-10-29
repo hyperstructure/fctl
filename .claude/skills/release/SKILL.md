@@ -1,6 +1,6 @@
 ---
 name: release
-description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the standalone control plane's image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR, and hyperstructure/homebrew-tap proposes the release's Homebrew formula. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
+description: Release a new version of fctl through the Release workflow, which publishes the archives to GitHub and fctl.sh/releases and the standalone control plane's image to GHCR, updates the CHANGELOG and redeploys app.fctl.sh; hyperstructure/sandbox then publishes the release's sandbox image to GHCR, and hyperstructure/homebrew-tap updates its Homebrew formula to the release. Only for people and agents with release access (write access to Actions on hyperstructure/fctl). Use when asked to release, publish or ship fctl, to preview what the next release contains, or to fix a failed release.
 ---
 
 # Releasing fctl
@@ -67,7 +67,7 @@ It runs in four steps, and a fifth beside them:
    with the version, using `HOMEBREW_TAP_TOKEN`. That workflow waits until
    livecheck finds the release on fctl.sh, then opens a pull request,
    `fctl X.Y.Z`, with the formula's new URLs and checksums for every
-   platform.
+   platform, and merges it once the tap's checks pass on it.
 5. **Standalone image**, beside Build and Publish: the Standalone image
    workflow (`.github/workflows/standalone-image.yml`) builds the control
    plane without Cloudflare (`deploy/standalone`) at the tag, runs a
@@ -99,10 +99,11 @@ a session before it publishes.
   ghcr.io/hyperstructure/sandbox:X.Y.Z` lists linux/amd64 and linux/arm64
   (`gh run list -R hyperstructure/sandbox --workflow image.yml` shows the
   runs).
-- Within minutes, hyperstructure/homebrew-tap has a pull request,
-  `fctl X.Y.Z` (`gh pr list -R hyperstructure/homebrew-tap`). Select
-  **Approve workflows to run** on it to start its checks; once a code owner
-  merges it, `brew upgrade fctl` installs the release.
+- Within about 15 minutes, hyperstructure/homebrew-tap has merged a pull
+  request, `fctl X.Y.Z`, and `brew upgrade fctl` installs the release
+  (`gh pr list -R hyperstructure/homebrew-tap --state all`). Its brew bump
+  run waits for the pull request's checks and merges it once they pass; if
+  one fails, the pull request stays open and the run fails.
 - Hosts update themselves within minutes of the archives' publication,
   unless their `host.toml` turns that off: those, and Homebrew's, update
   with `fctl self update` (or `brew upgrade fctl`); either restarts the
@@ -145,6 +146,9 @@ a session before it publishes.
   `gh workflow run autobump.yml -R hyperstructure/homebrew-tap -f version=X.Y.Z`.
   When the bump itself failed, its run in the tap says why
   (`gh run list -R hyperstructure/homebrew-tap --workflow autobump.yml`).
+  A pull request it opened but didn't merge (a check failed, or it didn't
+  finish in 45 minutes) stays open, and later runs leave it be: fix it
+  there, and a code owner merges it.
 - Never move or delete a published tag or its files on fctl.sh: installed
   CLIs and hosts download releases by version.
 
@@ -156,4 +160,5 @@ a session before it publishes.
 - **hyperstructure/sandbox** publishes the sandbox image from `main`, for
   every fctl release; see its AGENTS.md and publish skill.
 - **hyperstructure/homebrew-tap** has the Homebrew formula, which its
-  brew bump workflow updates in a pull request for every fctl release.
+  brew bump workflow updates in a pull request for every fctl release and
+  merges once its checks pass.
