@@ -340,7 +340,8 @@ token can't do them alone
   owner's role;
 - turning off what makes people prove it's them: requiring two-factor
   sign-in, of the instance or a workspace, asking for codes on Google
-  sign-in, and this confirmation itself; resetting someone's two-factor
+  sign-in, everyone's or your own (which also emails you), and this
+  confirmation itself; resetting someone's two-factor
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
   everyone's sessions there, registering a new one for a workspace (as

@@ -104,7 +104,8 @@ owner and purpose), so a value copied between rows does not decrypt.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
-  roles, turning two-factor sign-in or this off, resetting someone's
+  roles, turning two-factor sign-in, codes on Google sign-in or this off,
+  resetting someone's
   two-factor sign-in, removing a passkey, adding or registering a runner
   for a workspace and replacing its token, new access tokens and CLI
   sign-ins, exporting your data, deleting accounts, projects and

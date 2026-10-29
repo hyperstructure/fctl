@@ -94,6 +94,13 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateTwoFactorRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
     if let Some(google) = body.google {
+        // No longer asking for a code on Google sign-in lets whoever has the
+        // person's Google account in without one: a stolen session or token
+        // can't turn it off alone, as the instance's own setting can't be.
+        let stops = user.two_factor_google && !google;
+        if stops {
+            ctx.verified(fctl_domain::verify::Sensitive::StopGoogleCodes)?;
+        }
         q(
             &ctx.db,
             "UPDATE users SET two_factor_google = ?, updated_at = ? WHERE id = ?",
@@ -106,6 +113,19 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             Some(&user.id),
             Some(serde_json::json!({ "google": google })),
         );
+        if stops {
+            let instance = crate::instance::name(&ctx.db, &ctx.cfg).await?;
+            crate::email::notice(
+                ctx,
+                &user,
+                "Google sign-ins no longer ask for a code",
+                format!(
+                    "Signing in to your {instance} account ({}) with Google no longer asks for a code from your authenticator app.\n\nIf you didn't turn that off, turn it on again in Settings now and change your password: {}",
+                    user.email,
+                    ctx.cfg.url("/settings")
+                ),
+            );
+        }
     }
     me(ctx, &user.id).await
 }
