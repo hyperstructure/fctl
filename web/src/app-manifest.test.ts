@@ -53,4 +53,15 @@ describe("the installable app", () => {
     expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
     expect(pngSize("apple-touch-icon.png")).toBe("180x180");
   });
+
+  // Google Search takes no SVG favicon, and crops one that is opaque to its
+  // edges into its circle. Browsers keep the SVG for tabs: Chrome prefers an
+  // icon link without sizes there, and Firefox an SVG.
+  it("links a full-bleed PNG favicon for search results beside the SVG one", () => {
+    expect(html).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml" />');
+    expect(html).toContain(
+      '<link rel="icon" href="/icon-maskable-512.png" type="image/png" sizes="512x512" />',
+    );
+    expect(pngSize("icon-maskable-512.png")).toBe("512x512");
+  });
 });
