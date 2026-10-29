@@ -337,6 +337,44 @@ pub async fn start(socket: &Path, mut exec: Exec) -> Result<Started> {
     })
 }
 
+/// Asks a VM booted to unpack an image to unpack `layers`, whose bytes are
+/// the files `blobs`, and sends them, within `within`; what it wrote: files
+/// and bytes. A VM that fails stops reading and says why, which is the
+/// error rather than the write that failed after it.
+pub async fn unpack(
+    socket: &Path,
+    layers: &[fctl_proto::vm::Layer],
+    blobs: &[std::path::PathBuf],
+    within: Duration,
+) -> Result<(u64, u64)> {
+    let unpacking = Request::Unpack {
+        layers: layers.to_vec(),
+    };
+    let (mut r, mut w) = request(socket, &unpacking).await?;
+    let work = async {
+        let sent = async {
+            for blob in blobs {
+                let mut file = tokio::fs::File::open(blob).await?;
+                tokio::io::copy(&mut file, &mut w).await?;
+            }
+            w.flush().await
+        }
+        .await;
+        match (sent, read_reply(&mut r).await) {
+            (_, Ok(Reply { error: Some(e), .. })) => bail!("{e}"),
+            (Err(e), _) => Err(anyhow::Error::from(e).context("sending a layer to the VM")),
+            (Ok(()), Ok(reply)) => Ok((reply.files.unwrap_or(0), reply.bytes.unwrap_or(0))),
+            (Ok(()), Err(e)) => Err(e),
+        }
+    };
+    tokio::time::timeout(within, work).await.map_err(|_| {
+        anyhow::anyhow!(
+            "unpacking the image took more than {} minutes",
+            within.as_secs() / 60
+        )
+    })?
+}
+
 /// Asks the init to stop the VM.
 pub async fn shutdown(socket: &Path) -> Result<()> {
     request(socket, &Request::Shutdown).await.map(drop)
@@ -479,6 +517,61 @@ mod tests {
         assert_eq!(
             wait_ready(&socket, Duration::from_secs(5), || true).await?,
             "0.27.0"
+        );
+        Ok(())
+    }
+
+    /// A VM that unpacks: one that takes it all and says what it wrote,
+    /// and one that fails halfway, says why and hangs up.
+    #[tokio::test]
+    async fn unpacking_says_why_the_vm_stopped() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let blob = dir.path().join("layer");
+        std::fs::write(&blob, vec![7u8; 8 * 1024 * 1024])?;
+        let layers = [fctl_proto::vm::Layer {
+            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+            size: 8 * 1024 * 1024,
+        }];
+        let ok_dir = dir.path().join("ok");
+        std::fs::create_dir_all(&ok_dir)?;
+        let ok = fake_vm(&ok_dir, |request, mut r, mut w| async move {
+            let Request::Unpack { layers } = request else {
+                return;
+            };
+            reply(&mut w, &Reply::default()).await;
+            let mut rest = vec![0u8; layers.iter().map(|l| l.size as usize).sum()];
+            if r.read_exact(&mut rest).await.is_ok() {
+                let done = Reply {
+                    files: Some(3),
+                    bytes: Some(10),
+                    ..Reply::default()
+                };
+                reply(&mut w, &done).await;
+            }
+        })
+        .await?;
+        let blobs = [blob.clone()];
+        assert_eq!(
+            unpack(&ok, &layers, &blobs, Duration::from_secs(30)).await?,
+            (3, 10)
+        );
+        let failing_dir = dir.path().join("failing");
+        std::fs::create_dir_all(&failing_dir)?;
+        let failing = fake_vm(&failing_dir, |_, mut r, mut w| async move {
+            reply(&mut w, &Reply::default()).await;
+            let mut some = vec![0u8; 1024];
+            let _ = r.read_exact(&mut some).await;
+            reply(
+                &mut w,
+                &Reply::failed("unpacking layer 1 of 1: No space left on device"),
+            )
+            .await;
+        })
+        .await?;
+        let e = unpack(&failing, &layers, &blobs, Duration::from_secs(30)).await;
+        assert_eq!(
+            e.err().map(|e| e.to_string()).as_deref(),
+            Some("unpacking layer 1 of 1: No space left on device")
         );
         Ok(())
     }

@@ -99,6 +99,25 @@ fn kvm_problem() -> Option<String> {
     }
 }
 
+/// Removes what is in `dir` for more than two days: what pulls left that
+/// stopped halfway, when the host did.
+fn remove_stale(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(2 * 24 * 60 * 60));
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Makes an ext4 filesystem in a new sparse file of `gb` GiB at `path`,
 /// whose root is root's, labelled `label`, with a journal or not. It never
 /// writes over a file there, a sandbox's disk say.
@@ -515,10 +534,14 @@ impl FirecrackerDriver {
             resolved.layers.len(),
             total.div_ceil(1_000_000)
         ));
-        let downloads = self
-            .root
-            .join("downloads")
-            .join(hex::encode(&Sha256::digest(resolved.id.as_bytes())[..8]));
+        // A directory of this pull's own: another pull of the same image, by
+        // another name or in another process, has another.
+        remove_stale(&self.root.join("downloads"));
+        let downloads = self.root.join("downloads").join(format!(
+            "{}-{}",
+            hex::encode(&Sha256::digest(resolved.id.as_bytes())[..8]),
+            hex::encode(fctl_domain::random_bytes::<6>())
+        ));
         let result = async {
             let (rootfs, files, bytes) = self
                 .download_and_unpack(image, &registry, &resolved, &downloads, log)
@@ -536,7 +559,13 @@ impl FirecrackerDriver {
                 pulled_ms: vsock::now_ms(),
             };
             let _images = self.lock_images().await?;
-            self.store.add(&pulled, &rootfs)?;
+            // Another pull may have brought the same image meanwhile, which
+            // sandboxes may use already.
+            if self.store.image(&pulled.id).is_some() {
+                self.store.tag(image, &pulled.id)?;
+            } else {
+                self.store.add(&pulled, &rootfs)?;
+            }
             self.remove_unused();
             Ok::<_, anyhow::Error>((files, bytes))
         }
@@ -598,28 +627,15 @@ impl FirecrackerDriver {
             "fctl-unpack-{}",
             hex::encode(fctl_domain::random_bytes::<6>())
         );
+        remove_stale(&self.root.join("unpacking"));
         let vm = Vm::new(self.root.join("unpacking").join(&name))?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
         vm.start(&spec, &firecracker, None).await?;
         let result = async {
             vm.wait_ready().await?;
-            let request = fctl_proto::vm::Request::Unpack {
-                layers: layers.to_vec(),
-            };
-            let (mut r, mut w) = vsock::request(&vm.vsock(), &request).await?;
-            for blob in blobs {
-                let mut file = tokio::fs::File::open(blob).await?;
-                tokio::io::copy(&mut file, &mut w)
-                    .await
-                    .context("sending a layer to the VM")?;
-            }
-            let reply = tokio::time::timeout(registry::LAYER_TIME, vsock::read_reply(&mut r))
-                .await
-                .context("unpacking took too long")??;
-            if let Some(e) = reply.error {
-                bail!("{e}");
-            }
-            Ok((reply.files.unwrap_or(0), reply.bytes.unwrap_or(0)))
+            let within =
+                registry::LAYER_TIME * u32::try_from(blobs.len().max(1)).unwrap_or(u32::MAX);
+            vsock::unpack(&vm.vsock(), layers, blobs, within).await
         }
         .await;
         let result = result.map_err(|e| {
