@@ -103,7 +103,29 @@ pub struct AgentIo {
 
 /// The sandbox name for a session id: `fctl-ses-01ab…` (lowercase, dashes).
 pub fn sandbox_name(session_id: &str) -> String {
-    format!("fctl-{}", session_id.to_lowercase().replace('_', "-"))
+    format!("fctl-{}", name_part(session_id))
+}
+
+/// The sandbox name of a Claude sign-in: `fctl-login-01ab…`.
+pub fn login_name(job_id: &str) -> String {
+    format!("fctl-login-{}", name_part(job_id))
+}
+
+/// An id the control plane sent, as part of a sandbox name: in lowercase,
+/// with a dash for anything else than a letter or a digit. Ids are those
+/// already, `_` aside; whatever else a control plane sends stays one name
+/// for the container runtime, and one part of a path for the process
+/// driver, which keeps each sandbox in a directory of that name.
+fn name_part(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// The session id back from a sandbox name.
@@ -762,5 +784,25 @@ mod tests {
             Some("ses_01M553XWYGXA3FE9YKD72G5Y8T")
         );
         assert_eq!(session_of("fctl-login-x"), None);
+        assert_eq!(login_name("lgn_01ABC"), "fctl-login-lgn-01abc");
+    }
+
+    #[test]
+    fn names_stay_one_name_whatever_the_control_plane_sends() {
+        for id in [
+            "ses_/../../etc",
+            "ses_..",
+            "lgn_a b\\c",
+            "ses_x\0y",
+            "ses_é",
+        ] {
+            for name in [sandbox_name(id), login_name(id)] {
+                assert!(
+                    name.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                    "{name}"
+                );
+            }
+        }
     }
 }

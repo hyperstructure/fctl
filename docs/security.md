@@ -536,9 +536,12 @@ plane schedules sessions by these lists, and the host checks them again
 before it takes a session. To build, the host downloads the repository at
 the tip of its default branch with the session's GitHub token, which the
 build never sees, and runs the build in its container runtime's builder,
-outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)).
-Hosts pull images with their own registry logins; fctl stores no registry
-credentials.
+outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)),
+from the repository's files alone: the host checks again that the
+Dockerfile and the directory a project names are in the repository, and
+keeps each sandbox's name to letters, digits and dashes, whatever the
+control plane sends. Hosts pull images with their own registry logins;
+fctl stores no registry credentials.
 
 ## The control plane without Cloudflare
 
@@ -561,8 +564,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   whatever the apps show; keep such an instance to a network you trust.
 - **The data directory** holds D1 and every Durable Object as SQLite
   files: password hashes, encrypted credentials and secrets, transcripts
-  and attached files. Encryption at rest is the disk's. One server at a
-  time uses it (`server.lock`): two would each run the same sessions.
+  and attached files. Encryption at rest is the disk's, and the server
+  keeps the SQLite files' directory (`state`) to its own user (mode 0700),
+  or says in its log that it couldn't, for one another user owns.
+  One server at a time uses it (`server.lock`): two would each run the
+  same sessions.
 - Errors the Worker throws come back as plain 500s, without the stack
   traces Miniflare shows in development.
 

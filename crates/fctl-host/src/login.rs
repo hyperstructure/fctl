@@ -33,10 +33,7 @@ pub async fn run(
         });
     };
     send(ClaudeLoginUpdate::Starting);
-    let name = format!(
-        "fctl-login-{}",
-        job.as_str().to_lowercase().replace('_', "-")
-    );
+    let name = crate::driver::login_name(job.as_str());
     let result = login(&ctx, &name, cmds, &send).await;
     let sb = ctx.driver.handle(&name);
     let _ = ctx.driver.remove(&sb).await;

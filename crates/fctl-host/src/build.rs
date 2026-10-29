@@ -48,10 +48,16 @@ pub enum Recipe {
 /// The recipe for `setting`, given the text of the file it names, and what
 /// fctl leaves out of a dev container configuration, for the log.
 pub fn recipe(setting: &ImageBuild, file: &[u8]) -> Result<(Recipe, Vec<String>)> {
+    // In the repository, as the control plane checked them
+    // (`fctl_domain::validate::image_build`), and as the paths a dev
+    // container's configuration names are: whatever a control plane sends,
+    // the build reads nothing of the host's.
+    let path = setting_path(setting)?;
     if !setting.is_devcontainer() {
         let recipe = Recipe::Build {
-            dockerfile: setting.file.clone(),
-            context: setting.context.clone().unwrap_or_default(),
+            dockerfile: path,
+            context: join("", setting.context.as_deref().unwrap_or_default())
+                .with_context(|| "The directory the project's image builds in")?,
             args: BTreeMap::new(),
             target: None,
         };
@@ -59,8 +65,13 @@ pub fn recipe(setting: &ImageBuild, file: &[u8]) -> Result<(Recipe, Vec<String>)
     }
     let text = String::from_utf8_lossy(file);
     let config: Value = serde_json::from_str(&strip_jsonc(&text))
-        .with_context(|| format!("Reading {} (JSON with comments)", setting.file))?;
-    devcontainer(&setting.file, &config)
+        .with_context(|| format!("Reading {path} (JSON with comments)"))?;
+    devcontainer(&path, &config)
+}
+
+/// The file a project's setting names, as a path in the repository.
+fn setting_path(setting: &ImageBuild) -> Result<String> {
+    join("", &setting.file).with_context(|| format!("The project's {}", setting.file))
 }
 
 /// The recipe in a dev container configuration at `path`: its `image`, or
@@ -689,11 +700,14 @@ async fn resolve(
             repo.full_name()
         )
     };
+    // Only from the repository: a path that left it would name another
+    // repository's file in GitHub's API.
+    let path = setting_path(setting)?;
     let file = gh
-        .file(repo, &commit, &setting.file)
+        .file(repo, &commit, &path)
         .await?
-        .with_context(|| missing(&setting.file))?;
-    too_large(&setting.file, &file)?;
+        .with_context(|| missing(&path))?;
+    too_large(&path, &file)?;
     let (recipe, notes) = recipe(setting, &file)?;
     for note in notes {
         log(note);
@@ -706,7 +720,7 @@ async fn resolve(
             ..
         } => (dockerfile, context),
     };
-    let dockerfile_text = if *dockerfile == setting.file {
+    let dockerfile_text = if *dockerfile == path {
         file.clone()
     } else {
         gh.file(repo, &commit, dockerfile)
@@ -867,6 +881,34 @@ mod tests {
         let (r, _) = recipe(&setting("Dockerfile", Some("app")), b"FROM x")?;
         assert_eq!(r, build("Dockerfile", "app"));
         Ok(())
+    }
+
+    #[test]
+    fn a_dev_container_and_what_it_names_stay_in_the_repository() {
+        let config = br#"{ "build": { "dockerfile": "Dockerfile", "context": ".." } }"#;
+        assert!(
+            recipe(
+                &setting("../../x/.devcontainer/devcontainer.json", None),
+                config
+            )
+            .is_err()
+        );
+        assert!(recipe(&setting("a/../../devcontainer.json", None), config).is_err());
+        assert!(matches!(
+            recipe(&setting("./app/.devcontainer/devcontainer.json", None), config),
+            Ok((r, _)) if r == build("app/.devcontainer/Dockerfile", "app")
+        ));
+    }
+
+    #[test]
+    fn a_dockerfile_and_its_context_stay_in_the_repository() {
+        assert!(recipe(&setting("../Dockerfile", None), b"FROM x").is_err());
+        assert!(recipe(&setting("Dockerfile", Some("../..")), b"FROM x").is_err());
+        assert!(recipe(&setting("Dockerfile", Some("app/../../home")), b"FROM x").is_err());
+        assert!(matches!(
+            recipe(&setting("Dockerfile", Some("app/../web")), b"FROM x"),
+            Ok((r, _)) if r == build("Dockerfile", "web")
+        ));
     }
 
     #[test]
