@@ -2707,11 +2707,88 @@ pub fn held_back(f: &Found<'_>) -> String {
         ("them", "these")
     };
     format!(
-        "fctl's review agent found {} in commit {} of {}{}. fctl didn't pass {them} on: the agent got the findings of {MAX_PASSED_ON} reviews in a row, with no message from a person in between. Message the agent to have it look at {these}.",
+        "fctl's review agent found {} in commit {} of {}{}. fctl didn't pass {them} on: the agent got the findings of {MAX_PASSED_ON} reviews in a row, with no message from a person in between. Message the agent, or pass {them} on from the pull request on the session's page, to have it look at {these}.",
         issues(f.findings.len()),
         short(f.sha),
         f.pull_request(),
         f.link()
+    )
+}
+
+/// What a session keeps of a review whose findings fctl held back from its
+/// agent ([`held_back`]), to pass them on once a person says so: the
+/// message the agent would have got, and what its transcript shows of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Held {
+    /// The review agent's session.
+    pub review: SessionId,
+    /// The reviews in a row whose findings the agent got before it.
+    pub after: u32,
+    /// The message for the agent ([`passed_on`]).
+    pub text: String,
+    /// What its transcript shows of the message ([`passed_on_review`]),
+    /// which names the pull request.
+    #[serde(default)]
+    pub shown: Option<PassedOnReview>,
+}
+
+impl Held {
+    /// The pull request, by its URL.
+    fn pull_request(&self) -> Option<&str> {
+        self.shown.as_ref().map(|s| s.url.as_str())
+    }
+}
+
+/// Keeps `h` with the reviews whose findings fctl holds back from a
+/// session's agent, in place of an earlier review of the same pull request,
+/// whose findings the newer one's supersede: one for each of the session's
+/// pull requests.
+pub fn hold(held: &mut Vec<Held>, h: Held) {
+    let same = |x: &Held| match (x.pull_request(), h.pull_request()) {
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
+    };
+    held.retain(|x| x.review != h.review && !same(x));
+    held.push(h);
+    let over = held.len().saturating_sub(crate::pulls::MAX_PULL_REQUESTS);
+    held.drain(..over);
+}
+
+/// Marks the reviews among `held` on the session's pull requests whose
+/// checks show them, and unmarks the others ([`ReviewCheck::held_after`]).
+/// Returns whether any changed.
+pub fn mark_held(prs: &mut [PullRequestRef], held: &[Held]) -> bool {
+    let mut changed = false;
+    for r in prs
+        .iter_mut()
+        .filter_map(|p| p.checks.as_mut()?.review.as_mut())
+    {
+        let after = held
+            .iter()
+            .find(|h| r.session_id.as_ref() == Some(&h.review))
+            .map(|h| h.after);
+        changed |= r.held_after != after;
+        r.held_after = after;
+    }
+    changed
+}
+
+/// Whether a session's pull requests show `review` as held ([`mark_held`]):
+/// its pull request's check is that review's, so no newer review of it took
+/// its place.
+pub fn shows_held(prs: &[PullRequestRef], review: &SessionId) -> bool {
+    prs.iter()
+        .filter_map(|p| p.checks.as_ref()?.review.as_ref())
+        .any(|r| r.held_after.is_some() && r.session_id.as_ref() == Some(review))
+}
+
+/// What the transcript says when `name` passes on the findings fctl held
+/// back: the agent gets them now, and those of the reviews after them, up
+/// to [`MAX_PASSED_ON`] in a row with these.
+pub fn passed_on_by(name: &str) -> String {
+    format!(
+        "{} passed on the findings fctl held back, for up to {MAX_PASSED_ON} more rounds of review.",
+        name.trim()
     )
 }
 
@@ -3656,6 +3733,7 @@ mod tests {
             session_id: SessionId::parse("ses_1"),
             url: None,
             project_id: None,
+            held_after: None,
         };
         let project = ProjectId::parse("prj_1");
         let kept = |state| Kept {
@@ -3733,6 +3811,7 @@ mod tests {
                 session_id: None,
                 url: None,
                 project_id: None,
+                held_after: None,
             })
         };
         use ReviewState::*;
@@ -4316,7 +4395,7 @@ mod tests {
         assert_eq!(
             held_back(&found),
             format!(
-                "fctl's review agent found 3 issues in commit 3f2a1c9 of acme/web#12 (https://github.com/acme/web/pull/12#issuecomment-79). fctl didn't pass them on: the agent got the findings of {MAX_PASSED_ON} reviews in a row, with no message from a person in between. Message the agent to have it look at these."
+                "fctl's review agent found 3 issues in commit 3f2a1c9 of acme/web#12 (https://github.com/acme/web/pull/12#issuecomment-79). fctl didn't pass them on: the agent got the findings of {MAX_PASSED_ON} reviews in a row, with no message from a person in between. Message the agent, or pass them on from the pull request on the session's page, to have it look at these."
             )
         );
 
@@ -4332,7 +4411,106 @@ mod tests {
         assert!(m.contains("Leave the thread unresolved: fctl's review of your next commit resolves it if that commit fixes the finding."));
         assert!(!m.contains("review's summary"));
         assert!(held_back(&one).contains("fctl didn't pass it on: "));
-        assert!(held_back(&one).ends_with("Message the agent to have it look at this one."));
+        assert!(held_back(&one).ends_with(
+            "Message the agent, or pass it on from the pull request on the session's page, to have it look at this one."
+        ));
+    }
+
+    #[test]
+    fn held_reviews_show_on_their_pull_requests_until_passed_on() {
+        let web = "https://github.com/acme/web/pull/12";
+        let api = "https://github.com/acme/api/pull/3";
+        let review = |id: &str, url: &str| Held {
+            review: SessionId(id.into()),
+            after: MAX_PASSED_ON,
+            text: format!("the findings of {id}"),
+            shown: Some(PassedOnReview {
+                repo: pr().repo,
+                number: 12,
+                url: url.into(),
+                title: None,
+                sha: SHA.into(),
+                summary_url: None,
+                session: SessionId(id.into()),
+                findings: Vec::new(),
+            }),
+        };
+        let ids = |held: &[Held]| -> Vec<String> {
+            held.iter().map(|h| h.review.as_str().to_owned()).collect()
+        };
+        let mut held = Vec::new();
+        hold(&mut held, review("ses_r1", web));
+        hold(&mut held, review("ses_r2", api));
+        // A newer review of a pull request takes its older one's place,
+        // whatever the case of its URL, and a review held again its own.
+        hold(&mut held, review("ses_r3", &web.to_uppercase()));
+        hold(&mut held, review("ses_r3", web));
+        assert_eq!(ids(&held), ["ses_r2", "ses_r3"]);
+        // One for each pull request a session lists, at most: the newest.
+        let mut many = Vec::new();
+        for i in 0..=crate::pulls::MAX_PULL_REQUESTS {
+            let url = format!("https://github.com/acme/web/pull/{i}");
+            hold(&mut many, review(&format!("ses_{i}"), &url));
+        }
+        assert_eq!(many.len(), crate::pulls::MAX_PULL_REQUESTS);
+        assert_eq!(many[0].review.as_str(), "ses_1");
+
+        // Marked on the pull requests whose checks show them.
+        let check = |id: &str| ReviewCheck {
+            state: ReviewState::Commented,
+            waiting: false,
+            findings: 2,
+            still_open: 0,
+            session_id: SessionId::parse(id),
+            url: None,
+            project_id: None,
+            held_after: None,
+        };
+        let listed = |url: &str, review: Option<ReviewCheck>| PullRequestRef {
+            number: 12,
+            url: url.into(),
+            checks: Some(fctl_proto::session::PullRequestChecks {
+                passed: 3,
+                at: 1,
+                review,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut prs = vec![
+            listed(web, Some(check("ses_r3"))),
+            // Reviewed again since: its newer review isn't held.
+            listed(api, Some(check("ses_r9"))),
+            listed("https://github.com/acme/web/pull/13", None),
+            PullRequestRef {
+                url: "https://github.com/acme/web/pull/14".into(),
+                ..Default::default()
+            },
+        ];
+        let marks = |prs: &[PullRequestRef]| -> Vec<Option<u32>> {
+            prs.iter()
+                .map(|p| p.checks.as_ref()?.review.as_ref()?.held_after)
+                .collect()
+        };
+        assert!(mark_held(&mut prs, &held));
+        assert_eq!(marks(&prs), [Some(MAX_PASSED_ON), None, None, None]);
+        assert!(!mark_held(&mut prs, &held));
+        // Only what they show as held passes on: not the review of a pull
+        // request that a newer review took the place of.
+        let id = |s: &str| SessionId(s.into());
+        assert!(shows_held(&prs, &id("ses_r3")));
+        assert!(!shows_held(&prs, &id("ses_r2")));
+        assert!(!shows_held(&prs, &id("ses_r9")));
+        // Passed on, or a person wrote to the agent: unmarked.
+        assert!(mark_held(&mut prs, &[]));
+        assert_eq!(marks(&prs), [None; 4]);
+
+        assert_eq!(
+            passed_on_by(" Ada Lovelace "),
+            format!(
+                "Ada Lovelace passed on the findings fctl held back, for up to {MAX_PASSED_ON} more rounds of review."
+            )
+        );
     }
 
     #[test]

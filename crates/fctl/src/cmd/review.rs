@@ -9,7 +9,6 @@ use anyhow::{Context, Result, bail};
 use clap::builder::BoolishValueParser;
 use clap::{Args, Subcommand};
 use fctl_domain::reviews::short;
-use fctl_proto::SessionId;
 use fctl_proto::agent::{SessionReply, SessionRequest};
 use fctl_proto::api::{
     AgentAnswer, AgentCall, FindingThread, PostedReview, PullRequestSummary, ResolvedFinding,
@@ -17,7 +16,8 @@ use fctl_proto::api::{
     SummarizedPullRequest, SummaryHighlight, UpdateReviewAgentsRequest,
 };
 use fctl_proto::session::SessionStatus;
-use serde::Deserialize;
+use fctl_proto::{DeliveryId, SessionId};
+use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -51,6 +51,18 @@ pub enum ReviewCmd {
         /// The pull request: owner/name#12, its URL, or its number in the
         /// project's repository.
         pull_request: String,
+    },
+    /// Pass on to a session's agent the findings fctl held back from it,
+    /// once it got those of five reviews in a row with no message from a
+    /// person: it gets them now, and those of the reviews after them, up to
+    /// five in a row with these, before fctl holds them back again (people
+    /// who may message the agent).
+    #[command(
+        after_help = "A message to the agent ends the reviews in a row too, without passing the held findings on.\n\nExamples:\n  fctl review pass-on my-app#12\n  fctl show my-app#12        # says which findings fctl holds back"
+    )]
+    PassOn {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
     },
     /// Show the project's review agents, or turn them on or off and say
     /// how they review (the project's owners; the person they run for may
@@ -224,6 +236,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             print_settings(&project, &agents);
             Ok(())
         }
+        ReviewCmd::PassOn { session } => pass_on(server, &session, json).await,
         ReviewCmd::Bots { name } => bots(server, args.project, name, json).await,
         ReviewCmd::Threads => threads(json).await,
         ReviewCmd::Summarize { file } => summarize(&file, json).await,
@@ -272,6 +285,84 @@ fn repos_arg(s: &str) -> std::result::Result<Repos, String> {
         return Err("name the repositories, as acme/shared-lib,docs, or none".into());
     }
     Ok(Repos(list))
+}
+
+/// What `fctl review pass-on --json` prints: each review whose findings
+/// went to the agent, and the message they went in.
+#[derive(Serialize)]
+struct PassedOn {
+    passed_on: Vec<PassedOnReview>,
+}
+
+#[derive(Serialize)]
+struct PassedOnReview {
+    /// The review's session.
+    review: SessionId,
+    /// Its pull request on GitHub.
+    pull_request: String,
+    delivery_id: DeliveryId,
+}
+
+/// `fctl review pass-on SESSION`: the findings of each review that fctl
+/// holds back from the session's agent, as its pull requests say
+/// (`ReviewCheck::held_after`), go to the agent.
+async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
+    let api = config::api(server)?;
+    let s = super::sessions::resolve(&api, reference).await?;
+    let name = format!("{}#{}", s.project_slug, s.number);
+    let held: Vec<_> = s
+        .pull_requests
+        .iter()
+        .filter_map(|pr| {
+            let checks = pr.checks.as_ref()?;
+            let review = checks.review.as_ref()?;
+            let after = review.held_after?;
+            Some((pr, checks.sha.as_deref(), review.session_id.clone()?, after))
+        })
+        .collect();
+    if held.is_empty() {
+        bail!("fctl holds back no review's findings from the agent of {name}");
+    }
+    let mut passed = Vec::new();
+    for (pr, sha, review, after) in held {
+        let sent = api.pass_on_review(s.id.as_str(), review.as_str()).await?;
+        passed.push((pr, sha, after, review, sent.delivery_id));
+    }
+    if json {
+        return style::print_json(&PassedOn {
+            passed_on: passed
+                .into_iter()
+                .map(|(pr, _, _, review, delivery_id)| PassedOnReview {
+                    review,
+                    pull_request: pr.url.clone(),
+                    delivery_id,
+                })
+                .collect(),
+        });
+    }
+    for (pr, sha, after, _, _) in passed {
+        let what = match pr
+            .repo
+            .clone()
+            .or_else(|| fctl_domain::pulls::repo_of(&pr.url))
+        {
+            Some(repo) => format!("{}#{}", repo.full_name(), pr.number),
+            None => format!("#{}", pr.number),
+        };
+        let at = sha.map(|s| format!(" at {}", short(s))).unwrap_or_default();
+        println!(
+            "{} Passed on the findings of fctl's review of {}{at} to the agent of {name}",
+            style::accent("✓"),
+            style::terminal_safe(&what)
+        );
+        println!(
+            "  {}",
+            style::dim(&format!(
+                "It gets those of up to {after} reviews in a row, these included, before fctl holds them back again."
+            ))
+        );
+    }
+    Ok(())
 }
 
 /// `fctl review bots [NAME]`.

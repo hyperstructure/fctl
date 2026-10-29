@@ -555,6 +555,45 @@ pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     })
 }
 
+/// Passes on to the session's agent the findings of review `review`, which
+/// fctl held back from it (`ReviewCheck::held_after`): the agent gets the
+/// message from fctl it would have got, which resumes a stopped session on
+/// the subscription it ran on, and those of up to
+/// `fctl_domain::reviews::MAX_PASSED_ON` reviews in a row, these included,
+/// before fctl holds them back again. For those who may message the agent.
+pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Response> {
+    let a = access::session(ctx, id).await?;
+    a.require_editor()?;
+    refuse_review(&a.row)?;
+    let Some(review) = fctl_proto::SessionId::parse(review) else {
+        return Err(not_found("Review"));
+    };
+    let status = a.row.status();
+    if !status.accepts_messages() && !status.resumes_for_messages() {
+        return Err(conflict("The session failed. Resume it to continue."));
+    }
+    let by = ctx.user()?.to_ref();
+    let stub = internal::session_stub(&ctx.env, id)?;
+    let out: Delivered = internal::post(
+        &stub,
+        "/pass-on",
+        &internal::PassOn {
+            review: review.clone(),
+            by,
+        },
+    )
+    .await?;
+    ctx.audit_in(
+        Some(a.workspace_id()),
+        "review.held_passed_on",
+        Some(id),
+        Some(serde_json::json!({ "review": review })),
+    );
+    http::ok(&SendMessageResponse {
+        delivery_id: out.delivery_id,
+    })
+}
+
 pub async fn stop(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
     a.require_owner()?;

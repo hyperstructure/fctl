@@ -387,6 +387,9 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Patch, ["sessions", id]) => api::sessions::update(ctx, req, id).await,
         (Post, ["sessions", id, "messages"]) => api::sessions::send_message(ctx, req, id).await,
         (Post, ["sessions", id, "interrupt"]) => api::sessions::interrupt(ctx, id).await,
+        (Post, ["sessions", id, "reviews", review, "pass-on"]) => {
+            api::sessions::pass_on(ctx, id, review).await
+        }
         (Post, ["sessions", id, "stop"]) => api::sessions::stop(ctx, id).await,
         (Post, ["sessions", id, "resume"]) => api::sessions::resume(ctx, req, id).await,
         (Get, ["sessions", id, "events"]) => api::sessions::events(ctx, req, id).await,

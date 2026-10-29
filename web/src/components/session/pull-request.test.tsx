@@ -8,10 +8,14 @@ import { PullRequestChecksIcon, PullRequestReviewLine, PullRequestReviewMark } f
 
 // The projects of the person who looks, and the reviews they ask for.
 const state = vi.hoisted(() => ({ projects: [] as G.Project[] }));
-const { startReview, toast } = vi.hoisted(() => ({ startReview: vi.fn(), toast: vi.fn() }));
+const { startReview, passOnReview, toast } = vi.hoisted(() => ({
+  startReview: vi.fn(),
+  passOnReview: vi.fn(),
+  toast: vi.fn(),
+}));
 vi.mock("@/lib/api", () => ({
   ApiFailure: class extends Error {},
-  api: { projects: async () => ({ projects: state.projects }), startReview },
+  api: { projects: async () => ({ projects: state.projects }), startReview, passOnReview },
 }));
 vi.mock("@/components/ui", async (actual) => ({
   ...(await actual<typeof import("@/components/ui")>()),
@@ -193,5 +197,65 @@ describe("reviewing a pull request again", () => {
     // The control plane didn't say whose review it was.
     expect((await line(review("passed"))).again()).toBeNull();
     expect(startReview).not.toHaveBeenCalled();
+  });
+});
+
+describe("findings fctl held back", () => {
+  const held = review("commented", { findings: 2, held_after: 5 });
+  const strip = (c: HTMLElement) => c.querySelector('[role="status"]');
+  const button = (c: HTMLElement) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Continue"));
+
+  it("ends the card saying why, under the review's line", () => {
+    const c = render(<PullRequestReviewLine pr={pr(held)} review={held} passOnTo="ses_mine" />);
+    expect(strip(c)?.textContent).toContain("Paused after 5 review rounds");
+    expect(strip(c)?.textContent).toContain(
+      "fctl held these findings back, as nobody wrote to the agent in that time.",
+    );
+    expect(button(c)?.textContent).toBe("Continue for 5 more rounds");
+    // The strip has the card's rounded corners, not the line above it.
+    expect(c.querySelector("a")?.className).not.toContain("rounded-b");
+    expect(strip(c)?.className).toContain("rounded-b");
+    // Nothing held: the line ends the card.
+    const passed = review("commented", { findings: 2 });
+    const plain = render(<PullRequestReviewLine pr={pr(passed)} review={passed} passOnTo="ses_mine" />);
+    expect(strip(plain)).toBeNull();
+    expect(plain.querySelector("a")?.className).toContain("rounded-b");
+  });
+
+  it("passes them on for those who may message the agent, and stays off until they went", async () => {
+    passOnReview.mockResolvedValue({ delivery_id: "dlv_1" });
+    const { container, rerender } = mount(
+      <PullRequestReviewLine pr={pr(held)} review={held} passOnTo="ses_mine" />,
+    );
+    act(() => button(container)?.click());
+    await settle();
+    expect(passOnReview).toHaveBeenCalledTimes(1);
+    expect(passOnReview).toHaveBeenCalledWith("ses_mine", "ses_review");
+    expect(toast).toHaveBeenCalledWith("Findings passed on to the agent");
+    expect(button(container)?.disabled).toBe(true);
+    // The session says they went on: the card ends with the line again.
+    const sent = review("commented", { findings: 2 });
+    rerender(<PullRequestReviewLine pr={pr(sent)} review={sent} passOnTo="ses_mine" />);
+    expect(strip(container)).toBeNull();
+  });
+
+  it("says why they didn't go, and can try again", async () => {
+    passOnReview.mockRejectedValue(new Error("The session failed. Resume it to continue."));
+    const c = render(<PullRequestReviewLine pr={pr(held)} review={held} passOnTo="ses_mine" />);
+    act(() => button(c)?.click());
+    await settle();
+    expect(toast).toHaveBeenCalledWith("The session failed. Resume it to continue.", "error");
+    expect(button(c)?.disabled).toBe(false);
+  });
+
+  it("only says so to those who can't pass them on", () => {
+    const c = render(<PullRequestReviewLine pr={pr(held)} review={held} />);
+    expect(strip(c)?.textContent).toContain("Paused after 5 review rounds");
+    expect(button(c)).toBeUndefined();
+    const one = review("commented", { findings: 1, held_after: 1 });
+    const c1 = render(<PullRequestReviewLine pr={pr(one)} review={one} passOnTo="ses_mine" />);
+    expect(strip(c1)?.textContent).toContain("Paused after 1 review round");
+    expect(button(c1)?.textContent).toBe("Continue for 1 more round");
   });
 });

@@ -1264,8 +1264,9 @@ skip, drafts too, and fctl posts what it found on GitHub
    pull request up in its description first (`description_summary`,
    `fctl review settings --description-summary`, off until they turn it
    on; step 5), the GitHub Apps whose pull requests start reviews by
-   themselves (`bots`, below), and the repositories they skip (`project_reviews.skipped_repos`,
-   `ReviewAgents.skipped_repos`, `fctl review settings --skip-repos`),
+   themselves (`bots`, below), and the repositories they skip
+   (`project_reviews.skipped_repos`, `ReviewAgents.skipped_repos`, `fctl
+   review settings --skip-repos`),
    where another project's review agents review them, say: those the
    project's agents may write to are reviewed until the owners skip them,
    those linked later too. A skipped repository's pull requests get no
@@ -1443,7 +1444,18 @@ skip, drafts too, and fctl posts what it found on GitHub
    good, a session gets the findings of at most five reviews in a row
    (`MAX_PASSED_ON`) while no person messages its agent; the next ones
    only say in its transcript what they found (`review_held`), until
-   someone does. The review's `PostedReview.sent_to` names the session,
+   someone does. The session keeps each pull request's newest held
+   review (`reviews::Held`, `hold`) and marks it on the pull request's
+   review check (`ReviewCheck::held_after`, `mark_held`, again after each
+   lookup on GitHub), so that its page says so under the pull request,
+   with a button that passes the findings on
+   (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`, SessionObject's
+   `/pass-on`, `fctl review pass-on`): the agent gets the message it would
+   have got, the transcript says who passed it on (`review_passed_on`),
+   and the count starts again with it. Only a review its pull request
+   shows as held passes on (`shows_held`), not one a newer review of it
+   took the place of. A person's message, here or on
+   GitHub, ends the pause too, and drops what was held. The review's `PostedReview.sent_to` names the session,
    and its transcript links it
    ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).
 8. **A review that ends otherwise** (superseded, stopped, failed) ends

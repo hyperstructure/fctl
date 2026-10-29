@@ -332,6 +332,9 @@ export const api = {
     request<G.SendMessageResponse>("POST", `/sessions/${enc(id)}/messages`, b),
   uploadAttachment: upload,
   interrupt: (id: string) => request<G.SendMessageResponse>("POST", `/sessions/${enc(id)}/interrupt`, {}),
+  /** Hands the agent the findings of `review` (its session) that fctl held back from it. */
+  passOnReview: (id: string, review: string) =>
+    request<G.SendMessageResponse>("POST", `/sessions/${enc(id)}/reviews/${enc(review)}/pass-on`, {}),
   stop: (id: string) => request<G.Session>("POST", `/sessions/${enc(id)}/stop`, {}),
   resume: (id: string, prompt?: string, attachments?: G.AttachmentId[]) =>
     request<G.Session>("POST", `/sessions/${enc(id)}/resume`, { prompt, attachments }),

@@ -13,7 +13,7 @@ export type Notice = { level: NoticeLevel,
  * Stable identifier, for example `usage_limit`, `overage_blocked`,
  * `api_key_refused`, `credential_expired`, `runner_lost`,
  * `screenshot_published`, `memory_added`, `memory_stale`,
- * `retrospective`, `review_posted`, `review_held`,
+ * `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
  * `pull_request_summarized`, `follow_up_held`, `ticket_created`,
  * `ticket_commented`, `ticket_updated`, `ticket_replied`,
  * `ticket_moved`, `ticket_failed`.

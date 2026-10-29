@@ -181,6 +181,10 @@ const REVIEWS_TAKE_NO_MESSAGES: &str = "Review agents take no messages: this one
 /// The meta key that counts the reviews whose findings the agent got in a
 /// row, which a person's message ends (`fctl_domain::reviews::MAX_PASSED_ON`).
 const REVIEWS_PASSED_ON: &str = "reviews_passed_on";
+/// The meta key that keeps the reviews whose findings fctl held back from
+/// the agent, one for each pull request, until a person passes them on or
+/// writes to it (`fctl_domain::reviews::Held`).
+const HELD_REVIEWS: &str = "held_reviews";
 /// The meta key that counts the failed checks the agent heard of in a row,
 /// which a person's message, or their comment on GitHub, ends
 /// (`fctl_domain::follow_ups::MAX_CHECKS_IN_A_ROW`).
@@ -316,6 +320,10 @@ impl DurableObject for SessionObject {
                     Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
                 }
             }
+            (worker::Method::Post, "/pass-on") => match req.json::<internal::PassOn>().await {
+                Ok(b) => self.pass_on_held(b).await.map(|d| serde_json::json!(d)),
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
             (worker::Method::Post, "/notice") => {
                 match req.json::<fctl_proto::event::Notice>().await {
                     Ok(n) => Ok(self.control_notice(n)),
@@ -836,7 +844,7 @@ impl SessionObject {
             author: Some(_), ..
         } = &b.delivery.kind
         {
-            self.delete_meta(REVIEWS_PASSED_ON);
+            self.end_reviews_in_a_row(now).await;
             self.delete_meta(CHECKS_IN_A_ROW);
             self.delete_meta(CONFLICTS_IN_A_ROW);
         }
@@ -959,41 +967,169 @@ impl SessionObject {
             if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                 self.broadcast_events(&[json]);
             }
+            // Kept for a person to pass on (`Self::pass_on_held`), and
+            // marked on its pull request until then.
+            let mut kept = self.held_reviews();
+            fctl_domain::reviews::hold(
+                &mut kept,
+                fctl_domain::reviews::Held {
+                    review: b.review,
+                    after: in_a_row,
+                    text: b.text,
+                    shown: b.shown,
+                },
+            );
+            self.keep_held_reviews(&kept, now).await;
             return Ok(held(in_a_row));
         }
         // Counted before the message waits for a resume, so that another
         // review's findings, which may come meanwhile, count it. A resume
         // that fails leaves the message in the outbox, for the next run.
         self.set_meta(REVIEWS_PASSED_ON, &(in_a_row + 1).to_string());
-        let id = fctl_domain::ids::delivery_id(now);
-        let delivered = self
-            .deliver(Deliver {
-                delivery: Delivery {
-                    id: id.clone(),
-                    kind: DeliveryKind::Message {
-                        text: b.text.clone(),
-                        author: None,
-                        author_called: None,
-                        attachments: Vec::new(),
-                    },
-                },
-                client_key: Some(key),
-                event: EventBody::UserMessage(UserMessage {
-                    ticket: None,
-                    id,
-                    author: None,
-                    text: b.text,
-                    source: fctl_proto::event::MessageSource::System,
-                    attachments: Vec::new(),
-                    follow_up: None,
-                    review: b.shown,
-                }),
-            })
-            .await?;
+        let delivered = self.deliver_findings(key, b.text, b.shown, now).await?;
         Ok(internal::FindingsTold {
             delivery_id: Some(delivered.delivery_id),
             not_sent: None,
         })
+    }
+
+    /// Hands a review's findings to the agent in the message from fctl that
+    /// `crate::reviews` wrote (`text`), once by `key`, with what the
+    /// transcript shows of it.
+    async fn deliver_findings(
+        &self,
+        key: String,
+        text: String,
+        shown: Option<fctl_proto::event::PassedOnReview>,
+        now: i64,
+    ) -> std::result::Result<Delivered, ApiError> {
+        let id = fctl_domain::ids::delivery_id(now);
+        self.deliver(Deliver {
+            delivery: Delivery {
+                id: id.clone(),
+                kind: DeliveryKind::Message {
+                    text: text.clone(),
+                    author: None,
+                    author_called: None,
+                    attachments: Vec::new(),
+                },
+            },
+            client_key: Some(key),
+            event: EventBody::UserMessage(UserMessage {
+                ticket: None,
+                id,
+                author: None,
+                text,
+                source: fctl_proto::event::MessageSource::System,
+                attachments: Vec::new(),
+                follow_up: None,
+                review: shown,
+            }),
+        })
+        .await
+    }
+
+    /// Someone passes on the findings of a review that fctl held back from
+    /// the agent (`api::sessions::pass_on`): the agent gets the message it
+    /// would have got, which resumes a stopped session as the review's
+    /// would have, and the reviews in a row count from this one, as after a
+    /// person's message. The transcript says who passed them on. A failed
+    /// session keeps them back until it is resumed.
+    async fn pass_on_held(&self, b: internal::PassOn) -> std::result::Result<Delivered, ApiError> {
+        let Some(s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        if !s.status.accepts_messages() && !s.status.resumes_for_messages() {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "The session failed. Resume it to continue.",
+            ));
+        }
+        // Only a review that its pull request shows as held: not one that a
+        // newer review of the pull request took the place of.
+        let held = self
+            .held_reviews()
+            .into_iter()
+            .find(|h| h.review == b.review)
+            .filter(|_| fctl_domain::reviews::shows_held(&s.pull_requests, &b.review));
+        let Some(held) = held else {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "fctl holds back no findings of this review: the agent got them, someone has written to it since, or a newer review of its pull request came.",
+            ));
+        };
+        let now = now_ms();
+        let key = format!("review:{}", b.review);
+        // The review's key says fctl held its findings back, unless an
+        // earlier try delivered them already, which `deliver` then answers
+        // with, without a second notice.
+        if self.keyed(&key).is_none_or(|id| id.is_empty()) {
+            let _ = self.sql.exec(
+                "DELETE FROM client_keys WHERE key = ?",
+                Some(vec![sv(&key)]),
+            );
+            let notice = fctl_proto::event::Notice {
+                ticket: None,
+                level: fctl_proto::event::NoticeLevel::Info,
+                code: "review_passed_on".into(),
+                message: fctl_domain::reviews::passed_on_by(&b.by.name),
+                until: None,
+                published: None,
+                memory: None,
+                retrospective: None,
+                review: None,
+                summarized: None,
+                follow_up: None,
+            };
+            if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+                self.broadcast_events(&[json]);
+            }
+        }
+        self.set_meta(REVIEWS_PASSED_ON, "1");
+        // Listed until the agent has them, so that someone can try again
+        // when the session fails to resume.
+        let delivered = self
+            .deliver_findings(key, held.text, held.shown, now)
+            .await?;
+        // The list as it is now: a message, or another held review, may have
+        // come while the session resumed.
+        let mut kept = self.held_reviews();
+        kept.retain(|h| h.review != b.review);
+        self.keep_held_reviews(&kept, now).await;
+        Ok(delivered)
+    }
+
+    /// The reviews whose findings fctl holds back from the agent, one for
+    /// each pull request (`fctl_domain::reviews::hold`).
+    fn held_reviews(&self) -> Vec<fctl_domain::reviews::Held> {
+        self.meta(HELD_REVIEWS)
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default()
+    }
+
+    /// Keeps `held` as the reviews whose findings fctl holds back, and marks
+    /// them on the session's pull requests (`ReviewCheck::held_after`),
+    /// telling its viewers when that changed what they show.
+    async fn keep_held_reviews(&self, held: &[fctl_domain::reviews::Held], now: i64) {
+        if held.is_empty() {
+            self.delete_meta(HELD_REVIEWS);
+        } else if let Ok(text) = serde_json::to_string(held) {
+            self.set_meta(HELD_REVIEWS, &text);
+        }
+        let Some(mut s) = self.summary() else { return };
+        if fctl_domain::reviews::mark_held(&mut s.pull_requests, held) {
+            self.pull_requests_changed(s, now).await;
+        }
+    }
+
+    /// A person wrote to the agent, here or on GitHub: it gets reviews'
+    /// findings again, and those fctl held back are left to what they
+    /// wrote.
+    async fn end_reviews_in_a_row(&self, now: i64) {
+        self.delete_meta(REVIEWS_PASSED_ON);
+        if self.meta(HELD_REVIEWS).is_some() {
+            self.keep_held_reviews(&[], now).await;
+        }
     }
 
     /// Why the session's agent hears of nothing that happens to its pull
@@ -1188,7 +1324,7 @@ impl SessionObject {
         // People wrote to the agent: as a person's message, that ends the
         // automatic ones in a row.
         if follow_ups::from_people(&f) {
-            self.delete_meta(REVIEWS_PASSED_ON);
+            self.end_reviews_in_a_row(now).await;
         }
         for kind in follow_ups::Repeats::ALL {
             let before = self
@@ -2401,7 +2537,12 @@ impl SessionObject {
         let now = now_ms();
         let merged_before = merged(&s.pull_requests).len();
         let progress_before = progress(&s);
-        let changed = fctl_domain::pulls::observe(&mut s.pull_requests, &b.prs, now);
+        let before = s.pull_requests.clone();
+        fctl_domain::pulls::observe(&mut s.pull_requests, &b.prs, now);
+        // GitHub's checks don't say which reviews fctl holds back from the
+        // agent.
+        fctl_domain::reviews::mark_held(&mut s.pull_requests, &self.held_reviews());
+        let changed = s.pull_requests != before;
         if changed {
             let merged_more = merged(&s.pull_requests).len() > merged_before;
             self.want_done(&s, progress_before, merged_more).await;
