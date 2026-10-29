@@ -429,12 +429,27 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
 
 /// Revokes every token of a user (password change or reset), except `keep`.
 pub async fn revoke_tokens(ctx: &Ctx, user_id: &str, keep: Option<&str>) -> AppResult<()> {
-    q(
+    crate::db::batch(
         &ctx.db,
-        "DELETE FROM tokens WHERE user_id = ? AND id != ?",
-        &[s(user_id), s(keep.unwrap_or(""))],
-    )?
-    .run()
-    .await?;
-    Ok(())
+        vec![
+            q(
+                &ctx.db,
+                "DELETE FROM tokens WHERE user_id = ? AND id != ?",
+                &[s(user_id), s(keep.unwrap_or(""))],
+            )?,
+            refuse_device_codes(&ctx.db, user_id)?,
+        ],
+    )
+    .await
+}
+
+/// Refuses the CLI sign-ins `user_id` approved that no CLI has picked up
+/// yet (`device_codes`), with their tokens: an approval from before would
+/// otherwise still sign a CLI in, after a password change or reset.
+pub fn refuse_device_codes(db: &D1Database, user_id: &str) -> AppResult<crate::db::Query> {
+    q(
+        db,
+        "UPDATE device_codes SET status = 'denied' WHERE user_id = ? AND status IN ('pending', 'approved')",
+        &[s(user_id)],
+    )
 }

@@ -59,6 +59,12 @@ pub enum Sensitive {
     DeleteProject,
     /// Making an access token.
     NewToken,
+    /// Connecting a Claude subscription, with a token, a sign-in or the
+    /// token kept on their runners: the sessions the person starts then run
+    /// on it, and a full login's Claude account sees them (Remote Control),
+    /// so a stolen session or token could otherwise have their sessions run
+    /// where it watches, for good.
+    ConnectClaude,
     /// Approving a CLI's sign-in, or confirming it's you for a CLI that is
     /// signed in already.
     ApproveCli,
@@ -91,6 +97,7 @@ impl Sensitive {
             DeleteWorkspace => "delete a workspace",
             DeleteProject => "delete a project",
             NewToken => "make an access token",
+            ConnectClaude => "connect a Claude subscription",
             ApproveCli => "approve the CLI",
             RemovePasskey => "remove a passkey",
             Export => "export your data",
@@ -306,6 +313,10 @@ mod tests {
         assert_eq!(
             message(Sensitive::NewToken, BOTH),
             "Confirm it's you to make an access token, with your passkey or a code from your authenticator app."
+        );
+        assert_eq!(
+            message(Sensitive::ConnectClaude, APP),
+            "Confirm it's you to connect a Claude subscription, with a code from your authenticator app."
         );
     }
 

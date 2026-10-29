@@ -97,7 +97,14 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   user. Inviting an address adds its entry, which revoking the invitation
   removes again while no account has the address; an entry gives the role
   it names, so demoting or removing an admin makes those of their addresses
-  give a member's. The first account is created through a one-time setup link
+  give a member's, as disconnecting an address from an account makes its
+  own; and an invitation's admin role holds at sign-up only while the
+  entry that admits the address gives it. An admin's invitation makes an
+  earlier invitation's member entry for its address an admin's, and
+  revoking it, or its running out unused (the hourly job), takes that
+  back, but leaves an entry an admin added by hand alone: an admin's
+  invitation to an address such an entry allows as a member is refused
+  until the entry is removed. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
   primary instance owner.
 - **Early access**, where the deployment turns it on (as app.fctl.sh's
@@ -214,9 +221,11 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    and the first app comes with ten recovery codes, of which D1 keeps the
    SHA-256. Setting up an app takes the password unless this browser
    signed in within the last 15 minutes (with a CLI or access token, it
-   always does). Without a password, a first app takes that sign-in, which
-   nothing stands in for: its codes then add passkeys, so a stolen session
-   or token must not set one up (`two_factor::setup_proof`). Replacing the
+   always does). Without a password, or where password sign-ins ask for a
+   passkey already, a first app takes that sign-in, which nothing stands
+   in for: its codes then add passkeys and get past the password, so a
+   stolen session or token, with the password or not, must not set one up
+   (`two_factor::setup_proof`). Replacing the
    app, turning two-factor off and getting new recovery codes take a
    current code, from the app or a recovery code.
 2. **Signing in.** A sign-in with a password then starts no web session. It
@@ -283,9 +292,12 @@ decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
   or the card after a sign-in without one): `POST /api/v1/me/passkeys/options`
   returns WebAuthn's creation options, with a challenge of 256 random bits
   that works once, for ten minutes (`passkey_challenges`, by its SHA-256).
-  It takes the password unless this browser signed in within the last 15
-  minutes, or without a password a code from the authenticator app: a
-  passkey signs in without either, so a stolen session must not add one.
+  Unless this browser signed in within the last 15 minutes, it takes what
+  a sign-in with the password would: a code from the authenticator app
+  for an account that has one, a sign-in where passkeys are the second
+  factor a password sign-in asks for, else the password. A passkey signs
+  in without either, so neither a stolen session, nor one with the
+  password, must add one (`passkeys::prove`).
   `POST /api/v1/me/passkeys` checks the answer (the challenge, the origin,
   the relying party, user presence and verification) and keeps the public
   key (`passkeys`). The authenticator's model (AAGUID) names it: "1Password",
@@ -338,7 +350,8 @@ token can't do them alone
   owner's role;
 - turning off what makes people prove it's them: requiring two-factor
   sign-in, of the instance or a workspace, asking for codes on Google
-  sign-in, and this confirmation itself; resetting someone's two-factor
+  sign-in, everyone's or your own (which also emails you), and this
+  confirmation itself; resetting someone's two-factor
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
   everyone's sessions there, registering a new one for a workspace (as
@@ -346,7 +359,10 @@ token can't do them alone
   token of one that serves a workspace;
 - making someone a workspace's admin, or inviting them as one, and
   handing over or giving a workspace's primary admin role;
-- making an access token, and approving a CLI's sign-in;
+- making an access token, approving a CLI's sign-in, and connecting a
+  Claude subscription, with a token, a sign-in or the token kept on their
+  runners: the person's sessions then run on it, and a full login's Claude
+  account sees them (Remote Control);
 - exporting your data, and deleting your account, someone else's, a
   project or a workspace;
 - making someone a password reset link on an instance that sends no
@@ -355,8 +371,11 @@ token can't do them alone
 Only the primary instance owner turns it on or off, and turning it off is
 one of those actions (`verify::check_verify_setting`). Turning off your
 own authenticator app, replacing it and new recovery codes take a current
-code already, and adding a passkey or an app the password or a recent
-sign-in ([Two-factor sign-in](#two-factor-sign-in)).
+code already, and adding a passkey or an app a recent sign-in or what a
+sign-in with the password takes: the password, and the authenticator
+app's code where the account has one, or a sign-in where passkeys are
+its second factor ([Two-factor sign-in](#two-factor-sign-in),
+[Passkeys](#passkeys)).
 
 1. **Who it asks.** People with a passkey or an authenticator app
    (`verify::required`). People with neither have nothing to confirm it
@@ -500,7 +519,11 @@ five or more. Anyone on the instance creates one, as its primary admin.
   told so, and send the instance's invitation together with their
   workspaces'. People invited before they had an account join when they
   make it, or connect the address, as far as the limit and two-factor
-  allow; the rest keep waiting.
+  allow; the rest keep waiting. An invitation counts only while whoever
+  sent it is an active admin of the workspace
+  (`workspaces::INVITER_STILL_ADMIN`): an admin who is removed, demoted or
+  disabled takes their invitations with them, so that none brings them
+  back, or back as an admin, through another address they hold.
 - **Your preferences.** Each member chooses the Claude connection their
   sessions in it run on (`workspace_members.credential_id`), else their
   default one, so that a company's seat pays for the company's work. They
@@ -563,7 +586,9 @@ fctl writes to the person. A workspace knows its member by the address they
 joined as (`workspace_members.email`), the only one its people see:
 project members, shares and invitations look people up by it
 (`api::auth::member_by_email`). Disconnecting an address
-(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it.
+(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it,
+and uses up the account's waiting password reset links, since one may
+have gone to it.
 
 ### GitHub accounts
 
@@ -1691,7 +1716,11 @@ session, so that a task that needs them ends with a way on.
    files at most 20 tickets, changes at most 60 and reads at most 300
    times (`ticket_writes`, each call taking its place in one statement):
    an agent that loops would otherwise fill a team's tracker, or use up
-   the API of a Linear installation that other workspaces share. Its
+   the API of a Linear installation that other workspaces share. A write
+   that fails doesn't count as one, but among at most 60 failed writes an
+   hour, which every write needs room in, since it may have asked the
+   tracker all the same; a call names at most 20 labels, and a reply goes
+   only under one of the ticket's own comments. Its
    parents, sub-tickets and search results outside the project's choice
    don't reach it either. The transcript shows what it did there
    (`ticket_commented`, `ticket_created`, `ticket_updated` notices, which
@@ -1739,10 +1768,14 @@ issue's delegate (the person stays its assignee), and mention.
    A project's maintainers choose one team or several, at most 20, each
    optionally narrowed to one of its open Linear projects, among those the
    app sees in a Linear workspace connected to the project's workspace
-   (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`), which the
-   control plane checks with Linear as the choice is saved
-   (`tickets::check_linear`): only what changed, since a team checked
-   before keeps what Linear said of it. The first team stays where
+   (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`, for the
+   workspace's admins and its projects' maintainers), which the control
+   plane checks with Linear as the choice is saved, and again whenever the
+   tracker turns to Linear (`tickets::check_linear`,
+   `fctl_domain::tickets::linear_changed`): only what changed, since a
+   team checked before, while the tracker was Linear, keeps what Linear
+   said of it, and a choice kept while another tracker was chosen was
+   never checked. The first team stays where
    projects from before several kept their one (`LinearTickets::team`),
    and agents file new tickets there unless they name another; the others
    follow it (`more_teams`), which an update that leaves them out keeps,
@@ -1750,7 +1783,9 @@ issue's delegate (the person stays its assignee), and mention.
    (`fctl_domain::settings::keep_unsent`). Each move of a ticket
    (step 8) goes to the states of the ticket's own team, whose workflow
    may differ from the others'; `fctl ticket states` lists those of every
-   team, each name once. Linear prices a query by how much it asks
+   team, each name once. The workspace's Linear tab lists, for each Linear
+   workspace, the projects that take its tickets among those the person
+   sees. Linear prices a query by how much it asks
    for, whatever it finds, and refuses one of more than 10,000 points, so
    the control plane counts the teams first (up to 250) and then asks for
    their workflows and open projects 50 teams at a time, under 5,000
@@ -2541,6 +2576,14 @@ names that person in each Remote Control state the agent reports
 last, which the resume tells it (`ControlState.claude_user`). The web app
 shows the links, and the transcript's note, to that person alone; states
 from before it named anyone count as the starter's.
+
+Connecting a long-lived token, a full login or the token kept on one's
+runners makes it the person's default, so whoever connects one decides
+where their sessions run and, for a full login, whose claude.ai sees
+them. It is a sensitive action
+([Confirming it's you](#confirming-its-you)), so a stolen session or
+token can't connect one of its own alone, and a new connection emails the
+person when email is set up (`api::claude::connected_notice`).
 
 A full login also brings the person's claude.ai connectors (Claude Code
 fetches them with the `user:mcp_servers` scope). New projects start with

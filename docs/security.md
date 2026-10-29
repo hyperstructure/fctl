@@ -41,11 +41,21 @@ owner and purpose), so a value copied between rows does not decrypt.
   tokens. Revoking an invitation takes back the entry it added, and
   demoting or removing an admin turns the entries that admitted their
   addresses as an admin into a member's, so that a Google sign-up, which
-  needs no invitation, can't bring them back as one.
+  needs no invitation, can't bring them back as one; disconnecting an
+  address from an account does too, and an invitation signs up an admin
+  only while the entry that admits its address still says admin; an
+  admin's invitation that runs out unused leaves its address a member's
+  entry.
+  Disconnecting an address also uses up the account's password reset
+  links, and revoking someone's tokens (a new password, a reset) refuses
+  the CLI sign-ins they approved that no CLI has picked up yet.
 - **Workspaces** keep their projects, sessions, files and secrets to their
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance
-  admins see inside only the ones they are members of. Starting a session
+  admins see inside only the ones they are members of. An invitation to a
+  workspace counts only while the admin who sent it is still one, so
+  that an admin who is removed, demoted or disabled can't come back
+  through an invitation to another address of theirs. Starting a session
   makes someone its owner only while they may start sessions in its
   project: one made a viewer of it, or taken out of it, can't go on
   messaging its agent, resuming it or sharing it. On an instance that
@@ -76,7 +86,8 @@ owner and purpose), so a value copied between rows does not decrypt.
   signs nobody in. Replacing the app, turning it off and getting new
   recovery codes take a current code; setting up an app takes the password
   unless the browser signed in within 15 minutes (with a CLI or access
-  token, always), and on an account without a password, that sign-in.
+  token, always), and on an account without a password, or whose password
+  sign-ins ask for a passkey already, that sign-in.
   Admins can require it:
   accounts that sign in with a password, and with Google sign-ins asking
   too every account, then can do nothing until they set it up, in the
@@ -94,18 +105,23 @@ owner and purpose), so a value copied between rows does not decrypt.
   fctl keeps the public key, each challenge works once for ten minutes, and
   a counter that goes back (a copied passkey's would) refuses the sign-in.
   Adding one takes the password unless the browser signed in within 15
-  minutes, so a stolen session can't add a way in, and emails the person.
+  minutes, and a code from the authenticator app instead for an account
+  that has one, so a stolen session can't add a way in, even with the
+  password, and emails the person.
   Where two-factor is required, a passkey also counts as the second factor.
 - **Sensitive actions take a passkey or a code**, where the primary
   instance owner turns that on (off by default): inviting and promoting
   admins, handing over the primary owner's and workspaces' primary admin
-  roles, turning two-factor sign-in or this off, resetting someone's
+  roles, turning two-factor sign-in, codes on Google sign-in or this off,
+  resetting someone's
   two-factor sign-in, removing a passkey, adding or registering a runner
   for a workspace and replacing its token, new access tokens and CLI
-  sign-ins, exporting your data, deleting accounts, projects and
+  sign-ins, connecting a Claude subscription (whose account a full login's
+  sessions show in), exporting your data, deleting accounts, projects and
   workspaces, and, without email, making someone a password reset link.
   So a stolen browser session, CLI or
-  access token can't do them alone. A passkey (which must verify the
+  access token can't do them alone. Connecting a Claude subscription also
+  emails the person, when email is set up. A passkey (which must verify the
   person), a code from the authenticator app or a recovery code confirms
   it, for 15 minutes, for the browser, CLI or token that confirmed; a
   sign-in with a passkey or a second factor counts. People with neither a
@@ -279,9 +295,9 @@ outside it except through these channels:
   outside it answers as one that doesn't exist, as do the parents,
   sub-tickets and search results outside it. Review agents reach no
   tracker. In an hour, a session's agent comments at most 30 times, files
-  at most 20 tickets, changes at most 60 and reads at most 300 times, which
-  also keeps one workspace's agents from using up the API of a Linear
-  installation others share. What tickets and
+  at most 20 tickets, changes at most 60 and reads at most 300 times, and
+  its writes fail at most 60 times, which also keeps one workspace's
+  agents from using up the API of a Linear installation others share. What tickets and
   their comments say comes from whoever wrote them, inside the teams or
   not: agents are told to take it as what the work is about, not as
   instructions, and do what the person who delegated it asks.
@@ -536,9 +552,12 @@ plane schedules sessions by these lists, and the host checks them again
 before it takes a session. To build, the host downloads the repository at
 the tip of its default branch with the session's GitHub token, which the
 build never sees, and runs the build in its container runtime's builder,
-outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)).
-Hosts pull images with their own registry logins; fctl stores no registry
-credentials.
+outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)),
+from the repository's files alone: the host checks again that the
+Dockerfile and the directory a project names are in the repository, and
+keeps each sandbox's name to letters, digits and dashes, whatever the
+control plane sends. Hosts pull images with their own registry logins;
+fctl stores no registry credentials.
 
 ## The control plane without Cloudflare
 
@@ -561,8 +580,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   whatever the apps show; keep such an instance to a network you trust.
 - **The data directory** holds D1 and every Durable Object as SQLite
   files: password hashes, encrypted credentials and secrets, transcripts
-  and attached files. Encryption at rest is the disk's. One server at a
-  time uses it (`server.lock`): two would each run the same sessions.
+  and attached files. Encryption at rest is the disk's, and the server
+  keeps the SQLite files' directory (`state`) to its own user (mode 0700),
+  or says in its log that it couldn't, for one another user owns.
+  One server at a time uses it (`server.lock`): two would each run the
+  same sessions.
 - Errors the Worker throws come back as plain 500s, without the stack
   traces Miniflare shows in development.
 

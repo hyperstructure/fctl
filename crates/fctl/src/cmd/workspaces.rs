@@ -83,7 +83,8 @@ pub enum LinearCmd {
         organization: String,
     },
     /// The teams fctl's app reaches in a Linear workspace, for projects to
-    /// choose (`fctl projects set --tickets linear --linear-team KEY[,KEY…]`).
+    /// choose (`fctl projects set --tickets linear --linear-team KEY[,KEY…]`):
+    /// for the workspace's admins and its projects' maintainers.
     Teams {
         /// The Linear workspace (default: the only one).
         organization: Option<String>,

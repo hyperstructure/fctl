@@ -359,6 +359,15 @@ pub const INVITATION_SELECT: &str = "SELECT i.id, i.workspace_id, i.email, i.rol
     FROM workspace_invitations i JOIN workspaces w ON w.id = i.workspace_id \
     LEFT JOIN users iu ON iu.id = i.invited_by";
 
+/// An ` AND …` keeping invitations (`i`) to those that still count: whoever
+/// sent one is still an active admin of its workspace. Only admins invite,
+/// so an invitation from one who was since removed, demoted or disabled
+/// would outlast the role that let them send it, and let them back in, or
+/// in as an admin again, through an address they hold.
+pub const INVITER_STILL_ADMIN: &str = " AND EXISTS (SELECT 1 FROM workspace_members im \
+    JOIN users imu ON imu.id = im.user_id WHERE im.workspace_id = i.workspace_id \
+    AND im.user_id = i.invited_by AND im.role IN ('owner', 'admin') AND imu.status = 'active')";
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct InvitationRow {
     pub id: String,
@@ -429,7 +438,7 @@ pub async fn invitations_for(
         db,
         &format!(
             "{INVITATION_SELECT} WHERE i.email IN (SELECT email FROM user_emails WHERE user_id = ?1) \
-             AND i.expires_at > ?2 AND NOT EXISTS (SELECT 1 FROM workspace_members m \
+             AND i.expires_at > ?2{INVITER_STILL_ADMIN} AND NOT EXISTS (SELECT 1 FROM workspace_members m \
              WHERE m.workspace_id = i.workspace_id AND m.user_id = ?1) ORDER BY i.created_at"
         ),
         &[s(user_id), n(now)],
@@ -462,6 +471,26 @@ pub async fn join(
         .run()
         .await?;
         return Ok(false);
+    }
+    // Only while whoever sent it may still invite (`INVITER_STILL_ADMIN`).
+    let counts: Option<Count> = q(
+        db,
+        &format!(
+            "SELECT COUNT(*) AS n FROM workspace_invitations i WHERE i.id = ?{INVITER_STILL_ADMIN}"
+        ),
+        &[s(&invitation.id)],
+    )?
+    .first()
+    .await?;
+    if counts.is_none_or(|c| c.n == 0) {
+        q(
+            db,
+            "DELETE FROM workspace_invitations WHERE id = ?",
+            &[s(&invitation.id)],
+        )?
+        .run()
+        .await?;
+        return Err(not_found("Invitation"));
     }
     let limit = policy::workspace_limit(user.role());
     policy::check_limit(membership_count(db, &user.id).await?, limit)?;
@@ -517,7 +546,7 @@ pub async fn join_invited(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<V
     let invitations: Vec<InvitationRow> = q(
         &ctx.db,
         &format!(
-            "{INVITATION_SELECT} WHERE i.email = ? AND i.expires_at > ? ORDER BY i.created_at"
+            "{INVITATION_SELECT} WHERE i.email = ? AND i.expires_at > ?{INVITER_STILL_ADMIN} ORDER BY i.created_at"
         ),
         &[s(email), n(ctx.now)],
     )?

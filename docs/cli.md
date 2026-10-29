@@ -252,9 +252,9 @@ fctl workspaces connect acme --repo web --repo design   # only these repositorie
 fctl workspaces connect --no-browser       # print the link to open where you are signed in (linear connect takes it too)
 fctl workspaces disconnect acme
 
-fctl workspaces linear                     # the Linear workspaces it works in, and which projects take their tickets
+fctl workspaces linear                     # the Linear workspaces it works in, and which of your projects take their tickets
 fctl workspaces linear connect             # opens Linear, where one of its admins installs fctl's app
-fctl workspaces linear teams               # the teams fctl's app reaches there, for projects to choose
+fctl workspaces linear teams               # the teams fctl's app reaches there, for projects to choose (its admins and projects' maintainers)
 fctl workspaces linear disconnect acme     # its projects take no more tickets from it
 
 fctl workspaces audit                      # what happened in it (admins)
@@ -406,7 +406,7 @@ fctl projects tickets -p my-app                # its tracker, how agents reach i
 fctl projects set -p my-app --tickets github   # the issues of every repository its agents write to
 fctl projects set -p my-app --tickets github --tickets-repo my-org/my-app   # one of them only
 fctl projects set -p my-app --tickets none     # no tracker at all, GitHub's issues included
-fctl workspaces linear teams                   # the Linear teams fctl's app reaches
+fctl workspaces linear teams                   # the Linear teams fctl's app reaches (maintainers and the workspace's admins)
 fctl projects set -p my-app --tickets linear --linear-team ENG
 fctl projects set -p my-app --linear-team ENG,DES   # two teams' tickets; agents file new ones in the first
 fctl projects set -p my-app --linear-project "Mobile app"   # only that Linear project's issues of the team that has it ("all": every team's)
@@ -483,7 +483,8 @@ fctl ticket labels
 ```
 
 In an hour, a session's agent comments at most 30 times, files at most 20
-tickets, changes at most 60 and reads its tracker at most 300 times.
+tickets, changes at most 60 and reads its tracker at most 300 times, and
+after 60 writes that failed it writes nothing more until the hour is up.
 Review agents reach no tracker.
 
 ### Memory and retrospectives
@@ -889,6 +890,7 @@ of.
 fctl admin users                           # with their other addresses, how many workspaces, when last active
 fctl admin invite ada@private.example      # an invitation link (and an email, when set up)
 fctl admin invite grace@example.com -w side-project -w acme:admin   # and to your workspaces
+fctl admin invite grace@example.com --admin   # where you allowed her as a member by hand, after fctl admin disallow grace@example.com
 fctl admin role grace@example.com admin    # an instance admin, or member again (the primary instance owner)
 fctl admin transfer grace@example.com      # the primary instance owner hands the role to an admin
 fctl admin disable grace@example.com       # can't sign in; their tokens stop working (or enable)
@@ -979,7 +981,7 @@ fctl account two-factor                    # what you have, and what the instanc
 fctl account two-factor enable             # prints a QR code, asks for the app's code, shows recovery codes
 fctl account two-factor enable --code 123456   # replace your app: a code from it, or a recovery code
 fctl account two-factor recovery-codes     # ten new ones; the old ones stop working
-fctl account two-factor google on          # Google sign-ins ask you for a code too
+fctl account two-factor google on          # Google sign-ins ask you for a code too (off asks to confirm it's you, and emails you)
 fctl account two-factor disable            # asks for a code (not while the instance requires it)
 ```
 
@@ -988,9 +990,10 @@ the setup (the key, the `otpauth://` link and the QR code's rows), and
 `fctl account two-factor confirm --setup … --code …` finishes it.
 
 Where the primary instance owner turns it on, sensitive actions (inviting
-and promoting admins, turning two-factor sign-in off, adding or
+and promoting admins, turning two-factor sign-in or codes on Google
+sign-in off, adding or
 registering a runner for a workspace (`fctl host install` too), new access
-tokens, exporting your data, and deleting accounts,
+tokens, connecting a Claude subscription, exporting your data, and deleting accounts,
 projects and workspaces) ask you to confirm it's you first. In a terminal
 fctl asks by itself, and then does what you asked: for a code from your
 authenticator app, or, with a passkey, to approve a code in the browser,

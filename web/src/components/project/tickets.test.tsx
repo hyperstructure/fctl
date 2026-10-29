@@ -382,6 +382,33 @@ describe("the Tickets tab", () => {
     expect(c.textContent).toContain("Save");
   });
 
+  it("shows a viewer the team's states as what they are, without its list of teams", () => {
+    // Only the workspace's admins and the project's maintainers list them.
+    const c = tab(
+      project({ role: "viewer", settings: { ...settings, tickets: { tracker: "linear", linear } } }),
+      {
+        status: {
+          tracker: "linear",
+          scope: "Linear team ENG (Acme)",
+          via: "fctl",
+          linear: connection,
+          linked: true,
+        },
+        teams: null,
+      },
+    );
+    expect(c.textContent).toContain("Engineering");
+    const labels = [...c.querySelectorAll<HTMLButtonElement>('button[role="switch"]')].map((s) =>
+      s.getAttribute("aria-label"),
+    );
+    expect(labels).toEqual([
+      "Move a ticket to its first started state as its session starts",
+      "Move a ticket to its review state when its pull request is up",
+      "Move a ticket to its first completed state once its pull requests merge",
+    ]);
+    expect(c.textContent).not.toContain("no longer reaches it");
+  });
+
   it("says when fctl knows the person in Linear already", () => {
     const c = tab(project({ settings: { ...settings, tickets: { tracker: "linear", linear } } }), {
       status: {
