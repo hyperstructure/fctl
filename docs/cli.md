@@ -979,7 +979,7 @@ the setup (the key, the `otpauth://` link and the QR code's rows), and
 Where the primary instance owner turns it on, sensitive actions (inviting
 and promoting admins, turning two-factor sign-in off, adding or
 registering a runner for a workspace (`fctl host install` too), new access
-tokens, exporting your data, and deleting accounts,
+tokens, connecting a Claude subscription, exporting your data, and deleting accounts,
 projects and workspaces) ask you to confirm it's you first. In a terminal
 fctl asks by itself, and then does what you asked: for a code from your
 authenticator app, or, with a passkey, to approve a code in the browser,

@@ -2305,6 +2305,28 @@ impl FleetObject {
         )?
         .run()
         .await?;
+        // They hear of it, as of a token they connect (`api::claude`).
+        if let Some(mail) = cfg.email.clone() {
+            #[derive(Deserialize)]
+            struct Email {
+                email: String,
+            }
+            let person: Option<Email> = crate::db::q(
+                db,
+                "SELECT email FROM users WHERE id = ?",
+                &[crate::db::s(user_id)],
+            )?
+            .first()
+            .await?;
+            if let Some(person) = person {
+                let instance = crate::instance::name(db, &cfg).await?;
+                let (subject, text) =
+                    crate::api::claude::connected_notice(&instance, &person.email, &cfg);
+                self.state.wait_until(async move {
+                    let _ = crate::email::send(&mail, &person.email, &subject, &text).await;
+                });
+            }
+        }
         Ok(id)
     }
 
