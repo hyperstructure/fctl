@@ -245,6 +245,40 @@ describe("the field that adds repositories to a project", () => {
     expect(c.textContent).toContain("hyperstructure/* no longer chosen");
   });
 
+  it("closes on a press or a tap elsewhere, but not on a swipe that scrolls the page", () => {
+    const c = render(<Tab />);
+    const touch = (type: string, x: number, y: number) =>
+      act(() => {
+        document.body.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            pointerType: "touch",
+            pointerId: 2,
+            clientX: x,
+            clientY: y,
+          }),
+        );
+      });
+    open(c);
+    // The browser cancels a touch that scrolls; iOS at times lets it lift instead, far from where it
+    // went down.
+    touch("pointerdown", 100, 600);
+    touch("pointercancel", 100, 580);
+    expect(expanded(c)).toBe(true);
+    touch("pointerdown", 100, 600);
+    touch("pointerup", 100, 300);
+    expect(expanded(c)).toBe(true);
+    touch("pointerdown", 100, 600);
+    expect(expanded(c)).toBe(true);
+    touch("pointerup", 102, 601);
+    expect(expanded(c)).toBe(false);
+    open(c);
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+    });
+    expect(expanded(c)).toBe(false);
+  });
+
   it("heads each account's choices for a project without repositories, and keeps to the one chosen", () => {
     const shop = { ...repo("shop", { private: true }), owner: "romanescohq", full_name: "romanescohq/shop" };
     const c = render(

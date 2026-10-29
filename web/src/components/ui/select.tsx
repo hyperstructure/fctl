@@ -198,13 +198,11 @@ export function Select<T extends string>({
       window.clearTimeout(timer.current);
       setPhase((p) => (p === "open" ? "closing" : p));
     };
-    window.addEventListener("resize", follow);
-    window.addEventListener("scroll", follow, true);
+    const unfollow = followViewport(follow);
     document.addEventListener("pointerdown", outside, true);
     return () => {
       cancelAnimationFrame(frame);
-      window.removeEventListener("resize", follow);
-      window.removeEventListener("scroll", follow, true);
+      unfollow();
       document.removeEventListener("pointerdown", outside, true);
     };
   }, [mounted]);
@@ -589,18 +587,26 @@ function Check({ draw, className }: { draw: boolean; className?: string }) {
 /**
  * Puts a list under its trigger, or over it when there is more room above. `height` is how tall
  * the list would be with room for everything, for one that scrolls inside rather than itself.
+ * Callers place it again as the visual viewport changes (`followViewport`).
  */
 export function placeList(trigger: HTMLElement, list: HTMLElement, height?: number) {
   const r = trigger.getBoundingClientRect();
   const { clientWidth: vw, clientHeight: vh } = document.documentElement;
+  // The room in sight: a phone's on-screen keyboard covers the bottom of the page without
+  // shrinking it, only the visual viewport.
+  const vv = window.visualViewport;
+  const top = Math.max(0, vv?.offsetTop ?? 0);
+  const bottom = Math.min(vh, vv ? vv.offsetTop + vv.height : vh);
   list.style.minWidth = `${Math.min(r.width, vw - 2 * MARGIN)}px`;
   const tall = height ?? list.scrollHeight + list.offsetHeight - list.clientHeight;
-  const below = vh - r.bottom - GAP - MARGIN;
-  const above = r.top - GAP - MARGIN;
+  const below = bottom - r.bottom - GAP - MARGIN;
+  const above = r.top - top - GAP - MARGIN;
   const down = tall <= below || below >= above;
   list.style.maxHeight = `${Math.max(0, Math.min(down ? below : above, MAX_HEIGHT))}px`;
   list.style.top = down ? `${r.bottom + GAP}px` : "auto";
-  list.style.bottom = down ? "auto" : `${vh - r.top + GAP}px`;
+  // From the top, as the trigger's place is: on iOS the viewport fixed elements sit in grows
+  // taller than the page's height as the toolbars hide.
+  list.style.bottom = down ? "auto" : `calc(100% - ${r.top - GAP}px)`;
   const width = list.offsetWidth;
   let left = r.left;
   if (left + width > vw - MARGIN) left = r.right - width;
@@ -609,6 +615,24 @@ export function placeList(trigger: HTMLElement, list: HTMLElement, height?: numb
   // It grows out of the trigger.
   list.style.transformOrigin = `${Math.round(r.left + r.width / 2 - left)}px ${down ? "top" : "bottom"}`;
   list.style.setProperty("--listbox-y", down ? "-4px" : "4px");
+}
+
+/**
+ * Calls `place` as the page scrolls or the visual viewport changes, as it does when a phone's
+ * keyboard shows or hides; returns what stops it.
+ */
+export function followViewport(place: (e: Event) => void): () => void {
+  const vv = window.visualViewport;
+  window.addEventListener("resize", place);
+  window.addEventListener("scroll", place, true);
+  vv?.addEventListener("resize", place);
+  vv?.addEventListener("scroll", place);
+  return () => {
+    window.removeEventListener("resize", place);
+    window.removeEventListener("scroll", place, true);
+    vv?.removeEventListener("resize", place);
+    vv?.removeEventListener("scroll", place);
+  };
 }
 
 /**
