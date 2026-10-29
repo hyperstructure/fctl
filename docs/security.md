@@ -400,10 +400,11 @@ outside it except through these channels:
   ([ADR 0047](adr/0047-review-agents-review-outsiders-pull-requests-when-asked.md)).
   Where the owners turn summaries on, what the agent says of a pull
   request goes in that pull request's own description, which fctl writes
-  between its marks, as plain sentences in a GitHub alert, and the rest
-  of the description stays as it is: a steered agent can mislabel a pull
-  request's risk there, as it can in its findings, but not change what
-  people wrote
+  between its marks, as plain sentences in a GitHub alert, without HTML,
+  links or @-mentions, and the rest of the description stays as it is: a
+  steered agent can mislabel a pull request's risk there, as it can in
+  its findings, but not change what people wrote, link them elsewhere or
+  notify anyone
   ([ADR 0067](adr/0067-review-agents-sum-pull-requests-up-in-their-descriptions.md)).
   An app's pull requests can carry text from outside all the same, such
   as the release notes Dependabot and Renovate quote, and installing the

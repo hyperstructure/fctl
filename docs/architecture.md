@@ -1369,7 +1369,8 @@ skip, drafts too, and fctl posts what it found on GitHub
    does, and what deserves a closer look (`PullRequestSummary`), judged
    from what it changes rather than from bugs a review may find later.
    The control plane checks it (`fctl_domain::reviews::check_summary`:
-   plain sentences, no lists, headings, code blocks or HTML) and, with
+   plain sentences, no lists, headings, code blocks, HTML, links or
+   @-mentions, as GitHub reads each paragraph) and, with
    the review's writer, reads the description as GitHub has it at that
    moment and writes it back with the summary at its end, between fctl's
    marks (`<!-- FCTL_REVIEW_SUMMARY -->` and `<!--

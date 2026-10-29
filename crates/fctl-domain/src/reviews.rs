@@ -773,7 +773,7 @@ People who open this pull request find a short summary of it at the end of its d
 - `risk_reason`: a sentence or two on why: what it touches, and what could go wrong.
 - `overview`: what it does and why, for someone who hasn't read the diff, in two to four plain sentences: a paragraph, two at most.
 - `highlight`, only when something deserves a reviewer's closer look before merging, such as a migration, a breaking change, a new dependency or a step for whoever deploys it: `topic` names it in a few words, and `text` says what it is in a sentence or two.
-- Write plain sentences, with code in backticks: no lists, headings, code blocks or HTML.
+- Write plain sentences, with code in backticks: no lists, headings, code blocks, links, @-mentions or HTML. GitHub links #12 and owner/name#12 by itself.
 - At a new commit, sum up the pull request as it stands now, as a whole: your summary replaces the earlier one.
 - If `fctl review summarize` refuses the summary, fix what it says and run it again. If it fails otherwise, carry on with the review.
 "#;
@@ -1409,9 +1409,12 @@ pub const MAX_DESCRIPTION: usize = 65_536;
 /// Checks a review agent's summary of its pull request: why it has its
 /// risk in a paragraph, what it does in at most two, and what deserves a
 /// closer look in a few words and a paragraph. Each is plain sentences,
-/// with inline code, emphasis and links, but no lists, headings, quotes,
-/// tables, code blocks, rules, images or HTML, which would break out of
-/// the note fctl puts them in. A paragraph's lines become one.
+/// with inline code and emphasis, but no lists, headings, quotes, tables,
+/// code blocks or rules, which would break out of the note fctl puts them
+/// in, and no images, HTML, links or @-mentions, which a pull request that
+/// steers the agent could have fctl's app write in its description: links
+/// that pass for fctl's, mentions that notify people. A paragraph's lines
+/// become one.
 pub fn check_summary(s: &PullRequestSummary) -> Result<PullRequestSummary> {
     let risk_reason = prose("risk_reason", &s.risk_reason, 400, 1)?;
     let overview = prose("overview", &s.overview, 1_200, 2)?;
@@ -1431,7 +1434,7 @@ pub fn check_summary(s: &PullRequestSummary) -> Result<PullRequestSummary> {
                     "Name what deserves a closer look in a few words, on one line",
                 ));
             }
-            if let Some(why) = not_prose(&topic) {
+            if let Some(why) = not_block(&topic) {
                 return Err(ApiError::validation("highlight.topic", why));
             }
             Some(SummaryHighlight {
@@ -1441,12 +1444,20 @@ pub fn check_summary(s: &PullRequestSummary) -> Result<PullRequestSummary> {
         }
         _ => None,
     };
-    Ok(PullRequestSummary {
+    let checked = PullRequestSummary {
         risk: s.risk,
         risk_reason,
         overview,
         highlight,
-    })
+    };
+    // As GitHub reads them, in the note: a code span runs on across a
+    // paragraph's lines, and the highlight's topic and text share one.
+    for (field, paragraph) in paragraphs(&checked) {
+        if let Some(why) = not_inline(&paragraph) {
+            return Err(ApiError::validation(field, why));
+        }
+    }
+    Ok(checked)
 }
 
 /// `input` as paragraphs of plain sentences, at most `most` of them, each
@@ -1463,7 +1474,7 @@ fn prose(field: &str, input: &str, max: usize, most: usize) -> Result<String> {
             }
             continue;
         }
-        if let Some(why) = not_prose(line) {
+        if let Some(why) = not_block(line) {
             return Err(ApiError::validation(field, why));
         }
         current.push(line);
@@ -1494,9 +1505,9 @@ fn prose(field: &str, input: &str, max: usize, most: usize) -> Result<String> {
 }
 
 /// Why a line of a summary isn't plain prose, where it isn't: Markdown
-/// that would break out of the note fctl puts it in, or HTML, which could
-/// also pass for fctl's marks.
-fn not_prose(line: &str) -> Option<&'static str> {
+/// that starts a block of its own, which would break out of the note fctl
+/// puts it in.
+fn not_block(line: &str) -> Option<&'static str> {
     let line = line.trim();
     let numbered = {
         let digits = line.bytes().take_while(u8::is_ascii_digit).count();
@@ -1510,7 +1521,6 @@ fn not_prose(line: &str) -> Option<&'static str> {
         && line
             .chars()
             .all(|c| c.is_whitespace() || matches!(c, '-' | '*' | '_' | '='));
-    let outside = without_code(line);
     if bullet || numbered {
         Some("Write sentences rather than a list: the summary has no bullet points")
     } else if rule {
@@ -1523,14 +1533,44 @@ fn not_prose(line: &str) -> Option<&'static str> {
         Some("Leave out code blocks: name code in backticks, in the sentence")
     } else if line.starts_with('|') {
         Some("Leave out tables: write sentences")
-    } else if outside.contains("![") {
+    } else {
+        None
+    }
+}
+
+/// Why a paragraph of a summary, as the note shows it, isn't plain prose,
+/// where it isn't: an image, HTML, a link or an @-mention outside its code
+/// spans. HTML could pass for fctl's marks too.
+fn not_inline(paragraph: &str) -> Option<&'static str> {
+    let outside = without_code(paragraph);
+    let bytes = outside.as_bytes();
+    let html = bytes.windows(2).any(|w| {
+        w[0] == b'<' && (w[1].is_ascii_alphabetic() || matches!(w[1], b'/' | b'!' | b'?'))
+    });
+    let lower = outside.to_ascii_lowercase();
+    let link = ["](", "http://", "https://", "www."]
+        .iter()
+        .any(|l| lower.contains(l));
+    // As GitHub reads a mention: `@` and a name's first character, after
+    // anything that can't end a word or an address.
+    let mention = bytes.iter().enumerate().any(|(i, &b)| {
+        let before = i.checked_sub(1).map(|j| bytes[j]);
+        b == b'@'
+            && bytes.get(i + 1).is_some_and(u8::is_ascii_alphanumeric)
+            && before.is_none_or(|c| {
+                !(c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-' | b'+' | b'/' | b'@'))
+            })
+    });
+    if outside.contains("![") {
         Some("Leave out images")
-    } else if outside
-        .as_bytes()
-        .windows(2)
-        .any(|w| w[0] == b'<' && (w[1].is_ascii_alphabetic() || matches!(w[1], b'/' | b'!' | b'?')))
-    {
+    } else if html {
         Some("Leave out HTML: put code in backticks")
+    } else if link {
+        Some(
+            "Leave out links: name what you mean, and GitHub links #12 and owner/name#12 by itself",
+        )
+    } else if mention {
+        Some("Leave out @-mentions, which notify people: name them, or put a handle in backticks")
     } else {
         None
     }
@@ -1574,27 +1614,12 @@ pub struct Size {
 /// line on the commit it sums up, its size (`size`, where GitHub said)
 /// and where it comes from.
 pub fn summary_section(s: &PullRequestSummary, size: Option<Size>, links: &Links<'_>) -> String {
-    let (alert, risk) = match s.risk {
-        Risk::Low => ("NOTE", "Low risk"),
-        Risk::Medium => ("NOTE", "Medium risk"),
-        Risk::High => ("WARNING", "High risk"),
-        Risk::Critical => ("CAUTION", "Critical risk"),
+    let alert = match s.risk {
+        Risk::Low | Risk::Medium => "NOTE",
+        Risk::High => "WARNING",
+        Risk::Critical => "CAUTION",
     };
-    let mut paragraphs = vec![format!("**{risk}.** {}", s.risk_reason)];
-    for (i, p) in s.overview.split("\n\n").enumerate() {
-        paragraphs.push(match i {
-            0 => format!("**What it does.** {p}"),
-            _ => p.to_owned(),
-        });
-    }
-    if let Some(h) = &s.highlight {
-        let stop = if h.topic.ends_with(['?', '!']) {
-            ""
-        } else {
-            "."
-        };
-        paragraphs.push(format!("**{}{stop}** {}", h.topic, h.text));
-    }
+    let mut parts: Vec<String> = paragraphs(s).into_iter().map(|(_, p)| p).collect();
     let mut facts = vec![format!(
         "[fctl review]({})'s first look at [`{}`]({})",
         links.session_url,
@@ -1611,12 +1636,43 @@ pub fn summary_section(s: &PullRequestSummary, size: Option<Size>, links: &Links
         ));
     }
     facts.push(format!("[Review agent settings]({})", links.settings_url));
-    paragraphs.push(format!("<sub>{}</sub>", facts.join(" · ")));
-    let quoted: Vec<String> = paragraphs.iter().map(|p| format!("> {p}")).collect();
+    parts.push(format!("<sub>{}</sub>", facts.join(" · ")));
+    let quoted: Vec<String> = parts.iter().map(|p| format!("> {p}")).collect();
     format!(
         "{SUMMARY_START}\n---\n\n> [!{alert}]\n{}\n\n{SUMMARY_END}",
         quoted.join("\n>\n")
     )
+}
+
+/// The summary's paragraphs as the note shows them, how risky, what it
+/// does and what deserves a closer look each led in bold, with the field
+/// each comes from.
+fn paragraphs(s: &PullRequestSummary) -> Vec<(&'static str, String)> {
+    let risk = match s.risk {
+        Risk::Low => "Low risk",
+        Risk::Medium => "Medium risk",
+        Risk::High => "High risk",
+        Risk::Critical => "Critical risk",
+    };
+    let mut out = vec![("risk_reason", format!("**{risk}.** {}", s.risk_reason))];
+    for (i, p) in s.overview.split("\n\n").enumerate() {
+        out.push((
+            "overview",
+            match i {
+                0 => format!("**What it does.** {p}"),
+                _ => p.to_owned(),
+            },
+        ));
+    }
+    if let Some(h) = &s.highlight {
+        let stop = if h.topic.ends_with(['?', '!']) {
+            ""
+        } else {
+            "."
+        };
+        out.push(("highlight", format!("**{}{stop}** {}", h.topic, h.text)));
+    }
+    out
 }
 
 /// What GitHub says of a pull request (`GET /repos/{owner}/{name}/pulls/{number}`):
@@ -4333,9 +4389,10 @@ mod tests {
             checked.highlight.map(|h| h.topic).as_deref(),
             Some("Migration")
         );
-        // Code in backticks may hold anything; emphasis and links pass.
+        // Code in backticks may hold anything, across a paragraph's lines
+        // too; emphasis, GitHub's references and addresses pass.
         let mut fine = summary();
-        fine.overview = "Turns `Vec<String>` into `HashSet<&str>` in `<Login />`, *quickly*, as [the issue](https://github.com/acme/web/issues/3) asks: a < b.".into();
+        fine.overview = "Turns `Vec<String>` into `HashSet<&str>` in `<Login\n/>` and `@types/node` at `https://x.test`, *quickly*, as #3 and acme/api#7 ask, for dev@fctl.test: a < b, 2 @ 3.".into();
         fine.highlight = Some(SummaryHighlight {
             topic: " ".into(),
             text: "".into(),
@@ -4391,9 +4448,47 @@ mod tests {
             "It adds <details> to the page.",
             "</sub> ends it",
             "a<b",
+            // A code span that a line opens and the next closes leaves out
+            // what follows it, as GitHub reads the joined lines.
+            "a `b\nc` <img src=x.png> `d`",
         ] {
             assert!(refused("overview", html).contains("HTML"), "{html}");
         }
+        for link in [
+            "See [the fix](https://evil.example/login).",
+            "It moved to https://evil.example.",
+            "Read HTTP://EVIL.EXAMPLE first.",
+            "It lives at www.evil.example now.",
+            "a `b\nc` [x](y) `d`",
+        ] {
+            assert!(
+                refused("overview", link).contains("Leave out links"),
+                "{link}"
+            );
+        }
+        for mention in [
+            "Thanks @ada.",
+            "It pings (@acme/web-team) on deploys.",
+            "@ada wrote it",
+        ] {
+            assert!(
+                refused("risk_reason", mention).contains("@-mentions"),
+                "{mention}"
+            );
+        }
+        assert!(refused("overview", "a `b\nc` ![x](y.png) `d`").contains("images"));
+        // Nor do a topic and its text, which share a paragraph, pair a code
+        // span around what lies between them.
+        let mut across = summary();
+        across.highlight = Some(SummaryHighlight {
+            topic: "a `b".into(),
+            text: "c` <img src=x.png> `d`".into(),
+        });
+        let e = check_summary(&across)
+            .err()
+            .unwrap_or_else(|| panic!("passed"));
+        assert_eq!(e.field.as_deref(), Some("highlight"));
+        assert!(e.message.contains("HTML"));
         assert!(refused("overview", "  \n\n ").contains("plain text"));
         assert!(refused("overview", "One.\n\nTwo.\n\nThree.").contains("2 short paragraphs"));
         assert!(refused("risk_reason", "One.\n\nTwo.").contains("one paragraph"));

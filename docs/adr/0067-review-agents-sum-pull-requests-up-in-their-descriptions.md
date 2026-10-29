@@ -41,9 +41,12 @@ own rather than copy another review agent's.
   them out under a rule as a GitHub alert, each part led in bold as fctl's
   findings are (**Medium risk.**, **What it does.**), with a line of what
   fctl knows for sure: the commit it sums up, the pull request's size and
-  links to the review and its settings. Lists, headings, code blocks and
-  HTML are refused: they would break out of the alert, or could pass for
-  fctl's marks.
+  links to the review and its settings. Lists, headings, code blocks,
+  HTML, links and @-mentions are refused, as GitHub reads each paragraph:
+  they would break out of the alert or pass for fctl's marks, and a pull
+  request that steers the agent could have fctl's app link people
+  anywhere from it, or notify them. GitHub's own references (#12) still
+  link.
 - **Only between fctl's marks.** `<!-- FCTL_REVIEW_SUMMARY -->` and
   `<!-- /FCTL_REVIEW_SUMMARY -->`, each on a line of its own, bound
   fctl's part. fctl reads the description just before it writes it, and
