@@ -1322,8 +1322,9 @@ impl<'a> Writer<'a> {
 
     /// The writer of review `row`, the app it started with, and the
     /// repository: the GitHub App once the review app's installation is
-    /// gone or no longer reaches it, though only the review app could
-    /// change the check it created.
+    /// gone or no longer reaches the repository, though only the review app
+    /// could change the check it created. Fails when GitHub doesn't answer,
+    /// or refuses the review app's token otherwise.
     async fn of(cfg: &'a Config, row: &ReviewRow) -> AppResult<(RepoRef, Writer<'a>)> {
         let repo = row
             .repo()
@@ -1333,7 +1334,7 @@ impl<'a> Writer<'a> {
             .review_installation_id
             .and_then(|i| u64::try_from(i).ok());
         if let (Some(review), Some(at)) = (github::review_app(cfg, now), review_at) {
-            match review.review_token(at, &repo).await {
+            match review.try_review_token(at, &repo).await? {
                 Ok((token, no_checks)) => {
                     let writer = Writer {
                         gh: review,
@@ -1344,12 +1345,21 @@ impl<'a> Writer<'a> {
                     };
                     return Ok((repo, writer));
                 }
-                Err(e) => worker::console_error!(
-                    "{} can't write review {} any more: {}",
+                // Uninstalled, suspended or no longer reaching the repository
+                // since: the GitHub App writes instead.
+                Err((404 | 403 | 422, msg)) => worker::console_error!(
+                    "{} can't write review {} any more: {msg}",
                     review.slug(),
-                    row.session_id,
-                    e.0.message
+                    row.session_id
                 ),
+                // Anything else may pass, and the GitHub App couldn't change
+                // the review app's check: the caller tries again.
+                Err((status, msg)) => {
+                    return Err(crate::error::unavailable(&format!(
+                        "GitHub refused {}'s token ({status}): {msg}",
+                        review.slug()
+                    )));
+                }
             }
         }
         let gh = github::from_config(cfg, now)?;

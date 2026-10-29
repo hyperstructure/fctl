@@ -1057,26 +1057,43 @@ impl<'a> Github<'a> {
         inst: u64,
         repo: &RepoRef,
     ) -> AppResult<(GithubCredential, Option<String>)> {
+        self.try_review_token(inst, repo)
+            .await?
+            .map_err(|(_, msg)| refused(&msg))
+    }
+
+    /// [`Self::review_token`], with GitHub's refusal as
+    /// `Ok(Err((status, message)))`: 404 for an installation that is gone,
+    /// 403 for a suspended one, 422 for one that doesn't reach `repo`.
+    pub async fn try_review_token(
+        &self,
+        inst: u64,
+        repo: &RepoRef,
+    ) -> AppResult<Result<(GithubCredential, Option<String>), (u16, String)>> {
         let names = [repo.name.as_str()];
         match self
             .mint(inst, Some(&names), Some(repos::review_permissions(true)))
             .await?
         {
-            Ok(token) => return Ok((token, None)),
+            Ok(token) => return Ok(Ok((token, None))),
             // "The permissions requested are not granted to this installation."
             Err((422, _)) => {}
-            Err((_, msg)) => return Err(refused(&msg)),
+            Err(refusal) => return Ok(Err(refusal)),
         }
-        let token = self
-            .installation_token(inst, Some(&names), Some(repos::review_permissions(false)))
-            .await?;
-        Ok((
+        let token = match self
+            .mint(inst, Some(&names), Some(repos::review_permissions(false)))
+            .await?
+        {
+            Ok(token) => token,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        Ok(Ok((
             token,
             Some(format!(
                 "The {} GitHub App can't write checks on {}: its installation there needs the Checks permission (read and write), which the app's owners add and the account accepts.",
                 self.cfg.slug, repo.owner
             )),
-        ))
+        )))
     }
 
     /// Revokes an installation token the control plane minted for itself.
