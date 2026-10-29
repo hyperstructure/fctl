@@ -25,7 +25,7 @@ use fctl_domain::tickets::{self as tk, GithubIssues};
 use fctl_proto::runner::GithubCredential;
 use fctl_proto::session::{
     GithubAccess, LinearTeamChoice, LinearTickets, ProjectSettings, RepoGrant, RepoRef,
-    SessionTicket, Tickets, Tracker,
+    SessionTicket, Tracker,
 };
 use fctl_proto::tickets::{
     LinearConnection, LinearStatus, LinearTeam, ProjectTickets, StateFilter, Ticket, TicketAnswer,
@@ -96,8 +96,10 @@ pub async fn spec(
 // ───────────────────────────── how it works now ─────────────────────────────
 
 /// The Linear workspaces connected to an fctl workspace, as its tabs show
-/// them, with the projects that take tickets from each.
-pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<LinearConnection>> {
+/// them, with the projects that take tickets from each: those the caller
+/// sees, so that a member names no project that isn't theirs to know.
+pub async fn connections(ctx: &Ctx, workspace_id: &str) -> AppResult<Vec<LinearConnection>> {
+    let db = &ctx.db;
     #[derive(Deserialize)]
     struct Row {
         organization_id: String,
@@ -132,11 +134,19 @@ pub async fn connections(db: &D1Database, workspace_id: &str) -> AppResult<Vec<L
         name: String,
         settings: String,
     }
+    let mut params = vec![s(workspace_id), s(&ctx.user()?.id)];
+    let places = crate::access::places_sql(ctx.limits(), &mut params);
     let uses: Vec<Use> = q(
         db,
-        "SELECT slug, name, settings FROM projects WHERE workspace_id = ? AND archived_at IS NULL \
-         AND json_extract(settings, '$.tickets.tracker') = 'linear' ORDER BY created_at",
-        &[s(workspace_id)],
+        &format!(
+            "SELECT p.slug, p.name, p.settings FROM projects p JOIN workspaces w ON w.id = p.workspace_id \
+             LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?2 \
+             LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?2 \
+             WHERE p.workspace_id = ?1 AND p.archived_at IS NULL \
+             AND json_extract(p.settings, '$.tickets.tracker') = 'linear' AND {}{places} ORDER BY p.created_at",
+            crate::model::PROJECT_VISIBLE
+        ),
+        &params,
     )?
     .all()
     .await?;
@@ -204,7 +214,7 @@ pub async fn status(ctx: &Ctx, project: &ProjectRow) -> AppResult<ProjectTickets
         settings.github_access.unwrap_or_default(),
     );
     let workspace_id = project.workspace_id().to_owned();
-    let connections = connections(&ctx.db, &workspace_id).await?;
+    let connections = connections(ctx, &workspace_id).await?;
     // Linear's connection, for a project that takes its tickets.
     let connection = t
         .linear
@@ -532,24 +542,42 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             "This session's agent only reads: it can't write tickets.",
         ));
     }
+    tk::check_labels(&request)?;
     // The call's place within its limit, taken in one statement, so that
-    // calls at once can't go past it together.
+    // calls at once can't go past it together; a write also needs room
+    // among the writes that may fail (`tk::MAX_FAILED_PER_HOUR`).
     let (kind, most) = tk::limit_of(&request);
+    let hour_ago = ctx.now - 60 * 60 * 1000;
     let taken = q(
         &ctx.db,
         "INSERT INTO ticket_writes (session_id, kind, at) SELECT ?1, ?2, ?3 \
-         WHERE (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?2 AND at > ?4) < ?5",
+         WHERE (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?2 AND at > ?4) < ?5 \
+         AND (?2 = 'read' OR (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?6 AND at > ?4) < ?7)",
         &[
             s(&session.id),
             s(kind),
             n(ctx.now),
-            n(ctx.now - 60 * 60 * 1000),
+            n(hour_ago),
             n(i64::from(most)),
+            s(tk::FAILED),
+            n(i64::from(tk::MAX_FAILED_PER_HOUR)),
         ],
     )?
     .run()
     .await?;
     if taken == 0 {
+        let full: Option<Count> = q(
+            &ctx.db,
+            "SELECT COUNT(*) AS n FROM ticket_writes WHERE session_id = ? AND kind = ? AND at > ?",
+            &[s(&session.id), s(kind), n(hour_ago)],
+        )?
+        .first()
+        .await?;
+        let (kind, most) = if full.is_some_and(|c| c.n >= i64::from(most)) {
+            (kind, most)
+        } else {
+            (tk::FAILED, tk::MAX_FAILED_PER_HOUR)
+        };
         return Err(AppError(
             ApiError::new(ErrorCode::RateLimited, tk::limited(kind, most)).with_retry_after(600),
         ));
@@ -567,14 +595,17 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
     match answer {
         Ok(answer) => Ok(serde_json::to_value(answer)?),
         Err(e) => {
-            // A write that didn't happen doesn't count; a read cost the
-            // tracker's API all the same.
+            // A write that didn't happen doesn't count as one, but it may
+            // have asked the tracker's API all the same: it counts among
+            // those that failed, which every write needs room in, so that
+            // failing writes can't use up an API that other sessions, and
+            // other workspaces' with Linear, share.
             if kind != "read" {
                 q(
                     &ctx.db,
-                    "DELETE FROM ticket_writes WHERE rowid = (SELECT rowid FROM ticket_writes \
+                    "UPDATE ticket_writes SET kind = ? WHERE rowid = (SELECT rowid FROM ticket_writes \
                      WHERE session_id = ? AND kind = ? AND at = ? LIMIT 1)",
-                    &[s(&session.id), s(kind), n(ctx.now)],
+                    &[s(tk::FAILED), s(&session.id), s(kind), n(ctx.now)],
                 )?
                 .run()
                 .await?;
@@ -1042,7 +1073,20 @@ async fn linear_call(
             let (_, ticket) = linear_issue(client, l, &key).await?;
             let mut input = json!({ "issueId": ticket.id, "body": body });
             if let Some(parent) = reply_to.as_deref().filter(|p| !p.trim().is_empty()) {
-                put(&mut input, "parentId", json!(parent.trim()));
+                // A reply to one of this ticket's comments, as `fctl ticket
+                // view` lists them: never under a comment elsewhere, which
+                // may be in a team the project doesn't work on.
+                let parent = parent.trim();
+                if !ticket.comments.iter().any(|c| c.id == parent) {
+                    return Err(validation(
+                        "reply_to",
+                        &format!(
+                            "{} has no comment {parent} among those `fctl ticket view` lists",
+                            ticket.key
+                        ),
+                    ));
+                }
+                put(&mut input, "parentId", json!(parent));
             }
             let d = client
                 .graphql(lin::COMMENT_CREATE, json!({ "input": input }))
@@ -1624,12 +1668,6 @@ async fn github_with(
             return Err(internal("answered before"));
         }
     })
-}
-
-/// Whether a project's settings changed its tracker in a way that needs
-/// checking with Linear as it is saved.
-pub fn linear_changed(new: &Tickets, old: &Tickets) -> bool {
-    new.tracker == Tracker::Linear && new.linear.is_some() && new.linear != old.linear
 }
 
 /// Sets `key` of a JSON object.

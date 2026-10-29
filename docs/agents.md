@@ -439,8 +439,9 @@ fctl schedules runs "Weekly dependencies" -p my-app
 1. A workspace admin who administers the Linear workspace connects it: `fctl
    workspaces linear connect` (opens Linear, where they install fctl's app
    and choose the teams it sees).
-2. A project maintainer chooses its teams: `fctl workspaces linear teams`,
-   then `fctl projects set -p my-app --tickets linear --linear-team ENG`
+2. A project maintainer chooses its teams: `fctl workspaces linear teams`
+   (which lists them for the workspace's admins and its projects'
+   maintainers alone), then `fctl projects set -p my-app --tickets linear --linear-team ENG`
    (`ENG,DES` for several, the first where agents file new tickets;
    `--linear-project "Mobile app"` for one Linear project of a team,
    `DES:Website` to name the team).
@@ -589,7 +590,8 @@ fctl review threads && fctl review submit review.json   # review agents
   replaces at most 20 others. A session keeps at most 50 retrospectives and
   publishes at most 100 screenshots of 5 MB. In an hour, an agent comments
   on tickets at most 30 times, files at most 20, changes at most 60 and
-  reads its tracker at most 300 times.
+  reads its tracker at most 300 times, and writes nothing more after 60
+  writes that failed.
 - Agents in a session can't start other sessions: they hold no fctl
   credentials. A project secret with an access token would let them, on
   that token's person's subscription; treat that as giving every agent of

@@ -15,8 +15,8 @@
 
 use crate::crypto::{self, Keys};
 use crate::ctx::Ctx;
-use crate::db::{n, os, q, s};
-use crate::error::{AppError, AppResult, not_configured, not_found};
+use crate::db::{Count, n, os, q, s};
+use crate::error::{AppError, AppResult, forbidden, not_configured, not_found};
 use crate::http;
 use crate::linear;
 use crate::workspaces as ws;
@@ -115,7 +115,7 @@ async fn respond(ctx: &Ctx, workspace_id: &str) -> AppResult<WorkspaceLinear> {
             .linear
             .as_ref()
             .is_some_and(|l| l.webhook_secret.is_some()),
-        connections: crate::tickets::connections(&ctx.db, workspace_id).await?,
+        connections: crate::tickets::connections(ctx, workspace_id).await?,
     })
 }
 
@@ -178,15 +178,27 @@ pub async fn disconnect(ctx: &mut Ctx, id: &str, organization: &str) -> AppResul
 }
 
 /// `GET /api/v1/workspaces/{id}/linear/{organization}/teams`: the teams
-/// fctl's app reaches there, for a project to choose from.
+/// fctl's app reaches there, for a project to choose from: for the
+/// workspace's admins, who create its projects, and the maintainers of
+/// one, who choose its tracker. Other members see their projects' teams in
+/// them, not every team of the Linear workspace, whose API every fctl
+/// workspace connected to it shares.
 pub async fn teams(ctx: &Ctx, id: &str, organization: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
-    a.require_open()?;
-    let connected = crate::tickets::connections(&ctx.db, a.id())
-        .await?
-        .into_iter()
-        .any(|c| c.organization == organization);
-    if !connected {
+    let role = a.require_open()?;
+    if !role.is_admin() && !crate::api::projects::manages_a_project(ctx, a.id()).await? {
+        return Err(forbidden(
+            "Only the workspace's admins and its projects' maintainers list its Linear teams",
+        ));
+    }
+    let connected: Option<Count> = q(
+        &ctx.db,
+        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ?",
+        &[s(a.id()), s(organization)],
+    )?
+    .first()
+    .await?;
+    if connected.is_none_or(|c| c.n == 0) {
         return Err(not_found("Linear workspace"));
     }
     let keys = ctx.keys()?;

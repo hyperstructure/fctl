@@ -51,6 +51,12 @@ pub const MAX_UPDATED_PER_HOUR: u32 = 60;
 /// installation serves every fctl workspace connected to it, and an agent
 /// that loops would use up its share of Linear's API for all of them.
 pub const MAX_READS_PER_HOUR: u32 = 300;
+/// The most writes of a session's agent that fail in an hour, which every
+/// write needs room in: a write that fails doesn't count as one, but it
+/// asked the tracker all the same, so an agent looping on one that fails
+/// must stop too. What `ticket_writes` calls them.
+pub const MAX_FAILED_PER_HOUR: u32 = 60;
+pub const FAILED: &str = "failed";
 
 /// What an agent's call to its tracker counts as, for the limits above.
 pub fn limit_of(request: &fctl_proto::tickets::TicketRequest) -> (&'static str, u32) {
@@ -63,9 +69,50 @@ pub fn limit_of(request: &fctl_proto::tickets::TicketRequest) -> (&'static str, 
     }
 }
 
+/// Most labels one call files a ticket with, adds or removes.
+pub const MAX_LABELS_PER_CALL: usize = 20;
+
+/// Checks the labels a call names before anything reaches the tracker:
+/// GitHub takes each label a call removes in a request of its own, so that
+/// one call, which counts once, can't send the tracker's API any number of
+/// them, nor names no tracker keeps.
+pub fn check_labels(request: &fctl_proto::tickets::TicketRequest) -> Result<()> {
+    use fctl_proto::tickets::TicketRequest as R;
+    let lists: Vec<(&str, &[String])> = match request {
+        R::Create { labels, .. } => vec![("labels", labels)],
+        R::Update {
+            add_labels,
+            remove_labels,
+            ..
+        } => vec![("add_labels", add_labels), ("remove_labels", remove_labels)],
+        _ => vec![],
+    };
+    for (field, labels) in lists {
+        if labels.len() > MAX_LABELS_PER_CALL {
+            return Err(ApiError::validation(
+                field,
+                format!("Name at most {MAX_LABELS_PER_CALL} labels at a time"),
+            ));
+        }
+        if labels
+            .iter()
+            .any(|l| l.chars().count() > MAX_LABEL || l.chars().any(char::is_control))
+        {
+            return Err(ApiError::validation(
+                field,
+                format!("A label has at most {MAX_LABEL} characters, and no control characters"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// What a session's agent hears when it reached a limit above.
 pub fn limited(kind: &str, most: u32) -> String {
     match kind {
+        FAILED => format!(
+            "This session's agent's writes to its tracker failed {most} times in the last hour, which is as many as fctl lets an agent: say in your reply what's left to do in the tracker, and what went wrong."
+        ),
         "read" => format!(
             "This session's agent has read its tracker {most} times in the last hour, which is as often as fctl lets an agent: work with what you have read, and say in your reply what's left to look up."
         ),
@@ -452,6 +499,17 @@ pub fn check(t: &Tickets, primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Re
         l.more_teams = (!more.is_empty()).then_some(more);
     }
     Ok(t)
+}
+
+/// Whether a project's tracker, as it is saved (`new`, after [`check`]),
+/// needs checking with Linear: it takes its tickets from Linear now and
+/// didn't before, or from another team. A Linear choice kept while the
+/// tracker was something else was never checked, and turning the tracker
+/// to Linear alone mustn't make it count unchecked.
+pub fn linear_changed(new: &Tickets, old: &Tickets) -> bool {
+    new.tracker == Tracker::Linear
+        && new.linear.is_some()
+        && (old.tracker != Tracker::Linear || new.linear != old.linear)
 }
 
 /// Whether `s` looks like one of Linear's ids: a UUID.
@@ -1201,6 +1259,7 @@ mod tests {
         assert_eq!(limit_of(&R::About), ("read", MAX_READS_PER_HOUR));
         assert!(limited("read", 300).contains("read its tracker 300 times"));
         assert!(limited("comment", 30).contains("done that 30 times"));
+        assert!(limited(FAILED, 60).contains("failed 60 times"));
     }
 
     fn r(full: &str) -> RepoRef {
@@ -1244,6 +1303,53 @@ mod tests {
                 explore_label: None,
             }),
         }
+    }
+
+    #[test]
+    fn a_call_names_a_few_labels_of_a_tracker_size() {
+        use fctl_proto::tickets::TicketRequest as R;
+        let update = |add: Vec<String>, remove: Vec<String>| R::Update {
+            key: "ENG-1".into(),
+            title: None,
+            description: None,
+            state: None,
+            add_labels: add,
+            remove_labels: remove,
+            parent: None,
+            priority: None,
+        };
+        let some = vec!["bug".to_owned(), "needs review".to_owned()];
+        assert!(check_labels(&update(some.clone(), some.clone())).is_ok());
+        let many: Vec<String> = (0..=MAX_LABELS_PER_CALL).map(|i| format!("l{i}")).collect();
+        assert!(check_labels(&update(vec![], many.clone())).is_err());
+        assert!(check_labels(&update(many, vec![])).is_err());
+        let long = "x".repeat(MAX_LABEL + 1);
+        assert!(check_labels(&update(vec![], vec![long])).is_err());
+        assert!(check_labels(&update(vec!["a\nb".into()], vec![])).is_err());
+        assert!(check_labels(&R::States).is_ok());
+    }
+
+    #[test]
+    fn a_linear_team_is_checked_whenever_the_tracker_turns_to_linear() {
+        let now = linear();
+        // A team chosen, or another one: checked.
+        assert!(linear_changed(&now, &github(None)));
+        let mut other = linear();
+        if let Some(l) = other.linear.as_mut() {
+            l.team = "5d7e9a1b-3333-4e4f-9b2c-2d4f6b8c0e30".into();
+        }
+        assert!(linear_changed(&now, &other));
+        // The same team kept while the tracker was GitHub's, never checked
+        // then, when only the tracker turns to Linear: checked too.
+        let kept = Tickets {
+            tracker: Tracker::Github,
+            ..linear()
+        };
+        assert!(linear_changed(&now, &kept));
+        // Unchanged, or not Linear's: nothing to check.
+        assert!(!linear_changed(&now, &linear()));
+        assert!(!linear_changed(&kept, &now));
+        assert!(!linear_changed(&github(None), &now));
     }
 
     #[test]

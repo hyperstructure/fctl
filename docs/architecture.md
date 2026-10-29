@@ -1682,7 +1682,11 @@ session, so that a task that needs them ends with a way on.
    files at most 20 tickets, changes at most 60 and reads at most 300
    times (`ticket_writes`, each call taking its place in one statement):
    an agent that loops would otherwise fill a team's tracker, or use up
-   the API of a Linear installation that other workspaces share. Its
+   the API of a Linear installation that other workspaces share. A write
+   that fails doesn't count as one, but among at most 60 failed writes an
+   hour, which every write needs room in, since it may have asked the
+   tracker all the same; a call names at most 20 labels, and a reply goes
+   only under one of the ticket's own comments. Its
    parents, sub-tickets and search results outside the project's choice
    don't reach it either. The transcript shows what it did there
    (`ticket_commented`, `ticket_created`, `ticket_updated` notices, which
@@ -1730,10 +1734,14 @@ issue's delegate (the person stays its assignee), and mention.
    A project's maintainers choose one team or several, at most 20, each
    optionally narrowed to one of its open Linear projects, among those the
    app sees in a Linear workspace connected to the project's workspace
-   (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`), which the
-   control plane checks with Linear as the choice is saved
-   (`tickets::check_linear`): only what changed, since a team checked
-   before keeps what Linear said of it. The first team stays where
+   (`GET /api/v1/workspaces/{id}/linear/{organization}/teams`, for the
+   workspace's admins and its projects' maintainers), which the control
+   plane checks with Linear as the choice is saved, and again whenever the
+   tracker turns to Linear (`tickets::check_linear`,
+   `fctl_domain::tickets::linear_changed`): only what changed, since a
+   team checked before, while the tracker was Linear, keeps what Linear
+   said of it, and a choice kept while another tracker was chosen was
+   never checked. The first team stays where
    projects from before several kept their one (`LinearTickets::team`),
    and agents file new tickets there unless they name another; the others
    follow it (`more_teams`), which an update that leaves them out keeps,
@@ -1741,7 +1749,9 @@ issue's delegate (the person stays its assignee), and mention.
    (`fctl_domain::settings::keep_unsent`). Each move of a ticket
    (step 8) goes to the states of the ticket's own team, whose workflow
    may differ from the others'; `fctl ticket states` lists those of every
-   team, each name once. Linear prices a query by how much it asks
+   team, each name once. The workspace's Linear tab lists, for each Linear
+   workspace, the projects that take its tickets among those the person
+   sees. Linear prices a query by how much it asks
    for, whatever it finds, and refuses one of more than 10,000 points, so
    the control plane counts the teams first (up to 250) and then asks for
    their workflows and open projects 50 teams at a time, under 5,000

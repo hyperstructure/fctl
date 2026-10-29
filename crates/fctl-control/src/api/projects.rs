@@ -154,7 +154,7 @@ async fn check_tickets(
 ) -> AppResult<fctl_proto::session::Tickets> {
     let grants = crate::spec::grants(&ctx.db, project_id).await?;
     let mut t = fctl_domain::tickets::check(new, repo, &grants)?;
-    if crate::tickets::linear_changed(&t, old)
+    if fctl_domain::tickets::linear_changed(&t, old)
         && let Some(l) = t.linear.clone()
     {
         let keys = ctx.keys()?;
@@ -1029,7 +1029,7 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
 
 /// Whether the caller maintains or owns some project of workspace
 /// `workspace_id`.
-async fn manages_a_project(ctx: &Ctx, workspace_id: &str) -> AppResult<bool> {
+pub(crate) async fn manages_a_project(ctx: &Ctx, workspace_id: &str) -> AppResult<bool> {
     let user = ctx.user()?;
     let rows: Vec<ProjectRow> = q(
         &ctx.db,
