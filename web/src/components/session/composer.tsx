@@ -105,8 +105,8 @@ export function Composer({
       <div
         className={cn(
           "group relative rounded-2xl border bg-surface/90 shadow-[0_10px_40px_rgb(0_0_0/0.25)] backdrop-blur-xl transition-[border-color,box-shadow] duration-200",
-          "border-line-strong focus-within:border-accent/45 focus-within:shadow-[0_10px_40px_rgb(0_0_0/0.25),0_0_0_4px_var(--c-accent-soft)]",
-          dragging && "border-accent/50",
+          "border-line-strong focus-within:shadow-[0_12px_48px_rgb(0_0_0/0.4)]",
+          dragging ? "border-accent/50" : "focus-within:border-ink-4/60",
         )}
       >
         <DraftTray
