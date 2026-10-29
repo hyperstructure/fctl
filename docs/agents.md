@@ -471,6 +471,7 @@ teams).
 fctl review settings -p my-app --on --model opus --effort high   # a project owner: on their subscription
 fctl review settings -p my-app --instructions-file review.md
 fctl review settings -p my-app --bots dependabot,renovate         # apps whose pull requests start reviews
+fctl review settings -p my-app --drafts off                       # drafts wait until they're marked ready
 fctl review settings -p my-app --description-summary on           # sum each pull request up in its description first
 fctl review start -p my-app 12                                    # review a pull request's head now
 fctl review -p my-app --json                                      # reviews and what came of each
@@ -478,7 +479,8 @@ fctl projects set -p my-app --follow-ups all                      # comments, ch
 ```
 
 Each new commit of a pull request in the project's writable repositories
-then gets a review; when an fctl agent opened the pull request, its session
+then gets a review (with `--drafts off`, a draft's first comes when it's
+marked ready for review); when an fctl agent opened the pull request, its session
 gets the findings, fixes what is real and answers in the threads. With
 `--description-summary on`, the review agent first sums the pull request
 up at the end of its description, which agents that rewrite their

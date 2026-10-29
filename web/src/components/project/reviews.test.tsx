@@ -40,6 +40,7 @@ vi.mock("@/lib/api", () => {
           ...state.agents,
           ...(b.instructions !== undefined && { instructions: b.instructions || undefined }),
           ...(b.description_summary !== undefined && { description_summary: b.description_summary }),
+          ...(b.drafts !== undefined && { drafts: b.drafts }),
           ...(skipped && {
             repos: all.filter((r) => !skipped.includes(`${r.owner}/${r.name}`.toLowerCase())),
             skipped_repos: all.filter((r) => skipped.includes(`${r.owner}/${r.name}`.toLowerCase())),
@@ -67,6 +68,7 @@ beforeEach(() => {
     bots: ["dependabot[bot]"],
     repos: [repo("web"), repo("api")],
     skipped_repos: [repo("shared-lib")],
+    drafts: true,
     description_summary: false,
   };
 });
@@ -111,7 +113,11 @@ async function render(p: G.Project = project) {
 const button = (c: HTMLElement, text: string) =>
   [...c.querySelectorAll("button")].find((b) => b.textContent?.trim() === text) as HTMLButtonElement;
 const switches = (c: HTMLElement) =>
-  [...c.querySelectorAll<HTMLButtonElement>('[role="switch"][aria-label^="Review "]')].map(
+  [
+    ...c.querySelectorAll<HTMLButtonElement>(
+      'ul[aria-label="Repositories they review"] [role="switch"][aria-label^="Review "]',
+    ),
+  ].map(
     (s) => `${s.getAttribute("aria-label")}: ${s.getAttribute("aria-checked") === "true" ? "on" : "off"}`,
   );
 const click = (el: HTMLElement) => act(() => el.click());
@@ -329,6 +335,58 @@ describe("the app reviews post as on GitHub", () => {
     } satisfies G.WorkspaceReviewApp);
     const c = await render(inWorkspace);
     expect(line(c)).toBeUndefined();
+  });
+});
+
+describe("drafts", () => {
+  const draftsSwitch = (c: HTMLElement) =>
+    c.querySelector('[role="switch"][aria-label="Review drafts"]') as HTMLElement;
+
+  it("get reviews until the owners turn them off, which shows when they get one", async () => {
+    const c = await render();
+    expect(c.textContent).not.toContain("Drafts wait");
+    await openSettings(c);
+    expect(draftsSwitch(c).getAttribute("aria-checked")).toBe("true");
+    expect(c.textContent).toContain("Each new commit of a draft gets a review");
+    expect(c.textContent).not.toContain("Ready for reviewfctl review");
+    click(draftsSwitch(c));
+    expect(draftsSwitch(c).getAttribute("aria-checked")).toBe("false");
+    const text = c.textContent ?? "";
+    expect(text).toContain("Drafts get no review until they're marked ready for review");
+    // A draft's commits get none; marking it ready starts one.
+    expect(text).toContain("Opened as a draftNo review");
+    expect(text).toContain("2 new commitsNo review");
+    expect(text).toContain("Ready for reviewfctl review");
+    await save(c);
+    expect(state.sent.at(-1)?.drafts).toBe(false);
+    expect(c.textContent).toContain(
+      "They skip acme/shared-lib. Drafts wait until they're marked ready for review.",
+    );
+  });
+
+  it("are turned on again as they were turned off", async () => {
+    state.agents = { ...state.agents, drafts: false };
+    const c = await render();
+    expect(c.textContent).toContain("Drafts wait until they're marked ready for review.");
+    await openSettings(c);
+    expect(button(c, "Save").disabled).toBe(true);
+    click(draftsSwitch(c));
+    expect(button(c, "Save").disabled).toBe(false);
+    // Off and on again: nothing to save.
+    click(draftsSwitch(c));
+    expect(button(c, "Save").disabled).toBe(true);
+    click(draftsSwitch(c));
+    await save(c);
+    expect(state.sent.at(-1)?.drafts).toBe(true);
+    expect(c.textContent).not.toContain("Drafts wait");
+  });
+
+  it("say so where no review ran yet", async () => {
+    state.agents = { ...state.agents, drafts: false };
+    const c = await render();
+    expect(c.textContent).toContain(
+      "The next commit pushed to a pull request in acme/web and acme/api that isn't a draft starts one, as does marking a draft ready for review.",
+    );
   });
 });
 

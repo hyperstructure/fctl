@@ -61,6 +61,10 @@ pub struct SettingsRow {
     /// The repositories whose pull requests they don't review, as JSON.
     #[serde(default)]
     pub skipped_repos: Option<String>,
+    /// Each new commit of a draft starts a review; false: drafts wait
+    /// until they are marked ready for review.
+    #[serde(deserialize_with = "int_bool", default = "yes")]
+    pub drafts: bool,
     /// Their agents sum each pull request up at the end of its description
     /// before they review it in depth.
     #[serde(deserialize_with = "int_bool", default)]
@@ -90,6 +94,16 @@ impl SettingsRow {
     }
 }
 
+fn yes() -> bool {
+    true
+}
+
+/// Whether each new commit of a draft starts a review in a project with
+/// these settings (`None`: none yet), as of other pull requests.
+pub fn drafts(conf: Option<&SettingsRow>) -> bool {
+    conf.is_none_or(|c| c.drafts)
+}
+
 /// The apps whose pull requests start reviews by themselves in a project
 /// with these settings (`None`: none yet), as their bots are named.
 pub fn bots(conf: Option<&SettingsRow>) -> Vec<String> {
@@ -104,7 +118,7 @@ pub async fn settings(db: &D1Database, project_id: &str) -> AppResult<Option<Set
     q(
         db,
         "SELECT r.enabled, r.operator_id, ou.name AS operator_name, ou.avatar_url AS operator_avatar, \
-         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.description_summary, r.updated_by, \
+         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.drafts, r.description_summary, r.updated_by, \
          uu.name AS updater_name, \
          uu.avatar_url AS updater_avatar, r.updated_at FROM project_reviews r \
          LEFT JOIN users ou ON ou.id = r.operator_id LEFT JOIN users uu ON uu.id = r.updated_by \
@@ -692,9 +706,9 @@ pub enum Started {
 
 /// Starts the reviews a `pull_request` delivery asks for: one in each
 /// project whose review agents are on and review its repository (its
-/// agents may write to it, and its owners don't skip it), through the
-/// installation the project's workspace connected. Returns how many
-/// started.
+/// agents may write to it, and its owners don't skip it), and its drafts
+/// where it is one, through the installation the project's workspace
+/// connected. Returns how many started.
 pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
     let Some((action, pr)) = rv::delivered(payload) else {
         return Ok(0);
@@ -745,7 +759,19 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         let Some(project) = crate::spec::project_row(&ctx.db, &id).await? else {
             continue;
         };
-        if !trusted && !rv::by_bot(&pr, &bots(settings(&ctx.db, &id).await?.as_ref())) {
+        let conf = settings(&ctx.db, &id).await?;
+        // Its owners leave drafts until they're marked ready for review,
+        // whose delivery starts the review.
+        if rv::waits_until_ready(&pr, drafts(conf.as_ref())) {
+            worker::console_log!(
+                "not reviewing {}#{} in {} yet: its owners leave drafts until they're ready for review",
+                pr.repo.full_name(),
+                pr.number,
+                project.slug
+            );
+            continue;
+        }
+        if !trusted && !rv::by_bot(&pr, &bots(conf.as_ref())) {
             worker::console_log!(
                 "not reviewing {}#{} by itself in {}: its owners don't let {} start reviews",
                 pr.repo.full_name(),

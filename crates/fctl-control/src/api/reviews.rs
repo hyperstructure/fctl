@@ -40,6 +40,7 @@ async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<Revi
         bots: reviews::bots(conf.as_ref()),
         repos: repos.reviewed,
         skipped_repos: repos.skipped,
+        drafts: reviews::drafts(conf.as_ref()),
         description_summary: conf.as_ref().is_some_and(|c| c.description_summary),
         problem,
         updated_by: conf.as_ref().and_then(reviews::SettingsRow::updater),
@@ -66,6 +67,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         && body.instructions.is_none()
         && body.bots.is_none()
         && body.skipped_repos.is_none()
+        && body.drafts.is_none()
         && body.description_summary.is_none();
     if !fctl_domain::perm::can_own_project(p.role) && !(mine && only_off) {
         return Err(forbidden(
@@ -145,17 +147,20 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         instructions,
         conf.as_ref().and_then(|c| c.instructions.clone()),
     );
+    let drafts = body
+        .drafts
+        .unwrap_or_else(|| reviews::drafts(conf.as_ref()));
     let description_summary = body
         .description_summary
         .unwrap_or_else(|| conf.as_ref().is_some_and(|c| c.description_summary));
     q(
         &ctx.db,
         "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, skipped_repos, \
-         description_summary, updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+         drafts, description_summary, updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
          ON CONFLICT (project_id) DO UPDATE SET \
          enabled = excluded.enabled, operator_id = excluded.operator_id, model = excluded.model, effort = excluded.effort, \
          instructions = excluded.instructions, bots = excluded.bots, skipped_repos = excluded.skipped_repos, \
-         description_summary = excluded.description_summary, updated_by = excluded.updated_by, \
+         drafts = excluded.drafts, description_summary = excluded.description_summary, updated_by = excluded.updated_by, \
          updated_at = excluded.updated_at",
         &[
             s(&p.row.id),
@@ -166,6 +171,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             os(instructions.as_deref()),
             s(&serde_json::to_string(&bots)?),
             s(&serde_json::to_string(&skipped)?),
+            crate::db::b(drafts),
             crate::db::b(description_summary),
             s(&me.id),
             n(ctx.now),
@@ -190,6 +196,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             "effort": effort,
             "bots": bots,
             "skipped_repos": skipped,
+            "drafts": drafts,
             "description_summary": description_summary,
         })),
     );

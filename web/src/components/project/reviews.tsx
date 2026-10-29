@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { BotMark, ReviewBots } from "@/components/project/review-bots";
+import { ReviewDrafts } from "@/components/project/review-drafts";
 import { ReviewRepos } from "@/components/project/review-repos";
 import { ReviewStateIcon, RISK_TONE, SummaryAlert } from "@/components/review";
 import {
@@ -108,7 +109,7 @@ export function ReviewsTab({ project }: { project: G.Project }) {
         {items.length === 0 ? (
           <Empty title="No reviews yet" icon={<ReviewIcon kind="comment" className="size-7" />}>
             {a.repos.length > 0 &&
-              `The next commit pushed to a pull request in ${repoList(a.repos)} starts one. Its check shows on the commit, and its findings on the pull request.`}
+              `The next commit pushed to a pull request in ${repoList(a.repos)}${a.drafts ? " starts one" : " that isn't a draft starts one, as does marking a draft ready for review"}. Its check shows on the commit, and its findings on the pull request.`}
           </Empty>
         ) : (
           <ul className="border-t border-line">
@@ -194,7 +195,9 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
         </h2>
         <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-ink-3">
           When a pull request in {repos} opens or gets a new commit, a review agent reads it and posts what it
-          finds there, in one review, with a check on the commit. <Waiting bots={agents.bots} here />
+          finds there, in one review, with a check on the commit.{" "}
+          {!agents.drafts && "Drafts wait until they're marked ready for review. "}
+          <Waiting bots={agents.bots} here />
         </p>
         <ul className="mt-6 flex max-w-xl flex-col gap-3">
           {POINTS.map((p) => (
@@ -422,6 +425,7 @@ function Status({
                       They skip <span className="text-ink-2">{repoList(agents.skipped_repos)}</span>.{" "}
                     </>
                   )}
+                  {!agents.drafts && "Drafts wait until they're marked ready for review. "}
                   {agents.description_summary &&
                     "Before each review, they sum the pull request up at the end of its description. "}
                   <Waiting bots={agents.bots} />
@@ -621,8 +625,8 @@ function effortOptions(project: G.Project): SelectOption[] {
 }
 
 /**
- * Whose subscription they run on, the repositories they review, their model, effort level and
- * instructions, and the apps that start reviews: for the project's owners.
+ * Whose subscription they run on, the repositories they review and whether drafts get reviews, their
+ * model, effort level and instructions, and the apps that start reviews: for the project's owners.
  */
 function SettingsForm({
   project,
@@ -643,6 +647,7 @@ function SettingsForm({
   const [instructions, setInstructions] = useState(agents.instructions ?? "");
   const [bots, setBots] = useState<string[]>(agents.bots);
   const [summary, setSummary] = useState(agents.description_summary);
+  const [drafts, setDrafts] = useState(agents.drafts);
   const repos = reviewRepos(agents, project.repo);
   const [skipped, setSkipped] = useState<string[]>(agents.skipped_repos.map(repoName));
   // Those the project's agents may still write to, should a repository leave meanwhile.
@@ -661,6 +666,7 @@ function SettingsForm({
     instructions.trim() !== (agents.instructions ?? "").trim() ||
     !sameBots(bots, agents.bots) ||
     summary !== agents.description_summary ||
+    drafts !== agents.drafts ||
     skipsChanged;
   return (
     <form
@@ -675,6 +681,7 @@ function SettingsForm({
           effort,
           instructions,
           bots,
+          drafts,
           description_summary: summary,
           ...(skipsChanged && { skipped_repos: skips }),
         });
@@ -710,6 +717,7 @@ function SettingsForm({
         onChange={setSkipped}
         error={err("skipped_repos")}
       />
+      <ReviewDrafts on={drafts} onChange={setDrafts} />
       <div className="grid grid-cols-2 items-start gap-4">
         <Field label="Model" error={err("model")}>
           {(id) => (
