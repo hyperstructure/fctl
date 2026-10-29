@@ -207,7 +207,8 @@ pub enum AdminCmd {
         /// their authenticator app, before sensitive actions: inviting and
         /// promoting admins, turning two-factor sign-in off, adding a
         /// runner to a workspace, new access tokens and CLI sign-ins,
-        /// exporting data, and deleting accounts, projects and workspaces.
+        /// connecting a Claude subscription, exporting data, and deleting
+        /// accounts, projects and workspaces.
         /// Only the primary instance owner changes it; off takes confirming
         /// it's you.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
