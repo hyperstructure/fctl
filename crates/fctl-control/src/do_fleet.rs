@@ -2324,8 +2324,12 @@ impl FleetObject {
                 let instance = crate::instance::name(db, &cfg)
                     .await
                     .unwrap_or_else(|_| cfg.instance_name.clone());
-                let (subject, text) =
-                    crate::api::claude::connected_notice(&instance, &person.email, &cfg);
+                let (subject, text) = crate::api::claude::connected_notice(
+                    &instance,
+                    &person.email,
+                    &cfg,
+                    crate::api::claude::Connected::Login,
+                );
                 self.state.wait_until(async move {
                     let _ = crate::email::send(&mail, &person.email, &subject, &text).await;
                 });

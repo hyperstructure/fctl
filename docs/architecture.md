@@ -2491,12 +2491,13 @@ last, which the resume tells it (`ControlState.claude_user`). The web app
 shows the links, and the transcript's note, to that person alone; states
 from before it named anyone count as the starter's.
 
-Connecting a long-lived token or a full login makes it the person's
-default, so whoever connects one decides where their sessions run and,
-for a full login, whose claude.ai sees them. It is a sensitive action
+Connecting a long-lived token, a full login or the token kept on one's
+runners makes it the person's default, so whoever connects one decides
+where their sessions run and, for a full login, whose claude.ai sees
+them. It is a sensitive action
 ([Confirming it's you](#confirming-its-you)), so a stolen session or
-token can't connect one of its own alone, and it emails the person when
-email is set up (`api::claude::connected_notice`).
+token can't connect one of its own alone, and a new connection emails the
+person when email is set up (`api::claude::connected_notice`).
 
 A full login also brings the person's claude.ai connectors (Claude Code
 fetches them with the `user:mcp_servers` scope). New projects start with

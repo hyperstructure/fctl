@@ -70,7 +70,7 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         let instance = crate::instance::name(&ctx.db, &ctx.cfg)
             .await
             .unwrap_or_else(|_| ctx.cfg.instance_name.clone());
-        let (subject, text) = connected_notice(&instance, &user.email, &ctx.cfg);
+        let (subject, text) = connected_notice(&instance, &user.email, &ctx.cfg, Connected::Token);
         crate::email::notice(ctx, &user, &subject, text);
     }
     let user = auth::user_by_id(ctx, &user.id)
@@ -79,19 +79,43 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     http::created(&auth::me(ctx, &user).await?)
 }
 
+/// What a new Claude connection is, for the email about it.
+#[derive(Clone, Copy)]
+pub enum Connected {
+    /// A long-lived token from `claude setup-token`.
+    Token,
+    /// A full Claude login, through a host, whose Claude account sees the
+    /// sessions that run on it (Remote Control).
+    Login,
+    /// The token the person keeps on their runners.
+    OnRunners,
+}
+
 /// The email that tells someone a Claude subscription was connected to
-/// their account, with a token or a sign-in: the sessions they start run
-/// on it from now on, and its Claude account sees them, so one they didn't
-/// connect is someone else watching their sessions.
+/// their account: the sessions they start run on it from now on, so one
+/// they didn't connect is someone else's subscription running their
+/// sessions, and for a full login, watching them.
 pub fn connected_notice(
     instance: &str,
     email: &str,
     cfg: &crate::config::Config,
+    kind: Connected,
 ) -> (String, String) {
+    let what = match kind {
+        Connected::Login => format!(
+            "A Claude login now runs the sessions you start on {instance} ({email}), and its Claude account sees them in Claude's apps."
+        ),
+        Connected::Token => format!(
+            "A Claude token now runs the sessions you start on {instance} ({email}), on its Claude subscription."
+        ),
+        Connected::OnRunners => format!(
+            "The Claude token kept on your runners now runs the sessions you start on {instance} ({email})."
+        ),
+    };
     (
         "A Claude subscription was connected to your account".to_owned(),
         format!(
-            "A new Claude connection now runs the sessions you start on {instance} ({email}), and its Claude account sees them.\n\nIf you didn't connect it, remove it in Settings now, sign out your other devices there and change your password: {}",
+            "{what}\n\nIf you didn't connect it, remove it in Settings now, sign out your other devices there and change your password: {}",
             cfg.url("/settings#claude")
         ),
     )
@@ -113,6 +137,8 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
         .filter(|l| !l.is_empty())
         .map(|l| fctl_domain::validate::name("label", l))
         .transpose()?;
+    // It becomes their default, as a token or a sign-in does.
+    ctx.verified(Sensitive::ConnectClaude)?;
     #[derive(serde::Deserialize)]
     struct Existing {
         id: String,
@@ -176,6 +202,15 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     .await?;
     if created {
         ctx.audit("claude.on_runners_added", Some(&id), None);
+        // Best effort, as for a token.
+        if ctx.cfg.email.is_some() {
+            let instance = crate::instance::name(&ctx.db, &ctx.cfg)
+                .await
+                .unwrap_or_else(|_| ctx.cfg.instance_name.clone());
+            let (subject, text) =
+                connected_notice(&instance, &user.email, &ctx.cfg, Connected::OnRunners);
+            crate::email::notice(ctx, &user, &subject, text);
+        }
     }
     let user = auth::user_by_id(ctx, &user.id)
         .await?
