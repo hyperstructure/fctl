@@ -30,6 +30,11 @@ pub async fn build(
         );
         return Ok(());
     }
+    if driver.name() == "firecracker" {
+        bail!(
+            "The firecracker driver builds no images: it pulls them from their registries (`fctl host image pull`)"
+        );
+    }
     let info = driver.probe().await;
     // Lima only needs limactl here: its base VM is what this builds.
     if !info.available && !(driver.name() == "lima" && info.version.is_some()) {

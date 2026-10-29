@@ -19,10 +19,18 @@ pub const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 /// How long a VM may take to stop once its init is asked to.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The kernel's command line, before what fctl-agent reads: the console,
-/// a reset that ends Firecracker, and what Firecracker suggests to boot
-/// faster (no modules, no PS/2 probing, no PCI: the devices are MMIO).
-const KERNEL_ARGS: &str = "console=ttyS0 reboot=k panic=1 nomodule i8042.noaux i8042.nomux i8042.dumbkbd swiotlb=noforce pci=off quiet rdinit=/init";
+/// The kernel's command line, before what fctl-agent reads: the console, a
+/// reset that ends Firecracker, and no modules to look for. On x86_64 also
+/// what Firecracker suggests to boot faster: no PS/2 probing, and no PCI
+/// (its devices are MMIO); aarch64 has neither.
+fn kernel_args() -> String {
+    let common = "console=ttyS0 panic=1 nomodule quiet rdinit=/init";
+    if cfg!(target_arch = "x86_64") {
+        format!("{common} reboot=k i8042.noaux i8042.nomux i8042.dumbkbd swiotlb=noforce pci=off")
+    } else {
+        common.to_owned()
+    }
+}
 
 /// A disk for the VM: its file, and whether the VM may write to it.
 #[derive(Clone, Debug)]
@@ -213,7 +221,7 @@ impl Vm {
             "boot-source": {
                 "kernel_image_path": spec.kernel,
                 "initrd_path": spec.initrd,
-                "boot_args": format!("{KERNEL_ARGS} {}", spec.boot.params()),
+                "boot_args": format!("{} {}", kernel_args(), spec.boot.params()),
             },
             "drives": drives,
             "machine-config": {
@@ -384,7 +392,10 @@ mod tests {
         let c = vm.config(&spec);
         assert_eq!(
             c["boot-source"]["boot_args"],
-            format!("{KERNEL_ARGS} fctl.mode=sandbox fctl.name=fctl-ses-1 fctl.time=5")
+            format!(
+                "{} fctl.mode=sandbox fctl.name=fctl-ses-1 fctl.time=5",
+                kernel_args()
+            )
         );
         assert_eq!(c["drives"][0]["drive_id"], "vda");
         assert_eq!(c["drives"][0]["is_read_only"], true);

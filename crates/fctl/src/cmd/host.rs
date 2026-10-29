@@ -20,7 +20,7 @@ pub enum HostCmd {
         /// Runner name (default: the hostname).
         #[arg(long)]
         name: Option<String>,
-        /// apple, docker, lima, process, or auto.
+        /// apple, docker, firecracker, lima, process, or auto.
         #[arg(long, default_value = "auto")]
         driver: String,
         /// Maximum concurrent sessions.

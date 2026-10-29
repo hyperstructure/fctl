@@ -115,7 +115,15 @@ fn main() -> anyhow::Result<()> {
         Command::Attach { socket } => rt.block_on(link::attach(&socket)),
         #[cfg(target_os = "linux")]
         Command::VmServe => {
-            init_logging(None)?;
+            // To the VM's console, which the host keeps in a file.
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_env("FCTL_LOG")
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .with_ansi(false)
+                .with_writer(std::io::stderr)
+                .init();
             rt.block_on(vm::serve())
         }
         #[cfg(target_os = "linux")]
