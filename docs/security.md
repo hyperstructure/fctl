@@ -41,7 +41,12 @@ owner and purpose), so a value copied between rows does not decrypt.
   tokens. Revoking an invitation takes back the entry it added, and
   demoting or removing an admin turns the entries that admitted their
   addresses as an admin into a member's, so that a Google sign-up, which
-  needs no invitation, can't bring them back as one.
+  needs no invitation, can't bring them back as one; disconnecting an
+  address from an account does too, and an invitation signs up an admin
+  only while the entry that admits its address still says admin.
+  Disconnecting an address also uses up the account's password reset
+  links, and revoking someone's tokens (a new password, a reset) refuses
+  the CLI sign-ins they approved that no CLI has picked up yet.
 - **Workspaces** keep their projects, sessions, files and secrets to their
   members: people outside one are told its projects and sessions don't
   exist, whatever they started there or was shared with them, and instance

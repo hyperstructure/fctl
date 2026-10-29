@@ -97,7 +97,9 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   user. Inviting an address adds its entry, which revoking the invitation
   removes again while no account has the address; an entry gives the role
   it names, so demoting or removing an admin makes those of their addresses
-  give a member's. The first account is created through a one-time setup link
+  give a member's, as disconnecting an address from an account makes its
+  own; and an invitation's admin role holds at sign-up only while the
+  entry that admits the address gives it. The first account is created through a one-time setup link
   (`/setup#token=…`, from the `FCTL_SETUP_TOKEN` secret) and becomes the
   primary instance owner.
 - **Early access**, where the deployment turns it on (as app.fctl.sh's
@@ -563,7 +565,9 @@ fctl writes to the person. A workspace knows its member by the address they
 joined as (`workspace_members.email`), the only one its people see:
 project members, shares and invitations look people up by it
 (`api::auth::member_by_email`). Disconnecting an address
-(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it.
+(`DELETE /api/v1/me/emails/{email}`) leaves the workspaces joined as it,
+and uses up the account's waiting password reset links, since one may
+have gone to it.
 
 ### GitHub accounts
 

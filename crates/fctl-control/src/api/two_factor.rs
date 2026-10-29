@@ -439,6 +439,7 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
                 "DELETE FROM tokens WHERE user_id = ?",
                 &[s(&user.id)],
             )?,
+            crate::auth::refuse_device_codes(&ctx.db, &user.id)?,
             q(
                 &ctx.db,
                 "DELETE FROM sign_in_challenges WHERE user_id = ?",

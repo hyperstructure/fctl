@@ -92,10 +92,13 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                  SELECT ?, ?, ?, ?, ?, ?, 'owner', 'active', ?, ? WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'owner')",
                 &[s(id.as_str()), s(&email), s(&person.full), os(person.given.as_deref()), os(person.family.as_deref()), s(&hash), n(ctx.now), n(ctx.now)],
             )?,
+            // Only for the owner this made: a setup that lost the race must
+            // not leave an admin's entry for its address.
             q(
                 &ctx.db,
-                "INSERT OR IGNORE INTO allowlist (id, pattern, role, note, created_by, created_at) VALUES (?, ?, 'admin', 'Instance owner', ?, ?)",
-                &[s(allow_id.as_str()), s(&email), s(id.as_str()), n(ctx.now)],
+                "INSERT OR IGNORE INTO allowlist (id, pattern, role, note, created_by, created_at) \
+                 SELECT ?, ?, 'admin', 'Instance owner', ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)",
+                &[s(allow_id.as_str()), s(&email), s(id.as_str()), n(ctx.now), s(id.as_str())],
             )?,
             q(
                 &ctx.db,
@@ -226,14 +229,17 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "An account with this email already exists. Sign in instead.",
         ));
     }
-    if allow_match(ctx, &email).await?.is_none() {
+    let Some((_, allowed)) = allow_match(ctx, &email).await? else {
         return Err(AppError(ApiError::new(
             ErrorCode::AccessDenied,
             "This email is no longer allowed on this instance.",
         )));
-    }
-    let role = match InstanceRole::parse(&invite.role) {
-        Some(InstanceRole::Admin) => "admin",
+    };
+    // An admin's only while the entry that admits the address still says
+    // so: one made a member's since (its admin demoted), or another entry
+    // that admits it as a member, makes the invitation a member's too.
+    let role = match (InstanceRole::parse(&invite.role), allowed) {
+        (Some(InstanceRole::Admin), InstanceRole::Admin | InstanceRole::Owner) => "admin",
         _ => "member",
     };
     let hash = auth::hash_password(&body.password)?;
@@ -640,6 +646,7 @@ pub async fn reset_password(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
                 "DELETE FROM tokens WHERE user_id = ?",
                 &[s(&user.id)],
             )?,
+            auth::refuse_device_codes(&ctx.db, &user.id)?,
         ],
     )
     .await?;
