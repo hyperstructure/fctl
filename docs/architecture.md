@@ -1649,9 +1649,10 @@ session, so that a task that needs them ends with a way on.
    times (`ticket_writes`, each call taking its place in one statement):
    an agent that loops would otherwise fill a team's tracker, or use up
    the API of a Linear installation that other workspaces share. A write
-   that fails counts as a read, since it asked the tracker all the same,
-   a call names at most 20 labels, and a reply goes only under one of the
-   ticket's own comments. Its
+   that fails doesn't count as one, but among at most 60 failed writes an
+   hour, which every write needs room in, since it may have asked the
+   tracker all the same; a call names at most 20 labels, and a reply goes
+   only under one of the ticket's own comments. Its
    parents, sub-tickets and search results outside the project's choice
    don't reach it either. The transcript shows what it did there
    (`ticket_commented`, `ticket_created`, `ticket_updated` notices, which

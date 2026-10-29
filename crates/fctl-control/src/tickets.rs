@@ -491,23 +491,40 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
     }
     tk::check_labels(&request)?;
     // The call's place within its limit, taken in one statement, so that
-    // calls at once can't go past it together.
+    // calls at once can't go past it together; a write also needs room
+    // among the writes that may fail (`tk::MAX_FAILED_PER_HOUR`).
     let (kind, most) = tk::limit_of(&request);
+    let hour_ago = ctx.now - 60 * 60 * 1000;
     let taken = q(
         &ctx.db,
         "INSERT INTO ticket_writes (session_id, kind, at) SELECT ?1, ?2, ?3 \
-         WHERE (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?2 AND at > ?4) < ?5",
+         WHERE (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?2 AND at > ?4) < ?5 \
+         AND (?2 = 'read' OR (SELECT COUNT(*) FROM ticket_writes WHERE session_id = ?1 AND kind = ?6 AND at > ?4) < ?7)",
         &[
             s(&session.id),
             s(kind),
             n(ctx.now),
-            n(ctx.now - 60 * 60 * 1000),
+            n(hour_ago),
             n(i64::from(most)),
+            s(tk::FAILED),
+            n(i64::from(tk::MAX_FAILED_PER_HOUR)),
         ],
     )?
     .run()
     .await?;
     if taken == 0 {
+        let full: Option<Count> = q(
+            &ctx.db,
+            "SELECT COUNT(*) AS n FROM ticket_writes WHERE session_id = ? AND kind = ? AND at > ?",
+            &[s(&session.id), s(kind), n(hour_ago)],
+        )?
+        .first()
+        .await?;
+        let (kind, most) = if full.is_some_and(|c| c.n >= i64::from(most)) {
+            (kind, most)
+        } else {
+            (tk::FAILED, tk::MAX_FAILED_PER_HOUR)
+        };
         return Err(AppError(
             ApiError::new(ErrorCode::RateLimited, tk::limited(kind, most)).with_retry_after(600),
         ));
@@ -525,16 +542,17 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
     match answer {
         Ok(answer) => Ok(serde_json::to_value(answer)?),
         Err(e) => {
-            // A write that didn't happen doesn't count as one, but it asked
-            // the tracker's API all the same, as a read does: it counts as
-            // a read, so that failing writes can't use up an API that other
-            // sessions, and other workspaces' with Linear, share.
+            // A write that didn't happen doesn't count as one, but it may
+            // have asked the tracker's API all the same: it counts among
+            // those that failed, which every write needs room in, so that
+            // failing writes can't use up an API that other sessions, and
+            // other workspaces' with Linear, share.
             if kind != "read" {
                 q(
                     &ctx.db,
-                    "UPDATE ticket_writes SET kind = 'read' WHERE rowid = (SELECT rowid FROM ticket_writes \
+                    "UPDATE ticket_writes SET kind = ? WHERE rowid = (SELECT rowid FROM ticket_writes \
                      WHERE session_id = ? AND kind = ? AND at = ? LIMIT 1)",
-                    &[s(&session.id), s(kind), n(ctx.now)],
+                    &[s(tk::FAILED), s(&session.id), s(kind), n(ctx.now)],
                 )?
                 .run()
                 .await?;

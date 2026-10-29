@@ -47,6 +47,12 @@ pub const MAX_UPDATED_PER_HOUR: u32 = 60;
 /// installation serves every fctl workspace connected to it, and an agent
 /// that loops would use up its share of Linear's API for all of them.
 pub const MAX_READS_PER_HOUR: u32 = 300;
+/// The most writes of a session's agent that fail in an hour, which every
+/// write needs room in: a write that fails doesn't count as one, but it
+/// asked the tracker all the same, so an agent looping on one that fails
+/// must stop too. What `ticket_writes` calls them.
+pub const MAX_FAILED_PER_HOUR: u32 = 60;
+pub const FAILED: &str = "failed";
 
 /// What an agent's call to its tracker counts as, for the limits above.
 pub fn limit_of(request: &fctl_proto::tickets::TicketRequest) -> (&'static str, u32) {
@@ -100,6 +106,9 @@ pub fn check_labels(request: &fctl_proto::tickets::TicketRequest) -> Result<()> 
 /// What a session's agent hears when it reached a limit above.
 pub fn limited(kind: &str, most: u32) -> String {
     match kind {
+        FAILED => format!(
+            "This session's agent's writes to its tracker failed {most} times in the last hour, which is as many as fctl lets an agent: say in your reply what's left to do in the tracker, and what went wrong."
+        ),
         "read" => format!(
             "This session's agent has read its tracker {most} times in the last hour, which is as often as fctl lets an agent: work with what you have read, and say in your reply what's left to look up."
         ),
@@ -1119,6 +1128,7 @@ mod tests {
         assert_eq!(limit_of(&R::About), ("read", MAX_READS_PER_HOUR));
         assert!(limited("read", 300).contains("read its tracker 300 times"));
         assert!(limited("comment", 30).contains("done that 30 times"));
+        assert!(limited(FAILED, 60).contains("failed 60 times"));
     }
 
     fn r(full: &str) -> RepoRef {

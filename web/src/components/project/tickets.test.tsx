@@ -103,11 +103,14 @@ function tab(
     role = "member",
     connections = [connection],
     returned,
+    teams = true,
   }: {
     status?: Partial<G.ProjectTickets>;
     role?: G.WorkspaceRole;
     connections?: G.LinearConnection[];
     returned?: LinearOutcome;
+    /** The Linear workspace's teams are in the cache, as they are for those who choose one. */
+    teams?: boolean;
   } = {},
 ) {
   queryClient.setQueryData(keys.instance, instance);
@@ -121,20 +124,21 @@ function tab(
     webhook: true,
     connections,
   });
-  queryClient.setQueryData<G.LinearTeamList>(keys.linearTeams(workspace.id, ORG), {
-    teams: [
-      {
-        id: TEAM,
-        key: "ENG",
-        name: "Engineering",
-        states: [],
-        start_state: "In Progress",
-        review_state: "Code review",
-        done_state: "Shipped",
-        projects: [{ id: "c0000000-0000-4000-8000-000000000101", name: "Website" }],
-      },
-    ],
-  });
+  if (teams)
+    queryClient.setQueryData<G.LinearTeamList>(keys.linearTeams(workspace.id, ORG), {
+      teams: [
+        {
+          id: TEAM,
+          key: "ENG",
+          name: "Engineering",
+          states: [],
+          start_state: "In Progress",
+          review_state: "Code review",
+          done_state: "Shipped",
+          projects: [{ id: "c0000000-0000-4000-8000-000000000101", name: "Website" }],
+        },
+      ],
+    });
   queryClient.setQueryData<G.ProjectTickets>(keys.projectTickets(p.id), {
     tracker: p.settings.tickets?.tracker ?? "github",
     scope: "GitHub issues of acme/web",
@@ -292,6 +296,33 @@ describe("the Tickets tab", () => {
     act(() => switches()[0]?.click());
     expect(states()[0]).toEqual(["Move a ticket to In Progress as its session starts", "false"]);
     expect(c.textContent).toContain("Save");
+  });
+
+  it("shows a viewer the team's states as what they are, without its list of teams", () => {
+    // Only the workspace's admins and the project's maintainers list them.
+    const c = tab(
+      project({ role: "viewer", settings: { ...settings, tickets: { tracker: "linear", linear } } }),
+      {
+        status: {
+          tracker: "linear",
+          scope: "Linear team ENG (Acme)",
+          via: "fctl",
+          linear: connection,
+          linked: true,
+        },
+        teams: false,
+      },
+    );
+    expect(c.textContent).toContain("Engineering");
+    const labels = [...c.querySelectorAll<HTMLButtonElement>('button[role="switch"]')].map((s) =>
+      s.getAttribute("aria-label"),
+    );
+    expect(labels).toEqual([
+      "Move a ticket to its first started state as its session starts",
+      "Move a ticket to its review state when its pull request is up",
+      "Move a ticket to its first completed state once its pull requests merge",
+    ]);
+    expect(c.textContent).not.toContain("no longer reaches it");
   });
 
   it("says when fctl knows the person in Linear already", () => {
