@@ -123,9 +123,17 @@ const ALERTS: Record<RiskAlert, { title: string; icon: ReactNode; border: string
 /**
  * A pull request's summary as GitHub shows it at the end of its description: in an alert whose kind
  * says how risky the pull request looks, with how risky and why, what it does, and what deserves a
- * closer look.
+ * closer look; then `footer`, the line under it, where one is.
  */
-export function SummaryAlert({ summary, className }: { summary: G.PullRequestSummary; className?: string }) {
+export function SummaryAlert({
+  summary,
+  footer,
+  className,
+}: {
+  summary: G.PullRequestSummary;
+  footer?: ReactNode;
+  className?: string;
+}) {
   const alert = ALERTS[RISKS[summary.risk].alert];
   return (
     <div className={cn("border-l-[3px] py-0.5 pl-3.5", alert.border, className)}>
@@ -133,10 +141,10 @@ export function SummaryAlert({ summary, className }: { summary: G.PullRequestSum
         {alert.icon}
         {alert.title}
       </p>
-      <Markdown
-        text={summaryMarkdown(summary)}
-        className="mt-1.5 text-[13px] leading-relaxed text-ink-2 [&_p+p]:mt-2 [&_strong]:text-ink"
-      />
+      <div className="mt-1.5 text-[13px] text-ink-2 [&_strong]:font-semibold [&_strong]:text-ink">
+        <Markdown text={summaryMarkdown(summary)} className="prose-note" />
+      </div>
+      {footer && <p className="mt-2 text-[11.5px] text-ink-4">{footer}</p>}
     </div>
   );
 }
@@ -150,15 +158,15 @@ export function PullRequestSummarizedNotice({ summarized }: { summarized: G.Summ
   const url = githubLink(summarized.url);
   return (
     <div className="my-2 animate-rise rounded-xl border border-line bg-raised/30 px-4 py-3">
-      <div className="flex items-start gap-3">
-        <p className="min-w-0 flex-1 text-[13.5px] text-ink">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
+        <p className="min-w-0 flex-1 basis-64 text-[13.5px] text-ink">
           {summarized.replaced
             ? `Summary updated in ${ref}'s description`
             : `Summary added to ${ref}'s description`}
           <span className="block text-[12.5px] text-ink-3">
             {summarized.replaced
-              ? "In place of an earlier review's, before the review in depth. The rest of the description stays as it was."
-              : "At its end, before the review in depth. The rest of the description stays as it was."}
+              ? "In place of an earlier review's, before the review in depth. The rest stays as people wrote it."
+              : "At its end, before the review in depth. The rest stays as people wrote it."}
           </span>
         </p>
         {url && (
@@ -166,7 +174,7 @@ export function PullRequestSummarizedNotice({ summarized }: { summarized: G.Summ
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink max-sm:-ml-2"
           >
             View on GitHub <ArrowUpRight className="size-3.5" />
           </a>

@@ -821,11 +821,15 @@ function DescriptionSummary({ on, onChange }: { on: boolean; onChange: (on: bool
       </div>
       {on && (
         <div aria-hidden="true" className="animate-rise rounded-lg border border-line bg-surface px-4 py-3.5">
-          <SummaryAlert summary={EXAMPLE} />
-          <p className="mt-2.5 pl-[17.5px] text-[11.5px] text-ink-4">
-            fctl review's first look at <span className="font-mono">3f2a1c9</span> · 3 files, +120 −4 · Review
-            agent settings
-          </p>
+          <SummaryAlert
+            summary={EXAMPLE}
+            footer={
+              <>
+                fctl review's first look at <span className="font-mono">3f2a1c9</span> · 3 files, +120 −4 ·
+                Review agent settings
+              </>
+            }
+          />
         </div>
       )}
     </div>
