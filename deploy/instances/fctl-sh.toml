@@ -29,6 +29,13 @@ client_id = "Iv23liRKQScqi5ySeiBr"
 # Where "New repository" creates repositories.
 default_owner = "hyperstructure"
 
+# The app review agents post their reviews as where it's installed, apart
+# from what agents write as fctl-sh (GITHUB_REVIEW_APP_PRIVATE_KEY is a
+# Worker secret). It needs no client secret or webhook.
+[github.review]
+app_id = "5527664"
+app_slug = "fctl-review"
+
 # fctl's Linear app, which workspaces install in their Linear workspaces
 # (LINEAR_CLIENT_SECRET and LINEAR_WEBHOOK_SECRET are Worker secrets). Until
 # its client ID is here, LINEAR_CLIENT_ID can be a secret too.

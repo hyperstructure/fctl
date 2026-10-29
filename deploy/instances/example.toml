@@ -35,6 +35,13 @@ database_id = ""
 # app_slug = "my-fctl"
 # client_id = "Iv23li..."
 # default_owner = "my-org"
+#
+# Optional: a second GitHub App that review agents post their reviews as,
+# where it's installed (docs/self-hosting.md#a-review-app-optional). Set
+# its key with `cargo xtask secrets <name> --github-review-key key.pem`.
+# [github.review]
+# app_id = "234567"
+# app_slug = "my-fctl-review"
 
 # Optional: delegate Linear issues to fctl, through your own Linear OAuth app
 # (docs/self-hosting.md#connect-linear-optional). Set LINEAR_CLIENT_SECRET and

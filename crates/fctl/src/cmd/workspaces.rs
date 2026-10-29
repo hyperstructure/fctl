@@ -1538,7 +1538,9 @@ fn review_app_state(a: &ReviewAppAccount, app: &str, github_app: &str) -> (Strin
         ),
         ReviewAppState::Unknown => (
             "?".to_owned(),
-            style::dim(&format!("GitHub didn't say whether {app} is installed there")),
+            style::dim(&format!(
+                "GitHub didn't say whether {app} is installed there"
+            )),
         ),
     }
 }
@@ -1578,7 +1580,12 @@ mod tests {
             Some("Review agents post their reviews as fctl-review.")
         );
         assert_eq!(
-            line(&[("acme", Installed), ("globex", NotInstalled), ("initech", Partly)]).as_deref(),
+            line(&[
+                ("acme", Installed),
+                ("globex", NotInstalled),
+                ("initech", Partly)
+            ])
+            .as_deref(),
             Some(
                 "Review agents post their reviews as fctl-review, but as fctl-sh in globex and some repositories of initech: `fctl workspaces review-app` says more."
             )
