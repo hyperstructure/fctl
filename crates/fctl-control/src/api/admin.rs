@@ -4,7 +4,7 @@
 
 use crate::auth;
 use crate::ctx::Ctx;
-use crate::db::{batch, n, os, q, s};
+use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppResult, conflict, forbidden, not_found, validation};
 use crate::http;
 use crate::model::{AllowRow, UserRow, user_columns};
@@ -666,6 +666,24 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
         })?;
         workspaces.push((a.row, fctl_domain::workspace::invitation_role(w.role)?));
     }
+    // An entry an admin added by hand that allows the address as a member
+    // stays as it is: an admin's invitation would have to make it an
+    // admin's, and revoking the invitation couldn't tell what it was.
+    if role == InstanceRole::Admin {
+        let hand_made: Option<Count> = q(
+            &ctx.db,
+            "SELECT COUNT(*) AS n FROM allowlist WHERE pattern = ? AND role = 'member' \
+             AND (note IS NULL OR note != 'Invited')",
+            &[s(&email)],
+        )?
+        .first()
+        .await?;
+        if hand_made.is_some_and(|c| c.n > 0) {
+            return Err(conflict(&format!(
+                "{email} is allowed as a member by an entry an admin added. Remove it under Admin → Access first, then invite them as an admin."
+            )));
+        }
+    }
     if role == InstanceRole::Admin {
         ctx.verified(Sensitive::InviteAdmin)?;
     } else if workspaces.iter().any(|(_, role)| role.is_admin()) {
@@ -674,13 +692,13 @@ pub async fn create_invite(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respon
     // Inviting someone also allows them, with the invitation's role: an
     // entry gives its role at sign-up as the invitation does (the lower of
     // the two counts, `api::auth::signup`), so an admin's invitation makes
-    // a member's entry for the address an admin's, as an invitation's,
+    // an earlier invitation's member entry for the address an admin's,
     // which revoking it takes back (`revoke_invite`).
     q(
         &ctx.db,
         "INSERT INTO allowlist (id, pattern, role, note, created_by, created_at) VALUES (?, ?, ?, 'Invited', ?, ?) \
-         ON CONFLICT (pattern) DO UPDATE SET role = excluded.role, note = 'Invited' \
-         WHERE excluded.role = 'admin' AND allowlist.role != 'admin'",
+         ON CONFLICT (pattern) DO UPDATE SET role = excluded.role \
+         WHERE excluded.role = 'admin' AND allowlist.role != 'admin' AND allowlist.note = 'Invited'",
         &[s(fctl_domain::ids::allow_id(ctx.now).as_str()), s(&email), s(role.as_str()), s(&actor.id), n(ctx.now)],
     )?
     .run()
