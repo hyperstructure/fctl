@@ -2599,25 +2599,27 @@ impl FleetObject {
     }
 
     /// Stops the active sessions that run on the Claude subscription of
-    /// `user_ids` where its person may no longer run them
-    /// (`spec::credential_serves`): they lost their role in its project,
-    /// its share, or its workspace's two-factor requirement closed it to
-    /// them. Their tokens get no refresh there anyway; this stops the
-    /// agents at once, and a resume runs them on the resumer's.
+    /// `user_ids` (or that they started, once that connection is gone)
+    /// where its person may no longer run them (`spec::person_runs`): they
+    /// lost their role in its project, its share, or its workspace's
+    /// two-factor requirement closed it to them. Their tokens get no
+    /// refresh there anyway; this stops the agents at once, and a resume
+    /// runs them on the resumer's.
     async fn stop_unlent(&self, db: &worker::D1Database, user_ids: &[String]) {
         #[derive(Deserialize)]
         struct Lent {
             id: String,
-            credential_id: String,
+            #[serde(default)]
+            runner_id: Option<String>,
         }
         let Ok(users) = serde_json::to_string(user_ids) else {
             return;
         };
         let lent: Vec<Lent> = match crate::db::q(
             db,
-            "SELECT s.id AS id, s.credential_id AS credential_id FROM sessions s \
-             JOIN claude_credentials c ON c.id = s.credential_id \
-             WHERE c.user_id IN (SELECT value FROM json_each(?)) \
+            "SELECT s.id AS id, s.runner_id AS runner_id FROM sessions s \
+             LEFT JOIN claude_credentials c ON c.id = s.credential_id \
+             WHERE COALESCE(c.user_id, s.created_by) IN (SELECT value FROM json_each(?)) \
              AND s.status IN ('queued','provisioning','preparing','running','idle','paused')",
             &[crate::db::s(&users)],
         ) {
@@ -2625,7 +2627,7 @@ impl FleetObject {
             Err(_) => return,
         };
         for l in lent {
-            match spec::credential_serves(db, &l.credential_id, &l.id).await {
+            match spec::person_runs(db, &l.id).await {
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(e) => {
@@ -2642,6 +2644,13 @@ impl FleetObject {
                 .await;
             if let Err(e) = stopped {
                 worker::console_error!("stopping session {}: {}", l.id, e.message);
+            }
+            // As for a runner that no longer runs it (`unserved`): a host
+            // that ignores the stop keeps no uplink to it, and opens no
+            // other (`spec::check_runs`). It reports the end on its own
+            // connection.
+            if let Some(runner_id) = &l.runner_id {
+                self.close_uplink(&l.id, runner_id).await;
             }
         }
     }
