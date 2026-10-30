@@ -198,7 +198,7 @@ export function SessionPage() {
         {/* Header. On phones it holds the menu button, in place of the top bar it would cover,
             and has room for the title and status only: the orb and title open the rest, with
             what the rail shows on wider screens, in a sheet. */}
-        <div ref={header} className="sticky top-0 z-10">
+        <div ref={header} className="sticky top-(--viewport-shift) z-10">
           {/* Above the find bar, so that its menu opens over it. */}
           <header className="relative z-1 border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
             {/* On phones as tall as the top bar, with the menu button where the bar has it. */}
@@ -565,7 +565,7 @@ export function SessionPage() {
         {/* Composer: a review agent takes no messages, and says what becomes of its review instead. */}
         <div
           ref={footer}
-          className="sticky bottom-0 z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]"
+          className="sticky -bottom-(--viewport-shift) z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]"
         >
           <div className="mx-auto w-full max-w-[760px] px-6">
             {session?.review ? (
@@ -602,7 +602,7 @@ export function SessionPage() {
       </div>
 
       {rail && session && (
-        <aside className="sticky top-0 hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
+        <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
             session={session}
             role={role}

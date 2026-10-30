@@ -35,7 +35,7 @@ export function Dialog({
         if (e.target === ref.current) onClose();
       }}
       className={cn(
-        "m-auto w-[calc(100vw-2rem)] rounded-xl border border-line-strong bg-surface p-0 text-ink shadow-[0_30px_120px_rgb(0_0_0/0.55)]",
+        "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto w-[calc(100vw-2rem)] rounded-xl border border-line-strong bg-surface p-0 text-ink shadow-[0_30px_120px_rgb(0_0_0/0.55)]",
         "backdrop:bg-black/45 backdrop:backdrop-blur-[3px] open:animate-rise",
         wide ? "max-w-2xl" : "max-w-md",
       )}

@@ -6,6 +6,7 @@
 // tool call's details) stays where they opened it.
 
 import { type RefObject, useCallback, useLayoutEffect, useRef } from "react";
+import { visualHeight } from "./viewport";
 
 /**
  * How close (px) to the bottom scrolling down has to come to stick again: a
@@ -109,7 +110,7 @@ export function useStickToBottom(content: RefObject<HTMLElement | null>, key: un
     };
     const toBottom = () => {
       if (!stick.stuck || held) return;
-      const top = bottomOf(page.scrollHeight, page.clientHeight, window.visualViewport?.height);
+      const top = bottomOf(page.scrollHeight, page.clientHeight, visualHeight());
       window.scrollTo({ top, behavior: "instant" });
       stick.pinned(window.scrollY);
     };

@@ -1427,7 +1427,7 @@ function Settings({ project }: { project: G.Project }) {
           </Field>
         </div>
       </Section>
-      <div className="sticky bottom-[max(1rem,env(safe-area-inset-bottom))] mt-4 flex justify-end">
+      <div className="sticky bottom-[calc(max(1rem,env(safe-area-inset-bottom))-var(--viewport-shift))] mt-4 flex justify-end">
         <Button type="submit" variant="primary" loading={save.isPending}>
           Save settings
         </Button>

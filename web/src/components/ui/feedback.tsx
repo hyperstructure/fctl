@@ -111,7 +111,7 @@ export function Toaster() {
   useEffect(() => () => listeners.clear(), []);
   return (
     <div
-      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] left-[max(1rem,env(safe-area-inset-left))] z-50 flex flex-col items-end gap-2"
+      className="pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[calc(max(1rem,env(safe-area-inset-bottom))-var(--viewport-shift))] left-[max(1rem,env(safe-area-inset-left))] z-50 flex flex-col items-end gap-2"
       aria-live="polite"
     >
       {list.map((t) => (

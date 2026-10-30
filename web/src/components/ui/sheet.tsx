@@ -198,9 +198,9 @@ export function Sheet({
       className={
         "sheet m-0 flex-col overflow-hidden border-line-strong bg-surface p-0 text-ink outline-none open:flex " +
         // Phones: along the bottom, as tall as what it holds, up to most of the screen.
-        "inset-x-0 top-auto bottom-0 max-h-[min(88dvh,calc(100dvh-2.5rem))] w-full max-w-none rounded-t-[18px] border-t shadow-[0_-16px_60px_rgb(0_0_0/0.35)] " +
+        "inset-x-0 top-auto -bottom-(--viewport-shift) max-h-[min(88dvh,calc(100dvh-2.5rem))] w-full max-w-none rounded-t-[18px] border-t shadow-[0_-16px_60px_rgb(0_0_0/0.35)] " +
         // From 768 px: along the right, the screen's height.
-        "md:top-0 md:right-0 md:left-auto md:h-dvh md:max-h-none md:w-[340px] md:rounded-none md:border-t-0 md:border-l md:shadow-[-16px_0_60px_rgb(0_0_0/0.3)]"
+        "md:top-(--viewport-shift) md:right-0 md:left-auto md:h-dvh md:max-h-none md:w-[340px] md:rounded-none md:border-t-0 md:border-l md:shadow-[-16px_0_60px_rgb(0_0_0/0.3)]"
       }
     >
       <div className="relative shrink-0 border-b border-line px-5 pt-6 pb-4 md:pt-5">

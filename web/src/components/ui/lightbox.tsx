@@ -556,6 +556,8 @@ export function Lightbox({
       }}
       className={cn(
         "m-0 size-full max-h-none max-w-none overflow-hidden bg-transparent p-0 outline-none backdrop:animate-fade backdrop:bg-black/75 backdrop:backdrop-blur-[3px]",
+        // Moved, rather than placed, onto the screen: its fixed buttons go along.
+        "translate-y-(--viewport-shift)",
         // Fingers swipe and zoom from the start: the browser doesn't take them for a scroll.
         takesFingers && "touch-none",
       )}

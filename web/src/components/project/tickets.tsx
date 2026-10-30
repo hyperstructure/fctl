@@ -1118,7 +1118,7 @@ function SaveBar({
   onReset: () => void;
 }) {
   return (
-    <div className="sticky bottom-4 z-10 mt-8 flex animate-rise flex-wrap items-center justify-between gap-3 rounded-xl border border-line-strong bg-surface/95 px-4 py-3 shadow-[0_18px_50px_-24px_rgb(0_0_0/0.45)] backdrop-blur max-sm:bottom-2">
+    <div className="sticky bottom-[calc(1rem-var(--viewport-shift))] z-10 mt-8 flex animate-rise flex-wrap items-center justify-between gap-3 rounded-xl border border-line-strong bg-surface/95 px-4 py-3 shadow-[0_18px_50px_-24px_rgb(0_0_0/0.45)] backdrop-blur max-sm:bottom-[calc(0.5rem-var(--viewport-shift))]">
       <span className="text-[12.5px] text-ink-3">{hint}</span>
       <div className="flex items-center gap-2">
         <Button variant="ghost" onClick={onReset} disabled={pending}>
