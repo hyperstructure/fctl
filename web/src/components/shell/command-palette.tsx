@@ -69,7 +69,16 @@ export function usePaletteKeys(open: () => void) {
   useHotkey("mod+shift+p", open, { inInputs: true });
 }
 
-export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function CommandPalette({
+  open,
+  onClose,
+  onNavigate,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** An entry opens a page: on phones, the sidebar the palette was opened from goes too. */
+  onNavigate: () => void;
+}) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -91,6 +100,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const entries = useMemo<Entry[]>(() => {
     const go = (fn: () => void) => () => {
       onClose();
+      onNavigate();
       fn();
     };
     const list: Entry[] = [
@@ -169,7 +179,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         group: "Actions",
         label: "Toggle theme",
         icon: <Moon className="size-4" />,
-        run: go(() => setTheme(getTheme() === "dark" ? "light" : "dark")),
+        // It opens no page: the sidebar the palette was opened from stays, as the sidebar's
+        // own theme item leaves it.
+        run: () => {
+          onClose();
+          setTheme(getTheme() === "dark" ? "light" : "dark");
+        },
       },
     );
     if (me?.user.role === "owner" || me?.user.role === "admin") {
@@ -192,7 +207,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
       .map((x) => x.e);
-  }, [q, sessions, projects, workspaces, me, navigate, onClose]);
+  }, [q, sessions, projects, workspaces, me, navigate, onClose, onNavigate]);
 
   // The sessions that say what was typed, past those listed already.
   const deep = useMemo<Entry[]>(() => {
@@ -217,6 +232,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           icon: <StatusDot status={s.status} />,
           run: () => {
             onClose();
+            onNavigate();
             // What found it, which may be what was typed before the last keys.
             void navigate({
               to: "/s/$id",
@@ -226,7 +242,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           },
         };
       });
-  }, [found.results, entries, me, q, navigate, onClose]);
+  }, [found.results, entries, me, q, navigate, onClose, onNavigate]);
   const all = deep.length ? entries.concat(deep) : entries;
 
   if (!open) return null;

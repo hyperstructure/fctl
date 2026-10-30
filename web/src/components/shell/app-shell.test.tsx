@@ -285,6 +285,18 @@ function phone() {
     shade: () => click(closeButtons().find((b) => !drawer().contains(b))),
     follow: (name: string) =>
       click([...drawer().querySelectorAll("a")].find((a) => a.textContent?.trim() === name)),
+    /** The palette, opened from the drawer's search field. */
+    search: () =>
+      click([...drawer().querySelectorAll("button")].find((b) => b.textContent?.includes("Search"))),
+    pick: (name: string) =>
+      click([...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === name)),
+    escape: () =>
+      act(() => {
+        document
+          .querySelector('input[placeholder^="Search"]')
+          ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      }),
+    palette: () => !!document.querySelector('input[placeholder^="Search"]'),
   };
 }
 
@@ -307,6 +319,30 @@ describe("the drawer", () => {
     shell.follow("Settings");
     expect(shell.state()).toEqual({ open: false, slides: false, shade: false });
     shell.open();
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+  });
+
+  it("goes at once when the palette opened from it opens a page", () => {
+    const shell = phone();
+    shell.open();
+    shell.search();
+    expect(shell.palette()).toBe(true);
+    shell.pick("Settings");
+    expect(shell.palette()).toBe(false);
+    expect(shell.state()).toEqual({ open: false, slides: false, shade: false });
+  });
+
+  it("stays when the palette opened from it closes without opening a page", () => {
+    const shell = phone();
+    shell.open();
+    shell.search();
+    shell.escape();
+    expect(shell.palette()).toBe(false);
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+    shell.search();
+    cleanups.push(() => delete document.documentElement.dataset.theme);
+    shell.pick("Toggle theme");
+    expect(shell.palette()).toBe(false);
     expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
   });
 });

@@ -64,7 +64,7 @@ import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 
 /**
  * The sidebar on phones: open, closed with its button or the shade (it slides away), or
- * gone, closed by one of its links (at once).
+ * gone, closed by one of its links or by an entry of the palette opened from it (at once).
  */
 type Drawer = "open" | "closed" | "gone";
 
@@ -74,6 +74,7 @@ export function AppShell() {
   const openPalette = useCallback(() => setPalette(true), []);
   const openDrawer = useCallback(() => setDrawer("open"), []);
   const closeDrawer = () => setDrawer("closed");
+  const dropDrawer = () => setDrawer("gone");
   // A page whose header holds the menu button (the session's) takes the top bar's place.
   const [headerButton, shell] = useHeaderButtons(openDrawer);
   usePaletteKeys(openPalette);
@@ -86,10 +87,10 @@ export function AppShell() {
       {/* On phones the sidebar is a drawer over the page: opaque, and out of the page once
           it has slid away (display: none), so that it is drawn anew each time it opens.
           Kept off screen with a blur, it sometimes stopped showing properly in Safari on iOS
-          until a reload. A link in it takes it out at once, without the slide: the router's
-          view transition snapshots the page as the link is followed, and a drawer that had
-          only started to slide away showed there open, fading out over the page the link
-          opened. */}
+          until a reload. A link in it, or an entry of the palette opened from it, takes it
+          out at once, without the slide: the router's view transition snapshots the page as
+          the link is followed, and a drawer that had only started to slide away showed there
+          open, fading out over the page the link opened. */}
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
@@ -97,12 +98,7 @@ export function AppShell() {
           drawer === "open" ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
       >
-        <Sidebar
-          onPalette={openPalette}
-          onNavigate={() => setDrawer("gone")}
-          onClose={closeDrawer}
-          path={path}
-        />
+        <Sidebar onPalette={openPalette} onNavigate={dropDrawer} onClose={closeDrawer} path={path} />
       </aside>
       {drawer === "open" && (
         <button
@@ -128,7 +124,7 @@ export function AppShell() {
           </ShellContext>
         </main>
       </div>
-      <CommandPalette open={palette} onClose={() => setPalette(false)} />
+      <CommandPalette open={palette} onClose={() => setPalette(false)} onNavigate={dropDrawer} />
     </div>
   );
 }
