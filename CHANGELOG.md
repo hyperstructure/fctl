@@ -2,6 +2,26 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.27.1 (2026-10-30)
+
+### Fixes
+
+- **web:** Close the sidebar on phones when search opens a page ([#348](https://github.com/hyperstructure/fctl/pull/348))
+- **web:** Keep the bars on screen after the iOS app switcher ([#350](https://github.com/hyperstructure/fctl/pull/350))
+- **control:** Keep runners from acting for sessions their person lost ([#353](https://github.com/hyperstructure/fctl/pull/353))
+- **control:** Keep GitHub review state and findings within the workspace ([#354](https://github.com/hyperstructure/fctl/pull/354))
+- **control:** End workspaces' connections when their app is uninstalled ([#355](https://github.com/hyperstructure/fctl/pull/355))
+- Confirm it's you before linking a Linear account ([#357](https://github.com/hyperstructure/fctl/pull/357))
+- **cli:** Print titles and names without what terminals act on ([#358](https://github.com/hyperstructure/fctl/pull/358))
+- **web:** Warn against approving a confirmation someone else started ([#359](https://github.com/hyperstructure/fctl/pull/359))
+- **control:** Stop reading request bodies once they pass their limit ([#360](https://github.com/hyperstructure/fctl/pull/360))
+
+### Documentation
+
+- Describe fctl's main features in the README ([#349](https://github.com/hyperstructure/fctl/pull/349))
+- Show the features as a grid of their scenes in the README ([#351](https://github.com/hyperstructure/fctl/pull/351))
+- Add a self-hosting section to the README ([#352](https://github.com/hyperstructure/fctl/pull/352))
+
 ## 0.27.0 (2026-10-29)
 
 ### Features
