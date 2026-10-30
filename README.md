@@ -85,7 +85,8 @@ which fixes what's real and answers in the thread.
 Delegate a Linear issue to fctl, or mention `@fctl` in a comment, and a
 session starts in the project that takes the issue's team, as you, on your
 Claude plan. The agent answers in the ticket's thread, and the pull request
-comes back linked. Projects can take GitHub issues the same way.
+comes back linked. Projects that track their work in GitHub issues
+instead have their agents read and write tickets there.
 
 ### [Memory and retrospectives](https://fctl.sh/features/memory/)
 
