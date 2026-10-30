@@ -1,14 +1,14 @@
 // Safari on iOS can lose track of the on-screen keyboard. The installed app
 // can come back from the app switcher with WebKit taking a keyboard to cover
-// the bottom of the screen though none shows, until the app is closed. (WebKit
-// ignores a keyboard going away while the app turns, and iOS turns it for the
-// app switcher's snapshots.) The visual viewport is then shorter than the
-// screen by the keyboard's height, or has no height at all, and the layout
-// viewport, which sticky and fixed elements are placed against, moves only
-// once the visual viewport passes one of its edges. As the page scrolls down,
-// the screen leaves the layout viewport behind by up to that height, and what
-// is pinned to its edges comes loose: the session's header scrolls off the
-// top, and its composer rides up the screen.
+// the bottom of the screen though none shows, until the app is closed. (Most
+// likely as WebKit ignores a keyboard going away while the app turns, and iOS
+// turns it for the app switcher's snapshots.) The visual viewport is then
+// shorter than the screen by the keyboard's height, or has no height at all,
+// and the layout viewport, which sticky and fixed elements are placed against,
+// moves only once the visual viewport passes one of its edges. As the page
+// scrolls down, the screen leaves the layout viewport behind by up to that
+// height, and what is pinned to its edges comes loose: the session's header
+// scrolls off the top, and its composer rides up the screen.
 //
 // While that lasts, --viewport-shift on <html> says how far below the layout
 // viewport the screen is, and what is pinned to the screen's edges moves down
@@ -124,13 +124,24 @@ export function watchViewport(): () => void {
       update();
     }, KEYBOARD_GOES);
   };
+  // Safari lets the page scroll past its bottom by as much as the phantom
+  // keyboard is tall, as if to bring what it covers into sight. Nothing shows
+  // there, and what is pinned to the bottom can't follow past the page's end:
+  // the page glides back to its end, as it does after scrolling past it.
+  const back = () => {
+    const v = viewports();
+    const page = document.documentElement;
+    const end = page.scrollHeight - page.clientHeight;
+    if (v && phantomKeyboard(v) && window.scrollY > end + 1)
+      window.scrollTo({ top: end, behavior: "smooth" });
+  };
   const off = new AbortController();
   const on = { signal: off.signal };
-  const passive = { signal: off.signal, passive: true };
+  // Its scroll comes as the screen moves away from the layout viewport, not
+  // as the page scrolls along with it.
   vv.addEventListener("resize", update, on);
-  vv.addEventListener("scroll", update, passive);
-  window.addEventListener("scroll", update, passive);
-  window.addEventListener("resize", update, on);
+  vv.addEventListener("scroll", update, { signal: off.signal, passive: true });
+  window.addEventListener("scrollend", back, on);
   window.addEventListener("pageshow", update, on);
   document.addEventListener("visibilitychange", update, on);
   document.addEventListener("focusin", update, on);

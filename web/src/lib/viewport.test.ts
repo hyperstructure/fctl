@@ -66,7 +66,8 @@ describe("the viewport's shift", () => {
 /**
  * The app on a 402 x 874 iPhone, installed or in a tab, with its visual
  * viewport, which `move` moves as Safari does: `height` tall as Safari says,
- * `offsetTop` px down the layout viewport.
+ * `offsetTop` px down the layout viewport. Its page is 3000 px tall, and
+ * `scrolled` scrolls it as a finger does, to where it stops.
  */
 function iPhone({ installed = true } = {}) {
   const vv = Object.assign(new EventTarget(), { height: 874, offsetTop: 0, scale: 1 });
@@ -74,11 +75,24 @@ function iPhone({ installed = true } = {}) {
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: installed && query === "(display-mode: standalone)",
   }));
-  Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 874 });
-  cleanups.push(() => Reflect.deleteProperty(document.documentElement, "clientHeight"));
+  const page = document.documentElement;
+  Object.defineProperty(page, "clientHeight", { configurable: true, value: 874 });
+  Object.defineProperty(page, "scrollHeight", { configurable: true, value: 3000 });
+  let top = 0;
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => top });
+  const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+  cleanups.push(() => {
+    for (const k of ["clientHeight", "scrollHeight"]) Reflect.deleteProperty(page, k);
+    Reflect.deleteProperty(window, "scrollY");
+    scrollTo.mockRestore();
+  });
   const move = (height: number, offsetTop: number) => {
     Object.assign(vv, { height, offsetTop });
     vv.dispatchEvent(new Event("scroll"));
+  };
+  const scrolled = (to: number) => {
+    top = to;
+    window.dispatchEvent(new Event("scrollend"));
   };
   const field = document.createElement("textarea");
   document.body.append(field);
@@ -89,7 +103,7 @@ function iPhone({ installed = true } = {}) {
     return stop;
   };
   const shift = () => document.documentElement.style.getPropertyValue("--viewport-shift");
-  return { move, field, watch, shift };
+  return { move, scrolled, scrollTo, field, watch, shift };
 }
 
 describe("watching the viewport", () => {
@@ -153,6 +167,27 @@ describe("watching the viewport", () => {
     p.watch();
     p.move(565, 309);
     expect(p.shift()).toBe("");
+    p.scrolled(3000 - 565);
+    expect(p.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("takes the page back to its end from past it, where Safari lets a finger take it", () => {
+    const p = iPhone();
+    p.watch();
+    p.move(565, 309);
+    // The page's end is 309 px above the screen's.
+    p.scrolled(3000 - 565);
+    expect(p.scrollTo).toHaveBeenCalledWith({ top: 3000 - 874, behavior: "smooth" });
+  });
+
+  it("leaves the page where a finger takes it short of its end, or with a keyboard up", () => {
+    const p = iPhone();
+    p.watch();
+    p.move(565, 309);
+    p.scrolled(3000 - 874);
+    p.field.focus();
+    p.scrolled(3000 - 565);
+    expect(p.scrollTo).not.toHaveBeenCalled();
   });
 
   it("takes the shift away when it stops", () => {
