@@ -152,12 +152,7 @@ impl FilesObject {
             .ok_or_else(|| api_err(ErrorCode::BadRequest, "No upload metadata"))?;
         let bytes = crate::http::read_upto(req, files::MAX_FILE_BYTES as usize)
             .await
-            .map_err(|e| {
-                api_err(
-                    ErrorCode::BadRequest,
-                    &format!("Reading the upload: {}", e.0.message),
-                )
-            })?;
+            .map_err(|e| api_err(ErrorCode::BadRequest, &format!("Reading the upload: {e}")))?;
         if bytes.len() as u64 > files::MAX_FILE_BYTES {
             return Err(ApiError::validation(
                 "file",
@@ -423,12 +418,7 @@ impl FilesObject {
             .ok_or_else(|| api_err(ErrorCode::BadRequest, "No upload metadata"))?;
         let bytes = crate::http::read_upto(req, published::MAX_BYTES as usize)
             .await
-            .map_err(|e| {
-                api_err(
-                    ErrorCode::BadRequest,
-                    &format!("Reading the upload: {}", e.0.message),
-                )
-            })?;
+            .map_err(|e| api_err(ErrorCode::BadRequest, &format!("Reading the upload: {e}")))?;
         let image = published::check(&bytes)?;
         let now = now_ms();
         let failed = |e: worker::Error| {

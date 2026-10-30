@@ -90,14 +90,15 @@ pub async fn body<T: DeserializeOwned>(req: &mut Request) -> AppResult<T> {
 /// `limit`, for the caller's own check to refuse. A client that doesn't say
 /// how large a body is (`Transfer-Encoding: chunked`, as the standalone
 /// server's proxy passes bodies on) would otherwise have it kept in memory
-/// whole, however large, before anything looked at its size.
-pub async fn read_upto(req: &mut Request, limit: usize) -> AppResult<Vec<u8>> {
+/// whole, however large, before anything looked at its size. A failed
+/// read is the runtime's error, for each caller to say as it does.
+pub async fn read_upto(req: &mut Request, limit: usize) -> worker::Result<Vec<u8>> {
     use futures::StreamExt;
     let mut stream = match req.stream() {
         Ok(stream) => stream,
         // A request without a body.
         Err(worker::Error::RustError(_)) => return Ok(Vec::new()),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e),
     };
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
