@@ -77,12 +77,36 @@ pub async fn body<T: DeserializeOwned>(req: &mut Request) -> AppResult<T> {
     if length(req).is_some_and(|l| l > MAX_BODY_BYTES as u64) {
         return Err(too_large());
     }
-    let bytes = req.bytes().await?;
+    let bytes = read_upto(req, MAX_BODY_BYTES).await?;
     if bytes.len() > MAX_BODY_BYTES {
         return Err(too_large());
     }
     serde_json::from_slice(&bytes)
         .map_err(|e| AppError(ApiError::bad_request(format!("Invalid request body: {e}"))))
+}
+
+/// The request's body, read as it comes, until it holds more than `limit`
+/// bytes: then the rest stays unread, and what comes back is longer than
+/// `limit`, for the caller's own check to refuse. A client that doesn't say
+/// how large a body is (`Transfer-Encoding: chunked`, as the standalone
+/// server's proxy passes bodies on) would otherwise have it kept in memory
+/// whole, however large, before anything looked at its size.
+pub async fn read_upto(req: &mut Request, limit: usize) -> AppResult<Vec<u8>> {
+    use futures::StreamExt;
+    let mut stream = match req.stream() {
+        Ok(stream) => stream,
+        // A request without a body.
+        Err(worker::Error::RustError(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        bytes.extend_from_slice(&chunk?);
+        if bytes.len() > limit {
+            break;
+        }
+    }
+    Ok(bytes)
 }
 
 /// The size of the request's body, as its `Content-Length` says.

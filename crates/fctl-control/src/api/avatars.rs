@@ -31,7 +31,7 @@ pub async fn read(req: &mut Request) -> AppResult<(String, &'static str)> {
     {
         return Err(validation("avatar", "Use a smaller image"));
     }
-    let bytes = req.bytes().await?;
+    let bytes = http::read_upto(req, policy::MAX_BYTES).await?;
     let media_type = policy::check(&bytes)?;
     Ok((
         base64::engine::general_purpose::STANDARD.encode(&bytes),
