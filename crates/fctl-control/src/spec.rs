@@ -109,8 +109,9 @@ pub fn not_served() -> AppError {
 /// host does for the session's agent: its uplink, the agent's calls
 /// (memory, retrospectives, tickets, reviews), the files sent to it and the
 /// screenshots it publishes. The session is assigned to the runner, the
-/// runner still runs it ([`runner_serves`]), and the person it runs as may
-/// still run it ([`credential_serves`]), as for its credentials. A stopped
+/// runner still runs it ([`runner_serves`]), and the person it runs as (who
+/// started it, once they removed that Claude connection) may still run it,
+/// as [`credential_serves`] says for its credentials. A stopped
 /// session stays assigned to the runner it last ran on, so without the
 /// last check, someone made a viewer of its project, taken out of it or
 /// shut out by its workspace's two-factor requirement would go on reaching
@@ -120,11 +121,10 @@ pub async fn check_runs(db: &D1Database, runner_id: &str, session_id: &str) -> A
     #[derive(serde::Deserialize)]
     struct Row {
         runner_id: Option<String>,
-        credential_id: Option<String>,
     }
     let row: Option<Row> = q(
         db,
-        "SELECT runner_id, credential_id FROM sessions WHERE id = ?",
+        "SELECT runner_id FROM sessions WHERE id = ?",
         &[s(session_id)],
     )?
     .first()
@@ -138,10 +138,29 @@ pub async fn check_runs(db: &D1Database, runner_id: &str, session_id: &str) -> A
     if !runner_serves(db, runner_id, session_id).await? {
         return Err(not_served());
     }
-    match row.credential_id {
-        Some(c) if credential_serves(db, &c, session_id).await? => Ok(()),
-        _ => Err(credential_not_lent()),
+    if !person_runs(db, session_id).await? {
+        return Err(credential_not_lent());
     }
+    Ok(())
+}
+
+/// Whether the person session `session_id` runs as may still run it, as
+/// [`credential_serves`] says: whose Claude subscription it runs on or,
+/// once they removed that connection, who started it, so that a session
+/// that still runs then keeps going until it stops.
+pub async fn person_runs(db: &D1Database, session_id: &str) -> AppResult<bool> {
+    let person: Option<UserRow> = q(
+        db,
+        &format!(
+            "SELECT {} FROM sessions s LEFT JOIN claude_credentials c ON c.id = s.credential_id \
+             JOIN users u ON u.id = COALESCE(c.user_id, s.created_by) WHERE s.id = ?",
+            user_columns("u")
+        ),
+        &[s(session_id)],
+    )?
+    .first()
+    .await?;
+    may_run(db, person, session_id).await
 }
 
 /// Whether Claude credential `credential_id` still runs session
@@ -170,11 +189,17 @@ pub async fn credential_serves(
     )?
     .first()
     .await?;
-    let Some(owner) = owner.filter(UserRow::is_active) else {
+    may_run(db, owner, session_id).await
+}
+
+/// Whether `person` may still run session `session_id`: their account is
+/// active and they may message it ([`credential_serves`]).
+async fn may_run(db: &D1Database, person: Option<UserRow>, session_id: &str) -> AppResult<bool> {
+    let Some(person) = person.filter(UserRow::is_active) else {
         return Ok(false);
     };
     let settings = crate::instance::settings(db).await?;
-    let role = crate::access::session_role_now(db, &owner, &settings, None, session_id).await?;
+    let role = crate::access::session_role_now(db, &person, &settings, None, session_id).await?;
     Ok(role.is_some_and(|r| r.can_message()))
 }
 
