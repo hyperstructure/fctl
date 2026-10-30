@@ -35,7 +35,7 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     if http::length(req).is_some_and(|l| l > MAX_DELIVERY_BYTES as u64) {
         return Err(AppError(ApiError::bad_request("The delivery is too large")));
     }
-    let body = req.bytes().await?;
+    let body = http::read_upto(req, MAX_DELIVERY_BYTES).await?;
     if body.len() > MAX_DELIVERY_BYTES {
         return Err(AppError(ApiError::bad_request("The delivery is too large")));
     }

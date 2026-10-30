@@ -150,8 +150,7 @@ impl FilesObject {
         let meta: StoreFile = crate::http::query(req, "meta")
             .and_then(|m| serde_json::from_str(&m).ok())
             .ok_or_else(|| api_err(ErrorCode::BadRequest, "No upload metadata"))?;
-        let bytes = req
-            .bytes()
+        let bytes = crate::http::read_upto(req, files::MAX_FILE_BYTES as usize)
             .await
             .map_err(|e| api_err(ErrorCode::BadRequest, &format!("Reading the upload: {e}")))?;
         if bytes.len() as u64 > files::MAX_FILE_BYTES {
@@ -417,8 +416,7 @@ impl FilesObject {
         let meta: PublishFile = crate::http::query(req, "meta")
             .and_then(|m| serde_json::from_str(&m).ok())
             .ok_or_else(|| api_err(ErrorCode::BadRequest, "No upload metadata"))?;
-        let bytes = req
-            .bytes()
+        let bytes = crate::http::read_upto(req, published::MAX_BYTES as usize)
             .await
             .map_err(|e| api_err(ErrorCode::BadRequest, &format!("Reading the upload: {e}")))?;
         let image = published::check(&bytes)?;

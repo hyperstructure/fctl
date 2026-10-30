@@ -627,6 +627,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   same sessions.
 - Errors the Worker throws come back as plain 500s, without the stack
   traces Miniflare shows in development.
+- Request bodies are read as they come and refused once they pass their
+  limit (1 MB of JSON, 5 MB for a webhook delivery, a file's size for
+  uploads), whether or not the client says how large they are: the server
+  passes bodies on chunked, and nothing in front of workerd caps them, as
+  Cloudflare does.
 
 ## Retention
 
