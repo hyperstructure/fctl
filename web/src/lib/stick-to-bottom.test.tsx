@@ -268,9 +268,10 @@ describe("the session page", () => {
    * With `visual`, the browser says its visual viewport is that tall, and
    * scrolls the page until that much of it shows, as Safari on iOS does: less
    * than the screen with the keyboard up, and past the page's bottom with a
-   * visual viewport of no height.
+   * visual viewport of no height. With `installed`, it is the app opened from
+   * the home screen.
    */
-  function sessionPage({ visual }: { visual?: number } = {}) {
+  function sessionPage({ visual, installed = false }: { visual?: number; installed?: boolean } = {}) {
     const view = 800;
     let top = 0;
     let height = 2000;
@@ -278,8 +279,14 @@ describe("the session page", () => {
     Object.defineProperty(window, "innerHeight", { configurable: true, get: () => view });
     Object.defineProperty(window, "scrollY", { configurable: true, get: () => top });
     if (visual !== undefined) {
-      Object.defineProperty(window, "visualViewport", { configurable: true, value: { height: visual } });
+      Object.defineProperty(window, "visualViewport", {
+        configurable: true,
+        value: { height: visual, offsetTop: 0, scale: 1 },
+      });
     }
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: installed && query === "(display-mode: standalone)",
+    }));
     Object.defineProperty(document.documentElement, "scrollHeight", {
       configurable: true,
       get: () => height,
@@ -379,6 +386,24 @@ describe("the session page", () => {
     const p = sessionPage({ visual: 400 });
     p.grow(26);
     expect(p.below()).toBe(400);
+  });
+
+  it("keeps its bottom above the keyboard of the installed app's composer", () => {
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    cleanups.push(() => field.remove());
+    field.focus();
+    const p = sessionPage({ visual: 400, installed: true });
+    p.grow(26);
+    expect(p.below()).toBe(400);
+  });
+
+  it("keeps its bottom at the screen's when Safari on iOS takes a keyboard to be up that isn't", () => {
+    // As it can in the installed app after the app switcher, with nothing to type in:
+    // scrolled up to the keyboard, the page's bottom stopped over the middle of the screen.
+    const p = sessionPage({ visual: 491, installed: true });
+    p.grow(26);
+    expect(p.below()).toBe(800);
   });
 
   it("stays on the screen when Safari on iOS says the visual viewport has no height", () => {

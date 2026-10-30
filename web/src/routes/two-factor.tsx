@@ -230,7 +230,7 @@ function PasskeyOffer({ me }: { me: G.Me }) {
   return (
     <aside
       aria-label="Add a passkey"
-      className="fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 w-[min(360px,calc(100vw-2rem))] animate-rise rounded-xl border border-line-strong bg-surface/95 p-4 shadow-[0_18px_60px_rgb(0_0_0/0.35)] backdrop-blur-xl"
+      className="fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[calc(max(1rem,env(safe-area-inset-bottom))-var(--viewport-shift))] z-40 w-[min(360px,calc(100vw-2rem))] animate-rise rounded-xl border border-line-strong bg-surface/95 p-4 shadow-[0_18px_60px_rgb(0_0_0/0.35)] backdrop-blur-xl"
     >
       <div className="flex gap-3">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-highlight text-highlight-ink">

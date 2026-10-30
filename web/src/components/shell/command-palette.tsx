@@ -258,7 +258,7 @@ export function CommandPalette({
     // biome-ignore lint/a11y/noStaticElementInteractions: clicking outside closes; Escape closes from the keyboard
     <div
       role="presentation"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[14vh] backdrop-blur-[3px] pointer-coarse:animate-fade pointer-coarse:bg-black/55 pointer-coarse:backdrop-filter-none"
+      className="fixed inset-x-0 top-(--viewport-shift) -bottom-(--viewport-shift) z-50 flex items-start justify-center bg-black/40 px-4 pt-[14vh] backdrop-blur-[3px] pointer-coarse:animate-fade pointer-coarse:bg-black/55 pointer-coarse:backdrop-filter-none"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="w-full max-w-xl animate-rise overflow-hidden rounded-xl border border-line-strong bg-surface/95 shadow-[0_30px_120px_rgb(0_0_0/0.55)] backdrop-blur-2xl pointer-coarse:animate-none pointer-coarse:overflow-visible pointer-coarse:bg-surface pointer-coarse:backdrop-filter-none">

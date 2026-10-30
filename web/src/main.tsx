@@ -7,11 +7,13 @@ import { VerifyDialog } from "@/components/two-factor/verify";
 import { Toaster } from "@/components/ui";
 import { queryClient } from "@/lib/queries";
 import { syncShimmers } from "@/lib/shimmer";
+import { watchViewport } from "@/lib/viewport";
 import { stopPinchZoom } from "@/lib/zoom";
 import { router } from "./router";
 
 stopPinchZoom();
 syncShimmers();
+watchViewport();
 
 // Makes the app installable and shows an offline page (public/sw.js). Not in
 // development, where it would outlive the dev server on this origin.

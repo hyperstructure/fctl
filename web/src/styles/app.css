@@ -11,6 +11,20 @@
   }
 }
 
+/* How far below the layout viewport the screen is: 0, but while Safari on iOS
+   takes a keyboard to cover the screen that isn't there (lib/viewport.ts).
+   What is pinned to the screen's edges moves down by as much, dialogs'
+   backdrops too. */
+@layer base {
+  :root {
+    --viewport-shift: 0px;
+  }
+  ::backdrop {
+    top: var(--viewport-shift, 0px);
+    bottom: calc(-1 * var(--viewport-shift, 0px));
+  }
+}
+
 /* Editorial prose: agent answers, project descriptions. */
 .prose-fctl {
   font-family: var(--font-sans);

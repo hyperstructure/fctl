@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/cn";
+import { visualHeight } from "@/lib/viewport";
 import { fieldHeight } from "./form";
 
 export interface SelectOption<T extends string = string> {
@@ -599,9 +600,9 @@ export function placeList(trigger: HTMLElement, list: HTMLElement, height?: numb
   const { clientWidth: vw, clientHeight: vh } = document.documentElement;
   // The room in sight: a phone's on-screen keyboard covers the bottom of the page without
   // shrinking it, only the visual viewport.
-  const vv = window.visualViewport;
-  const top = Math.max(0, vv?.offsetTop ?? 0);
-  const bottom = Math.min(vh, vv ? vv.offsetTop + vv.height : vh);
+  const offset = window.visualViewport?.offsetTop ?? 0;
+  const top = Math.max(0, offset);
+  const bottom = Math.min(vh, offset + (visualHeight() ?? vh));
   list.style.minWidth = `${Math.min(r.width, vw - 2 * MARGIN)}px`;
   const tall = height ?? list.scrollHeight + list.offsetHeight - list.clientHeight;
   const below = bottom - r.bottom - GAP - MARGIN;

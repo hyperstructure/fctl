@@ -93,7 +93,7 @@ export function AppShell() {
           open, fading out over the page the link opened. */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
+          "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
           drawer !== "gone" && "transition-[translate,display] transition-discrete duration-300 ease-out",
           drawer === "open" ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
@@ -104,7 +104,7 @@ export function AppShell() {
         <button
           type="button"
           aria-label="Close menu"
-          className="fixed inset-0 z-20 bg-black/40 md:hidden"
+          className="fixed inset-x-0 top-(--viewport-shift) -bottom-(--viewport-shift) z-20 bg-black/40 md:hidden"
           onClick={closeDrawer}
         />
       )}
@@ -113,7 +113,7 @@ export function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
         {/* On phones: the menu button, its icon in line with the page's text. */}
         {!headerButton && (
-          <div className="sticky top-0 z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
+          <div className="sticky top-(--viewport-shift) z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
             <MenuButton onClick={openDrawer} />
             <Logo large />
           </div>
