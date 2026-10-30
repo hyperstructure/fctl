@@ -1300,7 +1300,7 @@ pub(crate) fn print_sessions(sessions: &[RunnerSession]) {
             status,
             s.project_slug,
             s.number,
-            style::dim(&s.title)
+            style::dim(&style::plain(&s.title))
         );
     }
 }

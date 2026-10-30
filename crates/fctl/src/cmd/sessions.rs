@@ -277,7 +277,9 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         style::accent("✓"),
         style::bold(&format!(
             "{}#{} {}",
-            session.project_slug, session.number, session.title
+            session.project_slug,
+            session.number,
+            style::plain(&session.title)
         )),
         style::dim(&format!("{}/s/{}", api.base(), session.id))
     );
@@ -319,7 +321,7 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             "{:<20} {:<18} {:<44} {}",
             style::bold(&reference),
             style::status(s.status),
-            truncate(&s.title, 44),
+            truncate(&style::plain(&s.title), 44),
             style::dim(&when)
         );
     }
@@ -427,10 +429,10 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     println!(
         "{} {}",
         style::bold(&format!("{}#{}", s.project_slug, s.number)),
-        s.title
+        style::plain(&s.title)
     );
     if let Some(d) = &s.description {
-        println!("{}", style::dim(d));
+        println!("{}", style::dim(&style::plain(d)));
     }
     println!(
         "status:   {}{}",
@@ -472,14 +474,15 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         } else {
             "by:       "
         },
-        s.created_by.name
+        style::plain(&s.created_by.name)
     );
     if let Some(b) = &s.branch {
         println!(
-            "branch:   {b}{}",
+            "branch:   {}{}",
+            style::plain(b),
             s.base_branch
                 .as_deref()
-                .map(|x| style::dim(&format!(" (from {x})")))
+                .map(|x| style::dim(&format!(" (from {})", style::plain(x))))
                 .unwrap_or_default()
         );
     }
@@ -487,13 +490,13 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         println!("{line}");
     }
     if let Some(r) = &s.runner {
-        println!("runner:   {}", r.name);
+        println!("runner:   {}", style::plain(&r.name));
     }
     if let Some(m) = &s.model {
-        println!("model:    {m}");
+        println!("model:    {}", style::plain(m));
     }
     if let Some(e) = &s.effort {
-        println!("effort:   {e}");
+        println!("effort:   {}", style::plain(e));
     }
     // Sessions that push, as all did before, say nothing.
     match s.github_access {
@@ -687,9 +690,14 @@ pub(crate) async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result
 }
 
 fn print_edited(reference: &str, title: &str, description: Option<&str>) {
-    println!("{} {} {title}", style::accent("✓"), style::bold(reference));
+    println!(
+        "{} {} {}",
+        style::accent("✓"),
+        style::bold(reference),
+        style::plain(title)
+    );
     if let Some(d) = description {
-        println!("  {}", style::dim(d));
+        println!("  {}", style::dim(&style::plain(d)));
     }
 }
 

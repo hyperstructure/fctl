@@ -41,6 +41,25 @@ pub fn terminal_safe(s: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// One line of what the server says as it is safe to print, in a list or
+/// after a label: whitespace becomes spaces, and control characters (color
+/// codes too) and those that turn text around go. Titles and branches come
+/// from agents, pull requests, tickets and other tools.
+pub fn plain(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c {
+            c if c.is_whitespace() => Some(' '),
+            '\u{061C}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}' => None,
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect()
+}
+
 fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
@@ -177,5 +196,15 @@ mod tests {
         assert_eq!(terminal_safe("done\rfake"), "donefake");
         assert_eq!(terminal_safe("x\u{9b}31my"), "x31my");
         assert_eq!(terminal_safe("bell\x07\x08"), "bell");
+    }
+
+    #[test]
+    fn plain_text_is_one_line_without_controls() {
+        assert_eq!(plain("Fix the\tflaky\ntest"), "Fix the flaky test");
+        // No color codes either, nor text turned around.
+        assert_eq!(plain("\x1b[8mhidden\x1b[0m"), "[8mhidden[0m");
+        assert_eq!(plain("\x1b]52;c;ZXZpbA==\x07ok"), "]52;c;ZXZpbA==ok");
+        assert_eq!(plain("invoice\u{202E}gnp.exe"), "invoicegnp.exe");
+        assert_eq!(plain("x\u{9b}31my"), "x31my");
     }
 }
