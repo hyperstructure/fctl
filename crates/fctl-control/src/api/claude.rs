@@ -277,9 +277,8 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 
 /// Stops sessions (`id`, `runner_id`) whose Claude connection was removed,
 /// and closes their runners' uplinks, as FleetDO does for those whose
-/// person may no longer run them: a host that ignores the stop keeps no
-/// uplink to them. A session that doesn't stop is left to its runner, which
-/// gets nothing more for it.
+/// person may no longer run them. A session that doesn't stop is left to
+/// its runner, which gets nothing more for it.
 async fn stop_running(ctx: &Ctx, running: &[(&str, Option<&str>)]) {
     let Ok(fleet) = internal::fleet_stub(&ctx.env) else {
         return;
@@ -301,20 +300,8 @@ async fn stop_running(ctx: &Ctx, running: &[(&str, Option<&str>)]) {
                 e.0.message
             );
         }
-        if let Some(runner_id) = runner_id
-            && let Ok(stub) = internal::session_stub(&ctx.env, session_id)
-        {
-            let closed: AppResult<serde_json::Value> = internal::post(
-                &stub,
-                "/close-uplink",
-                &internal::CloseUplink {
-                    runner_id: runner_id.to_owned(),
-                },
-            )
-            .await;
-            if let Err(e) = closed {
-                worker::console_error!("closing the uplink of {session_id}: {}", e.0.message);
-            }
+        if let Some(runner_id) = runner_id {
+            internal::close_uplink(&ctx.env, session_id, runner_id).await;
         }
     }
 }

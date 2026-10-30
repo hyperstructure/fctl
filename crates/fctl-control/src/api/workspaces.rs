@@ -578,6 +578,8 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
     #[derive(Deserialize)]
     struct S {
         id: String,
+        #[serde(default)]
+        runner_id: Option<String>,
     }
     // Theirs, those that run on their subscription (they resumed them),
     // and the workspace's on their machines, which it no longer trusts with
@@ -585,7 +587,7 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
     let running: Vec<S> = q(
         &ctx.db,
         &format!(
-            "SELECT s.id FROM sessions s JOIN projects p ON p.id = s.project_id \
+            "SELECT s.id, s.runner_id FROM sessions s JOIN projects p ON p.id = s.project_id \
              WHERE p.workspace_id = ?1 AND s.status IN {ACTIVE} \
              AND (s.created_by = ?2 OR s.runner_id IN (SELECT id FROM runners WHERE created_by = ?2) \
              OR s.credential_id IN (SELECT id FROM claude_credentials WHERE user_id = ?2))"
@@ -606,22 +608,28 @@ async fn stop_sessions_of(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRe
             },
         )
         .await?;
+        if let Some(runner_id) = &session.runner_id {
+            internal::close_uplink(&ctx.env, &session.id, runner_id).await;
+        }
     }
     Ok(running.len() as u32)
 }
 
 /// Stops the active sessions that run on `user_id`'s Claude subscription,
-/// in every workspace: their account was disabled, so nobody's sessions
-/// run on it any more (`spec::credential_serves`).
+/// in every workspace, and closes their runners' uplinks: their account was
+/// disabled or is being deleted, so nobody's sessions run on it any more
+/// (`spec::credential_serves`).
 pub(crate) async fn stop_sessions_on(ctx: &Ctx, user_id: &str) -> AppResult<()> {
     #[derive(Deserialize)]
     struct S {
         id: String,
+        #[serde(default)]
+        runner_id: Option<String>,
     }
     let running: Vec<S> = q(
         &ctx.db,
         &format!(
-            "SELECT s.id FROM sessions s WHERE s.status IN {ACTIVE} \
+            "SELECT s.id, s.runner_id FROM sessions s WHERE s.status IN {ACTIVE} \
              AND s.credential_id IN (SELECT id FROM claude_credentials WHERE user_id = ?)"
         ),
         &[s(user_id)],
@@ -640,6 +648,9 @@ pub(crate) async fn stop_sessions_on(ctx: &Ctx, user_id: &str) -> AppResult<()> 
             },
         )
         .await?;
+        if let Some(runner_id) = &session.runner_id {
+            internal::close_uplink(&ctx.env, &session.id, runner_id).await;
+        }
     }
     Ok(())
 }
