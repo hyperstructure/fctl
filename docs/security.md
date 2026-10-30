@@ -402,7 +402,9 @@ its VM, and nothing outside it except through these channels:
   their Claude access token in the sandbox like any session's, and read
   what pull requests say, which can steer them as any text can. Their
   GitHub token only reads, fctl posts what they find, and they get no
-  secrets, setup script, memory or connectors. A pull request starts a
+  secrets, setup script, memory, retrospectives, screenshots or
+  connectors, which the control plane refuses them whatever their project
+  allows and whatever their sandbox asks for. A pull request starts a
   review by itself only when its author may write to the repository, or
   one of fctl's agents or of the GitHub Apps the project's owners chose
   (Dependabot until they choose) opened it from a branch of the
@@ -535,11 +537,19 @@ sessions only on runners they registered (**Only on my runners**, `fctl
 workspaces own-runners on`), so that no one else's machine sees their
 Claude token or their sessions' work. Once a runner no longer runs a
 session (taken out of the workspace, its owner left it or was disabled,
-or the session's person keeps theirs on their own runners), the session
-stops, and the runner gets no more tokens, messages or files for it,
-whatever its host does. A Claude sign-in through a host, which passes the
-full login's long-lived tokens through it, runs on one of the person's own
-runners when one is online, else on a runner that runs their sessions.
+or the session's person keeps theirs on their own runners), or the
+person whose Claude connection the session runs on may no longer run it
+(they left its workspace, were disabled, lost their role in its project
+or its share, or its workspace's two-factor requirement closes it to
+them) or removed that connection, the session stops, its runner's uplink
+to it closes, and the runner gets no more tokens, messages or files for
+it, whatever its host does, and makes no more of its agent's calls (the
+project's memory, retrospectives and ticket tracker), uplinks or
+screenshots for it: a stopped session stays with the runner it last ran
+on, which would otherwise keep that person's reach in the project. A
+Claude sign-in through a host, which passes the full login's long-lived
+tokens through it, runs on one of the person's own runners when one is
+online, else on a runner that runs their sessions.
 
 **Updates.** Hosts update fctl by themselves to the version the control
 plane runs, unless `auto_update = false` in `host.toml` (`fctl host
@@ -634,7 +644,8 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   instance owner admins' too. Both delete the account's addresses, sign-in methods, passkeys
   and two-factor sign-in, tokens, Claude connections, memberships, shares,
   follows and notification settings and browsers, and the workspaces only
-  it is in, with their projects and sessions. Sessions and projects it
+  it is in, with their projects and sessions; the sessions that run on its
+  Claude connections stop first. Sessions and projects it
   created that others still use stay, credited to "Deleted user": the
   account remains only as a disabled placeholder, without its name,
   emails, commit emails or picture. Commits already pushed keep the

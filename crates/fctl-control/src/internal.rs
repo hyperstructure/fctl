@@ -515,6 +515,28 @@ pub fn notify_stub(env: &Env, user_id: &str) -> AppResult<Stub> {
         .get_stub()?)
 }
 
+/// Closes runner `runner_id`'s uplink to session `session_id`, as FleetDO
+/// does for a session that stops because its runner or its person no
+/// longer runs it: a host that ignores the stop keeps no uplink to it, and
+/// opens no other (`spec::check_runs`). Failures are logged, not returned.
+pub async fn close_uplink(env: &Env, session_id: &str, runner_id: &str) {
+    let closed: AppResult<serde_json::Value> = async {
+        let stub = session_stub(env, session_id)?;
+        post(
+            &stub,
+            "/close-uplink",
+            &CloseUplink {
+                runner_id: runner_id.to_owned(),
+            },
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = closed {
+        worker::console_error!("closing the uplink of {session_id}: {}", e.0.message);
+    }
+}
+
 pub fn fleet_stub(env: &Env) -> AppResult<Stub> {
     Ok(env
         .durable_object("FLEET")?

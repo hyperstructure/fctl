@@ -2609,13 +2609,15 @@ impl FleetObject {
         struct Lent {
             id: String,
             credential_id: String,
+            #[serde(default)]
+            runner_id: Option<String>,
         }
         let Ok(users) = serde_json::to_string(user_ids) else {
             return;
         };
         let lent: Vec<Lent> = match crate::db::q(
             db,
-            "SELECT s.id AS id, s.credential_id AS credential_id FROM sessions s \
+            "SELECT s.id AS id, s.credential_id AS credential_id, s.runner_id AS runner_id FROM sessions s \
              JOIN claude_credentials c ON c.id = s.credential_id \
              WHERE c.user_id IN (SELECT value FROM json_each(?)) \
              AND s.status IN ('queued','provisioning','preparing','running','idle','paused')",
@@ -2642,6 +2644,13 @@ impl FleetObject {
                 .await;
             if let Err(e) = stopped {
                 worker::console_error!("stopping session {}: {}", l.id, e.message);
+            }
+            // As for a runner that no longer runs it (`unserved`): a host
+            // that ignores the stop keeps no uplink to it, and opens no
+            // other (`spec::check_runs`). It reports the end on its own
+            // connection.
+            if let Some(runner_id) = &l.runner_id {
+                self.close_uplink(&l.id, runner_id).await;
             }
         }
     }

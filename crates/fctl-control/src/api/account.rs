@@ -224,6 +224,10 @@ pub async fn plan(ctx: &Ctx, user: &UserRow) -> AppResult<Plan> {
 /// Deletes `user`'s account as `plan` describes, in one transaction, then
 /// purges the deleted sessions' transcripts.
 pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> {
+    // The sessions that run on their Claude subscription, others' they
+    // resumed too, stop before their connections go, which would leave
+    // nobody's subscription running them.
+    crate::api::workspaces::stop_sessions_on(ctx, &user.id).await?;
     let db = &ctx.db;
     let id = user.id.as_str();
     let mut statements = Vec::new();

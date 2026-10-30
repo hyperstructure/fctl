@@ -578,6 +578,7 @@ function Claude({ me }: { me: G.Me }) {
           Sessions you start run on your own Claude subscription. fctl refuses API keys and stops a session
           before it would draw on paid extra usage. Each connection shows how much of its plan's limits is
           used, as sessions last reported it. Keep the token on your runners, and you never give it to fctl.
+          Removing a connection stops the sessions that run on it.
         </>
       }
     >
