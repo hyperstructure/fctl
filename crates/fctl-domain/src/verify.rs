@@ -325,6 +325,10 @@ mod tests {
             message(Sensitive::ConnectClaude, APP),
             "Confirm it's you to connect a Claude subscription, with a code from your authenticator app."
         );
+        assert_eq!(
+            message(Sensitive::LinkLinear, APP),
+            "Confirm it's you to link a Linear account, with a code from your authenticator app."
+        );
     }
 
     #[test]
