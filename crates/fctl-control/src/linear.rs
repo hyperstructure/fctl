@@ -457,20 +457,33 @@ async fn renew(
         access_token: tokens.access_token.clone(),
         refresh_token: tokens.refresh_token.clone().or(secret.refresh_token),
     };
-    q(
+    crate::db::batch(
         db,
-        // Active again, in case another renewal of the same token gave up
-        // meanwhile: this one won.
-        "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, status = 'active', updated_at = ? \
-         WHERE organization_id = ?",
-        &[
-            s(&keys.seal_json(&aad(&row.organization_id), &new)?),
-            on(tokens.expires_at(now)),
-            n(now),
-            s(&row.organization_id),
+        vec![
+            // The connections such a renewal revoked come back with it: those
+            // revoked when the installation was (`mark_revoked`).
+            q(
+                db,
+                "UPDATE workspace_linear SET revoked_at = NULL WHERE organization_id = ?1 \
+                 AND revoked_at = (SELECT updated_at FROM linear_installations \
+                 WHERE organization_id = ?1 AND status = 'revoked')",
+                &[s(&row.organization_id)],
+            )?,
+            q(
+                db,
+                // Active again, in case another renewal of the same token gave
+                // up meanwhile: this one won.
+                "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, status = 'active', updated_at = ? \
+                 WHERE organization_id = ?",
+                &[
+                    s(&keys.seal_json(&aad(&row.organization_id), &new)?),
+                    on(tokens.expires_at(now)),
+                    n(now),
+                    s(&row.organization_id),
+                ],
+            )?,
         ],
-    )?
-    .run()
+    )
     .await?;
     Ok(new)
 }
