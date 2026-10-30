@@ -103,7 +103,9 @@ export function DevicePage() {
                         <>
                           It's signed in as <b className="text-ink-2">{me?.user.email}</b> and asks you to
                           confirm it's you for a sensitive action. Approving lets it do sensitive actions for
-                          15 minutes.
+                          15 minutes, such as making access tokens and exporting your data. Approve only what
+                          you asked for yourself in a terminal, just now: if someone sent you this link or
+                          code, deny it, or they act as you.
                         </>
                       ) : (
                         <>
