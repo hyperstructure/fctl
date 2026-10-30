@@ -60,6 +60,7 @@ function palette() {
   const client = new QueryClient();
   client.setQueryData<G.SessionList>(keys.sessions({ limit: 50 }), { sessions: [session] });
   const onClose = vi.fn();
+  const onNavigate = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -67,7 +68,7 @@ function palette() {
     root.render(
       <QueryClientProvider client={client}>
         <TaskBox />
-        <CommandPalette open onClose={onClose} />
+        <CommandPalette open onClose={onClose} onNavigate={onNavigate} />
       </QueryClientProvider>,
     ),
   );
@@ -88,7 +89,7 @@ function palette() {
     return e;
   };
   const box = container.querySelector("textarea");
-  return { onClose, entries, press, input, box };
+  return { onClose, onNavigate, entries, press, input, box };
 }
 
 describe("⌘K", () => {
@@ -108,10 +109,12 @@ describe("⌘K", () => {
   });
 
   it("goes to the Agent Floor on Enter, with the focus in the task box", () => {
-    const { onClose, press, input, box } = palette();
+    const { onClose, onNavigate, press, input, box } = palette();
     expect(document.activeElement).toBe(input);
     const enter = press("Enter");
     expect(onClose).toHaveBeenCalled();
+    // On phones, the sidebar it was opened from goes too.
+    expect(onNavigate).toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith({ to: "/" });
     expect(document.activeElement).toBe(box);
     // Or the key would go on to the task box, as a line break.
