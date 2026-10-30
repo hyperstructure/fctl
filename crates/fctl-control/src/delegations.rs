@@ -92,7 +92,8 @@ async fn thread_of(db: &D1Database, session_id: &str) -> AppResult<Option<Thread
         &format!(
             "{THREAD_SELECT} t WHERE t.session_id = ?1 AND t.state = 'started' AND EXISTS (SELECT 1 FROM sessions s \
              JOIN projects p ON p.id = s.project_id JOIN workspace_linear wl ON wl.workspace_id = p.workspace_id \
-             WHERE s.id = ?1 AND wl.organization_id = t.organization_id) ORDER BY t.updated_at DESC LIMIT 1"
+             WHERE s.id = ?1 AND wl.organization_id = t.organization_id AND wl.revoked_at IS NULL) \
+             ORDER BY t.updated_at DESC LIMIT 1"
         ),
         &[s(session_id)],
     )?
@@ -107,7 +108,8 @@ async fn connected(db: &D1Database, session_id: &str, organization: &str) -> App
     let c: Option<crate::db::Count> = q(
         db,
         "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id \
-         JOIN workspace_linear wl ON wl.workspace_id = p.workspace_id WHERE s.id = ? AND wl.organization_id = ?",
+         JOIN workspace_linear wl ON wl.workspace_id = p.workspace_id WHERE s.id = ? AND wl.organization_id = ? \
+         AND wl.revoked_at IS NULL",
         &[s(session_id), s(organization)],
     )?
     .first()
@@ -387,7 +389,7 @@ async fn takers(db: &D1Database, organization: &str) -> AppResult<Vec<Taker>> {
     let rows: Vec<ProjectRow> = q(
         db,
         &format!(
-            "{PROJECT_SELECT} WHERE p.archived_at IS NULL AND p.workspace_id IN (SELECT workspace_id FROM workspace_linear WHERE organization_id = ?2) \
+            "{PROJECT_SELECT} WHERE p.archived_at IS NULL AND p.workspace_id IN (SELECT workspace_id FROM workspace_linear WHERE organization_id = ?2 AND revoked_at IS NULL) \
              AND json_extract(p.settings, '$.tickets.tracker') = 'linear' \
              AND json_extract(p.settings, '$.tickets.linear.organization') = ?2 ORDER BY p.created_at"
         ),

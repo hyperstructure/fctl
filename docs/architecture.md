@@ -1832,11 +1832,12 @@ issue's delegate (the person stays its assignee), and mention.
    already answered the same for half an hour. One whose renewal Linear
    refuses, or that Linear says was uninstalled (an `OAuthApp`
    revocation), is revoked here, and every fctl workspace's connection to
-   it ends (`crate::linear::mark_revoked`): installing the app again, which
-   takes an admin of the Linear workspace, connects only the fctl
-   workspace it is installed from, so that the Linear workspace's admins
-   can end what they let fctl workspaces reach, a former admin's own one
-   too. A
+   it ends (`crate::linear::mark_revoked`, `workspace_linear.revoked_at`):
+   installing the app again, which takes an admin of the Linear workspace,
+   connects only the fctl workspace it is installed from, and the others'
+   Linear tabs show theirs revoked until their admins connect it again, so
+   that the Linear workspace's admins can end what they let fctl
+   workspaces reach, a former admin's own one too. A
    workspace that disconnects a Linear workspace hears nothing more from
    it and reaches none of its tickets, whatever other workspaces do; once
    no fctl workspace works in it, fctl revokes the app's token there (the

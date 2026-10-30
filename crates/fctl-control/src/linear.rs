@@ -285,11 +285,12 @@ pub async fn store(
 
 /// Marks fctl's app in a Linear workspace revoked, and forgets its tokens,
 /// which no longer work: uninstalled there, or its token no longer renews.
-/// The fctl workspaces connected to it stop working there, and their admins
-/// connect it again: installing the app again, which takes an admin of the
-/// Linear workspace, connects only the fctl workspace it is installed from,
-/// so that the Linear workspace's admins can end what they let fctl
-/// workspaces reach, a former admin's own one too.
+/// The fctl workspaces connected to it stop working there, revoked, until
+/// their admins connect it again: installing the app again, which takes an
+/// admin of the Linear workspace, connects only the fctl workspace it is
+/// installed from (`workspace_linear.revoked_at`), so that the Linear
+/// workspace's admins can end what they let fctl workspaces reach, a
+/// former admin's own one too.
 pub async fn mark_revoked(db: &D1Database, organization: &str, now: i64) -> AppResult<()> {
     crate::db::batch(
         db,
@@ -302,8 +303,8 @@ pub async fn mark_revoked(db: &D1Database, organization: &str, now: i64) -> AppR
             )?,
             q(
                 db,
-                "DELETE FROM workspace_linear WHERE organization_id = ?",
-                &[s(organization)],
+                "UPDATE workspace_linear SET revoked_at = ? WHERE organization_id = ? AND revoked_at IS NULL",
+                &[n(now), s(organization)],
             )?,
         ],
     )

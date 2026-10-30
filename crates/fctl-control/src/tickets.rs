@@ -110,6 +110,10 @@ pub async fn connections(ctx: &Ctx, workspace_id: &str) -> AppResult<Vec<LinearC
         app_user_name: Option<String>,
         app_user_handle: Option<String>,
         status: String,
+        /// Linear revoked fctl's app while this workspace was connected,
+        /// and its admins haven't connected it again.
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        revoked_at: Option<i64>,
         linear_user: Option<String>,
         connected_by: Option<String>,
         by_name: Option<String>,
@@ -120,7 +124,7 @@ pub async fn connections(ctx: &Ctx, workspace_id: &str) -> AppResult<Vec<LinearC
     let rows: Vec<Row> = q(
         db,
         "SELECT i.organization_id, i.name, i.url_key, i.logo_url, i.app_user_id, i.app_user_name, i.app_user_handle, \
-         i.status, wl.linear_user, \
+         i.status, wl.revoked_at, wl.linear_user, \
          wl.connected_by, u.name AS by_name, u.avatar_url AS by_avatar, wl.created_at \
          FROM workspace_linear wl JOIN linear_installations i ON i.organization_id = wl.organization_id \
          LEFT JOIN users u ON u.id = wl.connected_by WHERE wl.workspace_id = ? ORDER BY wl.created_at",
@@ -182,7 +186,7 @@ pub async fn connections(ctx: &Ctx, workspace_id: &str) -> AppResult<Vec<LinearC
                 app_user: r.app_user_id,
                 app_name: r.app_user_name,
                 app_handle: r.app_user_handle,
-                status: if r.status == "active" {
+                status: if r.status == "active" && r.revoked_at.is_none() {
                     LinearStatus::Active
                 } else {
                     LinearStatus::Revoked
@@ -380,7 +384,7 @@ pub async fn check_linear(
 ) -> AppResult<LinearTickets> {
     let connected: Option<Count> = q(
         db,
-        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ?",
+        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ? AND revoked_at IS NULL",
         &[s(workspace_id), s(&l.organization)],
     )?
     .first()
@@ -621,7 +625,7 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
 pub async fn works_in(db: &D1Database, workspace_id: &str, organization: &str) -> AppResult<bool> {
     let c: Option<Count> = q(
         db,
-        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ?",
+        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ? AND revoked_at IS NULL",
         &[s(workspace_id), s(organization)],
     )?
     .first()
