@@ -1718,10 +1718,31 @@ async fn completing(
         return None;
     }
     let gh = crate::github::from_config(cfg, now).ok()?;
+    let workspace = crate::spec::session_row(db, session_id)
+        .await
+        .ok()
+        .flatten()?
+        .workspace
+        .workspace_id?;
+    let connections = crate::workspaces::connections(db, &workspace).await.ok()?;
     let mut unsure = false;
-    for prs in accounts.values() {
+    for (owner, prs) in &accounts {
+        // Through the installation on the account the session's workspace
+        // connected, by GitHub's id: once a connected login changes hands,
+        // what its new holder's pull requests say completes nothing.
+        let inst = match crate::workspaces::installation(db, &gh, &connections, owner).await {
+            Ok(inst) => inst,
+            Err(e) => {
+                worker::console_error!(
+                    "the pull requests of {session_id} on {owner}: {}",
+                    e.0.message
+                );
+                unsure = true;
+                continue;
+            }
+        };
         match gh
-            .pull_requests(None, prs, fctl_domain::webhooks::Fields::Text)
+            .pull_requests(Some(inst), prs, fctl_domain::webhooks::Fields::Text)
             .await
         {
             Ok(Some(answer)) => {

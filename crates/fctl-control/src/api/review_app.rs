@@ -19,6 +19,7 @@ use crate::db::{q, s};
 use crate::error::{AppError, AppResult};
 use crate::github::{self, Github};
 use crate::http;
+use crate::model::PROJECT_VISIBLE;
 use crate::workspaces::{self as ws, ConnectionRow, WorkspaceRow};
 use fctl_domain::cookies::Cookie;
 use fctl_domain::review_app;
@@ -46,6 +47,11 @@ struct InstallState {
 }
 
 const PURPOSE: &str = "github-review-install";
+
+/// What [`PROJECT_VISIBLE`] reads of a project (`p`) for the caller (`?2`).
+const SEEN: &str = "JOIN workspaces w ON w.id = p.workspace_id \
+    LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?2 \
+    LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?2";
 
 /// The state `signed` carries, when it is `user`'s, expired or not.
 fn install_state(keys: &Keys, signed: &str, user: &str) -> Option<InstallState> {
@@ -91,7 +97,7 @@ pub async fn workspace(ctx: &Ctx, id: &str) -> AppResult<Response> {
         .into_iter()
         .filter(ConnectionRow::active)
         .collect();
-    let writable = writable(ctx, a.id()).await?;
+    let writable = writable(ctx, a.id(), &ctx.user()?.id).await?;
     let keys = match role {
         r if r.is_admin() => ctx.keys().ok(),
         _ => None,
@@ -141,8 +147,13 @@ pub async fn workspace(ctx: &Ctx, id: &str) -> AppResult<Response> {
 /// The repositories the workspace's projects may write to, whose pull
 /// requests their review agents review, by account (in lowercase): their
 /// primary repositories and those they list as read and write, but the
-/// archived projects'.
-async fn writable(ctx: &Ctx, workspace_id: &str) -> AppResult<BTreeMap<String, Vec<String>>> {
+/// archived projects'. Only of the projects `user_id` sees there: those
+/// it hides from a member name repositories that member isn't told of.
+async fn writable(
+    ctx: &Ctx,
+    workspace_id: &str,
+    user_id: &str,
+) -> AppResult<BTreeMap<String, Vec<String>>> {
     #[derive(Deserialize)]
     struct Repo {
         owner: String,
@@ -150,11 +161,15 @@ async fn writable(ctx: &Ctx, workspace_id: &str) -> AppResult<BTreeMap<String, V
     }
     let rows: Vec<Repo> = q(
         &ctx.db,
-        "SELECT repo_owner AS owner, repo_name AS name FROM projects WHERE workspace_id = ?1 \
-         AND archived_at IS NULL AND repo_owner IS NOT NULL AND repo_name IS NOT NULL \
-         UNION SELECT r.owner AS owner, r.name AS name FROM project_repos r JOIN projects p ON p.id = r.project_id \
-         WHERE p.workspace_id = ?1 AND p.archived_at IS NULL AND r.access = 'write' AND r.name IS NOT NULL",
-        &[s(workspace_id)],
+        &format!(
+            "SELECT p.repo_owner AS owner, p.repo_name AS name FROM projects p {SEEN} \
+             WHERE p.workspace_id = ?1 AND p.archived_at IS NULL AND p.repo_owner IS NOT NULL \
+             AND p.repo_name IS NOT NULL AND {PROJECT_VISIBLE} \
+             UNION SELECT r.owner AS owner, r.name AS name FROM project_repos r JOIN projects p ON p.id = r.project_id {SEEN} \
+             WHERE p.workspace_id = ?1 AND p.archived_at IS NULL AND r.access = 'write' AND r.name IS NOT NULL \
+             AND {PROJECT_VISIBLE}"
+        ),
+        &[s(workspace_id), s(user_id)],
     )?
     .all()
     .await?;

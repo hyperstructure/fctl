@@ -163,21 +163,23 @@ pub struct Lister {
     pub state: Option<String>,
 }
 
-/// The sessions that list a pull request, but review agents' ones, in the
-/// order they started: those it may be looked up for ([`in_reach`]), with
-/// `answered` (GitHub's ids of the account it is in and the installation
-/// that answered for it) only in workspaces connected to that account.
+/// The sessions of workspace `workspace_id` that list a pull request, but
+/// review agents' ones, in the order they started: those it may be looked
+/// up for ([`in_reach`]), with `answered` (GitHub's ids of the account it
+/// is in and the installation that answered for it) only where the
+/// workspace is connected to that account.
 pub async fn listed_by(
     db: &D1Database,
+    workspace_id: &str,
     repo: &RepoRef,
     number: u64,
     answered: Option<(u64, u64)>,
 ) -> AppResult<Vec<Lister>> {
     let reach = match answered {
-        Some(_) => in_reach(Some(("?3", "?4"))),
+        Some(_) => in_reach(Some(("?4", "?5"))),
         None => in_reach(None),
     };
-    let mut params = vec![s(&key(repo)), n(number as i64)];
+    let mut params = vec![s(&key(repo)), n(number as i64), s(workspace_id)];
     if let Some((account, installation)) = answered {
         params.extend([n(account as i64), n(installation as i64)]);
     }
@@ -185,7 +187,8 @@ pub async fn listed_by(
         db,
         &format!(
             "SELECT l.session_id AS session_id, s.branch AS branch, l.state AS state FROM pull_request_sessions l \
-             JOIN sessions s ON s.id = l.session_id WHERE l.repo = ?1 AND l.number = ?2 \
+             JOIN sessions s ON s.id = l.session_id JOIN projects p ON p.id = s.project_id \
+             WHERE l.repo = ?1 AND l.number = ?2 AND p.workspace_id = ?3 \
              AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = l.session_id) AND {reach} \
              ORDER BY s.created_at, s.id LIMIT 20"
         ),
