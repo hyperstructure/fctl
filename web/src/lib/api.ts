@@ -48,7 +48,22 @@ export async function confirmFirst(): Promise<boolean> {
  * navigation can't go again by itself once the server refuses it.
  */
 export async function goConfirmed(href: string): Promise<void> {
-  if (await confirmFirst()) window.location.assign(href);
+  if (await confirmFirst()) location.assign(href);
+}
+
+/**
+ * A click on a link to `href` that takes confirming it's you first
+ * ([`goConfirmed`]): a plain click confirms, then goes. One that opens a
+ * new tab or window (with a modifier key) goes on as the browser does, and
+ * the server sends that tab back to confirm where it must.
+ */
+export function clickConfirmed(
+  e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "preventDefault">,
+  href: string,
+): Promise<void> | undefined {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return undefined;
+  e.preventDefault();
+  return goConfirmed(href);
 }
 
 async function request<T>(method: string, path: string, body?: unknown, again = true): Promise<T> {

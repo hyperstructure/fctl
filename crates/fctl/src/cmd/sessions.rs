@@ -277,7 +277,9 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         style::accent("✓"),
         style::bold(&format!(
             "{}#{} {}",
-            session.project_slug, session.number, session.title
+            session.project_slug,
+            session.number,
+            style::plain(&session.title)
         )),
         style::dim(&format!("{}/s/{}", api.base(), session.id))
     );
@@ -688,9 +690,14 @@ pub(crate) async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result
 }
 
 fn print_edited(reference: &str, title: &str, description: Option<&str>) {
-    println!("{} {} {title}", style::accent("✓"), style::bold(reference));
+    println!(
+        "{} {} {}",
+        style::accent("✓"),
+        style::bold(reference),
+        style::plain(title)
+    );
     if let Some(d) = description {
-        println!("  {}", style::dim(d));
+        println!("  {}", style::dim(&style::plain(d)));
     }
 }
 
