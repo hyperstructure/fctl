@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiFailure, api, confirmFirst, setConfirmer } from "./api";
+import { ApiFailure, api, clickConfirmed, confirmFirst, goConfirmed, setConfirmer } from "./api";
 
 const asked = {
   code: "verification_required",
@@ -111,5 +111,58 @@ describe("before a download", () => {
     answer(status(true, false));
     confirmer(false);
     await expect(confirmFirst()).resolves.toBe(false);
+  });
+});
+
+describe("links that take confirming it's you", () => {
+  const status = (required: boolean, verified: boolean) => ({
+    status: 200,
+    body: { required, verified, methods: ["passkey"] },
+  });
+  const LINK = "/api/v1/linear/link";
+  /** The browser's own navigation, as a spy. */
+  function navigation() {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign });
+    return assign;
+  }
+  const click = (keys: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" | "altKey", boolean>> = {}) => ({
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...keys,
+    preventDefault: vi.fn(),
+  });
+
+  it("goes once confirmed, and stays when the person cancels", async () => {
+    const assign = navigation();
+    answer(status(true, false));
+    confirmer(true);
+    await goConfirmed(LINK);
+    expect(assign).toHaveBeenCalledWith(LINK);
+    for (const u of unregister.splice(0)) u();
+    assign.mockClear();
+    answer(status(true, false));
+    confirmer(false);
+    await goConfirmed(LINK);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("takes a plain click, and leaves one that opens a new tab to the browser", async () => {
+    const assign = navigation();
+    answer(status(false, false));
+    const plain = click();
+    await clickConfirmed(plain, LINK);
+    expect(plain.preventDefault).toHaveBeenCalled();
+    expect(assign).toHaveBeenCalledWith(LINK);
+    assign.mockClear();
+    for (const keys of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }]) {
+      const e = click(keys);
+      expect(clickConfirmed(e, LINK)).toBeUndefined();
+      expect(e.preventDefault).not.toHaveBeenCalled();
+    }
+    expect(assign).not.toHaveBeenCalled();
   });
 });
