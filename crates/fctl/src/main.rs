@@ -354,7 +354,11 @@ fn main() {
         Ok(()) => 0,
         Err(e) => {
             if let Some(api) = e.downcast_ref::<fctl_client::Error>().and_then(|e| e.api()) {
-                eprintln!("{} {}", style::red("error:"), api.message);
+                eprintln!(
+                    "{} {}",
+                    style::red("error:"),
+                    style::terminal_safe(&api.message)
+                );
                 if api.code == fctl_proto::ErrorCode::VerificationRequired {
                     eprintln!(
                         "{}",

@@ -319,7 +319,7 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             "{:<20} {:<18} {:<44} {}",
             style::bold(&reference),
             style::status(s.status),
-            truncate(&s.title, 44),
+            truncate(&style::plain(&s.title), 44),
             style::dim(&when)
         );
     }
@@ -427,10 +427,10 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     println!(
         "{} {}",
         style::bold(&format!("{}#{}", s.project_slug, s.number)),
-        s.title
+        style::plain(&s.title)
     );
     if let Some(d) = &s.description {
-        println!("{}", style::dim(d));
+        println!("{}", style::dim(&style::plain(d)));
     }
     println!(
         "status:   {}{}",
@@ -472,14 +472,15 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         } else {
             "by:       "
         },
-        s.created_by.name
+        style::plain(&s.created_by.name)
     );
     if let Some(b) = &s.branch {
         println!(
-            "branch:   {b}{}",
+            "branch:   {}{}",
+            style::plain(b),
             s.base_branch
                 .as_deref()
-                .map(|x| style::dim(&format!(" (from {x})")))
+                .map(|x| style::dim(&format!(" (from {})", style::plain(x))))
                 .unwrap_or_default()
         );
     }
@@ -487,13 +488,13 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         println!("{line}");
     }
     if let Some(r) = &s.runner {
-        println!("runner:   {}", r.name);
+        println!("runner:   {}", style::plain(&r.name));
     }
     if let Some(m) = &s.model {
-        println!("model:    {m}");
+        println!("model:    {}", style::plain(m));
     }
     if let Some(e) = &s.effort {
-        println!("effort:   {e}");
+        println!("effort:   {}", style::plain(e));
     }
     // Sessions that push, as all did before, say nothing.
     match s.github_access {

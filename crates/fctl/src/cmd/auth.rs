@@ -62,10 +62,13 @@ pub async fn login(url: Option<&str>, no_browser: bool, json: bool) -> Result<()
         }
     }
     if !json {
-        println!("{}", style::bold(&format!("Sign in to {}", info.name)));
+        println!(
+            "{}",
+            style::bold(&format!("Sign in to {}", style::plain(&info.name)))
+        );
         println!();
-        println!("  Code: {}", style::accent(&start.user_code));
-        println!("  Link: {}", start.verification_uri_complete);
+        println!("  Code: {}", style::accent(&style::plain(&start.user_code)));
+        println!("  Link: {}", style::plain(&start.verification_uri_complete));
         println!();
     }
     if !no_browser && open_browser(&start.verification_uri_complete) && !json {
@@ -101,8 +104,8 @@ pub async fn login(url: Option<&str>, no_browser: bool, json: bool) -> Result<()
                 println!(
                     "{} Signed in as {} <{}>",
                     style::accent("✓"),
-                    me.user.name,
-                    me.user.email
+                    style::plain(&me.user.name),
+                    style::plain(&me.user.email)
                 );
                 if me.claude.is_empty() {
                     println!(

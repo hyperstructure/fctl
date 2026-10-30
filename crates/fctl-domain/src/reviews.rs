@@ -667,7 +667,11 @@ pub fn pull_request_ref(input: &str, default: Option<&RepoRef>) -> Result<(RepoR
 /// within the 80 characters a title may have.
 pub fn title(pr: &PullRequest) -> String {
     let head = format!("Review of {}#{}", pr.repo.name, pr.number);
-    let rest = pr.title.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Whoever opened it wrote it: without what terminals act on.
+    let rest = crate::naming::plain(&pr.title)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if rest.is_empty() {
         return truncate(&head, 80);
     }
@@ -3378,6 +3382,14 @@ mod tests {
             ..pr()
         };
         assert_eq!(title(&untitled), "Review of web#12");
+        // Whoever opened it wrote its title: nothing a terminal acts on.
+        let escaping = PullRequest {
+            title: "\x1b]52;c;Y3VybA==\x07Fix\u{202E}it".into(),
+            ..pr()
+        };
+        let t = title(&escaping);
+        assert_eq!(t, "Review of web#12: ]52;c;Y3VybA==Fixit");
+        assert!(validate::session_title(&t).is_ok());
         assert_eq!(
             task(&pr(), None),
             "Review acme/web#12, “Fix the login redirect”, at commit 3f2a1c9."
