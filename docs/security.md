@@ -117,11 +117,12 @@ owner and purpose), so a value copied between rows does not decrypt.
   two-factor sign-in, removing a passkey, adding or registering a runner
   for a workspace and replacing its token, new access tokens and CLI
   sign-ins, connecting a Claude subscription (whose account a full login's
-  sessions show in), exporting your data, deleting accounts, projects and
+  sessions show in), linking a Linear account (whose delegations start
+  sessions as you), exporting your data, deleting accounts, projects and
   workspaces, and, without email, making someone a password reset link.
-  So a stolen browser session, CLI or
-  access token can't do them alone. Connecting a Claude subscription also
-  emails the person, when email is set up. A passkey (which must verify the
+  So a stolen browser session, CLI or access token can't do them alone.
+  Connecting a Claude subscription and linking a Linear account also
+  email the person, when email is set up. A passkey (which must verify the
   person), a code from the authenticator app or a recovery code confirms
   it, for 15 minutes, for the browser, CLI or token that confirmed; a
   sign-in with a passkey or a second factor counts. People with neither a

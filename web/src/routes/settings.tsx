@@ -54,7 +54,7 @@ import {
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
-import { api, confirmFirst, emails, linearLinkUrl, workspaces as wsApi } from "@/lib/api";
+import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as wsApi } from "@/lib/api";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
@@ -1067,7 +1067,13 @@ function LinearAccounts({ returned }: { returned?: LinearOutcome }) {
             </ul>
           )}
           <div>
-            <a href={linearLinkUrl()} className="inline-block">
+            <a
+              href={linearLinkUrl()}
+              className="inline-block"
+              onClick={(e) =>
+                clickConfirmed(e, linearLinkUrl())?.catch((err: Error) => toast(err.message, "error"))
+              }
+            >
               <Button icon={<LinearIcon className="size-3.5" />}>
                 {accounts.length > 0 ? "Link another Linear account" : "Link your Linear account"}
               </Button>

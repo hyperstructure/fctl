@@ -65,6 +65,12 @@ pub enum Sensitive {
     /// so a stolen session or token could otherwise have their sessions run
     /// where it watches, for good.
     ConnectClaude,
+    /// Linking a Linear account: what it delegates to fctl or mentions it
+    /// in then starts sessions as the person, on their subscription, and
+    /// its replies reach their sessions' agents, so a stolen session or
+    /// token could otherwise go on starting their sessions from Linear long
+    /// after it was revoked.
+    LinkLinear,
     /// Approving a CLI's sign-in, or confirming it's you for a CLI that is
     /// signed in already.
     ApproveCli,
@@ -98,6 +104,7 @@ impl Sensitive {
             DeleteProject => "delete a project",
             NewToken => "make an access token",
             ConnectClaude => "connect a Claude subscription",
+            LinkLinear => "link a Linear account",
             ApproveCli => "approve the CLI",
             RemovePasskey => "remove a passkey",
             Export => "export your data",
@@ -317,6 +324,10 @@ mod tests {
         assert_eq!(
             message(Sensitive::ConnectClaude, APP),
             "Confirm it's you to connect a Claude subscription, with a code from your authenticator app."
+        );
+        assert_eq!(
+            message(Sensitive::LinkLinear, APP),
+            "Confirm it's you to link a Linear account, with a code from your authenticator app."
         );
     }
 

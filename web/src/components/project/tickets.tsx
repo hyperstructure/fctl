@@ -38,7 +38,7 @@ import {
   toast,
 } from "@/components/ui";
 import type * as G from "@/gen";
-import { ApiFailure, api, linearLinkUrl, workspaces } from "@/lib/api";
+import { ApiFailure, api, clickConfirmed, linearLinkUrl, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
 import { keys, queryClient, useInstance } from "@/lib/queries";
@@ -1236,7 +1236,13 @@ function YourAccount({ project, status }: { project: G.Project; status?: G.Proje
         <span className="font-medium text-ink">Link your Linear account.</span> fctl starts sessions only for
         people it knows in {name}, as them. It takes a Linear sign-in, which fctl forgets at once.
       </p>
-      <a href={linearLinkUrl(project.slug)} className="shrink-0">
+      <a
+        href={linearLinkUrl(project.slug)}
+        className="shrink-0"
+        onClick={(e) =>
+          clickConfirmed(e, linearLinkUrl(project.slug))?.catch((err: Error) => toast(err.message, "error"))
+        }
+      >
         <Button icon={<LinearIcon className="size-3.5" />}>Link Linear account</Button>
       </a>
     </div>

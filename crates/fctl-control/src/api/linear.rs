@@ -22,6 +22,7 @@ use crate::linear;
 use crate::workspaces as ws;
 use fctl_domain::cookies::Cookie;
 use fctl_domain::linear as lin;
+use fctl_domain::verify::Sensitive;
 use fctl_proto::tickets::{
     ConnectLinearRequest, LinearAccount, LinearLink, LinearTeamList, MyLinear, WorkspaceLinear,
 };
@@ -370,6 +371,14 @@ pub async fn link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let thread = http::query(req, "thread").filter(|t| {
         !t.is_empty() && t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     });
+    let project = clean_slug(http::query(req, "project").as_deref());
+    // What the account delegates then starts sessions as them, so a stolen
+    // session can't link one alone, where the instance asks for that. The
+    // app confirms before it comes here; Linear's own button comes straight
+    // here, and goes back to where they confirm and link it again.
+    if ctx.verified(Sensitive::LinkLinear).is_err() {
+        return http::redirect(&Back::Person { project }.url("confirm"));
+    }
     begin(
         ctx,
         &keys,
@@ -377,7 +386,7 @@ pub async fn link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
             purpose: String::new(),
             user: user.id,
             workspace: None,
-            project: clean_slug(http::query(req, "project").as_deref()),
+            project,
             thread,
             state: String::new(),
             verifier: String::new(),
@@ -607,6 +616,15 @@ async fn linked(
         Some(&viewer.organization),
         Some(json!({ "name": viewer.organization_name })),
     );
+    // Best effort, as for a Claude connection: the account is linked,
+    // whatever the email does.
+    if ctx.cfg.email.is_some() {
+        let instance = crate::instance::name(&ctx.db, &ctx.cfg)
+            .await
+            .unwrap_or_else(|_| ctx.cfg.instance_name.clone());
+        let (subject, text) = linked_notice(&instance, &user.email, &ctx.cfg, &viewer);
+        crate::email::notice(ctx, &user, &subject, text);
+    }
     let reached = crate::delegations::linked(
         &ctx.env,
         &ctx.cfg,
@@ -622,6 +640,29 @@ async fn linked(
     });
     // From Linear's button in an agent session: on to what it started.
     Ok(thread.and(reached.first().cloned()))
+}
+
+/// The email that tells someone a Linear account was linked to theirs:
+/// what it delegates to fctl starts sessions as them from then on, so one
+/// they didn't link is someone else starting their sessions.
+fn linked_notice(
+    instance: &str,
+    email: &str,
+    cfg: &crate::config::Config,
+    viewer: &linear::Viewer,
+) -> (String, String) {
+    let who = match viewer.email.as_deref() {
+        Some(e) if !e.is_empty() => format!("{} ({e})", viewer.name),
+        _ => viewer.name.clone(),
+    };
+    (
+        "A Linear account was linked to your account".to_owned(),
+        format!(
+            "{who}, in the Linear workspace {}, is now linked to your {instance} account ({email}): what it delegates to fctl there, or mentions fctl in, starts sessions as you, on your Claude subscription, and its replies reach your sessions' agents.\n\nIf you didn't link it, unlink it in Settings now, sign out your other devices there and change your password: {}",
+            viewer.organization_name,
+            cfg.url("/settings#linear")
+        ),
+    )
 }
 
 // ───────────────────────────── the webhook ─────────────────────────────
