@@ -460,24 +460,7 @@ pub async fn uplink(ctx: &Ctx, req: &Request, session_id: &str) -> AppResult<Res
         )));
     }
     let r = runner_auth(ctx, req).await?;
-    #[derive(serde::Deserialize)]
-    struct Assigned {
-        runner_id: Option<String>,
-    }
-    let row: Option<Assigned> = q(
-        &ctx.db,
-        "SELECT runner_id FROM sessions WHERE id = ?",
-        &[s(session_id)],
-    )?
-    .first()
-    .await?;
-    let assigned = row.ok_or_else(|| not_found("Session"))?;
-    if assigned.runner_id.as_deref() != Some(r.id.as_str()) {
-        return Err(forbidden("This session is not assigned to this runner"));
-    }
-    if !crate::spec::runner_serves(&ctx.db, &r.id, session_id).await? {
-        return Err(crate::spec::not_served());
-    }
+    crate::spec::check_runs(&ctx.db, &r.id, session_id).await?;
     let stub = internal::session_stub(&ctx.env, session_id)?;
     internal::upgrade(&stub, "/uplink", &[(internal::HDR_RUNNER, &r.id)]).await
 }

@@ -43,27 +43,30 @@ pub async fn runner_publish(
     session_id: &str,
 ) -> AppResult<Response> {
     let r = runners::runner_auth(ctx, req).await?;
+    crate::spec::check_runs(&ctx.db, &r.id, session_id).await?;
     #[derive(Deserialize)]
     struct Row {
         project_id: String,
-        runner_id: Option<String>,
         settings: String,
         #[serde(default)]
         workspace_id: Option<String>,
+        #[serde(default)]
+        review_repo: Option<String>,
     }
     let row: Option<Row> = q(
         &ctx.db,
-        "SELECT s.project_id, s.runner_id, p.settings, p.workspace_id FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ?",
+        "SELECT s.project_id, p.settings, p.workspace_id, rv.repo AS review_repo FROM sessions s \
+         JOIN projects p ON p.id = s.project_id LEFT JOIN reviews rv ON rv.session_id = s.id WHERE s.id = ?",
         &[s(session_id)],
     )?
     .first()
     .await?;
     let row = row.ok_or_else(|| not_found("Session"))?;
-    if row.runner_id.as_deref() != Some(r.id.as_str()) {
-        return Err(forbidden("This session is not assigned to this runner"));
-    }
-    if !crate::spec::runner_serves(&ctx.db, &r.id, session_id).await? {
-        return Err(crate::spec::not_served());
+    // A review agent's session publishes nothing, as its spec says, whatever
+    // its project does: its pull request's text could steer what runs in
+    // its sandbox, which may pose as its agent.
+    if row.review_repo.is_some() {
+        return Err(forbidden("Review agents don't publish screenshots."));
     }
     let settings: ProjectSettings = serde_json::from_str(&row.settings).unwrap_or_default();
     if !crate::instance::settings(&ctx.db)

@@ -105,6 +105,45 @@ pub fn not_served() -> AppError {
     crate::error::forbidden("This runner no longer runs this session")
 }
 
+/// Whether runner `runner_id` acts for session `session_id` now, as its
+/// host does for the session's agent: its uplink, the agent's calls
+/// (memory, retrospectives, tickets, reviews), the files sent to it and the
+/// screenshots it publishes. The session is assigned to the runner, the
+/// runner still runs it ([`runner_serves`]), and the person it runs as may
+/// still run it ([`credential_serves`]), as for its credentials. A stopped
+/// session stays assigned to the runner it last ran on, so without the
+/// last check, someone made a viewer of its project, taken out of it or
+/// shut out by its workspace's two-factor requirement would go on reaching
+/// the project's memory and ticket tracker with their own runner's token,
+/// through any session of theirs it ever ran.
+pub async fn check_runs(db: &D1Database, runner_id: &str, session_id: &str) -> AppResult<()> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        runner_id: Option<String>,
+        credential_id: Option<String>,
+    }
+    let row: Option<Row> = q(
+        db,
+        "SELECT runner_id, credential_id FROM sessions WHERE id = ?",
+        &[s(session_id)],
+    )?
+    .first()
+    .await?;
+    let row = row.ok_or_else(|| crate::error::not_found("Session"))?;
+    if row.runner_id.as_deref() != Some(runner_id) {
+        return Err(crate::error::forbidden(
+            "This session is not assigned to this runner",
+        ));
+    }
+    if !runner_serves(db, runner_id, session_id).await? {
+        return Err(not_served());
+    }
+    match row.credential_id {
+        Some(c) if credential_serves(db, &c, session_id).await? => Ok(()),
+        _ => Err(credential_not_lent()),
+    }
+}
+
 /// Whether Claude credential `credential_id` still runs session
 /// `session_id`: its owner's account is active and they may still message
 /// the session (`fctl_domain::perm::session_role`): they are a member of

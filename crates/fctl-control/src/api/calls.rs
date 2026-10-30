@@ -53,9 +53,10 @@ struct Row {
 }
 
 impl RunnerSession {
-    /// The session, when it is assigned to the runner `runner_id` and that
-    /// runner still serves its workspace.
+    /// The session, when the runner `runner_id` acts for it now
+    /// (`spec::check_runs`).
     async fn load(ctx: &Ctx, runner_id: &str, session_id: &str) -> AppResult<Self> {
+        crate::spec::check_runs(&ctx.db, runner_id, session_id).await?;
         let row: Option<Row> = q(
             &ctx.db,
             "SELECT s.project_id, s.runner_id, s.created_by, p.settings, s.github_access, \
@@ -69,9 +70,6 @@ impl RunnerSession {
         let row = row.ok_or_else(|| not_found("Session"))?;
         if row.runner_id.as_deref() != Some(runner_id) {
             return Err(forbidden("This session is not assigned to this runner"));
-        }
-        if !crate::spec::runner_serves(&ctx.db, runner_id, session_id).await? {
-            return Err(crate::spec::not_served());
         }
         // Settings that don't read as settings turn both off, and leave
         // the agent reading only.
@@ -101,7 +99,23 @@ impl RunnerSession {
         })
     }
 
+    /// A review agent's session reaches neither the memory nor
+    /// retrospectives, whatever its project does, as its spec says
+    /// (`spec::review_spec`): its pull request's text could steer what runs
+    /// in its sandbox, which may pose as its agent, and the project's memory
+    /// would carry that to every later agent there.
+    fn refuse_review(&self) -> AppResult<()> {
+        if self.review {
+            Err(forbidden(
+                "Review agents keep no memory and record no retrospectives.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     fn require_memory(&self) -> AppResult<()> {
+        self.refuse_review()?;
         if self.settings.project_memory {
             Ok(())
         } else {
@@ -112,6 +126,7 @@ impl RunnerSession {
     }
 
     fn require_retrospectives(&self) -> AppResult<()> {
+        self.refuse_review()?;
         if self.settings.retrospectives {
             Ok(())
         } else {

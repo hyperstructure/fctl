@@ -724,7 +724,12 @@ workspace, its owner left, was disabled, or the session's person turned on
 own runners), the session stops and resumes on another runner, whatever
 its host does: FleetDO stops it (`/runner-changed`), closes the runner's
 uplink to it, and the runner gets no credentials, uplinks, files or
-screenshots for it any more (`spec::runner_serves`). Disabling a runner or
+screenshots for it any more (`spec::runner_serves`). Nor does it once the
+session's person may no longer run it (`spec::credential_serves`, which
+`spec::check_runs` takes for uplinks, agents' calls, files and
+screenshots, as FleetDO does for credentials): a stopped session stays
+with the runner it last ran on, whose owner would otherwise keep their
+reach in its project through it. Disabling a runner or
 replacing its token closes its control connection and its sessions'
 uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
@@ -2492,8 +2497,10 @@ why and who marked it, and the note that took its place or that it repeats
    (`AgentToHost::Call`); the host sends it with its runner token (`POST
    /api/v1/runner/sessions/{id}/calls`, an `AgentCall`), and the control
    plane checks that the session is assigned to that runner, that the
-   runner still serves its workspace and that the project keeps a memory,
-   as for published screenshots. The answer comes back the same way, and
+   runner still serves its workspace, that the session's person may still
+   run it (`spec::check_runs`) and that the project keeps a memory, as for
+   published screenshots; a review agent's session reaches neither the
+   memory nor retrospectives, whatever its project keeps. The answer comes back the same way, and
    fctl-agent adds a `memory_added` or `memory_stale` notice with the note
    to the transcript, one for each note a new one replaced. The host
    retries reading the memory and marking a note stale (a duplicate too)

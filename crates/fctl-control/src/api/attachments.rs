@@ -8,7 +8,7 @@ use crate::access;
 use crate::api::runners;
 use crate::ctx::Ctx;
 use crate::db::{q, s};
-use crate::error::{AppError, AppResult, forbidden, not_found, validation};
+use crate::error::{AppError, AppResult, not_found, validation};
 use crate::http;
 use crate::internal::{self, StoreFile};
 use fctl_domain::files;
@@ -113,25 +113,19 @@ pub async fn runner_download(
     attachment_id: &str,
 ) -> AppResult<Response> {
     let r = runners::runner_auth(ctx, req).await?;
+    crate::spec::check_runs(&ctx.db, &r.id, session_id).await?;
     #[derive(serde::Deserialize)]
     struct Assigned {
         project_id: String,
-        runner_id: Option<String>,
     }
     let row: Option<Assigned> = q(
         &ctx.db,
-        "SELECT project_id, runner_id FROM sessions WHERE id = ?",
+        "SELECT project_id FROM sessions WHERE id = ?",
         &[s(session_id)],
     )?
     .first()
     .await?;
     let assigned = row.ok_or_else(|| not_found("Session"))?;
-    if assigned.runner_id.as_deref() != Some(r.id.as_str()) {
-        return Err(forbidden("This session is not assigned to this runner"));
-    }
-    if !crate::spec::runner_serves(&ctx.db, &r.id, session_id).await? {
-        return Err(crate::spec::not_served());
-    }
     file(ctx, req, &assigned.project_id, session_id, attachment_id).await
 }
 
