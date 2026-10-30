@@ -25,6 +25,11 @@ vi.mock("@/lib/api", () => {
     api: never,
     workspaces: never,
     linearLinkUrl: (project?: string) => `/api/v1/linear/link${project ? `?project=${project}` : ""}`,
+    clickConfirmed: (e: { preventDefault(): void }, href: string) => {
+      e.preventDefault();
+      calls.push({ name: "clickConfirmed", args: [href] });
+      return undefined;
+    },
     ApiFailure: class extends Error {},
   };
 });
@@ -347,6 +352,9 @@ describe("the Tickets tab", () => {
     expect(c.textContent).toContain("assign one of ENG's issues to fctl");
     const link = c.querySelector<HTMLAnchorElement>('a[href="/api/v1/linear/link?project=web"]');
     expect(link?.textContent).toContain("Link Linear account");
+    // Linking confirms it's you first, where the instance asks for that.
+    act(() => link?.click());
+    expect(calls).toContainEqual({ name: "clickConfirmed", args: ["/api/v1/linear/link?project=web"] });
   });
 
   it("moves tickets through the team's states, each with a switch", () => {

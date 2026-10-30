@@ -38,7 +38,7 @@ import {
   toast,
 } from "@/components/ui";
 import type * as G from "@/gen";
-import { ApiFailure, api, goConfirmed, linearLinkUrl, workspaces } from "@/lib/api";
+import { ApiFailure, api, clickConfirmed, linearLinkUrl, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
 import { keys, queryClient, useInstance } from "@/lib/queries";
@@ -1239,10 +1239,9 @@ function YourAccount({ project, status }: { project: G.Project; status?: G.Proje
       <a
         href={linearLinkUrl(project.slug)}
         className="shrink-0"
-        onClick={(e) => {
-          e.preventDefault();
-          goConfirmed(linearLinkUrl(project.slug)).catch((err: Error) => toast(err.message, "error"));
-        }}
+        onClick={(e) =>
+          clickConfirmed(e, linearLinkUrl(project.slug))?.catch((err: Error) => toast(err.message, "error"))
+        }
       >
         <Button icon={<LinearIcon className="size-3.5" />}>Link Linear account</Button>
       </a>
