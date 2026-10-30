@@ -1445,10 +1445,12 @@ posts what it found on GitHub
    agents opened the pull request (its author is the GitHub App,
    `fctl_domain::reviews::by_app`), the control plane sends the new
    findings to that agent's session (`crate::reviews::pass_on`), so that
-   it acts on them without waiting for a person. The session is one that
-   lists the pull request (`pull_request_sessions`, review sessions left
-   out): the one whose branch it comes from, else the one that started
-   first (`opener`). After posting, the control plane asks GitHub for the
+   it acts on them without waiting for a person. The session is one of
+   the review's own workspace that lists the pull request
+   (`pull_request_sessions`, review sessions left out): the one whose
+   branch it comes from, else the one that started first (`opener`).
+   Another workspace connected to the same account could otherwise list
+   the pull request on a branch of the same name and take the findings. After posting, the control plane asks GitHub for the
    comments of the review that holds the findings on their lines
    (`spots`), and SessionObject's `/review-findings` delivers a message
    from fctl, as a person's message is delivered, resuming a stopped

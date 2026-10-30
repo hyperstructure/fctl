@@ -2130,11 +2130,23 @@ async fn pass_on(
         return Ok(None);
     }
     let pr = format!("{}#{}", repo.full_name(), row.number);
-    // Only to sessions of workspaces connected to the account the review's
-    // workspace connected, by GitHub's id: not to one whose connection is
-    // to a login that has changed hands since.
+    // Only to sessions of the review's own workspace, connected to the
+    // account it connected, by GitHub's id: not to one whose connection is
+    // to a login that has changed hands since, nor to another workspace's
+    // session, which could list the pull request on a branch of the same
+    // name, earlier, and so take the findings, and its agent their text.
+    let Some(project) = crate::spec::project_row(&ctx.db, &row.project_id).await? else {
+        return Ok(None);
+    };
     let answered = answered_for(&ctx.db, row, repo).await?;
-    let listing = crate::pull_requests::listed_by(&ctx.db, repo, row.number(), answered).await?;
+    let listing = crate::pull_requests::listed_by(
+        &ctx.db,
+        project.workspace_id(),
+        repo,
+        row.number(),
+        answered,
+    )
+    .await?;
     let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
     let Some(opener) = rv::opener(&branches, row.head_ref.as_deref()).and_then(|i| listing.get(i))
     else {
