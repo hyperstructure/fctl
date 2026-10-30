@@ -330,7 +330,15 @@ its VM, and nothing outside it except through these channels:
   A connection is to the account, by GitHub's id, not its name: when a
   connected account is renamed or deleted and someone else takes its name,
   the workspace's sessions get no tokens there, and their pull requests no
-  news from it, until its admins connect the account again.
+  news from it, until its admins connect the account again. It is also to
+  the installation of the app it was made through: uninstalling the app
+  from an account ends every workspace's connection there, and installing
+  it again brings none back, so that the account's admins can end what
+  they let workspaces reach, a former admin's own workspace too. Each
+  workspace's admins connect it again, with a GitHub sign-in that checks
+  what they may connect then. Short of that, a connection keeps what its
+  admin's sign-in gave it: fctl doesn't check their standing on GitHub
+  again ([ADR 0029](adr/0029-workspaces-connect-github-accounts-with-a-github-sign-in.md)).
 - **Claude.** A short-lived access token for the session's owner. Refresh
   tokens never enter a sandbox: when the access token expires, Claude asks
   the control plane for a new one through its host. A session gets the
@@ -664,7 +672,9 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   to it; once none is, the control plane revokes them at Linear and
   deletes them (within the hour if Linear doesn't answer), and it forgets
   them as soon as Linear says the app was uninstalled or refuses to renew
-  them. A delegation waiting for someone to link their account keeps what
+  them, which ends every fctl workspace's connection to that Linear
+  workspace: installing the app again, which takes one of its admins,
+  connects only the fctl workspace it is installed from. A delegation waiting for someone to link their account keeps what
   Linear sent for an hour, and which Linear agent session reached which
   fctl session goes with the session.
 - Hosts keep a stopped session's sandbox so it can resume, and remove it

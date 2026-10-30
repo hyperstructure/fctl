@@ -285,17 +285,29 @@ pub async fn store(
 
 /// Marks fctl's app in a Linear workspace revoked, and forgets its tokens,
 /// which no longer work: uninstalled there, or its token no longer renews.
-/// Its fctl workspaces' admins connect it again.
+/// The fctl workspaces connected to it stop working there, and their admins
+/// connect it again: installing the app again, which takes an admin of the
+/// Linear workspace, connects only the fctl workspace it is installed from,
+/// so that the Linear workspace's admins can end what they let fctl
+/// workspaces reach, a former admin's own one too.
 pub async fn mark_revoked(db: &D1Database, organization: &str, now: i64) -> AppResult<()> {
-    q(
+    crate::db::batch(
         db,
-        "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ? \
-         WHERE organization_id = ?",
-        &[n(now), s(organization)],
-    )?
-    .run()
-    .await?;
-    Ok(())
+        vec![
+            q(
+                db,
+                "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ? \
+                 WHERE organization_id = ?",
+                &[n(now), s(organization)],
+            )?,
+            q(
+                db,
+                "DELETE FROM workspace_linear WHERE organization_id = ?",
+                &[s(organization)],
+            )?,
+        ],
+    )
+    .await
 }
 
 /// Removes fctl's app from a Linear workspace no fctl workspace works in
