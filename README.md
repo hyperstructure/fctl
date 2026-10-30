@@ -108,15 +108,21 @@ source is in [docs/](docs/).
 
 ## How it works
 
-```
- web app · fctl CLI · Claude apps
-              │
-   control plane                      a Rust → wasm Worker, Durable Objects, D1:
-              │  (hosts dial out)     on Cloudflare, or in one container anywhere
-         fctl host on your Mac        one Linux VM per session
-              │
-   fctl-agent + Claude Code           journaled events, branch, push, pull request
-```
+![fctl's architecture: the web app, the CLI and the Claude apps talk to the control plane, which hands sessions to your Macs and Linux boxes, each running a sandbox per session](https://github.com/user-attachments/assets/d8aa6929-97cc-4821-9233-f5a13c78cfa6)
+
+You start and follow work from the web app on your desk or phone, the
+`fctl` CLI in a terminal, script or CI job, or the Claude apps through
+Remote Control. They all talk to the control plane: a Rust Worker compiled
+to wasm, with Durable Objects and D1, that runs on Cloudflare or in one
+container anywhere. It keeps every session's events and hands sessions to
+your machines.
+
+Each machine runs `fctl host`, which dials out to the control plane, so it
+needs no open ports. A Mac runs every session in a VM of its own with
+Apple's container; a Linux box, in a Firecracker microVM or a Docker
+container. In each sandbox, `fctl-agent` runs Claude Code and journals its
+events, and the agent works on a branch, pushes it and opens a pull
+request.
 
 - **Subscriptions only.** API keys are stripped from every sandbox, sessions
   must report a subscription credential, and a session pauses before it would
