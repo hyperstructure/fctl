@@ -644,7 +644,8 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   instance owner admins' too. Both delete the account's addresses, sign-in methods, passkeys
   and two-factor sign-in, tokens, Claude connections, memberships, shares,
   follows and notification settings and browsers, and the workspaces only
-  it is in, with their projects and sessions. Sessions and projects it
+  it is in, with their projects and sessions; the sessions that run on its
+  Claude connections stop first. Sessions and projects it
   created that others still use stay, credited to "Deleted user": the
   account remains only as a disabled placeholder, without its name,
   emails, commit emails or picture. Commits already pushed keep the
