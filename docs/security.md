@@ -538,15 +538,18 @@ workspaces own-runners on`), so that no one else's machine sees their
 Claude token or their sessions' work. Once a runner no longer runs a
 session (taken out of the workspace, its owner left it or was disabled,
 or the session's person keeps theirs on their own runners), or the
-session's person may no longer run it (they lost their role in its
-project, or its workspace's two-factor requirement closes it to them),
-the session stops, and the runner gets no more tokens, messages or files
-for it, whatever its host does, and makes no more of its agent's calls
-(the project's memory, retrospectives and ticket tracker), uplinks or
+person whose Claude connection the session runs on may no longer run it
+(they left its workspace, were disabled, lost their role in its project
+or its share, or its workspace's two-factor requirement closes it to
+them) or removed that connection, the session stops, its runner's uplink
+to it closes, and the runner gets no more tokens, messages or files for
+it, whatever its host does, and makes no more of its agent's calls (the
+project's memory, retrospectives and ticket tracker), uplinks or
 screenshots for it: a stopped session stays with the runner it last ran
-on, which would otherwise keep that person's reach in the project. A Claude sign-in through a host, which passes the
-full login's long-lived tokens through it, runs on one of the person's own
-runners when one is online, else on a runner that runs their sessions.
+on, which would otherwise keep that person's reach in the project. A
+Claude sign-in through a host, which passes the full login's long-lived
+tokens through it, runs on one of the person's own runners when one is
+online, else on a runner that runs their sessions.
 
 **Updates.** Hosts update fctl by themselves to the version the control
 plane runs, unless `auto_update = false` in `host.toml` (`fctl host

@@ -225,6 +225,24 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
 
 pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let user = ctx.user()?.clone();
+    // The sessions that run on it stop with it: nobody's subscription runs
+    // them from then on, so they get no new tokens, and their runners act
+    // for them no more (`spec::check_runs`).
+    #[derive(serde::Deserialize)]
+    struct Running {
+        id: String,
+        #[serde(default)]
+        runner_id: Option<String>,
+    }
+    let running: Vec<Running> = q(
+        &ctx.db,
+        "SELECT s.id, s.runner_id FROM sessions s JOIN claude_credentials c ON c.id = s.credential_id \
+         WHERE c.id = ? AND c.user_id = ? \
+         AND s.status IN ('queued','provisioning','preparing','running','idle','paused')",
+        &[s(id), s(&user.id)],
+    )?
+    .all()
+    .await?;
     let changed = q(
         &ctx.db,
         "DELETE FROM claude_credentials WHERE id = ? AND user_id = ?",
@@ -235,6 +253,14 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if changed == 0 {
         return Err(not_found("Credential"));
     }
+    stop_running(
+        ctx,
+        &running
+            .iter()
+            .map(|r| (r.id.as_str(), r.runner_id.as_deref()))
+            .collect::<Vec<_>>(),
+    )
+    .await;
     q(
         &ctx.db,
         "UPDATE users SET default_credential_id = NULL WHERE id = ? AND default_credential_id = ?",
@@ -247,6 +273,50 @@ pub async fn remove(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         .await?
         .ok_or_else(|| not_found("User"))?;
     http::ok(&auth::me(ctx, &user).await?)
+}
+
+/// Stops sessions (`id`, `runner_id`) whose Claude connection was removed,
+/// and closes their runners' uplinks, as FleetDO does for those whose
+/// person may no longer run them: a host that ignores the stop keeps no
+/// uplink to them. A session that doesn't stop is left to its runner, which
+/// gets nothing more for it.
+async fn stop_running(ctx: &Ctx, running: &[(&str, Option<&str>)]) {
+    let Ok(fleet) = internal::fleet_stub(&ctx.env) else {
+        return;
+    };
+    for &(session_id, runner_id) in running {
+        let stopped: AppResult<serde_json::Value> = internal::post(
+            &fleet,
+            "/stop",
+            &internal::Stop {
+                session_id: fctl_proto::SessionId(session_id.to_owned()),
+                reason: fctl_proto::runner::StopReason::User,
+                destroy: false,
+            },
+        )
+        .await;
+        if let Err(e) = stopped {
+            worker::console_error!(
+                "stopping {session_id}, whose Claude connection went: {}",
+                e.0.message
+            );
+        }
+        if let Some(runner_id) = runner_id
+            && let Ok(stub) = internal::session_stub(&ctx.env, session_id)
+        {
+            let closed: AppResult<serde_json::Value> = internal::post(
+                &stub,
+                "/close-uplink",
+                &internal::CloseUplink {
+                    runner_id: runner_id.to_owned(),
+                },
+            )
+            .await;
+            if let Err(e) = closed {
+                worker::console_error!("closing the uplink of {session_id}: {}", e.0.message);
+            }
+        }
+    }
 }
 
 pub async fn set_default(ctx: &mut Ctx, id: &str) -> AppResult<Response> {

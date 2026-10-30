@@ -725,11 +725,14 @@ own runners), the session stops and resumes on another runner, whatever
 its host does: FleetDO stops it (`/runner-changed`), closes the runner's
 uplink to it, and the runner gets no credentials, uplinks, files or
 screenshots for it any more (`spec::runner_serves`). Nor does it once the
-session's person may no longer run it (`spec::credential_serves`, which
-`spec::check_runs` takes for uplinks, agents' calls, files and
-screenshots, as FleetDO does for credentials): a stopped session stays
-with the runner it last ran on, whose owner would otherwise keep their
-reach in its project through it. Disabling a runner or
+person whose Claude connection the session runs on may no longer run it,
+or removed that connection (`spec::check_runs`, for uplinks, agents'
+calls, files and screenshots, which takes `spec::credential_serves` as
+FleetDO does for credentials): a stopped session stays with the runner
+it last ran on, whose owner would otherwise keep their reach in its
+project through it. Such a session stops too, and its runner's uplink to
+it closes: FleetDO's `stop_unlent` when someone's access changes, and
+removing the connection (`api::claude::remove`). Disabling a runner or
 replacing its token closes its control connection and its sessions'
 uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
