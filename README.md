@@ -143,6 +143,27 @@ request.
   `docker run ghcr.io/hyperstructure/fctl-control`
   ([self-hosting](docs/self-hosting.md)).
 
+## Self-hosting
+
+The control plane, API and web app together, runs in one container with
+its state in a volume, so trying fctl on your own machine needs only
+Docker. Start it, open the setup link its log prints to create the first
+account, then point the CLI at it instead of app.fctl.sh:
+
+```sh
+docker run -d --name fctl --restart unless-stopped \
+  -p 8787:8787 -v fctl-data:/data \
+  -e FCTL_PUBLIC_URL=http://localhost:8787 \
+  ghcr.io/hyperstructure/fctl-control
+docker logs fctl                         # the link that creates the first account
+
+fctl login http://localhost:8787
+fctl host install                        # this machine runs its agents
+```
+
+[Self-hosting](docs/self-hosting.md) has the full details: Kubernetes and
+Cloudflare, HTTPS, settings, GitHub, Linear, sign-in, email and backups.
+
 ## Developing
 
 ```sh
