@@ -26,6 +26,8 @@ work from the web app, the terminal or your phone; follow every session live;
 message an agent to steer it, with screenshots and files; share projects and
 sessions with your team.
 
+![app.fctl.sh](https://github.com/user-attachments/assets/7f3f3b3c-60e8-46df-b51a-0bde53b13971)
+
 ```sh
 curl -fsSL https://fctl.sh/install | sh
 fctl login app.fctl.sh
@@ -39,9 +41,9 @@ release.
 Pointing an agent at fctl? [llms.txt](docs/llms.txt), also at
 https://fctl.sh/llms.txt, tells it what fctl is and how to drive it.
 
-![app.fctl.sh](https://github.com/user-attachments/assets/7f3f3b3c-60e8-46df-b51a-0bde53b13971)
-
 ## Features
+
+![features](https://github.com/user-attachments/assets/2c12eabf-5a13-4e0f-8c2c-ad1e3d369a2d)
 
 ### [Runners](https://fctl.sh/features/runners/)
 
