@@ -42,6 +42,15 @@ export async function confirmFirst(): Promise<boolean> {
   return (await confirmer?.()) ?? false;
 }
 
+/**
+ * Follows a link that takes confirming it's you first, where the instance
+ * asks for it, as linking a Linear account does: the browser's own
+ * navigation can't go again by itself once the server refuses it.
+ */
+export async function goConfirmed(href: string): Promise<void> {
+  if (await confirmFirst()) window.location.assign(href);
+}
+
 async function request<T>(method: string, path: string, body?: unknown, again = true): Promise<T> {
   let res: Response;
   try {

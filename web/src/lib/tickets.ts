@@ -47,6 +47,7 @@ export const LINEAR_OUTCOMES = [
   "failed",
   "other_user",
   "not_app",
+  "confirm",
 ] as const;
 export type LinearOutcome = (typeof LINEAR_OUTCOMES)[number];
 
@@ -79,6 +80,11 @@ export function linearOutcome(o: LinearOutcome): { tone: "ok" | "warn" | "error"
       };
     case "failed":
       return { tone: "error", text: "Linear didn't finish the sign-in. Try again in a minute." };
+    case "confirm":
+      return {
+        tone: "warn",
+        text: "Linking a Linear account takes confirming it's you, so nothing changed. Link it again from here.",
+      };
   }
 }
 

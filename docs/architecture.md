@@ -1876,7 +1876,13 @@ issue's delegate (the person stays its assignee), and mention.
    Linear's own button in an agent session that waits for it): a Linear
    sign-in of theirs, with `read` alone, shows fctl who they are there
    (`viewer`), which D1 keeps (`linear_accounts`: their Linear id, name,
-   email and avatar), and fctl revokes the sign-in at once. A Linear
+   email and avatar), and fctl revokes the sign-in at once. Linking takes
+   confirming it's you where the instance asks for that
+   (`Sensitive::LinkLinear`), since what the account delegates then runs
+   as you: the app confirms before it goes on to Linear, and a link opened
+   from elsewhere (Linear's button, the CLI) goes back to Settings
+   (`?linear=confirm`) to confirm and link again. fctl emails the person
+   once it's linked, when email is set up. A Linear
    account is one person's: whoever links it last has it. Matching
    addresses would let anyone whose Linear address matches someone's run
    their work on that person's subscription, and an address in Linear says
