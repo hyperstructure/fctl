@@ -292,8 +292,11 @@ pub async fn store(
 /// workspace's admins can end what they let fctl workspaces reach, a
 /// former admin's own one too.
 /// `refused`: the sealed tokens whose renewal Linear refused, which revoke
-/// it only while they are still the installation's: another renewal may
-/// have kept new ones meanwhile, or an admin installed the app again.
+/// it only while they are still the installation's: an admin may have
+/// installed the app again meanwhile. Linear answers a renewal it already
+/// answered the same for half an hour, so two renewals of the same tokens
+/// don't refuse each other. A revocation stays until an admin connects
+/// the app again: a renewal keeps new tokens only over the ones it renewed.
 pub async fn mark_revoked(
     db: &D1Database,
     organization: &str,
@@ -306,7 +309,7 @@ pub async fn mark_revoked(
             q(
                 db,
                 "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ?1 \
-                 WHERE organization_id = ?2 AND (?3 IS NULL OR secret_enc = ?3)",
+                 WHERE organization_id = ?2 AND status = 'active' AND (?3 IS NULL OR secret_enc = ?3)",
                 &[n(now), s(organization), os(refused)],
             )?,
             q(
@@ -457,33 +460,22 @@ async fn renew(
         access_token: tokens.access_token.clone(),
         refresh_token: tokens.refresh_token.clone().or(secret.refresh_token),
     };
-    crate::db::batch(
+    q(
         db,
-        vec![
-            // The connections such a renewal revoked come back with it: those
-            // revoked when the installation was (`mark_revoked`).
-            q(
-                db,
-                "UPDATE workspace_linear SET revoked_at = NULL WHERE organization_id = ?1 \
-                 AND revoked_at = (SELECT updated_at FROM linear_installations \
-                 WHERE organization_id = ?1 AND status = 'revoked')",
-                &[s(&row.organization_id)],
-            )?,
-            q(
-                db,
-                // Active again, in case another renewal of the same token gave
-                // up meanwhile: this one won.
-                "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, status = 'active', updated_at = ? \
-                 WHERE organization_id = ?",
-                &[
-                    s(&keys.seal_json(&aad(&row.organization_id), &new)?),
-                    on(tokens.expires_at(now)),
-                    n(now),
-                    s(&row.organization_id),
-                ],
-            )?,
+        // Only over the tokens it renewed: once the installation was revoked
+        // meanwhile (uninstalled, or its renewal refused), it stays so, with
+        // its connections, until an admin connects it again (`mark_revoked`).
+        "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, updated_at = ? \
+         WHERE organization_id = ? AND secret_enc = ?",
+        &[
+            s(&keys.seal_json(&aad(&row.organization_id), &new)?),
+            on(tokens.expires_at(now)),
+            n(now),
+            s(&row.organization_id),
+            s(&row.secret_enc),
         ],
-    )
+    )?
+    .run()
     .await?;
     Ok(new)
 }
