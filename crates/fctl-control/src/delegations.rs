@@ -1314,7 +1314,7 @@ pub async fn linked(
 /// fctl's app was uninstalled from a Linear workspace, or its access
 /// revoked there.
 pub async fn revoked(db: &D1Database, organization: &str, now: i64) -> AppResult<()> {
-    linear::mark_revoked(db, organization, now).await
+    linear::mark_revoked(db, organization, now, None).await
 }
 
 async fn audit(

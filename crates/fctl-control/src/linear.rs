@@ -291,19 +291,28 @@ pub async fn store(
 /// installed from (`workspace_linear.revoked_at`), so that the Linear
 /// workspace's admins can end what they let fctl workspaces reach, a
 /// former admin's own one too.
-pub async fn mark_revoked(db: &D1Database, organization: &str, now: i64) -> AppResult<()> {
+/// `refused`: the sealed tokens whose renewal Linear refused, which revoke
+/// it only while they are still the installation's: another renewal may
+/// have kept new ones meanwhile, or an admin installed the app again.
+pub async fn mark_revoked(
+    db: &D1Database,
+    organization: &str,
+    now: i64,
+    refused: Option<&str>,
+) -> AppResult<()> {
     crate::db::batch(
         db,
         vec![
             q(
                 db,
-                "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ? \
-                 WHERE organization_id = ?",
-                &[n(now), s(organization)],
+                "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ?1 \
+                 WHERE organization_id = ?2 AND (?3 IS NULL OR secret_enc = ?3)",
+                &[n(now), s(organization), os(refused)],
             )?,
             q(
                 db,
-                "UPDATE workspace_linear SET revoked_at = ? WHERE organization_id = ? AND revoked_at IS NULL",
+                "UPDATE workspace_linear SET revoked_at = ?1 WHERE organization_id = ?2 AND revoked_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM linear_installations i WHERE i.organization_id = ?2 AND i.status = 'revoked')",
                 &[n(now), s(organization)],
             )?,
         ],
@@ -423,7 +432,7 @@ async fn renew(
             "Linear refused to renew the token of {}: {v}",
             row.organization_id
         );
-        mark_revoked(db, &row.organization_id, now).await?;
+        mark_revoked(db, &row.organization_id, now, Some(&row.secret_enc)).await?;
         return Err(not_configured(&format!(
             "Linear no longer takes fctl's access to {}: an admin of the fctl workspace connects it again",
             row.name

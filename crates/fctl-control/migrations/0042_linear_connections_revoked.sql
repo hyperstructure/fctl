@@ -7,3 +7,9 @@
 -- which their Linear tab shows until their admins connect it again or
 -- disconnect it.
 ALTER TABLE workspace_linear ADD COLUMN revoked_at INTEGER;
+
+-- Those of installations Linear revoked before this: their connections end
+-- too, rather than come back when someone installs the app again.
+UPDATE workspace_linear SET revoked_at = (SELECT i.updated_at FROM linear_installations i
+  WHERE i.organization_id = workspace_linear.organization_id)
+WHERE organization_id IN (SELECT organization_id FROM linear_installations WHERE status = 'revoked');
