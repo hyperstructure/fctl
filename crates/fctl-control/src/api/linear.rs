@@ -193,7 +193,7 @@ pub async fn teams(ctx: &Ctx, id: &str, organization: &str) -> AppResult<Respons
     }
     let connected: Option<Count> = q(
         &ctx.db,
-        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ?",
+        "SELECT COUNT(*) AS n FROM workspace_linear WHERE workspace_id = ? AND organization_id = ? AND revoked_at IS NULL",
         &[s(a.id()), s(organization)],
     )?
     .first()
@@ -529,7 +529,7 @@ async fn install(
     q(
         &ctx.db,
         "INSERT INTO workspace_linear (workspace_id, organization_id, connected_by, linear_user, created_at) VALUES (?, ?, ?, ?, ?) \
-         ON CONFLICT (workspace_id, organization_id) DO UPDATE SET connected_by = excluded.connected_by",
+         ON CONFLICT (workspace_id, organization_id) DO UPDATE SET connected_by = excluded.connected_by, revoked_at = NULL",
         &[
             s(a.id()),
             s(&viewer.organization),

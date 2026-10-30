@@ -285,17 +285,42 @@ pub async fn store(
 
 /// Marks fctl's app in a Linear workspace revoked, and forgets its tokens,
 /// which no longer work: uninstalled there, or its token no longer renews.
-/// Its fctl workspaces' admins connect it again.
-pub async fn mark_revoked(db: &D1Database, organization: &str, now: i64) -> AppResult<()> {
-    q(
+/// The fctl workspaces connected to it stop working there, revoked, until
+/// their admins connect it again: installing the app again, which takes an
+/// admin of the Linear workspace, connects only the fctl workspace it is
+/// installed from (`workspace_linear.revoked_at`), so that the Linear
+/// workspace's admins can end what they let fctl workspaces reach, a
+/// former admin's own one too.
+/// `refused`: the sealed tokens whose renewal Linear refused, which revoke
+/// it only while they are still the installation's: an admin may have
+/// installed the app again meanwhile. Linear answers a renewal it already
+/// answered the same for half an hour, so two renewals of the same tokens
+/// don't refuse each other. A revocation stays until an admin connects
+/// the app again: a renewal keeps new tokens only over the ones it renewed.
+pub async fn mark_revoked(
+    db: &D1Database,
+    organization: &str,
+    now: i64,
+    refused: Option<&str>,
+) -> AppResult<()> {
+    crate::db::batch(
         db,
-        "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ? \
-         WHERE organization_id = ?",
-        &[n(now), s(organization)],
-    )?
-    .run()
-    .await?;
-    Ok(())
+        vec![
+            q(
+                db,
+                "UPDATE linear_installations SET status = 'revoked', secret_enc = '', expires_at = NULL, updated_at = ?1 \
+                 WHERE organization_id = ?2 AND status = 'active' AND (?3 IS NULL OR secret_enc = ?3)",
+                &[n(now), s(organization), os(refused)],
+            )?,
+            q(
+                db,
+                "UPDATE workspace_linear SET revoked_at = ?1 WHERE organization_id = ?2 AND revoked_at IS NULL \
+                 AND EXISTS (SELECT 1 FROM linear_installations i WHERE i.organization_id = ?2 AND i.status = 'revoked')",
+                &[n(now), s(organization)],
+            )?,
+        ],
+    )
+    .await
 }
 
 /// Removes fctl's app from a Linear workspace no fctl workspace works in
@@ -410,7 +435,7 @@ async fn renew(
             "Linear refused to renew the token of {}: {v}",
             row.organization_id
         );
-        mark_revoked(db, &row.organization_id, now).await?;
+        mark_revoked(db, &row.organization_id, now, Some(&row.secret_enc)).await?;
         return Err(not_configured(&format!(
             "Linear no longer takes fctl's access to {}: an admin of the fctl workspace connects it again",
             row.name
@@ -437,15 +462,17 @@ async fn renew(
     };
     q(
         db,
-        // Active again, in case another renewal of the same token gave up
-        // meanwhile: this one won.
-        "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, status = 'active', updated_at = ? \
-         WHERE organization_id = ?",
+        // Only over the tokens it renewed: once the installation was revoked
+        // meanwhile (uninstalled, or its renewal refused), it stays so, with
+        // its connections, until an admin connects it again (`mark_revoked`).
+        "UPDATE linear_installations SET secret_enc = ?, expires_at = ?, updated_at = ? \
+         WHERE organization_id = ? AND secret_enc = ?",
         &[
             s(&keys.seal_json(&aad(&row.organization_id), &new)?),
             on(tokens.expires_at(now)),
             n(now),
             s(&row.organization_id),
+            s(&row.secret_enc),
         ],
     )?
     .run()

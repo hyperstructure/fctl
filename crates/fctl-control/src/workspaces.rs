@@ -667,16 +667,18 @@ pub fn scope(connections: &[ConnectionRow], owner: &str) -> Option<Scope> {
 }
 
 /// The installation of the GitHub App that serves a workspace's connection
-/// to `account`: the one on that login as GitHub says now (the app may have
-/// been installed again since), while the login still belongs to the
-/// account the workspace connected, by id (`fctl_domain::github::binding`).
-/// A connection from before ids were kept takes the account of the
-/// installation it recorded, when GitHub still has it, else the one that
-/// has the login now. The installation is remembered with the workspace's
-/// connection and the others bound to that account; never with another
-/// workspace's connection from before ids were kept, whose recorded
-/// installation is what tells it which account it connected. A workspace
-/// without an active connection to `account` gets none.
+/// to `account`: the one on that login as GitHub says now, while the login
+/// still belongs to the account the workspace connected, by id
+/// (`fctl_domain::github::binding`), and that installation is the one the
+/// workspace connected through. Uninstalling the app from an account ends
+/// the connections made through it: installing it again brings none back
+/// (`installed_again`), so that an account's admins can end what they let
+/// workspaces reach, for a former admin's own workspace too, and the
+/// workspace's admins connect it again, with a GitHub sign-in that checks
+/// what they may connect now. A connection from before installations were
+/// recorded keeps the one it finds the first time, and one from before ids
+/// were kept the account it finds then. A workspace without an active
+/// connection to `account` gets none.
 pub async fn installation(
     db: &D1Database,
     gh: &crate::github::Github<'_>,
@@ -694,17 +696,26 @@ pub async fn installation(
         .installation_id
         .and_then(|id| u64::try_from(id).ok());
     let stored = connection.account_id.and_then(|id| u64::try_from(id).ok());
-    let mut connected = stored;
-    if stored.is_none()
-        && let Some(recorded) = known.filter(|k| *k != found.id)
-        && let Some(info) = gh.installation_by_id(recorded).await?
-    {
-        connected = info.account_id;
+    if let Some(recorded) = known.filter(|k| *k != found.id) {
+        // Where the installation it recorded is still there, the login is
+        // another account's now; else the app was installed again.
+        let connected = match stored {
+            Some(id) => Some(id),
+            None => gh
+                .installation_by_id(recorded)
+                .await?
+                .and_then(|i| i.account_id),
+        };
+        if fctl_domain::github::binding(connected, found.account_id) == Binding::Other {
+            return Err(not_connected(account));
+        }
+        return Err(installed_again(account));
     }
-    if fctl_domain::github::binding(connected, found.account_id) == Binding::Other {
+    if fctl_domain::github::binding(stored, found.account_id) == Binding::Other {
         return Err(not_connected(account));
     }
-    // A connection from before ids were kept keeps the account from now on.
+    // A connection from before ids were kept keeps the account from now on,
+    // and one from before installations were recorded the installation.
     if stored.is_none()
         && let Some(id) = found.account_id
     {
@@ -716,17 +727,11 @@ pub async fn installation(
         .run()
         .await?;
     }
-    if known != Some(found.id) {
+    if known.is_none() {
         q(
             db,
-            "UPDATE workspace_github SET installation_id = ?1 \
-             WHERE (workspace_id = ?2 AND account = ?3) OR (?4 IS NOT NULL AND account_id = ?4)",
-            &[
-                n(found.id as i64),
-                s(&connection.workspace_id),
-                s(&connection.account),
-                on(found.account_id.map(|id| id as i64)),
-            ],
+            "UPDATE workspace_github SET installation_id = ? WHERE workspace_id = ? AND account = ? AND installation_id IS NULL",
+            &[n(found.id as i64), s(&connection.workspace_id), s(&connection.account)],
         )?
         .run()
         .await?;
@@ -740,6 +745,18 @@ fn not_used(account: &str) -> AppError {
         ErrorCode::Forbidden,
         format!(
             "This workspace doesn't use the GitHub account {account}. Its admins connect it under the workspace's GitHub tab."
+        ),
+    ))
+}
+
+/// The error for a connection made through an installation of the GitHub
+/// App that the account no longer has: it was uninstalled there, and maybe
+/// installed again since ([`installation`]).
+pub fn installed_again(account: &str) -> AppError {
+    AppError(ApiError::new(
+        ErrorCode::Forbidden,
+        format!(
+            "fctl's GitHub App was uninstalled from {account} after this workspace connected it, which ended the connection. The workspace's admins connect it again under its GitHub tab."
         ),
     ))
 }

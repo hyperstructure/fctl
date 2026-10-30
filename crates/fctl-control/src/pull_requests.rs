@@ -84,13 +84,15 @@ pub(crate) fn key(repo: &RepoRef) -> String {
 ///
 /// With `answered` (parameters, `?N`): GitHub's id of the account that
 /// answered and of the installation it answered through, only where the
-/// connection is to that account, or, from before ids were kept, recorded
-/// that installation, since a login can change hands.
+/// connection was made through that installation, or, from before
+/// installations were recorded, is to that account, since a login can
+/// change hands, and a connection made through an installation since
+/// uninstalled has ended (`crate::workspaces::installation`).
 pub(crate) fn in_reach(answered: Option<(&str, &str)>) -> String {
     let account = answered
         .map(|(account, installation)| {
             format!(
-                " AND (rg.account_id = {account} OR (rg.account_id IS NULL AND rg.installation_id = {installation}))"
+                " AND (rg.installation_id = {installation} OR (rg.installation_id IS NULL AND rg.account_id = {account}))"
             )
         })
         .unwrap_or_default();
