@@ -135,3 +135,27 @@ describe("images in text from elsewhere", () => {
     }
   });
 });
+
+describe("tables", () => {
+  const table = [
+    "| File | Link |",
+    "| --- | --- |",
+    "| `crates/fctl/src/main.rs` | https://github.com/hyperstructure/fctl/pull/1 |",
+  ].join("\n");
+
+  it("break paths and URLs in their cells after a slash, but within //", () => {
+    const [code, link] = [...render(table).querySelectorAll("td")];
+    expect(code?.innerHTML).toBe("<code>crates/<wbr>fctl/<wbr>src/<wbr>main.rs</code>");
+    expect(link?.querySelectorAll("wbr")).toHaveLength(5);
+    expect(link?.innerHTML).toContain("https://<wbr>github.com/<wbr>");
+    expect(link?.textContent).toBe("https://github.com/hyperstructure/fctl/pull/1");
+    expect(link?.querySelector("a")?.getAttribute("href")).toBe(
+      "https://github.com/hyperstructure/fctl/pull/1",
+    );
+  });
+
+  it("leave text outside them as it is", () => {
+    const c = render("See `crates/fctl/src/main.rs` and docs/README.md.");
+    expect(c.querySelector("wbr")).toBeNull();
+  });
+});

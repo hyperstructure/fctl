@@ -85,20 +85,32 @@ function Image({ src, alt, linked }: { src: string; alt: string; linked: boolean
   return linked ? <Picture src={src} alt={alt} /> : <ZoomImage src={src} alt={alt} />;
 }
 
-/** `linked`: inside a link, which a click follows. */
-function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNode[] {
+/**
+ * `s` with a place to break the line after each slash (but within `//`), where a path or URL in a
+ * table's cell wraps: the cell keeps its words whole (app.css), and a path has no other place to
+ * break but its hyphens.
+ */
+function slashes(s: string, key: string, cell: boolean): ReactNode {
+  if (!cell) return s;
+  const parts = s.split(/(?<=\/)(?!\/)/).filter(Boolean);
+  if (parts.length < 2) return s;
+  return parts.flatMap((p, j) => (j ? [<wbr key={`${key}w${j}`} />, p] : [p]));
+}
+
+/** `linked`: inside a link, which a click follows. `cell`: in a table's cell. */
+function inline(tokens: Token[] | undefined, key = "i", linked = false, cell = false): ReactNode[] {
   if (!tokens) return [];
   return tokens.map((t, i) => {
     const k = `${key}${i}`;
     switch (t.type) {
       case "strong":
-        return <strong key={k}>{inline((t as Tokens.Strong).tokens, k, linked)}</strong>;
+        return <strong key={k}>{inline((t as Tokens.Strong).tokens, k, linked, cell)}</strong>;
       case "em":
-        return <em key={k}>{inline((t as Tokens.Em).tokens, k, linked)}</em>;
+        return <em key={k}>{inline((t as Tokens.Em).tokens, k, linked, cell)}</em>;
       case "del":
-        return <del key={k}>{inline((t as Tokens.Del).tokens, k, linked)}</del>;
+        return <del key={k}>{inline((t as Tokens.Del).tokens, k, linked, cell)}</del>;
       case "codespan":
-        return <code key={k}>{(t as Tokens.Codespan).text}</code>;
+        return <code key={k}>{slashes((t as Tokens.Codespan).text, k, cell)}</code>;
       case "br":
         return <br key={k} />;
       case "link": {
@@ -111,10 +123,10 @@ function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNo
             target={to.kind === "web" ? "_blank" : undefined}
             rel="noreferrer noopener"
           >
-            {inline(l.tokens, k, true)}
+            {inline(l.tokens, k, true, cell)}
           </a>
         ) : (
-          <span key={k}>{l.text}</span>
+          <span key={k}>{slashes(l.text, k, cell)}</span>
         );
       }
       case "image": {
@@ -125,9 +137,9 @@ function inline(tokens: Token[] | undefined, key = "i", linked = false): ReactNo
       case "text": {
         const tx = t as Tokens.Text;
         return tx.tokens ? (
-          <span key={k}>{inline(tx.tokens, k, linked)}</span>
+          <span key={k}>{inline(tx.tokens, k, linked, cell)}</span>
         ) : (
-          <span key={k}>{decode(tx.text)}</span>
+          <span key={k}>{slashes(decode(tx.text), k, cell)}</span>
         );
       }
       case "escape":
@@ -246,12 +258,13 @@ function block(t: Token, i: number): ReactNode {
     case "table": {
       const tb = t as Tokens.Table;
       return (
-        <div key={k} className="overflow-x-auto">
+        // As wide as where it is, which a table as wide as its longest word doesn't widen: it scrolls.
+        <div key={k} className="overflow-x-auto [contain:inline-size]">
           <table>
             <thead>
               <tr>
                 {tb.header.map((h, j) => (
-                  <th key={j}>{inline(h.tokens, `${k}h${j}`)}</th>
+                  <th key={j}>{inline(h.tokens, `${k}h${j}`, false, true)}</th>
                 ))}
               </tr>
             </thead>
@@ -259,7 +272,7 @@ function block(t: Token, i: number): ReactNode {
               {tb.rows.map((r, j) => (
                 <tr key={j}>
                   {r.map((c, n) => (
-                    <td key={n}>{inline(c.tokens, `${k}r${j}${n}`)}</td>
+                    <td key={n}>{inline(c.tokens, `${k}r${j}${n}`, false, true)}</td>
                   ))}
                 </tr>
               ))}

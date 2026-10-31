@@ -110,11 +110,17 @@
   border-collapse: collapse;
   width: 100%;
 }
+/* A column is as narrow as its longest word, not one letter: overflow-wrap:
+   anywhere would let a table squeeze a column of short words to a letter's
+   width and break each of them. Paths and URLs break after their slashes
+   (markdown.tsx); a word too long for the table still widens it, and the
+   table scrolls. */
 .prose-fctl th,
 .prose-fctl td {
   border-bottom: 1px solid var(--c-line);
   padding: 0.4em 0.6em;
   text-align: left;
+  overflow-wrap: break-word;
 }
 .prose-fctl hr {
   border: 0;
