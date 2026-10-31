@@ -108,11 +108,12 @@ export function NewWorkspace() {
           if (name.trim()) create.mutate();
         }}
       >
-        <div className="flex items-center gap-5">
+        {/* Level with the input rather than centred on the field, which grows when its hint wraps. */}
+        <div className="flex items-start gap-5">
           <WorkspaceAvatar
             workspace={{ name: name.trim() || "New workspace", color: shown }}
             size={72}
-            className="transition-colors duration-300"
+            className="mt-2.75 transition-colors duration-300"
           />
           <Field
             label="Name"
