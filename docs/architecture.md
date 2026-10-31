@@ -1442,12 +1442,17 @@ posts what it found on GitHub
    before the review app was installed are marked and summed up too; puts atop each earlier review's summary how the issues
    it found stand (`restated`: fixed, or resolved by someone, going by
    the threads its session started, which fctl notes out of sight in
-   every comment it posts), and hides the summary as outdated once all of
-   them are; and, once `reviews` keeps how it went, completes the check:
+   every comment it posts), marks fixed the findings it names in the
+   summary's own text, on lines the diff didn't show, which have no
+   threads (their numbers go in the summary's note), and hides the
+   summary as outdated once all of them are addressed; and, once
+   `reviews` keeps how it went, completes the check:
    success with nothing to look at, neutral with findings or earlier ones
    still open, since acting on them is up to the pull request's people. It posts once: a second submission
    gets what the first posted. `fctl review threads` lists fctl's earlier
-   findings, with what people answered. fctl-agent reminds an agent that
+   findings, with what people answered: those on their lines by their
+   threads (`PRRT_…`), and those in a summary's text by the summary and
+   their number there (`IC_…#1`). fctl-agent reminds an agent that
    ends its turn without posting, once.
 7. **Back to the agent that opened it.** Where one of the instance's own
    agents opened the pull request (its author is the GitHub App,
