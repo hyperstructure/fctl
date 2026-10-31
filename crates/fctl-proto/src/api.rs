@@ -2824,7 +2824,10 @@ pub struct ReviewFinding {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ResolvedFinding {
-    /// Its review thread (`PRRT_…`), as `fctl review threads` lists it.
+    /// Its id, as `fctl review threads` lists it: its review thread's
+    /// (`PRRT_…`), or for a finding an earlier review's summary holds, on
+    /// lines the diff didn't show, the summary's and its number there
+    /// (`IC_…#1`).
     pub thread: String,
     /// What changed, in a sentence.
     pub note: String,
@@ -2905,12 +2908,16 @@ pub struct SummarizedPullRequest {
 }
 
 /// One of the review threads fctl started on a pull request: an earlier
-/// review's finding, with what people answered.
+/// review's finding, with what people answered. Or a finding an earlier
+/// review's summary holds, on lines the diff didn't show, which has no
+/// thread: resolved once a later review found it fixed, or the summary is
+/// hidden.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct FindingThread {
-    /// GitHub's id (`PRRT_…`).
+    /// GitHub's id (`PRRT_…`); for a finding in a summary, the summary's
+    /// and its number there (`IC_…#1`).
     pub id: String,
     pub path: Option<String>,
     pub line: Option<u32>,
@@ -2950,7 +2957,8 @@ pub struct PostedReview {
     /// Findings whose lines the pull request doesn't change, posted in its
     /// summary instead.
     pub in_text: u32,
-    /// The earlier findings marked fixed, by thread.
+    /// The earlier findings marked fixed, by their ids, as `fctl review
+    /// threads` lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub resolved: Vec<String>,

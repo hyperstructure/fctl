@@ -21,7 +21,8 @@ comments: number,
  */
 in_text: number, 
 /**
- * The earlier findings marked fixed, by thread.
+ * The earlier findings marked fixed, by their ids, as `fctl review
+ * threads` lists them.
  */
 resolved?: Array<string>, 
 /**

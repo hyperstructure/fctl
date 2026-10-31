@@ -45,6 +45,12 @@ const NOTE: &str = "<!-- fctl review: {";
 /// before the summary as it was posted.
 const STATUS: &str = "<!-- fctl review: status -->";
 
+/// Leads the list of a summary's findings on lines the diff doesn't show.
+const IN_TEXT: &str = "\nOn lines the diff doesn't show:\n\n";
+
+/// Follows a summary's findings, before the links at its end.
+const REVIEWED_BY: &str = "\n<sub>Reviewed by ";
+
 /// The most findings one review posts.
 pub const MAX_FINDINGS: usize = 25;
 
@@ -828,8 +834,8 @@ const SPLIT_AND_HURRY: &str = "- For a large pull request, hand separate parts (
 const EARLIER_REVIEWS: &str = r#"
 ## Earlier reviews
 
-- `fctl review threads` lists the findings fctl's earlier reviews of this pull request posted: their ids, whether they are resolved, and what people answered.
-- An earlier finding that the new commits fixed, or that no longer applies because the code it was about changed or went, goes in your submission's `resolved`, with a short note on what changed: fctl marks it fixed in this commit and resolves its thread. Leave alone resolved threads and the threads people started.
+- `fctl review threads` lists the findings fctl's earlier reviews of this pull request posted: their ids, whether they are resolved, and what people answered. Those on lines the diff didn't show are in an earlier review's summary rather than in threads of their own, with ids like `IC_kwDOABCD1234#1`.
+- An earlier finding that the new commits fixed, or that no longer applies because the code it was about changed or went, goes in your submission's `resolved`, by its id, with a short note on what changed: fctl marks it fixed in this commit and resolves its thread, or marks it fixed in the summary that holds it. Leave alone resolved findings and the threads people started.
 - Don't post a finding again that is still open. Don't raise one again that someone answered (it's intended, it won't be fixed) unless the new commits make it worse.
 "#;
 
@@ -986,8 +992,16 @@ pub fn check(
     let mut threads_seen = BTreeSet::new();
     let mut fixed = Vec::with_capacity(resolved.len());
     for (i, r) in resolved.iter().enumerate() {
-        let thread = threads::check_id(&r.thread)
-            .map_err(|e| ApiError::validation(&format!("resolved[{i}].thread"), e.message))?;
+        let thread = match in_text_of(r.thread.trim()) {
+            Some((summary, n)) => Ok(in_text_id(summary, n)),
+            None => threads::check_id(&r.thread),
+        }
+        .map_err(|_| {
+            ApiError::validation(
+                &format!("resolved[{i}].thread"),
+                "Name an earlier finding by its id, as `fctl review threads` lists it: PRRT_kwDOABCD1234 for one on its lines, IC_kwDOABCD1234#1 for one in an earlier review's summary",
+            )
+        })?;
         if !threads_seen.insert(thread.clone()) {
             continue;
         }
@@ -1183,17 +1197,25 @@ pub struct Links<'a> {
 /// What fctl notes out of sight in what it posts for a review, before its
 /// [`MARKER`]: the review session that posted it, by which later reviews
 /// tell which findings a summary sums up, and in a summary, how many
-/// issues the review found and how many of them later reviews last found
-/// fixed or resolved.
+/// issues the review found, how many of them it holds in its own text, and
+/// how many of them later reviews last found fixed or resolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found: Option<u32>,
+    /// Those on lines the diff doesn't show, in the summary's own text;
+    /// absent in summaries from before fctl noted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_text: Option<u32>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fixed: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub resolved: u32,
+    /// Those in its text that later reviews found fixed, by their numbers
+    /// there, from 1: they have no threads to tell.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixed_in_text: Vec<u32>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1313,8 +1335,9 @@ pub fn summary_text(
         .filter(|(_, p)| **p == Placed::Text)
         .map(|(f, _)| f)
         .collect();
+    let in_text = u32::try_from(elsewhere.len()).unwrap_or(u32::MAX);
     if !elsewhere.is_empty() {
-        s.push_str("\nOn lines the diff doesn't show:\n\n");
+        s.push_str(IN_TEXT);
         for f in elsewhere {
             let lines = match f.start_line {
                 Some(start) => format!("lines {start}–{}", f.line),
@@ -1332,10 +1355,11 @@ pub fn summary_text(
     }
     let note = Note {
         found: Some(u32::try_from(findings.len()).unwrap_or(u32::MAX)),
+        in_text: Some(in_text),
         ..Note::of_review(links)
     };
     s.push_str(&format!(
-        "\n<sub>Reviewed by [fctl]({}) · [Review agent settings]({})</sub>\n\n{}\n{MARKER}",
+        "{REVIEWED_BY}[fctl]({}) · [Review agent settings]({})</sub>\n\n{}\n{MARKER}",
         links.session_url,
         links.settings_url,
         note.mark()
@@ -2114,7 +2138,7 @@ const THREADS: &str = "reviewThreads(first: 100) { nodes { id isResolved isOutda
 
 /// The newest comments on a pull request, among them fctl's summaries.
 const COMMENTS: &str =
-    "comments(last: 100) { nodes { id body isMinimized author { __typename login } } }";
+    "comments(last: 100) { nodes { id url body isMinimized author { __typename login } } }";
 
 /// Which of the instance's GitHub Apps `apps` wrote a comment, as
 /// [`THREADS`] and [`COMMENTS`] have it: GraphQL names an app's bot by its
@@ -2157,9 +2181,10 @@ pub fn threads_query(repo: &RepoRef, number: u64) -> Value {
     pull_request_query(repo, number, THREADS)
 }
 
-/// What posting a review reads first: the pull request's review threads,
-/// as [`threads_query`] has them, and its newest comments, among them
-/// fctl's summaries of earlier reviews ([`summaries`]).
+/// What posting a review reads first, and `fctl review threads` lists: the
+/// pull request's review threads, as [`threads_query`] has them, and its
+/// newest comments, among them fctl's summaries of earlier reviews
+/// ([`summaries`]), which hold the findings on lines the diff didn't show.
 pub fn posting_query(repo: &RepoRef, number: u64) -> Value {
     pull_request_query(repo, number, &format!("{THREADS} {COMMENTS}"))
 }
@@ -2242,21 +2267,34 @@ pub fn threads(answer: &Value, apps: &[&str]) -> Vec<Thread> {
 }
 
 /// fctl's own threads, as `fctl review threads` lists them to the agent:
-/// without the marks fctl leaves in its comments.
-pub fn finding_threads(all: &[Thread]) -> Vec<FindingThread> {
-    all.iter()
-        .filter(|t| t.ours)
-        .map(|t| FindingThread {
-            id: t.id.clone(),
-            path: t.path.clone(),
-            line: t.line,
-            resolved: t.resolved,
-            outdated: t.outdated,
-            body: unmarked(&t.body),
-            url: t.url.clone(),
-            replies: t.replies.clone(),
+/// without the marks fctl leaves in its comments; then the findings that
+/// earlier reviews' summaries hold in their text, on lines the diff didn't
+/// show, resolved once a later review found them fixed or the summary is
+/// hidden.
+pub fn finding_threads(all: &[Thread], summaries: &[Summary]) -> Vec<FindingThread> {
+    let threads = all.iter().filter(|t| t.ours).map(|t| FindingThread {
+        id: t.id.clone(),
+        path: t.path.clone(),
+        line: t.line,
+        resolved: t.resolved,
+        outdated: t.outdated,
+        body: unmarked(&t.body),
+        url: t.url.clone(),
+        replies: t.replies.clone(),
+    });
+    let in_text = summaries.iter().flat_map(|s| {
+        s.in_text().into_iter().map(|f| FindingThread {
+            id: in_text_id(&s.id, f.n),
+            path: f.path,
+            line: f.line,
+            resolved: f.fixed || s.minimized,
+            outdated: false,
+            body: f.text,
+            url: s.url.clone(),
+            replies: Vec::new(),
         })
-        .collect()
+    });
+    threads.chain(in_text).collect()
 }
 
 /// The GraphQL mutation that changes a review comment's text.
@@ -2281,6 +2319,163 @@ pub struct Summary {
     /// addressed, or because someone hid it.
     pub minimized: bool,
     pub note: Note,
+    /// Its link.
+    pub url: Option<String>,
+}
+
+/// A finding that an earlier review's summary holds in its own text, on
+/// lines the diff didn't show: it has no thread, so `fctl review threads`
+/// lists it by the summary's id and its number there ([`in_text_id`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextFinding {
+    /// Its number in the summary's list, from 1.
+    pub n: u32,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    /// The finding, as the summary shows it.
+    pub text: String,
+    /// A later review found it fixed.
+    pub fixed: bool,
+}
+
+impl Summary {
+    /// The findings it holds in its own text.
+    pub fn in_text(&self) -> Vec<TextFinding> {
+        let most = self.note.found.unwrap_or(0);
+        let most = self.note.in_text.map_or(most, |n| n.min(most));
+        let Some((_, items)) = listed(&self.body) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .zip(1..=most)
+            .map(|(lines, n)| {
+                let (path, line) = place_of(lines[0]);
+                let text = lines
+                    .iter()
+                    .map(|l| l.strip_prefix("- ").or(l.strip_prefix("  ")).unwrap_or(l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                TextFinding {
+                    n,
+                    path,
+                    line,
+                    text,
+                    fixed: self.note.fixed_in_text.contains(&n),
+                }
+            })
+            .collect()
+    }
+}
+
+/// The id by which `fctl review threads` lists finding `n` of summary
+/// `summary` ([`TextFinding`]): `IC_kwDOABCD1234#1`.
+pub fn in_text_id(summary: &str, n: u32) -> String {
+    format!("{summary}#{n}")
+}
+
+/// The summary and the number that an id from [`in_text_id`] names; `None`
+/// for any other id, a thread's among them.
+pub fn in_text_of(id: &str) -> Option<(&str, u32)> {
+    let (summary, n) = id.split_once('#')?;
+    let n = n
+        .parse()
+        .ok()
+        .filter(|n| (1..=MAX_FINDINGS as u32).contains(n))?;
+    let ok = !summary.is_empty()
+        && summary.len() <= 100
+        && summary
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-=+/".contains(&b));
+    ok.then_some((summary, n))
+}
+
+/// A summary's findings on lines the diff doesn't show, as [`summary_text`]
+/// lists them before the links at its end: where the list starts in
+/// `body`, and the lines of each item. `None` where the text before those
+/// links isn't such a list.
+fn listed(body: &str) -> Option<(usize, Vec<Vec<&str>>)> {
+    let end = body.rfind(REVIEWED_BY)?;
+    let start = body[..end].rfind(IN_TEXT)? + IN_TEXT.len();
+    let mut items: Vec<Vec<&str>> = Vec::new();
+    for line in body[start..end].lines() {
+        if line.starts_with("- ") {
+            items.push(vec![line]);
+        } else if line.starts_with("  ") {
+            items.last_mut()?.push(line);
+        } else {
+            return None;
+        }
+    }
+    Some((start, items))
+}
+
+/// Where a finding in a summary's text is, by its item's first line as
+/// [`summary_text`] writes it: `` - **Title** · Medium severity · `a.rs` lines 3–5: … ``.
+fn place_of(item: &str) -> (Option<String>, Option<u32>) {
+    let Some(at) = item.find(" severity · `") else {
+        return (None, None);
+    };
+    let rest = &item[at + " severity · `".len()..];
+    let Some((path, rest)) = rest.split_once("` line") else {
+        return (None, None);
+    };
+    let lines = rest.trim_start_matches('s').trim_start();
+    let lines = lines.split([':', ' ']).next().unwrap_or_default();
+    let line = lines.rsplit('–').next().and_then(|l| l.parse().ok());
+    (Some(path.to_owned()), line)
+}
+
+/// `posted`, a summary's text, with its findings `fixing` (by their
+/// numbers, with what fixed each) marked fixed in the commit `links` has:
+/// each one's title struck through, and what fixed it below. Those marked
+/// already stay as they are.
+fn mark_in_text(posted: &str, fixing: &[(u32, &str)], links: &Links<'_>) -> String {
+    let Some((start, items)) = listed(posted) else {
+        return posted.to_owned();
+    };
+    let mut list = String::new();
+    for (lines, n) in items.iter().zip(1u32..) {
+        let first = lines[0];
+        let note = fixing
+            .iter()
+            .find(|(i, _)| *i == n)
+            .map(|(_, note)| *note)
+            .filter(|_| !first.starts_with("- ~~"));
+        match note {
+            Some(note) => {
+                // Its title, struck through.
+                let title_end = first
+                    .strip_prefix("- **")
+                    .and_then(|t| t.find("** · "))
+                    .map(|i| "- **".len() + i + "**".len());
+                match title_end {
+                    Some(i) => list.push_str(&format!("- ~~{}~~{}", &first[2..i], &first[i..])),
+                    None => list.push_str(first),
+                }
+                list.push('\n');
+                for line in &lines[1..] {
+                    list.push_str(line);
+                    list.push('\n');
+                }
+                list.push_str(&format!(
+                    "  **Fixed in [`{}`]({}).** {}\n",
+                    short(links.sha),
+                    links.commit_url,
+                    note.split_whitespace().collect::<Vec<_>>().join(" ")
+                ));
+            }
+            None => {
+                for line in lines {
+                    list.push_str(line);
+                    list.push('\n');
+                }
+            }
+        }
+    }
+    // Its items' lines, each with its newline, end where the links begin.
+    let end = posted.rfind(REVIEWED_BY).unwrap_or(posted.len());
+    format!("{}{list}{}", &posted[..start], &posted[end..])
 }
 
 /// fctl's summaries in GitHub's answer to [`posting_query`]: the comments
@@ -2309,17 +2504,19 @@ pub fn summaries(answer: &Value, apps: &[&str]) -> Vec<Summary> {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 note: Note::of(body).filter(|n| n.found.is_some())?,
+                url: c.get("url").and_then(Value::as_str).map(str::to_owned),
             })
         })
         .collect()
 }
 
-/// How the issues an earlier review found stand, by their threads.
+/// How the issues an earlier review found stand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Standing {
     /// The issues it found.
     pub found: u32,
-    /// Those a later review found fixed.
+    /// Those a later review found fixed, by their threads or in the
+    /// summary's text.
     pub fixed: u32,
     /// Those whose threads someone resolved otherwise.
     pub resolved: u32,
@@ -2327,8 +2524,8 @@ pub struct Standing {
 
 impl Standing {
     /// Whether each of its issues is fixed or resolved. Findings in the
-    /// summary's own text have no thread to tell: a review that put any
-    /// there is never all addressed.
+    /// summary's own text have no thread for someone to resolve: they
+    /// count once a later review found them fixed.
     pub fn addressed(&self) -> bool {
         self.found > 0 && self.fixed + self.resolved >= self.found
     }
@@ -2337,10 +2534,23 @@ impl Standing {
 /// How the issues that `summary` sums up stand: by fctl's threads that the
 /// same review session started, those resolved as fixed (a later review
 /// marked them, or `fixing`, those this one marks fixed) and those
-/// resolved otherwise.
-pub fn standing(summary: &Summary, threads: &[Thread], fixing: &BTreeSet<&str>) -> Standing {
+/// resolved otherwise; and those in its own text that a later review found
+/// fixed, or this one does (`fixing_in_text`, by their numbers).
+pub fn standing(
+    summary: &Summary,
+    threads: &[Thread],
+    fixing: &BTreeSet<&str>,
+    fixing_in_text: &[u32],
+) -> Standing {
     let found = summary.note.found.unwrap_or(0);
-    let (mut fixed, mut resolved) = (0u32, 0u32);
+    let in_text: BTreeSet<u32> = summary
+        .note
+        .fixed_in_text
+        .iter()
+        .chain(fixing_in_text)
+        .copied()
+        .collect();
+    let (mut fixed, mut resolved) = (u32::try_from(in_text.len()).unwrap_or(u32::MAX), 0u32);
     let its = threads
         .iter()
         .filter(|t| t.ours && t.session.as_deref() == Some(summary.note.session.as_str()));
@@ -2362,12 +2572,28 @@ pub fn standing(summary: &Summary, threads: &[Thread], fixing: &BTreeSet<&str>) 
 
 /// An earlier review's summary as a later review leaves it: a line atop it
 /// on how the issues it found stand, as of the commit the later one
-/// reviews, then the summary as it was posted, with its note brought up to
-/// date. `None` when it says so already.
-pub fn restated(summary: &Summary, now: Standing, links: &Links<'_>) -> Option<String> {
-    if (summary.note.fixed, summary.note.resolved) == (now.fixed, now.resolved) {
+/// reviews, then the summary as it was posted, with the findings in its
+/// text that the later one found fixed (`fixing_in_text`, by their numbers,
+/// with what fixed each) marked so, and its note brought up to date.
+/// `None` when it says so already.
+pub fn restated(
+    summary: &Summary,
+    now: Standing,
+    fixing_in_text: &[(u32, &str)],
+    links: &Links<'_>,
+) -> Option<String> {
+    let mut fixed_in_text = summary.note.fixed_in_text.clone();
+    let newly: Vec<(u32, &str)> = fixing_in_text
+        .iter()
+        .filter(|(n, _)| !fixed_in_text.contains(n))
+        .copied()
+        .collect();
+    if newly.is_empty() && (summary.note.fixed, summary.note.resolved) == (now.fixed, now.resolved)
+    {
         return None;
     }
+    fixed_in_text.extend(newly.iter().map(|(n, _)| n));
+    fixed_in_text.sort_unstable();
     // A line atop it, once its note counts what it says: the agent's text
     // below may hold anything.
     let said = summary.note.fixed + summary.note.resolved > 0;
@@ -2378,13 +2604,28 @@ pub fn restated(summary: &Summary, now: Standing, links: &Links<'_>) -> Option<S
     let note = Note {
         fixed: now.fixed,
         resolved: now.resolved,
+        fixed_in_text,
         ..summary.note.clone()
     };
-    let rest = format!("{}\n\n{}\n{MARKER}", unmarked(posted), note.mark());
+    // What the agent wrote stays as it is, fctl's marks in it included:
+    // taking them out could take its findings' text with them, and their
+    // numbers go by the summary as it is.
+    let posted = mark_in_text(without_note(posted), &newly, links);
+    let rest = format!("{posted}\n\n{}\n{MARKER}", note.mark());
     Some(match status(now, links) {
         Some(status) => format!("{status}\n\n---\n\n{STATUS}\n\n{rest}"),
         None => rest,
     })
+}
+
+/// A summary's text without the note and the mark that fctl ends it with.
+fn without_note(body: &str) -> &str {
+    let body = body.trim();
+    let body = body.strip_suffix(MARKER).unwrap_or(body).trim_end();
+    match body.rfind(NOTE) {
+        Some(i) if body.ends_with("-->") => body[..i].trim(),
+        _ => body.trim_start(),
+    }
 }
 
 /// The line atop an earlier review's summary: how the issues it found
@@ -3650,13 +3891,14 @@ mod tests {
         let text = summary_text(Some("Small and tidy."), &findings, &placed, 1, &links());
         assert!(text.starts_with("**fctl reviewed [`3f2a1c9`](https://github.com/acme/web/pull/12/commits/3f2a1c9) and found 2 issues.** The new commits fixed 1 issue an earlier review found.\n\nSmall and tidy.\n"));
         assert!(text.contains("On lines the diff doesn't show:\n\n- **Retries never stop** · Medium severity · `README.md` line 3: `retry` loops for good.\n"));
-        assert!(text.contains("[Review agent settings](https://app.fctl.sh/p/web?tab=reviews)</sub>\n\n<!-- fctl review: {\"session\":\"ses_1\",\"found\":2} -->\n<!-- fctl review -->"));
+        assert!(text.contains("[Review agent settings](https://app.fctl.sh/p/web?tab=reviews)</sub>\n\n<!-- fctl review: {\"session\":\"ses_1\",\"found\":2,\"in_text\":1} -->\n<!-- fctl review -->"));
         assert!(text.ends_with(MARKER));
         assert_eq!(
             Note::of(&text),
             Some(Note {
                 session: "ses_1".into(),
                 found: Some(2),
+                in_text: Some(1),
                 ..Note::default()
             })
         );
@@ -3939,7 +4181,7 @@ mod tests {
         // Without the review app, its threads are another app's.
         assert!(!threads(&answer, &["fctl[bot]"])[3].ours);
         assert!(threads(&answer, &["fctl[bot]"])[0].ours);
-        let ours = finding_threads(&all);
+        let ours = finding_threads(&all, &[]);
         assert_eq!(ours.len(), 2);
         assert_eq!(ours[0].body, "### Old finding\n\nbody");
         assert!(ours[0].outdated);
@@ -3992,6 +4234,7 @@ mod tests {
             body,
             by: "fctl".into(),
             minimized: false,
+            url: None,
         }
     }
 
@@ -4016,7 +4259,7 @@ mod tests {
                 .contains("comments(last: 100)")
         );
         assert!(posting["query"].as_str().unwrap_or_default().ends_with(
-            "comments(last: 100) { nodes { id body isMinimized author { __typename login } } } } } }"
+            "comments(last: 100) { nodes { id url body isMinimized author { __typename login } } } } } }"
         ));
 
         let ours = summary_of(2).body;
@@ -4087,7 +4330,7 @@ mod tests {
             },
         ];
         let fixing = BTreeSet::from(["T4"]);
-        let s = standing(&summary_of(5), &threads, &fixing);
+        let s = standing(&summary_of(5), &threads, &fixing, &[]);
         assert_eq!(
             s,
             Standing {
@@ -4097,17 +4340,20 @@ mod tests {
             }
         );
         assert!(!s.addressed());
-        // Findings in its text have no threads: never all addressed.
+        // Findings in its text have no threads: addressed only once a
+        // later review finds them fixed.
         let s = standing(
             &summary_of(6),
             &threads,
             &BTreeSet::from(["T2", "T4", "T5"]),
+            &[],
         );
         assert_eq!((s.fixed, s.resolved, s.addressed()), (4, 1, false));
         let s = standing(
             &summary_of(5),
             &threads,
             &BTreeSet::from(["T2", "T4", "T5"]),
+            &[],
         );
         assert_eq!((s.fixed, s.resolved, s.addressed()), (4, 1, true));
         // Never more than it found.
@@ -4115,6 +4361,7 @@ mod tests {
             &summary_of(2),
             &threads,
             &BTreeSet::from(["T2", "T4", "T5"]),
+            &[],
         );
         assert_eq!((s.fixed, s.resolved, s.addressed()), (2, 0, true));
     }
@@ -4194,25 +4441,25 @@ mod tests {
             found: 2,
             ..Standing::default()
         };
-        assert_eq!(restated(&summary, none, &later()), None);
+        assert_eq!(restated(&summary, none, &[], &later()), None);
         // One fixed: the line atop it, then the summary as it was.
         let one = Standing {
             found: 2,
             fixed: 1,
             resolved: 0,
         };
-        let first = restated(&summary, one, &later()).unwrap_or_default();
+        let first = restated(&summary, one, &[], &later()).unwrap_or_default();
         let posted = summary
             .body
             .strip_suffix(&format!(
-                "<!-- fctl review: {{\"session\":\"ses_1\",\"found\":2}} -->\n{MARKER}"
+                "<!-- fctl review: {{\"session\":\"ses_1\",\"found\":2,\"in_text\":0}} -->\n{MARKER}"
             ))
             .unwrap_or_default();
         assert!(!posted.is_empty());
         assert_eq!(
             first,
             format!(
-                "{partly} Later commits fixed 1 of the 2 issues this review found.\n\n---\n\n{STATUS}\n\n{posted}<!-- fctl review: {{\"session\":\"ses_1\",\"found\":2,\"fixed\":1}} -->\n{MARKER}"
+                "{partly} Later commits fixed 1 of the 2 issues this review found.\n\n---\n\n{STATUS}\n\n{posted}<!-- fctl review: {{\"session\":\"ses_1\",\"found\":2,\"in_text\":0,\"fixed\":1}} -->\n{MARKER}"
             )
         );
         let first = Summary {
@@ -4222,19 +4469,19 @@ mod tests {
         };
         assert_eq!(first.note.fixed, 1);
         // The same again, as of a later commit: nothing to change.
-        assert_eq!(restated(&first, one, &links()), None);
+        assert_eq!(restated(&first, one, &[], &links()), None);
         // Both: the line says so, once, over the summary as it was.
         let both = Standing {
             found: 2,
             fixed: 2,
             resolved: 0,
         };
-        let second = restated(&first, both, &later()).unwrap_or_default();
+        let second = restated(&first, both, &[], &later()).unwrap_or_default();
         assert!(second.starts_with(&format!("{lead} Later commits fixed the 2 issues this review found.\n\n---\n\n{STATUS}\n\n**fctl reviewed [`3f2a1c9`]")));
         assert_eq!(second.matches(STATUS).count(), 1);
         assert_eq!(second.matches("**fctl reviewed").count(), 1);
         assert!(second.ends_with(&format!(
-            "<!-- fctl review: {{\"session\":\"ses_1\",\"found\":2,\"fixed\":2}} -->\n{MARKER}"
+            "<!-- fctl review: {{\"session\":\"ses_1\",\"found\":2,\"in_text\":0,\"fixed\":2}} -->\n{MARKER}"
         )));
         // Opened again: back as it was posted, with its note.
         let second = Summary {
@@ -4243,7 +4490,7 @@ mod tests {
             ..summary.clone()
         };
         assert_eq!(
-            restated(&second, none, &later()).as_deref(),
+            restated(&second, none, &[], &later()).as_deref(),
             Some(summary.body.as_str())
         );
 
@@ -4263,15 +4510,236 @@ mod tests {
             body,
             by: "fctl".into(),
             minimized: false,
+            url: None,
         };
         let one = Standing {
             found: 1,
             fixed: 0,
             resolved: 1,
         };
-        let text = restated(&steered, one, &later()).unwrap_or_default();
+        let text = restated(&steered, one, &[], &later()).unwrap_or_default();
         assert!(text.contains("**fctl reviewed [`3f2a1c9`]"));
-        assert!(text.contains("Small.\n\n\n\nAnd tidy."));
+        assert!(text.contains(&format!("Small.\n\n{STATUS}\n\nAnd tidy.")));
+        // Nor do they once fctl's line is atop it: the agent's text stays
+        // whole, once.
+        let steered = Summary {
+            note: Note::of(&text).unwrap_or_default(),
+            body: text,
+            ..steered
+        };
+        let none = Standing {
+            found: 1,
+            ..Standing::default()
+        };
+        let text = restated(&steered, none, &[], &later()).unwrap_or_default();
+        assert!(text.starts_with("**fctl reviewed [`3f2a1c9`]"));
+        assert_eq!(text.matches("**fctl reviewed").count(), 1);
+        assert!(text.contains(&format!("Small.\n\n{STATUS}\n\nAnd tidy.")));
+    }
+
+    #[test]
+    fn findings_in_summaries_are_listed_and_marked_fixed() {
+        // Ids name a summary and a finding's number in it.
+        assert_eq!(in_text_id("IC_kwDO1-_x", 2), "IC_kwDO1-_x#2");
+        assert_eq!(in_text_of("IC_kwDO1-_x#2"), Some(("IC_kwDO1-_x", 2)));
+        for bad in [
+            "PRRT_1", "IC_1", "#1", "IC_1#0", "IC_1#26", "IC_1#x", "IC 1#1", "IC_\"#1",
+        ] {
+            assert_eq!(in_text_of(bad), None, "{bad}");
+        }
+        let resolving = |id: &str| {
+            check(
+                None,
+                &[],
+                &[ResolvedFinding {
+                    thread: id.into(),
+                    note: "Fixed.".into(),
+                }],
+            )
+            .map(|s| s.resolved[0].thread.clone())
+        };
+        assert_eq!(resolving(" IC_1#1 ").ok().as_deref(), Some("IC_1#1"));
+        assert!(resolving("IC_1#0").is_err());
+        assert!(resolving("IC_1#1\"}").is_err());
+
+        // A summary with a finding on its lines and two in its text.
+        let mut findings = vec![
+            finding("a.rs", 1),
+            finding("README.md", 3),
+            finding("b.rs", 9),
+        ];
+        findings[2].start_line = Some(7);
+        findings[2].title = "Old config stays".into();
+        let placed = [
+            Placed::Lines {
+                start: None,
+                line: 1,
+                side: Side::Right,
+            },
+            Placed::Text,
+            Placed::Text,
+        ];
+        let body = summary_text(Some("Small."), &findings, &placed, 0, &links());
+        let summary = Summary {
+            id: "IC_1".into(),
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            by: "fctl".into(),
+            minimized: false,
+            url: Some("https://github.com/acme/web/pull/12#issuecomment-1".into()),
+        };
+        assert_eq!(summary.note.in_text, Some(2));
+        let in_text = summary.in_text();
+        assert_eq!(in_text.len(), 2);
+        assert_eq!(
+            (in_text[0].n, in_text[0].path.as_deref(), in_text[0].line),
+            (1, Some("README.md"), Some(3))
+        );
+        assert_eq!(
+            (in_text[1].n, in_text[1].path.as_deref(), in_text[1].line),
+            (2, Some("b.rs"), Some(9))
+        );
+        assert_eq!(
+            in_text[0].text,
+            "**Retries never stop** · Medium severity · `README.md` line 3: `retry` loops for good."
+        );
+        let threads = [thread("T1", "ses_1", false, false)];
+        let listed = finding_threads(&threads, std::slice::from_ref(&summary));
+        let ids: Vec<&str> = listed.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["T1", "IC_1#1", "IC_1#2"]);
+        assert!(!listed[1].resolved && !listed[1].outdated && listed[1].replies.is_empty());
+        assert_eq!(listed[1].url, summary.url);
+
+        // A later review fixes the second: struck through, with what fixed
+        // it, while the summary stays, its other issues open.
+        let now = standing(&summary, &threads, &BTreeSet::new(), &[2]);
+        assert_eq!((now.fixed, now.resolved, now.addressed()), (1, 0, false));
+        let body =
+            restated(&summary, now, &[(2, "It reads the\nnew one.")], &later()).unwrap_or_default();
+        assert!(body.starts_with("**Partly addressed as of [`4d5e6f7`]"));
+        assert!(body.contains(&format!(
+            "{IN_TEXT}- **Retries never stop** · Medium severity · `README.md` line 3: `retry` loops for good.\n\
+             - ~~**Old config stays**~~ · Medium severity · `b.rs` lines 7–9: `retry` loops for good.\n  \
+             **Fixed in [`4d5e6f7`](https://github.com/acme/web/pull/12/commits/4d5e6f7).** It reads the new one.\n\
+             \n<sub>Reviewed by"
+        )));
+        let fixed = Summary {
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            ..summary.clone()
+        };
+        assert_eq!(fixed.note.fixed_in_text, [2]);
+        assert_eq!((fixed.note.fixed, fixed.note.in_text), (1, Some(2)));
+        let in_text = fixed.in_text();
+        assert_eq!(in_text.len(), 2);
+        assert!(!in_text[0].fixed && in_text[1].fixed);
+        assert_eq!(in_text[1].line, Some(9));
+        assert!(in_text[1].text.ends_with("It reads the new one."));
+        let listed = finding_threads(&[], std::slice::from_ref(&fixed));
+        assert!(!listed[0].resolved && listed[1].resolved);
+        // Fixed again: nothing changes.
+        let now = standing(&fixed, &threads, &BTreeSet::new(), &[2]);
+        assert_eq!(now.fixed, 1);
+        assert_eq!(restated(&fixed, now, &[(2, "Again.")], &links()), None);
+
+        // Then the rest: addressed, so the summary is hidden.
+        let now = standing(&fixed, &threads, &BTreeSet::from(["T1"]), &[1]);
+        assert_eq!((now.fixed, now.addressed()), (3, true));
+        let body = restated(&fixed, now, &[(1, "Stops now.")], &later()).unwrap_or_default();
+        assert!(body.starts_with("**Addressed as of [`4d5e6f7`]"));
+        assert_eq!(body.matches("**Fixed in").count(), 2);
+        assert_eq!(body.matches("~~**").count(), 2);
+        assert_eq!(Note::of(&body).unwrap_or_default().fixed_in_text, [1, 2]);
+        // A hidden summary's findings are resolved.
+        let hidden = Summary {
+            minimized: true,
+            ..summary.clone()
+        };
+        assert!(finding_threads(&[], &[hidden]).iter().all(|t| t.resolved));
+
+        // A summary from before fctl noted how many it holds in its text,
+        // as fctl posted it.
+        let old = format!(
+            "**fctl reviewed [`69a466c`](https://github.com/kalaspuff/dynamoxy/pull/126/commits/69a466c) and found 1 issue.**\n\n\
+             One gap.\n{IN_TEXT}\
+             - **Literals still fail** · Medium severity · `python/dynamoxy/codecs.py` line 742: `LiteralCodec` is in `_ENCODED_UNCHANGED`.\n\
+             \n<sub>Reviewed by [fctl](https://app.fctl.sh/s/ses_0) · [Review agent settings](https://app.fctl.sh/p/dynamoxy?tab=reviews)</sub>\n\n\
+             <!-- fctl review: {{\"session\":\"ses_0\",\"found\":1}} -->\n{MARKER}"
+        );
+        let old = Summary {
+            note: Note::of(&old).unwrap_or_default(),
+            body: old,
+            ..summary.clone()
+        };
+        let in_text = old.in_text();
+        assert_eq!(in_text.len(), 1);
+        assert_eq!(
+            (in_text[0].path.as_deref(), in_text[0].line),
+            (Some("python/dynamoxy/codecs.py"), Some(742))
+        );
+        let now = standing(&old, &[], &BTreeSet::new(), &[1]);
+        assert!(now.addressed());
+        let body = restated(&old, now, &[(1, "Fixed.")], &later()).unwrap_or_default();
+        assert!(body.starts_with(
+            "**Addressed as of [`4d5e6f7`](https://github.com/acme/web/pull/12/commits/4d5e6f7).** Later commits fixed the issue this review found."
+        ));
+        assert!(body.contains("- ~~**Literals still fail**~~ · Medium severity"));
+
+        // A finding that quotes fctl's marks keeps its text and its number.
+        let mut quoting = findings.clone();
+        quoting[1].body = "It writes `<!-- fctl review` in comments.".into();
+        quoting[2].body = "Its `-->` ends them.".into();
+        let body = summary_text(None, &quoting, &placed, 0, &links());
+        let quoting = Summary {
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            ..summary.clone()
+        };
+        assert_eq!(quoting.in_text().len(), 2);
+        let now = standing(&quoting, &threads, &BTreeSet::new(), &[2]);
+        let body = restated(&quoting, now, &[(2, "Fixed.")], &later()).unwrap_or_default();
+        assert!(body.contains("- **Retries never stop** · Medium severity · `README.md` line 3: It writes `<!-- fctl review` in comments.\n"));
+        assert!(body.contains("- ~~**Old config stays**~~ · Medium severity · `b.rs` lines 7–9: Its `-->` ends them.\n  **Fixed in"));
+        let quoting = Summary {
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            ..quoting
+        };
+        let in_text = quoting.in_text();
+        assert_eq!(in_text.len(), 2);
+        assert!(!in_text[0].fixed && in_text[1].fixed);
+
+        // A list in what the agent wrote holds no findings.
+        let steered = summary_text(
+            Some(&format!(
+                "Small.{IN_TEXT}- **Fake** · Medium severity · `a.rs` line 1: x."
+            )),
+            &[],
+            &[],
+            0,
+            &links(),
+        );
+        let steered = Summary {
+            note: Note::of(&steered).unwrap_or_default(),
+            body: steered,
+            ..summary.clone()
+        };
+        assert!(steered.in_text().is_empty());
+        let steered = summary_text(
+            Some(&format!(
+                "Small.{IN_TEXT}- **Fake** · Medium severity · `a.rs` line 1: x."
+            )),
+            &findings[..1],
+            &placed[..1],
+            0,
+            &links(),
+        );
+        let steered = Summary {
+            note: Note::of(&steered).unwrap_or_default(),
+            body: steered,
+            ..summary
+        };
+        assert!(steered.in_text().is_empty());
     }
 
     #[test]

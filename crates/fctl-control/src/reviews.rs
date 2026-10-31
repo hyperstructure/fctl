@@ -1801,9 +1801,13 @@ pub async fn threads(ctx: &Ctx, session_id: &str) -> AppResult<Vec<FindingThread
         .ok_or_else(|| crate::error::internal("a review without an installation"))?;
     let gh = github::from_config(&ctx.cfg, ctx.now)?;
     let answer = gh
-        .lookup(inst, rv::threads_query(&repo, row.number()))
+        .lookup(inst, rv::posting_query(&repo, row.number()))
         .await?;
-    Ok(rv::finding_threads(&rv::threads(&answer, &apps(&ctx.cfg))))
+    let apps = apps(&ctx.cfg);
+    Ok(rv::finding_threads(
+        &rv::threads(&answer, &apps),
+        &rv::summaries(&answer, &apps),
+    ))
 }
 
 /// Posts what a review session's agent found (`fctl review submit`), once:
@@ -2265,7 +2269,35 @@ async fn post(
     let summaries = rv::summaries(&answer, &apps);
     let ours: Vec<&rv::Thread> = threads.iter().filter(|t| t.ours).collect();
     let mut fixing = Vec::new();
+    // The findings in earlier summaries' text that the new commits fixed,
+    // by summary: they have no threads.
+    let mut fixing_in_text: BTreeMap<&str, Vec<(u32, &str)>> = BTreeMap::new();
     for r in &sub.resolved {
+        if let Some((id, n)) = rv::in_text_of(&r.thread) {
+            let summary = summaries
+                .iter()
+                .find(|s| s.id == id)
+                .filter(|s| s.in_text().iter().any(|f| f.n == n));
+            match summary {
+                Some(s) if !s.minimized && !s.note.fixed_in_text.contains(&n) => {
+                    fixing_in_text
+                        .entry(s.id.as_str())
+                        .or_default()
+                        .push((n, r.note.as_str()));
+                }
+                Some(_) => {}
+                None => {
+                    return Err(AppError(ApiError::validation(
+                        "resolved",
+                        format!(
+                            "{} isn't one of fctl's findings on this pull request: `fctl review threads` lists them",
+                            r.thread
+                        ),
+                    )));
+                }
+            }
+            continue;
+        }
         match ours.iter().find(|t| t.id == r.thread) {
             Some(t) if !t.resolved => fixing.push((*t, r.note.as_str())),
             Some(_) => {}
@@ -2296,7 +2328,7 @@ async fn post(
                 sub.summary.as_deref(),
                 &sub.findings,
                 placed,
-                fixing.len(),
+                fixing.len() + fixing_in_text.values().map(Vec::len).sum::<usize>(),
                 &links,
             )
         };
@@ -2411,15 +2443,33 @@ async fn post(
             }
         }
         let fixed: BTreeSet<&str> = resolved_ids.iter().map(String::as_str).collect();
+        let mut fixed_in_text = Vec::new();
         // How the issues each earlier review found stand now, atop its
-        // summary, which is hidden as outdated once all are addressed.
+        // summary, with those in its text that the new commits fixed
+        // marked; it is hidden as outdated once all are addressed.
         for s in &restating {
             let token = token_of(Some(&s.by));
-            let standing = rv::standing(s, &threads, &fixed);
-            if let Some(body) = rv::restated(s, standing, &links)
-                && let Err(e) = gh.graphql(token, rv::edit_summary(&s.id, &body)).await
-            {
-                worker::console_error!("restating an earlier review's summary: {}", e.0.message);
+            let in_text = fixing_in_text
+                .get(s.id.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let numbers: Vec<u32> = in_text.iter().map(|(n, _)| *n).collect();
+            let mut standing = rv::standing(s, &threads, &fixed, &numbers);
+            if let Some(body) = rv::restated(s, standing, in_text, &links) {
+                match gh.graphql(token, rv::edit_summary(&s.id, &body)).await {
+                    Ok(_) => {
+                        fixed_in_text.extend(numbers.iter().map(|n| rv::in_text_id(&s.id, *n)))
+                    }
+                    Err(e) => {
+                        worker::console_error!(
+                            "restating an earlier review's summary: {}",
+                            e.0.message
+                        );
+                        // Its findings stay unmarked, and so open: it
+                        // stays shown for them.
+                        standing = rv::standing(s, &threads, &fixed, &[]);
+                    }
+                }
             }
             if standing.addressed()
                 && let Err(e) = gh.graphql(token, rv::hide_outdated(&s.id)).await
@@ -2427,6 +2477,7 @@ async fn post(
                 worker::console_error!("hiding an earlier review's summary: {}", e.0.message);
             }
         }
+        resolved_ids.extend(fixed_in_text);
         Ok::<_, AppError>(resolved_ids)
     }
     .await;
@@ -2435,10 +2486,23 @@ async fn post(
     }
     let resolved_ids = edited?;
     let fixed: BTreeSet<&str> = resolved_ids.iter().map(String::as_str).collect();
+    // Those in the text of earlier summaries still shown count too: they
+    // have no threads to resolve.
+    let still_open_in_text: usize = restating
+        .iter()
+        .flat_map(|s| {
+            s.in_text()
+                .into_iter()
+                .filter(|f| !f.fixed)
+                .map(|f| rv::in_text_id(&s.id, f.n))
+        })
+        .filter(|id| !fixed.contains(id.as_str()))
+        .count();
     let still_open = ours
         .iter()
         .filter(|t| !t.resolved && !fixed.contains(t.id.as_str()))
-        .count();
+        .count()
+        + still_open_in_text;
     let state = rv::outcome(sub.findings.len(), still_open);
     q(
         &ctx.db,

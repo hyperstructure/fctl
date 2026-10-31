@@ -607,7 +607,7 @@ request one reviews and what came of it. In a review agent's sandbox,
 `fctl review` is the agent's, through fctl-agent:
 
 ```sh
-fctl review threads                    # fctl's earlier findings on the pull request, with the answers
+fctl review threads                    # fctl's earlier findings on the pull request, with the answers: PRRT_… on their lines, IC_…#1 in a summary
 fctl review summarize summary.json     # sum it up at the end of its description first, where the project asks: --help shows the file
 fctl review submit review.json         # post the review, once: --help shows the file
 ```

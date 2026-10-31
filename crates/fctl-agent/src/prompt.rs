@@ -568,7 +568,10 @@ pull request it reviews: leave its title as it is.
 
 - `fctl review threads` lists the findings fctl's earlier reviews of the
   pull request posted, with their ids, whether they are resolved and what
-  people answered.
+  people answered: those on their lines by their threads (`PRRT_…`), and
+  those on lines the diff didn't show, which an earlier review's summary
+  holds, by the summary and their number there (`IC_…#1`). Your review's
+  `resolved` takes either.
 - `fctl review submit review.json` posts your review, once, at the end. The
   system prompt says what goes in the file.
 - `fctl review summarize summary.json` puts your summary of the pull request
