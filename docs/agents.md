@@ -593,8 +593,9 @@ fctl review summarize summary.json           # review agents, first, where the p
   `FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB` say where it is.
 - git and `gh` are signed in with tokens for the project's repositories, as
   far as the session's GitHub access allows, refreshed each hour.
-- fctl pushes the branch after every turn until its pull request merges;
-  agents commit as they go and never force-push.
+- fctl pushes the branch after every turn until its pull request merges,
+  and another branch checked out then only once GitHub has it; agents
+  commit as they go and never force-push.
 - Notes are at most 2,000 characters, a project keeps 500, and a note
   replaces at most 20 others. A session keeps at most 50 retrospectives and
   publishes at most 100 screenshots of 5 MB. In an hour, an agent comments

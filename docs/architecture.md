@@ -1107,6 +1107,12 @@ agent posts a notice; a primary repository out of reach fails the session.
   system prompt tells agents to make another pull request's branch where
   the repository is checked out, not in a worktree, since Changes shows
   the checked-out branches.
+- **Other branches.** When a turn ends on another branch of the primary
+  repository, fctl-agent pushes its new commits only once GitHub has the
+  branch (`refs/remotes/origin/<branch>`): one the agent made and hasn't
+  pushed, such as the next of a stack of pull requests, stays in the
+  sandbox, where it may still rebase it without rewriting what fctl
+  published.
 - **Merged branches** aren't pushed again: GitHub deletes a merged pull
   request's branch in repositories set up to, and a push would bring it
   back. Before it pushes a

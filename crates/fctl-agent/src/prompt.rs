@@ -393,7 +393,7 @@ pub fn system_prompt(
         _ => {}
     }
     if github.pushes() {
-        s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged; never force-push and never rewrite published history.\n");
+        s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged, and on another branch checked out then only once GitHub has it: a branch you haven't pushed stays in the sandbox. Never force-push and never rewrite published history.\n");
     }
     // Agents that push open pull requests when the task is done or when
     // someone asks for one, and describe them as their project chose.
@@ -1073,7 +1073,9 @@ mod tests {
         ));
         assert!(!text.contains("/home/agent/repos"));
         assert!(!text.contains("GH_TOKEN"));
-        assert!(text.contains("after every turn, until its pull request is merged;"));
+        assert!(text.contains(
+            "after every turn, until its pull request is merged, and on another branch checked out then only once GitHub has it"
+        ));
         assert!(text.contains(
             "make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone"
         ));

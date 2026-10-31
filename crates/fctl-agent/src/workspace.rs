@@ -857,6 +857,14 @@ pub async fn push(dir: &Path, home: &Path, st: &GitState) -> Result<bool> {
     Ok(true)
 }
 
+/// Whether GitHub has `branch`, as far as the clone knows from its last
+/// fetch or push.
+async fn on_github(dir: &Path, home: &Path, branch: &str) -> bool {
+    let remote = format!("refs/remotes/origin/{branch}");
+    let has = ["rev-parse", "--verify", "--quiet", remote.as_str()];
+    run(dir, home, "git", &has).await.is_ok_and(|o| o.ok)
+}
+
 /// Whether `branch` was pushed and GitHub no longer has it: its upstream
 /// is set, but a fetch pruned it from the clone (`[gone]`), as when GitHub
 /// deleted the branch after its pull request merged.
@@ -1135,6 +1143,9 @@ struct Writable<'a> {
     repo: &'a RepoRef,
     /// The branch its state is relative to.
     base: &'a str,
+    /// The session's branch, which fctl-agent publishes; other branches it
+    /// pushes only once GitHub has them.
+    session: &'a str,
     /// `owner/name`, for the others.
     name: Option<String>,
 }
@@ -1192,7 +1203,13 @@ impl Run<'_> {
         // Whether GitHub deleted the branch, asked of git once.
         let mut gone = None;
         let mut looked_up = false;
-        if push && st.ahead > 0 && !st.pushed {
+        // A branch the agent made and hasn't pushed stays in the sandbox:
+        // it may still rebase it, which a push would make rewrite history.
+        let push = push
+            && st.ahead > 0
+            && !st.pushed
+            && (branch == w.session || on_github(w.dir, home, &branch).await);
+        if push {
             // A branch whose pull request was open, or that GitHub deleted,
             // can have merged since the last lookup: ask before pushing.
             let known = self.pulls.of_branch(w.repo, &branch).map(|f| f.merged());
@@ -1277,8 +1294,9 @@ pub fn pushes(spec: &SessionSpec) -> bool {
 /// `moment`, with the pull requests fctl-agent follows (`pulls`), which
 /// lookups update. When a turn ends or the session stops it also moves the
 /// work in writable clones onto the session branch and, with
-/// `push_commits`, pushes new commits on the session branch. `last` is the
-/// state reported last. A session whose agent doesn't push ([`pushes`])
+/// `push_commits`, pushes new commits on the session branch, and on
+/// another branch checked out in the primary repository once GitHub has
+/// it. `last` is the state reported last. A session whose agent doesn't push ([`pushes`])
 /// moves and pushes nothing.
 pub async fn sync(
     p: &Paths,
@@ -1297,10 +1315,16 @@ pub async fn sync(
         logs: Vec::new(),
     };
     let mut st = state(p, spec, run.pulls).await?;
+    // The branch fctl-agent checked out.
+    let session = match &spec.review {
+        Some(review) => review_branch(spec, review),
+        None => spec.branch.clone(),
+    };
     let primary = spec.project.repo.as_ref().map(|repo| Writable {
         dir: &p.workdir,
         repo,
         base: &spec.base_branch,
+        session: &session,
         name: None,
     });
     if let Some(w) = &primary {
@@ -1333,6 +1357,7 @@ pub async fn sync(
             dir: &c.dir,
             repo: &c.repo,
             base: &base,
+            session: &spec.branch,
             name: None,
         };
         run.attach(&w, &mut cst, &was).await;
@@ -1375,6 +1400,7 @@ async fn sync_clone(
         dir,
         repo: &c.repo,
         base: &base,
+        session: branch,
         name: Some(name.clone()),
     };
     let mut st = run.state(&w).await.unwrap_or_default();
@@ -2245,6 +2271,42 @@ cat "$answer"
         );
         assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
         assert_eq!(synced.state.unmerged, Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_branch_github_lacks_is_pushed_only_once_the_agent_pushed_it() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let ended = Moment::TurnEnded;
+        let mut pulls = Pulls::default();
+        commit(&p.workdir, &p.home, "a.txt", "a\n", "First").await?;
+        let synced = sync(&p, &spec, true, ended, None, &mut pulls).await?;
+        assert_eq!(log_texts(&synced.logs), ["Pushed fctl/1-test"]);
+        // The agent stacks a branch on it and ends the turn there: it stays
+        // in the sandbox.
+        git_ok(&p, &["switch", "-q", "-c", "stack/2"]).await?;
+        commit(&p.workdir, &p.home, "b.txt", "b\n", "Second").await?;
+        let synced = sync(&p, &spec, true, ended, Some(&synced.state), &mut pulls).await?;
+        assert!(synced.logs.is_empty(), "{:?}", synced.logs);
+        assert!(!has_branch(&origin, &p.home, "stack/2").await?);
+        assert_eq!(synced.state.branch.as_deref(), Some("stack/2"));
+        assert!(!synced.state.pushed);
+        // So it can still rewrite it, then push it itself.
+        git_ok(&p, &["commit", "-q", "--amend", "-m", "Second, amended"]).await?;
+        git_ok(&p, &["push", "-q", "-u", "origin", "stack/2"]).await?;
+        // Once GitHub has it, fctl-agent pushes its new commits.
+        let third = commit(&p.workdir, &p.home, "c.txt", "c\n", "Third").await?;
+        let synced = sync(&p, &spec, true, ended, Some(&synced.state), &mut pulls).await?;
+        assert_eq!(log_texts(&synced.logs), ["Pushed stack/2"]);
+        let pushed = git_ok_in(&origin, &p.home, &["rev-parse", "stack/2"]).await?;
+        assert_eq!(pushed.trim(), third);
         Ok(())
     }
 
