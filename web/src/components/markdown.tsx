@@ -258,7 +258,8 @@ function block(t: Token, i: number): ReactNode {
     case "table": {
       const tb = t as Tokens.Table;
       return (
-        <div key={k} className="overflow-x-auto">
+        // As wide as where it is, which a table as wide as its longest word doesn't widen: it scrolls.
+        <div key={k} className="overflow-x-auto [contain:inline-size]">
           <table>
             <thead>
               <tr>
