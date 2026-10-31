@@ -46,6 +46,20 @@ describe("pullRequests", () => {
     expect(pullRequests({})).toEqual([]);
   });
 
+  it("lists those under way first, then those not looked up, then those done with", () => {
+    const at = (number: number, state?: string) => ({ ...pr("acme/app", number), state });
+    const prs = [
+      at(1, "merged"),
+      at(2, "open"),
+      at(3, "closed"),
+      at(4),
+      at(5, "draft"),
+      at(6, "merged"),
+      at(7, "in_merge_queue"),
+    ];
+    expect(pullRequests({ pull_requests: prs }).map((p) => p.number)).toEqual([2, 5, 7, 4, 1, 3, 6]);
+  });
+
   it("lists only GitHub's own links", () => {
     const real = pr("acme/app", 12);
     const forged = [

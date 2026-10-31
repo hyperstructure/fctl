@@ -24,10 +24,25 @@ export function githubLink(url: string | undefined): string | undefined {
   return url && /^https:\/\/github\.com\/[^\s\\]*$/.test(url) ? url : undefined;
 }
 
-/** Every pull request of a session, in the order its agent found them: those GitHub's own links name. */
+/**
+ * Every pull request of a session, those GitHub's own links name: first those still under way (open, draft, queued),
+ * then those nobody looked up yet, then the merged and closed ones, each in the order its agent found them. Lists
+ * that run out of room cut off the end, which then holds those done with.
+ */
 export function pullRequests(s: Pulls): G.PullRequestRef[] {
-  return (s.pull_requests ?? (s.pull_request ? [s.pull_request] : [])).filter(isGithubPull);
+  const all = (s.pull_requests ?? (s.pull_request ? [s.pull_request] : [])).filter(isGithubPull);
+  return all.sort((a, b) => STATE_ORDER[prState(a)] - STATE_ORDER[prState(b)]);
 }
+
+/** Where pull requests in each state come in a session's list. */
+const STATE_ORDER: Record<PrState, number> = {
+  open: 0,
+  draft: 0,
+  queued: 0,
+  unknown: 1,
+  merged: 2,
+  closed: 2,
+};
 
 /** Its repository's name and its number: "fctl#120" ("#120" when the repository is unknown). */
 export function prRef(pr: G.PullRequestRef): string {
