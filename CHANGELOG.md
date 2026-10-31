@@ -2,6 +2,14 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.27.2 (2026-10-31)
+
+### Fixes
+
+- **web:** List a session's open pull requests before merged ones ([#362](https://github.com/hyperstructure/fctl/pull/362))
+- **web:** Keep words whole in Markdown tables' cells ([#363](https://github.com/hyperstructure/fctl/pull/363))
+- **control:** Resolve review findings on lines the diff doesn't show ([#364](https://github.com/hyperstructure/fctl/pull/364))
+
 ## 0.27.1 (2026-10-30)
 
 ### Fixes
