@@ -2454,16 +2454,21 @@ async fn post(
                 .map(Vec::as_slice)
                 .unwrap_or_default();
             let numbers: Vec<u32> = in_text.iter().map(|(n, _)| *n).collect();
-            let standing = rv::standing(s, &threads, &fixed, &numbers);
+            let mut standing = rv::standing(s, &threads, &fixed, &numbers);
             if let Some(body) = rv::restated(s, standing, in_text, &links) {
                 match gh.graphql(token, rv::edit_summary(&s.id, &body)).await {
                     Ok(_) => {
                         fixed_in_text.extend(numbers.iter().map(|n| rv::in_text_id(&s.id, *n)))
                     }
-                    Err(e) => worker::console_error!(
-                        "restating an earlier review's summary: {}",
-                        e.0.message
-                    ),
+                    Err(e) => {
+                        worker::console_error!(
+                            "restating an earlier review's summary: {}",
+                            e.0.message
+                        );
+                        // Its findings stay unmarked, and so open: it
+                        // stays shown for them.
+                        standing = rv::standing(s, &threads, &fixed, &[]);
+                    }
                 }
             }
             if standing.addressed()
@@ -2481,10 +2486,23 @@ async fn post(
     }
     let resolved_ids = edited?;
     let fixed: BTreeSet<&str> = resolved_ids.iter().map(String::as_str).collect();
+    // Those in the text of earlier summaries still shown count too: they
+    // have no threads to resolve.
+    let still_open_in_text: usize = restating
+        .iter()
+        .flat_map(|s| {
+            s.in_text()
+                .into_iter()
+                .filter(|f| !f.fixed)
+                .map(|f| rv::in_text_id(&s.id, f.n))
+        })
+        .filter(|id| !fixed.contains(id.as_str()))
+        .count();
     let still_open = ours
         .iter()
         .filter(|t| !t.resolved && !fixed.contains(t.id.as_str()))
-        .count();
+        .count()
+        + still_open_in_text;
     let state = rv::outcome(sub.findings.len(), still_open);
     q(
         &ctx.db,

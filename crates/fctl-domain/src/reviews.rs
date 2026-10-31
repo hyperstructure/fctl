@@ -2289,7 +2289,7 @@ pub fn finding_threads(all: &[Thread], summaries: &[Summary]) -> Vec<FindingThre
             line: f.line,
             resolved: f.fixed || s.minimized,
             outdated: false,
-            body: unmarked(&f.text),
+            body: f.text,
             url: s.url.clone(),
             replies: Vec::new(),
         })
@@ -2607,12 +2607,25 @@ pub fn restated(
         fixed_in_text,
         ..summary.note.clone()
     };
-    let posted = mark_in_text(&unmarked(posted), &newly, links);
+    // What the agent wrote stays as it is, fctl's marks in it included:
+    // taking them out could take its findings' text with them, and their
+    // numbers go by the summary as it is.
+    let posted = mark_in_text(without_note(posted), &newly, links);
     let rest = format!("{posted}\n\n{}\n{MARKER}", note.mark());
     Some(match status(now, links) {
         Some(status) => format!("{status}\n\n---\n\n{STATUS}\n\n{rest}"),
         None => rest,
     })
+}
+
+/// A summary's text without the note and the mark that fctl ends it with.
+fn without_note(body: &str) -> &str {
+    let body = body.trim();
+    let body = body.strip_suffix(MARKER).unwrap_or(body).trim_end();
+    match body.rfind(NOTE) {
+        Some(i) if body.ends_with("-->") => body[..i].trim(),
+        _ => body.trim_start(),
+    }
 }
 
 /// The line atop an earlier review's summary: how the issues it found
@@ -4506,7 +4519,22 @@ mod tests {
         };
         let text = restated(&steered, one, &[], &later()).unwrap_or_default();
         assert!(text.contains("**fctl reviewed [`3f2a1c9`]"));
-        assert!(text.contains("Small.\n\n\n\nAnd tidy."));
+        assert!(text.contains(&format!("Small.\n\n{STATUS}\n\nAnd tidy.")));
+        // Nor do they once fctl's line is atop it: the agent's text stays
+        // whole, once.
+        let steered = Summary {
+            note: Note::of(&text).unwrap_or_default(),
+            body: text,
+            ..steered
+        };
+        let none = Standing {
+            found: 1,
+            ..Standing::default()
+        };
+        let text = restated(&steered, none, &[], &later()).unwrap_or_default();
+        assert!(text.starts_with("**fctl reviewed [`3f2a1c9`]"));
+        assert_eq!(text.matches("**fctl reviewed").count(), 1);
+        assert!(text.contains(&format!("Small.\n\n{STATUS}\n\nAnd tidy.")));
     }
 
     #[test]
@@ -4656,6 +4684,30 @@ mod tests {
             "**Addressed as of [`4d5e6f7`](https://github.com/acme/web/pull/12/commits/4d5e6f7).** Later commits fixed the issue this review found."
         ));
         assert!(body.contains("- ~~**Literals still fail**~~ · Medium severity"));
+
+        // A finding that quotes fctl's marks keeps its text and its number.
+        let mut quoting = findings.clone();
+        quoting[1].body = "It writes `<!-- fctl review` in comments.".into();
+        quoting[2].body = "Its `-->` ends them.".into();
+        let body = summary_text(None, &quoting, &placed, 0, &links());
+        let quoting = Summary {
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            ..summary.clone()
+        };
+        assert_eq!(quoting.in_text().len(), 2);
+        let now = standing(&quoting, &threads, &BTreeSet::new(), &[2]);
+        let body = restated(&quoting, now, &[(2, "Fixed.")], &later()).unwrap_or_default();
+        assert!(body.contains("- **Retries never stop** · Medium severity · `README.md` line 3: It writes `<!-- fctl review` in comments.\n"));
+        assert!(body.contains("- ~~**Old config stays**~~ · Medium severity · `b.rs` lines 7–9: Its `-->` ends them.\n  **Fixed in"));
+        let quoting = Summary {
+            note: Note::of(&body).unwrap_or_default(),
+            body,
+            ..quoting
+        };
+        let in_text = quoting.in_text();
+        assert_eq!(in_text.len(), 2);
+        assert!(!in_text[0].fixed && in_text[1].fixed);
 
         // A list in what the agent wrote holds no findings.
         let steered = summary_text(

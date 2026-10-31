@@ -1448,7 +1448,7 @@ posts what it found on GitHub
    summary as outdated once all of them are addressed; and, once
    `reviews` keeps how it went, completes the check:
    success with nothing to look at, neutral with findings or earlier ones
-   still open, since acting on them is up to the pull request's people. It posts once: a second submission
+   still open (those in the text of summaries still shown among them), since acting on them is up to the pull request's people. It posts once: a second submission
    gets what the first posted. `fctl review threads` lists fctl's earlier
    findings, with what people answered: those on their lines by their
    threads (`PRRT_…`), and those in a summary's text by the summary and
