@@ -1011,6 +1011,8 @@ pub struct CredentialRow {
     pub scopes: String,
     pub account_email: Option<String>,
     pub subscription_type: Option<String>,
+    #[serde(default)]
+    pub rate_limit_tier: Option<String>,
     pub account: Option<String>,
     pub status: String,
     #[serde(deserialize_with = "opt_int", default)]
@@ -1073,6 +1075,7 @@ impl CredentialRow {
             label: self.label.clone(),
             account_email: self.account_email.clone(),
             subscription_type: self.subscription_type.clone(),
+            rate_limit_tier: self.rate_limit_tier.clone(),
             remote_control: self.supports_remote_control(),
             status: if self.status == "active" {
                 CredentialStatus::Active

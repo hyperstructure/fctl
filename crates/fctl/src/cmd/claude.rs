@@ -55,7 +55,8 @@ fn name(c: &ClaudeCredentialInfo) -> String {
 }
 
 /// What sort of connection it is: `oauth · Remote Control · max`, or
-/// `kept on your runners · inference only`.
+/// `kept on your runners · inference only`, with `ultra` for Claude's Ultra
+/// plan ([`fctl_domain::usage::is_ultra`]).
 fn about(c: &ClaudeCredentialInfo) -> String {
     let mut about = format!(
         "{} · {}",
@@ -70,7 +71,13 @@ fn about(c: &ClaudeCredentialInfo) -> String {
             "inference only"
         }
     );
-    if let Some(t) = &c.subscription_type {
+    if fctl_domain::usage::is_ultra(
+        c.subscription_type.as_deref(),
+        c.rate_limit_tier.as_deref(),
+        &c.usage,
+    ) {
+        about.push_str(" · ultra");
+    } else if let Some(t) = &c.subscription_type {
         about.push_str(&format!(" · {t}"));
     }
     about
@@ -423,6 +430,25 @@ mod tests {
             Err("None of your Claude connections is grace@example.com. `fctl claude status` lists them, with their ids.".into())
         );
         assert_eq!(picked(&[], "ada@example.com"), Err(NO_CONNECTION.into()));
+        Ok(())
+    }
+
+    #[test]
+    fn ultra_plans_are_named() -> Result<()> {
+        let mut login = connection("crd_01ADA", "oauth", None, "active", 0)?;
+        login.subscription_type = Some("max".into());
+        assert_eq!(about(&login), "oauth · Remote Control · max");
+        login.rate_limit_tier = Some("default_claude_max_20x".into());
+        assert_eq!(about(&login), "oauth · Remote Control · ultra");
+        let mut token = connection("crd_01TOKEN", "setup_token", None, "active", 0)?;
+        token.usage = vec![fctl_proto::api::PlanLimit {
+            window: "seven_day".into(),
+            utilization: Some(0.4),
+            resets_at: None,
+            status: None,
+            observed_at: 0,
+        }];
+        assert_eq!(about(&token), "setup_token · inference only · ultra");
         Ok(())
     }
 

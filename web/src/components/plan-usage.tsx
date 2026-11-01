@@ -96,9 +96,18 @@ export function PlanUsageList({ usage }: { usage: G.PlanLimit[] }) {
   );
 }
 
-/** The default credential's limits in one line, under the home page's task box. Phones get
- * shorter meters and gaps, so two limits fit on the line from 390 px. */
-export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; className?: string }) {
+/** The default credential's limits in one line, under the home page's task box, after the plan's
+ * name when it is Ultra. Phones get shorter meters and gaps, so two limits fit on the line from
+ * 390 px. */
+export function PlanUsageStrip({
+  usage,
+  ultra,
+  className,
+}: {
+  usage: G.PlanLimit[];
+  ultra?: boolean;
+  className?: string;
+}) {
   const now = useNow();
   const urgent = pressing(usage, now);
   const s = urgent && standing(urgent, now);
@@ -111,7 +120,7 @@ export function PlanUsageStrip({ usage, className }: { usage: G.PlanLimit[]; cla
         title={`As a session reported it ${ago(reportedAt(usage))}`}
         className="flex flex-wrap items-center gap-x-4 gap-y-1.5 self-start rounded-md text-ink-3 transition-colors hover:text-ink-2 sm:gap-x-5"
       >
-        <span className="text-ink-4">Claude plan</span>
+        <span className="text-ink-4">{ultra ? "Claude Ultra" : "Claude plan"}</span>
         {usage.map((l) => {
           const st = standing(l, now);
           return (

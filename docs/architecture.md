@@ -2792,7 +2792,20 @@ message.
 
 Readings change only while sessions run, so the apps say when a session last
 reported them, and a window whose reset time has passed counts as started
-over. Removing the connection deletes them. Hosts and agents need no update:
+over. A limit that started over before the latest report, which didn't
+mention it, is one the plan no longer has, and is left out
+(`fctl_domain::usage::current`): Claude's Ultra plan (Max 20x before) dropped
+its five-hour limit once Claude verifies the account. Removing the connection
+deletes them.
+
+The apps name the Ultra plan ("Claude Ultra" on the Agent Floor, "Ultra" in
+Settings and `fctl claude status`) from the login's rate limit tier
+(`rate_limit_tier`, `default_claude_max_20x`), which fctl keeps from a full
+login (`claude auth login`) beside its subscription type, `max` for both
+Ultra and Max 5x.
+Long-lived tokens, and logins kept before fctl kept the tier, carry neither:
+those count as Ultra when their sessions report a weekly limit but no
+five-hour one (`fctl_domain::usage::is_ultra`). Hosts and agents need no update:
 they already pass every Claude message on.
 
 The apps go by the share used. From 80 % of a limit, the Agent Floor says how

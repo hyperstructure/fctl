@@ -3,8 +3,10 @@ import type * as G from "@/gen";
 import { clock } from "./format";
 import {
   inSentence,
+  isUltra,
   limitLabel,
   percent,
+  planOf,
   pressing,
   reportedAt,
   resetTime,
@@ -77,5 +79,26 @@ describe("plan usage", () => {
     expect(resetTime(now + 10 * 24 * hour, now)).toMatch(/^on /);
     expect(inSentence("Weekly Opus limit")).toBe("weekly Opus limit");
     expect(inSentence("5-hour limit")).toBe("5-hour limit");
+  });
+
+  it("tells Ultra plans", () => {
+    const week = [limit({ window: "seven_day", utilization: 0.4 })];
+    const both = [limit({ utilization: 0.1 }), ...week];
+    const tier = "default_claude_max_20x";
+    // From the login.
+    expect(isUltra({ subscription_type: "max", rate_limit_tier: tier, usage: both })).toBe(true);
+    expect(isUltra({ subscription_type: "max", rate_limit_tier: "default_claude_max_5x", usage: week })).toBe(
+      false,
+    );
+    expect(isUltra({ subscription_type: "team", rate_limit_tier: tier, usage: week })).toBe(false);
+    // Without one: a weekly limit and no five-hour one.
+    expect(isUltra({ usage: week })).toBe(true);
+    expect(isUltra({ subscription_type: "max", usage: week })).toBe(true);
+    expect(isUltra({ usage: both })).toBe(false);
+    expect(isUltra({})).toBe(false);
+    expect(isUltra({ subscription_type: "pro", usage: week })).toBe(false);
+    expect(planOf({ usage: week })).toBe("Ultra");
+    expect(planOf({ subscription_type: "max", usage: both })).toBe("max");
+    expect(planOf({})).toBeUndefined();
   });
 });

@@ -6,6 +6,12 @@ import type { PlanLimit } from "./PlanLimit";
 
 export type ClaudeCredentialInfo = { id: CredentialId, kind: ClaudeCredentialKind, label?: string, account_email?: string, subscription_type?: string, 
 /**
+ * The login's rate limit tier (`default_claude_max_20x` is Ultra, which
+ * was Max 20x), from `claude auth login`. Absent for long-lived tokens
+ * and for logins fctl kept before it kept the tier.
+ */
+rate_limit_tier?: string, 
+/**
  * Whether sessions on this credential can enable Remote Control.
  */
 remote_control: boolean, status: CredentialStatus, 

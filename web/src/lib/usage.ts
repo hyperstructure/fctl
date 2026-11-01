@@ -76,6 +76,24 @@ export function resetTime(ms: number, now: number): string {
   return `on ${date.format(ms)}`;
 }
 
+/** The rate limit tier of a Claude Max 20x login, which Claude renamed Ultra. */
+export const ULTRA_TIER = "default_claude_max_20x";
+
+/** Whether a credential is on Claude's Ultra plan: its login's rate limit tier says so, or, when
+ * the login doesn't say (a long-lived token, or a login kept before fctl kept the tier), its
+ * sessions report a weekly limit but no five-hour one, which only Ultra plans dropped. The same
+ * rule as `fctl_domain::usage::is_ultra`. */
+export function isUltra(c: Pick<G.ClaudeCredentialInfo, "subscription_type" | "rate_limit_tier" | "usage">) {
+  if (c.subscription_type !== undefined && c.subscription_type !== "max") return false;
+  if (c.rate_limit_tier !== undefined) return c.rate_limit_tier === ULTRA_TIER;
+  const reports = (w: string) => (c.usage ?? []).some((l) => l.window === w);
+  return reports("seven_day") && !reports("five_hour");
+}
+
+/** The plan to name beside a credential: "Ultra", else its subscription type ("max", "pro"). */
+export const planOf = (c: Pick<G.ClaudeCredentialInfo, "subscription_type" | "rate_limit_tier" | "usage">) =>
+  isUltra(c) ? "Ultra" : c.subscription_type;
+
 /** A label inside a sentence: "weekly Opus limit". */
 export const inSentence = (label: string) => label.charAt(0).toLowerCase() + label.slice(1);
 

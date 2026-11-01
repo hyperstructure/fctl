@@ -88,7 +88,8 @@ pub fn readings(v: &Value, observed_at: Millis) -> Vec<PlanLimit> {
 
 /// Plan usage as the control plane stores it: a JSON array of readings
 /// (`window`, `utilization`, `resets_at`, `status`, `observed_at`), in
-/// display order. Anything unreadable is left out.
+/// display order. Anything unreadable is left out, and so is each limit
+/// Claude stopped reporting ([`current`]).
 pub fn from_json(json: &str) -> Vec<PlanLimit> {
     #[derive(serde::Deserialize)]
     struct Row {
@@ -109,8 +110,48 @@ pub fn from_json(json: &str) -> Vec<PlanLimit> {
             observed_at: r.observed_at as Millis,
         })
         .collect();
+    current(&mut limits);
     sort(&mut limits);
     limits
+}
+
+/// Leaves out the readings of limits the plan no longer has: those that
+/// started over before the latest report, which didn't mention them. Each
+/// reading stays until a newer one of its limit replaces it, and Ultra
+/// plans (Max 20x before) dropped their five-hour limit, so its last
+/// reading would otherwise show as started over for good. A limit that
+/// started over since the latest report still shows, as started over.
+pub fn current(limits: &mut Vec<PlanLimit>) {
+    let latest = limits.iter().map(|l| l.observed_at).max().unwrap_or(0);
+    limits.retain(|l| l.resets_at.is_none_or(|t| t > latest));
+}
+
+/// The rate limit tier of a Claude Max 20x login, which Claude renamed
+/// Ultra: Claude Code reads `rateLimitTier` from the login to tell it from
+/// Max 5x, both `subscriptionType` `max`.
+pub const ULTRA_TIER: &str = "default_claude_max_20x";
+
+/// Whether a credential is on Claude's Ultra plan: its login's rate limit
+/// tier says so, or, when the login doesn't say (a long-lived token from
+/// `claude setup-token`, or a login fctl kept before it kept the tier), its
+/// sessions report a weekly limit but no five-hour one, which only Ultra
+/// plans dropped. An Ultra account Claude hasn't verified yet still has a
+/// five-hour limit, so it shows as Ultra only from its login.
+pub fn is_ultra(
+    subscription_type: Option<&str>,
+    rate_limit_tier: Option<&str>,
+    usage: &[PlanLimit],
+) -> bool {
+    if subscription_type.is_some_and(|t| t != "max") {
+        return false;
+    }
+    match rate_limit_tier {
+        Some(tier) => tier == ULTRA_TIER,
+        None => {
+            let reports = |w: &str| usage.iter().any(|l| l.window == w);
+            reports("seven_day") && !reports("five_hour")
+        }
+    }
 }
 
 /// Adds newer readings to `limits`: each replaces the reading of its window.
@@ -394,6 +435,47 @@ mod tests {
         );
         assert_eq!(from_json("[]"), vec![]);
         assert_eq!(from_json("not json"), vec![]);
+    }
+
+    #[test]
+    fn limits_claude_stopped_reporting_are_left_out() {
+        // The five-hour window started over at …010, and a report at …020
+        // didn't mention it: the plan has no five-hour limit any more.
+        let json = r#"[
+            {"window":"five_hour","utilization":0.3,"resets_at":1760010000000,"observed_at":1760000000000},
+            {"window":"seven_day","utilization":0.9,"resets_at":1760400000000,"observed_at":1760020000000},
+            {"window":"seven_day_opus","utilization":0.5,"observed_at":1760000000000}
+        ]"#;
+        let windows = |l: Vec<PlanLimit>| l.into_iter().map(|l| l.window).collect::<Vec<_>>();
+        assert_eq!(windows(from_json(json)), ["seven_day", "seven_day_opus"]);
+        // Started over since the latest report: it still shows, as reset.
+        let json = r#"[
+            {"window":"five_hour","utilization":0.3,"resets_at":1760010000000,"observed_at":1760000000000},
+            {"window":"seven_day","utilization":0.9,"resets_at":1760400000000,"observed_at":1760005000000}
+        ]"#;
+        assert_eq!(windows(from_json(json)), ["five_hour", "seven_day"]);
+        // A reading reported after it started over says nothing either.
+        let mut stale = vec![limit("five_hour", Some(0.1), Some(AT - 1), None)];
+        current(&mut stale);
+        assert_eq!(stale, vec![]);
+    }
+
+    #[test]
+    fn ultra_plans() {
+        let week = limit("seven_day", Some(0.4), None, None);
+        let both = [limit("five_hour", Some(0.1), None, None), week.clone()];
+        let week = [week];
+        // From the login.
+        assert!(is_ultra(Some("max"), Some(ULTRA_TIER), &both));
+        assert!(!is_ultra(Some("max"), Some("default_claude_max_5x"), &week));
+        assert!(!is_ultra(Some("team"), Some(ULTRA_TIER), &week));
+        // Without one: a weekly limit and no five-hour one.
+        assert!(is_ultra(None, None, &week));
+        assert!(is_ultra(Some("max"), None, &week));
+        assert!(!is_ultra(None, None, &both));
+        assert!(!is_ultra(None, None, &[]));
+        assert!(!is_ultra(Some("pro"), None, &week));
+        assert!(!is_ultra(Some("enterprise"), None, &week));
     }
 
     #[test]
