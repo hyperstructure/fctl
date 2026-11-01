@@ -19,10 +19,10 @@ afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
 });
 
-function strip(usage: G.PlanLimit[]) {
+function strip(usage: G.PlanLimit[], ultra?: boolean) {
   const container = document.createElement("div");
   const root = createRoot(container);
-  act(() => root.render(<PlanUsageStrip usage={usage} />));
+  act(() => root.render(<PlanUsageStrip usage={usage} ultra={ultra} />));
   roots.push(() => act(() => root.unmount()));
   return container;
 }
@@ -68,5 +68,12 @@ describe("the home page's plan usage", () => {
       /^Your 5-hour limit is used up\. Sessions you start now pause until it resets/,
     );
     expect(reached?.tone).toBe("text-danger");
+  });
+
+  it("names an Ultra plan", () => {
+    expect(strip([limit("seven_day", 0.4)], true).textContent).toMatch(/^Claude UltraWeekly/);
+    expect(strip([limit("five_hour", 0.1), limit("seven_day", 0.4)]).textContent).toMatch(
+      /^Claude plan5-hour/,
+    );
   });
 });

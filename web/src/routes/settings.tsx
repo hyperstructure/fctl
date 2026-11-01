@@ -67,6 +67,7 @@ import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
+import { planOf } from "@/lib/usage";
 import { claudeOptions, roleLabel, roomForAnother, workspaceCount } from "@/lib/workspaces";
 
 const LINK_ERRORS: Record<string, string> = {
@@ -625,7 +626,7 @@ function Claude({ me }: { me: G.Me }) {
                         : c.kind === "oauth"
                           ? "Full login · Remote Control"
                           : "Inference only · no Remote Control"}
-                      {c.subscription_type && ` · ${c.subscription_type}`}
+                      {planOf(c) && ` · ${planOf(c)}`}
                       {c.status === "invalid" && <span className="text-danger"> · needs reconnecting</span>}
                       {c.last_used_at && ` · used ${ago(c.last_used_at)}`}
                     </div>

@@ -113,6 +113,64 @@ pub fn from_json(json: &str) -> Vec<PlanLimit> {
     limits
 }
 
+/// The windows a `rate_limit_event` lists in `unifiedWindows`: all the
+/// five-hour and weekly windows the plan has, which recent Claude Code
+/// versions report together. `None` when it lists none (no
+/// `unifiedWindows`, or only paid extra usage and names that aren't
+/// windows), as older versions, which report one limit at a time, don't:
+/// such reports say nothing of the limits they leave out.
+///
+/// Each reading is kept until a newer one of its limit replaces it, and
+/// Ultra plans (Max 20x before) dropped their five-hour limit, so the
+/// control plane deletes a limit's reading once it started over and a
+/// report that lists the windows leaves it out (`crate::usage::record` in
+/// fctl-control). It would otherwise show as started over for good.
+pub fn listed(v: &Value) -> Option<Vec<String>> {
+    if v.get("type").and_then(Value::as_str) != Some("rate_limit_event") {
+        return None;
+    }
+    let windows = v
+        .get("rate_limit_info")?
+        .get("unifiedWindows")?
+        .as_object()?;
+    let names: Vec<String> = windows
+        .keys()
+        .filter(|name| is_window(name))
+        .take(MAX_LIMITS)
+        .cloned()
+        .collect();
+    // A plan has a window at least: a list of none says nothing.
+    (!names.is_empty()).then_some(names)
+}
+
+/// The rate limit tier of a Claude Max 20x login, which Claude renamed
+/// Ultra: Claude Code reads `rateLimitTier` from the login to tell it from
+/// Max 5x, both `subscriptionType` `max`.
+pub const ULTRA_TIER: &str = "default_claude_max_20x";
+
+/// Whether a credential is on Claude's Ultra plan: its login's rate limit
+/// tier says so, or, when the login doesn't say (a long-lived token from
+/// `claude setup-token`, or a login fctl kept before it kept the tier), its
+/// sessions report a weekly limit but no five-hour one, which only Ultra
+/// plans dropped. An Ultra account Claude hasn't verified yet still has a
+/// five-hour limit, so it shows as Ultra only from its login.
+pub fn is_ultra(
+    subscription_type: Option<&str>,
+    rate_limit_tier: Option<&str>,
+    usage: &[PlanLimit],
+) -> bool {
+    if subscription_type.is_some_and(|t| t != "max") {
+        return false;
+    }
+    match rate_limit_tier {
+        Some(tier) => tier == ULTRA_TIER,
+        None => {
+            let reports = |w: &str| usage.iter().any(|l| l.window == w);
+            reports("seven_day") && !reports("five_hour")
+        }
+    }
+}
+
 /// Adds newer readings to `limits`: each replaces the reading of its window.
 pub fn merge(limits: &mut Vec<PlanLimit>, newer: Vec<PlanLimit>) {
     for reading in newer {
@@ -394,6 +452,57 @@ mod tests {
         );
         assert_eq!(from_json("[]"), vec![]);
         assert_eq!(from_json("not json"), vec![]);
+    }
+
+    #[test]
+    fn windows_a_report_lists() {
+        // An Ultra plan's, without the five-hour window.
+        let ultra = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed",
+            "unifiedWindows": {
+                "seven_day": {"utilization": 0.9, "resetsAt": 1_760_400_000},
+                "seven_day_overage_included": {"utilization": 0.4, "resetsAt": 1_760_400_000},
+                "overage": {"utilization": 0.0, "resetsAt": 1_760_400_000}
+            }
+        }});
+        assert_eq!(
+            listed(&ultra),
+            Some(vec![
+                "seven_day".into(),
+                "seven_day_overage_included".into()
+            ])
+        );
+        // An older Claude Code's report of one limit says nothing of the rest.
+        let one = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.8
+        }});
+        assert_eq!(listed(&one), None);
+        let none = json!({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {}}});
+        assert_eq!(listed(&none), None);
+        let unknown = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "unifiedWindows": {"overage": {}, "Bad-Name": {}}
+        }});
+        assert_eq!(listed(&unknown), None);
+        let other = json!({"type": "assistant", "rate_limit_info": {"unifiedWindows": {}}});
+        assert_eq!(listed(&other), None);
+    }
+
+    #[test]
+    fn ultra_plans() {
+        let week = limit("seven_day", Some(0.4), None, None);
+        let both = [limit("five_hour", Some(0.1), None, None), week.clone()];
+        let week = [week];
+        // From the login.
+        assert!(is_ultra(Some("max"), Some(ULTRA_TIER), &both));
+        assert!(!is_ultra(Some("max"), Some("default_claude_max_5x"), &week));
+        assert!(!is_ultra(Some("team"), Some(ULTRA_TIER), &week));
+        // Without one: a weekly limit and no five-hour one.
+        assert!(is_ultra(None, None, &week));
+        assert!(is_ultra(Some("max"), None, &week));
+        assert!(!is_ultra(None, None, &both));
+        assert!(!is_ultra(None, None, &[]));
+        assert!(!is_ultra(Some("pro"), None, &week));
+        assert!(!is_ultra(Some("enterprise"), None, &week));
     }
 
     #[test]

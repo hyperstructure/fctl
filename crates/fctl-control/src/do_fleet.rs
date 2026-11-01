@@ -2281,8 +2281,8 @@ impl FleetObject {
         let email = bundle.account.as_ref().and_then(|a| a.email.clone());
         crate::db::q(
             db,
-            "INSERT INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, account_email, subscription_type, account, status, expires_at, created_at, updated_at) \
-             VALUES (?, ?, 'oauth', ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            "INSERT INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, account_email, subscription_type, rate_limit_tier, account, status, expires_at, created_at, updated_at) \
+             VALUES (?, ?, 'oauth', ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
             &[
                 crate::db::s(id.as_str()),
                 crate::db::s(user_id),
@@ -2291,6 +2291,7 @@ impl FleetObject {
                 crate::db::s(&bundle.scopes.join(" ")),
                 crate::db::os(email.as_deref()),
                 crate::db::os(bundle.subscription_type.as_deref()),
+                crate::db::os(bundle.rate_limit_tier.as_deref()),
                 crate::db::os(account.as_deref()),
                 crate::db::on(secret.expires_at),
                 crate::db::n(now),

@@ -7,6 +7,7 @@ import type * as G from "@/gen";
 import { workspaces as workspacesApi } from "./api";
 import { pending, withPendingProjects, withPendingWorkspaces } from "./order";
 import { keys, queryClient, useMe, useWorkspaces } from "./queries";
+import { planOf } from "./usage";
 
 /** Whether you create projects in `w`: its admins do, while it is open to them (two-factor sign-in). */
 export function createsProjects(w: Pick<G.Workspace, "role" | "blocked">): boolean {
@@ -283,7 +284,7 @@ export function claudeOptions(
         label: `${prefix}${claudeName(c)}`,
         description: c.on_runners
           ? "Kept on your runners: sessions run only on yours that keep it"
-          : (c.subscription_type ?? c.kind),
+          : (planOf(c) ?? c.kind),
       });
     else if (c.id === current)
       options.push({

@@ -50,6 +50,7 @@ import { repoSummary } from "@/lib/repos";
 import { ACTIVE } from "@/lib/sessions";
 import { waitsForYou } from "@/lib/status";
 import { useTaskBoxFocus } from "@/lib/task-box";
+import { isUltra } from "@/lib/usage";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 function greeting(user: G.User) {
@@ -678,7 +679,8 @@ export function Home() {
   const lowDisk = onlineRunners.filter((r) => !r.drain && lowOnDisk(r)).length;
   const scene = useRef<FoundryHandle | null>(null);
   // The plan that sessions you start run on.
-  const usage = me?.claude.find((c) => c.is_default)?.usage;
+  const plan = me?.claude.find((c) => c.is_default);
+  const usage = plan?.usage;
   const blocked = mine.filter((w) => w.blocked);
   const row = (s: G.Session) => (
     <SessionRow key={s.id} s={s} workspace={several && !only ? freshest(index, s.workspace) : undefined} />
@@ -735,7 +737,9 @@ export function Home() {
               workspace={only}
             />
           )}
-          {usage?.length ? <PlanUsageStrip usage={usage} className="mt-3" /> : null}
+          {usage?.length ? (
+            <PlanUsageStrip usage={usage} ultra={plan && isUltra(plan)} className="mt-3" />
+          ) : null}
         </div>
         <div className="mt-12 flex flex-col gap-12 pb-24">
           {workspaces.data && <Invitations invitations={workspaces.data.invitations} />}

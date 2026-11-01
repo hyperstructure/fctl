@@ -3472,6 +3472,10 @@ pub struct ClaudeCredentialInfo {
     pub label: Option<String>,
     pub account_email: Option<String>,
     pub subscription_type: Option<String>,
+    /// The login's rate limit tier (`default_claude_max_20x` is Ultra, which
+    /// was Max 20x), from `claude auth login`. Absent for long-lived tokens
+    /// and for logins fctl kept before it kept the tier.
+    pub rate_limit_tier: Option<String>,
     /// Whether sessions on this credential can enable Remote Control.
     pub remote_control: bool,
     pub status: CredentialStatus,

@@ -127,8 +127,8 @@ fctl claude status
 ```
 
 Once a session runs on it, the connection shows how much of your plan's
-limits is used: the five-hour window, the week, and a model's own weekly
-limit when Claude reports one, each with when it resets. You see it under
+limits is used: the five-hour window (Ultra plans have none), the week, and
+a model's own weekly limit when Claude reports one, each with when it resets. You see it under
 each connection in Settings → Claude, under the task box on the Agent Floor
 (for the connection new sessions use), and in `fctl claude status`. Sessions
 report it as they work, so it is as recent as your latest session. From
