@@ -343,8 +343,9 @@ yours in its place. GitHub delivers the app's webhook from the internet,
 so it needs to reach that address. An instance it can't reach, such as one
 served over plain http on a home network, still works with the app, but
 sessions learn of merges and checks hours late, through the hourly lookup
-([Pull request state and checks](#pull-request-state-and-checks)), and
-reviews and follow-ups, which need the webhook, don't start.
+([Pull request state and checks](#pull-request-state-and-checks)).
+Reviews start only when someone asks for one (`fctl review start`), and
+follow-ups, which need the webhook, don't come at all.
 
 ### 1. Create the app
 
@@ -494,13 +495,14 @@ project's Reviews tab says why.
 
 To turn the webhook on for an app made before, edit it on GitHub: under
 **General**, tick **Active** under **Webhook** and fill in its URL and
-secret; under **Permissions & events**, subscribe to the four events
-above. Installations accept nothing new: the app reads pull requests,
-checks and commit statuses already. **Advanced → Recent Deliveries** shows
+secret; under **Permissions & events**, subscribe to **Pull request**,
+**Check run**, **Check suite** and **Status**. Installations accept
+nothing new: the app reads pull requests, checks and commit statuses
+already. **Advanced → Recent Deliveries** shows
 each delivery and the control plane's answer: `{"ok":true,"sessions":1}`
 when a session heard of it.
 
-Subscribe to all four events before you rely on the webhook. When a pull
+Subscribe to those four events before you rely on the webhook. When a pull
 request merges or closes while **Pull request** isn't subscribed, or the
 webhook is off, GitHub sends nothing about it, and its sessions keep
 showing it as it was until the hourly job looks it up again. The job skips
