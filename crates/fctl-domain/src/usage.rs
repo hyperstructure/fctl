@@ -115,9 +115,10 @@ pub fn from_json(json: &str) -> Vec<PlanLimit> {
 
 /// The windows a `rate_limit_event` lists in `unifiedWindows`: all the
 /// five-hour and weekly windows the plan has, which recent Claude Code
-/// versions report together. `None` when it lists none, as older versions,
-/// which report one limit at a time, don't: their reports say nothing of
-/// the limits they leave out.
+/// versions report together. `None` when it lists none (no
+/// `unifiedWindows`, or only paid extra usage and names that aren't
+/// windows), as older versions, which report one limit at a time, don't:
+/// such reports say nothing of the limits they leave out.
 ///
 /// Each reading is kept until a newer one of its limit replaces it, and
 /// Ultra plans (Max 20x before) dropped their five-hour limit, so the
@@ -132,14 +133,14 @@ pub fn listed(v: &Value) -> Option<Vec<String>> {
         .get("rate_limit_info")?
         .get("unifiedWindows")?
         .as_object()?;
-    Some(
-        windows
-            .keys()
-            .filter(|name| is_window(name))
-            .take(MAX_LIMITS)
-            .cloned()
-            .collect(),
-    )
+    let names: Vec<String> = windows
+        .keys()
+        .filter(|name| is_window(name))
+        .take(MAX_LIMITS)
+        .cloned()
+        .collect();
+    // A plan has a window at least: a list of none says nothing.
+    (!names.is_empty()).then_some(names)
 }
 
 /// The rate limit tier of a Claude Max 20x login, which Claude renamed
@@ -476,6 +477,12 @@ mod tests {
             "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.8
         }});
         assert_eq!(listed(&one), None);
+        let none = json!({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {}}});
+        assert_eq!(listed(&none), None);
+        let unknown = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "unifiedWindows": {"overage": {}, "Bad-Name": {}}
+        }});
+        assert_eq!(listed(&unknown), None);
         let other = json!({"type": "assistant", "rate_limit_info": {"unifiedWindows": {}}});
         assert_eq!(listed(&other), None);
     }
