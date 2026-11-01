@@ -6,16 +6,25 @@ use crate::db::{batch, n, of, on, os, q, s};
 use crate::error::AppResult;
 use crate::internal::{self, ClaudeUsage};
 use crate::model::{USAGE_JSON, plan_usage};
-use fctl_proto::CredentialId;
 use fctl_proto::api::{LimitStatus, PlanLimit};
+use fctl_proto::{CredentialId, Millis};
 use serde::Deserialize;
 use worker::Env;
 
 /// Stores readings with the Claude credential the session runs on now (a
 /// resumed session runs on the resumer's), each unless the stored reading
 /// of its limit is newer, then sends the credential's usage to its owner's
-/// open apps.
-pub async fn record(env: &Env, session_id: &str, readings: &[PlanLimit]) -> AppResult<()> {
+/// open apps. When a report at `observed_at` listed the plan's windows
+/// (`fctl_domain::usage::listed`), the readings of limits it left out that
+/// started over by then go: the plan no longer has them, as Ultra plans no
+/// longer have the five-hour window.
+pub async fn record(
+    env: &Env,
+    session_id: &str,
+    readings: &[PlanLimit],
+    listed: Option<&[String]>,
+    observed_at: Millis,
+) -> AppResult<()> {
     let db = env.d1("DB")?;
     let mut statements = Vec::new();
     for r in readings {
@@ -34,6 +43,18 @@ pub async fn record(env: &Env, session_id: &str, readings: &[PlanLimit]) -> AppR
                 os(r.status.map(LimitStatus::as_str)),
                 n(r.observed_at),
                 s(session_id),
+            ],
+        )?);
+    }
+    if let Some(listed) = listed {
+        statements.push(q(
+            &db,
+            "DELETE FROM claude_usage WHERE credential_id = (SELECT credential_id FROM sessions WHERE id = ?) \
+             AND window NOT IN (SELECT value FROM json_each(?)) AND resets_at <= ?",
+            &[
+                s(session_id),
+                s(&serde_json::to_string(listed)?),
+                n(observed_at),
             ],
         )?);
     }

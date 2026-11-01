@@ -2114,6 +2114,8 @@ impl SessionObject {
                 let mut found = Vec::new();
                 let mut turn_ended = false;
                 let mut usage = Vec::new();
+                // The windows the latest report that lists them listed.
+                let mut listed = None;
                 // Images from the results of the agent's tools were kept.
                 let mut kept_some = false;
                 let counted_before = self.counted();
@@ -2171,6 +2173,7 @@ impl SessionObject {
                         turn_ended |= self.remember_reply(v, e.agent_seq);
                         self.mirror_to_linear(s, v, now);
                         plan::merge(&mut usage, plan::readings(v, now));
+                        listed = plan::listed(v).or(listed);
                         kept_some |= self.keep_images(v, now);
                         ev::shape_for_storage(v);
                     }
@@ -2238,7 +2241,7 @@ impl SessionObject {
                 }
                 self.broadcast_events(&out);
                 self.send_uplink(&UplinkDown::Ack { agent_seq: acked });
-                self.record_usage(usage);
+                self.record_usage(usage, listed, now);
                 if kept_some {
                     self.arm(kept_images::expires_at(now)).await;
                 }
@@ -2770,16 +2773,24 @@ impl SessionObject {
         }
     }
 
-    /// Keeps the plan usage the agent reported with the session's Claude
-    /// credential, for its owner (`crate::usage`).
-    fn record_usage(&self, readings: Vec<PlanLimit>) {
-        if readings.is_empty() {
+    /// Keeps the plan usage the agent reported at `now` with the session's
+    /// Claude credential, for its owner (`crate::usage`), with the windows a
+    /// report listed (`fctl_domain::usage::listed`).
+    fn record_usage(
+        &self,
+        readings: Vec<PlanLimit>,
+        listed: Option<Vec<String>>,
+        now: fctl_proto::Millis,
+    ) {
+        if readings.is_empty() && listed.is_none() {
             return;
         }
         let Some(s) = self.summary() else { return };
         let env = self.env.clone();
         self.state.wait_until(async move {
-            if let Err(e) = crate::usage::record(&env, s.id.as_str(), &readings).await {
+            let listed = listed.as_deref();
+            if let Err(e) = crate::usage::record(&env, s.id.as_str(), &readings, listed, now).await
+            {
                 worker::console_error!("recording plan usage failed: {}", e.0.message);
             }
         });

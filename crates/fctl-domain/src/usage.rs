@@ -88,8 +88,7 @@ pub fn readings(v: &Value, observed_at: Millis) -> Vec<PlanLimit> {
 
 /// Plan usage as the control plane stores it: a JSON array of readings
 /// (`window`, `utilization`, `resets_at`, `status`, `observed_at`), in
-/// display order. Anything unreadable is left out, and so is each limit
-/// Claude stopped reporting ([`current`]).
+/// display order. Anything unreadable is left out.
 pub fn from_json(json: &str) -> Vec<PlanLimit> {
     #[derive(serde::Deserialize)]
     struct Row {
@@ -110,20 +109,37 @@ pub fn from_json(json: &str) -> Vec<PlanLimit> {
             observed_at: r.observed_at as Millis,
         })
         .collect();
-    current(&mut limits);
     sort(&mut limits);
     limits
 }
 
-/// Leaves out the readings of limits the plan no longer has: those that
-/// started over before the latest report, which didn't mention them. Each
-/// reading stays until a newer one of its limit replaces it, and Ultra
-/// plans (Max 20x before) dropped their five-hour limit, so its last
-/// reading would otherwise show as started over for good. A limit that
-/// started over since the latest report still shows, as started over.
-pub fn current(limits: &mut Vec<PlanLimit>) {
-    let latest = limits.iter().map(|l| l.observed_at).max().unwrap_or(0);
-    limits.retain(|l| l.resets_at.is_none_or(|t| t > latest));
+/// The windows a `rate_limit_event` lists in `unifiedWindows`: all the
+/// five-hour and weekly windows the plan has, which recent Claude Code
+/// versions report together. `None` when it lists none, as older versions,
+/// which report one limit at a time, don't: their reports say nothing of
+/// the limits they leave out.
+///
+/// Each reading is kept until a newer one of its limit replaces it, and
+/// Ultra plans (Max 20x before) dropped their five-hour limit, so the
+/// control plane deletes a limit's reading once it started over and a
+/// report that lists the windows leaves it out (`crate::usage::record` in
+/// fctl-control). It would otherwise show as started over for good.
+pub fn listed(v: &Value) -> Option<Vec<String>> {
+    if v.get("type").and_then(Value::as_str) != Some("rate_limit_event") {
+        return None;
+    }
+    let windows = v
+        .get("rate_limit_info")?
+        .get("unifiedWindows")?
+        .as_object()?;
+    Some(
+        windows
+            .keys()
+            .filter(|name| is_window(name))
+            .take(MAX_LIMITS)
+            .cloned()
+            .collect(),
+    )
 }
 
 /// The rate limit tier of a Claude Max 20x login, which Claude renamed
@@ -438,26 +454,30 @@ mod tests {
     }
 
     #[test]
-    fn limits_claude_stopped_reporting_are_left_out() {
-        // The five-hour window started over at …010, and a report at …020
-        // didn't mention it: the plan has no five-hour limit any more.
-        let json = r#"[
-            {"window":"five_hour","utilization":0.3,"resets_at":1760010000000,"observed_at":1760000000000},
-            {"window":"seven_day","utilization":0.9,"resets_at":1760400000000,"observed_at":1760020000000},
-            {"window":"seven_day_opus","utilization":0.5,"observed_at":1760000000000}
-        ]"#;
-        let windows = |l: Vec<PlanLimit>| l.into_iter().map(|l| l.window).collect::<Vec<_>>();
-        assert_eq!(windows(from_json(json)), ["seven_day", "seven_day_opus"]);
-        // Started over since the latest report: it still shows, as reset.
-        let json = r#"[
-            {"window":"five_hour","utilization":0.3,"resets_at":1760010000000,"observed_at":1760000000000},
-            {"window":"seven_day","utilization":0.9,"resets_at":1760400000000,"observed_at":1760005000000}
-        ]"#;
-        assert_eq!(windows(from_json(json)), ["five_hour", "seven_day"]);
-        // A reading reported after it started over says nothing either.
-        let mut stale = vec![limit("five_hour", Some(0.1), Some(AT - 1), None)];
-        current(&mut stale);
-        assert_eq!(stale, vec![]);
+    fn windows_a_report_lists() {
+        // An Ultra plan's, without the five-hour window.
+        let ultra = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed",
+            "unifiedWindows": {
+                "seven_day": {"utilization": 0.9, "resetsAt": 1_760_400_000},
+                "seven_day_overage_included": {"utilization": 0.4, "resetsAt": 1_760_400_000},
+                "overage": {"utilization": 0.0, "resetsAt": 1_760_400_000}
+            }
+        }});
+        assert_eq!(
+            listed(&ultra),
+            Some(vec![
+                "seven_day".into(),
+                "seven_day_overage_included".into()
+            ])
+        );
+        // An older Claude Code's report of one limit says nothing of the rest.
+        let one = json!({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.8
+        }});
+        assert_eq!(listed(&one), None);
+        let other = json!({"type": "assistant", "rate_limit_info": {"unifiedWindows": {}}});
+        assert_eq!(listed(&other), None);
     }
 
     #[test]

@@ -2792,11 +2792,12 @@ message.
 
 Readings change only while sessions run, so the apps say when a session last
 reported them, and a window whose reset time has passed counts as started
-over. A limit that started over before the latest report, which didn't
-mention it, is one the plan no longer has, and is left out
-(`fctl_domain::usage::current`): Claude's Ultra plan (Max 20x before) dropped
-its five-hour limit once Claude verifies the account. Removing the connection
-deletes them.
+over. A report that lists the plan's windows (`unifiedWindows`, which recent
+Claude Code versions send whole) deletes the readings of limits it leaves out
+that started over by then (`fctl_domain::usage::listed`): the plan no longer
+has them, as Claude's Ultra plan (Max 20x before) dropped its five-hour limit
+once Claude verifies the account. Older versions report one limit at a time,
+which says nothing of the others. Removing the connection deletes them.
 
 The apps name the Ultra plan ("Claude Ultra" on the Agent Floor, "Ultra" in
 Settings and `fctl claude status`) from the login's rate limit tier
