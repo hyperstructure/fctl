@@ -2,6 +2,17 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.27.3 (2026-11-01)
+
+### Features
+
+- Name Claude Ultra plans and hide the 5-hour limit they dropped ([#367](https://github.com/hyperstructure/fctl/pull/367))
+
+### Fixes
+
+- **agent:** Push branches GitHub lacks only when they are the session's ([#365](https://github.com/hyperstructure/fctl/pull/365))
+- **web:** Keep the new workspace's avatar still when the slug hint wraps ([#366](https://github.com/hyperstructure/fctl/pull/366))
+
 ## 0.27.2 (2026-10-31)
 
 ### Fixes
