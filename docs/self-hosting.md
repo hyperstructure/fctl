@@ -396,7 +396,10 @@ fctl uses no other permission or event. An app that has more works the
 same: the tokens fctl gives sessions carry only the permissions under
 [What sessions get](#what-sessions-get), whatever the app has, and it
 answers deliveries of other events without acting on them. (app.fctl.sh's
-own app, `fctl-sh`, has more, for work beyond fctl's.)
+own app, `fctl-sh`, has more, for work beyond fctl's.) Among those,
+**Release**, **Workflow run** and **Merge queue entry** aren't in use
+yet, but a future version of fctl may use them; its release notes will
+say when an app needs them.
 
 ### 2. Install it
 
