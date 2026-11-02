@@ -10,7 +10,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "wrangler": "4.153.0"
+    "wrangler": "4.156.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15"
