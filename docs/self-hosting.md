@@ -18,8 +18,27 @@ of two ways, with the same features, settings, hosts and apps:
 | Backups | copies of its data directory | D1's 30 days of point-in-time history |
 | Made for | trying fctl out, a spare machine, a homelab, a cluster you run | a team's everyday instance, as app.fctl.sh |
 
-Set up the control plane one of the two ways, then the rest of this page
-(your team, GitHub, Google sign-in, email, hosts) is the same for both.
+Set up the control plane one of the two ways. The rest of this page is the
+same for both, in the order to follow:
+
+1. [The first account and your team](#the-first-account-and-your-team).
+2. [GitHub](#connect-github-optional-recommended): a GitHub App that
+   agents clone, push and open pull requests as, and whose webhook keeps
+   sessions' pull requests current. Without it, projects have no
+   repositories.
+3. Optionally, [a review app](#a-review-app-optional): a second GitHub App
+   that review agents post as, so that their reviews stand apart from what
+   the agents that opened the pull requests answer.
+4. Optionally, [Linear](#connect-linear-optional): an OAuth app with which
+   teams delegate Linear issues to fctl.
+5. Optionally, [Google sign-in](#google-sign-in-optional) and
+   [email](#email-optional).
+6. [Hosts](#bring-hosts-online), the machines agents run on.
+
+Each app takes a few minutes in GitHub's or Linear's settings, then its
+IDs and secrets go to the control plane: as environment variables on your
+own machine, in the instance file and with `cargo xtask secrets` on
+Cloudflare.
 
 ## On your own machine or cluster
 
@@ -316,83 +335,120 @@ a random ending instead (`home-829d34`).
 With a GitHub App, projects link repositories, agents get short-lived tokens
 for their project's repositories only, and fctl can create new repositories.
 An instance has one app; each workspace works in the accounts it is
-installed on that are connected to the workspace.
+installed on that are connected to the workspace. A second app, for review
+agents to post as, is optional ([A review app](#a-review-app-optional)).
 
-1. Create an app under your organization: **Settings → Developer settings →
-   GitHub Apps → New GitHub App**. Leave its webhook on, with the **Webhook
-   URL** `https://fctl.acme.dev/api/v1/github/webhook` (your
-   `FCTL_PUBLIC_URL` followed by `/api/v1/github/webhook`) and a **Webhook
-   secret** of your own (`openssl rand -hex 32`), which you give the
-   control plane too (step 3): GitHub then tells fctl when pull requests
-   and their checks change, and sessions show them as they are. Set its **Setup
-   URL** to `https://fctl.acme.dev/api/v1/github/installed` (your
-   `FCTL_PUBLIC_URL` followed by `/api/v1/github/installed`) and tick
-   **Redirect on update**, so that people who install it from a workspace,
-   or give it more repositories, come back to the workspace to choose what
-   it works in. Add a **Callback URL**,
-   `https://fctl.acme.dev/api/v1/github/authorized` (your `FCTL_PUBLIC_URL`
-   followed by `/api/v1/github/authorized`): a workspace's admin signs in
-   to GitHub there to connect an account, which shows the app what they may
-   connect. Leave **Request user authorization (OAuth) during
-   installation** off — fctl starts the sign-in itself. Repository
-   permissions:
+The steps below use `https://fctl.acme.dev` as `FCTL_PUBLIC_URL`; put
+yours in its place. GitHub delivers the app's webhook from the internet,
+so it needs to reach that address. An instance it can't reach, such as one
+served over plain http on a home network, still works with the app, but
+sessions learn of merges and checks hours late, through the hourly lookup
+([Pull request state and checks](#pull-request-state-and-checks)).
+Reviews start only when someone asks for one (`fctl review start`), and
+follow-ups, which need the webhook, don't come at all.
 
-   | Permission | Access | Why |
-   |---|---|---|
-   | Contents | Read and write | clone, commit, push |
-   | Pull requests | Read and write | open and update pull requests |
-   | Issues | Read and write | agents can read and comment on issues |
-   | Workflows | Read and write | agents may edit `.github/workflows` |
-   | Checks | Read and write | agents can see CI results; review agents' checks |
-   | Actions, Commit statuses | Read | agents can see CI results |
-   | Administration | Read and write | only for **New repository** |
-   | Metadata | Read | required |
+### 1. Create the app
 
-   Under **Subscribe to events**, tick **Pull request**, **Check run**,
-   **Check suite** and **Status**: the webhook's deliveries. Tick **Issue
-   comment**, **Pull request review** and **Pull request review comment**
-   too, for [follow-ups](#follow-ups) that bring agents back when people
-   mention them.
+Under the organization that will own it, open **Settings → Developer
+settings → GitHub Apps → New GitHub App** and fill in the form from the
+top:
 
-2. Install it on the organization (all repositories, or the ones agents may
-   touch, including those they only read, such as private dependencies).
-   To let workspaces use other accounts (someone's own, a friend's
-   organization), make the app public (**Advanced → Make public**): only
-   then can others install it. Installing it lets the instance mint tokens
-   for that account, but no workspace uses it until one of its admins
-   connects it.
-3. Generate a **private key** and a **client secret** (both under the app's
-   settings), and tell the control plane about the app. The client secret
-   signs workspace admins in to GitHub to connect accounts; reading their
-   installations and repositories needs only the Metadata permission above,
-   so the app asks for no more.
+| Field | Value |
+|---|---|
+| **GitHub App name** | Your choice, such as `acme-fctl`: agents' commits, pull requests and comments show it. The end of its public link (`github.com/apps/acme-fctl`) is its slug |
+| **Homepage URL** | `https://fctl.acme.dev`, or a page about your instance |
+| **Redirect URI** (**Callback URL** in older forms) | `https://fctl.acme.dev/api/v1/github/authorized`. A workspace's admin signs in to GitHub there to connect an account, which shows fctl what they may connect |
+| **Request user authorization (OAuth) during installation** | Off: fctl starts the sign-in itself |
+| **Enable Device Flow** | Off |
+| **Setup URL** | `https://fctl.acme.dev/api/v1/github/installed` |
+| **Redirect on update** | On, so that people who install the app from a workspace, or give it more repositories, come back to the workspace to choose what it works in |
+| **Webhook: Active** | On |
+| **Webhook URL** | `https://fctl.acme.dev/api/v1/github/webhook` |
+| **Secret** | A secret of your own (`openssl rand -hex 32`), which you give the control plane in step 3 |
+| **SSL verification** | Enabled |
+| **Permissions** | The repository permissions below; no organization or account permissions |
+| **Subscribe to events** | The events below |
+| **Where can this GitHub App be installed?** | **Only on this account** when workspaces work only in your organization. **Any account** lets workspaces use other accounts too (someone's own, a friend's organization), which can install it only then; you can change it later under **Advanced → Make public** |
 
-   On your own machine, set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`,
-   `GITHUB_CLIENT_ID`, `GITHUB_DEFAULT_OWNER` (the organization **New
-   repository** creates repositories in), `GITHUB_APP_PRIVATE_KEY` (the key
-   as GitHub gives it; with Kubernetes, in the `fctl` Secret:
-   `--from-file=GITHUB_APP_PRIVATE_KEY=acme-fctl.private-key.pem`),
-   `GITHUB_CLIENT_SECRET` and `GITHUB_WEBHOOK_SECRET` (the webhook's
-   secret), and start the server again.
+Leave the other fields as GitHub sets them. Repository permissions:
 
-   On Cloudflare, fill in the instance file:
+| Permission | Access | Why |
+|---|---|---|
+| Contents | Read and write | clone, commit, push |
+| Pull requests | Read and write | open and update pull requests |
+| Issues | Read and write | agents can read and comment on issues |
+| Workflows | Read and write | agents may edit `.github/workflows` |
+| Checks | Read and write | agents can see CI results; review agents' checks |
+| Actions, Commit statuses | Read | agents can see CI results |
+| Administration | Read and write | only for **New repository** |
+| Metadata | Read | required (GitHub ticks it itself) |
 
-   ```toml
-   [github]
-   app_id = "123456"
-   app_slug = "acme-fctl"
-   client_id = "Iv23li…"
-   default_owner = "acme"     # where "New repository" creates repositories
-   ```
+Events, which GitHub offers once the permissions above are chosen:
 
-   Then store the key and the client secret and redeploy:
+| Event | What fctl does with it |
+|---|---|
+| **Pull request** | keeps sessions' pull requests current (opened, merged, closed), starts reviews, and brings agents back when their pull requests merge or close |
+| **Check run**, **Check suite** | shows checks as they change, and brings agents back when one fails |
+| **Status** | the same for CI that reports commit statuses rather than checks |
+| **Issue comment**, **Pull request review**, **Pull request review comment** | brings agents back when people mention them ([Follow-ups](#follow-ups)) |
 
-   ```sh
-   cargo xtask secrets acme --github-key ~/Downloads/acme-fctl.private-key.pem
-   echo "$GITHUB_CLIENT_SECRET" | cargo xtask secrets acme --set GITHUB_CLIENT_SECRET
-   echo "$GITHUB_WEBHOOK_SECRET" | cargo xtask secrets acme --set GITHUB_WEBHOOK_SECRET
-   cargo xtask deploy acme
-   ```
+fctl uses no other permission or event. An app that has more works the
+same: the tokens fctl gives sessions carry only the permissions under
+[What sessions get](#what-sessions-get), whatever the app has, and it
+answers deliveries of other events without acting on them. (app.fctl.sh's
+own app, `fctl-sh`, has more, for work beyond fctl's.) Among its events,
+**Release**, **Workflow run** and **Merge queue entry** aren't in use
+yet, but a future version of fctl may use them.
+
+### 2. Install it
+
+Install the app on the organization (all repositories, or the ones agents
+may touch, including those they only read, such as private dependencies),
+from its public link or **Install App** in its settings. Installing it
+lets the instance mint tokens for that account, but no workspace uses it
+until one of its admins connects it (step 4).
+
+### 3. Tell the control plane about it
+
+Collect these from the app's settings on GitHub (**General**):
+
+| Setting | Where it comes from |
+|---|---|
+| `GITHUB_APP_ID` (`app_id`) | **App ID**, at the top |
+| `GITHUB_CLIENT_ID` (`client_id`) | **Client ID**, under it |
+| `GITHUB_APP_SLUG` (`app_slug`) | the end of the **Public link** |
+| `GITHUB_DEFAULT_OWNER` (`default_owner`) | the organization **New repository** creates repositories in |
+| `GITHUB_APP_PRIVATE_KEY` | **Private keys → Generate a private key**, which downloads a `.pem` file |
+| `GITHUB_CLIENT_SECRET` | **Client secrets → Generate a new client secret** |
+| `GITHUB_WEBHOOK_SECRET` | the webhook's secret from step 1 |
+
+The client secret signs workspace admins in to GitHub to connect
+accounts; reading their installations and repositories needs only the
+Metadata permission above, so the app asks for no more.
+
+On your own machine, set the seven variables (with Kubernetes, the key in
+the `fctl` Secret:
+`--from-file=GITHUB_APP_PRIVATE_KEY=acme-fctl.private-key.pem`) and start
+the server again.
+
+On Cloudflare, fill in the instance file:
+
+```toml
+[github]
+app_id = "123456"
+app_slug = "acme-fctl"
+client_id = "Iv23li…"
+default_owner = "acme"     # where "New repository" creates repositories
+```
+
+Then store the key and the two secrets and redeploy:
+
+```sh
+cargo xtask secrets acme --github-key ~/Downloads/acme-fctl.private-key.pem
+echo "$GITHUB_CLIENT_SECRET" | cargo xtask secrets acme --set GITHUB_CLIENT_SECRET
+echo "$GITHUB_WEBHOOK_SECRET" | cargo xtask secrets acme --set GITHUB_WEBHOOK_SECRET
+cargo xtask deploy acme
+```
 
 The key is stored as PKCS#8, which WebCrypto imports (`cargo xtask secrets`
 and the server convert it); it never reaches a host or a sandbox. fctl
@@ -400,6 +456,17 @@ reads it also on one line, as a form can store it, its line breaks turned
 into spaces, dropped or written as `\n`. Without the client secret, a
 workspace keeps the accounts it has but can't connect a new one, and its
 GitHub tab says so.
+
+### 4. Connect it to a workspace
+
+A workspace's admin connects the account under the workspace's **GitHub**
+tab (or `fctl workspaces connect`) and chooses the repositories it works
+in ([Which workspace uses which account](#which-workspace-uses-which-account)).
+Projects then link those repositories. **Admin → GitHub** shows the app's
+installations, and the app's **Advanced → Recent Deliveries** on GitHub
+show each webhook delivery with the control plane's answer: the `ping`
+GitHub sent as the app was created got 501 if the control plane didn't
+have the secret yet; **Redeliver** it to see `{"ok":true}`.
 
 ### Pull request state and checks
 
@@ -430,13 +497,14 @@ project's Reviews tab says why.
 
 To turn the webhook on for an app made before, edit it on GitHub: under
 **General**, tick **Active** under **Webhook** and fill in its URL and
-secret; under **Permissions & events**, subscribe to the four events
-above. Installations accept nothing new: the app reads pull requests,
-checks and commit statuses already. **Advanced → Recent Deliveries** shows
+secret; under **Permissions & events**, subscribe to **Pull request**,
+**Check run**, **Check suite** and **Status**. Installations accept
+nothing new: the app reads pull requests, checks and commit statuses
+already. **Advanced → Recent Deliveries** shows
 each delivery and the control plane's answer: `{"ok":true,"sessions":1}`
 when a session heard of it.
 
-Subscribe to all four events before you rely on the webhook. When a pull
+Subscribe to those four events before you rely on the webhook. When a pull
 request merges or closes while **Pull request** isn't subscribed, or the
 webhook is off, GitHub sends nothing about it, and its sessions keep
 showing it as it was until the hourly job looks it up again. The job skips
@@ -560,27 +628,39 @@ one where it's installed, so that a pull request shows a review agent's
 findings apart from what the agent that opened it answers (app.fctl.sh's
 are `fctl-review` and `fctl-sh`). Where it isn't installed on an account,
 or doesn't reach a repository, reviews post as the GitHub App, as before.
+Skip it, and review agents work all the same.
 
-1. Create a second app under your organization, as in step 1 above, with
-   a name and logo of its own. Untick **Active** under **Webhook** (the
-   GitHub App's webhook tells fctl everything), and add no callback URL:
-   it signs nobody in. Set its **Setup URL** to
-   `https://fctl.acme.dev/api/v1/github-review/installed` (your
-   `FCTL_PUBLIC_URL` followed by `/api/v1/github-review/installed`) and
-   tick **Redirect on update**, so that people who install it from a
-   workspace come back there. Repository permissions:
+1. Create a second app under the same organization, as in
+   [step 1](#1-create-the-app) above, with a name and logo of its own.
+   It signs nobody in and hears nothing from GitHub (the GitHub App's
+   webhook tells fctl everything), so most of the form stays empty:
+
+   | Field | Value |
+   |---|---|
+   | **GitHub App name** | Your choice, such as `acme-fctl-review`: reviews show it |
+   | **Homepage URL** | `https://fctl.acme.dev`, or a page about your instance |
+   | **Redirect URI** | None |
+   | **Request user authorization (OAuth) during installation** | Off |
+   | **Enable Device Flow** | Off |
+   | **Setup URL** | `https://fctl.acme.dev/api/v1/github-review/installed` |
+   | **Redirect on update** | On, so that people who install it from a workspace come back there |
+   | **Webhook: Active** | Off, with no URL or secret |
+   | **Permissions** | The repository permissions below; no organization or account permissions |
+   | **Subscribe to events** | None (GitHub offers none while the webhook is off) |
+   | **Where can this GitHub App be installed?** | As for the GitHub App, so that the same accounts can install it |
+
+   Repository permissions:
 
    | Permission | Access | Why |
    |---|---|---|
    | Pull requests | Read and write | post reviews and their summaries, mark findings fixed, sum pull requests up in their descriptions |
    | Checks | Read and write | the `fctl review` check |
    | Contents | Read and write | resolve fctl's earlier threads, as GitHub asks; without it, the GitHub App resolves them |
-   | Metadata | Read | required |
+   | Metadata | Read | required (GitHub ticks it itself) |
 
-   Make it public too where the GitHub App is (**Advanced → Make public**),
-   so that the same accounts can install it.
-2. Generate a **private key**, and tell the control plane about the app.
-   On your own machine, set `GITHUB_REVIEW_APP_ID`,
+2. Generate a **private key** (**General → Private keys**), and tell the
+   control plane about the app: its **App ID** and the slug at the end of
+   its **Public link**. On your own machine, set `GITHUB_REVIEW_APP_ID`,
    `GITHUB_REVIEW_APP_SLUG` and `GITHUB_REVIEW_APP_PRIVATE_KEY`, and start
    the server again. On Cloudflare, add it to the instance file's
    `[github]`:
@@ -624,25 +704,29 @@ starts a session of the project that takes the issue's team, as the person
 who asked, which reports back in the issue
 ([Architecture](architecture.md#linear)). An instance has one app, which
 each workspace's admins install in their Linear workspace from fctl.
+Delegations reach fctl only through the app's webhook, so Linear needs to
+reach your instance from the internet.
 
-1. Create an OAuth application in a Linear workspace you administer, in
-   its API settings or from a manifest:
-   - Its **redirect URI**: `https://fctl.acme.dev/api/v1/linear/installed`
-     (your `FCTL_PUBLIC_URL` followed by `/api/v1/linear/installed`).
-     Workspaces install the app there, and people link their Linear
-     accounts.
-   - **Public** distribution, so that Linear workspaces other than yours can
-     install it; without it, only yours can.
-   - Its **webhook**, at `https://fctl.acme.dev/api/v1/linear/webhook` (your
-     `FCTL_PUBLIC_URL` followed by `/api/v1/linear/webhook`), with the
-     resource types `AgentSessionEvent` (delegations, mentions, replies and
-     stops), `OAuthAuthorization` (Linear says fctl's app was uninstalled
-     from a Linear workspace, as an `OAuthApp` revocation) and
-     `PermissionChange` (its admins changed the teams it sees). fctl uses
-     no others: they only send it every change in every Linear workspace
-     that installs the app.
+1. Create an OAuth application in a Linear workspace you administer
+   (**Settings → API → OAuth applications**), and fill it in:
 
-   A manifest with these:
+   | Field | Value |
+   |---|---|
+   | **Application name** | Your choice: people assign issues to it and mention it by this name (app.fctl.sh's is `fctl-sh`) |
+   | **Developer name**, **Developer URL** | Who runs the instance, shown as Linear asks to install the app |
+   | **Callback URLs** (Redirect URIs) | `https://fctl.acme.dev/api/v1/linear/installed`: workspaces install the app there, and people link their Linear accounts |
+   | **Public** | On (Publicly available), so that Linear workspaces other than yours can install it; off, only yours can |
+   | **Webhooks** | On |
+   | **Webhook URL** | `https://fctl.acme.dev/api/v1/linear/webhook` |
+   | **Events** | **Agent session events** (delegations, mentions, replies and stops), **OAuth authorization events** (Linear says fctl's app was uninstalled from a Linear workspace) and **Permission changes** (its admins changed the teams it sees) |
+
+   fctl uses no other events: they only send it every change in every
+   Linear workspace that installs the app, which it answers without
+   acting on. (app.fctl.sh's app subscribes to more, such as issues and
+   comments, for work beyond fctl's.)
+
+   Or create it from a manifest with these, whose resource types are the
+   three events above:
 
    ```json
    {
@@ -665,11 +749,13 @@ each workspace's admins install in their Linear workspace from fctl.
    `app:assignable` (people assign it issues, which delegates them) and
    `app:mentionable` (people mention it), as Linear's own agent (`actor=app`);
    and `read` alone, revoked at once, when someone links their account.
-2. Tell the control plane about it. On your own machine, set
-   `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` and `LINEAR_WEBHOOK_SECRET`
-   (the webhook's signing secret) and start the server again. On
-   Cloudflare, add the client ID to the instance file and the secrets to
-   the Worker:
+   The app needs no developer token.
+2. Tell the control plane about it: the **Client ID** and **Client
+   secret** under **OAuth credentials**, and the **Signing secret** under
+   **Webhooks**. On your own machine, set `LINEAR_CLIENT_ID`,
+   `LINEAR_CLIENT_SECRET` and `LINEAR_WEBHOOK_SECRET` (the signing secret)
+   and start the server again. On Cloudflare, add the client ID to the
+   instance file and the secrets to the Worker:
 
    ```toml
    [linear]
