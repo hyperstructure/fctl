@@ -2,6 +2,16 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.27.4 (2026-11-02)
+
+### Documentation
+
+- Walk through the GitHub, review and Linear apps' setup forms ([#368](https://github.com/hyperstructure/fctl/pull/368))
+
+### Other changes
+
+- **deps:** Bump wrangler to 4.156.1 for workerd with Brotli 1.2.1 ([#371](https://github.com/hyperstructure/fctl/pull/371))
+
 ## 0.27.3 (2026-11-01)
 
 ### Features
