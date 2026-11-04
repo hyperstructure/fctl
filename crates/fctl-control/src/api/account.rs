@@ -12,7 +12,7 @@
 
 use crate::auth;
 use crate::ctx::Ctx;
-use crate::db::{Count, Val, batch, n, q, s};
+use crate::db::{Count, Val, all_paged, batch, n, q, s};
 use crate::error::{AppResult, conflict, internal, validation};
 use crate::http;
 use crate::internal as dobj;
@@ -30,6 +30,13 @@ use std::collections::VecDeque;
 use worker::{Env, Request, Response};
 
 const ACTIVE: &str = "('queued','provisioning','preparing','running','idle','paused','stopping')";
+
+/// Sessions an export reads from D1 at a time: a person may have thousands,
+/// each with a prompt of up to 100 000 characters, and D1 fails a query
+/// whose result is over 50 MB.
+const EXPORT_SESSIONS_PAGE: usize = 100;
+/// Entries of the audit log an export reads at a time (they are small).
+const EXPORT_ACTIVITY_PAGE: usize = 2000;
 
 /// Workspaces where `?1` is the only member.
 const SOLE_WORKSPACES: &str = "SELECT m.workspace_id FROM workspace_members m WHERE m.user_id = ?1 \
@@ -556,15 +563,15 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     .collect();
     let mine_seen =
         || -> AppResult<[Val; 2]> { Ok([s(&user.id), s(&serde_json::to_string(&seen)?)]) };
-    let followed: Vec<String> = q(
+    let followed: Vec<String> = all_paged::<crate::model::SessionRow>(
         &ctx.db,
         &format!(
-            "{} WHERE s.id IN (SELECT session_id FROM session_followers WHERE user_id = ?1)",
+            "{} WHERE s.id IN (SELECT session_id FROM session_followers WHERE user_id = ?1) ORDER BY s.id",
             crate::model::SESSION_SELECT
         ),
         &me(),
-    )?
-    .all::<crate::model::SessionRow>()
+        EXPORT_SESSIONS_PAGE,
+    )
     .await?
     .into_iter()
     .filter(|r| crate::access::session_role(&user, &settings, None, r).is_some())
@@ -801,36 +808,45 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     );
     doc.insert(
         "activity".into(),
-        rows(
-            ctx,
-            // The addresses of their own requests, not of others' that
-            // concerned them (an admin's, say); in workspaces, those open
-            // to them, as the rest.
-            "SELECT ts, action, target, data, CASE WHEN actor_id = ?1 THEN ip END AS ip FROM audit_log \
-             WHERE (actor_id = ?1 OR target = ?1) \
-             AND (workspace_id IS NULL OR workspace_id IN (SELECT value FROM json_each(?2))) ORDER BY ts",
-            &mine_open()?,
-        )
-        .await?,
+        Value::Array(
+            all_paged::<Value>(
+                &ctx.db,
+                // The addresses of their own requests, not of others' that
+                // concerned them (an admin's, say); in workspaces, those
+                // open to them, as the rest.
+                "SELECT ts, action, target, data, CASE WHEN actor_id = ?1 THEN ip END AS ip FROM audit_log \
+                 WHERE (actor_id = ?1 OR target = ?1) \
+                 AND (workspace_id IS NULL OR workspace_id IN (SELECT value FROM json_each(?2))) ORDER BY ts, id",
+                &mine_open()?,
+                EXPORT_ACTIVITY_PAGE,
+            )
+            .await?
+            .into_iter()
+            .map(readable)
+            .collect(),
+        ),
     );
-    let sessions: Vec<Value> = q(
+    let sessions: Vec<Value> = all_paged(
         &ctx.db,
         "SELECT s.id, p.slug AS project, s.number, s.title, s.description, s.prompt, s.status, s.branch, s.base_branch, \
          s.model, s.effort, s.claude_effort, s.pr_url AS pull_request, s.pull_requests, s.created_at, s.started_at, s.ended_at \
          FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.created_by = ?1 \
-         AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY s.created_at",
+         AND p.workspace_id IN (SELECT value FROM json_each(?2)) ORDER BY s.created_at, s.id",
         &mine_open()?,
-    )?
-    .all()
+        EXPORT_SESSIONS_PAGE,
+    )
     .await?;
     // Only those they can still see: starting a session counts while they
     // may start sessions in its project (`perm::session_role`).
-    let visible: std::collections::HashSet<String> = q(
+    let visible: std::collections::HashSet<String> = all_paged::<crate::model::SessionRow>(
         &ctx.db,
-        &format!("{} WHERE s.created_by = ?1", crate::model::SESSION_SELECT),
+        &format!(
+            "{} WHERE s.created_by = ?1 ORDER BY s.id",
+            crate::model::SESSION_SELECT
+        ),
         &me(),
-    )?
-    .all::<crate::model::SessionRow>()
+        EXPORT_SESSIONS_PAGE,
+    )
     .await?
     .into_iter()
     .filter(|r| crate::access::session_role(&user, &settings, None, r).is_some())
