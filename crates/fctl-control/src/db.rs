@@ -67,6 +67,36 @@ impl Query {
     }
 }
 
+/// All rows of a query that has no bound on how many it returns, read
+/// `page` rows at a time: D1 fails a query whose result is over 50 MB.
+/// `sql` must end in an `ORDER BY` that orders its rows totally, and use
+/// every one of `params`; the pages are separate queries, not a snapshot.
+pub async fn all_paged<T: DeserializeOwned>(
+    db: &D1Database,
+    sql: &str,
+    params: &[Val],
+    page: usize,
+) -> AppResult<Vec<T>> {
+    let page = page.max(1);
+    let sql = format!(
+        "{sql} LIMIT ?{} OFFSET ?{}",
+        params.len() + 1,
+        params.len() + 2
+    );
+    let mut out = Vec::new();
+    loop {
+        let mut bound = params.to_vec();
+        bound.push(n(page as i64));
+        bound.push(n(out.len() as i64));
+        let rows: Vec<T> = q(db, &sql, &bound)?.all().await?;
+        let last = rows.len() < page;
+        out.extend(rows);
+        if last {
+            return Ok(out);
+        }
+    }
+}
+
 /// Runs statements in one transaction.
 pub async fn batch(db: &D1Database, statements: Vec<Query>) -> AppResult<()> {
     db.batch(statements.into_iter().map(Query::statement).collect())
