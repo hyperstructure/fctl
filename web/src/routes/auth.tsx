@@ -155,29 +155,81 @@ function finished(r: G.AuthResponse, next?: string) {
   if (r.me) signedIn(r.me, r.next ?? next);
 }
 
-function GoogleButton({ label, next }: { label: string; next?: string }) {
+/** An address's name and its `@domain`, for breaking or cutting it short between the two. */
+function splitAddress(email: string): [string, string] {
+  const at = email.lastIndexOf("@");
+  return at > 0 ? [email.slice(0, at), email.slice(at)] : [email, ""];
+}
+
+/** An address in running text: it stands out, and where it must wrap, it breaks before its `@`. */
+function Address({ email }: { email: string }) {
+  const [name, domain] = splitAddress(email);
+  return (
+    <span className="text-ink">
+      {name}
+      <wbr />
+      {domain}
+    </span>
+  );
+}
+
+function GoogleMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.7z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24z"
+      />
+      <path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.3a12 12 0 0 0 0 10.8l4-3.1z" />
+      <path
+        fill="#EA4335"
+        d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9z"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Signs in with Google. With `email` (an invitation's address), the address
+ * goes on a line of its own under the label, and a long one is cut short,
+ * its name sooner than its domain: the button stays one height however long
+ * it is.
+ */
+function GoogleButton({ next, email }: { next?: string; email?: string }) {
   const back = appPath(next) !== "/" ? `&return_to=${encodeURIComponent(appPath(next))}` : "";
+  const href = `/api/v1/auth/google/start?intent=login${back}`;
+  const frame =
+    "flex w-full items-center rounded-lg border border-line-strong bg-raised/80 text-ink transition-colors hover:border-ink-4";
+  if (!email) {
+    return (
+      <a href={href} className={cn(frame, "h-10 justify-center gap-2.5 text-[14px] font-medium")}>
+        <GoogleMark className="size-4 shrink-0" />
+        Continue with Google
+      </a>
+    );
+  }
+  const [name, domain] = splitAddress(email);
   return (
     <a
-      href={`/api/v1/auth/google/start?intent=login${back}`}
-      className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg border border-line-strong bg-raised/80 text-[14px] font-medium text-ink transition-colors hover:border-ink-4"
+      href={href}
+      title={email}
+      aria-label={`Continue with Google as ${email}`}
+      className={cn(frame, "group h-14 gap-3 pr-3.5 pl-4 text-left")}
     >
-      <svg viewBox="0 0 24 24" className="size-4" aria-hidden="true">
-        <path
-          fill="#4285F4"
-          d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.7z"
-        />
-        <path
-          fill="#34A853"
-          d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24z"
-        />
-        <path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.3a12 12 0 0 0 0 10.8l4-3.1z" />
-        <path
-          fill="#EA4335"
-          d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9z"
-        />
-      </svg>
-      {label}
+      <GoogleMark className="size-5 shrink-0" />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-[14px] leading-tight font-medium">Continue with Google</span>
+        {/* The name gives way first, and the domain keeps at most two thirds of the line. */}
+        <span className="flex min-w-0 text-[12.5px] leading-tight text-ink-3">
+          <span className="min-w-0 truncate">{name}</span>
+          <span className="max-w-2/3 shrink-0 truncate">{domain}</span>
+        </span>
+      </span>
+      <ArrowRight className="size-4 shrink-0 text-ink-3 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-ink motion-reduce:transition-none" />
     </a>
   );
 }
@@ -266,7 +318,7 @@ export function LoginPage() {
       {(instance?.features.google || passkey.supported) && (
         <>
           <div className="flex flex-col gap-2.5">
-            {instance?.features.google && <GoogleButton label="Continue with Google" next={search.next} />}
+            {instance?.features.google && <GoogleButton next={search.next} />}
             {passkey.supported && (
               <button
                 type="button"
@@ -511,8 +563,8 @@ export function InvitePage() {
   );
   const subtitle = preview.data ? (
     <>
-      {preview.data.invited_by ?? "An admin"} invited {email} to {preview.data.instance}, where Claude agents
-      build software.
+      {preview.data.invited_by ?? "An admin"} invited <Address email={email} /> to {preview.data.instance},
+      where Claude agents build software.
     </>
   ) : (
     "Checking your invitation…"
@@ -539,9 +591,9 @@ export function InvitePage() {
             </div>
           </div>
           <p className="text-[13.5px] leading-relaxed text-ink-3">
-            Connect <span className="text-ink">{email}</span> to this account: it signs in to it too, has its
-            own commit email, and the workspaces you join as it see only it. Connect it only if the address is
-            yours: whoever has it can reset this account's password.
+            Connect <Address email={email} /> to this account: it signs in to it too, has its own commit
+            email, and the workspaces you join as it see only it. Connect it only if the address is yours:
+            whoever has it can reset this account's password.
           </p>
           {connect.error && <Banner tone="error">{connect.error.message}</Banner>}
           <Button
@@ -592,7 +644,7 @@ export function InvitePage() {
       {workspacesLine}
       {instance?.features.google && (
         <>
-          <GoogleButton label={`Continue with Google as ${email}`} />
+          <GoogleButton email={email} />
           <div className="my-5 flex items-center gap-3 text-[12px] text-ink-4">
             <div className="h-px flex-1 bg-line" /> or set a password <div className="h-px flex-1 bg-line" />
           </div>
