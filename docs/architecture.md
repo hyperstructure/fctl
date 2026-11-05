@@ -1268,7 +1268,8 @@ agent posts a notice; a primary repository out of reach fails the session.
   diff (`FileChange.digest`), which changes whenever the diff does
   (`fctl_domain::diffs`). A session keeps at most 512 KB of a file's diff
   and 8 MB of them all, the smallest first, and fctl-agent doesn't read a
-  file's past 50,000 changed lines: the others are `too_large`. When they
+  file's past 50,000 changed lines, nor more than 16 MB of git's diff and
+  untracked files in a refresh: the others are `too_large`. When they
   changed, it hands them all to its host (`AgentToHost::Diff`) before the
   `git` event that has their digests, and again to a host that attaches.
   The host passes them on over the session's uplink (`UplinkUp::Diff`), so
