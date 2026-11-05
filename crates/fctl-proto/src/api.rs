@@ -2560,6 +2560,18 @@ pub struct UpdateSessionRequest {
     /// What the session is about; an empty string clears it.
     pub description: Option<String>,
     pub archived: Option<bool>,
+    /// The model its agent works on from now on, in this run and the
+    /// next: an alias (`opus`, `sonnet`, `haiku`, `fable`) or a model's
+    /// ID. A running Claude switches at its next request, and reads the
+    /// whole conversation again without its prompt cache, which belongs to
+    /// the model it leaves. Control planes from before it ignore it.
+    pub model: Option<String>,
+    /// The effort level its agent works at from now on (`low` … `max`).
+    /// A running Claude changes it at its next request, keeping its prompt
+    /// cache where it sends the effort level with each turn
+    /// (`per_turn_effort_active` in Claude Code's `system/init`). Control
+    /// planes from before it ignore it.
+    pub effort: Option<String>,
 }
 
 #[skip_serializing_none]

@@ -86,10 +86,13 @@ enum Command {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
     },
-    /// Rename a session or say what it is about (agents: the session they run in).
+    /// Rename a session or say what it is about (agents: the session they
+    /// run in), or change the model and effort level its agent works at.
     #[command(
         after_help = "Examples:\n  fctl edit my-app#12 --title \"Fix the flaky login test\"\n  \
                             fctl edit my-app#12 --description \"\"       # clear the description\n  \
+                            fctl edit my-app#12 --effort medium        # plan at xhigh, then build at medium\n  \
+                            fctl edit my-app#12 --model sonnet         # its next step reads the conversation without the cache\n  \
                             fctl edit --title \"Retry failed uploads\"   # an agent, in its sandbox"
     )]
     Edit(cmd::sessions::EditArgs),

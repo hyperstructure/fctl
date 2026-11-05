@@ -42,6 +42,7 @@ import {
   PullRequestStateIcon,
 } from "@/components/session/pull-request";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
+import { SessionChoices } from "@/components/session/settings";
 import { Transcript } from "@/components/session/transcript";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
 import {
@@ -589,6 +590,11 @@ export function SessionPage() {
                 }
                 onInterrupt={() => store.interrupt()}
                 onTyping={() => store.typing()}
+                choices={
+                  isOwner && session ? (
+                    <SessionChoices session={session} perTurnEffort={s.perTurnEffort} />
+                  ) : undefined
+                }
                 onResume={async (t, files) => {
                   await resume.mutateAsync({
                     prompt: t,
@@ -1063,7 +1069,8 @@ function Details({
         )}
         {session.ticket && <Row k="Ticket" v={<TicketLink session={session} className="justify-end" />} />}
         {session.base_branch && <Row k="From" v={<span className="font-mono">{session.base_branch}</span>} />}
-        {(model ?? session.model) && <Row k="Model" v={model ?? session.model} />}
+        {/* What its agent says, also after a switch, which no new `init` says until the next turn. */}
+        {(session.model ?? model) && <Row k="Model" v={session.model ?? model} />}
         {session.effort && <Row k="Effort" v={session.effort} />}
         {project && onGithub(project) && (
           <Row k="On GitHub" v={<GithubAccessLabel access={sessionGithub(session, project)} />} />

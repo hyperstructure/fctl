@@ -66,6 +66,12 @@ export interface InitMessage extends ClaudeMessage {
   apiKeySource: string;
   claude_code_version?: string;
   permissionMode?: string;
+  /**
+   * Whether an effort change keeps the prompt cache: Claude sends the effort level with each turn
+   * (on the models that take it per message) rather than for the whole conversation. Absent from
+   * Claude Code before it.
+   */
+  per_turn_effort_active?: boolean;
 }
 
 export interface AssistantMessage extends ClaudeMessage {

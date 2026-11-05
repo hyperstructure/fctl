@@ -18,6 +18,13 @@ use serde_with::skip_serializing_none;
 /// `AgentHello`).
 pub const FEATURE_ATTACHMENTS: &str = "attachments";
 
+/// A host or fctl-agent that changes the model and the effort level Claude
+/// works at while it runs ([`DeliveryKind::Settings`]). SessionDO sends
+/// those deliveries only to hosts that say so, after their hello rather
+/// than in `UplinkDown::Welcome`, which older hosts couldn't read with
+/// one in it, and hosts pass them only to agents that say so.
+pub const FEATURE_SETTINGS: &str = "settings";
+
 /// An event produced in the sandbox.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -67,6 +74,31 @@ pub enum DeliveryKind {
         #[cfg_attr(feature = "ts", ts(optional))]
         by: Option<UserRef>,
     },
+    /// Work on another model or at another effort level from Claude's next
+    /// request on (`UpdateSessionRequest`), and start Claude on them if it
+    /// starts again in this run. Only for hosts and agents that announce
+    /// [`FEATURE_SETTINGS`].
+    Settings {
+        /// An alias (`opus`, `sonnet`, …) or a model's ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        model: Option<String>,
+        /// `low` … `max`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        by: Option<UserRef>,
+    },
+}
+
+impl DeliveryKind {
+    /// A change of model or effort level, which older hosts and agents
+    /// can't read.
+    pub fn is_settings(&self) -> bool {
+        matches!(self, Self::Settings { .. })
+    }
 }
 
 /// Session facts the host reports as state (idempotent, latest wins).
@@ -250,6 +282,36 @@ mod tests {
         let json = serde_json::to_value(&state)?;
         assert_eq!(json["effort"], "high");
         assert_eq!(serde_json::from_value::<SessionState>(json)?, state);
+        Ok(())
+    }
+
+    #[test]
+    fn settings_say_only_what_changes() -> serde_json::Result<()> {
+        let effort = Delivery {
+            id: crate::DeliveryId("dlv_1".into()),
+            kind: DeliveryKind::Settings {
+                model: None,
+                effort: Some("medium".into()),
+                by: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&effort)?,
+            r#"{"id":"dlv_1","kind":"settings","effort":"medium"}"#
+        );
+        assert!(effort.kind.is_settings());
+        let both: Delivery = serde_json::from_str(
+            r#"{"id":"dlv_2","kind":"settings","model":"sonnet","effort":"high"}"#,
+        )?;
+        assert_eq!(
+            both.kind,
+            DeliveryKind::Settings {
+                model: Some("sonnet".into()),
+                effort: Some("high".into()),
+                by: None,
+            }
+        );
+        assert!(!DeliveryKind::Interrupt { by: None }.is_settings());
         Ok(())
     }
 

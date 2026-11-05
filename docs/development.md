@@ -163,7 +163,9 @@ GitHub App, so none comes there by itself),
 and `crash` exits mid-turn. Anything
 else gets a short answer with a tool call. It answers `get_settings` with
 its model and effort level (`--effort`, else `medium`), which the session
-page and `fctl show` show. Its context grows with each call, from the 18K
+page and `fctl show` show, and takes a change of them from the session
+page or `fctl edit --model … --effort …` (`set_model`, which refuses the
+model `unknown`, and `apply_flag_settings`) once its turn ends. Its context grows with each call, from the 18K
 tokens of its system prompt and tools; like Claude Code with a 200K
 window, it compacts the conversation on its own once its context reaches
 167K tokens, and it answers `get_context_usage` with that window and where

@@ -339,6 +339,15 @@ the model's name and the effort level's symbol, the one Claude Code shows
 for it: ○ low, ◐ medium, ● high, ◉ extra high, ◈ max. In the terminal:
 `fctl run --model haiku --effort low "…"`.
 
+The same two lists sit beside the message box of a session you own, to
+change them as it runs: plan at extra high effort, say, then build at
+medium (`fctl edit my-app#12 --effort medium`). Claude works on the new
+ones from its next step, and the session resumes on them. Claude's prompt
+cache spares it reading the whole conversation again at each step: a new
+effort level keeps it on the models Claude sends the level to with each
+turn, Opus 5.5 among them, but a new model can't use it, so the page asks
+before it switches (and before an effort change that would lose it too).
+
 To show the agent what you mean, attach screenshots and files: with the
 paperclip, by pasting them into the message box, or by dropping them on the
 page (`fctl run -a screenshot.png "…"` in the terminal). The agent sees

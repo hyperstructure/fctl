@@ -77,7 +77,12 @@
 //! connector (`claude.ai Fake Docs`), as Claude Code does on a full login,
 //! unless `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, `0`, `no` or `off`.
 //! `get_settings` answers with the model and the effort level it works at
-//! (`applied`): `--effort`, else `medium`.
+//! (`applied`): `--effort`, else `medium`. `set_model` switches to the model
+//! it names (but `unknown`, which it says isn't there) and answers with it,
+//! by that name; `apply_flag_settings` takes an `effortLevel`. It answers
+//! control requests between turns, so a change during a turn waits for its
+//! end. Its `system/init` says that effort changes keep the prompt cache
+//! (`per_turn_effort_active`), as Claude Code 2.1.318 does on Opus 5.5.
 
 mod replay;
 
@@ -259,7 +264,7 @@ impl Session {
     fn turn_starts(&mut self) {
         self.report_turn(true);
         out(
-            &json!({"type": "system", "subtype": "init", "apiKeySource": self.api_key_source, "claude_code_version": self.version(), "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": self.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": self.mcp_servers, "model": self.model, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
+            &json!({"type": "system", "subtype": "init", "apiKeySource": self.api_key_source, "claude_code_version": self.version(), "cwd": std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default(), "session_id": self.id, "tools": ["Bash", "Read", "Write", "Edit"], "mcp_servers": self.mcp_servers, "model": self.model, "per_turn_effort_active": true, "permissionMode": "bypassPermissions", "slash_commands": [], "output_style": "default", "skills": [], "plugins": [], "uuid": uuid()}),
         );
     }
 
@@ -1931,6 +1936,25 @@ fn main() {
                     "interrupt" => json!({"subtype": "success", "request_id": id, "response": {}}),
                     "get_settings" => {
                         json!({"subtype": "success", "request_id": id, "response": {"effective": {}, "sources": [], "applied": {"model": session.model, "effort": session.effort}}})
+                    }
+                    // A change from the session's page (`fctl edit --model`):
+                    // the model from its next request, by the name it was given.
+                    "set_model" => match v.pointer("/request/model").and_then(Value::as_str) {
+                        Some(m) if m != "unknown" => {
+                            session.model = m.to_owned();
+                            json!({"subtype": "success", "request_id": id, "response": {"model": m}})
+                        }
+                        _ => {
+                            json!({"subtype": "error", "request_id": id, "error": "not_found: there is no such model"})
+                        }
+                    },
+                    // `--effort`'s setting, changed (`fctl edit --effort`);
+                    // `null` goes back to the default.
+                    "apply_flag_settings" => {
+                        if let Some(level) = v.pointer("/request/settings/effortLevel") {
+                            session.effort = Some(level.as_str().unwrap_or("medium").to_owned());
+                        }
+                        json!({"subtype": "success", "request_id": id})
                     }
                     "get_context_usage" => {
                         json!({"subtype": "success", "request_id": id, "response": session.context_usage()})

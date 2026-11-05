@@ -56,6 +56,8 @@ export interface LiveState {
   lastSeq: number;
   git?: G.GitState;
   model?: string;
+  /** Whether an effort change keeps Claude's prompt cache (`TranscriptBuilder.perTurnEffort`). */
+  perTurnEffort?: boolean;
   /** Tokens per second over the last few seconds, for the orb. */
   activity: number;
   error?: string;
@@ -242,6 +244,7 @@ export class LiveSession {
           lastSeq: Math.max(this.state.lastSeq, events[events.length - 1]?.seq ?? 0, m.next_seq - 1),
           git: this.builder.latestGit,
           model: this.builder.model ?? m.session.model,
+          perTurnEffort: this.builder.perTurnEffort,
           error: undefined,
         });
         patchSession(queryClient, m.session);
@@ -260,6 +263,7 @@ export class LiveSession {
           lastSeq: events[events.length - 1]?.seq ?? this.state.lastSeq,
           git: this.builder.latestGit,
           model: this.builder.model ?? this.state.model,
+          perTurnEffort: this.builder.perTurnEffort,
         });
         return;
       }
@@ -440,6 +444,8 @@ export class LiveSession {
       firstSeq: this.events[0]?.seq ?? firstSeq,
       loadingOlder: false,
       git: this.builder.latestGit,
+      model: this.builder.model ?? this.state.model,
+      perTurnEffort: this.builder.perTurnEffort,
     });
   }
 }

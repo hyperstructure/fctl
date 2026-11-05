@@ -413,22 +413,50 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         .as_deref()
         .map(validate::session_description)
         .transpose()?;
+    let model = body.model.as_deref().map(validate::model).transpose()?;
+    let effort = body.effort.as_deref().map(validate::effort).transpose()?;
+    let stub = internal::session_stub(&ctx.env, id)?;
+    // First, as SessionDO refuses a change a run under way can't take.
+    let settings = model.is_some() || effort.is_some();
+    if settings {
+        refuse_review(&a.row)?;
+        let _: serde_json::Value = internal::post(
+            &stub,
+            "/settings",
+            &internal::SessionSettings {
+                model: model.clone(),
+                effort: effort.clone(),
+                by: ctx.user()?.to_ref(),
+            },
+        )
+        .await?;
+    }
+    // Its next run starts on the model and the effort level asked for.
     q(
         &ctx.db,
         "UPDATE sessions SET title = COALESCE(?, title), description = CASE WHEN ? THEN ? ELSE description END, \
-         archived = COALESCE(?, archived), updated_at = ? WHERE id = ?",
+         archived = COALESCE(?, archived), model = COALESCE(?, model), effort = COALESCE(?, effort), updated_at = ? WHERE id = ?",
         &[
             os(title.as_deref()),
             crate::db::b(description.is_some()),
             os(description.clone().flatten().as_deref()),
             body.archived.map_or(crate::db::null(), crate::db::b),
+            os(model.as_deref()),
+            os(effort.as_deref()),
             n(ctx.now),
             s(id),
         ],
     )?
     .run()
     .await?;
-    let stub = internal::session_stub(&ctx.env, id)?;
+    if settings {
+        ctx.audit_in(
+            Some(a.workspace_id()),
+            "session.settings_changed",
+            Some(id),
+            Some(serde_json::json!({ "model": model, "effort": effort })),
+        );
+    }
     let _: serde_json::Value = internal::post(
         &stub,
         "/control",

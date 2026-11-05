@@ -22,10 +22,10 @@ use fctl_proto::runner::{
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::uplink::{
-    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
-    UplinkUp,
+    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SessionState,
+    UplinkDown, UplinkUp,
 };
-use fctl_proto::{ApiError, ErrorCode, Millis, RunnerId, SessionId};
+use fctl_proto::{ApiError, DeliveryId, ErrorCode, Millis, RunnerId, SessionId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -402,6 +402,56 @@ fn route(
     }
 }
 
+/// A change of model or effort level (`DeliveryKind::Settings`): an agent
+/// that starts again in this run (`agent_config`) starts Claude on it.
+fn follow_settings(spec: &mut SessionSpec, delivery: &Delivery) {
+    if let DeliveryKind::Settings { model, effort, .. } = &delivery.kind {
+        if let Some(m) = model {
+            spec.model = Some(m.clone());
+        }
+        if let Some(e) = effort {
+            spec.effort = Some(e.clone());
+        }
+    }
+}
+
+/// Takes the changes of model or effort level out of what waits for an
+/// agent that said hello without them, which couldn't read them, and
+/// returns their ids.
+fn refuse_settings(
+    unconfirmed: &mut Vec<Delivery>,
+    queued: &mut Vec<HostToAgent>,
+) -> Vec<DeliveryId> {
+    let mut refused: Vec<DeliveryId> = unconfirmed
+        .iter()
+        .filter(|d| d.kind.is_settings())
+        .map(|d| d.id.clone())
+        .collect();
+    unconfirmed.retain(|d| !d.kind.is_settings());
+    queued.retain(|f| match f {
+        HostToAgent::Deliver { delivery } if delivery.kind.is_settings() => {
+            if !refused.contains(&delivery.id) {
+                refused.push(delivery.id.clone());
+            }
+            false
+        }
+        _ => true,
+    });
+    refused
+}
+
+/// What the control plane hears of a change of model or effort level that
+/// the agent in the sandbox can't make.
+fn older_agent(delivery_id: DeliveryId) -> UplinkUp {
+    UplinkUp::Delivered {
+        delivery_id,
+        ok: false,
+        error: Some(
+            "The agent in this sandbox started on an older fctl and can't change the model or the effort level while Claude runs. Stop and resume the session, then change them again.".into(),
+        ),
+    }
+}
+
 /// Sends the deliveries the agent hasn't confirmed over a new link, but
 /// not those already waiting for one.
 fn resend(
@@ -744,7 +794,7 @@ async fn run(
     events: mpsc::UnboundedSender<SessionEvent>,
     report: Arc<Mutex<Report>>,
 ) -> (SessionStatus, Option<String>) {
-    let (session_id, spec) = match start {
+    let (session_id, mut spec) = match start {
         Start::New(spec) => (spec.session_id.clone(), Some(spec)),
         Start::Recover(id) => (id, None),
     };
@@ -846,6 +896,9 @@ async fn run(
     let mut queued: Vec<HostToAgent> = Vec::new();
     // Whether the attached agent takes `File` frames.
     let mut agent_files = false;
+    // Whether the attached agent changes the model and effort level Claude
+    // works at; until it says hello, it may.
+    let mut agent_settings = true;
     let mut exited: Option<(SessionStatus, Option<String>)> = None;
     let mut stop: Option<(bool, Instant)> = None;
     let mut superseded = false;
@@ -949,6 +1002,7 @@ async fn run(
                         );
                         set_report(h.status, Some(h.agent_seq));
                         agent_files = h.features.iter().any(|f| f == FEATURE_ATTACHMENTS);
+                        agent_settings = h.features.iter().any(|f| f == FEATURE_SETTINGS);
                         if !h.configured {
                             match &spec {
                                 Some(spec) if spec.resume && !welcomed => configure_when_welcomed = true,
@@ -960,6 +1014,11 @@ async fn run(
                                     uplink.state(state(SessionStatus::Stopped, &msg));
                                     break (SessionStatus::Stopped, Some(msg));
                                 }
+                            }
+                        }
+                        if !agent_settings {
+                            for id in refuse_settings(&mut unconfirmed, &mut queued) {
+                                uplink.send(older_agent(id));
                             }
                         }
                         if welcomed {
@@ -1034,6 +1093,13 @@ async fn run(
                             l.send(HostToAgent::Replay { after_agent_seq: acked });
                         }
                         for p in pending {
+                            if let Some(s) = spec.as_mut() {
+                                follow_settings(s, &p);
+                            }
+                            if p.kind.is_settings() && !agent_settings {
+                                uplink.send(older_agent(p.id));
+                                continue;
+                            }
                             remember(&mut unconfirmed, &p);
                             route(p, &jobs, link.as_ref(), &mut queued);
                         }
@@ -1045,8 +1111,15 @@ async fn run(
                         }
                     }
                     UplinkDown::Deliver { delivery } => {
-                        remember(&mut unconfirmed, &delivery);
-                        route(delivery, &jobs, link.as_ref(), &mut queued);
+                        if let Some(s) = spec.as_mut() {
+                            follow_settings(s, &delivery);
+                        }
+                        if delivery.kind.is_settings() && !agent_settings {
+                            uplink.send(older_agent(delivery.id));
+                        } else {
+                            remember(&mut unconfirmed, &delivery);
+                            route(delivery, &jobs, link.as_ref(), &mut queued);
+                        }
                     }
                     UplinkDown::Pong => {}
                 }
@@ -1206,5 +1279,62 @@ fn agent_config(
         sandbox: ctx.driver.enforces_size().then(|| ctx.sandbox_size(spec)),
         cache,
         diffs: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delivery(id: &str, kind: DeliveryKind) -> Delivery {
+        Delivery {
+            id: DeliveryId(id.into()),
+            kind,
+        }
+    }
+
+    fn settings(id: &str) -> Delivery {
+        delivery(
+            id,
+            DeliveryKind::Settings {
+                model: None,
+                effort: Some("medium".into()),
+                by: None,
+            },
+        )
+    }
+
+    #[test]
+    fn an_older_agent_gets_no_change_of_settings() {
+        let interrupt = delivery("dlv_1", DeliveryKind::Interrupt { by: None });
+        let mut unconfirmed = vec![interrupt.clone(), settings("dlv_2")];
+        let mut queued = vec![
+            HostToAgent::Deliver {
+                delivery: settings("dlv_2"),
+            },
+            HostToAgent::Deliver {
+                delivery: settings("dlv_3"),
+            },
+            HostToAgent::Deliver {
+                delivery: interrupt.clone(),
+            },
+        ];
+        let refused = refuse_settings(&mut unconfirmed, &mut queued);
+        assert_eq!(
+            refused,
+            vec![DeliveryId("dlv_2".into()), DeliveryId("dlv_3".into())]
+        );
+        assert_eq!(unconfirmed, vec![interrupt.clone()]);
+        assert_eq!(
+            queued,
+            vec![HostToAgent::Deliver {
+                delivery: interrupt
+            }]
+        );
+        let UplinkUp::Delivered { ok, error, .. } = older_agent(DeliveryId("dlv_2".into())) else {
+            panic!("expected a delivery's outcome");
+        };
+        assert!(!ok);
+        assert!(error.is_some_and(|e| e.contains("older fctl")));
     }
 }

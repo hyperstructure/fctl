@@ -35,7 +35,8 @@ use fctl_proto::runner::{
 };
 use fctl_proto::session::{GithubAccess, ProjectSettings, RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{
-    AgentEvent, ContextWindow, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState,
+    AgentEvent, ContextWindow, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS,
+    SessionState,
 };
 use fctl_proto::{ApiError, DeliveryId, PROTOCOL_VERSION, SessionId};
 use serde::{Deserialize, Serialize};
@@ -107,7 +108,18 @@ pub(crate) enum Work {
     Effort(String),
     /// The context window Claude works in ([`claude::context_window`]).
     Context(ContextWindow),
+    /// Claude's answers to a change of model or effort level
+    /// ([`DeliveryKind::Settings`]): what was asked for, and the answer.
+    Settings {
+        delivery: DeliveryId,
+        model: Option<(String, std::result::Result<Value, String>)>,
+        effort: Option<(String, std::result::Result<Value, String>)>,
+    },
 }
+
+/// How long Claude has to switch models: it may ask the API about the
+/// model first.
+const SETTINGS_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Why we asked the host for a credential.
 enum CredFor {
@@ -351,7 +363,7 @@ impl Supervisor {
             status: self.state.status,
             agent_seq: self.journal.last_seq(),
             claude_version: self.claude_version.map(|v| v.to_string()),
-            features: vec![FEATURE_ATTACHMENTS.to_owned()],
+            features: vec![FEATURE_ATTACHMENTS.to_owned(), FEATURE_SETTINGS.to_owned()],
         })
     }
 
@@ -1120,7 +1132,67 @@ impl Supervisor {
                     });
                 }
             }
+            Work::Settings {
+                delivery,
+                model,
+                effort,
+            } => self.settings_applied(delivery, model, effort),
         }
+    }
+
+    /// Claude answered a change of model or effort level: the session says
+    /// what it works on now, which also takes back what the control plane
+    /// showed of a change Claude refused, and the transcript says why.
+    fn settings_applied(
+        &mut self,
+        delivery: DeliveryId,
+        model: Option<(String, std::result::Result<Value, String>)>,
+        effort: Option<(String, std::result::Result<Value, String>)>,
+    ) {
+        let mut refused = Vec::new();
+        if let Some((asked, answer)) = model {
+            match answer {
+                // As `system/init` names it: an alias becomes the model's ID.
+                Ok(v) => {
+                    self.state.model = Some(
+                        v.get("model")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&asked)
+                            .to_owned(),
+                    );
+                }
+                Err(e) => {
+                    refused.push(format!("Claude didn't switch to {asked}: {e}"));
+                    // It starts on the model it works on, if it starts again.
+                    if let Some(c) = self.config.as_mut() {
+                        c.spec.model = self.state.model.clone();
+                    }
+                }
+            }
+        }
+        if let Some((asked, answer)) = effort {
+            match answer {
+                // Until Claude says what it works at (`get_settings`), which
+                // its limits may make less.
+                Ok(_) => self.state.effort = Some(asked),
+                Err(e) => refused.push(format!(
+                    "Claude didn't change its effort level to {asked}: {e}"
+                )),
+            }
+        }
+        if let Some(c) = self.claude.as_mut() {
+            read_effort(c, &self.work_tx);
+            read_context(c, &self.work_tx);
+        }
+        self.flush();
+        self.send(&AgentToHost::State {
+            state: self.state.clone(),
+        });
+        self.send(&AgentToHost::Delivered {
+            delivery_id: delivery,
+            ok: refused.is_empty(),
+            error: (!refused.is_empty()).then(|| refused.join(" ")),
+        });
     }
 
     // ───────────────────────────── Claude ─────────────────────────────
@@ -1558,6 +1630,65 @@ impl Supervisor {
                     called: author_called.as_deref(),
                 });
                 self.send_turn(text, author, Some(&d.id), attachments).await;
+            }
+            DeliveryKind::Settings { model, effort, .. } => {
+                // Before the session's spec came: once Claude has started.
+                if self.config.is_none() {
+                    self.queue.push_back(d.clone());
+                    return;
+                }
+                self.mark_delivered(&d.id);
+                // What Claude starts on if it starts again in this run.
+                if let Some(config) = self.config.as_mut() {
+                    if let Some(m) = model {
+                        config.spec.model = Some(m.clone());
+                    }
+                    if let Some(e) = effort {
+                        config.spec.effort = Some(e.clone());
+                    }
+                }
+                let Some(c) = self.claude.as_mut() else {
+                    // It starts on them.
+                    self.send(&AgentToHost::Delivered {
+                        delivery_id: d.id,
+                        ok: true,
+                        error: None,
+                    });
+                    return;
+                };
+                // At once, and in either order: the effort level is a
+                // setting of its own, which Claude applies to whichever
+                // model it works on.
+                let switched = model.clone().map(|m| {
+                    let answer = c.ask(
+                        json!({ "subtype": "set_model", "model": m }),
+                        SETTINGS_TIMEOUT,
+                    );
+                    (m, answer)
+                });
+                let changed = effort.clone().map(|e| {
+                    let answer = c.ask(
+                        json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": e } }),
+                        SETTINGS_TIMEOUT,
+                    );
+                    (e, answer)
+                });
+                let work = self.work_tx.clone();
+                tokio::spawn(async move {
+                    let model = match switched {
+                        Some((m, answer)) => Some((m, answer.await)),
+                        None => None,
+                    };
+                    let effort = match changed {
+                        Some((e, answer)) => Some((e, answer.await)),
+                        None => None,
+                    };
+                    let _ = work.send(Work::Settings {
+                        delivery: d.id,
+                        model,
+                        effort,
+                    });
+                });
             }
             DeliveryKind::Interrupt { .. } => {
                 if let Some(c) = self.claude.as_mut()
@@ -3548,6 +3679,169 @@ done
         // A model that takes none.
         sup.on_work(Work::Effort(String::new())).await;
         assert_eq!(states_sent(&mut host)[0].effort.as_deref(), Some(""));
+        Ok(())
+    }
+
+    /// What the host has been told of deliveries since last asked.
+    fn delivered_sent(
+        host: &mut mpsc::UnboundedReceiver<String>,
+    ) -> Vec<(DeliveryId, bool, Option<String>)> {
+        let mut out = vec![];
+        while let Ok(text) = host.try_recv() {
+            if let Ok(AgentToHost::Delivered {
+                delivery_id,
+                ok,
+                error,
+            }) = serde_json::from_str(&text)
+            {
+                out.push((delivery_id, ok, error));
+            }
+        }
+        out
+    }
+
+    fn settings(id: &str, model: Option<&str>, effort: Option<&str>) -> Delivery {
+        Delivery {
+            id: DeliveryId(id.into()),
+            kind: DeliveryKind::Settings {
+                model: model.map(str::to_owned),
+                effort: effort.map(str::to_owned),
+                by: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn people_change_the_model_and_effort_claude_works_at() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, mut work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.config = Some(config(dir.path(), false)?);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.state.model = Some("claude-opus-5-5".into());
+        sup.state.effort = Some("xhigh".into());
+        // A Claude Code that switches to Sonnet as 2.1.318 does, and takes
+        // any effort level, but knows no Haiku.
+        let script = r##"#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$HOME/stdin.jsonl"
+  id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+  case "$line" in
+    *'"model":"haiku"'*)
+      printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"not_found"}}\n' "$id" ;;
+    *'"set_model"'*)
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"model":"claude-sonnet-5-5"}}}\n' "$id" ;;
+    *'"apply_flag_settings"'*)
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id" ;;
+  esac
+done
+"##;
+        sup.claude = Some(script_claude(dir.path(), &sup, script)?);
+
+        sup.on_delivery(settings("dlv_1", Some("sonnet"), Some("medium")))
+            .await;
+        let sent = sent_to_claude(dir.path(), 2).await?;
+        assert_eq!(sent[0]["request"]["subtype"], "set_model");
+        assert_eq!(sent[0]["request"]["model"], "sonnet");
+        assert_eq!(sent[1]["request"]["subtype"], "apply_flag_settings");
+        assert_eq!(sent[1]["request"]["settings"]["effortLevel"], "medium");
+        let answered = tokio::time::timeout(Duration::from_secs(10), work.recv()).await?;
+        let Some(answered @ Work::Settings { .. }) = answered else {
+            panic!("expected Claude's answers");
+        };
+        sup.on_work(answered).await;
+        // The session says what Claude works on now, as Claude names it.
+        let mut frames = vec![];
+        while let Ok(text) = host.try_recv() {
+            frames.push(text);
+        }
+        let state = frames
+            .iter()
+            .find_map(|t| match serde_json::from_str(t) {
+                Ok(AgentToHost::State { state }) => Some(state),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("no state sent"))?;
+        assert_eq!(state.model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(state.effort.as_deref(), Some("medium"));
+        assert!(frames.iter().any(|t| matches!(
+            serde_json::from_str(t),
+            Ok(AgentToHost::Delivered {
+                ok: true,
+                error: None,
+                ..
+            })
+        )));
+        // A Claude that starts again in this run starts on them.
+        let spec = &sup
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("not configured"))?
+            .spec;
+        assert_eq!(spec.model.as_deref(), Some("sonnet"));
+        assert_eq!(spec.effort.as_deref(), Some("medium"));
+        // Delivered again over a new link: taken once.
+        sup.on_delivery(settings("dlv_1", Some("sonnet"), Some("medium")))
+            .await;
+        assert_eq!(delivered_sent(&mut host).len(), 1);
+        assert_eq!(sent_to_claude(dir.path(), 2).await?.len(), 2);
+
+        // A model Claude refuses: it keeps working on the one it had, and
+        // the transcript says why.
+        sup.on_delivery(settings("dlv_2", Some("haiku"), None))
+            .await;
+        let answered = tokio::time::timeout(Duration::from_secs(10), work.recv()).await?;
+        let Some(answered @ Work::Settings { .. }) = answered else {
+            panic!("expected Claude's answer");
+        };
+        sup.on_work(answered).await;
+        let mut frames = vec![];
+        while let Ok(text) = host.try_recv() {
+            frames.push(text);
+        }
+        assert!(frames.iter().any(|t| matches!(
+            serde_json::from_str(t),
+            Ok(AgentToHost::State { state }) if state.model.as_deref() == Some("claude-sonnet-5-5")
+        )));
+        let refused = frames.iter().find_map(|t| match serde_json::from_str(t) {
+            Ok(AgentToHost::Delivered {
+                ok: false, error, ..
+            }) => error,
+            _ => None,
+        });
+        assert_eq!(
+            refused.as_deref(),
+            Some("Claude didn't switch to haiku: not_found")
+        );
+        assert_eq!(
+            sup.config.as_ref().and_then(|c| c.spec.model.as_deref()),
+            Some("claude-sonnet-5-5")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claude_starts_on_settings_changed_before_it_did() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        // Before the session's spec: it waits for Claude.
+        sup.on_delivery(settings("dlv_1", None, Some("low"))).await;
+        assert_eq!(sup.queue.len(), 1);
+        assert!(delivered_sent(&mut host).is_empty());
+        // Once configured, while the workspace is prepared: Claude starts
+        // on it.
+        sup.queue.clear();
+        sup.config = Some(config(dir.path(), false)?);
+        sup.on_delivery(settings("dlv_1", None, Some("low"))).await;
+        assert_eq!(
+            sup.config.as_ref().and_then(|c| c.spec.effort.as_deref()),
+            Some("low")
+        );
+        let delivered = delivered_sent(&mut host);
+        assert_eq!(delivered.len(), 1);
+        assert!(delivered[0].1);
         Ok(())
     }
 

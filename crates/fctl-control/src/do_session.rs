@@ -29,8 +29,8 @@ use fctl_proto::event::{
 };
 use fctl_proto::session::{PullRequestRef, RepoRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
-    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, SessionState, UplinkDown,
-    UplinkUp,
+    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SessionState,
+    UplinkDown, UplinkUp,
 };
 use fctl_proto::viewer::{Presence, ViewerClient, ViewerServer};
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
@@ -302,6 +302,12 @@ impl DurableObject for SessionObject {
                 Ok(b) => self.deliver(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            (worker::Method::Post, "/settings") => {
+                match req.json::<internal::SessionSettings>().await {
+                    Ok(b) => self.settings(b).await,
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Post, "/control") => match req.json::<ControlState>().await {
                 Ok(b) => self.control(b).await,
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
@@ -1574,6 +1580,137 @@ impl SessionObject {
         }
     }
 
+    /// The changes of model or effort level that wait in the outbox, oldest
+    /// first.
+    fn pending_settings(&self) -> Vec<Delivery> {
+        self.sql
+            .exec("SELECT data FROM outbox ORDER BY n ASC", None)
+            .and_then(|c| c.to_array::<OutboxRow>())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| serde_json::from_str::<Delivery>(&r.data).ok())
+            .filter(|d| d.kind.is_settings())
+            .collect()
+    }
+
+    /// Someone changed the model or the effort level (`/settings`). The
+    /// session shows the new ones until its agent says what Claude works on,
+    /// and the API keeps them in D1 for its next run. A run under way gets
+    /// them in one delivery with any that its agent hasn't taken yet,
+    /// unless its host is too old to pass them on, which is refused; a
+    /// stopped session drops those, as its next run starts on D1's.
+    async fn settings(
+        &self,
+        b: internal::SessionSettings,
+    ) -> std::result::Result<serde_json::Value, ApiError> {
+        let Some(mut s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        if s.review.is_some() {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "Review agents work on the model and effort level of their project's review agents.",
+            ));
+        }
+        let now = now_ms();
+        let live = s.status.accepts_messages();
+        let host_features = self
+            .uplink()
+            .and_then(|ws| ws.deserialize_attachment::<SocketInfo>().ok().flatten())
+            .and_then(|info| info.features);
+        let host_takes = host_features
+            .as_ref()
+            .map(|f| f.iter().any(|x| x == FEATURE_SETTINGS));
+        if live && host_takes == Some(false) {
+            let runner = s
+                .runner
+                .as_ref()
+                .map_or_else(|| "This session's runner".to_owned(), |r| r.name.clone());
+            return Err(api_err(
+                ErrorCode::Conflict,
+                &format!(
+                    "{runner} runs a version of fctl that can't change the model or the effort level while Claude runs. Run `fctl self update` on it, or stop the session, change them and resume it."
+                ),
+            ));
+        }
+        // Those its agent hasn't taken yet, with this change over them.
+        let (mut model, mut effort) = (None, None);
+        for d in self.pending_settings() {
+            if let DeliveryKind::Settings {
+                model: m,
+                effort: e,
+                ..
+            } = d.kind
+            {
+                model = m.or(model);
+                effort = e.or(effort);
+            }
+            let _ = self.sql.exec(
+                "DELETE FROM outbox WHERE id = ?",
+                Some(vec![sv(d.id.as_str())]),
+            );
+        }
+        if live {
+            let delivery = Delivery {
+                id: fctl_domain::ids::delivery_id(now),
+                kind: DeliveryKind::Settings {
+                    model: b.model.clone().or(model),
+                    effort: b.effort.clone().or(effort),
+                    by: Some(b.by.clone()),
+                },
+            };
+            let data = serde_json::to_string(&delivery)
+                .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+            #[derive(Deserialize)]
+            struct N {
+                n: Option<f64>,
+            }
+            let next = self
+                .sql
+                .exec("SELECT MAX(n) AS n FROM outbox", None)
+                .and_then(|c| c.to_array::<N>())
+                .ok()
+                .and_then(|r| r.first().and_then(|x| x.n))
+                .map_or(1, |n| n as i64 + 1);
+            let _ = self.sql.exec(
+                "INSERT OR REPLACE INTO outbox (id, n, data) VALUES (?, ?, ?)",
+                Some(vec![sv(delivery.id.as_str()), iv(next), sv(&data)]),
+            );
+            // A host that hasn't said hello yet gets it after its hello.
+            if host_takes == Some(true) {
+                self.send_uplink(&UplinkDown::Deliver { delivery });
+            }
+        }
+        if let Some(m) = &b.model {
+            s.model = Some(m.clone());
+        }
+        if let Some(e) = &b.effort {
+            s.effort = Some(e.clone());
+        }
+        self.publish(&mut s, now).await;
+        let notice = fctl_proto::event::Notice {
+            ticket: None,
+            level: fctl_proto::event::NoticeLevel::Info,
+            code: "settings_changed".into(),
+            message: fctl_domain::models::changed(
+                &b.by.name,
+                b.model.as_deref(),
+                b.effort.as_deref(),
+            ),
+            until: None,
+            published: None,
+            memory: None,
+            retrospective: None,
+            review: None,
+            summarized: None,
+            follow_up: None,
+        };
+        if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+            self.broadcast_events(&[json]);
+        }
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
     async fn control(&self, b: ControlState) -> std::result::Result<serde_json::Value, ApiError> {
         let Some(mut s) = self.summary() else {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
@@ -2075,7 +2212,10 @@ impl SessionObject {
             .and_then(|c| c.to_array::<OutboxRow>())
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|r| serde_json::from_str(&r.data).ok())
+            .filter_map(|r| serde_json::from_str::<Delivery>(&r.data).ok())
+            // Older hosts couldn't read the welcome with one: those that
+            // say they take them get them after their hello.
+            .filter(|d| !d.kind.is_settings())
             .collect();
         let welcome = UplinkDown::Welcome {
             acked_agent_seq: self.acked_agent_seq(),
@@ -2098,6 +2238,13 @@ impl SessionObject {
         match msg {
             UplinkUp::Hello { features, .. } => {
                 let supported = features.iter().any(|f| f == FEATURE_ATTACHMENTS);
+                if features.iter().any(|f| f == FEATURE_SETTINGS) {
+                    for delivery in self.pending_settings() {
+                        if let Ok(text) = serde_json::to_string(&UplinkDown::Deliver { delivery }) {
+                            let _ = ws.send_with_str(&text);
+                        }
+                    }
+                }
                 if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() {
                     info.features = Some(features);
                     let _ = ws.serialize_attachment(&info);
