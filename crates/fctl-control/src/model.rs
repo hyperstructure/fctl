@@ -32,6 +32,16 @@ pub struct UserRow {
     #[serde(default)]
     pub preferred_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Where their picture came from (`user_avatars.source`), when fctl
+    /// recorded that.
+    #[serde(default)]
+    pub avatar_source: Option<String>,
+    /// They show their Gravatar while they have no picture of their own.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub gravatar: bool,
+    /// When fctl last looked up their Gravatar.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub gravatar_checked_at: Option<i64>,
     pub password_hash: Option<String>,
     pub role: String,
     pub status: String,
@@ -133,6 +143,17 @@ impl UserRow {
         UserId(self.id.clone())
     }
 
+    /// Their picture, as far as their Gravatar goes.
+    pub fn picture(&self) -> fctl_domain::avatar::Picture {
+        fctl_domain::avatar::Picture {
+            some: self.avatar_url.is_some(),
+            source: self
+                .avatar_source
+                .as_deref()
+                .and_then(fctl_proto::api::AvatarSource::parse),
+        }
+    }
+
     pub fn to_user(&self) -> User {
         User {
             id: self.user_id(),
@@ -201,10 +222,15 @@ pub fn user_columns(alias: &str) -> String {
         "last_login_at",
         "last_active_at",
         "two_factor_google",
+        "gravatar",
+        "gravatar_checked_at",
     ]
     .iter()
     .map(|c| format!("{alias}.{c} AS {c}"))
     .collect();
+    columns.push(format!(
+        "(SELECT ua.source FROM user_avatars ua WHERE ua.user_id = {alias}.id) AS avatar_source"
+    ));
     columns.push(format!(
         "(SELECT a.created_at FROM authenticator_apps a WHERE a.user_id = {alias}.id) AS totp_at"
     ));

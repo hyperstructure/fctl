@@ -15,12 +15,20 @@ name?: string,
  */
 preferred_name?: string, 
 /**
- * `""` removes your picture. `PUT /api/v1/me/avatar` uploads one: an
- * address is refused, unless it is the one you have.
+ * `""` removes your picture, and turns `gravatar` off. `PUT
+ * /api/v1/me/avatar` uploads one: an address is refused, unless it is
+ * the one you have.
  */
 avatar_url?: string, 
 /**
  * The address commits credit you with (`Me.commit_email`); an empty
  * one removes it.
  */
-commit_email?: string, };
+commit_email?: string, 
+/**
+ * `true` shows your Gravatar while you have no picture of your own
+ * (`Me.gravatar`), looking it up at once; `false` stops that, and
+ * removes the picture if it is your Gravatar. Removing your picture
+ * (`DELETE /api/v1/me/avatar`) turns it off too.
+ */
+gravatar?: boolean, };

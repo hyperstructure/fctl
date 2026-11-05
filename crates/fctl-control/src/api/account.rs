@@ -591,6 +591,8 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
             "family_name": user.family_name,
             "preferred_name": user.preferred_name,
             "avatar_url": user.avatar_url,
+            "avatar_source": user.avatar_source,
+            "gravatar": user.gravatar,
             "role": user.role,
             "status": user.status,
             "has_password": user.password_hash.is_some(),

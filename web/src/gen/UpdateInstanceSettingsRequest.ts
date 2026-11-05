@@ -7,4 +7,4 @@ export type UpdateInstanceSettingsRequest = { publish_screenshots?: boolean, req
 /**
  * Only the primary instance owner changes it.
  */
-verify_sensitive_actions?: boolean, };
+verify_sensitive_actions?: boolean, gravatar?: boolean, };

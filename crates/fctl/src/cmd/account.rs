@@ -34,11 +34,11 @@ pub enum LinearAccountCmd {
 
 #[derive(Subcommand)]
 pub enum AccountCmd {
-    /// Change your profile: your picture, what agents call you, and the
-    /// address commits credit you with.
+    /// Change your profile: your picture, your Gravatar, what agents call
+    /// you, and the address commits credit you with.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_email", "avatar", "preferred_name"])),
-        after_help = "Examples:\n  fctl account set --avatar me.png\n  fctl account set --avatar none   # your initials\n  fctl account set --preferred-name \"Carl Oscar\"\n  fctl account set --preferred-name \"\"   # your first names\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you\n  fctl account set --for ada.lovelace@company.example --commit-email ada.lovelace@company.example"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["commit_email", "avatar", "gravatar", "preferred_name"])),
+        after_help = "Examples:\n  fctl account set --avatar me.png\n  fctl account set --avatar none   # your initials\n  fctl account set --gravatar off\n  fctl account set --avatar none --gravatar on   # your Gravatar instead of your picture\n  fctl account set --preferred-name \"Carl Oscar\"\n  fctl account set --preferred-name \"\"   # your first names\n  fctl account set --commit-email 1234+ada@users.noreply.github.com\n  fctl account set --commit-email \"\"   # commits don't credit you\n  fctl account set --for ada.lovelace@company.example --commit-email ada.lovelace@company.example"
     )]
     Set {
         /// What agents call you, in your sessions, in the messages you send
@@ -58,9 +58,15 @@ pub enum AccountCmd {
         address: Option<String>,
         /// Your picture, where people see your name: a PNG, JPEG, GIF or
         /// WebP image of at most 256 KB and 1024 pixels a side (square works
-        /// best), or `none` for your initials.
+        /// best), or `none` for your initials (which turns --gravatar off).
         #[arg(long, value_name = "FILE|none")]
         avatar: Option<String>,
+        /// Show your Gravatar while you have no picture of your own: fctl
+        /// looks it up on gravatar.com by your primary address, keeps a copy
+        /// and looks again once a day. On unless you turn it off; off
+        /// removes the picture if it is your Gravatar.
+        #[arg(long, value_name = "ON|OFF", value_parser = clap::builder::BoolishValueParser::new(), hide_possible_values = true)]
+        gravatar: Option<bool>,
     },
     /// Your email addresses: each signs in to your account, has its own
     /// commit email, and is how the workspaces you joined as it know you.
@@ -128,13 +134,15 @@ pub enum AccountCmd {
 }
 
 /// `fctl account set`: what agents call you, the commit email, then the
-/// picture.
+/// picture, then the Gravatar (so that `--avatar none --gravatar on`
+/// replaces the picture with it).
 async fn set(
     api: &fctl_client::Api,
     preferred_name: Option<String>,
     commit_email: Option<String>,
     address: Option<String>,
     avatar: Option<String>,
+    gravatar: Option<bool>,
     json: bool,
 ) -> Result<()> {
     let changes_sessions = commit_email.is_some() || preferred_name.is_some();
@@ -192,8 +200,18 @@ async fn set(
         };
         me = Some(m);
     }
+    if let Some(on) = gravatar {
+        let m = api
+            .update_me(&UpdateMeRequest {
+                gravatar: Some(on),
+                ..Default::default()
+            })
+            .await?;
+        said.push(gravatar_said(&m));
+        me = Some(m);
+    }
     let Some(me) = me else {
-        bail!("Say what to change: --avatar, --preferred-name or --commit-email");
+        bail!("Say what to change: --avatar, --gravatar, --preferred-name or --commit-email");
     };
     if json {
         return style::print_json(&me);
@@ -211,6 +229,26 @@ async fn set(
         );
     }
     Ok(())
+}
+
+/// What `fctl account set --gravatar` did.
+fn gravatar_said(me: &fctl_proto::api::Me) -> String {
+    use fctl_proto::api::AvatarSource;
+    match me.gravatar {
+        None => "This instance's admins turned Gravatar off".to_owned(),
+        Some(false) => "fctl doesn't show your Gravatar".to_owned(),
+        Some(true) if me.avatar_source == Some(AvatarSource::Gravatar) => {
+            "Your picture is your Gravatar".to_owned()
+        }
+        Some(true) if me.user.avatar_url.is_some() => {
+            "Your Gravatar shows once you remove your picture (--avatar none --gravatar on)"
+                .to_owned()
+        }
+        Some(true) => format!(
+            "{} has no Gravatar yet: fctl looks again once a day",
+            me.user.email
+        ),
+    }
 }
 
 /// What agents call you, as `fctl whoami` and `fctl account set` say it.
@@ -237,7 +275,19 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
             commit_email,
             address,
             avatar,
-        } => set(&api, preferred_name, commit_email, address, avatar, json).await,
+            gravatar,
+        } => {
+            set(
+                &api,
+                preferred_name,
+                commit_email,
+                address,
+                avatar,
+                gravatar,
+                json,
+            )
+            .await
+        }
         AccountCmd::Emails => {
             let me = super::auth::account(&api).await?;
             if json {

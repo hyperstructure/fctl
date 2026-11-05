@@ -1,12 +1,13 @@
 //! `/api/v1/instance`, `/api/v1/setup`, `/api/v1/auth/*`, `/api/v1/invites/*`.
 
+use crate::api::avatars::{self, Look};
 use crate::api::two_factor::Pending;
 use crate::auth::{self, DAY_MS};
 use crate::ctx::Ctx;
 use crate::db::{Count, batch, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, not_found, validation};
 use crate::http;
-use crate::model::user_columns;
+use crate::model::{UserRow, user_columns};
 use fctl_domain::allowlist;
 use fctl_domain::tokens::{self, SecretKind, hash_secret, new_secret};
 use fctl_domain::two_factor::{self, Via};
@@ -113,6 +114,7 @@ pub async fn setup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?
         .ok_or_else(|| conflict("Setup is already complete. Sign in instead."))?;
     auth::start_web_session(ctx, &user, false).await?;
+    let user = new_gravatar(ctx, user).await?;
     ctx.audit("instance.setup", Some(&user.id), None);
     http::created(&signed_in(auth::me(ctx, &user).await?))
 }
@@ -270,6 +272,7 @@ pub async fn signup(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .await?
         .ok_or_else(|| crate::error::internal("user vanished after insert"))?;
     auth::start_web_session(ctx, &user, false).await?;
+    let user = new_gravatar(ctx, user).await?;
     ctx.audit(
         "user.signup",
         Some(&user.id),
@@ -372,9 +375,28 @@ pub async fn get_me(ctx: &Ctx) -> AppResult<Response> {
     if ctx.limits().is_some() {
         return http::ok(&crate::api::tokens::limited_me(user, token));
     }
+    // Their Gravatar, once a day, after the answer: the app shows a new one
+    // the next time it asks.
+    let settings = ctx.settings();
+    if avatars::gravatar_wanted(&settings, user, ctx.now, Look::IfDue) {
+        let (db, now, user) = (crate::db::handle(&ctx.db), ctx.now, user.clone());
+        ctx.defer(async move {
+            avatars::gravatar(&db, now, &settings, &user, Look::IfDue).await?;
+            Ok(())
+        });
+    }
     let mut me = auth::me(ctx, user).await?;
     me.token = token;
     http::ok(&me)
+}
+
+/// Looks up the Gravatar of someone who just signed up, before the answer
+/// shows them, and returns them as they now are.
+pub async fn new_gravatar(ctx: &Ctx, user: UserRow) -> AppResult<UserRow> {
+    if !avatars::gravatar(&ctx.db, ctx.now, &ctx.settings(), &user, Look::Now).await? {
+        return Ok(user);
+    }
+    Ok(auth::user_by_id(ctx, &user.id).await?.unwrap_or(user))
 }
 
 pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -431,13 +453,39 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
             s(&user.id),
         ],
     )?];
+    // Before `gravatar`, which turns it back on: both at once replace a
+    // picture with their Gravatar.
     if remove_avatar {
-        statements.extend(crate::api::avatars::remove(ctx, &user.id)?);
+        statements.extend(avatars::remove(ctx, &user.id)?);
+    }
+    match body.gravatar {
+        Some(true) => statements.push(q(
+            &ctx.db,
+            "UPDATE users SET gravatar = 1 WHERE id = ?",
+            &[s(&user.id)],
+        )?),
+        Some(false) => {
+            statements.push(q(
+                &ctx.db,
+                "UPDATE users SET gravatar = 0 WHERE id = ?",
+                &[s(&user.id)],
+            )?);
+            statements.extend(avatars::remove_gravatar(&ctx.db, ctx.now, &user.id)?);
+        }
+        None => {}
     }
     batch(&ctx.db, statements).await?;
-    let user = auth::user_by_id(ctx, &user.id)
+    let mut user = auth::user_by_id(ctx, &user.id)
         .await?
         .ok_or_else(|| not_found("User"))?;
+    // Turned on, it shows at once if they have one.
+    if body.gravatar == Some(true)
+        && avatars::gravatar(&ctx.db, ctx.now, &ctx.settings(), &user, Look::Now).await?
+    {
+        user = auth::user_by_id(ctx, &user.id)
+            .await?
+            .ok_or_else(|| not_found("User"))?;
+    }
     http::ok(&auth::me(ctx, &user).await?)
 }
 
