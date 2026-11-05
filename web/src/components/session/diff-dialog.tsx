@@ -41,6 +41,7 @@ import { firstLine, parsePatch } from "@/lib/diff";
 import { useHoldPage } from "@/lib/hold-page";
 import { languageOf } from "@/lib/languages";
 import { fileDiffQuery, useFileDiff } from "@/lib/queries";
+import { diffCommand } from "@/lib/shell";
 
 /** A repository's changed files, as the dialog lists them. */
 export interface DiffGroup {
@@ -717,19 +718,9 @@ function Body({
     }
     return <Loading />;
   }
-  const command = `fctl diff ${cliRef} ${/\s|['"$`\\]/.test(current.path) ? `'${current.path.replaceAll("'", "'\\''")}'` : current.path}${entry.repo ? ` --repo ${entry.repo}` : ""}`;
+  const command = diffCommand(cliRef, current.path, entry.repo);
   // What changed beside its lines: where a renamed file was, and its mode.
-  const exec = (m?: string) => !!m?.endsWith("755");
-  const mode =
-    diff.old_mode && diff.new_mode
-      ? `${diff.old_mode} → ${diff.new_mode}${
-          exec(diff.new_mode) && !exec(diff.old_mode)
-            ? ": executable now"
-            : exec(diff.old_mode) && !exec(diff.new_mode)
-              ? ": no longer executable"
-              : ""
-        }`
-      : undefined;
+  const mode = diff.old_mode && diff.new_mode ? modeChange(diff.old_mode, diff.new_mode) : undefined;
   const from = diff.old_path && <code className="font-mono text-ink-2">{diff.old_path}</code>;
   let content: ReactNode;
   // What the lines don't say goes above them; with no lines, the note says it.
@@ -788,6 +779,23 @@ function Body({
       <div className="flex flex-1 animate-fade flex-col">{content}</div>
     </div>
   );
+}
+
+/** What a change of a file's mode means: `100644 → 100755: executable now`. */
+export function modeChange(before: string, after: string): string {
+  const link = (m: string) => m === "120000";
+  const exec = (m: string) => m.endsWith("755");
+  const meaning =
+    link(after) && !link(before)
+      ? "a symbolic link now"
+      : link(before) && !link(after)
+        ? "no longer a symbolic link"
+        : exec(after) && !exec(before)
+          ? "executable now"
+          : exec(before) && !exec(after)
+            ? "no longer executable"
+            : "";
+  return `${before} → ${after}${meaning && `: ${meaning}`}`;
 }
 
 /** Lines that shimmer while the diff loads, as long as the file's change. */

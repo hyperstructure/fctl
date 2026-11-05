@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
-import { byDirectory, DiffDialog, type DiffGroup, type DiffTarget } from "./diff-dialog";
+import { byDirectory, DiffDialog, type DiffGroup, type DiffTarget, modeChange } from "./diff-dialog";
 
 // Diffs come from the cache; the files beside the one shown load ahead, and never come.
 vi.mock("@/lib/api", () => {
@@ -214,12 +214,20 @@ describe("a changed file's diff over the page", () => {
     const large = await say("package-lock.json");
     expect(large).toContain("This diff is too large to show here");
     expect(large).toContain("900 lines added and 300 taken out");
-    expect(large).toContain("fctl diff web#12 package-lock.json");
+    expect(large).toContain("fctl diff 'web#12' package-lock.json");
     const mode = await say("scripts/deploy");
     expect(mode).toContain("Only its mode changed100644 → 100755: executable now.");
     expect(await say("src/b.rs")).toContain("Renamed, its lines as they wereFrom src/b_old.rs.");
     expect(await say("src/old.rs")).toContain("its runner runs an older version of fctl");
     expect(await say("gone.rs")).toContain("No changes in this file any more");
+  });
+
+  it("says what a change of mode means", () => {
+    expect(modeChange("100644", "100755")).toBe("100644 → 100755: executable now");
+    expect(modeChange("100755", "100644")).toBe("100755 → 100644: no longer executable");
+    expect(modeChange("100644", "120000")).toBe("100644 → 120000: a symbolic link now");
+    expect(modeChange("120000", "100755")).toBe("120000 → 100755: no longer a symbolic link");
+    expect(modeChange("100644", "100664")).toBe("100644 → 100664");
   });
 
   it("closes with its X", () => {
