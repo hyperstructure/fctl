@@ -381,6 +381,10 @@ impl DurableObject for FleetObject {
                 }
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
             },
+            (worker::Method::Post, "/sweep") => {
+                let forgot = self.sweep().await;
+                Ok(serde_json::json!({ "removed": forgot }))
+            }
             (worker::Method::Post, "/runner-removed") => match req.json::<RunnerRemoved>().await {
                 Ok(b) => {
                     self.removed(&b.runner_id, &b.reason).await;
@@ -858,6 +862,59 @@ impl FleetObject {
             }
             Some(_) => {}
         }
+    }
+
+    /// Removes everything FleetObject has of the runners among `ids` whose
+    /// row D1 no longer has: they were removed, and FleetObject wasn't told
+    /// (`api::runners::removed` failed). D1 not answering removes nothing.
+    /// Returns how many went.
+    async fn forget_removed(&self, ids: &[String]) -> usize {
+        #[derive(Deserialize)]
+        struct Id {
+            id: String,
+        }
+        let Ok(db) = self.env.d1("DB") else { return 0 };
+        let Ok(json) = serde_json::to_string(ids) else {
+            return 0;
+        };
+        let existing: Vec<Id> = match crate::db::q(
+            &db,
+            "SELECT id FROM runners WHERE id IN (SELECT value FROM json_each(?))",
+            &[crate::db::s(&json)],
+        ) {
+            Ok(q) => match q.all().await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    worker::console_error!("checking which runners are gone: {}", e.0.message);
+                    return 0;
+                }
+            },
+            Err(_) => return 0,
+        };
+        let mut forgot = 0;
+        for id in ids {
+            if existing.iter().all(|e| &e.id != id) {
+                self.removed(id, "Its runner was removed.").await;
+                forgot += 1;
+            }
+        }
+        forgot
+    }
+
+    /// The hourly sweep: forgets the runners FleetObject has while they are
+    /// offline whose row D1 no longer has. Connected ones it lets go at
+    /// their next heartbeat (`in_d1`).
+    async fn sweep(&self) -> usize {
+        let offline: Vec<String> = self
+            .live_rows()
+            .into_iter()
+            .filter(|r| !r.online(self))
+            .map(|r| r.id)
+            .collect();
+        if offline.is_empty() {
+            return 0;
+        }
+        self.forget_removed(&offline).await
     }
 
     /// Writes what a runner's connection says to its row in D1, and says
@@ -1544,6 +1601,22 @@ impl FleetObject {
             "DELETE FROM stopped_away WHERE since < ?",
             Some(vec![iv(now - HOME_KEEP_MS)]),
         );
+        // A runner that was removed while away, and FleetObject wasn't told
+        // (`api::runners::removed` failed): its sessions stop as a removed
+        // runner's do, rather than waiting for it to come back.
+        let away: Vec<String> = self
+            .live_rows()
+            .into_iter()
+            .filter(|r| {
+                r.connected == 0.0
+                    && now - r.last_seen.map_or(now, |t| t as i64) >= RUNNER_GRACE_MS
+                    && !self.assigned_to_runner(&r.id).is_empty()
+            })
+            .map(|r| r.id)
+            .collect();
+        if !away.is_empty() {
+            self.forget_removed(&away).await;
+        }
         for r in self.live_rows() {
             let offline_for = now - r.last_seen.map_or(now, |t| t as i64);
             if r.connected > 0.0 || offline_for < RUNNER_GRACE_MS {

@@ -846,10 +846,13 @@ one of its enrollment tokens
    sessions it ran at once (FleetDO's `/runner-removed`), which a message
    resumes elsewhere, and feeds drop it (`runner_removed`). Its row in D1
    decides: it is deleted first, and FleetDO, told after, also lets go of a
-   runner whose hello or heartbeat finds its row gone, so that neither a
-   host that connects again as its runner goes nor a FleetDO that wasn't
-   told keeps it. FleetDO's own removals delete the row only while the
-   runner is still offline and D1 hasn't heard from it since.
+   runner whose hello or heartbeat finds its row gone, so that a host that
+   connects again as its runner goes doesn't stay. Should FleetDO not hear
+   of a removal, it lets go of the runner at its next heartbeat when
+   connected, and otherwise once its sessions stop waiting for it (ten
+   minutes) or at the hourly job's sweep of the runners D1 no longer has.
+   FleetDO's own removals delete the row only while the runner is still
+   offline and D1 hasn't heard from it since.
 
 ## Data
 

@@ -94,8 +94,9 @@ has and nothing in front of it.
 - **Removing a runner stops its sessions at once** (FleetDO's
   `/runner-removed`), once its row is deleted, which decides: FleetDO also
   lets go of any runner whose hello or heartbeat finds its row gone, so a
-  host that reconnects as it goes, or a FleetDO that wasn't told, doesn't
-  keep it. Its connection and uplinks close, the sessions it
+  host that reconnects as it goes doesn't stay, and one FleetDO wasn't told
+  of goes at its next heartbeat, or, offline, when its sessions stop
+  waiting for it or at the hourly sweep. Its connection and uplinks close, the sessions it
   ran stop and resume elsewhere, FleetDO forgets it, and feeds drop it
   (`FeedServer::RunnerRemoved`). Before, a removed runner's sessions
   waited ten minutes, as an offline runner's do.

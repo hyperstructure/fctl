@@ -201,9 +201,10 @@ pub(crate) fn changed(ctx: &Ctx, runner_id: &str, approved: bool) {
 /// Tells FleetObject that a runner is gone: its control connection and
 /// uplinks close, the sessions it ran stop, saying `reason`, and lists
 /// drop it. Call it once its row is deleted, which is what decides: a host
-/// that connects as it goes, or a FleetObject that wasn't told, finds the
-/// row gone at the connection's next hello or heartbeat, and FleetObject
-/// lets the runner go then (`FleetObject::in_d1`).
+/// that connects as it goes, or a connected runner FleetObject wasn't told
+/// of, finds the row gone at the connection's next hello or heartbeat, and
+/// FleetObject lets the runner go then (`FleetObject::in_d1`); an offline
+/// one goes at the hourly sweep, or once its sessions stop waiting for it.
 pub(crate) async fn removed(env: &worker::Env, runner_id: &str, reason: &str) -> AppResult<()> {
     let stub = internal::fleet_stub(env)?;
     let _: serde_json::Value = internal::post(
@@ -304,11 +305,13 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 
 /// Tells FleetObject that a runner whose row is deleted is gone. Should it
 /// not answer, FleetObject lets the runner go at its connection's next
-/// heartbeat, which finds the row gone: the removal stands either way.
+/// heartbeat, which finds the row gone, or, while it is offline, at the
+/// hourly job's sweep, or once its sessions stop waiting for it (ten
+/// minutes), whichever comes first.
 async fn let_go(ctx: &Ctx, id: &str, reason: &str) {
     if let Err(e) = removed(&ctx.env, id, reason).await {
         worker::console_error!(
-            "telling FleetObject runner {id} was removed (it lets it go at its next heartbeat): {}",
+            "telling FleetObject runner {id} was removed (it lets it go at its next heartbeat, or its sweep): {}",
             e.0.message
         );
     }

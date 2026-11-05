@@ -392,6 +392,25 @@ pub async fn runners(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
             ),
         }
     }
+    // What FleetObject still has of runners removed while it couldn't be
+    // told, and while they were offline, goes too.
+    let swept: AppResult<serde_json::Value> = async {
+        let stub = internal::fleet_stub(env)?;
+        internal::post(&stub, "/sweep", &serde_json::json!({})).await
+    }
+    .await;
+    match swept {
+        Ok(v) => {
+            if let Some(n) = v
+                .get("removed")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|n| *n > 0)
+            {
+                worker::console_log!("housekeeping: FleetObject forgot {n} removed runners");
+            }
+        }
+        Err(e) => worker::console_error!("sweeping FleetObject's runners: {}", e.0.message),
+    }
     let ended = q(
         db,
         "DELETE FROM enrollment_tokens WHERE (revoked_at < ?1 OR expires_at < ?1) \
@@ -421,8 +440,9 @@ struct Removal<'a> {
 /// Removes one runner: its row, while `still` holds, then the audit log,
 /// then FleetObject, which closes its connections and stops its sessions.
 /// Its row decides: should FleetObject not answer, it lets the runner go at
-/// its connection's next heartbeat, which finds the row gone. Returns
-/// whether it went.
+/// its connection's next heartbeat, which finds the row gone, or, offline,
+/// at this job's sweep within the hour, or when its sessions stop waiting
+/// for it, whichever comes first. Returns whether it went.
 async fn remove(env: &Env, db: &D1Database, now: i64, r: Removal<'_>) -> bool {
     let deleted = async {
         q(
@@ -452,7 +472,7 @@ async fn remove(env: &Env, db: &D1Database, now: i64, r: Removal<'_>) -> bool {
     }
     if let Err(e) = crate::api::runners::removed(env, r.id, r.reason).await {
         worker::console_error!(
-            "telling FleetObject runner {} was removed (it lets it go at its next heartbeat): {}",
+            "telling FleetObject runner {} was removed (it lets it go at its next heartbeat, or its sweep): {}",
             r.id,
             e.0.message
         );
