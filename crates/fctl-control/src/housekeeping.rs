@@ -418,15 +418,12 @@ struct Removal<'a> {
     reason: &'a str,
 }
 
-/// Removes one runner: FleetObject first, which closes its connections and
-/// stops its sessions, then its row, while `still` holds, then the audit
-/// log. A step that fails leaves the rest, and the row, for the next run.
-/// Returns whether it went.
+/// Removes one runner: its row, while `still` holds, then the audit log,
+/// then FleetObject, which closes its connections and stops its sessions.
+/// Its row decides: should FleetObject not answer, it lets the runner go at
+/// its connection's next heartbeat, which finds the row gone. Returns
+/// whether it went.
 async fn remove(env: &Env, db: &D1Database, now: i64, r: Removal<'_>) -> bool {
-    if let Err(e) = crate::api::runners::removed(env, r.id, r.reason).await {
-        worker::console_error!("removing runner {}: {}", r.id, e.0.message);
-        return false;
-    }
     let deleted = async {
         q(
             db,
@@ -452,6 +449,13 @@ async fn remove(env: &Env, db: &D1Database, now: i64, r: Removal<'_>) -> bool {
     });
     if let Err(e) = audit_runner(db, now, r.action, r.id, r.workspace_id, data).await {
         worker::console_error!("auditing runner {}: {}", r.id, e.0.message);
+    }
+    if let Err(e) = crate::api::runners::removed(env, r.id, r.reason).await {
+        worker::console_error!(
+            "telling FleetObject runner {} was removed (it lets it go at its next heartbeat): {}",
+            r.id,
+            e.0.message
+        );
     }
     true
 }

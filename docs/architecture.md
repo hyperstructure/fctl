@@ -844,7 +844,12 @@ one of its enrollment tokens
    runners free their place in their token's limit, so an autoscaling group
    keeps replacing its machines within it. Removing any runner stops the
    sessions it ran at once (FleetDO's `/runner-removed`), which a message
-   resumes elsewhere, and feeds drop it (`runner_removed`).
+   resumes elsewhere, and feeds drop it (`runner_removed`). Its row in D1
+   decides: it is deleted first, and FleetDO, told after, also lets go of a
+   runner whose hello or heartbeat finds its row gone, so that neither a
+   host that connects again as its runner goes nor a FleetDO that wasn't
+   told keeps it. FleetDO's own removals delete the row only while the
+   runner is still offline and D1 hasn't heard from it since.
 
 ## Data
 

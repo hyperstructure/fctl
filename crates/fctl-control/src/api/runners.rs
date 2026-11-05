@@ -200,7 +200,10 @@ pub(crate) fn changed(ctx: &Ctx, runner_id: &str, approved: bool) {
 
 /// Tells FleetObject that a runner is gone: its control connection and
 /// uplinks close, the sessions it ran stop, saying `reason`, and lists
-/// drop it.
+/// drop it. Call it once its row is deleted, which is what decides: a host
+/// that connects as it goes, or a FleetObject that wasn't told, finds the
+/// row gone at the connection's next hello or heartbeat, and FleetObject
+/// lets the runner go then (`FleetObject::in_d1`).
 pub(crate) async fn removed(env: &worker::Env, runner_id: &str, reason: &str) -> AppResult<()> {
     let stub = internal::fleet_stub(env)?;
     let _: serde_json::Value = internal::post(
@@ -280,14 +283,6 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
 /// working, and the sessions it ran stop and resume elsewhere.
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let runner = require_manager(ctx, id).await?;
-    // FleetObject first, so that a failure there leaves the runner as it
-    // was, for another try, rather than gone with its connection open.
-    removed(
-        &ctx.env,
-        id,
-        &format!("Its runner {} was removed.", runner.name),
-    )
-    .await?;
     let changed = q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(id)])?
         .run()
         .await?;
@@ -303,7 +298,20 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             Some(serde_json::json!({ "name": runner.name })),
         );
     }
+    let_go(ctx, id, &format!("Its runner {} was removed.", runner.name)).await;
     http::ok(&Ok { ok: true })
+}
+
+/// Tells FleetObject that a runner whose row is deleted is gone. Should it
+/// not answer, FleetObject lets the runner go at its connection's next
+/// heartbeat, which finds the row gone: the removal stands either way.
+async fn let_go(ctx: &Ctx, id: &str, reason: &str) {
+    if let Err(e) = removed(&ctx.env, id, reason).await {
+        worker::console_error!(
+            "telling FleetObject runner {id} was removed (it lets it go at its next heartbeat): {}",
+            e.0.message
+        );
+    }
 }
 
 /// A workspace's runner that waits for approval, for the admins of the
@@ -377,10 +385,6 @@ pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             runner.name
         )));
     }
-    // FleetObject first, as for `delete`: it gets nothing but a welcome
-    // while it waits, so a race with an approval only drops its connection
-    // for its host to open again.
-    removed(&ctx.env, id, "Its runner was rejected.").await?;
     let changed = q(
         &ctx.db,
         "DELETE FROM runners WHERE id = ? AND pending_until IS NOT NULL",
@@ -400,6 +404,7 @@ pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Some(id),
         Some(serde_json::json!({ "name": runner.name })),
     );
+    let_go(ctx, id, "Its runner was rejected.").await;
     http::ok(&Ok { ok: true })
 }
 
@@ -621,13 +626,6 @@ pub async fn remove_this_runner(ctx: &mut Ctx, req: &Request) -> AppResult<Respo
             "Only runners that enrolled with an enrollment token remove themselves. Its owner removes this one, in the app or with `fctl runners remove`.",
         ));
     };
-    // FleetObject first, as for `delete`: the host tries again otherwise.
-    removed(
-        &ctx.env,
-        &r.id,
-        &format!("Its runner {} was uninstalled.", r.name),
-    )
-    .await?;
     q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(&r.id)])?
         .run()
         .await?;
@@ -637,6 +635,12 @@ pub async fn remove_this_runner(ctx: &mut Ctx, req: &Request) -> AppResult<Respo
         Some(&r.id),
         Some(serde_json::json!({ "name": r.name, "by": "host" })),
     );
+    let_go(
+        ctx,
+        &r.id,
+        &format!("Its runner {} was uninstalled.", r.name),
+    )
+    .await;
     http::ok(&Ok { ok: true })
 }
 

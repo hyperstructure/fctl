@@ -769,11 +769,23 @@ impl FleetObject {
             minutes: i64,
         }
         for r in due {
+            // Its host may have connected again while the runners before it
+            // went: not while it is connected, and only while D1 hasn't
+            // heard from it since either, so that a hello that gets in
+            // first keeps it.
+            let Some(fresh) = self.live_rows().into_iter().find(|x| x.id == r.id) else {
+                continue;
+            };
+            if fresh.online(self) {
+                continue;
+            }
+            let seen = fresh.last_seen.map_or(0, |t| t as i64);
             let gone: Vec<Gone> = match crate::db::q(
                 &db,
-                "DELETE FROM runners WHERE id = ? AND remove_offline_after_minutes IS NOT NULL \
+                "DELETE FROM runners WHERE id = ?1 AND remove_offline_after_minutes IS NOT NULL \
+                 AND COALESCE(last_seen_at, 0) <= ?2 \
                  RETURNING name, workspace_id, remove_offline_after_minutes AS minutes",
-                &[crate::db::s(&r.id)],
+                &[crate::db::s(&r.id), crate::db::n(seen)],
             ) {
                 Ok(q) => match q.all().await {
                     Ok(g) => g,
@@ -785,12 +797,7 @@ impl FleetObject {
                 Err(_) => continue,
             };
             let Some(g) = gone.into_iter().next() else {
-                // Removed meanwhile by someone, or it keeps its runners:
-                // nothing here waits for it any more.
-                let _ = self.sql.exec(
-                    "UPDATE runners SET remove_after_ms = NULL WHERE id = ?",
-                    Some(vec![sv(&r.id)]),
-                );
+                self.not_removed(&db, &r.id).await;
                 continue;
             };
             let offline = fctl_domain::enrollment::minutes(u32::try_from(g.minutes).unwrap_or(1));
@@ -816,6 +823,57 @@ impl FleetObject {
                 worker::console_error!("auditing runner {}: {}", r.id, e.0.message);
             }
             worker::console_log!("{} was offline for {offline}: removed it", g.name);
+        }
+    }
+
+    /// A runner `remove_gone_runners` found due kept its row, and why: it is
+    /// gone already (someone removed it, and FleetObject may not have heard),
+    /// when everything of it here goes too; it no longer goes when offline,
+    /// when nothing here waits for it any more; or D1 heard from it since,
+    /// when it is back.
+    async fn not_removed(&self, db: &worker::D1Database, runner_id: &str) {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            minutes: Option<i64>,
+        }
+        let row: Vec<Row> = match crate::db::q(
+            db,
+            "SELECT remove_offline_after_minutes AS minutes FROM runners WHERE id = ?",
+            &[crate::db::s(runner_id)],
+        ) {
+            Ok(q) => match q.all().await {
+                Ok(r) => r,
+                Err(_) => return,
+            },
+            Err(_) => return,
+        };
+        match row.first() {
+            None => self.removed(runner_id, "Its runner was removed.").await,
+            Some(Row { minutes: None }) => {
+                let _ = self.sql.exec(
+                    "UPDATE runners SET remove_after_ms = NULL WHERE id = ?",
+                    Some(vec![sv(runner_id)]),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Writes what a runner's connection says to its row in D1, and says
+    /// whether the row is there: `Some(false)` once the runner was removed,
+    /// so that a connection that got in as it went (its token checked just
+    /// before its row was deleted), or that FleetObject wasn't told of,
+    /// doesn't stay. `None` when D1 doesn't answer, which proves nothing.
+    async fn in_d1(&self, sql: &str, params: &[crate::db::Val]) -> Option<bool> {
+        let db = self.env.d1("DB").ok()?;
+        let changed = crate::db::q(&db, sql, params).ok()?.run().await;
+        match changed {
+            Ok(n) => Some(n > 0),
+            Err(e) => {
+                worker::console_error!("noting a runner's connection in D1: {}", e.0.message);
+                None
+            }
         }
     }
 
@@ -857,14 +915,15 @@ impl FleetObject {
                     ]),
                 );
                 // Persist liveness in D1 now and then (every heartbeat is fine: one write per 15 s).
-                if let Ok(db) = self.env.d1("DB")
-                    && let Ok(q) = crate::db::q(
-                        &db,
+                let kept = self
+                    .in_d1(
                         "UPDATE runners SET last_seen_at = ? WHERE id = ?",
                         &[crate::db::n(now), crate::db::s(&rs.id)],
                     )
-                {
-                    let _ = q.run().await;
+                    .await;
+                if kept == Some(false) {
+                    self.removed(&rs.id, "Its runner was removed.").await;
+                    return;
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
@@ -987,14 +1046,15 @@ impl FleetObject {
             "UPDATE runners SET hello = ?, sessions = ?, connected = 1, last_seen = ? WHERE id = ?",
             Some(vec![sv(&info), sv(&sessions), iv(now), sv(&rs.id)]),
         );
-        if let Ok(db) = self.env.d1("DB")
-            && let Ok(q) = crate::db::q(
-                &db,
+        let kept = self
+            .in_d1(
                 "UPDATE runners SET info = ?, last_seen_at = ? WHERE id = ?",
                 &[crate::db::s(&info), crate::db::n(now), crate::db::s(&rs.id)],
             )
-        {
-            let _ = q.run().await;
+            .await;
+        if kept == Some(false) {
+            self.removed(&rs.id, "Its runner was removed.").await;
+            return;
         }
         if let Ok(text) = serde_json::to_string(&Self::welcome(rs, now)) {
             let _ = ws.send_with_str(&text);

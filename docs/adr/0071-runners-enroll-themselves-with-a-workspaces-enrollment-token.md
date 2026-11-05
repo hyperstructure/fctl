@@ -92,7 +92,10 @@ has and nothing in front of it.
   ones too, so removed, rejected and expired ones free their place, and
   an autoscaling group keeps replacing machines within it.
 - **Removing a runner stops its sessions at once** (FleetDO's
-  `/runner-removed`): its connection and uplinks close, the sessions it
+  `/runner-removed`), once its row is deleted, which decides: FleetDO also
+  lets go of any runner whose hello or heartbeat finds its row gone, so a
+  host that reconnects as it goes, or a FleetDO that wasn't told, doesn't
+  keep it. Its connection and uplinks close, the sessions it
   ran stop and resume elsewhere, FleetDO forgets it, and feeds drop it
   (`FeedServer::RunnerRemoved`). Before, a removed runner's sessions
   waited ten minutes, as an offline runner's do.
