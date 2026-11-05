@@ -41,7 +41,7 @@ use fctl_proto::uplink::{
 use fctl_proto::{ApiError, DeliveryId, PROTOCOL_VERSION, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -114,8 +114,15 @@ pub(crate) enum Work {
         delivery: DeliveryId,
         model: Option<(String, std::result::Result<Value, String>)>,
         effort: Option<(String, std::result::Result<Value, String>)>,
+        /// The model and effort level the spec had before: what Claude
+        /// starts on again if it refuses the new ones.
+        before: (Option<String>, Option<String>),
     },
 }
+
+/// How many refused changes of model or effort level fctl-agent remembers,
+/// to say so again when the host sends one again.
+const REFUSALS_KEPT: usize = 50;
 
 /// How long Claude has to switch models: it may ask the API about the
 /// model first.
@@ -207,6 +214,12 @@ pub struct Supervisor {
     told_old_fctl_tickets: bool,
     /// The project's package caches, once readied for the session.
     cache: Option<caches::Ready>,
+    /// Changes of model or effort level that Claude hasn't answered yet:
+    /// one that comes again meanwhile is the same, whose answer follows.
+    settings_waiting: HashSet<String>,
+    /// Changes Claude refused, newest last, with why: one that comes again
+    /// (the host lost the answer with its link) gets the same answer.
+    settings_refused: VecDeque<(String, String)>,
 }
 
 impl Supervisor {
@@ -283,6 +296,8 @@ impl Supervisor {
                 told_old_fctl: false,
                 told_old_fctl_tickets: false,
                 cache: None,
+                settings_waiting: HashSet::new(),
+                settings_refused: VecDeque::new(),
             },
             claude_rx,
             work_rx,
@@ -1136,7 +1151,8 @@ impl Supervisor {
                 delivery,
                 model,
                 effort,
-            } => self.settings_applied(delivery, model, effort),
+                before,
+            } => self.settings_applied(delivery, model, effort, before),
         }
     }
 
@@ -1148,7 +1164,9 @@ impl Supervisor {
         delivery: DeliveryId,
         model: Option<(String, std::result::Result<Value, String>)>,
         effort: Option<(String, std::result::Result<Value, String>)>,
+        before: (Option<String>, Option<String>),
     ) {
+        self.settings_waiting.remove(&delivery.0);
         let mut refused = Vec::new();
         if let Some((asked, answer)) = model {
             match answer {
@@ -1163,9 +1181,9 @@ impl Supervisor {
                 }
                 Err(e) => {
                     refused.push(format!("Claude didn't switch to {asked}: {e}"));
-                    // It starts on the model it works on, if it starts again.
+                    // It starts on the one it had, if it starts again.
                     if let Some(c) = self.config.as_mut() {
-                        c.spec.model = self.state.model.clone();
+                        c.spec.model = before.0.clone();
                     }
                 }
             }
@@ -1175,9 +1193,14 @@ impl Supervisor {
                 // Until Claude says what it works at (`get_settings`), which
                 // its limits may make less.
                 Ok(_) => self.state.effort = Some(asked),
-                Err(e) => refused.push(format!(
-                    "Claude didn't change its effort level to {asked}: {e}"
-                )),
+                Err(e) => {
+                    refused.push(format!(
+                        "Claude didn't change its effort level to {asked}: {e}"
+                    ));
+                    if let Some(c) = self.config.as_mut() {
+                        c.spec.effort = before.1.clone();
+                    }
+                }
             }
         }
         if let Some(c) = self.claude.as_mut() {
@@ -1185,12 +1208,23 @@ impl Supervisor {
             read_context(c, &self.work_tx);
         }
         self.flush();
+        // Taken only now: until Claude answered, the same change coming
+        // again waits for this answer.
+        self.mark_delivered(&delivery);
+        let error = (!refused.is_empty()).then(|| refused.join(" "));
+        if let Some(e) = &error {
+            self.settings_refused
+                .push_back((delivery.0.clone(), e.clone()));
+            while self.settings_refused.len() > REFUSALS_KEPT {
+                self.settings_refused.pop_front();
+            }
+        }
         // The delivery first: SessionDO shows the change until it is done,
         // and then what the state says.
         self.send(&AgentToHost::Delivered {
             delivery_id: delivery,
-            ok: refused.is_empty(),
-            error: (!refused.is_empty()).then(|| refused.join(" ")),
+            ok: error.is_none(),
+            error,
         });
         self.send(&AgentToHost::State {
             state: self.state.clone(),
@@ -1599,11 +1633,20 @@ impl Supervisor {
     }
 
     async fn on_delivery(&mut self, d: Delivery) {
+        if self.settings_waiting.contains(&d.id.0) {
+            // Its answer follows.
+            return;
+        }
         if self.was_delivered(&d.id) {
+            let refused = self
+                .settings_refused
+                .iter()
+                .find(|(id, _)| id == &d.id.0)
+                .map(|(_, why)| why.clone());
             self.send(&AgentToHost::Delivered {
                 delivery_id: d.id,
-                ok: true,
-                error: None,
+                ok: refused.is_none(),
+                error: refused,
             });
             return;
         }
@@ -1635,11 +1678,11 @@ impl Supervisor {
             }
             DeliveryKind::Settings { model, effort, .. } => {
                 // Before the session's spec came: once Claude has started.
-                if self.config.is_none() {
+                let Some(spec) = self.config.as_ref().map(|c| &c.spec) else {
                     self.queue.push_back(d.clone());
                     return;
-                }
-                self.mark_delivered(&d.id);
+                };
+                let before = (spec.model.clone(), spec.effort.clone());
                 // What Claude starts on if it starts again in this run.
                 if let Some(config) = self.config.as_mut() {
                     if let Some(m) = model {
@@ -1651,6 +1694,7 @@ impl Supervisor {
                 }
                 let Some(c) = self.claude.as_mut() else {
                     // It starts on them.
+                    self.mark_delivered(&d.id);
                     self.send(&AgentToHost::Delivered {
                         delivery_id: d.id,
                         ok: true,
@@ -1675,6 +1719,7 @@ impl Supervisor {
                     );
                     (e, answer)
                 });
+                self.settings_waiting.insert(d.id.0.clone());
                 let work = self.work_tx.clone();
                 tokio::spawn(async move {
                     let model = match switched {
@@ -1689,6 +1734,7 @@ impl Supervisor {
                         delivery: d.id,
                         model,
                         effort,
+                        before,
                     });
                 });
             }
@@ -3733,6 +3779,8 @@ while IFS= read -r line; do
       printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"not_found"}}\n' "$id" ;;
     *'"set_model"'*)
       printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"model":"claude-sonnet-5-5"}}}\n' "$id" ;;
+    *'"effortLevel":"max"'*)
+      printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"capped at xhigh"}}\n' "$id" ;;
     *'"apply_flag_settings"'*)
       printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$id" ;;
   esac
@@ -3742,6 +3790,10 @@ done
 
         sup.on_delivery(settings("dlv_1", Some("sonnet"), Some("medium")))
             .await;
+        // Sent again before Claude answered (a new link): the answer follows.
+        sup.on_delivery(settings("dlv_1", Some("sonnet"), Some("medium")))
+            .await;
+        assert!(delivered_sent(&mut host).is_empty());
         let sent = sent_to_claude(dir.path(), 2).await?;
         assert_eq!(sent[0]["request"]["subtype"], "set_model");
         assert_eq!(sent[0]["request"]["model"], "sonnet");
@@ -3815,9 +3867,38 @@ done
             refused.as_deref(),
             Some("Claude didn't switch to haiku: not_found")
         );
+        // A Claude that starts again starts on the model it had.
         assert_eq!(
             sup.config.as_ref().and_then(|c| c.spec.model.as_deref()),
-            Some("claude-sonnet-5-5")
+            Some("sonnet")
+        );
+        // Sent again after a link that lost the answer: refused again.
+        sup.on_delivery(settings("dlv_2", Some("haiku"), None))
+            .await;
+        let again = delivered_sent(&mut host);
+        assert_eq!(again.len(), 1);
+        assert!(!again[0].1);
+        assert_eq!(
+            again[0].2.as_deref(),
+            Some("Claude didn't switch to haiku: not_found")
+        );
+
+        // An effort level it refuses: a Claude that starts again starts on
+        // the one it had.
+        sup.on_delivery(settings("dlv_3", None, Some("max"))).await;
+        let answered = tokio::time::timeout(Duration::from_secs(10), work.recv()).await?;
+        let Some(answered @ Work::Settings { .. }) = answered else {
+            panic!("expected Claude's answer");
+        };
+        sup.on_work(answered).await;
+        assert_eq!(
+            sup.config.as_ref().and_then(|c| c.spec.effort.as_deref()),
+            Some("medium")
+        );
+        assert!(
+            delivered_sent(&mut host)
+                .iter()
+                .any(|(id, ok, _)| id.0 == "dlv_3" && !ok)
         );
         Ok(())
     }

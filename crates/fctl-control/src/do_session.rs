@@ -197,6 +197,11 @@ const CHECKS_IN_A_ROW: &str = "checks_in_a_row";
 /// (`fctl_domain::follow_ups::MAX_CONFLICTS_IN_A_ROW`).
 const CONFLICTS_IN_A_ROW: &str = "conflicts_in_a_row";
 
+/// The meta key that says Claude refused an effort level someone asked for:
+/// the state that follows says the one it works at, which the next run asks
+/// for in its place (D1's `effort`).
+const EFFORT_REFUSED: &str = "effort_refused";
+
 /// The meta key that counts what of `kind` the agent heard of in a row.
 fn in_a_row_key(kind: follow_ups::Repeats) -> &'static str {
     match kind {
@@ -1580,6 +1585,24 @@ impl SessionObject {
         }
     }
 
+    /// Keeps `effort` as the level the session's next run asks for (D1's
+    /// `effort`; none: the project's).
+    async fn ask_effort(&self, id: &str, effort: Option<String>) {
+        let Ok(db) = self.env.d1("DB") else { return };
+        let res = crate::db::q(
+            &db,
+            "UPDATE sessions SET effort = ? WHERE id = ?",
+            &[crate::db::os(effort.as_deref()), crate::db::s(id)],
+        );
+        let done = match res {
+            Ok(query) => query.run().await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = done {
+            worker::console_error!("keeping the effort level failed: {}", e.0.message);
+        }
+    }
+
     /// The changes of model or effort level that wait in the outbox, oldest
     /// first.
     fn pending_settings(&self) -> Vec<Delivery> {
@@ -2492,12 +2515,34 @@ impl SessionObject {
                 ok,
                 error,
             } => {
+                // What it was, before it leaves the outbox.
+                let settings = self
+                    .sql
+                    .exec(
+                        "SELECT data FROM outbox WHERE id = ?",
+                        Some(vec![sv(delivery_id.as_str())]),
+                    )
+                    .and_then(|c| c.to_array::<OutboxRow>())
+                    .unwrap_or_default()
+                    .first()
+                    .and_then(|r| serde_json::from_str::<Delivery>(&r.data).ok())
+                    .and_then(|d| match d.kind {
+                        DeliveryKind::Settings { effort, .. } => Some(effort),
+                        _ => None,
+                    });
                 let _ = self.sql.exec(
                     "DELETE FROM outbox WHERE id = ?",
                     Some(vec![sv(delivery_id.as_str())]),
                 );
-                // The agent took it: a turn starts, whatever the status says yet.
-                self.set_meta("last_delivered", &now.to_string());
+                // The agent took it: a turn starts, whatever the status says
+                // yet. A change of model or effort level starts none, and so
+                // doesn't keep a draining runner from stopping the session.
+                if settings.is_none() {
+                    self.set_meta("last_delivered", &now.to_string());
+                }
+                if !ok && matches!(settings, Some(Some(_))) {
+                    self.set_meta(EFFORT_REFUSED, "1");
+                }
                 if !ok {
                     let notice = fctl_proto::event::Notice {
                         ticket: None,
@@ -2919,6 +2964,17 @@ impl SessionObject {
             && !asked_model
         {
             s.model = Some(m);
+        }
+        // The level Claude works at after it refused one, unless someone
+        // asked for another since: its next run's.
+        if let Some(e) = &state.effort
+            && self.meta(EFFORT_REFUSED).is_some()
+        {
+            self.delete_meta(EFFORT_REFUSED);
+            if !asked_effort {
+                self.ask_effort(s.id.as_str(), fctl_domain::validate::effort(e).ok())
+                    .await;
+            }
         }
         // Empty when Claude's model takes no effort level.
         if let Some(e) = state.effort
