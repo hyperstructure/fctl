@@ -197,6 +197,22 @@ export function patchSession(qc: QueryClient, s: G.Session) {
   });
 }
 
+/**
+ * After a session's summary changes, its project's last activity in the cached list of projects,
+ * which is its sessions' latest (review agents' left out).
+ */
+export function patchProjectActivity(qc: QueryClient, s: G.Session) {
+  if (s.review) return;
+  const at = s.last_activity_at ?? s.created_at;
+  qc.setQueryData<G.ProjectList>(keys.projects, (old) => {
+    const i = old?.projects.findIndex((p) => p.id === s.project_id && (p.last_activity_at ?? 0) < at) ?? -1;
+    if (!old || i === -1) return old;
+    const projects = old.projects.slice();
+    projects[i] = { ...old.projects[i], last_activity_at: at } as G.Project;
+    return { ...old, projects };
+  });
+}
+
 export function useInvalidate() {
   const qc = useQueryClient();
   return (...ks: readonly unknown[][]) => Promise.all(ks.map((k) => qc.invalidateQueries({ queryKey: k })));

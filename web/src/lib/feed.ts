@@ -4,7 +4,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
 import { wsUrl } from "./api";
-import { keys, patchSession, queryClient } from "./queries";
+import { keys, patchProjectActivity, patchSession, queryClient } from "./queries";
 
 export interface Pulse {
   sessionId: string;
@@ -122,9 +122,10 @@ class Feed {
           sessions.set(msg.session.id, msg.session);
           this.set({ sessions });
           patchSession(queryClient, msg.session);
-          // New sessions and status changes may move lists; refresh them lazily. Patching them has
-          // the rest, as an agent's every step changes its session's summary, and the sidebar's list
-          // shows on every page.
+          patchProjectActivity(queryClient, msg.session);
+          // New sessions and status changes may move lists and change projects' counts; refresh
+          // them lazily. Patching them has the rest, as an agent's every step changes its session's
+          // summary, and the sidebar's list shows on every page.
           if (movesLists(before, msg.session)) {
             void queryClient.invalidateQueries({ queryKey: ["sessions"], refetchType: "active" });
             void queryClient.invalidateQueries({ queryKey: keys.projects, refetchType: "active" });
