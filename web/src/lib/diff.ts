@@ -172,12 +172,30 @@ export function markChanges(lines: DiffLine[]) {
         }
         return out;
       };
-      const removed = ranges("removed");
-      const added = ranges("added");
+      const removed = joined(ranges("removed"), del.text);
+      const added = joined(ranges("added"), add.text);
       if (removed.length) del.changed = removed;
       if (added.length) add.changed = added;
     }
   }
+}
+
+/**
+ * Ranges with nothing but spaces between them, as one (`skipped = []`
+ * marked once, not in three), without the spaces at their ends.
+ */
+function joined(ranges: [number, number][], text: string): [number, number][] {
+  const out: [number, number][] = [];
+  for (const r of ranges) {
+    const last = out[out.length - 1];
+    if (last && !text.slice(last[1], r[0]).trim()) last[1] = r[1];
+    else out.push([r[0], r[1]]);
+  }
+  for (const r of out) {
+    while (r[0] < r[1] && /\s/.test(text[r[0]] ?? "")) r[0]++;
+    while (r[1] > r[0] && /\s/.test(text[r[1] - 1] ?? "")) r[1]--;
+  }
+  return out.filter(([a, b]) => b > a);
 }
 
 /** A row of a side-by-side diff: the line before on the left, after on the right. */

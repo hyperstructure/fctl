@@ -10,8 +10,10 @@ import {
   ChevronDown,
   ChevronUp,
   Columns2,
+  FilePen,
   FileQuestion,
   FileX2,
+  Folder,
   History,
   PanelLeft,
   Rows3,
@@ -63,9 +65,9 @@ const same = (a: DiffTarget, b: DiffTarget) => a.path === b.path && (a.repo ?? "
 export function changeOf(status: string): { letter: string; label: string; tone: string } {
   switch (status) {
     case "added":
-      return { letter: "A", label: "Added", tone: "text-accent" };
+      return { letter: "A", label: "Added", tone: "text-added" };
     case "untracked":
-      return { letter: "A", label: "New, untracked", tone: "text-accent" };
+      return { letter: "A", label: "New, untracked", tone: "text-added" };
     case "deleted":
       return { letter: "D", label: "Deleted", tone: "text-danger" };
     case "renamed":
@@ -144,7 +146,12 @@ export function DiffDialog({
   const body = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const [layout, setLayout] = useKept<DiffLayout>("fctl.diff.layout", "unified", ["unified", "split"]);
-  const [wrap, setWrap] = useKept<"wrap" | "scroll">("fctl.diff.wrap", "scroll", ["wrap", "scroll"]);
+  // On a phone's narrow screen long lines wrap, unless someone chose otherwise.
+  const narrow = window.matchMedia?.("(max-width: 639px)").matches ?? false;
+  const [wrap, setWrap] = useKept<"wrap" | "scroll">("fctl.diff.wrap", narrow ? "wrap" : "scroll", [
+    "wrap",
+    "scroll",
+  ]);
   const [listShown, setListShown] = useKept<"shown" | "hidden">("fctl.diff.list", "shown", [
     "shown",
     "hidden",
@@ -156,8 +163,12 @@ export function DiffDialog({
   const roomy = useWide(900);
   const pressedOutside = useRef(false);
 
+  // In the order the list shows them.
   const all = useMemo(
-    () => groups.flatMap((g) => g.files.map((file) => ({ repo: g.repo, file, group: g }))),
+    () =>
+      groups.flatMap((g) =>
+        byDirectory(g.files).flatMap((d) => d.files.map((file) => ({ repo: g.repo, file, group: g }))),
+      ),
     [groups],
   );
   const index = all.findIndex((f) => same({ repo: f.repo, path: f.file.path }, current));
@@ -356,18 +367,17 @@ function Header({
             {dir && <span className="min-w-0 shrink-[1000] truncate text-ink-4">{dir}</span>}
             <span className="min-w-0 truncate font-medium text-ink">{name}</span>
           </h2>
-          <CopyButton
-            text={current.path}
-            label="Copy path"
-            className="hidden shrink-0 py-0.5 sm:inline-flex"
-          />
+          <span className="hidden shrink-0 sm:inline-flex">
+            <CopyButton text={current.path} label="Copy path" className="py-0.5" />
+          </span>
         </div>
         <div className="flex min-w-0 items-center gap-x-2.5 overflow-hidden text-[12px] whitespace-nowrap text-ink-3">
           <span className={cn("font-medium", change.tone)}>{change.label}</span>
-          {(a !== undefined || d !== undefined) && (
+          {(!!a || !!d) && (
             <span className="font-mono text-[11.5px] tabular-nums">
-              <span className={cn(a && "text-accent")}>+{a ?? 0}</span>{" "}
-              <span className={cn(d && "text-danger")}>−{d ?? 0}</span>
+              {!!a && <span className="text-added">+{a}</span>}
+              {!!a && !!d && " "}
+              {!!d && <span className="text-danger">−{d}</span>}
             </span>
           )}
           {lang.id !== "text" && <span className="hidden text-ink-4 sm:inline">{lang.label}</span>}
@@ -422,7 +432,7 @@ function Header({
         label={wrap ? "Scroll long lines (w)" : "Wrap long lines (w)"}
         aria-pressed={wrap}
         onClick={toggleWrap}
-        className={cn("hidden sm:inline-flex", wrap && "bg-hover text-ink")}
+        className={cn(wrap && "bg-hover text-ink")}
       >
         <TextWrap className="size-4" />
       </IconButton>
@@ -549,13 +559,29 @@ function FileList({
               </div>
             )}
             <ul>
-              {g.files.map((f) => (
-                <li key={f.path}>
-                  <FileRow
-                    file={f}
-                    active={same({ repo: g.repo, path: f.path }, current)}
-                    onClick={() => onSelect({ repo: g.repo, path: f.path })}
-                  />
+              {byDirectory(g.files).map(({ dir, files }) => (
+                <li key={dir}>
+                  {dir && (
+                    <div
+                      className="flex min-w-0 items-center gap-1.5 px-2.5 pt-2 pb-0.5 font-mono text-[11px] text-ink-4"
+                      title={dir}
+                    >
+                      <Folder className="size-3 shrink-0" aria-hidden="true" />
+                      <span className="truncate">{dir.slice(0, -1)}</span>
+                    </div>
+                  )}
+                  <ul>
+                    {files.map((f) => (
+                      <li key={f.path}>
+                        <FileRow
+                          file={f}
+                          nested={!!dir}
+                          active={same({ repo: g.repo, path: f.path }, current)}
+                          onClick={() => onSelect({ repo: g.repo, path: f.path })}
+                        />
+                      </li>
+                    ))}
+                  </ul>
                 </li>
               ))}
             </ul>
@@ -575,8 +601,35 @@ function FileList({
   );
 }
 
-function FileRow({ file, active, onClick }: { file: G.FileChange; active: boolean; onClick: () => void }) {
-  const { dir, name } = split(file.path);
+/**
+ * A repository's files under their directories: those at its root first,
+ * then each directory once, in the order the list has them, above its files.
+ */
+export function byDirectory(files: G.FileChange[]): { dir: string; files: G.FileChange[] }[] {
+  const dirs = new Map<string, G.FileChange[]>([["", []]]);
+  for (const f of files) {
+    const { dir } = split(f.path);
+    const list = dirs.get(dir);
+    if (list) list.push(f);
+    else dirs.set(dir, [f]);
+  }
+  return [...dirs].map(([dir, files]) => ({ dir, files })).filter((d) => d.files.length > 0);
+}
+
+/** A file in the list: how it changed, its name (its directory is above it), its lines added and taken out. */
+function FileRow({
+  file,
+  nested,
+  active,
+  onClick,
+}: {
+  file: G.FileChange;
+  /** Under its directory: indented. */
+  nested: boolean;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const { name } = split(file.path);
   const change = changeOf(file.status);
   const a = file.additions ?? 0;
   const d = file.deletions ?? 0;
@@ -587,7 +640,8 @@ function FileRow({ file, active, onClick }: { file: G.FileChange; active: boolea
       aria-current={active}
       title={file.path}
       className={cn(
-        "group/file relative flex w-full items-center gap-2 rounded-md py-1.5 pr-2 pl-2.5 text-left transition-colors",
+        "group/file relative flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-colors",
+        nested ? "pl-[22px]" : "pl-2.5",
         active ? "bg-hover text-ink" : "text-ink-2 hover:bg-hover hover:text-ink",
       )}
     >
@@ -598,17 +652,10 @@ function FileRow({ file, active, onClick }: { file: G.FileChange; active: boolea
       <span className={cn("w-3 shrink-0 text-center font-mono text-[11px]", change.tone)} aria-hidden="true">
         {change.letter}
       </span>
-      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="min-w-0 truncate font-mono text-[12.5px]">{name}</span>
-        {dir && (
-          <span className="min-w-0 shrink-[1000] truncate font-mono text-[11px] text-ink-4">
-            {dir.slice(0, -1)}
-          </span>
-        )}
-      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{name}</span>
       {(a > 0 || d > 0) && (
         <span className="shrink-0 font-mono text-[10.5px] text-ink-4 tabular-nums">
-          {a > 0 && <span className="text-accent/80">+{a}</span>}
+          {a > 0 && <span className="text-added/80">+{a}</span>}
           {a > 0 && d > 0 && " "}
           {d > 0 && <span className="text-danger/80">−{d}</span>}
         </span>
@@ -671,25 +718,22 @@ function Body({
     return <Loading />;
   }
   const command = `fctl diff ${cliRef} ${/\s|['"$`\\]/.test(current.path) ? `'${current.path.replaceAll("'", "'\\''")}'` : current.path}${entry.repo ? ` --repo ${entry.repo}` : ""}`;
-  const notes: ReactNode[] = [];
-  if (diff.old_path) {
-    notes.push(
-      <span key="renamed">
-        Renamed from <code className="font-mono text-ink-2">{diff.old_path}</code>
-      </span>,
-    );
-  }
-  if (diff.old_mode && diff.new_mode) {
-    const exec = (m: string) => m.endsWith("755");
-    notes.push(
-      <span key="mode">
-        Mode {diff.old_mode} → {diff.new_mode}
-        {exec(diff.new_mode) && !exec(diff.old_mode) ? ": executable now" : ""}
-        {exec(diff.old_mode) && !exec(diff.new_mode) ? ": no longer executable" : ""}
-      </span>,
-    );
-  }
+  // What changed beside its lines: where a renamed file was, and its mode.
+  const exec = (m?: string) => !!m?.endsWith("755");
+  const mode =
+    diff.old_mode && diff.new_mode
+      ? `${diff.old_mode} → ${diff.new_mode}${
+          exec(diff.new_mode) && !exec(diff.old_mode)
+            ? ": executable now"
+            : exec(diff.old_mode) && !exec(diff.new_mode)
+              ? ": no longer executable"
+              : ""
+        }`
+      : undefined;
+  const from = diff.old_path && <code className="font-mono text-ink-2">{diff.old_path}</code>;
   let content: ReactNode;
+  // What the lines don't say goes above them; with no lines, the note says it.
+  let above = true;
   if (diff.binary) {
     content = (
       <Note icon={<Binary />} title="A binary file">
@@ -707,9 +751,19 @@ function Body({
       </Note>
     );
   } else if (!hunks.length) {
-    content = (
-      <Note icon={<FileQuestion />} title={notes.length ? "No lines changed" : "An empty file"}>
-        {notes.length ? "Only what's above changed." : "It has no lines."}
+    above = false;
+    content = from ? (
+      <Note icon={<FilePen />} title="Renamed, its lines as they were">
+        From {from}
+        {mode && `, its mode ${mode}`}.
+      </Note>
+    ) : mode ? (
+      <Note icon={<FilePen />} title="Only its mode changed">
+        {mode}.
+      </Note>
+    ) : (
+      <Note icon={<FileQuestion />} title="An empty file">
+        It has no lines.
       </Note>
     );
   } else {
@@ -719,21 +773,19 @@ function Body({
         lang={lang}
         layout={layout}
         wrap={wrap}
-        className={cn(
-          "min-h-full pb-10 [--diff-bg:var(--c-surface)]",
-          (q.isFetching || q.isPlaceholderData) && "opacity-90",
-        )}
+        className={cn("diff-on-surface flex-1 pb-10", (q.isFetching || q.isPlaceholderData) && "opacity-90")}
       />
     );
   }
   return (
     <div className="flex min-h-full flex-col">
-      {notes.length > 0 && (
+      {above && (from || mode) && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-line bg-surface px-4 py-2 text-[12px] text-ink-3">
-          {notes}
+          {from && <span>Renamed from {from}</span>}
+          {mode && <span>Mode {mode}</span>}
         </div>
       )}
-      <div className="flex-1 animate-fade">{content}</div>
+      <div className="flex flex-1 animate-fade flex-col">{content}</div>
     </div>
   );
 }

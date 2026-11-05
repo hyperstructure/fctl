@@ -65,7 +65,7 @@ export function Changes({
                   {f.path}
                 </span>
                 <span className="flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
-                  <span className="bg-accent/80" style={{ width: `${(a / maxChange) * 100}%` }} />
+                  <span className="bg-added/80" style={{ width: `${(a / maxChange) * 100}%` }} />
                   <span className="bg-danger/70" style={{ width: `${(d / maxChange) * 100}%` }} />
                 </span>
               </>
@@ -114,7 +114,7 @@ export function Changes({
       {showTotals && (
         <div className="mt-3 flex flex-wrap gap-x-3 text-[12px] text-ink-4">
           <span>
-            <span className="text-accent">+{repo.additions}</span>{" "}
+            <span className="text-added">+{repo.additions}</span>{" "}
             <span className="text-danger">−{repo.deletions}</span>
           </span>
           {ahead > 0 && (

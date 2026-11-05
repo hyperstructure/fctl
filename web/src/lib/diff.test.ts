@@ -62,6 +62,16 @@ describe("git's hunks", () => {
     expect(h?.lines[3]?.changed).toBeUndefined();
   });
 
+  it("mark what changed in one piece when only spaces lie between", () => {
+    const lines: DiffLine[] = [
+      { kind: "del", text: "export function DayPicker({ days, value, onChange }: Props) {" },
+      { kind: "add", text: "export function DayPicker({ days, value, onChange, skipped = [] }: Props) {" },
+    ];
+    markChanges(lines);
+    const add = lines[1];
+    expect(add?.changed?.map(([a, b]) => add.text.slice(a, b))).toEqual([", skipped = []"]);
+  });
+
   it("leave lines that share little unmarked", () => {
     const lines = parsePatch("@@ -1 +1 @@\n-const config = load();\n+export default {};").flatMap(
       (h) => h.lines,

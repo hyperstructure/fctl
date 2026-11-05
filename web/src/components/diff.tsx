@@ -94,17 +94,30 @@ function pieces(line: DiffLine, tokens: Token[] | undefined): Piece[] {
 
 /** A line's code: highlighted pieces, the words that changed marked. */
 const Code = memo(function Code({ line, tokens }: { line: DiffLine; tokens?: Token[] }) {
+  // Each run of what changed is one mark, whatever tokens it spans.
+  const runs: { changed: boolean; pieces: Piece[] }[] = [];
+  for (const p of pieces(line, tokens)) {
+    const last = runs[runs.length - 1];
+    if (last && last.changed === p.changed) last.pieces.push(p);
+    else runs.push({ changed: p.changed, pieces: [p] });
+  }
+  const spans = (ps: Piece[]) =>
+    ps.map((p, i) => (
+      <span key={i} style={p.style as CSSProperties | undefined}>
+        {p.content}
+      </span>
+    ));
   return (
     <>
-      {pieces(line, tokens).map((p, i) => (
-        <span
-          key={i}
-          style={p.style as CSSProperties | undefined}
-          className={p.changed ? "diff-word" : undefined}
-        >
-          {p.content}
-        </span>
-      ))}
+      {runs.map((r, i) =>
+        r.changed ? (
+          <span key={i} className="diff-word">
+            {spans(r.pieces)}
+          </span>
+        ) : (
+          spans(r.pieces)
+        ),
+      )}
       {line.noNewline && (
         <span
           role="img"
@@ -156,6 +169,10 @@ export function DiffLines({
     return Math.max(2, String(most).length);
   }, [hunks]);
   const split = layout === "split";
+  // One hunk from the file's top, as a new or deleted file's: its `@@` line says nothing the numbers don't.
+  const first = hunks[0];
+  const wholeFile =
+    hunks.length === 1 && !!first && first.oldStart <= 1 && first.newStart <= 1 && !first.section;
   const style = { "--diff-digits": `${digits}ch` } as CSSProperties;
   return (
     <div
@@ -169,7 +186,7 @@ export function DiffLines({
       <div className={cn(!split && !wrap && "w-max min-w-full")}>
         {hunks.map((h, i) => (
           <Fragment key={`${h.oldStart}:${h.newStart}:${i}`}>
-            {headers && (
+            {headers && !wholeFile && (
               <HunkHeader hunk={h} hidden={hiddenBefore(hunks, i)} numbers={numbers} split={split} />
             )}
             {split

@@ -914,17 +914,22 @@ function Details({
   // The diff shown over the page, of the file opened in the lists below.
   const [diffAt, setDiffAt] = useState<DiffTarget>();
   const primaryTitle = project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace";
+  const merged = new Set(
+    pullRequests(session)
+      .filter((p) => p.state === "merged")
+      .map((p) => p.url),
+  );
   const diffGroups: DiffGroup[] = [
     {
       title: primaryTitle,
       files: primary?.files ?? [],
-      blob: blobLink(project?.repo && primaryTitle, branchOf(git)),
+      blob: blobLink(project?.repo && primaryTitle, branchOf(git), merged),
     },
     ...changed.map((r) => ({
       repo: r.name,
       title: r.name,
       files: r.files,
-      blob: blobLink(r.name, branchOf(git, r.name)),
+      blob: blobLink(r.name, branchOf(git, r.name), merged),
     })),
   ].filter((g) => g.files.length > 0);
   const prs = pullRequests(session);

@@ -118,7 +118,7 @@ function DiffView({ hunks, numbered, path }: { hunks: Hunk[]; numbered: boolean;
         <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-1.5 font-mono text-[11.5px] text-ink-3">
           <span className="truncate">{path}</span>
           <span className="shrink-0 tabular-nums">
-            <span className="text-accent">+{added}</span> <span className="text-danger">−{removed}</span>
+            <span className="text-added">+{added}</span> <span className="text-danger">−{removed}</span>
           </span>
         </div>
       )}
@@ -539,7 +539,7 @@ function TargetText({ target, find }: { target: Target; find: string }) {
 function LinesChanged({ lines }: { lines: Lines }) {
   return (
     <span className="font-mono text-[11px]">
-      <span className={cn(lines.added > 0 && "text-accent/80")}>+{lines.added}</span>{" "}
+      <span className={cn(lines.added > 0 && "text-added/80")}>+{lines.added}</span>{" "}
       <span className={cn(lines.removed > 0 && "text-danger/80")}>−{lines.removed}</span>
     </span>
   );

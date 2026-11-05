@@ -242,6 +242,11 @@ describe("a file's link on GitHub", () => {
     expect(blobLink("acme/web", branchOf(git({ pull_request: merged })))).toBeUndefined();
     expect(blobLink(undefined, branchOf(git({})))).toBeUndefined();
     expect(blobLink("acme/web", branchOf(git({ branch: "HEAD" })))).toBeUndefined();
+    // Merged since the agent last looked: the session's pull requests say so.
+    const open = { number: 1, url: "https://github.com/acme/web/pull/1", state: "open" } as G.PullRequestRef;
+    const st = branchOf(git({ pull_request: open }));
+    expect(blobLink("acme/web", st)).toBeDefined();
+    expect(blobLink("acme/web", st, new Set([open.url]))).toBeUndefined();
   });
 
   it("takes another repository's branch from its own state", () => {

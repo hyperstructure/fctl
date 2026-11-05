@@ -39,7 +39,7 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
           {statusReason(s) && <span className="truncate">· {statusReason(s)}</span>}
           {s.stats.files_changed > 0 && (
             <span className="shrink-0 max-sm:hidden">
-              · <span className="text-accent/80">+{s.stats.additions}</span>{" "}
+              · <span className="text-added/80">+{s.stats.additions}</span>{" "}
               <span className="text-danger/80">−{s.stats.deletions}</span>
             </span>
           )}
