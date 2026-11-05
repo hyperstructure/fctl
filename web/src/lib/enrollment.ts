@@ -1,7 +1,8 @@
 // A workspace's enrollment tokens (G.EnrollmentToken): machines that autoscaling creates, or that
-// someone sets up without signing in, enroll with one as the workspace's runners. Its admins make
-// them on the Runners tab, which says what each does in a sentence, as `fctl runners
-// enrollment-tokens` does (`fctl_domain::enrollment::describe`), and approve the runners that wait.
+// someone sets up without signing in, enroll with one as the workspace's runners, or, with a token a
+// member made for their own sessions, as that member's. They make them on the Runners tab, which
+// says what each does in a sentence, as `fctl runners enrollment-tokens` does
+// (`fctl_domain::enrollment::describe`), and approve the runners that wait for them.
 
 import type * as G from "@/gen";
 import { cpus, memory } from "./format";
@@ -59,6 +60,8 @@ export const OFFLINE_REMOVAL: readonly {
 /** A new enrollment token, as the form holds it. */
 export interface EnrollmentForm {
   name: string;
+  /** For your own sessions: the runners it enrolls are yours. Members' always are. */
+  personal: boolean;
   /** One of `ENROLLMENT_EXPIRIES`' values. */
   expires: string;
   /** The most runners at once, as typed: empty for no limit. */
@@ -70,6 +73,7 @@ export interface EnrollmentForm {
 
 export const NEW_ENROLLMENT: EnrollmentForm = {
   name: "",
+  personal: false,
   expires: "90d",
   limit: "",
   approval: false,
@@ -90,9 +94,13 @@ export function limitOf(typed: string): number | undefined {
 /** Whether the form makes a token: it has a name, and its limit, if any, is one. */
 export const enrollmentReady = (f: EnrollmentForm) => !!f.name.trim() && !Number.isNaN(limitOf(f.limit));
 
-/** The request that makes the token `f` describes. */
-export function enrollmentRequest(f: EnrollmentForm): G.CreateEnrollmentTokenRequest {
-  const req: G.CreateEnrollmentTokenRequest = { name: f.name.trim(), approval: f.approval };
+/** The request that makes the token `f` describes, for an admin of the workspace or not. */
+export function enrollmentRequest(f: EnrollmentForm, admin: boolean): G.CreateEnrollmentTokenRequest {
+  const req: G.CreateEnrollmentTokenRequest = {
+    name: f.name.trim(),
+    personal: !admin || f.personal,
+    approval: f.approval,
+  };
   const expires = ENROLLMENT_EXPIRIES.find((e) => e.value === f.expires)?.hours;
   if (expires) req.expires_in_hours = expires;
   const limit = limitOf(f.limit);
@@ -114,11 +122,48 @@ export function minutesText(m: number): string {
 }
 
 /**
+ * Whose sessions the runners a token enrolls run, as the reader sees it: the workspace's own runners
+ * run everyone's, and a member's token for their own sessions enrolls runners of theirs (`you`, or
+ * their name). As `fctl_domain::enrollment::Whose`.
+ */
+export type Whose = { everyone: true } | { you: true } | { name: string };
+
+/** Whose sessions token `t` enrolls runners for, as the person `me` reads it. */
+export function whoseToken(t: Pick<G.EnrollmentToken, "personal" | "created_by">, me?: string): Whose {
+  if (!t.personal) return { everyone: true };
+  if (t.created_by && t.created_by.id === me) return { you: true };
+  return { name: t.created_by?.name ?? "its maker" };
+}
+
+/** `everyone's sessions`, `your sessions`, `Ada's sessions`. */
+export function sessionsOf(whose: Whose): string {
+  return "everyone" in whose
+    ? "everyone's sessions"
+    : "you" in whose
+      ? "your sessions"
+      : `${whose.name}'s sessions`;
+}
+
+/** `an admin's approval`, `your approval`, `Ada's approval`. */
+function approvalOf(whose: Whose): string {
+  return "everyone" in whose
+    ? "an admin's approval"
+    : "you" in whose
+      ? "your approval"
+      : `${whose.name}'s approval`;
+}
+
+/**
  * What a token does with the runners it enrolls, in a sentence, as the CLI says it: `Enrolls up to
  * 20 runners at a time, which wait for an admin's approval and are removed once they have been
  * offline for 5 minutes.` `removeOffline` is in minutes.
  */
-export function describeEnrollment(approval: boolean, maxRunners?: number, removeOffline?: number): string {
+export function describeEnrollment(
+  whose: Whose,
+  approval: boolean,
+  maxRunners?: number,
+  removeOffline?: number,
+): string {
   const one = maxRunners === 1;
   const howMany =
     maxRunners === undefined
@@ -129,14 +174,16 @@ export function describeEnrollment(approval: boolean, maxRunners?: number, remov
   const [runs, waits, is, has, they] = one
     ? ["runs", "waits", "is", "it has", "it runs"]
     : ["run", "wait", "are", "they have", "they run"];
+  const sessions = sessionsOf(whose);
+  const approver = approvalOf(whose);
   const then =
     removeOffline === undefined
       ? approval
-        ? `, which ${waits} for an admin's approval before ${they} anything`
-        : `, which ${runs} everyone's sessions at once`
+        ? `, which ${waits} for ${approver} before ${they} anything`
+        : `, which ${runs} ${sessions} at once`
       : approval
-        ? `, which ${waits} for an admin's approval and ${is} removed once ${has} been offline for ${minutesText(removeOffline)}`
-        : `, which ${runs} everyone's sessions at once and ${is} removed once ${has} been offline for ${minutesText(removeOffline)}`;
+        ? `, which ${waits} for ${approver} and ${is} removed once ${has} been offline for ${minutesText(removeOffline)}`
+        : `, which ${runs} ${sessions} at once and ${is} removed once ${has} been offline for ${minutesText(removeOffline)}`;
   return `${howMany}${then}.`;
 }
 
@@ -170,15 +217,21 @@ export function enrolledFrom(e: G.RunnerEnrollment | undefined): string | undefi
   return e.location ? `${e.address} (${e.location})` : e.address;
 }
 
-/** The runners that wait for approval in the workspaces you are an admin of, by workspace. */
+/** Whether you approve runner `r`, which waits: it is yours, or the workspace's and you are its admin. */
+export function approvedBy(r: G.Runner, w: Pick<G.Workspace, "role">): boolean {
+  return r.created_by ? r.yours : w.role === "owner" || w.role === "admin";
+}
+
+/**
+ * The runners that wait for your approval, by workspace: the workspace's own in those you are an
+ * admin of, and yours, which enrolled for your own sessions.
+ */
 export function waitingByWorkspace(runners: G.Runner[], workspaces: G.Workspace[]) {
-  const admined = new Map(
-    workspaces.filter((w) => !w.blocked && (w.role === "owner" || w.role === "admin")).map((w) => [w.id, w]),
-  );
+  const open = new Map(workspaces.filter((w) => !w.blocked && w.role).map((w) => [w.id, w]));
   const out = new Map<string, { workspace: G.Workspace; runners: G.Runner[] }>();
   for (const r of runners) {
-    const w = r.pending_until && r.workspace ? admined.get(r.workspace.id) : undefined;
-    if (!w) continue;
+    const w = r.pending_until && r.workspace ? open.get(r.workspace.id) : undefined;
+    if (!w || !approvedBy(r, w)) continue;
     const entry = out.get(w.id) ?? { workspace: w, runners: [] };
     entry.runners.push(r);
     out.set(w.id, entry);

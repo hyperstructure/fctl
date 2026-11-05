@@ -258,6 +258,27 @@ uninstalling. A runner of the workspace keeps no one's Claude token: people
 who run their sessions only on their own runners, or keep their token on
 them, don't run sessions on it.
 
+To enroll machines of your own instead, for your sessions alone, make a
+token for **Only my sessions** (any member can; a member's tokens are
+always for their own sessions, and admins choose), or
+`fctl runners enrollment-tokens create "My cluster" -w acme --personal
+--remove-offline-after 5m`. The machines it enrolls are your runners: they
+run only your sessions in that workspace and no other's, so they count for
+**Only on my runners** and for the Claude token you keep on your runners,
+and you manage them as your other runners. With approval, they wait for
+you, not the workspace's admins. If you keep your Claude token on your
+runners, give each machine the token from `claude setup-token` as a file
+only its user reads (a Kubernetes secret, say), and before or after `fctl
+host install`:
+
+```sh
+fctl host claude set-token < /run/secrets/claude-token
+```
+
+The token stays on the machine; fctl never gets it. The workspace's admins
+can take your runners out, which removes them, and they go when you leave
+the workspace.
+
 ## 6. Create a project
 
 In the app, choose **New project** (or the **+** beside a workspace in the

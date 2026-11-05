@@ -126,8 +126,8 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   `fctl_domain::cookies`), `fctl_cli_` (CLI,
   issued through the device flow), `fctl_pat_` (personal access token,
   which may be limited: [Access tokens](#access-tokens)), `fctl_rt_`
-  (runner), `fctl_et_` (a workspace's enrollment token, which only enrolls
-  runners: [Enrollment tokens](#enrollment-tokens)).
+  (runner), `fctl_et_` (an enrollment token, the workspace's or one of its
+  members', which only enrolls runners: [Enrollment tokens](#enrollment-tokens)).
 - Cookie requests that change state must come from the app's origin
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
@@ -730,7 +730,9 @@ any runner out of it; its owner and instance admins rename, drain, disable
 and remove it. A runner that enrolled with one of a workspace's enrollment
 tokens belongs to that workspace instead, and nobody owns it
 (`runners.workspace_id`, no `created_by`): it runs everyone's sessions
-there and no other workspace's, and its admins manage it
+there and no other workspace's, and its admins manage it. One that enrolled
+with a token a member made for their own sessions is theirs, and runs only
+their sessions there and no other workspace's
 ([Enrollment tokens](#enrollment-tokens)).
 
 A session runs as the owner of its Claude connection. A member may keep
@@ -780,7 +782,9 @@ that browser (localStorage, per person).
 Machines that autoscaling creates and destroys, or that someone sets up
 without signing in on them, enroll themselves as a workspace's runners with
 one of its enrollment tokens
-([ADR 0071](adr/0071-runners-enroll-themselves-with-a-workspaces-enrollment-token.md)).
+([ADR 0071](adr/0071-runners-enroll-themselves-with-a-workspaces-enrollment-token.md)),
+or as a member's own runners with a token they made for their own sessions
+([ADR 0072](adr/0072-members-enroll-runners-for-their-own-sessions.md)).
 
 1. **Making one.** A workspace's admins make enrollment tokens (`fctl_et_`)
    on its Runners tab or with `fctl runners enrollment-tokens create`
@@ -791,9 +795,13 @@ one of its enrollment tokens
    enrolls with it with everyone's sessions there, as a runner added for
    everyone's sessions is: making one is a
    [sensitive action](#confirming-its-you) and needs the workspace open to
-   them (its two-factor requirement). D1 keeps its hash
-   (`enrollment_tokens`). Revoking it stops enrollments and leaves the
-   runners it enrolled, waiting ones too.
+   them (its two-factor requirement). Any member makes one for their own
+   sessions (`personal`, `--personal`; a member's always is, and an admin's
+   is for everyone's unless they ask: `fctl_domain::workspace::enrollment_for_own`),
+   which trusts what enrolls with only their sessions, as adding a runner of
+   theirs does. D1 keeps its hash (`enrollment_tokens`). Admins see and
+   revoke every token of the workspace, members their own. Revoking it
+   stops enrollments and leaves the runners it enrolled, waiting ones too.
 2. **Enrolling.** `fctl host install --enroll fctl_et_…` (or
    `FCTL_ENROLL_TOKEN`), signed in or not, asks what the token enrolls in
    (`GET /api/v1/runner/enroll`) before anything else, so that an expired,
@@ -804,8 +812,10 @@ one of its enrollment tokens
    own, kept in `host-token` as any is: the enrollment token goes no
    further. The statement that inserts the runner checks the token again
    and counts its runners, so that machines that enroll at once can't take
-   more than its limit. Run again on a machine whose runner belongs to the
-   same workspace, it keeps that runner. A token the control plane doesn't
+   more than its limit, and that a token for its maker's own sessions
+   enrolls only while they are an active member of its workspace. Run again
+   on a machine whose runner belongs to the same workspace, and to the same
+   person or nobody, it keeps that runner. A token the control plane doesn't
    know counts towards the caller's rate limit.
 3. **The workspace's own runner.** It belongs to the workspace
    (`runners.workspace_id`; `created_by` is empty): it runs everyone's
@@ -816,6 +826,18 @@ one of its enrollment tokens
    person keeps their sessions on their own runners, or their Claude token
    on them, doesn't run on it, as on anyone else's
    (`fctl_domain::schedule::runs_for`). Deleting the workspace removes it.
+   **A member's own runner**, enrolled with a token they made for their own
+   sessions, has them as its owner (`created_by`) and runs only their
+   sessions there (`runner_workspaces.personal`), so it counts as theirs
+   for **Only on my runners** and for a Claude token kept on runners. It is
+   held to the token's workspace (`runners.workspace_id`) as the
+   workspace's own are, and nobody adds it elsewhere. Its owner manages it
+   as any runner of theirs; the workspace's admins take it out, which
+   removes it, since it serves no other workspace. When its owner leaves
+   the workspace, or deletes their account, it is removed and their tokens
+   there revoked. Its machine keeps their Claude token as any runner of
+   theirs does: a boot script or entrypoint pipes it from a secret store
+   into `fctl host claude set-token`.
 4. **Approval.** With a token that asks for it, the runner waits
    (`runners.pending_until`) without a `runner_workspaces` row: it serves
    no workspace, so it gets no sessions, credentials, uplinks, files or
@@ -827,7 +849,9 @@ one of its enrollment tokens
    the next one replaces, and, where the instance sends email, an email
    when it is the only one that waits. They approve it (a sensitive action)
    or reject it there or with `fctl runners approve` or `reject` (`POST
-   /api/v1/runners/{id}/approve`, `…/reject`). Approving gives it the row,
+   /api/v1/runners/{id}/approve`, `…/reject`). A member's own runner waits
+   for them instead: only they see it, are told, and approve or reject it,
+   and its welcome names them (`PendingApproval.owner`). Approving gives it the row,
    and FleetDO a second welcome: it takes sessions at once, without a
    restart. Rejecting removes it. One that nobody approves within 7 days is
    removed.

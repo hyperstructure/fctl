@@ -1,7 +1,8 @@
-// A workspace's own runners on its Runners tab: the ones that wait for its admins' approval, what
-// its admins do with the runners that belong to it (they enrolled with one of its enrollment
-// tokens), and the enrollment tokens themselves, with which machines that autoscaling creates
-// enroll without anyone signing in on them (docs/architecture.md#enrollment-tokens).
+// Enrolled runners on a workspace's Runners tab: the ones that wait for your approval (the
+// workspace's own, for its admins, and yours), what its admins do with the runners that belong to
+// it and you with yours that enrolled for your sessions, and the enrollment tokens themselves, with
+// which machines that autoscaling creates enroll without anyone signing in on them: its admins' for
+// everyone's sessions, and each member's for their own (docs/architecture.md#enrollment-tokens).
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -20,6 +21,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useId, useState } from "react";
+import { SET_TOKEN_FROM_FILE } from "@/components/claude/on-runners";
 import {
   Banner,
   Button,
@@ -53,11 +55,14 @@ import {
   minutesText,
   NEW_ENROLLMENT,
   OFFLINE_REMOVAL,
+  sessionsOf,
   tokenState,
+  type Whose,
+  whoseToken,
 } from "@/lib/enrollment";
 import { ago } from "@/lib/format";
 import { installCommand, siteUrl } from "@/lib/install";
-import { keys, queryClient } from "@/lib/queries";
+import { keys, queryClient, useMe } from "@/lib/queries";
 
 /** How enrollment works, on fctl.sh. */
 const GUIDE = () => `${siteUrl()}/docs/getting-started/#many-machines-and-autoscaling`;
@@ -70,14 +75,21 @@ function refetch(w: G.Workspace) {
 
 // ───────────────────────────── waiting for approval ─────────────────────────────
 
-/** The runners that wait for an admin of `w` to approve them, each with what it said of itself. */
+/**
+ * The runners in `w` that wait for you to approve them, each with what it said of itself: the
+ * workspace's own, for its admins, and yours, which enrolled with a token you made for your sessions.
+ */
 export function WaitingRunners({ w, runners }: { w: G.Workspace; runners: G.Runner[] }) {
   const title = useId();
   const [rejecting, setRejecting] = useState<G.Runner | null>(null);
   const approve = useMutation({
     mutationFn: (r: G.Runner) => api.approveRunner(r.id),
     onSuccess: (r) => {
-      toast(`${r.name} runs ${w.name}'s sessions now`);
+      toast(
+        r.created_by
+          ? `${r.name} runs your sessions in ${w.name} now`
+          : `${r.name} runs ${w.name}'s sessions now`,
+      );
       refetch(w);
     },
     onError: (e) => toast(e.message, "error"),
@@ -93,6 +105,8 @@ export function WaitingRunners({ w, runners }: { w: G.Workspace; runners: G.Runn
   });
   if (!runners.length) return null;
   const one = runners.length === 1;
+  // All yours: they would run only your sessions, and you approve them.
+  const yours = runners.every((r) => r.created_by);
   return (
     <section
       aria-labelledby={title}
@@ -107,9 +121,11 @@ export function WaitingRunners({ w, runners }: { w: G.Workspace; runners: G.Runn
             {one ? "A runner waits for your approval" : `${runners.length} runners wait for your approval`}
           </h3>
           <p className="mt-0.5 max-w-2xl text-[12.5px] leading-relaxed text-ink-3">
-            Until an admin approves {one ? "it" : "them"}, {one ? "it runs" : "they run"} nothing and{" "}
-            {one ? "gets" : "get"} none of {w.name}'s code, secrets or tokens. Approve only machines you know:{" "}
-            <code className="font-mono text-[11.5px]">fctl host status</code> on each shows its id.
+            {yours
+              ? `${one ? "It enrolled" : "They enrolled"} with a token you made for your sessions. Until you approve ${one ? "it" : "them"}, ${one ? "it runs" : "they run"} nothing and ${one ? "gets" : "get"} none of your sessions' code, secrets or tokens.`
+              : `Until an admin approves ${one ? "it" : "them"}, ${one ? "it runs" : "they run"} nothing and ${one ? "gets" : "get"} none of ${w.name}'s code, secrets or tokens.`}{" "}
+            Approve only machines you know: <code className="font-mono text-[11.5px]">fctl host status</code>{" "}
+            on each shows its id.
           </p>
         </div>
       </div>
@@ -185,7 +201,7 @@ export function WaitingRunners({ w, runners }: { w: G.Workspace; runners: G.Runn
         open={!!rejecting}
         onClose={() => setRejecting(null)}
         title={`Reject ${rejecting?.name ?? ""}?`}
-        description="It is removed, and its token stops working: the machine runs nothing for this workspace. It frees its place in its enrollment token's limit, and could enroll again while the token works."
+        description={`It is removed, and its token stops working: the machine runs nothing ${rejecting?.created_by ? "for you" : "for this workspace"}. It frees its place in its enrollment token's limit, and could enroll again while the token works.`}
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setRejecting(null)}>
@@ -204,11 +220,12 @@ export function WaitingRunners({ w, runners }: { w: G.Workspace; runners: G.Runn
   );
 }
 
-// ───────────────────────────── a workspace's own runner ─────────────────────────────
+// ───────────────────────────── an enrolled runner ─────────────────────────────
 
 /**
- * What a workspace's admins do with a runner that belongs to it, from its row's menu: rename,
- * drain, disable and remove it, and replace its token.
+ * What a workspace's admins do with a runner that belongs to it, and a member with theirs that
+ * enrolled there for their sessions, from its row's menu: rename, drain, disable and remove it, and
+ * replace its token.
  */
 export function ManageRunner({ w, runner: r }: { w: G.Workspace; runner: G.Runner }) {
   const [dialog, setDialog] = useState<"rename" | "token" | "remove" | "disable" | null>(null);
@@ -406,12 +423,25 @@ export function ManageRunner({ w, runner: r }: { w: G.Workspace; runner: G.Runne
 
 // ───────────────────────────── enrollment tokens ─────────────────────────────
 
-/** The workspace's enrollment tokens, for its admins: what each does, and how much it was used. */
-export function EnrollmentTokens({ w }: { w: G.Workspace }) {
+/**
+ * The workspace's enrollment tokens, what each does and how much it was used: every one for its
+ * admins, and their own for its members, who make them for their own sessions. `onRunners`: your
+ * sessions here run on the Claude token you keep on your runners, which the machines need too.
+ */
+export function EnrollmentTokens({
+  w,
+  admin,
+  onRunners,
+}: {
+  w: G.Workspace;
+  admin: boolean;
+  onRunners: boolean;
+}) {
   const list = useQuery({
     queryKey: keys.enrollmentTokens(w.id),
     queryFn: () => workspaces.enrollmentTokens(w.id),
   });
+  const me = useMe().data?.user?.id;
   const [creating, setCreating] = useState(false);
   const [showEnded, setShowEnded] = useState(false);
   const [revoking, setRevoking] = useState<G.EnrollmentToken | null>(null);
@@ -435,8 +465,10 @@ export function EnrollmentTokens({ w }: { w: G.Workspace }) {
           <h3 className="font-display text-xl text-ink">Enrollment tokens</h3>
           <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-ink-3">
             For machines that autoscaling creates, or that you set up without signing in on them: each enrolls
-            itself with a token as one of {w.name}'s runners, with a token of its own. They belong to {w.name}
-            , run everyone's sessions here, and its admins manage them.{" "}
+            itself with a token, and gets a token of its own.{" "}
+            {admin
+              ? `With a token for everyone's sessions, they belong to ${w.name} and its admins manage them; with one for your own, they are yours and run only your sessions here.`
+              : `They are yours and run only your sessions in ${w.name}, so they count as your runners${w.own_runners || onRunners ? ", as your sessions here need" : ""}.`}{" "}
             <a
               href={GUIDE()}
               target="_blank"
@@ -459,7 +491,13 @@ export function EnrollmentTokens({ w }: { w: G.Workspace }) {
       {live.length > 0 && (
         <ul className="mt-5 divide-y divide-line border-y border-line">
           {live.map((t) => (
-            <TokenRow key={t.id} token={t} now={now} onRevoke={() => setRevoking(t)} />
+            <TokenRow
+              key={t.id}
+              token={t}
+              whose={whoseToken(t, me)}
+              now={now}
+              onRevoke={() => setRevoking(t)}
+            />
           ))}
         </ul>
       )}
@@ -479,7 +517,7 @@ export function EnrollmentTokens({ w }: { w: G.Workspace }) {
           {showEnded && (
             <ul className="mt-2 animate-rise divide-y divide-line border-y border-line">
               {ended.map((t) => (
-                <TokenRow key={t.id} token={t} now={now} />
+                <TokenRow key={t.id} token={t} whose={whoseToken(t, me)} now={now} />
               ))}
             </ul>
           )}
@@ -487,6 +525,8 @@ export function EnrollmentTokens({ w }: { w: G.Workspace }) {
       )}
       <NewEnrollmentToken
         w={w}
+        admin={admin}
+        onRunners={onRunners}
         open={creating}
         onClose={() => {
           setCreating(false);
@@ -522,10 +562,12 @@ export function EnrollmentTokens({ w }: { w: G.Workspace }) {
 
 function TokenRow({
   token: t,
+  whose,
   now,
   onRevoke,
 }: {
   token: G.EnrollmentToken;
+  whose: Whose;
   now: number;
   onRevoke?: () => void;
 }) {
@@ -554,9 +596,14 @@ function TokenRow({
               {state === "full" ? "Full" : state === "revoked" ? "Revoked" : "Expired"}
             </span>
           )}
+          {!("everyone" in whose) && (
+            <span className="whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
+              {"you" in whose ? "Only your sessions" : `Only ${whose.name}'s sessions`}
+            </span>
+          )}
         </div>
         <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">
-          {describeEnrollment(t.approval, t.max_runners, t.remove_offline_after_minutes)}
+          {describeEnrollment(whose, t.approval, t.max_runners, t.remove_offline_after_minutes)}
         </p>
         <Meta
           parts={[
@@ -582,7 +629,10 @@ function TokenRow({
                     node: `${state === "expired" ? "expired" : "expires"} ${ago(t.expires_at)}`,
                   }
                 : { key: "ended", node: "never expires" },
-            { key: "made", node: `made by ${t.created_by?.name ?? "a former admin"}` },
+            {
+              key: "made",
+              node: `made by ${"you" in whose ? "you" : (t.created_by?.name ?? (t.personal ? "a former member" : "a former admin"))}`,
+            },
           ]}
         />
       </div>
@@ -595,15 +645,31 @@ function TokenRow({
   );
 }
 
-/** Makes an enrollment token, and shows it once with the commands that enroll a machine. */
-function NewEnrollmentToken({ w, open, onClose }: { w: G.Workspace; open: boolean; onClose: () => void }) {
+/**
+ * Makes an enrollment token, and shows it once with the commands that enroll a machine: an admin's
+ * for everyone's sessions or their own, a member's for their own.
+ */
+function NewEnrollmentToken({
+  w,
+  admin,
+  onRunners,
+  open,
+  onClose,
+}: {
+  w: G.Workspace;
+  admin: boolean;
+  onRunners: boolean;
+  open: boolean;
+  onClose: () => void;
+}) {
   const [form, setForm] = useState<EnrollmentForm>(NEW_ENROLLMENT);
   const [created, setCreated] = useState<G.CreatedEnrollmentToken | null>(null);
   const set = (f: Partial<EnrollmentForm>) => setForm((was) => ({ ...was, ...f }));
   const create = useMutation({
-    mutationFn: () => workspaces.createEnrollmentToken(w.id, enrollmentRequest(form)),
+    mutationFn: () => workspaces.createEnrollmentToken(w.id, enrollmentRequest(form, admin)),
     onSuccess: setCreated,
   });
+  const personal = !admin || form.personal;
   const close = () => {
     onClose();
     setForm(NEW_ENROLLMENT);
@@ -619,29 +685,48 @@ function NewEnrollmentToken({ w, open, onClose }: { w: G.Workspace; open: boolea
       description={
         created
           ? describeEnrollment(
+              created.token.personal ? { you: true } : { everyone: true },
               created.token.approval,
               created.token.max_runners,
               created.token.remove_offline_after_minutes,
             )
-          : `Machines that have it enroll themselves as ${w.name}'s runners, without signing in.`
+          : personal
+            ? `Machines that have it enroll themselves as your runners in ${w.name}, without signing in, and run only your sessions there.`
+            : `Machines that have it enroll themselves as ${w.name}'s runners, without signing in.`
       }
     >
       {created ? (
-        <Created w={w} token={created} onDone={close} />
+        <Created w={w} token={created} onRunners={onRunners} onDone={close} />
       ) : (
-        <TokenForm w={w} form={form} set={set} create={create} />
+        <TokenForm w={w} admin={admin} form={form} set={set} create={create} />
       )}
     </Dialog>
   );
 }
 
+/** Whose sessions an admin's new token is for. */
+const WHOSE_OPTIONS = [
+  {
+    value: "everyone",
+    label: "Everyone's sessions",
+    description: "The workspace's runners, which its admins manage",
+  },
+  {
+    value: "mine",
+    label: "Only my sessions",
+    description: "Your runners, for Only on my runners and a Claude token kept on them",
+  },
+];
+
 function TokenForm({
   w,
+  admin,
   form,
   set,
   create,
 }: {
   w: G.Workspace;
+  admin: boolean;
   form: EnrollmentForm;
   set: (f: Partial<EnrollmentForm>) => void;
   create: { mutate: () => void; isPending: boolean; error: Error | null };
@@ -651,6 +736,8 @@ function TokenForm({
   const limit = limitOf(form.limit);
   const expires = ENROLLMENT_EXPIRIES.find((e) => e.value === form.expires)?.hours;
   const offline = OFFLINE_REMOVAL.find((o) => o.value === form.offline)?.minutes;
+  const personal = !admin || form.personal;
+  const whose: Whose = personal ? { you: true } : { everyone: true };
   return (
     <form
       className="flex flex-col gap-5"
@@ -665,11 +752,23 @@ function TokenForm({
             id={id}
             value={form.name}
             onChange={(e) => set({ name: e.target.value })}
-            placeholder="Build fleet"
+            placeholder={personal ? "My cluster" : "Build fleet"}
             autoFocus
           />
         )}
       </Field>
+      {admin && (
+        <Field label="Runs">
+          {(id) => (
+            <Select
+              id={id}
+              value={personal ? "mine" : "everyone"}
+              onChange={(v) => set({ personal: v === "mine" })}
+              options={WHOSE_OPTIONS}
+            />
+          )}
+        </Field>
+      )}
       <div className="grid items-start gap-4 sm:grid-cols-2">
         <Field label="Expires" error={err("expires_in_hours")}>
           {(id) => (
@@ -718,8 +817,9 @@ function TokenForm({
         <div className="min-w-0">
           <div className="text-[13.5px] text-ink">Approve each runner</div>
           <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">
-            Runners it enrolls wait on this tab, with where they enrolled from, until an admin approves them;
-            until then they run nothing. {w.name}'s admins get a notification.
+            {personal
+              ? "Runners it enrolls wait on this tab, with where they enrolled from, until you approve them; until then they run nothing. You get a notification."
+              : `Runners it enrolls wait on this tab, with where they enrolled from, until an admin approves them; until then they run nothing. ${w.name}'s admins get a notification.`}
           </p>
         </div>
         <Switch
@@ -732,7 +832,7 @@ function TokenForm({
         aria-live="polite"
         className="rounded-lg border border-line bg-sunken/50 px-4 py-3 text-[13px] leading-relaxed text-ink-2"
       >
-        {describeEnrollment(form.approval, Number.isNaN(limit) ? undefined : limit, offline)}{" "}
+        {describeEnrollment(whose, form.approval, Number.isNaN(limit) ? undefined : limit, offline)}{" "}
         {expires
           ? `It expires on ${new Date(Date.now() + expires * 3_600_000).toLocaleDateString(undefined, { dateStyle: "long" })}${expires < 24 ? ` at ${new Date(Date.now() + expires * 3_600_000).toLocaleTimeString(undefined, { timeStyle: "short" })}` : ""}.`
           : "It never expires: revoke it when you no longer need it."}
@@ -748,23 +848,33 @@ function TokenForm({
   );
 }
 
-/** The new token, once, and how a machine enrolls with it. */
+/**
+ * The new token, once, and how a machine enrolls with it. `onRunners`: your sessions here run on the
+ * Claude token you keep on your runners, which a machine your token enrolls needs too.
+ */
 function Created({
   w,
   token,
+  onRunners,
   onDone,
 }: {
   w: G.Workspace;
   token: G.CreatedEnrollmentToken;
+  onRunners: boolean;
   onDone: () => void;
 }) {
   const t = token.token;
+  const whose: Whose = t.personal ? { you: true } : { everyone: true };
   return (
     <div className="flex flex-col gap-5">
       <div>
         <Banner tone="warn">
           Copy it now: it is shown once. Whoever has it enrolls machines in {w.name}
-          {t.approval ? ", which wait for an admin's approval" : ", which run everyone's sessions there"}.
+          {t.personal ? " as your runners" : ""}
+          {t.approval
+            ? `, which wait for ${t.personal ? "your" : "an admin's"} approval`
+            : `, which run ${sessionsOf(whose)} there`}
+          .
         </Banner>
         <CodeBox value={token.secret} className="mt-2" />
       </div>
@@ -779,6 +889,18 @@ function Created({
           </span>
           <CodeBox value={enrollCommand(location.origin, token.secret)} className="mt-1.5" />
         </li>
+        {t.personal && onRunners && (
+          <li>
+            <span className="text-ink-2">3. Keep your Claude token on it</span>
+            <p className="mt-0.5">
+              Your sessions here run on the Claude token you keep on your runners, so they run on one of these
+              once it keeps it too. Give the machine your token from{" "}
+              <code className="font-mono">claude setup-token</code> as a file only its user reads (a
+              Kubernetes secret, say), then:
+            </p>
+            <CodeBox value={SET_TOKEN_FROM_FILE} className="mt-1.5" />
+          </li>
+        )}
       </ol>
       <p className="text-[12.5px] leading-relaxed text-ink-4">
         In a boot script (cloud-init's user data, a launch template) both run as they are; on Linux, where

@@ -4,9 +4,10 @@ import type { UserRef } from "./UserRef";
 
 /**
  * A workspace's enrollment token: machines that autoscaling creates, or
- * that someone sets up without signing in, enroll with it as the
- * workspace's runners (`fctl host install --enroll`). Its admins make
- * them on the Runners tab or with `fctl runners enrollment-tokens create`.
+ * that someone sets up without signing in, enroll with it as runners of
+ * the workspace (`fctl host install --enroll`). Its admins make them on
+ * the Runners tab or with `fctl runners enrollment-tokens create`, for
+ * everyone's sessions, and any member makes them for their own.
  */
 export type EnrollmentToken = { id: EnrollmentTokenId, 
 /**
@@ -14,8 +15,17 @@ export type EnrollmentToken = { id: EnrollmentTokenId,
  */
 name: string, 
 /**
- * The runners it enrolls wait for an admin of the workspace to approve
- * them before they run anything.
+ * For its maker's own sessions: the runners it enrolls belong to
+ * `created_by` and run only their sessions in the workspace, so they
+ * count as their runners for **Only on my runners** and for a Claude
+ * token kept on their runners. Otherwise they belong to the workspace
+ * and run everyone's sessions there. Absent (false) from control
+ * planes before it, whose tokens are all for everyone's.
+ */
+personal: boolean, 
+/**
+ * The runners it enrolls wait for approval before they run anything:
+ * by an admin of the workspace, or, for `personal`, by its maker.
  */
 approval: boolean, 
 /**

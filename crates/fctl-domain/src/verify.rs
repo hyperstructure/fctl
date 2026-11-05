@@ -51,11 +51,11 @@ pub enum Sensitive {
     /// run everyone's sessions there.
     AddRunner,
     /// Making a workspace's enrollment token: whoever holds it enrolls
-    /// machines that run everyone's sessions there, unless an admin has to
-    /// approve each.
+    /// machines that run everyone's sessions there, or its maker's, unless
+    /// each has to be approved.
     NewEnrollmentToken,
     /// Approving a runner that enrolled in a workspace, which then runs
-    /// everyone's sessions there.
+    /// everyone's sessions there, or its owner's.
     ApproveRunner,
     /// Making someone a workspace's admin, or inviting them as one.
     MakeWorkspaceAdmin,

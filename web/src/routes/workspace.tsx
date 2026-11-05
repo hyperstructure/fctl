@@ -53,7 +53,7 @@ import { ApiFailure, api, workspaces } from "@/lib/api";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
-import { minutesText } from "@/lib/enrollment";
+import { approvedBy, minutesText } from "@/lib/enrollment";
 import { ago, agoShort } from "@/lib/format";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
 import {
@@ -94,9 +94,9 @@ export function WorkspacePage() {
   const w = ws.data;
   const { data: instance } = useInstance();
   const admin = w?.role === "owner" || w?.role === "admin";
-  // Runners that wait for its admins to approve them, which only they see.
+  // Runners that wait for you to approve them: the workspace's own, for its admins, and yours.
   const waiting = (useRunners().data?.runners ?? []).filter(
-    (r) => r.pending_until && r.workspace?.id === w?.id,
+    (r) => r.pending_until && w && r.workspace?.id === w.id && approvedBy(r, w),
   ).length;
   // Tabs this workspace has: admins' ones for admins, Linear's where the instance has a Linear app.
   const has = (t: (typeof TABS)[number]) => (!t.admin || admin) && (!t.linear || !!instance?.features.linear);
@@ -205,7 +205,7 @@ export function WorkspacePage() {
                   )}
                 >
                   {t.label}
-                  {t.tab === "runners" && admin && waiting > 0 && (
+                  {t.tab === "runners" && waiting > 0 && (
                     <span
                       role="img"
                       aria-label={`${waiting} waiting for approval`}
@@ -830,7 +830,8 @@ function Runners({ w }: { w: G.Workspace }) {
     onError: (e) => toast(e.message, "error"),
   });
   const here = new Set(list.data?.runners.map((r) => r.id));
-  const yours = (all.data?.runners ?? []).filter((r) => r.yours && !here.has(r.id));
+  // Not the ones that enrolled somewhere: those run that workspace's sessions alone.
+  const yours = (all.data?.runners ?? []).filter((r) => r.yours && !here.has(r.id) && !r.workspace);
   // The ones that wait for approval show apart, for its admins.
   const waiting = (list.data?.runners ?? []).filter((r) => r.pending_until);
   const runners = (list.data?.runners ?? []).filter((r) => !r.pending_until);
@@ -839,8 +840,9 @@ function Runners({ w }: { w: G.Workspace }) {
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
         Sessions in {w.name} start only on these machines, which see their code, secrets and Claude tokens
         while they work. A runner belongs to the person who registered it, who can let it work for several
-        workspaces, or to {w.name} itself when it enrolled with one of its enrollment tokens. Its own and the
-        ones its admins add run everyone's sessions; one a member adds runs only theirs.
+        workspaces, or to {w.name} itself when it enrolled with one of its enrollment tokens for everyone's
+        sessions. Its own and the ones its admins add run everyone's sessions; one a member adds, or enrolls
+        with a token of their own, runs only theirs.
         {onRunners ? (
           <>
             {" "}
@@ -874,7 +876,7 @@ function Runners({ w }: { w: G.Workspace }) {
           )
         )}
       </p>
-      {admin && <WaitingRunners w={w} runners={waiting} />}
+      <WaitingRunners w={w} runners={waiting} />
       {/* The two line up by their labels, so an error under the name moves nothing. */}
       <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start">
         <form
@@ -945,8 +947,10 @@ function Runners({ w }: { w: G.Workspace }) {
         <ul className="mt-6 border-t border-line">
           {runners.map((r) => {
             const others = (r.workspaces ?? []).filter((x) => x.id !== w.id);
-            // It enrolled here: the workspace's own, which its admins manage.
-            const own = r.workspace?.id === w.id;
+            // It enrolled here: the workspace's own, which its admins manage, or a member's for
+            // their own sessions, which they manage and which goes when it is taken out.
+            const enrolled = r.workspace?.id === w.id;
+            const own = enrolled && !r.created_by;
             return (
               <li key={r.id} className="flex items-center gap-4 border-b border-line py-4">
                 <span
@@ -986,7 +990,7 @@ function Runners({ w }: { w: G.Workspace }) {
                     {r.driver ? `${r.driver} runner` : "runner"} · {r.active_sessions}/{r.capacity} sessions
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
-                  {own && (r.enrollment?.token_name || r.remove_offline_after_minutes) && (
+                  {enrolled && (r.enrollment?.token_name || r.remove_offline_after_minutes) && (
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-4">
                       {r.enrollment?.token_name && (
                         <span className="inline-flex items-center gap-1 text-ink-3">
@@ -1009,11 +1013,11 @@ function Runners({ w }: { w: G.Workspace }) {
                     </div>
                   )}
                 </div>
-                {own
-                  ? admin && <ManageRunner w={w} runner={r} />
+                {own || (enrolled && r.yours)
+                  ? (admin || r.yours) && <ManageRunner w={w} runner={r} />
                   : (admin || r.yours) && (
                       <Button size="sm" variant="ghost" onClick={() => setTakingOut(r)}>
-                        Take out
+                        {enrolled ? "Remove" : "Take out"}
                       </Button>
                     )}
               </li>
@@ -1030,15 +1034,21 @@ function Runners({ w }: { w: G.Workspace }) {
           token={onRunners}
         />
       )}
-      {admin && <EnrollmentTokens w={w} />}
+      <EnrollmentTokens w={w} admin={admin} onRunners={onRunners} />
       <Dialog
         open={!!takingOut}
         onClose={() => setTakingOut(null)}
-        title={`Take ${takingOut?.name ?? ""} out of ${w.name}?`}
+        title={
+          takingOut?.workspace?.id === w.id
+            ? `Remove ${takingOut?.name ?? ""}?`
+            : `Take ${takingOut?.name ?? ""} out of ${w.name}?`
+        }
         description={
-          takingOut?.yours
-            ? `It stops taking ${w.name}'s sessions, and the ones running there stop. You can add it again.`
-            : `It stops taking ${w.name}'s sessions, and the ones running there stop. Only its owner can add it again.`
+          takingOut?.workspace?.id === w.id
+            ? `It enrolled in ${w.name} for ${takingOut.created_by?.name ?? "its owner"}'s sessions and runs no other workspace's, so it is removed: its token stops working, and the sessions running there stop. It could enroll again while their token works.`
+            : takingOut?.yours
+              ? `It stops taking ${w.name}'s sessions, and the ones running there stop. You can add it again.`
+              : `It stops taking ${w.name}'s sessions, and the ones running there stop. Only its owner can add it again.`
         }
       >
         <div className="flex justify-end gap-2">
@@ -1050,7 +1060,7 @@ function Runners({ w }: { w: G.Workspace }) {
             loading={remove.isPending}
             onClick={() => takingOut && remove.mutate(takingOut.id)}
           >
-            Take it out
+            {takingOut?.workspace?.id === w.id ? "Remove it" : "Take it out"}
           </Button>
         </div>
       </Dialog>
@@ -1125,20 +1135,12 @@ function AddRunner({
           <CodeBox value={`fctl login ${location.origin}`} />
           <CodeBox value={`fctl host install --workspace ${w.slug}`} />
           <p className="text-[12.5px] text-ink-4">
-            Rather not sign in there? Name it above and choose Register for a command with a token.
-            {admin && (
-              <>
-                {" "}
-                Many machines, or ones that autoscaling starts? Enroll them with an{" "}
-                <a
-                  href="#enrollment-tokens"
-                  className="text-ink-3 underline underline-offset-2 hover:text-ink"
-                >
-                  enrollment token
-                </a>
-                .
-              </>
-            )}
+            Rather not sign in there? Name it above and choose Register for a command with a token. Many
+            machines, or ones that autoscaling starts? Enroll them with an{" "}
+            <a href="#enrollment-tokens" className="text-ink-3 underline underline-offset-2 hover:text-ink">
+              enrollment token
+            </a>
+            {admin ? "" : " of yours"}.
           </p>
         </>
       ),

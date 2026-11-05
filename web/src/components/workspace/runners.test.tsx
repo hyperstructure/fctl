@@ -96,10 +96,24 @@ describe("runners that wait for approval", () => {
   it("show nothing while none waits", () => {
     expect(show(<WaitingRunners w={acme} runners={[]} />).textContent).toBe("");
   });
+
+  it("say so when they are yours, enrolled for your sessions", () => {
+    const ada = { id: "usr_ada", name: "Ada" } as G.UserRef;
+    const c = show(
+      <WaitingRunners
+        w={{ ...acme, role: "member" }}
+        runners={[waiting({ id: "rnr_1", name: "pod-7", created_by: ada, yours: true })]}
+      />,
+    );
+    expect(c.textContent).toContain(
+      "It enrolled with a token you made for your sessions. Until you approve it, it runs nothing and gets none of your sessions' code, secrets or tokens.",
+    );
+  });
 });
 
 const token = (t: Partial<G.EnrollmentToken> & { id: string }): G.EnrollmentToken => ({
   name: t.id,
+  personal: false,
   approval: false,
   created_at: now - 86_400_000,
   runners: 0,
@@ -109,7 +123,7 @@ const token = (t: Partial<G.EnrollmentToken> & { id: string }): G.EnrollmentToke
 
 describe("enrollment tokens", () => {
   it("say what each does, how full it is, and keep the ended ones folded", () => {
-    const c = show(<EnrollmentTokens w={acme} />, [
+    const c = show(<EnrollmentTokens w={acme} admin onRunners={false} />, [
       token({
         id: "enr_1",
         name: "Autoscaling group",
@@ -135,7 +149,7 @@ describe("enrollment tokens", () => {
   });
 
   it("make a token from a form that says what it will do", () => {
-    show(<EnrollmentTokens w={acme} />, []);
+    show(<EnrollmentTokens w={acme} admin onRunners={false} />, []);
     act(() => button("New enrollment token").click());
     const create = button("Create token");
     expect(create.disabled).toBe(true);
@@ -143,5 +157,29 @@ describe("enrollment tokens", () => {
     expect(summary()).toContain("Enrolls any number of runners, which run everyone's sessions at once.");
     act(() => (document.querySelector('[role="switch"]') as HTMLButtonElement).click());
     expect(summary()).toContain("which wait for an admin's approval before they run anything");
+  });
+
+  it("are a member's own: for their sessions, which they approve", () => {
+    const member = { ...acme, role: "member" } as G.Workspace;
+    const c = show(<EnrollmentTokens w={member} admin={false} onRunners />, [
+      token({
+        id: "enr_9",
+        name: "My cluster",
+        personal: true,
+        remove_offline_after_minutes: 5,
+        created_by: { id: "usr_bo", name: "Bo" } as G.UserRef,
+      }),
+    ]);
+    expect(c.textContent).toContain("They are yours and run only your sessions in Acme");
+    // Whose it is, as someone else (an admin, say) reads it.
+    expect(c.textContent).toContain("Only Bo's sessions");
+    expect(c.textContent).toContain("which run Bo's sessions at once");
+    act(() => button("New enrollment token").click());
+    const summary = () => document.querySelector("dialog [aria-live]")?.textContent ?? "";
+    // No choice of whose: a member's are for their own sessions.
+    expect(document.body.textContent).not.toContain("Everyone's sessions");
+    expect(summary()).toContain("Enrolls any number of runners, which run your sessions at once.");
+    act(() => (document.querySelector('[role="switch"]') as HTMLButtonElement).click());
+    expect(summary()).toContain("which wait for your approval before they run anything");
   });
 });

@@ -437,7 +437,8 @@ pub fn _kind_name(k: ClaudeCredentialKind) -> &'static str {
 
 /// The runners that may run someone's Claude sign-in, which passes their
 /// tokens through the host, in the order to try them: the ones they
-/// registered, then those that run their sessions in the workspaces open to
+/// registered or enrolled (once approved: a token for their own sessions
+/// may have leaked), then those that run their sessions in the workspaces open to
 /// them (not ones whose two-factor requirement shuts them out). A runner of
 /// someone else's runs them only where it runs everyone's sessions and
 /// they don't keep theirs on their own runners
@@ -461,7 +462,7 @@ async fn login_runners(ctx: &Ctx, user: &UserRow) -> AppResult<Vec<String>> {
              LEFT JOIN workspace_members m ON m.workspace_id = rw.workspace_id AND m.user_id = ?1 \
              WHERE r.enabled = 1 AND ((m.user_id IS NOT NULL AND ",
             crate::serves!(),
-            ") OR r.created_by = ?1)"
+            ") OR (r.created_by = ?1 AND r.pending_until IS NULL))"
         ),
         &[s(&user.id)],
     )?

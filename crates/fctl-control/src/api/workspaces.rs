@@ -691,7 +691,16 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
     let runners: Vec<R> = q(
         &ctx.db,
         "SELECT rw.runner_id FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id \
-         WHERE rw.workspace_id = ? AND r.created_by = ?",
+         WHERE rw.workspace_id = ? AND r.created_by = ? AND r.workspace_id IS NULL",
+        &[s(workspace_id), s(user_id)],
+    )?
+    .all()
+    .await?;
+    // The runners they enrolled there for their own sessions serve no
+    // other workspace: they go.
+    let enrolled: Vec<R> = q(
+        &ctx.db,
+        "SELECT id AS runner_id FROM runners WHERE workspace_id = ? AND created_by = ?",
         &[s(workspace_id), s(user_id)],
     )?
     .all()
@@ -705,6 +714,18 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
                 "DELETE FROM runner_workspaces WHERE workspace_id = ? AND runner_id IN \
                  (SELECT id FROM runners WHERE created_by = ?)",
                 &[s(workspace_id), s(user_id)],
+            )?,
+            q(
+                &ctx.db,
+                "DELETE FROM runners WHERE workspace_id = ? AND created_by = ?",
+                &[s(workspace_id), s(user_id)],
+            )?,
+            // And the tokens they made for their own sessions enroll none.
+            q(
+                &ctx.db,
+                "UPDATE enrollment_tokens SET revoked_at = ?3 WHERE workspace_id = ?1 AND created_by = ?2 \
+                 AND personal = 1 AND revoked_at IS NULL",
+                &[s(workspace_id), s(user_id), n(ctx.now)],
             )?,
             // So do the invitations of their other addresses, which would
             // let them back in, and those they sent, which count no more
@@ -741,6 +762,14 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
     .await?;
     for r in &runners {
         runner_changed(ctx, &r.runner_id);
+    }
+    for r in &enrolled {
+        crate::api::runners::let_go(
+            ctx,
+            &r.runner_id,
+            "Its runner was removed: its owner left the workspace.",
+        )
+        .await;
     }
     Ok(())
 }
@@ -1385,8 +1414,8 @@ pub fn runs_whose(a: &ws::WorkspaceAccess, personal: Option<bool>) -> AppResult<
 struct RunnerOwner {
     created_by: Option<String>,
     name: String,
-    /// The workspace it belongs to, when it enrolled in one: it runs that
-    /// one's sessions and no other's.
+    /// The workspace it enrolled in, if it did: it runs that one's sessions
+    /// and no other's, everyone's or, with `created_by`, its owner's.
     workspace_id: Option<String>,
 }
 
@@ -1401,23 +1430,27 @@ async fn runner_owner(ctx: &Ctx, runner_id: &str) -> AppResult<RunnerOwner> {
     .ok_or_else(|| not_found("Runner"))
 }
 
-/// A workspace's own runner (it enrolled there) runs that workspace's
-/// sessions alone, everyone's, from its approval until it is removed:
-/// nobody adds it elsewhere, changes whose sessions it runs, or takes it
-/// out but by removing it.
+/// A runner that enrolled in a workspace runs that workspace's sessions
+/// alone, everyone's or its owner's, from its approval until it is
+/// removed: nobody adds it elsewhere, changes whose sessions it runs, or
+/// takes it out but by removing it.
 fn its_workspaces_own(
     owner: &RunnerOwner,
     workspace: &ws::WorkspaceAccess,
     runner_id: &str,
 ) -> AppResult<()> {
-    match &owner.workspace_id {
-        None => Ok(()),
-        Some(w) if w == workspace.id() => Err(conflict(&format!(
+    match (&owner.workspace_id, &owner.created_by) {
+        (None, _) => Ok(()),
+        (Some(w), None) if w == workspace.id() => Err(conflict(&format!(
             "{} belongs to {}: it runs everyone's sessions there once approved, and goes when it is removed (`fctl runners remove {runner_id}`)",
             owner.name, workspace.row.name
         ))),
-        Some(_) => Err(forbidden(
-            "This runner belongs to another workspace and runs only that workspace's sessions",
+        (Some(w), Some(_)) if w == workspace.id() => Err(conflict(&format!(
+            "{} enrolled in {} for its owner's sessions: it runs only theirs there, and goes when it is taken out or removed",
+            owner.name, workspace.row.name
+        ))),
+        (Some(_), _) => Err(forbidden(
+            "This runner enrolled in another workspace and runs only that workspace's sessions",
         )),
     }
 }
@@ -1525,13 +1558,18 @@ pub async fn add_runner(
 }
 
 /// `DELETE /api/v1/workspaces/{id}/runners/{runner}`: the workspace's
-/// sessions no longer start on it, and the ones running there stop.
+/// sessions no longer start on it, and the ones running there stop. A
+/// member's runner that enrolled there for their own sessions serves no
+/// other workspace, so taking it out removes it.
 pub async fn remove_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
     let role = a.require_open()?;
     let user = ctx.user()?.clone();
     let owner = runner_owner(ctx, runner_id).await?;
-    its_workspaces_own(&owner, &a, runner_id)?;
+    let enrolled_here = owner.created_by.is_some() && owner.workspace_id.as_deref() == Some(a.id());
+    if !enrolled_here {
+        its_workspaces_own(&owner, &a, runner_id)?;
+    }
     if !policy::can_remove_runner(
         owner.created_by.as_deref() == Some(user.id.as_str()),
         Some(role),
@@ -1540,6 +1578,32 @@ pub async fn remove_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResul
         return Err(forbidden(
             "Only the workspace's admins and the runner's owner can take it out",
         ));
+    }
+    if enrolled_here {
+        let removed = q(
+            &ctx.db,
+            "DELETE FROM runners WHERE id = ? AND workspace_id = ? AND created_by IS NOT NULL",
+            &[s(runner_id), s(a.id())],
+        )?
+        .run()
+        .await?;
+        if removed == 0 {
+            return Err(not_found("Runner"));
+        }
+        ctx.audit("runner.deleted", Some(runner_id), None);
+        ctx.audit_in(
+            Some(a.id()),
+            "workspace.runner_removed",
+            Some(runner_id),
+            Some(serde_json::json!({ "name": owner.name })),
+        );
+        crate::api::runners::let_go(
+            ctx,
+            runner_id,
+            &format!("Its runner {} was removed.", owner.name),
+        )
+        .await;
+        return runners(ctx, a.id()).await;
     }
     let removed = q(
         &ctx.db,
