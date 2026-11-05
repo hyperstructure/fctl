@@ -1,8 +1,10 @@
 //! Enrollment tokens (docs/architecture.md#enrollment-tokens): machines
-//! enroll themselves as a workspace's runners with one, without anyone
-//! signing in on them, as autoscaling creates them. What a token may be
-//! made with, whether it enrolls another runner now, what it says it does,
-//! and when the runners it enrolled are removed.
+//! enroll themselves as runners of a workspace with one, without anyone
+//! signing in on them, as autoscaling creates them: the workspace's own,
+//! for everyone's sessions, or, with a token a member made for their own
+//! sessions, that member's. What a token may be made with, whether it
+//! enrolls another runner now, what it says it does, and when the runners
+//! it enrolled are removed.
 
 use crate::validate::Result;
 use fctl_proto::api::{CreateEnrollmentTokenRequest, PushMessage, RunnerFacts};
@@ -10,8 +12,8 @@ use fctl_proto::{ApiError, Millis};
 
 pub const MINUTE_MS: i64 = 60_000;
 pub const HOUR_MS: i64 = 60 * MINUTE_MS;
-/// How long a runner waits for an admin of its workspace to approve it
-/// before it is removed.
+/// How long a runner waits for approval (by an admin of its workspace, or
+/// its owner) before it is removed.
 pub const PENDING_MS: i64 = 7 * 24 * HOUR_MS;
 /// The longest an enrollment token lasts, when it expires at all.
 pub const MAX_EXPIRY_HOURS: u32 = 365 * 24;
@@ -37,14 +39,18 @@ pub const KEEP_ENDED_MS: i64 = 90 * 24 * HOUR_MS;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewToken {
     pub name: String,
+    /// For its maker's own sessions (`fctl_domain::workspace::enrollment_for_own`
+    /// decides it, by their role).
+    pub personal: bool,
     pub expires_at: Option<i64>,
     pub max_runners: Option<u32>,
     pub approval: bool,
     pub remove_offline_after_minutes: Option<u32>,
 }
 
-/// Checks what a new enrollment token is to be made with, at `now`.
-pub fn check_new(req: &CreateEnrollmentTokenRequest, now: i64) -> Result<NewToken> {
+/// Checks what a new enrollment token is to be made with, at `now`, for its
+/// maker's own sessions or not (`personal`).
+pub fn check_new(req: &CreateEnrollmentTokenRequest, personal: bool, now: i64) -> Result<NewToken> {
     let name = crate::validate::name("name", &req.name)?;
     let expires_at = match req.expires_in_hours {
         None => None,
@@ -78,6 +84,7 @@ pub fn check_new(req: &CreateEnrollmentTokenRequest, now: i64) -> Result<NewToke
     };
     Ok(NewToken {
         name,
+        personal,
         expires_at,
         max_runners,
         approval: req.approval.unwrap_or(false),
@@ -126,26 +133,46 @@ pub fn check(token: &State, now: i64) -> std::result::Result<(), Refusal> {
 
 impl Refusal {
     /// What the host that tries to enroll is told, naming the token's
-    /// workspace.
-    pub fn message(&self, workspace: &str) -> String {
+    /// workspace. `personal`: the token is for its maker's own sessions,
+    /// and they make another themselves.
+    pub fn message(&self, workspace: &str, personal: bool) -> String {
+        let another = if personal {
+            format!("make another on {workspace}'s Runners tab")
+        } else {
+            "ask one of its admins for another".to_owned()
+        };
         match self {
             Self::Revoked { at } => format!(
-                "This enrollment token for {workspace} was revoked on {}: ask one of its admins for another.",
+                "This enrollment token for {workspace} was revoked on {}: {another}.",
                 day(*at)
             ),
             Self::Expired { at } => format!(
-                "This enrollment token for {workspace} expired on {}: ask one of its admins for another.",
+                "This enrollment token for {workspace} expired on {}: {another}.",
                 day(*at)
             ),
             Self::Full { max } => format!(
-                "This enrollment token for {workspace} has as many runners as it may keep at once ({max}). Remove one from {workspace}'s Runners tab, or ask one of its admins for another token."
+                "This enrollment token for {workspace} has as many runners as it may keep at once ({max}). Remove one from {workspace}'s Runners tab, or {}.",
+                if personal {
+                    "make another token there"
+                } else {
+                    "ask one of its admins for another token"
+                }
             ),
         }
     }
 
-    pub fn error(&self, workspace: &str) -> ApiError {
-        ApiError::forbidden(self.message(workspace))
+    pub fn error(&self, workspace: &str, personal: bool) -> ApiError {
+        ApiError::forbidden(self.message(workspace, personal))
     }
+}
+
+/// Why a token for its maker's own sessions enrolls nothing, whatever its
+/// state: its maker is no longer an active member of its workspace, so the
+/// runners it would enroll would run nothing.
+pub fn maker_gone(workspace: &str) -> ApiError {
+    ApiError::forbidden(format!(
+        "This enrollment token was made by someone who is no longer a member of {workspace}, for their own sessions: it enrolls no runner."
+    ))
 }
 
 /// `2026-11-05`, in UTC: messages from the control plane don't know the
@@ -213,36 +240,76 @@ pub fn minutes(m: u32) -> String {
     }
 }
 
+/// Whose sessions the runners a token enrolls run, as the person who reads
+/// what it does sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Whose<'a> {
+    /// The workspace's own runners: everyone's sessions there, once an
+    /// admin approves them where the token asks for that.
+    Everyone,
+    /// The reader made the token for their own sessions.
+    Yours,
+    /// Someone else made it for theirs: their name.
+    Theirs(&'a str),
+}
+
+impl Whose<'_> {
+    /// `everyone's sessions`, `your sessions`, `Ada's sessions`.
+    pub fn sessions(self) -> String {
+        match self {
+            Self::Everyone => "everyone's sessions".into(),
+            Self::Yours => "your sessions".into(),
+            Self::Theirs(name) => format!("{name}'s sessions"),
+        }
+    }
+
+    /// `an admin's approval`, `your approval`, `Ada's approval`.
+    pub fn approval(self) -> String {
+        match self {
+            Self::Everyone => "an admin's approval".into(),
+            Self::Yours => "your approval".into(),
+            Self::Theirs(name) => format!("{name}'s approval"),
+        }
+    }
+}
+
 /// What a token does with the runners it enrolls, in a sentence: `Enrolls
 /// up to 20 runners at a time, which wait for an admin's approval and are
 /// removed once they have been offline for 5 minutes.` `remove_offline` is
 /// in minutes.
-pub fn describe(approval: bool, max_runners: Option<u32>, remove_offline: Option<u32>) -> String {
+pub fn describe(
+    whose: Whose,
+    approval: bool,
+    max_runners: Option<u32>,
+    remove_offline: Option<u32>,
+) -> String {
     let how_many = match max_runners {
         None => "Enrolls any number of runners".to_owned(),
         Some(1) => "Enrolls one runner at a time".to_owned(),
         Some(n) => format!("Enrolls up to {n} runners at a time"),
     };
     let one = max_runners == Some(1);
+    let sessions = whose.sessions();
+    let approver = whose.approval();
     let then = match (approval, remove_offline) {
         (false, None) => format!(
-            ", which {} everyone's sessions at once",
+            ", which {} {sessions} at once",
             if one { "runs" } else { "run" }
         ),
         (true, None) => format!(
-            ", which {} for an admin's approval before {} anything",
+            ", which {} for {approver} before {} anything",
             if one { "waits" } else { "wait" },
             if one { "it runs" } else { "they run" }
         ),
         (false, Some(h)) => format!(
-            ", which {} everyone's sessions at once and {} removed once {} been offline for {}",
+            ", which {} {sessions} at once and {} removed once {} been offline for {}",
             if one { "runs" } else { "run" },
             if one { "is" } else { "are" },
             if one { "it has" } else { "they have" },
             minutes(h)
         ),
         (true, Some(h)) => format!(
-            ", which {} for an admin's approval and {} removed once {} been offline for {}",
+            ", which {} for {approver} and {} removed once {} been offline for {}",
             if one { "waits" } else { "wait" },
             if one { "is" } else { "are" },
             if one { "it has" } else { "they have" },
@@ -312,9 +379,13 @@ pub fn facts(f: RunnerFacts) -> RunnerFacts {
     }
 }
 
-/// A runner that waits for approval, as its workspace's admins hear of it.
+/// A runner that waits for approval, as those who approve it hear of it:
+/// its workspace's admins, or its owner (`yours`).
 #[derive(Clone, Debug, Default)]
 pub struct Waiting<'a> {
+    /// It is the reader's, enrolled with a token they made for their own
+    /// sessions: they approve it.
+    pub yours: bool,
     pub runner_id: &'a str,
     pub runner: &'a str,
     pub hostname: Option<&'a str>,
@@ -323,7 +394,8 @@ pub struct Waiting<'a> {
     pub workspace_id: &'a str,
     pub workspace_slug: &'a str,
     pub workspace: &'a str,
-    /// The runners that wait in the workspace now, this one included.
+    /// The runners that wait in the workspace now for the reader to
+    /// approve them, this one included.
     pub waiting: u32,
     /// Where it enrolled from.
     pub address: Option<&'a str>,
@@ -348,12 +420,12 @@ impl Waiting<'_> {
     }
 }
 
-/// The notification that tells a workspace's admins that a runner waits for
-/// their approval. Its tag is the workspace's, so that a burst of them
-/// shows as one, which counts them.
+/// The notification that tells a workspace's admins, or a runner's owner,
+/// that a runner waits for their approval. Its tag is the workspace's, so
+/// that a burst of them shows as one, which counts them.
 pub fn waiting_push(w: &Waiting, now: Millis) -> PushMessage {
-    let (title, body) = if w.waiting > 1 {
-        (
+    let (title, body) = match (w.waiting > 1, w.yours) {
+        (true, _) => (
             format!("{} runners wait for your approval", w.waiting),
             format!(
                 "{} and {} more wait in {}. Approve or reject them on its Runners tab.",
@@ -361,9 +433,8 @@ pub fn waiting_push(w: &Waiting, now: Millis) -> PushMessage {
                 w.waiting - 1,
                 w.workspace
             ),
-        )
-    } else {
-        (
+        ),
+        (false, false) => (
             "A runner waits for your approval".to_owned(),
             format!(
                 "{} enrolled in {} with “{}”. Approve or reject it on its Runners tab.",
@@ -371,7 +442,16 @@ pub fn waiting_push(w: &Waiting, now: Millis) -> PushMessage {
                 w.workspace,
                 w.token
             ),
-        )
+        ),
+        (false, true) => (
+            "Your runner waits for your approval".to_owned(),
+            format!(
+                "{} enrolled in {} with your token “{}”, for your sessions. Approve or reject it on its Runners tab.",
+                w.who(),
+                w.workspace,
+                w.token
+            ),
+        ),
     };
     PushMessage {
         title,
@@ -383,17 +463,22 @@ pub fn waiting_push(w: &Waiting, now: Millis) -> PushMessage {
     }
 }
 
-/// The email that tells a workspace's admins that a runner waits for their
-/// approval: its subject and text.
+/// The email that tells a workspace's admins, or a runner's owner, that a
+/// runner waits for their approval: its subject and text.
 pub fn waiting_email(w: &Waiting, public_url: &str) -> (String, String) {
     let subject = format!("{} waits for your approval in {}", w.runner, w.workspace);
-    let mut lines = vec![
+    let first = if w.yours {
+        format!(
+            "A machine enrolled in {} as your runner {}, with your enrollment token “{}”, and waits for you to approve it. Until you do, it runs none of your sessions and gets none of their code, secrets or tokens.",
+            w.workspace, w.runner, w.token
+        )
+    } else {
         format!(
             "A machine enrolled in {} as the runner {}, with the enrollment token “{}”, and waits for an admin to approve it. Until one does, it runs none of {}'s sessions and gets none of its code, secrets or tokens.",
             w.workspace, w.runner, w.token, w.workspace
-        ),
-        String::new(),
-    ];
+        )
+    };
+    let mut lines = vec![first, String::new()];
     if let Some(h) = w.hostname {
         lines.push(format!("Hostname: {h}"));
     }
@@ -441,7 +526,9 @@ mod tests {
                 max_runners: Some(20),
                 approval: Some(true),
                 remove_offline_after_minutes: Some(5),
+                ..Default::default()
             },
+            true,
             NOW,
         )
         .ok();
@@ -449,6 +536,7 @@ mod tests {
             t,
             Some(NewToken {
                 name: "Build fleet".into(),
+                personal: true,
                 expires_at: Some(NOW + 90 * 24 * HOUR_MS),
                 max_runners: Some(20),
                 approval: true,
@@ -456,7 +544,7 @@ mod tests {
             })
         );
         // Without settings: never expires, no limit, no approval, kept.
-        let t = check_new(&request("CI"), NOW).ok();
+        let t = check_new(&request("CI"), false, NOW).ok();
         assert_eq!(
             t.map(|t| (
                 t.expires_at,
@@ -467,7 +555,7 @@ mod tests {
             Some((None, None, false, None))
         );
         let field =
-            |r: CreateEnrollmentTokenRequest| check_new(&r, NOW).err().and_then(|e| e.field);
+            |r: CreateEnrollmentTokenRequest| check_new(&r, false, NOW).err().and_then(|e| e.field);
         assert_eq!(field(request(" ")).as_deref(), Some("name"));
         for (expires, max, offline, which) in [
             (Some(0), None, None, "expires_in_hours"),
@@ -527,20 +615,33 @@ mod tests {
         let at = 1_793_707_200_000;
         assert_eq!(day(at), "2026-11-03");
         assert_eq!(
-            Refusal::Revoked { at }.message("Acme"),
+            Refusal::Revoked { at }.message("Acme", false),
             "This enrollment token for Acme was revoked on 2026-11-03: ask one of its admins for another."
         );
         assert_eq!(
-            Refusal::Expired { at }.message("Acme"),
+            Refusal::Expired { at }.message("Acme", false),
             "This enrollment token for Acme expired on 2026-11-03: ask one of its admins for another."
         );
         assert_eq!(
-            Refusal::Full { max: 3 }.message("Acme"),
+            Refusal::Full { max: 3 }.message("Acme", false),
             "This enrollment token for Acme has as many runners as it may keep at once (3). Remove one from Acme's Runners tab, or ask one of its admins for another token."
         );
         assert_eq!(
-            Refusal::Full { max: 3 }.error("Acme").code,
+            Refusal::Full { max: 3 }.error("Acme", false).code,
             fctl_proto::ErrorCode::Forbidden
+        );
+        // A token for its maker's own sessions is theirs to replace.
+        assert_eq!(
+            Refusal::Expired { at }.message("Acme", true),
+            "This enrollment token for Acme expired on 2026-11-03: make another on Acme's Runners tab."
+        );
+        assert_eq!(
+            Refusal::Full { max: 3 }.message("Acme", true),
+            "This enrollment token for Acme has as many runners as it may keep at once (3). Remove one from Acme's Runners tab, or make another token there."
+        );
+        assert_eq!(
+            maker_gone("Acme").message,
+            "This enrollment token was made by someone who is no longer a member of Acme, for their own sessions: it enrolls no runner."
         );
     }
 
@@ -637,21 +738,31 @@ mod tests {
 
     #[test]
     fn tokens_say_what_they_do_with_the_runners_they_enroll() {
+        use Whose::*;
         assert_eq!(
-            describe(false, None, None),
+            describe(Everyone, false, None, None),
             "Enrolls any number of runners, which run everyone's sessions at once."
         );
         assert_eq!(
-            describe(true, Some(20), Some(5)),
+            describe(Everyone, true, Some(20), Some(5)),
             "Enrolls up to 20 runners at a time, which wait for an admin's approval and are removed once they have been offline for 5 minutes."
         );
         assert_eq!(
-            describe(false, Some(1), Some(1440)),
+            describe(Everyone, false, Some(1), Some(1440)),
             "Enrolls one runner at a time, which runs everyone's sessions at once and is removed once it has been offline for a day."
         );
         assert_eq!(
-            describe(true, Some(1), None),
+            describe(Everyone, true, Some(1), None),
             "Enrolls one runner at a time, which waits for an admin's approval before it runs anything."
+        );
+        // A member's, for their own sessions, as they and others read it.
+        assert_eq!(
+            describe(Yours, false, Some(4), Some(5)),
+            "Enrolls up to 4 runners at a time, which run your sessions at once and are removed once they have been offline for 5 minutes."
+        );
+        assert_eq!(
+            describe(Theirs("Ada"), true, None, None),
+            "Enrolls any number of runners, which wait for Ada's approval before they run anything."
         );
         assert_eq!(minutes(1), "a minute");
         assert_eq!(minutes(15), "15 minutes");
@@ -664,6 +775,7 @@ mod tests {
     #[test]
     fn admins_hear_which_runner_waits_and_how_many_do() {
         let w = Waiting {
+            yours: false,
             runner_id: "rnr_01",
             runner: "build-1",
             hostname: Some("ip-10-0-3-17"),
@@ -709,6 +821,33 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("fctl runners approve rnr_01"), "{text}");
+        assert!(text.contains("waits for an admin to approve it"), "{text}");
+    }
+
+    #[test]
+    fn owners_hear_that_their_own_runner_waits() {
+        let w = Waiting {
+            yours: true,
+            runner_id: "rnr_01",
+            runner: "pod-7",
+            token: "My cluster",
+            workspace_id: "wsp_1",
+            workspace_slug: "acme",
+            workspace: "Acme",
+            waiting: 1,
+            ..Default::default()
+        };
+        let push = waiting_push(&w, NOW);
+        assert_eq!(push.title, "Your runner waits for your approval");
+        assert_eq!(
+            push.body,
+            "pod-7 enrolled in Acme with your token “My cluster”, for your sessions. Approve or reject it on its Runners tab."
+        );
+        let (_, text) = waiting_email(&w, "https://app.fctl.sh");
+        assert!(
+            text.starts_with("A machine enrolled in Acme as your runner pod-7, with your enrollment token “My cluster”, and waits for you to approve it."),
+            "{text}"
+        );
     }
 
     #[test]

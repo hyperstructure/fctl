@@ -867,8 +867,10 @@ pub struct RunnerRow {
     /// The workspaces it serves (JSON, from [`RUNNER_SELECT`]).
     #[serde(default)]
     pub workspaces: Option<String>,
-    /// The workspace it belongs to, when it enrolled in one (and its parts,
-    /// from [`RUNNER_SELECT`]).
+    /// The workspace it enrolled in, and the only one it serves (and its
+    /// parts, from [`RUNNER_SELECT`]): it belongs to that workspace, or,
+    /// with `created_by`, to the member who made the token for their own
+    /// sessions.
     #[serde(default)]
     pub workspace_id: Option<String>,
     #[serde(default)]
@@ -904,9 +906,9 @@ pub struct RunnerView<'a> {
     /// The workspaces they are a member of; `None` for instance admins, who
     /// see every workspace a runner serves.
     pub workspaces: Option<&'a [String]>,
-    /// Of those, the ones they are an admin of: they see the runners that
-    /// wait there for approval, and how each of its runners enrolled.
-    /// `None` with `workspaces` (instance admins).
+    /// Of those, the ones they are an admin of: they see the workspace's
+    /// own runners that wait there for approval, and how each of those
+    /// enrolled. `None` with `workspaces` (instance admins).
     pub admin_of: Option<&'a [String]>,
 }
 
@@ -929,7 +931,7 @@ impl RunnerRow {
         self.workspace_list().into_iter().map(|w| w.id).collect()
     }
 
-    /// The workspace it belongs to, when it enrolled in one.
+    /// The workspace it enrolled in.
     pub fn owner_workspace(&self) -> Option<WorkspaceRef> {
         let id = self.workspace_id.as_deref()?;
         Some(workspace_ref(
@@ -941,13 +943,16 @@ impl RunnerRow {
         ))
     }
 
-    /// Whether `view` is an admin of the workspace it belongs to (or an
-    /// instance admin, who sees everything of it).
-    fn admin_sees(&self, view: &RunnerView) -> bool {
-        match (view.workspaces, &self.workspace_id) {
-            (None, _) => true,
-            (Some(_), Some(w)) => view.admin_of.is_some_and(|a| a.contains(w)),
-            (Some(_), None) => false,
+    /// Whether `view` decides whether it runs sessions, for a runner that
+    /// enrolled: an admin of the workspace it belongs to, or its owner when
+    /// it is theirs (it enrolled with a token they made for their own
+    /// sessions). Instance admins see everything of it.
+    fn approver_sees(&self, view: &RunnerView) -> bool {
+        match (view.workspaces, &self.workspace_id, &self.created_by) {
+            (None, _, _) => true,
+            (Some(_), Some(_), Some(owner)) => view.user_id == Some(owner.as_str()),
+            (Some(_), Some(w), None) => view.admin_of.is_some_and(|a| a.contains(w)),
+            (Some(_), None, _) => false,
         }
     }
 
@@ -968,11 +973,11 @@ impl RunnerRow {
 
     /// Whether `view` may see it: it serves one of their workspaces, they
     /// registered it, or they are an instance admin. One that waits for
-    /// approval only its workspace's admins see.
+    /// approval only those who approve it see.
     pub fn visible_to(&self, view: &RunnerView) -> bool {
         match view.workspaces {
             None => true,
-            Some(_) if self.pending_until.is_some() => self.admin_sees(view),
+            Some(_) if self.pending_until.is_some() => self.approver_sees(view),
             Some(mine) => {
                 view.user_id.is_some() && self.created_by.as_deref() == view.user_id
                     || self.workspace_ids().iter().any(|w| mine.contains(w))
@@ -1075,8 +1080,8 @@ impl RunnerRow {
             auto_update: hello.as_ref().and_then(|h| h.auto_update),
             workspace: self.owner_workspace(),
             // Where it enrolled from is for those who decide whether it
-            // runs their workspace's sessions.
-            enrollment: (self.workspace_id.is_some() && self.admin_sees(view)).then(|| {
+            // runs sessions.
+            enrollment: (self.workspace_id.is_some() && self.approver_sees(view)).then(|| {
                 fctl_proto::api::RunnerEnrollment {
                     token_id: self
                         .enrollment_id
@@ -1098,9 +1103,9 @@ impl RunnerRow {
 /// Whether runner `r` serves the workspace of `runner_workspaces` row `rw`:
 /// while its owner is an active member there (a runner whose owner's
 /// account is gone serves where it was put before workspaces had owners).
-/// A runner that belongs to a workspace (it enrolled there) serves that
-/// one alone, and only once approved: one that waits for approval has no
-/// `runner_workspaces` row anyway.
+/// A runner that enrolled in a workspace serves that one alone, everyone's
+/// sessions or its owner's, and only once approved: one that waits for
+/// approval has no `runner_workspaces` row anyway.
 #[macro_export]
 macro_rules! serves {
     () => {

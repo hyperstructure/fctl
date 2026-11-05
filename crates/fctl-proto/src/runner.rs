@@ -528,15 +528,20 @@ pub enum HostToFleet {
     Pong,
 }
 
-/// A runner that waits for an admin of its workspace to approve it, as its
-/// `Welcome` says ([`FleetToHost::Welcome`]).
+/// A runner that waits for approval, by an admin of its workspace or by
+/// its owner, as its `Welcome` says ([`FleetToHost::Welcome`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct PendingApproval {
     /// The workspace's name.
     pub workspace: String,
-    /// When the runner is removed unless one of its admins approves it.
+    /// When the runner is removed unless it is approved.
     pub until: Millis,
+    /// The name of the person who approves it: the runner is theirs, for
+    /// their own sessions. Absent: one of the workspace's admins, and from
+    /// control planes before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -783,6 +788,7 @@ mod tests {
             pending: Some(PendingApproval {
                 workspace: "Acme".into(),
                 until: 2,
+                owner: None,
             }),
         };
         let json = serde_json::to_value(&msg)?;
@@ -790,6 +796,16 @@ mod tests {
             json["pending"],
             serde_json::json!({ "workspace": "Acme", "until": 2 })
         );
+        // One that is a member's, for their own sessions, waits for them;
+        // what a control plane before it sends reads as an admin's to
+        // approve.
+        let theirs: PendingApproval = serde_json::from_value(
+            serde_json::json!({ "workspace": "Acme", "until": 2, "owner": "Ada" }),
+        )?;
+        assert_eq!(theirs.owner.as_deref(), Some("Ada"));
+        let before: PendingApproval =
+            serde_json::from_value(serde_json::json!({ "workspace": "Acme", "until": 2 }))?;
+        assert_eq!(before.owner, None);
         #[derive(Deserialize)]
         #[serde(tag = "type", rename_all = "snake_case")]
         enum Older {

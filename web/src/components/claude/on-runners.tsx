@@ -18,6 +18,8 @@ export const TOKEN_FILE = "~/.config/fctl/claude-token";
 /** Commands, as people copy them. */
 export const SETUP_TOKEN = "claude setup-token";
 export const SET_TOKEN = "fctl host claude set-token";
+/** The same on a machine nobody signs in on, from a file its secret store put there. */
+export const SET_TOKEN_FROM_FILE = "fctl host claude set-token < /run/secrets/claude-token";
 
 /** A step of a guide: its number, or a check once it is done. */
 function Step({

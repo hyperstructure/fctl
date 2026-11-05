@@ -244,6 +244,34 @@ pub fn check_add_runner(
     Ok(())
 }
 
+/// Whether an enrollment token someone whose role in a workspace is `role`
+/// makes there is for their own sessions: as they ask (`personal`), else
+/// for their own when they are a member and for everyone's when they are
+/// an admin. A token for everyone's sessions enrolls machines that see
+/// everyone's code, secrets and tokens there, so only its admins make one,
+/// as only they add runners for everyone's ([`check_add_runner`]).
+pub fn enrollment_for_own(role: Option<WorkspaceRole>, personal: Option<bool>) -> Result<bool> {
+    let Some(role) = role else {
+        return Err(denied(
+            "Only the workspace's members make enrollment tokens for it",
+        ));
+    };
+    let personal = personal.unwrap_or(!role.is_admin());
+    if !personal && !role.is_admin() {
+        return Err(denied(
+            "Only the workspace's admins make enrollment tokens whose runners run everyone's sessions. Make one for your own sessions.",
+        ));
+    }
+    Ok(personal)
+}
+
+/// Whether someone may see and revoke a workspace's enrollment token: its
+/// admins every one of them, a member those they made for their own
+/// sessions (`own`).
+pub fn can_manage_enrollment_token(role: Option<WorkspaceRole>, own: bool) -> bool {
+    role.is_some_and(WorkspaceRole::is_admin) || role.is_some() && own
+}
+
 /// Whom a runner belongs to, as the person who asks sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunnerOwner {
@@ -473,6 +501,29 @@ mod tests {
         // A workspace's runner is its admins' to replace.
         assert!(check_replace_runner_token(RunnerOwner::Workspace { admin: true }).is_ok());
         assert!(check_replace_runner_token(RunnerOwner::Workspace { admin: false }).is_err());
+    }
+
+    #[test]
+    fn members_make_enrollment_tokens_for_their_own_sessions_and_admins_for_anyones() {
+        // Absent, it follows the role, as adding a runner does.
+        assert_eq!(enrollment_for_own(Some(Member), None), Ok(true));
+        assert_eq!(enrollment_for_own(Some(Admin), None), Ok(false));
+        assert_eq!(enrollment_for_own(Some(Owner), None), Ok(false));
+        assert_eq!(enrollment_for_own(Some(Admin), Some(true)), Ok(true));
+        assert_eq!(enrollment_for_own(Some(Member), Some(true)), Ok(true));
+        // A member's would run everyone's sessions on machines they bring.
+        assert!(enrollment_for_own(Some(Member), Some(false)).is_err());
+        assert!(enrollment_for_own(None, Some(true)).is_err());
+    }
+
+    #[test]
+    fn members_manage_the_enrollment_tokens_they_made_for_themselves() {
+        assert!(can_manage_enrollment_token(Some(Admin), false));
+        assert!(can_manage_enrollment_token(Some(Owner), true));
+        assert!(can_manage_enrollment_token(Some(Member), true));
+        assert!(!can_manage_enrollment_token(Some(Member), false));
+        // Someone who left manages none of them.
+        assert!(!can_manage_enrollment_token(None, true));
     }
 
     #[test]

@@ -12,11 +12,13 @@ import {
   NEW_ENROLLMENT,
   tokenState,
   waitingByWorkspace,
+  whoseToken,
 } from "./enrollment";
 
 const token = (t: Partial<G.EnrollmentToken> = {}): G.EnrollmentToken => ({
   id: "enr_1",
   name: "Build fleet",
+  personal: false,
   approval: false,
   created_at: 0,
   runners: 0,
@@ -26,14 +28,28 @@ const token = (t: Partial<G.EnrollmentToken> = {}): G.EnrollmentToken => ({
 
 describe("enrollmentRequest", () => {
   it("asks for what the form says, and leaves out what it doesn't limit", () => {
-    expect(enrollmentRequest({ ...NEW_ENROLLMENT, name: "  Build fleet " })).toEqual({
+    expect(enrollmentRequest({ ...NEW_ENROLLMENT, name: "  Build fleet " }, true)).toEqual({
       name: "Build fleet",
+      personal: false,
       approval: false,
       expires_in_hours: 90 * 24,
     });
     expect(
-      enrollmentRequest({ name: "CI", expires: "never", limit: "20", approval: true, offline: "1h" }),
-    ).toEqual({ name: "CI", approval: true, max_runners: 20, remove_offline_after_minutes: 60 });
+      enrollmentRequest(
+        { name: "CI", personal: true, expires: "never", limit: "20", approval: true, offline: "1h" },
+        true,
+      ),
+    ).toEqual({
+      name: "CI",
+      personal: true,
+      approval: true,
+      max_runners: 20,
+      remove_offline_after_minutes: 60,
+    });
+  });
+
+  it("makes a member's for their own sessions, whatever the form held", () => {
+    expect(enrollmentRequest({ ...NEW_ENROLLMENT, name: "My cluster" }, false).personal).toBe(true);
   });
 
   it("takes a limit of whole runners within bounds, or none", () => {
@@ -51,18 +67,32 @@ describe("enrollmentRequest", () => {
 describe("describeEnrollment", () => {
   // As `fctl_domain::enrollment::describe` says it.
   it("says what happens to the runners a token enrolls", () => {
-    expect(describeEnrollment(false)).toBe(
+    const everyone = { everyone: true } as const;
+    expect(describeEnrollment(everyone, false)).toBe(
       "Enrolls any number of runners, which run everyone's sessions at once.",
     );
-    expect(describeEnrollment(true, 20, 5)).toBe(
+    expect(describeEnrollment(everyone, true, 20, 5)).toBe(
       "Enrolls up to 20 runners at a time, which wait for an admin's approval and are removed once they have been offline for 5 minutes.",
     );
-    expect(describeEnrollment(false, 1, 1440)).toBe(
+    expect(describeEnrollment(everyone, false, 1, 1440)).toBe(
       "Enrolls one runner at a time, which runs everyone's sessions at once and is removed once it has been offline for a day.",
     );
-    expect(describeEnrollment(true, 1)).toBe(
+    expect(describeEnrollment(everyone, true, 1)).toBe(
       "Enrolls one runner at a time, which waits for an admin's approval before it runs anything.",
     );
+  });
+
+  it("says whose sessions a member's token runs, as you or others read it", () => {
+    const ada = { id: "usr_ada", name: "Ada" };
+    const mine = whoseToken({ personal: true, created_by: ada }, "usr_ada");
+    expect(describeEnrollment(mine, false, 4, 5)).toBe(
+      "Enrolls up to 4 runners at a time, which run your sessions at once and are removed once they have been offline for 5 minutes.",
+    );
+    expect(describeEnrollment(whoseToken({ personal: true, created_by: ada }, "usr_bo"), true)).toBe(
+      "Enrolls any number of runners, which wait for Ada's approval before they run anything.",
+    );
+    // An admin's for everyone's sessions is the workspace's, whoever reads it.
+    expect(whoseToken({ personal: false, created_by: ada }, "usr_ada")).toEqual({ everyone: true });
   });
 
   it("names durations as people say them", () => {
@@ -151,5 +181,22 @@ describe("what a waiting runner shows", () => {
     ]);
     // Instance admins see every runner, but approve only in their workspaces, as their admins.
     expect(waitingByWorkspace(runners, [ws("wsp_acme", "owner", true)])).toEqual([]);
+  });
+
+  it("goes to its owner when it enrolled for their own sessions", () => {
+    const ws = (id: string, role: G.WorkspaceRole) => ({ id, role }) as G.Workspace;
+    const side = { id: "wsp_side" } as G.WorkspaceRef;
+    const ada = { id: "usr_ada", name: "Ada" };
+    const runners = [
+      runner({ id: "rnr_mine", workspace: side, created_by: ada, yours: true, pending_until: 9 }),
+      // Someone else's, which an instance admin sees: theirs to approve, not the workspace's admins'.
+      runner({ id: "rnr_theirs", workspace: side, created_by: ada, yours: false, pending_until: 9 }),
+    ];
+    expect(
+      waitingByWorkspace(runners, [ws("wsp_side", "member")]).map((w) => w.runners.map((r) => r.id)),
+    ).toEqual([["rnr_mine"]]);
+    expect(
+      waitingByWorkspace(runners, [ws("wsp_side", "admin")]).map((w) => w.runners.map((r) => r.id)),
+    ).toEqual([["rnr_mine"]]);
   });
 });

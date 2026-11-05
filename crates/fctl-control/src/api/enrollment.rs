@@ -1,7 +1,8 @@
-//! A workspace's enrollment tokens (`/api/v1/workspaces/{id}/enrollment-tokens`,
-//! its admins), and the machines that enroll with them as the workspace's
-//! runners (`/api/v1/runner/enroll`, with the token as the bearer token):
-//! docs/architecture.md#enrollment-tokens, ADR 0071.
+//! A workspace's enrollment tokens (`/api/v1/workspaces/{id}/enrollment-tokens`:
+//! its admins', for everyone's sessions, and its members', for their own),
+//! and the machines that enroll with them as runners of the workspace
+//! (`/api/v1/runner/enroll`, with the token as the bearer token):
+//! docs/architecture.md#enrollment-tokens, ADRs 0071 and 0072.
 
 use crate::ctx::Ctx;
 use crate::db::{Count, b, batch_changes, int, int_bool, n, on, opt_int, os, q, s};
@@ -9,6 +10,7 @@ use crate::error::{AppError, AppResult, not_found};
 use crate::model::{RUNNER_SELECT, RunnerRow, RunnerView, workspace_ref};
 use crate::{http, internal, workspaces as ws};
 use fctl_domain::enrollment::{self, Refusal};
+use fctl_domain::workspace as policy;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::verify::Sensitive;
 use fctl_proto::api::{
@@ -27,6 +29,13 @@ struct TokenRow {
     id: String,
     workspace_id: String,
     name: String,
+    /// For its maker's own sessions: the runners it enrolls are theirs.
+    #[serde(deserialize_with = "int_bool", default)]
+    personal: bool,
+    /// Its maker is an active member of its workspace, without which a
+    /// token for their own sessions enrolls nothing.
+    #[serde(deserialize_with = "int_bool", default)]
+    maker_member: bool,
     #[serde(deserialize_with = "int_bool")]
     approval: bool,
     #[serde(deserialize_with = "opt_int", default)]
@@ -51,8 +60,10 @@ struct TokenRow {
     pending: i64,
 }
 
-const TOKEN_SELECT: &str = "SELECT t.id, t.workspace_id, t.name, t.approval, t.max_runners, \
+const TOKEN_SELECT: &str = "SELECT t.id, t.workspace_id, t.name, t.personal, t.approval, t.max_runners, \
     t.remove_offline_after_minutes, t.expires_at, t.created_by, cu.name AS creator_name, t.created_at, \
+    EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = t.workspace_id \
+      AND m.user_id = t.created_by AND cu.status = 'active') AS maker_member, \
     t.last_used_at, t.revoked_at, t.revoked_by, ru.name AS revoker_name, \
     (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) AS runners, \
     (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NOT NULL) AS pending \
@@ -79,6 +90,7 @@ impl TokenRow {
         EnrollmentToken {
             id: EnrollmentTokenId(self.id.clone()),
             name: self.name.clone(),
+            personal: self.personal,
             approval: self.approval,
             max_runners: count(self.max_runners),
             remove_offline_after_minutes: count(self.remove_offline_after_minutes),
@@ -91,6 +103,22 @@ impl TokenRow {
             runners: count(Some(self.runners)).unwrap_or_default(),
             pending: count(Some(self.pending)).unwrap_or_default(),
         }
+    }
+
+    /// The person whose runners it enrolls, for a token for its maker's
+    /// own sessions.
+    fn owner(&self) -> Option<&str> {
+        self.created_by.as_deref().filter(|_| self.personal)
+    }
+
+    /// Whether it enrolls runners at all, whatever its state: a token for
+    /// its maker's own sessions doesn't once they are no longer an active
+    /// member of its workspace, or have no account.
+    fn usable(&self, workspace: &str) -> AppResult<()> {
+        if self.personal && !(self.owner().is_some() && self.maker_member) {
+            return Err(AppError(enrollment::maker_gone(workspace)));
+        }
+        Ok(())
     }
 
     fn state(&self) -> enrollment::State {
@@ -114,10 +142,22 @@ async fn token_row(ctx: &Ctx, workspace_id: &str, id: &str) -> AppResult<TokenRo
     .ok_or_else(|| not_found("Enrollment token"))
 }
 
-/// `GET /api/v1/workspaces/{id}/enrollment-tokens` (its admins): newest first.
+/// Whether the caller may see and revoke token `t` of workspace `a`: its
+/// admins every one, a member those they made for their own sessions.
+fn manages(ctx: &Ctx, a: &ws::WorkspaceAccess, t: &TokenRow) -> AppResult<bool> {
+    let role = a.require_open()?;
+    let me = ctx.user()?.id.as_str();
+    Ok(policy::can_manage_enrollment_token(
+        Some(role),
+        t.owner() == Some(me),
+    ))
+}
+
+/// `GET /api/v1/workspaces/{id}/enrollment-tokens`: newest first, every one
+/// for its admins, and for a member those they made for their own sessions.
 pub async fn list(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
-    a.require_admin()?;
+    a.require_open()?;
     let rows: Vec<TokenRow> = q(
         &ctx.db,
         &format!("{TOKEN_SELECT} WHERE t.workspace_id = ? ORDER BY t.created_at DESC"),
@@ -125,34 +165,41 @@ pub async fn list(ctx: &Ctx, id: &str) -> AppResult<Response> {
     )?
     .all()
     .await?;
-    http::ok(&EnrollmentTokenList {
-        tokens: rows.iter().map(TokenRow::to_token).collect(),
-    })
+    let mut tokens = Vec::new();
+    for t in &rows {
+        if manages(ctx, &a, t)? {
+            tokens.push(t.to_token());
+        }
+    }
+    http::ok(&EnrollmentTokenList { tokens })
 }
 
-/// `POST /api/v1/workspaces/{id}/enrollment-tokens` (its admins): a new
-/// token, whose secret the answer shows once. Making one trusts whatever
-/// machines enroll with it with everyone's sessions there, as adding a
-/// runner for everyone's sessions does: it takes confirming it's you, and
-/// the workspace open to them (its two-factor requirement).
+/// `POST /api/v1/workspaces/{id}/enrollment-tokens`: a new token, whose
+/// secret the answer shows once, for everyone's sessions (its admins) or
+/// for the caller's own (any member). Making one trusts whatever machines
+/// enroll with it with those sessions, as adding a runner for them does:
+/// it takes confirming it's you, and the workspace open to them (its
+/// two-factor requirement).
 pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: CreateEnrollmentTokenRequest = http::body(req).await?;
     let a = ws::load(ctx, id).await?;
-    a.require_admin()?;
-    let new = enrollment::check_new(&body, ctx.now).map_err(AppError)?;
+    let role = a.require_open()?;
+    let personal = policy::enrollment_for_own(Some(role), body.personal).map_err(AppError)?;
+    let new = enrollment::check_new(&body, personal, ctx.now).map_err(AppError)?;
     ctx.verified(Sensitive::NewEnrollmentToken)?;
     let secret = new_secret(SecretKind::Enrollment);
     let token_id = fctl_domain::ids::enrollment_token_id(ctx.now);
     let user = ctx.user()?.id.clone();
     q(
         &ctx.db,
-        "INSERT INTO enrollment_tokens (id, workspace_id, name, token_hash, approval, max_runners, \
-         remove_offline_after_minutes, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO enrollment_tokens (id, workspace_id, name, token_hash, personal, approval, max_runners, \
+         remove_offline_after_minutes, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(token_id.as_str()),
             s(a.id()),
             s(&new.name),
             s(&hash_secret(&secret)),
+            b(new.personal),
             b(new.approval),
             on(new.max_runners.map(i64::from)),
             on(new.remove_offline_after_minutes.map(i64::from)),
@@ -169,6 +216,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         Some(token_id.as_str()),
         Some(serde_json::json!({
             "name": new.name,
+            "personal": new.personal,
             "approval": new.approval,
             "max_runners": new.max_runners,
             "remove_offline_after_minutes": new.remove_offline_after_minutes,
@@ -182,12 +230,17 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     })
 }
 
-/// `DELETE /api/v1/workspaces/{id}/enrollment-tokens/{token}` (its admins):
-/// revokes it. It enrolls no more runners; those it enrolled stay, waiting
-/// ones too, which its admins still approve or reject.
+/// `DELETE /api/v1/workspaces/{id}/enrollment-tokens/{token}`: revokes it,
+/// for its admins, or a member who made it for their own sessions. It
+/// enrolls no more runners; those it enrolled stay, waiting ones too, which
+/// are still approved or rejected.
 pub async fn revoke(ctx: &mut Ctx, id: &str, token: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
-    a.require_admin()?;
+    a.require_open()?;
+    if !manages(ctx, &a, &token_row(ctx, a.id(), token).await?)? {
+        // Members are told only of their own.
+        return Err(not_found("Enrollment token"));
+    }
     let user = ctx.user()?.id.clone();
     let changed = q(
         &ctx.db,
@@ -271,12 +324,17 @@ async fn presented(ctx: &Ctx, req: &Request) -> AppResult<Presented> {
 }
 
 /// `GET /api/v1/runner/enroll`, with an enrollment token: the workspace it
-/// enrolls in and how, or why it enrolls no runner now.
+/// enrolls in, for whose sessions and how, or why it enrolls no runner now.
 pub async fn info(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let p = presented(ctx, req).await?;
+    p.token.usable(&p.workspace.name)?;
     enrollment::check(&p.token.state(), ctx.now)
-        .map_err(|r| AppError(r.error(&p.workspace.name)))?;
+        .map_err(|r| AppError(r.error(&p.workspace.name, p.token.personal)))?;
     http::ok(&EnrollmentInfo {
+        owner: p
+            .token
+            .owner()
+            .and_then(|_| user_ref(&p.token.created_by, &p.token.creator_name)),
         workspace: p.workspace,
         name: p.token.name.clone(),
         approval: p.token.approval,
@@ -288,25 +346,31 @@ pub async fn info(ctx: &Ctx, req: &Request) -> AppResult<Response> {
 }
 
 /// `POST /api/v1/runner/enroll`, with an enrollment token: registers the
-/// machine as a runner of the token's workspace, which belongs to the
-/// workspace, and answers with its own runner token. With a token that
-/// requires approval, the runner waits for an admin to approve it, and the
-/// workspace's admins are told.
+/// machine as a runner of the token's workspace, and answers with its own
+/// runner token. The runner belongs to the workspace and runs everyone's
+/// sessions there, or, with a token a member made for their own sessions,
+/// belongs to them and runs only theirs. With a token that requires
+/// approval, it waits until an admin of the workspace approves it, or its
+/// owner, who are told.
 pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let p = presented(ctx, req).await?;
     let body: EnrollRunnerRequest = http::body(req).await?;
     let name = fctl_domain::validate::name("name", &body.name).map_err(AppError)?;
     let facts = body.facts.map(enrollment::facts);
     let workspace = p.workspace.name.clone();
-    let refuse = |r: Refusal| AppError(r.error(&workspace));
+    let personal = p.token.personal;
+    let refuse = |r: Refusal| AppError(r.error(&workspace, personal));
+    p.token.usable(&workspace)?;
     enrollment::check(&p.token.state(), ctx.now).map_err(refuse)?;
     let runner_token = new_secret(SecretKind::Runner);
     let runner_id = fctl_domain::ids::runner_id(ctx.now);
     let pending_until = p.token.approval.then(|| enrollment::pending_until(ctx.now));
     // One statement checks the token again and counts its runners as it
     // inserts, so that two machines that enroll at once can't both take
-    // its last place. A runner that needs no approval runs the workspace's
-    // sessions from the start.
+    // its last place, and a token for its maker's own sessions enrolls
+    // only while they are an active member. A runner that needs no
+    // approval runs the workspace's sessions from the start: everyone's,
+    // or its owner's alone.
     let changes = batch_changes(
         &ctx.db,
         vec![
@@ -314,10 +378,13 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 &ctx.db,
                 "INSERT INTO runners (id, name, token_hash, enabled, created_by, created_at, workspace_id, \
                  enrollment_id, enrolled_ip, enrolled_location, facts, pending_until, remove_offline_after_minutes) \
-                 SELECT ?1, ?2, ?3, 1, NULL, ?4, t.workspace_id, t.id, ?5, ?6, ?7, ?8, t.remove_offline_after_minutes \
+                 SELECT ?1, ?2, ?3, 1, CASE WHEN t.personal = 1 THEN t.created_by END, ?4, t.workspace_id, t.id, \
+                 ?5, ?6, ?7, ?8, t.remove_offline_after_minutes \
                  FROM enrollment_tokens t WHERE t.id = ?9 AND t.revoked_at IS NULL \
                  AND (t.expires_at IS NULL OR t.expires_at > ?4) \
-                 AND (t.max_runners IS NULL OR (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) < t.max_runners)",
+                 AND (t.max_runners IS NULL OR (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) < t.max_runners) \
+                 AND (t.personal = 0 OR EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id \
+                   WHERE m.workspace_id = t.workspace_id AND m.user_id = t.created_by AND u.status = 'active'))",
                 &[
                     s(runner_id.as_str()),
                     s(&name),
@@ -336,7 +403,7 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             q(
                 &ctx.db,
                 "INSERT INTO runner_workspaces (runner_id, workspace_id, added_by, created_at, personal) \
-                 SELECT r.id, r.workspace_id, NULL, ?2, 0 FROM runners r \
+                 SELECT r.id, r.workspace_id, r.created_by, ?2, r.created_by IS NOT NULL FROM runners r \
                  WHERE r.id = ?1 AND r.pending_until IS NULL AND r.workspace_id IS NOT NULL",
                 &[s(runner_id.as_str()), n(ctx.now)],
             )?,
@@ -350,8 +417,10 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     )
     .await?;
     if changes.first().copied().unwrap_or(0) == 0 {
-        // Revoked, expired or full since it was read: say which.
+        // Revoked, expired or full since it was read, or its maker left:
+        // say which.
         let row = token_row(ctx, &p.token.workspace_id, &p.token.id).await?;
+        row.usable(&workspace)?;
         return Err(match enrollment::check(&row.state(), ctx.now) {
             Err(r) => refuse(r),
             Ok(()) => AppError(ApiError::new(
@@ -369,6 +438,7 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             "name": name,
             "enrollment_token": p.token.id,
             "enrollment_token_name": p.token.name,
+            "personal": personal,
             "pending": pending_until.is_some(),
         })),
     );
@@ -384,7 +454,7 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     // Its host sees all of it, as `GET /api/v1/runner` shows it.
     let runner = row.to_runner(&internal::LiveRunners::default(), &RunnerView::default());
     if pending_until.is_some() {
-        tell_admins(ctx, &p, &runner);
+        tell_approvers(ctx, &p, &runner);
     }
     http::created(&RunnerRegistration {
         runner,
@@ -392,36 +462,47 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     })
 }
 
-/// Tells the workspace's admins that a runner waits for their approval
-/// (after the response): a notification in each browser where they turned
-/// notifications on, which the next one replaces, and, where the instance
-/// sends email, an email when it is the only one that waits, so that a
-/// fleet that enrolls at once sends one.
-fn tell_admins(ctx: &Ctx, p: &Presented, runner: &fctl_proto::api::Runner) {
+/// Tells those who approve a runner that it waits for them (after the
+/// response): the workspace's admins, or its owner for a runner that is
+/// theirs. A notification in each browser where they turned notifications
+/// on, which the next one replaces, and, where the instance sends email,
+/// an email when it is the only one that waits for them, so that a fleet
+/// that enrolls at once sends one.
+fn tell_approvers(ctx: &Ctx, p: &Presented, runner: &fctl_proto::api::Runner) {
     let cfg = ctx.cfg.clone();
     let db = crate::db::handle(&ctx.db);
     let now = ctx.now;
     let workspace = p.workspace.clone();
     let token = p.token.name.clone();
+    let owner = p.token.owner().map(str::to_owned);
     let runner = runner.clone();
     ctx.defer(async move {
         #[derive(Deserialize)]
-        struct Admin {
+        struct Approver {
             id: String,
             email: String,
         }
-        let admins: Vec<Admin> = q(
-            &db,
-            "SELECT u.id, u.email FROM workspace_members m JOIN users u ON u.id = m.user_id \
-             WHERE m.workspace_id = ? AND m.role IN ('owner', 'admin') AND u.status = 'active'",
-            &[s(workspace.id.as_str())],
-        )?
+        let approvers: Vec<Approver> = match &owner {
+            Some(owner) => q(
+                &db,
+                "SELECT id, email FROM users WHERE id = ? AND status = 'active'",
+                &[s(owner)],
+            )?,
+            None => q(
+                &db,
+                "SELECT u.id, u.email FROM workspace_members m JOIN users u ON u.id = m.user_id \
+                 WHERE m.workspace_id = ? AND m.role IN ('owner', 'admin') AND u.status = 'active'",
+                &[s(workspace.id.as_str())],
+            )?,
+        }
         .all()
         .await?;
+        // The ones that wait for the same people.
         let waiting: Option<Count> = q(
             &db,
-            "SELECT COUNT(*) AS n FROM runners WHERE workspace_id = ? AND pending_until IS NOT NULL",
-            &[s(workspace.id.as_str())],
+            "SELECT COUNT(*) AS n FROM runners WHERE workspace_id = ?1 AND pending_until IS NOT NULL \
+             AND created_by IS ?2",
+            &[s(workspace.id.as_str()), os(owner.as_deref())],
         )?
         .first()
         .await?;
@@ -442,6 +523,7 @@ fn tell_admins(ctx: &Ctx, p: &Presented, runner: &fctl_proto::api::Runner) {
         let address = runner.enrollment.as_ref().and_then(|e| e.address.clone());
         let location = runner.enrollment.as_ref().and_then(|e| e.location.clone());
         let w = enrollment::Waiting {
+            yours: owner.is_some(),
             runner_id: runner.id.as_str(),
             runner: &runner.name,
             hostname: runner.hostname.as_deref(),
@@ -459,14 +541,14 @@ fn tell_admins(ctx: &Ctx, p: &Presented, runner: &fctl_proto::api::Runner) {
             .then_some(cfg.email.as_ref())
             .flatten()
             .map(|mail| (mail, enrollment::waiting_email(&w, &cfg.public_url)));
-        for admin in &admins {
-            if let Err(e) = crate::push::deliver(&cfg, &db, &admin.id, &push).await {
-                worker::console_error!("telling {} a runner waits: {}", admin.id, e.0.message);
+        for to in &approvers {
+            if let Err(e) = crate::push::deliver(&cfg, &db, &to.id, &push).await {
+                worker::console_error!("telling {} a runner waits: {}", to.id, e.0.message);
             }
             if let Some((mail, (subject, text))) = &email
-                && let Err(e) = crate::email::send(mail, &admin.email, subject, text).await
+                && let Err(e) = crate::email::send(mail, &to.email, subject, text).await
             {
-                worker::console_error!("emailing {} that a runner waits: {}", admin.id, e.0.message);
+                worker::console_error!("emailing {} that a runner waits: {}", to.id, e.0.message);
             }
         }
         Ok(())

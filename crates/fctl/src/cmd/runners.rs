@@ -1,8 +1,9 @@
 //! `fctl runners …`: the runners you see; approving and rejecting the ones
-//! that wait in workspaces you are an admin of; managing runners as
-//! machines (yours, your workspaces' own as their admin, every one as an
-//! instance admin); and workspaces' enrollment tokens, with which machines
-//! enroll themselves as their runners.
+//! that wait for you (in workspaces you are an admin of, and your own);
+//! managing runners as machines (yours, your workspaces' own as their
+//! admin, every one as an instance admin); and workspaces' enrollment
+//! tokens, with which machines enroll themselves as their runners, or as
+//! yours.
 
 use crate::cmd::admin::{drain_line, find_runner, low_disk_line, still_running};
 use crate::config;
@@ -23,13 +24,14 @@ pub enum RunnersCmd {
         /// Only this workspace's (its slug or id).
         #[arg(short, long)]
         workspace: Option<String>,
-        /// Only the ones that wait for an admin to approve them.
+        /// Only the ones that wait for approval.
         #[arg(long)]
         pending: bool,
     },
-    /// Approve a runner that enrolled in a workspace you are an admin of
-    /// and waits for approval: it runs everyone's sessions there from now
-    /// on, and its host takes them at once.
+    /// Approve a runner that waits for approval: one that enrolled in a
+    /// workspace you are an admin of, which runs everyone's sessions there
+    /// from now on, or one of yours that enrolled for your own sessions.
+    /// Its host takes them at once.
     Approve {
         /// The runner's name or id.
         runner: String,
@@ -86,9 +88,10 @@ pub enum RunnersCmd {
         /// The runner's name or id.
         runner: String,
     },
-    /// A workspace's enrollment tokens: machines enroll themselves as its
-    /// runners with one (`fctl host install --enroll`), without anyone
-    /// signing in on them, as autoscaling creates them (its admins).
+    /// A workspace's enrollment tokens: machines enroll themselves with one
+    /// (`fctl host install --enroll`), without anyone signing in on them,
+    /// as autoscaling creates them. Its admins make them for everyone's
+    /// sessions, and any member for their own (`--personal`).
     #[command(
         name = "enrollment-tokens",
         visible_alias = "enroll-tokens",
@@ -96,6 +99,7 @@ pub enum RunnersCmd {
   fctl runners enrollment-tokens -w acme
   fctl runners enrollment-tokens create \"Build fleet\" -w acme --expires 90d --max-runners 20 --remove-offline-after 5m
   fctl runners enrollment-tokens create \"Contractors\" -w acme --approval --expires 7d
+  fctl runners enrollment-tokens create \"My cluster\" -w acme --personal --remove-offline-after 5m
   fctl runners enrollment-tokens revoke \"Build fleet\" -w acme
 
 On each machine, without signing in:
@@ -113,13 +117,21 @@ On each machine, without signing in:
 
 #[derive(Subcommand)]
 pub enum EnrollmentTokensCmd {
-    /// The workspace's enrollment tokens, newest first (the default).
+    /// The workspace's enrollment tokens, newest first (the default): every
+    /// one for its admins, your own for its members.
     #[command(visible_alias = "ls")]
     List,
     /// Make an enrollment token. Prints its secret, once, on stdout.
     Create {
         /// What it is for, which the runners it enrolls show: "Build fleet".
         name: String,
+        /// For your own sessions: the runners it enrolls are yours and run
+        /// only your sessions in the workspace, so they count as your
+        /// runners for Only on my runners and a Claude token you keep on
+        /// your runners. A member's always is; an admin's runs everyone's
+        /// sessions without it.
+        #[arg(long)]
+        personal: bool,
         /// How long it works: 1h, 7d, 90d, 1y, or never.
         #[arg(long, default_value = "90d", value_parser = hours_arg)]
         expires: Hours,
@@ -127,8 +139,9 @@ pub enum EnrollmentTokensCmd {
         /// and removed ones don't count). Default: no limit.
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
         max_runners: Option<u32>,
-        /// The runners it enrolls wait for an admin of the workspace to
-        /// approve them before they run anything.
+        /// The runners it enrolls wait for approval before they run
+        /// anything: by an admin of the workspace, or by you with
+        /// `--personal`.
         #[arg(long)]
         approval: bool,
         /// Remove the runners it enrolls once they have been offline this
@@ -212,9 +225,10 @@ pub async fn run(server: Option<&str>, cmd: RunnersCmd, json: bool) -> Result<()
                     return style::print_json(&r);
                 }
                 println!(
-                    "{} {} was approved already: it runs everyone's sessions in {}.",
+                    "{} {} was approved already: it runs {} in {}.",
                     style::accent("✓"),
                     style::bold(&r.name),
+                    whose_sessions(&r),
                     workspace_name(&r)
                 );
                 return Ok(());
@@ -224,9 +238,10 @@ pub async fn run(server: Option<&str>, cmd: RunnersCmd, json: bool) -> Result<()
                 return style::print_json(&r);
             }
             println!(
-                "{} Approved {}: it runs everyone's sessions in {} from now on.",
+                "{} Approved {}: it runs {} in {} from now on.",
                 style::accent("✓"),
                 style::bold(&r.name),
+                whose_sessions(&r),
                 workspace_name(&r)
             );
             Ok(())
@@ -370,6 +385,7 @@ async fn enrollment_tokens(
             if json {
                 return style::print_json(&list);
             }
+            let me = api.me().await.ok().map(|m| m.user.id);
             if list.tokens.is_empty() {
                 println!(
                     "{}",
@@ -380,12 +396,13 @@ async fn enrollment_tokens(
                 );
             }
             for t in &list.tokens {
-                print_token(t);
+                print_token(t, me.as_ref());
             }
             Ok(())
         }
         EnrollmentTokensCmd::Create {
             name,
+            personal,
             expires,
             max_runners,
             approval,
@@ -396,6 +413,9 @@ async fn enrollment_tokens(
                     id,
                     &CreateEnrollmentTokenRequest {
                         name,
+                        // Without it, the control plane decides by role:
+                        // a member's is for their own sessions.
+                        personal: personal.then_some(true),
                         expires_in_hours: expires.0,
                         max_runners,
                         approval: Some(approval),
@@ -408,11 +428,21 @@ async fn enrollment_tokens(
             }
             println!("{}", created.secret);
             let t = &created.token;
+            let whose = if t.personal {
+                enrollment::Whose::Yours
+            } else {
+                enrollment::Whose::Everyone
+            };
             eprintln!(
                 "{}",
                 style::dim(&format!(
                     "{} {}",
-                    enrollment::describe(t.approval, t.max_runners, t.remove_offline_after_minutes),
+                    enrollment::describe(
+                        whose,
+                        t.approval,
+                        t.max_runners,
+                        t.remove_offline_after_minutes
+                    ),
                     expiry(t.expires_at)
                 ))
             );
@@ -481,6 +511,18 @@ fn workspace_name(r: &Runner) -> String {
         .map_or_else(|| "its workspace".to_owned(), |w| w.name.clone())
 }
 
+/// Whose sessions a runner that enrolled runs: `everyone's sessions`, or,
+/// for one a member enrolled for their own, `your sessions` or `Ada's
+/// sessions`.
+fn whose_sessions(r: &Runner) -> String {
+    match &r.created_by {
+        None => enrollment::Whose::Everyone,
+        Some(_) if r.yours => enrollment::Whose::Yours,
+        Some(u) => enrollment::Whose::Theirs(&u.name),
+    }
+    .sessions()
+}
+
 /// `expires in 89d 23h.`, `expired 2d ago.`, `never expires.`
 fn expiry(expires_at: Option<i64>) -> String {
     match expires_at {
@@ -493,9 +535,9 @@ fn expiry(expires_at: Option<i64>) -> String {
 /// One runner, with whose it is and what it does now.
 fn print_runner(r: &Runner) {
     let whose = match (&r.workspace, &r.created_by) {
-        (Some(w), _) => format!("{}'s", w.name),
-        (None, Some(_)) if r.yours => "yours".to_owned(),
-        (None, Some(u)) => format!("{}'s", u.name),
+        (Some(w), None) => format!("{}'s", w.name),
+        (_, Some(_)) if r.yours => "yours".to_owned(),
+        (_, Some(u)) => format!("{}'s", u.name),
         (None, None) => "nobody's".to_owned(),
     };
     println!(
@@ -533,7 +575,11 @@ fn print_runner(r: &Runner) {
             ))
         );
     } else if let Some(t) = r.enrollment.as_ref().and_then(|e| e.token_name.as_deref()) {
-        println!("  {}", style::dim(&format!("enrolled with “{t}”")));
+        let place = match (&r.workspace, &r.created_by) {
+            (Some(w), Some(_)) => format!(" in {}, for {}", w.name, whose_sessions(r)),
+            _ => String::new(),
+        };
+        println!("  {}", style::dim(&format!("enrolled with “{t}”{place}")));
     }
     let facts: Vec<String> = [
         r.hostname.clone(),
@@ -567,8 +613,9 @@ fn print_runner(r: &Runner) {
     }
 }
 
-/// One enrollment token, with what it does and how much it was used.
-fn print_token(t: &EnrollmentToken) {
+/// One enrollment token, with what it does and how much it was used, as
+/// the person signed in (`me`) reads it.
+fn print_token(t: &EnrollmentToken, me: Option<&fctl_proto::UserId>) {
     let now = style::now_ms();
     let state = match (t.revoked_at, t.expires_at) {
         (Some(_), _) => style::red("revoked"),
@@ -597,11 +644,22 @@ fn print_token(t: &EnrollmentToken) {
         .last_used_at
         .map(|at| format!("; last enrolled a runner {}", style::ago(at)))
         .unwrap_or_default();
+    let whose = match (&t.created_by, t.personal) {
+        (_, false) => enrollment::Whose::Everyone,
+        (Some(u), true) if Some(&u.id) == me => enrollment::Whose::Yours,
+        (Some(u), true) => enrollment::Whose::Theirs(&u.name),
+        (None, true) => enrollment::Whose::Theirs("its maker"),
+    };
     println!(
         "  {}",
         style::dim(&format!(
             "{} {} {made}{used}.",
-            enrollment::describe(t.approval, t.max_runners, t.remove_offline_after_minutes),
+            enrollment::describe(
+                whose,
+                t.approval,
+                t.max_runners,
+                t.remove_offline_after_minutes
+            ),
             expiry(t.expires_at)
         ))
     );

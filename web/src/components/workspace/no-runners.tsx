@@ -20,16 +20,26 @@ const linkClass = "text-ink-2 underline underline-offset-2 transition-colors hov
 export function NoRunnerNote({ workspace: w, className }: { workspace?: G.Workspace; className?: string }) {
   const runners = useRunners();
   const { data: me } = useMe();
+  // Runners that enrolled and wait for your approval, which run your sessions once approved: yours,
+  // and, while your sessions here may run on others' runners, the workspace's own, which only its
+  // admins see.
+  const waitingFor = (all: boolean) =>
+    (runners.data?.runners ?? []).filter(
+      (r) => r.pending_until && w && r.workspace?.id === w.id && (r.yours || (all && !r.created_by)),
+    ).length;
   if (w && runners.data && tokenOnRunnersIn(me, w))
-    return <NoTokenRunnerNote w={w} count={tokenRunnersIn(runners.data.runners, w)} className={className} />;
+    return (
+      <NoTokenRunnerNote
+        w={w}
+        count={tokenRunnersIn(runners.data.runners, w)}
+        waiting={waitingFor(false)}
+        className={className}
+      />
+    );
   const count = w && runners.data && runnersOf(runners.data.runners, w);
   if (!w || !count || count.online > 0) return null;
   const admin = w.role === "owner" || w.role === "admin";
-  // Runners that enrolled and wait for approval, which only its admins see, and which run
-  // everyone's sessions once approved.
-  const waiting = (runners.data?.runners ?? []).filter(
-    (r) => r.pending_until && r.workspace?.id === w.id,
-  ).length;
+  const waiting = waitingFor(!w.own_runners);
   const link = (label: string) => (
     <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "runners" }} className={linkClass}>
       {label}
@@ -39,7 +49,7 @@ export function NoRunnerNote({ workspace: w, className }: { workspace?: G.Worksp
     <p className={cn("flex gap-2 px-1 text-[12.5px] leading-relaxed text-ink-3", className)}>
       <Cpu className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
       <span>
-        {!w.own_runners && waiting > 0 ? (
+        {waiting > 0 ? (
           <>
             {waiting === 1 ? "A runner waits" : `${waiting} runners wait`} for your approval in {w.name}:
             sessions you start here wait until {waiting === 1 ? "it is" : "one is"} approved and online.{" "}
@@ -91,16 +101,18 @@ export function NoRunnerNote({ workspace: w, className }: { workspace?: G.Worksp
 
 /**
  * Why sessions you start in `w` wait while they run on the Claude token you keep on your runners:
- * none of yours is in it, none of those keeps the token, or none that keeps it is online. Nothing
- * while one is.
+ * none of yours is in it (`waiting` of yours wait for your approval), none of those keeps the token,
+ * or none that keeps it is online. Nothing while one is.
  */
 function NoTokenRunnerNote({
   w,
   count,
+  waiting,
   className,
 }: {
   w: G.Workspace;
   count: { here: number; kept: number; online: number };
+  waiting: number;
   className?: string;
 }) {
   if (count.online > 0) return null;
@@ -113,7 +125,13 @@ function NoTokenRunnerNote({
     <p className={cn("flex gap-2 px-1 text-[12.5px] leading-relaxed text-ink-3", className)}>
       <Cpu className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
       <span>
-        {count.here === 0 ? (
+        {count.here === 0 && waiting > 0 ? (
+          <>
+            {waiting === 1 ? "A runner of yours waits" : `${waiting} runners of yours wait`} for your approval
+            in {w.name}: sessions you start here wait until one is approved, online and keeps your Claude
+            token. {runnersTab(waiting === 1 ? "Review it" : "Review them")}
+          </>
+        ) : count.here === 0 ? (
           <>
             Your Claude token is kept on your runners, and none of yours is in {w.name} yet: sessions you
             start here wait until one is. {runnersTab("Add a runner")}

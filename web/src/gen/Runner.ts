@@ -84,24 +84,28 @@ claude_token?: RunnerClaudeToken,
  */
 auto_update?: boolean, 
 /**
- * The workspace it belongs to: it enrolled with one of the
- * workspace's enrollment tokens (`fctl host install --enroll`). Its
- * admins manage it, nobody owns it (`created_by` is absent), and it
- * runs everyone's sessions there and no other workspace's. Absent for
- * runners that belong to the person who registered them, and from
- * control planes before enrollment tokens.
+ * The workspace it enrolled in with one of its enrollment tokens
+ * (`fctl host install --enroll`), and the only one whose sessions it
+ * runs. Without `created_by`, it belongs to the workspace: its admins
+ * manage it, and it runs everyone's sessions there. With `created_by`,
+ * it belongs to that person, who made the token for their own
+ * sessions: it runs only theirs there (`personal`). Absent for runners
+ * that were registered rather than enrolled, and from control planes
+ * before enrollment tokens.
  */
 workspace?: WorkspaceRef, 
 /**
- * How it enrolled, for its workspace's admins and instance admins.
- * Absent for other people and for runners that didn't enroll.
+ * How it enrolled, for those who approve it (its workspace's admins,
+ * or its owner when it is theirs) and instance admins. Absent for
+ * other people and for runners that didn't enroll.
  */
 enrollment?: RunnerEnrollment, 
 /**
- * Set while it waits for an admin of its workspace to approve it (its
- * enrollment token requires that): when it is removed unless one does.
- * It runs nothing and gets no credentials until then. Absent once
- * approved, and for runners that needed no approval.
+ * Set while it waits for approval (its enrollment token requires
+ * that): by an admin of its workspace, or by its owner when it is
+ * theirs. When it is removed unless approved. It runs nothing and gets
+ * no credentials until then. Absent once approved, and for runners
+ * that needed no approval.
  */
 pending_until?: number, 
 /**
