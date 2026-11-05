@@ -794,10 +794,10 @@ disk_gb = 64             # each sandbox's own disk, which takes only what its se
 ```
 
 Apple's `container` service stops when the Mac restarts. A host whose
-driver is apple (or auto) starts it again (`container system start`, never
+driver is apple starts it again (`container system start`, never
 installing a kernel): when the host starts, and when its probe of the
-drivers, every five minutes, finds the service stopped. Docker's daemon is
-left to its owner.
+drivers, every five minutes, finds the service stopped. With `auto`, or
+another driver, the host leaves it, and Docker's daemon, to their owner.
 
 On Linux, `--driver firecracker` runs each session in a
 [Firecracker](https://firecracker-microvm.github.io) microVM with a kernel

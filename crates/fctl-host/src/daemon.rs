@@ -16,7 +16,6 @@
 use crate::caches;
 use crate::claude_token;
 use crate::config::HostConfig;
-use crate::driver::container::ContainerDriver;
 use crate::driver::{DiskSpot, Driver, SandboxInfo, sandbox_name, session_of, timed_out};
 use crate::expiry::{self, Why};
 use crate::login::{self, LoginCmd};
@@ -179,14 +178,6 @@ impl Daemon {
         std::fs::create_dir_all(&data)?;
         // What image builds left behind when the host last stopped.
         let _ = std::fs::remove_dir_all(data.join("builds"));
-        // After the Mac restarts, Apple's `container` service isn't running
-        // until something starts it: start it before `auto` passes it over
-        // (`refresh_facts` starts it for the apple driver).
-        if cfg.driver == "auto" {
-            Driver::Container(ContainerDriver::apple())
-                .start_service()
-                .await;
-        }
         let driver = Driver::select(&cfg.driver, &cfg).await?;
         let ctx = Arc::new(HostCtx::new(cfg, driver, token));
         ctx.refresh_facts().await;

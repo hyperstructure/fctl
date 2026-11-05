@@ -168,7 +168,7 @@ impl ContainerDriver {
                 (_, true, _) => "ready".into(),
                 (Flavor::Apple, false, true) => "the `container` service is not answering".into(),
                 (Flavor::Apple, false, false) => {
-                    "the `container` service is not running (the host service starts it; `container system start` starts it now)".into()
+                    "the `container` service is not running (run `container system start`; a host on the apple driver starts it itself)".into()
                 }
                 (Flavor::Docker, false, true) => "the docker daemon is not answering".into(),
                 (Flavor::Docker, false, false) => "the docker daemon is not running".into(),

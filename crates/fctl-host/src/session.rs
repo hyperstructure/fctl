@@ -114,7 +114,9 @@ impl HostCtx {
     /// connection never waits on a runtime; a Docker daemon that doesn't
     /// answer leaves the limits and the disk's place as they were. First it
     /// starts Apple's `container` service when that is the driver and it
-    /// isn't running (the Mac restarted, say).
+    /// isn't running (the Mac restarted, say), which may take minutes: when
+    /// the host starts, it connects only after that, as it would take no
+    /// sessions before.
     pub async fn refresh_facts(&self) {
         self.driver.start_service().await;
         let data_dir = self.cfg.data_dir();
