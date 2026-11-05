@@ -95,6 +95,7 @@ mod tests {
                 status: "modified".into(),
                 additions: Some(1),
                 deletions: Some(0),
+                digest: None,
             }],
             uncommitted: 1,
             ..state("base", 0, false)

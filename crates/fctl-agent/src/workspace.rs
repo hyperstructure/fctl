@@ -10,8 +10,8 @@
 
 use crate::followed::{self, Pulls};
 use anyhow::{Context, Result, bail};
-use fctl_domain::repos;
-use fctl_proto::event::{CommitInfo, FileChange, GitState, LogLevel, RepoGitState};
+use fctl_domain::{diffs, repos};
+use fctl_proto::event::{CommitInfo, FileChange, FileDiff, GitState, LogLevel, RepoGitState};
 use fctl_proto::runner::{GitIdentity, GithubCredential, ReviewSpec, SessionSpec};
 use fctl_proto::session::{GithubAccess, RepoAccess, RepoGrant, RepoRef};
 use std::ffi::OsStr;
@@ -701,60 +701,28 @@ pub async fn state_at(
     let index = IndexCopy::of(dir, home).await;
     let env = index.env();
     let mut files: Vec<FileChange> = Vec::new();
-    // What the branch changed since it left the base: the diff from their
-    // merge base, which the base's later commits don't move. Once its pull
-    // request merged, from the base as it was just before (`baseRefOid`):
-    // a merge commit puts the branch's commits on the base, which would
-    // leave nothing to compare. Without a base, or a merge base with it,
-    // everything is new: the diff from the empty tree.
-    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-    let mut diff_target = EMPTY_TREE.to_owned();
-    if has_base && head.is_some() {
-        let before_merge = merged.and_then(|f| f.base.as_deref());
-        for from in before_merge.into_iter().chain([base_ref.as_str()]) {
-            if let Ok(fork) = git_ok_in(dir, home, &["merge-base", from, "HEAD"]).await {
-                diff_target = fork.trim().to_owned();
-                break;
-            }
-        }
-    }
+    let before_merge = merged.and_then(|f| f.base.as_deref());
+    let diff_target =
+        compared_with(dir, home, base, has_base && head.is_some(), before_merge).await;
     if head.is_some() {
-        let numstat = ["diff", "--numstat", "-M", &diff_target];
+        // With NULs, paths come as they are: unquoted, and a renamed file's
+        // new path rather than git's `{old => new}`.
+        let numstat = ["diff", "--numstat", "-z", "-M", &diff_target];
         let numstat = run_with(dir, home, "git", &numstat, &env).await?;
-        let names = ["diff", "--name-status", "-M", &diff_target];
+        let names = ["diff", "--name-status", "-z", "-M", &diff_target];
         let names = run_with(dir, home, "git", &names, &env).await?;
-        let statuses: Vec<(String, String)> = names
-            .stdout
-            .lines()
-            .filter_map(|l| {
-                let mut parts = l.split('\t');
-                let code = parts.next()?.chars().next()?;
-                let path = parts.next_back()?.to_owned();
-                let status = match code {
-                    'A' => "added",
-                    'D' => "deleted",
-                    'R' => "renamed",
-                    _ => "modified",
-                };
-                Some((path, status.to_owned()))
-            })
-            .collect();
-        for line in numstat.stdout.lines() {
-            let mut parts = line.split('\t');
-            let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next_back())
-            else {
-                continue;
-            };
-            let path = path.to_owned();
+        let statuses = diffs::name_status(&names.stdout);
+        for n in diffs::numstat(&numstat.stdout) {
             let status = statuses
                 .iter()
-                .find(|(p2, _)| *p2 == path)
-                .map_or("modified".to_owned(), |(_, s)| s.clone());
+                .find(|(p2, _)| *p2 == n.path)
+                .map_or("modified", |(_, s)| s);
             files.push(FileChange {
-                path,
-                status,
-                additions: a.parse().ok(),
-                deletions: d.parse().ok(),
+                path: n.path,
+                status: status.to_owned(),
+                additions: n.additions,
+                deletions: n.deletions,
+                digest: None,
             });
         }
     }
@@ -773,6 +741,7 @@ pub async fn state_at(
                     status: "untracked".into(),
                     additions: lines,
                     deletions: Some(0),
+                    digest: None,
                 });
             }
         }
@@ -834,6 +803,153 @@ pub async fn state_at(
         repos: None,
         pull_requests: None,
     })
+}
+
+/// What a clone's changes are counted from: the merge base of its branch
+/// and `origin/<base>`, which the base's later commits don't move. Once
+/// its pull request merged, from the base as it was just before
+/// (`before_merge`, its `baseRefOid`): a merge commit puts the branch's
+/// commits on the base, which would leave nothing to compare. Without a
+/// base (`has_base`), or a merge base with it, everything is new: the
+/// changes from the empty tree.
+async fn compared_with(
+    dir: &Path,
+    home: &Path,
+    base: &str,
+    has_base: bool,
+    before_merge: Option<&str>,
+) -> String {
+    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    if has_base {
+        let base_ref = format!("origin/{base}");
+        for from in before_merge.into_iter().chain([base_ref.as_str()]) {
+            if let Ok(fork) = git_ok_in(dir, home, &["merge-base", from, "HEAD"]).await {
+                return fork.trim().to_owned();
+            }
+        }
+    }
+    EMPTY_TREE.to_owned()
+}
+
+/// The most lines added and taken out a file may have for fctl-agent to
+/// read its diff: a larger one is too large to keep anyway, and reading it
+/// would cost every refresh.
+const MAX_DIFF_LINES: u32 = 50_000;
+
+/// The diffs of the files `st` lists as changed in the clone at `dir`,
+/// counted from where [`state_at`] counts them (`base`, `followed`), with
+/// `repo` (`owner/name`) for another than the primary repository: git's,
+/// and for untracked files every line added. A file that changed after
+/// `st` was read gets the diff it has now; one that git no longer shows
+/// gets none until the next read. Their digests are still to be sealed
+/// ([`diffs::fit`]).
+pub async fn diffs_at(
+    dir: &Path,
+    home: &Path,
+    base: &str,
+    followed: Option<(&RepoRef, &Pulls)>,
+    st: &GitState,
+    repo: Option<&str>,
+) -> Vec<FileDiff> {
+    let mut found = Vec::new();
+    if st.files.is_empty() || st.head.is_none() {
+        return found;
+    }
+    // The commit `state_at` counted from, asked again.
+    let base_ref = format!("origin/{base}");
+    let verify = ["rev-parse", "--verify", "--quiet", &base_ref];
+    let has_base = run(dir, home, "git", &verify).await.is_ok_and(|o| o.ok);
+    let merged = followed.and_then(|(r, pulls)| pulls.merged(Some(r), st.branch.as_deref()));
+    let before_merge = merged.and_then(|f| f.base.as_deref());
+    let target = compared_with(dir, home, base, has_base, before_merge).await;
+    // Files too large to keep a diff of stay out of git's, which would
+    // otherwise hold all of their lines.
+    let too_large: Vec<&FileChange> = st
+        .files
+        .iter()
+        .filter(|f| f.status != "untracked")
+        .filter(|f| {
+            let lines = f
+                .additions
+                .unwrap_or(0)
+                .saturating_add(f.deletions.unwrap_or(0));
+            lines > MAX_DIFF_LINES
+        })
+        .collect();
+    let mut args: Vec<String> = diffs::GIT_DIFF.iter().map(|a| (*a).to_owned()).collect();
+    args.push(target);
+    if !too_large.is_empty() {
+        args.extend(["--".to_owned(), ".".to_owned()]);
+        args.extend(
+            too_large
+                .iter()
+                .map(|f| format!(":(exclude,literal){}", f.path)),
+        );
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let index = IndexCopy::of(dir, home).await;
+    let mut parsed = match run_with(dir, home, "git", &args, &index.env()).await {
+        Ok(o) if o.ok => diffs::parse(&o.stdout),
+        Ok(o) => {
+            tracing::debug!("git diff in {}: {}", dir.display(), o.stderr.trim());
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::debug!("git diff in {}: {e:#}", dir.display());
+            Vec::new()
+        }
+    };
+    for f in &st.files {
+        let diff = if f.status == "untracked" {
+            untracked_diff(dir, &f.path)
+        } else if too_large.iter().any(|t| t.path == f.path) {
+            let counted = format!("{:?} {:?}", f.additions, f.deletions);
+            Some(diffs::too_large(&f.path, &counted))
+        } else {
+            parsed
+                .iter()
+                .position(|d| d.path == f.path)
+                .map(|i| parsed.swap_remove(i))
+        };
+        if let Some(mut d) = diff {
+            d.repo = repo.map(str::to_owned);
+            // What the list of changes says, so that the two agree.
+            d.status.clone_from(&f.status);
+            found.push(d);
+        }
+    }
+    found
+}
+
+/// The diff of an untracked file in `dir`: what [`diffs::untracked`] makes
+/// of its first bytes, as many as a session keeps of one file's diff. A
+/// symbolic link's is the path it points to, as git has it; there is none
+/// of anything else that isn't a regular file (a pipe would never end).
+fn untracked_diff(dir: &Path, path: &str) -> Option<FileDiff> {
+    use std::io::Read;
+    let full = dir.join(path);
+    let meta = std::fs::symlink_metadata(&full).ok()?;
+    if meta.file_type().is_symlink() {
+        let to = std::fs::read_link(&full).ok()?;
+        return Some(diffs::untracked(
+            path,
+            to.to_string_lossy().as_bytes(),
+            true,
+        ));
+    }
+    if !meta.is_file() {
+        return None;
+    }
+    let most = diffs::MAX_PATCH_BYTES as u64;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&full)
+        .ok()?
+        .take(most + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let whole = bytes.len() as u64 <= most;
+    bytes.truncate(diffs::MAX_PATCH_BYTES);
+    Some(diffs::untracked(path, &bytes, whole))
 }
 
 /// Pushes the checked-out branch when it has commits the remote lacks.
@@ -1124,6 +1240,9 @@ pub struct Synced {
     pub state: GitState,
     /// For the transcript: pushes, and what went wrong.
     pub logs: Vec<(LogLevel, String)>,
+    /// The changed files' diffs, when asked for: the primary repository's,
+    /// then the others', their digests in `state`'s files.
+    pub diffs: Option<Vec<FileDiff>>,
 }
 
 /// A sync of the repositories as it goes through them.
@@ -1305,6 +1424,7 @@ pub async fn sync(
     moment: Moment,
     last: Option<&GitState>,
     pulls: &mut Pulls,
+    read_diffs: bool,
 ) -> Result<Synced> {
     let push_commits = push_commits && pushes(spec);
     let mut run = Run {
@@ -1351,6 +1471,11 @@ pub async fn sync(
     if let Some(w) = &primary {
         run.attach(w, &mut st, &was).await;
     }
+    let mut found = Vec::new();
+    if read_diffs {
+        let followed = spec.project.repo.as_ref().map(|r| (r, &*run.pulls));
+        found = diffs_at(&p.workdir, &p.home, &spec.base_branch, followed, &st, None).await;
+    }
     let mut repos = Vec::new();
     for (c, base, mut cst) in others {
         let w = Writable {
@@ -1362,6 +1487,11 @@ pub async fn sync(
         };
         run.attach(&w, &mut cst, &was).await;
         cst.files.truncate(MAX_CLONE_FILES);
+        if read_diffs {
+            let name = c.repo.full_name();
+            let followed = Some((&c.repo, &*run.pulls));
+            found.extend(diffs_at(&c.dir, &p.home, &base, followed, &cst, Some(&name)).await);
+        }
         let path = match c.dir.strip_prefix(&p.home) {
             Ok(rel) => format!("~/{}", rel.display()),
             Err(_) => c.dir.display().to_string(),
@@ -1375,10 +1505,38 @@ pub async fn sync(
     if !listed.is_empty() {
         st.pull_requests = Some(listed);
     }
+    let diffs = read_diffs.then(|| {
+        diffs::fit(&mut found);
+        stamp(&mut st, &found);
+        found
+    });
     Ok(Synced {
         state: st,
         logs: run.logs,
+        diffs,
     })
+}
+
+/// Gives each changed file in `st` the digest of its diff in `found`, the
+/// diffs sealed: the session page asks for the diff it has.
+fn stamp(st: &mut GitState, found: &[FileDiff]) {
+    use std::collections::HashMap;
+    let digests: HashMap<(Option<&str>, &str), &str> = found
+        .iter()
+        .map(|d| ((d.repo.as_deref(), d.path.as_str()), d.digest.as_str()))
+        .collect();
+    let mark = |files: &mut [FileChange], repo: Option<&str>| {
+        for f in files {
+            f.digest = digests
+                .get(&(repo, f.path.as_str()))
+                .map(|d| (*d).to_owned());
+        }
+    };
+    mark(&mut st.files, None);
+    for r in st.repos.iter_mut().flatten() {
+        let name = r.full_name();
+        mark(&mut r.files, Some(&name));
+    }
 }
 
 /// A clone of another repository: in a writable one, the work moves onto
@@ -1908,6 +2066,7 @@ cat "$answer"
             Moment::Stopping,
             None,
             &mut Pulls::default(),
+            false,
         )
         .await?;
         let repos = synced.state.repos.context("repos")?;
@@ -1950,6 +2109,7 @@ cat "$answer"
             Moment::Stopping,
             None,
             &mut Pulls::default(),
+            false,
         )
         .await?;
         assert!(again.logs.is_empty(), "{:?}", again.logs);
@@ -1993,6 +2153,7 @@ cat "$answer"
             Moment::Stopping,
             None,
             &mut Pulls::default(),
+            false,
         )
         .await?;
         assert!(
@@ -2102,7 +2263,7 @@ cat "$answer"
 
         // Even after `gh pr create`, nothing is pushed or looked up.
         let working = Moment::Working { opened_pr: true };
-        let synced = sync(&p, &spec, true, working, None, &mut Pulls::default()).await?;
+        let synced = sync(&p, &spec, true, working, None, &mut Pulls::default(), false).await?;
         assert!(synced.logs.is_empty(), "{:?}", synced.logs);
         let st = synced.state;
         assert_eq!((st.ahead, st.pushed), (1, false));
@@ -2171,7 +2332,7 @@ cat "$answer"
         gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
         let mut pulls = Pulls::default();
         let ended = Moment::TurnEnded;
-        let synced = sync(&p, &spec, true, ended, None, &mut pulls).await?;
+        let synced = sync(&p, &spec, true, ended, None, &mut pulls, false).await?;
         let st = synced.state;
         assert_eq!(log_texts(&synced.logs), ["Pushed fctl/1-test"]);
         assert_eq!(changes(&st), ["added a.txt +2 -0"]);
@@ -2187,7 +2348,7 @@ cat "$answer"
         gh.knows(1, "fctl/1-test", "MERGED", &first, &before)?;
         prepare(&p, &spec, &log).await?;
         let working = Moment::Working { opened_pr: false };
-        let st = sync(&p, &spec, true, working, None, &mut pulls)
+        let st = sync(&p, &spec, true, working, None, &mut pulls, false)
             .await?
             .state;
         // The work it merged, which main has now.
@@ -2197,14 +2358,23 @@ cat "$answer"
         assert_eq!(state, Some("merged"));
         assert_eq!(st.unmerged, Some(0));
         // A turn ends: nothing new to push, and the branch stays deleted.
-        let synced = sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        let synced = sync(&p, &spec, true, ended, Some(&st), &mut pulls, false).await?;
         assert!(synced.logs.is_empty(), "{:?}", synced.logs);
         assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
 
         // The agent goes on on the merged branch: its new commit stays here,
         // and the transcript says why.
         commit(&p.workdir, &p.home, "b.txt", "three\n", "Add b.txt").await?;
-        let synced = sync(&p, &spec, true, ended, Some(&synced.state), &mut pulls).await?;
+        let synced = sync(
+            &p,
+            &spec,
+            true,
+            ended,
+            Some(&synced.state),
+            &mut pulls,
+            false,
+        )
+        .await?;
         let st = synced.state;
         assert_eq!(
             log_texts(&synced.logs),
@@ -2214,24 +2384,33 @@ cat "$answer"
         assert_eq!((st.ahead, st.pushed, st.unmerged), (2, false, Some(1)));
         assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
         // It says so once.
-        let again = sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        let again = sync(&p, &spec, true, ended, Some(&st), &mut pulls, false).await?;
         assert!(again.logs.is_empty(), "{:?}", again.logs);
         // Merged is final: no more lookups.
         let lookups = gh.calls().lines().count();
-        sync(&p, &spec, true, ended, Some(&again.state), &mut pulls).await?;
+        sync(
+            &p,
+            &spec,
+            true,
+            ended,
+            Some(&again.state),
+            &mut pulls,
+            false,
+        )
+        .await?;
         assert_eq!(gh.calls().lines().count(), lookups);
 
         // An agent that kept nothing, as after an upgrade, tells from the
         // deleted branch to ask GitHub.
         let mut fresh = Pulls::default();
-        let st = sync(&p, &spec, true, working, None, &mut fresh)
+        let st = sync(&p, &spec, true, working, None, &mut fresh, false)
             .await?
             .state;
         assert_eq!(
             st.pull_request.and_then(|p| p.state).as_deref(),
             Some("merged")
         );
-        let synced = sync(&p, &spec, true, ended, None, &mut fresh).await?;
+        let synced = sync(&p, &spec, true, ended, None, &mut fresh, false).await?;
         assert!(!has_branch(&origin, &p.home, "fctl/1-test").await?);
         assert_eq!(synced.state.unmerged, Some(1));
         Ok(())
@@ -2255,7 +2434,9 @@ cat "$answer"
         gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
         let mut pulls = Pulls::default();
         let ended = Moment::TurnEnded;
-        let st = sync(&p, &spec, true, ended, None, &mut pulls).await?.state;
+        let st = sync(&p, &spec, true, ended, None, &mut pulls, false)
+            .await?
+            .state;
         assert_eq!(st.pull_request.as_ref().map(|p| p.number), Some(1));
         // It merges; a fetch prunes the branch, and the agent commits more.
         let before = merge_on_github(&origin, &p.home, "fctl/1-test", true).await?;
@@ -2264,7 +2445,7 @@ cat "$answer"
         commit(&p.workdir, &p.home, "b.txt", "two\n", "Add b.txt").await?;
         // Before pushing, fctl-agent asks GitHub about the pull request it
         // saw open.
-        let synced = sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        let synced = sync(&p, &spec, true, ended, Some(&st), &mut pulls, false).await?;
         assert_eq!(
             log_texts(&synced.logs),
             ["Didn't push fctl/1-test: its pull request #1 is merged"]
@@ -2287,13 +2468,22 @@ cat "$answer"
         let ended = Moment::TurnEnded;
         let mut pulls = Pulls::default();
         commit(&p.workdir, &p.home, "a.txt", "a\n", "First").await?;
-        let synced = sync(&p, &spec, true, ended, None, &mut pulls).await?;
+        let synced = sync(&p, &spec, true, ended, None, &mut pulls, false).await?;
         assert_eq!(log_texts(&synced.logs), ["Pushed fctl/1-test"]);
         // The agent stacks a branch on it and ends the turn there: it stays
         // in the sandbox.
         git_ok(&p, &["switch", "-q", "-c", "stack/2"]).await?;
         commit(&p.workdir, &p.home, "b.txt", "b\n", "Second").await?;
-        let synced = sync(&p, &spec, true, ended, Some(&synced.state), &mut pulls).await?;
+        let synced = sync(
+            &p,
+            &spec,
+            true,
+            ended,
+            Some(&synced.state),
+            &mut pulls,
+            false,
+        )
+        .await?;
         assert!(synced.logs.is_empty(), "{:?}", synced.logs);
         assert!(!has_branch(&origin, &p.home, "stack/2").await?);
         assert_eq!(synced.state.branch.as_deref(), Some("stack/2"));
@@ -2303,7 +2493,16 @@ cat "$answer"
         git_ok(&p, &["push", "-q", "-u", "origin", "stack/2"]).await?;
         // Once GitHub has it, fctl-agent pushes its new commits.
         let third = commit(&p.workdir, &p.home, "c.txt", "c\n", "Third").await?;
-        let synced = sync(&p, &spec, true, ended, Some(&synced.state), &mut pulls).await?;
+        let synced = sync(
+            &p,
+            &spec,
+            true,
+            ended,
+            Some(&synced.state),
+            &mut pulls,
+            false,
+        )
+        .await?;
         assert_eq!(log_texts(&synced.logs), ["Pushed stack/2"]);
         let pushed = git_ok_in(&origin, &p.home, &["rev-parse", "stack/2"]).await?;
         assert_eq!(pushed.trim(), third);
@@ -2324,7 +2523,7 @@ cat "$answer"
         let first = commit(&p.workdir, &p.home, "a.txt", "one\ntwo\n", "Add a.txt").await?;
         gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
         let mut pulls = Pulls::default();
-        sync(&p, &spec, true, Moment::TurnEnded, None, &mut pulls).await?;
+        sync(&p, &spec, true, Moment::TurnEnded, None, &mut pulls, false).await?;
         let before = merge_on_github(&origin, &p.home, "fctl/1-test", false).await?;
         gh.knows(1, "fctl/1-test", "MERGED", &first, &before)?;
         prepare(&p, &spec, &log).await?;
@@ -2332,7 +2531,7 @@ cat "$answer"
         // branch nothing changed. From main before the merge, what merged.
         assert!(state(&p, &spec, &Pulls::default()).await?.files.is_empty());
         let working = Moment::Working { opened_pr: false };
-        let st = sync(&p, &spec, true, working, None, &mut pulls)
+        let st = sync(&p, &spec, true, working, None, &mut pulls, false)
             .await?
             .state;
         assert_eq!(changes(&st), ["added a.txt +2 -0"]);
@@ -2370,6 +2569,127 @@ cat "$answer"
     }
 
     #[tokio::test]
+    async fn renamed_files_are_listed_by_their_new_path() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        // On main, which the branch then starts from.
+        let body = "one\ntwo\nthree\nfour\nfive\nsix\n";
+        std::fs::create_dir_all(origin.join("src"))?;
+        commit(&origin, &p.home, "src/old name.rs", body, "Add it").await?;
+        git_ok(&p, &["fetch", "-q", "origin"]).await?;
+        git_ok(&p, &["reset", "-q", "--hard", "origin/main"]).await?;
+        git_ok(&p, &["mv", "src/old name.rs", "src/new \"name\".rs"]).await?;
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        // Not git's `src/{old name.rs => new "name".rs}`, nor in quotes.
+        assert_eq!(changes(&st), ["renamed src/new \"name\".rs +0 -0"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn diffs_come_with_the_state_their_digests_in_its_files() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        commit(&p.workdir, &p.home, "a.rs", "fn a() {}\n", "Add a.rs").await?;
+        // Uncommitted, untracked and binary work counts as it is now.
+        std::fs::write(p.workdir.join("a.rs"), "fn a() {}\nfn b() {}\n")?;
+        std::fs::write(p.workdir.join("notes.md"), "# Notes\n")?;
+        std::fs::write(p.workdir.join("logo.png"), b"\x89PNG\0\0\0")?;
+        let mut pulls = Pulls::default();
+        let working = Moment::Working { opened_pr: false };
+        let synced = sync(&p, &spec, true, working, None, &mut pulls, true).await?;
+        let diffs = synced.diffs.context("diffs")?;
+        let seen: Vec<(&str, &str, Option<&str>, bool)> = diffs
+            .iter()
+            .map(|d| {
+                (
+                    d.path.as_str(),
+                    d.status.as_str(),
+                    d.patch.as_deref(),
+                    d.binary,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (
+                    "a.rs",
+                    "added",
+                    Some("@@ -0,0 +1,2 @@\n+fn a() {}\n+fn b() {}"),
+                    false
+                ),
+                ("logo.png", "untracked", None, true),
+                (
+                    "notes.md",
+                    "untracked",
+                    Some("@@ -0,0 +1 @@\n+# Notes"),
+                    false
+                ),
+            ]
+        );
+        // Each changed file has its diff's digest.
+        let digests: Vec<Option<&str>> = synced
+            .state
+            .files
+            .iter()
+            .map(|f| f.digest.as_deref())
+            .collect();
+        let expected: Vec<Option<&str>> = diffs.iter().map(|d| Some(d.digest.as_str())).collect();
+        assert_eq!(digests, expected);
+        assert!(
+            diffs
+                .iter()
+                .all(|d| d.repo.is_none() && d.digest.len() == 16)
+        );
+
+        // A change that adds as much as it takes out changes the digest alone.
+        std::fs::write(p.workdir.join("a.rs"), "fn a() {}\nfn c() {}\n")?;
+        let again = sync(&p, &spec, true, working, None, &mut pulls, true).await?;
+        let (before, after) = (&synced.state.files[0], &again.state.files[0]);
+        assert_eq!((before.additions, after.additions), (Some(2), Some(2)));
+        assert_ne!(before.digest, after.digest);
+        assert_eq!(again.state.files[1..], synced.state.files[1..]);
+
+        // Without them, the state has none.
+        let plain = sync(&p, &spec, true, working, None, &mut pulls, false).await?;
+        assert!(plain.diffs.is_none());
+        assert!(plain.state.files.iter().all(|f| f.digest.is_none()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn untracked_files_that_are_not_regular_have_their_own_diffs() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let work = dir.path();
+        std::fs::write(work.join("big.log"), "x".repeat(diffs::MAX_PATCH_BYTES + 1))?;
+        let big = untracked_diff(work, "big.log").context("big")?;
+        assert!(big.too_large && big.patch.is_none());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("target/file.txt", work.join("link"))?;
+            let link = untracked_diff(work, "link").context("link")?;
+            assert_eq!(
+                link.patch.as_deref(),
+                Some("@@ -0,0 +1 @@\n+target/file.txt\n\\ No newline at end of file")
+            );
+        }
+        std::fs::create_dir(work.join("dir"))?;
+        assert!(untracked_diff(work, "dir").is_none());
+        assert!(untracked_diff(work, "missing").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn pull_requests_from_other_branches_are_followed() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let mut p = sandbox(dir.path())?;
@@ -2384,7 +2704,9 @@ cat "$answer"
         gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
         let mut pulls = Pulls::default();
         let ended = Moment::TurnEnded;
-        let st = sync(&p, &spec, true, ended, None, &mut pulls).await?.state;
+        let st = sync(&p, &spec, true, ended, None, &mut pulls, false)
+            .await?
+            .state;
         // A second branch in a worktree beside the checkout, pushed, with
         // its own pull request.
         let wt = dir.path().join("second");
@@ -2412,7 +2734,7 @@ cat "$answer"
         let printed = fctl_domain::pulls::named_in("https://github.com/acme/widgets/pull/2\n");
         assert!(pulls.follow(printed, &spec));
         let working = Moment::Working { opened_pr: true };
-        let st = sync(&p, &spec, true, working, Some(&st), &mut pulls)
+        let st = sync(&p, &spec, true, working, Some(&st), &mut pulls, false)
             .await?
             .state;
         let found = |st: &GitState| -> Vec<(u64, Option<String>)> {
@@ -2434,7 +2756,7 @@ cat "$answer"
         // The second merges: its state follows when a turn ends, and then
         // the lookups stop.
         gh.knows(2, "fctl/1-second", "MERGED", &second, main.trim())?;
-        let st = sync(&p, &spec, true, ended, Some(&st), &mut pulls)
+        let st = sync(&p, &spec, true, ended, Some(&st), &mut pulls, false)
             .await?
             .state;
         assert_eq!(
@@ -2442,7 +2764,7 @@ cat "$answer"
             [(1, Some("open".into())), (2, Some("merged".into()))]
         );
         let lookups = gh.calls().matches("pull/2").count();
-        sync(&p, &spec, true, ended, Some(&st), &mut pulls).await?;
+        sync(&p, &spec, true, ended, Some(&st), &mut pulls, false).await?;
         assert_eq!(gh.calls().matches("pull/2").count(), lookups);
         Ok(())
     }
@@ -2462,7 +2784,7 @@ cat "$answer"
         gh.knows(1, "fctl/1-test", "OPEN", &first, main.trim())?;
         gh.grow_old()?;
         let mut pulls = Pulls::default();
-        let st = sync(&p, &spec, true, Moment::TurnEnded, None, &mut pulls)
+        let st = sync(&p, &spec, true, Moment::TurnEnded, None, &mut pulls, false)
             .await?
             .state;
         assert_eq!(

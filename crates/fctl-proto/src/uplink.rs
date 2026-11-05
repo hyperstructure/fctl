@@ -8,7 +8,7 @@
 //! host replays the journal from there and re-sends deliveries to the agent,
 //! which ignores ids it has already handled.
 
-use crate::event::{Attachment, EventBody, LogLine};
+use crate::event::{Attachment, DiffKey, EventBody, FileDiff, LogLine};
 use crate::session::{RemoteControlState, SessionStats, SessionStatus, UserRef};
 use crate::{DeliveryId, Millis, RunnerId};
 use serde::{Deserialize, Serialize};
@@ -165,6 +165,17 @@ pub enum UplinkUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,
+    },
+    /// The diffs of the session's changes, for its viewers: every changed
+    /// file's key and digest (`keep`), and the diffs SessionDO lacks
+    /// (`files`). Over a new uplink the host sends them all, then those
+    /// that changed since, in frames of at most
+    /// `fctl_domain::diffs::MAX_FRAME_BYTES`, each with all of `keep`.
+    /// SessionDO keeps the diffs it gets and forgets the files `keep`
+    /// doesn't list. Older hosts never send it.
+    Diff {
+        keep: Vec<DiffKey>,
+        files: Vec<FileDiff>,
     },
     /// Whether the host reaches fctl-agent: sent when that changes, and
     /// again after every reconnect. SessionDO forgets it when the uplink

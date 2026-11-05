@@ -13,6 +13,7 @@ pub mod claude;
 pub mod cookies;
 pub mod crawlers;
 pub mod cron;
+pub mod diffs;
 pub mod disk;
 pub mod enrollment;
 pub mod events;

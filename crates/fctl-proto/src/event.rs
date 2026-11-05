@@ -341,6 +341,72 @@ pub struct FileChange {
     /// Absent for binary files.
     pub additions: Option<u32>,
     pub deletions: Option<u32>,
+    /// The [`FileDiff::digest`] of its diff, which the session keeps for
+    /// the people who can see it (`GET /api/v1/sessions/{id}/diff`):
+    /// it changes whenever the diff does. Absent from agents that don't
+    /// read diffs, and from those whose hosts don't pass them on.
+    pub digest: Option<String>,
+}
+
+/// What a changed file's diff is, in a repository of the session: its
+/// path, and [`FileDiff::digest`].
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct DiffKey {
+    /// `owner/name`; absent for the primary repository.
+    pub repo: Option<String>,
+    pub path: String,
+    pub digest: String,
+}
+
+/// A changed file's diff, as fctl-agent reads it with `git diff` since the
+/// branch left its base, uncommitted and untracked work included (what
+/// [`FileChange`]s count), for people to read on the session's page.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct FileDiff {
+    /// `owner/name`; absent for the primary repository.
+    pub repo: Option<String>,
+    pub path: String,
+    /// The path a renamed file had.
+    pub old_path: Option<String>,
+    /// As [`FileChange::status`] has it.
+    pub status: String,
+    /// A short hash of all of the above that makes up the diff: it changes
+    /// whenever the diff does.
+    pub digest: String,
+    /// git's lines of the diff from its first hunk's `@@` on: context lines
+    /// start with a space, those added with `+` and those taken out with
+    /// `-`. Absent when it has none to show: a binary file, a diff larger
+    /// than the session keeps (`too_large`), a file whose mode alone
+    /// changed, and in an uplink's `Diff` a file whose diff SessionDO has.
+    pub patch: Option<String>,
+    /// git shows no lines of a binary file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub binary: bool,
+    /// Its diff is larger than the session keeps
+    /// (`fctl_domain::diffs::MAX_PATCH_BYTES`), or would take the session
+    /// past what it keeps of them all.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub too_large: bool,
+    /// Its mode before and after (`100644`, `100755`), when that changed.
+    pub old_mode: Option<String>,
+    pub new_mode: Option<String>,
+}
+
+impl FileDiff {
+    /// What it is, for SessionDO's keeping.
+    pub fn key(&self) -> DiffKey {
+        DiffKey {
+            repo: self.repo.clone(),
+            path: self.path.clone(),
+            digest: self.digest.clone(),
+        }
+    }
 }
 
 #[skip_serializing_none]
@@ -613,6 +679,7 @@ mod tests {
                 status: "modified".into(),
                 additions: Some(1),
                 deletions: Some(2),
+                digest: None,
             }],
             pull_request: Some(PullRequestRef {
                 number: 7,
