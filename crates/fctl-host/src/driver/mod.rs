@@ -400,6 +400,17 @@ impl Driver {
         }
     }
 
+    /// Starts the driver's runtime when it isn't running and the host may
+    /// start it (Apple's `container` service), and logs what came of it.
+    pub async fn start_service(&self) {
+        let Self::Container(d) = self else { return };
+        match d.start_service().await {
+            Ok(true) => tracing::info!("started Apple's `container` service, which wasn't running"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("couldn't start Apple's `container` service: {e:#}"),
+        }
+    }
+
     pub async fn probe(&self) -> DriverInfo {
         match self {
             Self::Process(d) => d.probe().await,
