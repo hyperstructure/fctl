@@ -44,6 +44,7 @@ const groups: DiffGroup[] = [
       file("assets/logo.png"),
       file("package-lock.json", "modified", 900, 300),
       file("scripts/deploy", "modified", 0, 0),
+      file("scripts/link", "modified", 1, 0),
       file("src/a.rs"),
       file("src/b.rs", "renamed", 0, 0),
       // From an older agent, which sends no diffs.
@@ -58,6 +59,13 @@ const diffs: G.FileDiff[] = [
   diff("assets/logo.png", { binary: true }),
   diff("package-lock.json", { too_large: true }),
   diff("scripts/deploy", { old_mode: "100644", new_mode: "100755" }),
+  // A binary file that became a link: its link's line.
+  diff("scripts/link", {
+    binary: true,
+    old_mode: "100644",
+    new_mode: "120000",
+    patch: "@@ -0,0 +1 @@\n+target",
+  }),
   diff("src/a.rs", { patch: "@@ -1,2 +1,2 @@\n fn a() {\n-    1\n+    2" }),
   diff("src/b.rs", { status: "renamed", old_path: "src/b_old.rs" }),
   diff("guide.md", { repo: "acme/docs", status: "added", patch: "@@ -0,0 +1,2 @@\n+# Guide\n+Hi" }),
@@ -115,7 +123,7 @@ describe("a changed file's diff over the page", () => {
     expect(dialog.open).toBe(true);
     expect(dialog.querySelector("h2")?.textContent).toBe("src/a.rs");
     expect(dialog.querySelector("header")?.textContent).toContain("Modified+1 −1Rust");
-    expect(dialog.querySelector("nav")?.textContent).toContain("5/8");
+    expect(dialog.querySelector("nav")?.textContent).toContain("6/9");
     expect([...dialog.querySelectorAll(".diff-code")].map((c) => c.textContent)).toEqual([
       "fn a() {",
       "    1",
@@ -218,6 +226,10 @@ describe("a changed file's diff over the page", () => {
     const mode = await say("scripts/deploy");
     expect(mode).toContain("Only its mode changed100644 → 100755: executable now.");
     expect(await say("src/b.rs")).toContain("Renamed, its lines as they wereFrom src/b_old.rs.");
+    const link = await say("scripts/link");
+    expect(link).toContain("Mode 100644 → 120000: a symbolic link now");
+    expect(link).toContain("target");
+    expect(link).not.toContain("A binary file");
     expect(await say("src/old.rs")).toContain("its runner runs an older version of fctl");
     expect(await say("gone.rs")).toContain("No changes in this file any more");
   });

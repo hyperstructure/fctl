@@ -101,6 +101,7 @@ fn type_changed(old: &mut FileDiff, new: FileDiff) {
         (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
         (a, b) => a.or(b),
     };
+    // A half git shows no lines of (a binary file's) leaves the other's.
     old.binary |= new.binary;
     old.new_mode = new.new_mode;
     let mut hash = Sha256::new();
@@ -462,8 +463,10 @@ pub fn git_patch(f: &FileDiff) -> String {
         && (o == SYMLINK) != (n == SYMLINK)
     {
         let (gone, came) = split_type_change(f.patch.as_deref());
+        // The half without lines is the binary one, when there is one.
         let half = |status: &str, patch: Option<String>, old_mode, new_mode| FileDiff {
             status: status.to_owned(),
+            binary: f.binary && patch.is_none(),
             patch,
             old_mode,
             new_mode,
@@ -771,6 +774,40 @@ index 0000000..1de5659
             .map(|l| format!("{l}\n"))
             .collect();
         assert_eq!(git_patch(x), without_index);
+    }
+
+    #[test]
+    fn a_binary_file_that_became_a_link_shows_the_link() {
+        let out = "diff --git a/x b/x
+deleted file mode 100644
+index 814f4a4..0000000
+Binary files a/x and /dev/null differ
+diff --git a/x b/x
+new file mode 120000
+index 0000000..1de5659
+--- /dev/null
++++ b/x
+@@ -0,0 +1 @@
++target
+\\ No newline at end of file
+";
+        let files = parse(out);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].binary);
+        assert_eq!(
+            files[0].patch.as_deref(),
+            Some("@@ -0,0 +1 @@\n+target\n\\ No newline at end of file")
+        );
+        // Printed as git does: the deletion binary, the link with its line.
+        let printed = git_patch(&files[0]);
+        assert!(
+            printed.contains("deleted file mode 100644\nBinary files a/x and /dev/null differ\n"),
+            "{printed}"
+        );
+        assert!(
+            printed.ends_with("new file mode 120000\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n"),
+            "{printed}"
+        );
     }
 
     #[test]

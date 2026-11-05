@@ -725,7 +725,8 @@ function Body({
   let content: ReactNode;
   // What the lines don't say goes above them; with no lines, the note says it.
   let above = true;
-  if (diff.binary) {
+  // A file that changed type from or to a binary one has the other half's lines.
+  if (diff.binary && !hunks.length) {
     content = (
       <Note icon={<Binary />} title="A binary file">
         git shows no lines of it.
