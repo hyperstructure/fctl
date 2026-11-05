@@ -582,6 +582,27 @@ describe("a workspace's GitHub tab", () => {
     );
   });
 
+  it("says when there is no repository to connect yet, rather than that it isn't theirs", () => {
+    // An organization without repositories, say: nobody is an admin of any.
+    Object.assign(route, { github: "refused", account: "acme", reason: "no_repos" });
+    let page = githubTab(side, github);
+    expect(page.textContent).toContain(
+      "The fctl-sh app reaches no repository of acme that you can see, so there is nothing to connect yet. Create a repository there, or give the app the ones it should reach with Install fctl-sh on GitHub below, then connect again.",
+    );
+    expect(page.textContent).not.toContain("aren't an admin");
+    // Not an error: nothing went wrong.
+    expect(page.querySelector("[role=alert]")).toBeNull();
+    Object.assign(route, { account: undefined });
+    page = githubTab(side, github);
+    expect(page.textContent).toContain(
+      "The fctl-sh app reaches no repository you can see on the accounts GitHub shows you, so there is nothing to connect yet.",
+    );
+    // The button it points to, not just its name in the banner.
+    expect(button(page, "Install fctl-sh on GitHub")?.closest("a")?.getAttribute("href")).toBe(
+      github.install_url,
+    );
+  });
+
   it("asks people back from GitHub to connect from here", () => {
     Object.assign(route, { github: "installed" });
     const page = githubTab(side, github);

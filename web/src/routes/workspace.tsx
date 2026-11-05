@@ -1221,7 +1221,13 @@ type ReviewAppOutcome = Extract<GithubOutcome, `review_${string}`>;
 const reviewAppOutcome = (o: GithubOutcome): o is ReviewAppOutcome => o.startsWith("review_");
 
 /** Why GitHub's answer let nothing be connected (`fctl_domain::github::Refusal`). */
-export const GITHUB_REFUSALS = ["no_installation", "no_admin", "not_admin", "unreachable"] as const;
+export const GITHUB_REFUSALS = [
+  "no_installation",
+  "no_repos",
+  "no_admin",
+  "not_admin",
+  "unreachable",
+] as const;
 export type GithubRefusal = (typeof GITHUB_REFUSALS)[number];
 
 /** The most repositories a connection names (`fctl_domain::repos::MAX_REPOS`). */
@@ -1238,6 +1244,28 @@ function someAccounts(accounts: string[]) {
   return accounts.length > 1
     ? `${accounts.slice(0, -1).join(", ")} and ${accounts.at(-1)}`
     : (accounts[0] ?? "");
+}
+
+/** Why GitHub's answer connected nothing of `account` (or of the accounts it showed), and what to do. */
+function refusal(reason: GithubRefusal | undefined, account: string | undefined, app: string): string {
+  switch (reason) {
+    case "no_installation":
+      return account
+        ? `GitHub shows you no installation of the ${app} app on ${account}: it isn't installed there, or it reaches no repository you can see. Install it there, or ask an admin of its repositories to connect it.`
+        : `GitHub shows you no installation of the ${app} app. Install it on your own account or an organization you own, or ask an admin of the repositories to connect them.`;
+    case "no_repos":
+      return account
+        ? `The ${app} app reaches no repository of ${account} that you can see, so there is nothing to connect yet. Create a repository there, or give the app the ones it should reach with Install ${app} on GitHub below, then connect again.`
+        : `The ${app} app reaches no repository you can see on the accounts GitHub shows you, so there is nothing to connect yet. Create a repository in one of them, or give the app the ones it should reach with Install ${app} on GitHub below, then connect again.`;
+    case "not_admin":
+      return `GitHub says you aren't an admin of every repository you named in ${account}. Name the ones you are an admin of, or ask an admin of the others to connect them.`;
+    case "unreachable":
+      return `The app doesn't reach every repository you named in ${account}, or you can't see them on GitHub. Add them to the app's installation there, or check their names.`;
+    default:
+      return account
+        ? `GitHub says you aren't an admin of any repository of ${account} the app reaches, so you can't connect it. An admin of its repositories, such as an owner of ${account}, connects it.`
+        : `GitHub says you aren't an admin of any repository the ${app} app reaches on the accounts it shows you, so there is nothing for you to connect. An admin of their repositories, such as an owner of the organization, connects them.`;
+  }
 }
 
 /** What the tab says when the browser comes back from GitHub. */
@@ -1277,21 +1305,8 @@ function Returned({
         </Banner>
       );
     case "refused":
-      return (
-        <Banner tone="error">
-          {reason === "no_installation"
-            ? account
-              ? `GitHub shows you no installation of the ${app} app on ${account}: it isn't installed there, or it reaches no repository you can see. Install it there, or ask an admin of its repositories to connect it.`
-              : `GitHub shows you no installation of the ${app} app. Install it on your own account or an organization you own, or ask an admin of the repositories to connect them.`
-            : reason === "not_admin"
-              ? `GitHub says you aren't an admin of every repository you named in ${account}. Name the ones you are an admin of, or ask an admin of the others to connect them.`
-              : reason === "unreachable"
-                ? `The app doesn't reach every repository you named in ${account}, or you can't see them on GitHub. Add them to the app's installation there, or check their names.`
-                : account
-                  ? `GitHub says you aren't an admin of any repository of ${account} the app reaches, so you can't connect it. An admin of its repositories, such as an owner of ${account}, connects it.`
-                  : `GitHub says you aren't an admin of any repository the ${app} app reaches on the accounts it shows you, so there is nothing for you to connect. An admin of their repositories, such as an owner of the organization, connects them.`}
-        </Banner>
-      );
+      // Nothing there to connect yet isn't anyone's mistake.
+      return <Banner tone={reason === "no_repos" ? "info" : "error"}>{refusal(reason, account, app)}</Banner>;
     case "cancelled":
       return <Banner tone="info">You didn't sign in to GitHub, so nothing was connected.</Banner>;
     case "failed":
