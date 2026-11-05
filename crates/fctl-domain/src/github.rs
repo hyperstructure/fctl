@@ -51,7 +51,13 @@ pub enum Refusal {
     /// installed, or reaches no repository they can see. Either way the
     /// same, so that nobody learns where the app is installed.
     NoInstallation,
-    /// They are an admin of none of the repositories the app reaches there.
+    /// GitHub shows them the installation, but no repository it reaches
+    /// that they can see: the account has none yet, the app reaches none of
+    /// them, or none they can see. Its owners can't be told from its other
+    /// members then, so there is nothing to connect.
+    NoRepos,
+    /// They are an admin of none of the repositories the app reaches there
+    /// that they can see.
     NoAdmin,
     /// They aren't an admin of some of the repositories they named.
     NotAdmin,
@@ -64,6 +70,7 @@ impl Refusal {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoInstallation => "no_installation",
+            Self::NoRepos => "no_repos",
             Self::NoAdmin => "no_admin",
             Self::NotAdmin => "not_admin",
             Self::Unreachable => "unreachable",
@@ -73,6 +80,7 @@ impl Refusal {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "no_installation" => Some(Self::NoInstallation),
+            "no_repos" => Some(Self::NoRepos),
             "no_admin" => Some(Self::NoAdmin),
             "not_admin" => Some(Self::NotAdmin),
             "unreachable" => Some(Self::Unreachable),
@@ -123,7 +131,7 @@ pub struct Offer {
 
 /// What the person may choose from of the account: nothing when it isn't
 /// their own and they are an admin of none of its repositories the app
-/// reaches.
+/// reaches, or see none of them.
 ///
 /// Every repository of an organization takes being an admin of each one the
 /// app reaches there, by id: not as many as it reaches, since GitHub's
@@ -153,9 +161,24 @@ pub fn offer(standing: &Standing) -> std::result::Result<Offer, Refusal> {
         && standing.reached.iter().all(|id| admin.contains(id));
     let all = standing.own || of_all;
     if !all && repos.is_empty() {
-        return Err(Refusal::NoAdmin);
+        return Err(if standing.seen.is_empty() {
+            Refusal::NoRepos
+        } else {
+            Refusal::NoAdmin
+        });
     }
     Ok(Offer { all, repos, others })
+}
+
+/// Why a sign-in offers nothing of the accounts GitHub showed, given why
+/// each of them offers nothing: none has a repository the person can see,
+/// or they are an admin of none they see.
+pub fn nothing_offered(each: &[Refusal]) -> Refusal {
+    if each.iter().all(|r| *r == Refusal::NoRepos) {
+        Refusal::NoRepos
+    } else {
+        Refusal::NoAdmin
+    }
 }
 
 /// What a workspace gets of what was offered: every repository (`None`),
@@ -424,14 +447,34 @@ mod tests {
             seen: seen(&[("web", false), ("api", false)]),
         };
         assert_eq!(offer(&reader), Err(Refusal::NoAdmin));
-        // Nobody can tell an empty organization's owners from strangers.
+        // Nobody can tell an empty organization's owners from strangers,
+        // so it has nothing to connect until it has a repository.
         let empty = Standing {
             own: false,
             reaches_all: true,
             reached: Vec::new(),
             seen: Vec::new(),
         };
-        assert_eq!(offer(&empty), Err(Refusal::NoAdmin));
+        assert_eq!(offer(&empty), Err(Refusal::NoRepos));
+        // Nor does an organization whose repositories they can't see, or
+        // that the app reaches none of.
+        let hidden = Standing {
+            own: false,
+            reaches_all: false,
+            reached: Vec::new(),
+            seen: Vec::new(),
+        };
+        assert_eq!(offer(&hidden), Err(Refusal::NoRepos));
+    }
+
+    #[test]
+    fn several_accounts_have_nothing_to_connect_only_when_none_has_a_repository() {
+        use Refusal::{NoAdmin, NoRepos};
+        assert_eq!(nothing_offered(&[NoRepos]), NoRepos);
+        assert_eq!(nothing_offered(&[NoRepos, NoRepos]), NoRepos);
+        // Repositories they see somewhere, none of them theirs.
+        assert_eq!(nothing_offered(&[NoRepos, NoAdmin]), NoAdmin);
+        assert_eq!(nothing_offered(&[NoAdmin]), NoAdmin);
     }
 
     #[test]
@@ -528,6 +571,7 @@ mod tests {
     fn refusals_round_trip() {
         for r in [
             Refusal::NoInstallation,
+            Refusal::NoRepos,
             Refusal::NoAdmin,
             Refusal::NotAdmin,
             Refusal::Unreachable,

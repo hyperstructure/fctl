@@ -1,5 +1,5 @@
-//! `fctl run`, `sessions`, `show`, `edit`, `logs`, `send`, `interrupt`, `stop`, `resume`,
-//! `follow`, `unfollow`, `share`, `unshare`, `archive`, `unarchive`, `open`.
+//! `fctl run`, `sessions`, `show`, `edit`, `logs`, `diff`, `send`, `interrupt`, `stop`,
+//! `resume`, `follow`, `unfollow`, `share`, `unshare`, `archive`, `unarchive`, `open`.
 
 use crate::config;
 use crate::render::Renderer;
@@ -7,7 +7,7 @@ use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use fctl_client::Api;
-use fctl_domain::{files, pulls, reviews};
+use fctl_domain::{diffs, files, pulls, reviews};
 use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{
     CreateSessionRequest, CreateShareRequest, ReviewState, SessionShare, UpdateSessionRequest,
@@ -81,6 +81,19 @@ pub struct EditArgs {
     /// What the session is about, in a sentence or two ("" clears it).
     #[arg(long)]
     pub description: Option<String>,
+}
+
+#[derive(Args)]
+pub struct DiffArgs {
+    /// A session: its id (ses_…), its URL, or project#number.
+    pub session: String,
+    /// Only these files, or the files in these directories.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<String>,
+    /// Only the files of this repository of the project (owner/name), one
+    /// the agent cloned beside the primary one.
+    #[arg(long, value_name = "OWNER/NAME")]
+    pub repo: Option<String>,
 }
 
 #[derive(Args)]
@@ -747,6 +760,74 @@ pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: boo
     }
     if follow {
         return crate::cmd::attach::follow_after(&api, &s.id.0, true, Some(after), r).await;
+    }
+    Ok(())
+}
+
+/// The diffs of a session's changes, as its agent last read them: as git
+/// prints them, which `git apply` takes, in color on a terminal.
+pub async fn diff(server: Option<&str>, args: DiffArgs, json: bool) -> Result<()> {
+    let api = config::api(server)?;
+    let s = resolve(&api, &args.session).await?;
+    let mut d = api.session_diff(&s.id.0).await?;
+    let wanted = |path: &str| {
+        args.paths.is_empty()
+            || args.paths.iter().any(|p| {
+                let p = p.trim_end_matches('/');
+                path == p
+                    || path
+                        .strip_prefix(p)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+    };
+    d.files
+        .retain(|f| wanted(&f.path) && (args.repo.is_none() || f.repo == args.repo));
+    if json {
+        return style::print_json(&d);
+    }
+    if d.files.is_empty() {
+        eprintln!(
+            "{}",
+            if d.updated_at.is_none() {
+                "No diffs: the session's agent hasn't sent any. Its runner may run an older fctl, whose agents don't."
+            } else {
+                "No changes."
+            }
+        );
+        return Ok(());
+    }
+    // On a terminal, colored and safe to show; through a pipe, as it is.
+    let terminal = std::io::stdout().is_terminal();
+    let several = d.files.iter().any(|f| f.repo.is_some());
+    for f in &d.files {
+        if several && let Some(repo) = &f.repo {
+            eprintln!("{}", style::dim(&format!("# {repo}")));
+        }
+        if f.too_large {
+            eprintln!(
+                "{}",
+                style::amber(&format!(
+                    "{}: its diff is too large for the session to keep",
+                    style::plain(&f.path)
+                ))
+            );
+        }
+        let patch = diffs::git_patch(f);
+        if !terminal {
+            print!("{patch}");
+            continue;
+        }
+        for line in style::terminal_safe(&patch).lines() {
+            let shown = match line.as_bytes().first() {
+                _ if line.starts_with("diff --git ") => style::bold(line),
+                Some(b'@') => style::blue(line),
+                Some(b'+') if !line.starts_with("+++ ") => style::accent(line),
+                Some(b'-') if !line.starts_with("--- ") => style::red(line),
+                Some(b' ') | Some(b'\\') => line.to_owned(),
+                _ => style::dim(line),
+            };
+            println!("{shown}");
+        }
     }
     Ok(())
 }

@@ -160,6 +160,21 @@ a screenshot: a PNG, JPEG, GIF or WebP of up to 5 MB, for 7 days. Its
 `expires_at`), and `GET /api/v1/sessions/{id}/images/{image}` returns it to
 anyone who can see the session until it expires, `404` after.
 
+### Diffs
+
+`GET /api/v1/sessions/{id}/diff` returns the diffs of the session's
+changes, as its agent last read them: what each repository's branch
+changed since it left its base, uncommitted and untracked work included,
+`{"files": [...], "updated_at": …}`. With `?path=` (and `?repo=owner/name`
+for another repository than the primary one), it returns that file's
+alone, and `404` for a file it has none of. A file is `{"repo", "path",
+"old_path", "status", "digest", "patch"}`: `patch` holds git's lines from
+the first hunk's `@@` on, and is absent for a binary file (`binary`), one
+larger than the session keeps (`too_large`: 512 KB a file, 8 MB in all),
+and one whose mode alone changed (`old_mode`, `new_mode`). The `git`
+event's files carry the same `digest`, which changes whenever the diff
+does. Agents whose runners run an fctl from before diffs send none.
+
 To wait for the agent's reply to a message, note the newest `seq` before
 sending it, then read the events after it, page by page, until one is a
 `result`:

@@ -153,6 +153,146 @@
   color: var(--shiki-light);
 }
 
+/* Lines added, in diffs and in the counts of what changed: a fresh green,
+   as people know additions by (`text-added`, `bg-added`). Not a brand
+   color, and only for changes to files; lines taken out are danger's red. */
+:root,
+:root[data-theme="dark"] {
+  --c-added: #4ade80;
+}
+:root[data-theme="light"] {
+  --c-added: #15803d;
+}
+@theme {
+  --color-added: var(--c-added);
+}
+
+/* Diffs (components/diff.tsx): lines added on green, those taken out on
+   red, and the words that changed between them a shade stronger. The
+   gutters of line numbers stay put, opaque, while long lines scroll under
+   them. Shiki colors the code as it does code blocks. */
+:root,
+:root[data-theme="dark"] {
+  --diff-add: rgb(74 222 128 / 0.09);
+  --diff-add-gutter: rgb(74 222 128 / 0.15);
+  --diff-add-word: rgb(74 222 128 / 0.25);
+  --diff-del: rgb(255 77 77 / 0.08);
+  --diff-del-gutter: rgb(255 77 77 / 0.12);
+  --diff-del-word: rgb(255 77 77 / 0.25);
+  --diff-del-mark: #ff6b6b;
+  --diff-hunk: rgb(0 126 255 / 0.075);
+}
+:root[data-theme="light"] {
+  --diff-add: rgb(34 197 94 / 0.11);
+  --diff-add-gutter: rgb(34 197 94 / 0.19);
+  --diff-add-word: rgb(34 197 94 / 0.28);
+  --diff-del: rgb(255 77 77 / 0.07);
+  --diff-del-gutter: rgb(255 77 77 / 0.11);
+  --diff-del-word: rgb(255 77 77 / 0.2);
+  --diff-del-mark: #cc1f1f;
+  --diff-hunk: rgb(0 126 255 / 0.055);
+}
+.diff {
+  /* What the lines sit on, which the gutters paint over themselves. */
+  --diff-bg: var(--c-sunken);
+  background: var(--diff-bg);
+  color: var(--c-ink-2);
+  tab-size: 4;
+  /* Code as it is written: no arrows for -> nor spaced-out ::. */
+  font-variant-ligatures: none;
+}
+/* Over the page (session/diff-dialog.tsx), the light theme's lines sit on white. */
+:root[data-theme="light"] .diff-on-surface {
+  --diff-bg: var(--c-surface);
+}
+.diff-scroll {
+  overflow-x: auto;
+}
+.diff-scroll .diff-code {
+  white-space: pre;
+}
+.diff-wrap .diff-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-line {
+  min-height: 1.25rem;
+}
+.diff-line[data-kind="add"] {
+  background: var(--diff-add);
+}
+.diff-line[data-kind="del"] {
+  background: var(--diff-del);
+}
+.diff-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  align-self: stretch;
+  background-color: var(--diff-bg);
+  color: var(--c-ink-4);
+  box-shadow: inset -1px 0 var(--c-line);
+}
+.diff-gutter-two {
+  min-width: calc(2 * (var(--diff-digits) + 1.25rem));
+}
+.diff-number {
+  width: calc(var(--diff-digits) + 1.25rem);
+  padding: 0 0.625rem;
+  text-align: right;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.diff-hunk {
+  background-color: var(--diff-bg);
+  background-image: linear-gradient(var(--diff-hunk), var(--diff-hunk));
+}
+.diff-hunk .diff-gutter {
+  background-image: linear-gradient(var(--diff-hunk), var(--diff-hunk));
+}
+.diff-line[data-kind="add"] .diff-gutter {
+  background-image: linear-gradient(var(--diff-add-gutter), var(--diff-add-gutter));
+  color: color-mix(in srgb, var(--c-added) 70%, var(--c-ink-4));
+}
+.diff-line[data-kind="del"] .diff-gutter {
+  background-image: linear-gradient(var(--diff-del-gutter), var(--diff-del-gutter));
+  color: color-mix(in srgb, var(--diff-del-mark) 70%, var(--c-ink-4));
+}
+.diff-mark {
+  color: var(--c-ink-4);
+}
+.diff-line[data-kind="add"] .diff-mark {
+  color: var(--c-added);
+}
+.diff-line[data-kind="del"] .diff-mark {
+  color: var(--diff-del-mark);
+}
+.diff-word {
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.diff-line[data-kind="add"] .diff-word {
+  background: var(--diff-add-word);
+}
+.diff-line[data-kind="del"] .diff-word {
+  background: var(--diff-del-word);
+}
+/* Side by side: a rule between before and after, and a hatch where a side has no line. */
+.diff-divided {
+  box-shadow: inset 1px 0 var(--c-line);
+}
+.diff-empty {
+  min-height: 1.25rem;
+  background-image: repeating-linear-gradient(135deg, transparent 0 5px, var(--c-line) 5px 6px);
+}
+.diff-code span[style] {
+  color: var(--shiki-dark);
+}
+:root[data-theme="light"] .diff-code span[style] {
+  color: var(--shiki-light);
+}
+
 /* Words of a headline in the brand's yellow, as on fctl.sh, with a pink full
    stop (routes/early-access.tsx). On light backgrounds the yellow becomes a
    highlighter stroke under the words, on each line they wrap to. */

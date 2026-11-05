@@ -26,7 +26,7 @@ use fctl_proto::agent::{
 };
 use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{
-    Attachment, EventBody, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel,
+    Attachment, EventBody, FileDiff, GitState, LogLevel, LogLine, LogSource, Notice, NoticeLevel,
     PublishedFile,
 };
 use fctl_proto::runner::{
@@ -99,8 +99,9 @@ const REVIEW_POSTED: &str = "Finished: its review is posted";
 pub(crate) enum Work {
     Prepared(Result<(), String>),
     /// A refresh of the repositories' state at a moment ended: what they
-    /// hold and the pull requests it follows, unless it failed.
-    Git(Option<(GitState, Pulls)>, Moment),
+    /// hold, the pull requests it follows and the changed files' diffs
+    /// (when the host takes them), unless it failed.
+    Git(Option<(GitState, Pulls, Option<Vec<FileDiff>>)>, Moment),
     Log(LogLevel, String, LogSource),
     /// The effort level Claude works at ([`claude::applied_effort`]).
     Effort(String),
@@ -159,6 +160,9 @@ pub struct Supervisor {
     exit_after: Option<Instant>,
     /// The repositories' state reported last.
     last_git: Option<GitState>,
+    /// The changed files' diffs sent last, which a host that attaches gets
+    /// again.
+    last_diffs: Option<Vec<FileDiff>>,
     /// When to refresh the repositories' state while Claude works.
     refresh: Refresh,
     /// A refresh of the repositories' state runs: one at a time.
@@ -253,6 +257,7 @@ impl Supervisor {
                 claude_credential: None,
                 exit_after: None,
                 last_git: None,
+                last_diffs: None,
                 refresh: Refresh::default(),
                 syncing: false,
                 turn_ended: false,
@@ -305,6 +310,25 @@ impl Supervisor {
         if let (Some((_, tx)), Some(text)) = (&self.host, link::encode(msg)) {
             let _ = tx.send(text);
         }
+    }
+
+    /// Hands the host the changed files' diffs when they differ from those
+    /// it got last.
+    fn send_diffs(&mut self, files: Vec<FileDiff>) {
+        let same = |a: &[FileDiff], b: &[FileDiff]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.key() == y.key())
+        };
+        if self
+            .last_diffs
+            .as_deref()
+            .is_some_and(|last| same(last, &files))
+        {
+            return;
+        }
+        self.send(&AgentToHost::Diff {
+            files: files.clone(),
+        });
+        self.last_diffs = Some(files);
     }
 
     fn flush(&mut self) {
@@ -396,6 +420,13 @@ impl Supervisor {
                 self.send(&AgentToHost::State {
                     state: self.state.clone(),
                 });
+                // The host passes on to the control plane those it
+                // hasn't sent over its uplink.
+                if let Some(files) = &self.last_diffs {
+                    self.send(&AgentToHost::Diff {
+                        files: files.clone(),
+                    });
+                }
             }
             HostToAgent::Ack { agent_seq } => {
                 if let Err(e) = self.journal.ack(agent_seq) {
@@ -1046,10 +1077,15 @@ impl Supervisor {
                 self.syncing = false;
                 // Once the session has stopped, the state it stopped with
                 // is its last.
-                if let Some((state, pulls)) = synced.filter(|_| self.exit_after.is_none()) {
+                if let Some((state, pulls, diffs)) = synced.filter(|_| self.exit_after.is_none()) {
                     if pulls != self.persisted.pulls {
                         self.persisted.pulls = pulls;
                         self.persist();
+                    }
+                    // Before the state that has their digests, so that the
+                    // control plane has them when its viewers ask.
+                    if let Some(files) = diffs {
+                        self.send_diffs(files);
                     }
                     // While Claude works, only a change is news, and a
                     // repository in the middle of a rebase has none yet.
@@ -1749,15 +1785,16 @@ impl Supervisor {
         let mut pulls = self.persisted.pulls.clone();
         let work = self.work_tx.clone();
         tokio::spawn(async move {
-            let push = config.push_on_commit;
+            let (push, diffs) = (config.push_on_commit, config.diffs);
             let spec = &config.spec;
-            let sync = workspace::sync(&paths, spec, push, moment, last.as_ref(), &mut pulls);
+            let last = last.as_ref();
+            let sync = workspace::sync(&paths, spec, push, moment, last, &mut pulls, diffs);
             let state = match tokio::time::timeout(SYNC_TIMEOUT, sync).await {
                 Ok(Ok(synced)) => {
                     for (level, text) in synced.logs {
                         let _ = work.send(Work::Log(level, text, LogSource::Agent));
                     }
-                    Some((synced.state, pulls))
+                    Some((synced.state, pulls, synced.diffs))
                 }
                 Ok(Err(e)) => {
                     tracing::debug!("reading the repositories' state failed: {e:#}");
@@ -2119,11 +2156,23 @@ impl Supervisor {
             // still stand.
             let mut pulls = self.persisted.pulls.clone();
             let stopping = Moment::Stopping;
-            if let Ok(synced) =
-                workspace::sync(&paths, &config.spec, push, stopping, last, &mut pulls).await
+            let diffs = config.diffs;
+            if let Ok(synced) = workspace::sync(
+                &paths,
+                &config.spec,
+                push,
+                stopping,
+                last,
+                &mut pulls,
+                diffs,
+            )
+            .await
             {
                 for (level, text) in synced.logs {
                     self.log(LogSource::Agent, level, &text);
+                }
+                if let Some(files) = synced.diffs {
+                    self.send_diffs(files);
                 }
                 self.emit(EventBody::Git(synced.state));
             }
@@ -2438,6 +2487,7 @@ mod tests {
             first_agent_seq: None,
             sandbox: None,
             cache: None,
+            diffs: false,
         });
         let reply = ask(
             &mut sup,
@@ -2507,6 +2557,7 @@ mod tests {
             first_agent_seq: None,
             sandbox: None,
             cache: None,
+            diffs: false,
         })
     }
 
@@ -2581,6 +2632,70 @@ mod tests {
         // A late or repeated answer goes nowhere.
         sup.on_published(&request_id, Some(file), None);
         assert!(host_rx.try_recv().is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn diffs_go_to_the_host_before_the_state_and_again_to_a_new_one() -> anyhow::Result<()> {
+        use crate::followed::Pulls;
+        use crate::workspace::Moment;
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        let mut config = config(dir.path(), false)?;
+        config.diffs = true;
+        sup.config = Some(config);
+        let (host_tx, mut host_rx) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        let mut diffs = vec![fctl_domain::diffs::untracked(
+            "notes.md",
+            b"# Notes\n",
+            true,
+        )];
+        fctl_domain::diffs::fit(&mut diffs);
+        let state = GitState {
+            files: vec![fctl_proto::event::FileChange {
+                path: "notes.md".into(),
+                status: "untracked".into(),
+                additions: Some(1),
+                deletions: Some(0),
+                digest: Some(diffs[0].digest.clone()),
+            }],
+            ..GitState::default()
+        };
+        let synced = |d: &Vec<FileDiff>| {
+            let found = (state.clone(), Pulls::default(), Some(d.clone()));
+            Work::Git(Some(found), Moment::TurnEnded)
+        };
+        sup.on_work(synced(&diffs)).await;
+        sup.flush();
+        let frames: Vec<AgentToHost> = std::iter::from_fn(|| host_rx.try_recv().ok())
+            .map(|f| serde_json::from_str(&f))
+            .collect::<Result<_, _>>()?;
+        assert!(
+            matches!(&frames[..], [AgentToHost::Diff { files }, AgentToHost::Events { events }]
+                if *files == diffs && matches!(events[0].body, EventBody::Git(_))),
+            "{frames:?}"
+        );
+        // The same again: nothing new for the host.
+        sup.on_work(synced(&diffs)).await;
+        sup.flush();
+        let frames: Vec<String> = std::iter::from_fn(|| host_rx.try_recv().ok()).collect();
+        assert!(
+            frames.iter().all(|f| !f.contains(r#""type":"diff""#)),
+            "{frames:?}"
+        );
+        // A host that attaches gets them again, after the state.
+        sup.on_frame(HostToAgent::Replay {
+            after_agent_seq: u64::MAX,
+        })
+        .await;
+        let frames: Vec<AgentToHost> = std::iter::from_fn(|| host_rx.try_recv().ok())
+            .map(|f| serde_json::from_str(&f))
+            .collect::<Result<_, _>>()?;
+        assert!(
+            matches!(&frames[..], [AgentToHost::State { .. }, AgentToHost::Diff { files }] if *files == diffs),
+            "{frames:?}"
+        );
         Ok(())
     }
 

@@ -246,6 +246,8 @@ Some useful filters:
 fctl logs "$id" --json | jq -r 'select(.kind == "claude" and .data.type == "assistant") | .data.message.content[] | select(.type == "text") | .text'
 fctl logs "$id" --json | jq -c 'select(.kind == "claude" and .data.type == "assistant") | .data.message.content[] | select(.type == "tool_use") | {name, input}'
 fctl logs "$id" --json | jq -s 'map(select(.kind == "git")) | last | .data'
+fctl diff "$id"                                   # what the branch changed, as git prints it
+fctl diff "$id" --json | jq -r '.files[] | select(.patch) | .path'
 ```
 
 Images come without their bytes. The session keeps a copy of each image

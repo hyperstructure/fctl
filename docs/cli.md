@@ -92,6 +92,9 @@ fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl logs my-app#12              # the transcript
 fctl logs -f my-app#12           # …and keep following
+fctl diff my-app#12              # what its branch changed, as git prints it (uncommitted work too)
+fctl diff my-app#12 src/auth     # the files in a directory; --repo acme/docs for another repository
+fctl diff my-app#12 | git apply  # the same changes, here
 fctl search login redirect       # the sessions that say it, and where
 fctl search -p my-app "flaky test" --limit 50
 

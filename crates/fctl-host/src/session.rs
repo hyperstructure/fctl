@@ -987,6 +987,7 @@ async fn run(
                         uplink.state(st);
                     }
                     AgentToHost::Log { line } => uplink.log(line),
+                    AgentToHost::Diff { files } => uplink.diffs(files),
                     AgentToHost::Delivered { delivery_id, ok, error } => {
                         unconfirmed.retain(|d| d.id != delivery_id);
                         uplink.send(UplinkUp::Delivered { delivery_id, ok, error });
@@ -1204,5 +1205,6 @@ fn agent_config(
         first_agent_seq: (first_agent_seq > 0).then_some(first_agent_seq),
         sandbox: ctx.driver.enforces_size().then(|| ctx.sandbox_size(spec)),
         cache,
+        diffs: true,
     }
 }

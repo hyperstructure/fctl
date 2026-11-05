@@ -3,7 +3,6 @@
 // Calls in a row fold into a run: a line that says what they did, which
 // opens into them.
 
-import { diffLines } from "diff";
 import {
   Bot,
   FilePenLine,
@@ -34,14 +33,17 @@ import {
   useMemo,
   useState,
 } from "react";
+import { DiffLines } from "@/components/diff";
 import { CodeBlock, Markdown } from "@/components/markdown";
 import { plainClick, Spinner, ThoughtIcon, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
+import { counts, firstLine, fromStrings, fromStructured, type Hunk } from "@/lib/diff";
 import { bytes, duration } from "@/lib/format";
 import { langOf } from "@/lib/highlight";
 import { formatOf, imageName, KEPT_DAYS, keptImageUrl, keptNow, type ToolImage } from "@/lib/kept-images";
+import { languageOf } from "@/lib/languages";
 import {
   callsIn,
   changed,
@@ -102,49 +104,37 @@ const ranFor = (s: number) => (s < 60 ? `${Math.round(s)} s` : duration(s * 1000
 /** A call that took this long (ms) says so on its line. */
 const SLOW = 10_000;
 
-function DiffView({ before, after, path }: { before: string; after: string; path?: string }) {
-  const parts = useMemo(() => diffLines(before, after), [before, after]);
-  let add = 0;
-  let del = 0;
-  for (const p of parts) {
-    if (p.added) add += p.count ?? 0;
-    if (p.removed) del += p.count ?? 0;
-  }
+/**
+ * What an edit changed: Claude Code's hunks, numbered as the file has them,
+ * when its result has them; else what the edit's strings make, unnumbered.
+ * Highlighted as the file's language is.
+ */
+function DiffView({ hunks, numbered, path }: { hunks: Hunk[]; numbered: boolean; path?: string }) {
+  const { added, removed } = counts(hunks);
+  const lang = langOf(path ?? "", firstLine(hunks));
   return (
     <div className="overflow-hidden rounded-md border border-line bg-sunken">
       {path && (
-        <div className="flex items-center justify-between border-b border-line px-3 py-1.5 font-mono text-[11.5px] text-ink-3">
+        <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-1.5 font-mono text-[11.5px] text-ink-3">
           <span className="truncate">{path}</span>
           <span className="shrink-0 tabular-nums">
-            <span className="text-accent">+{add}</span> <span className="text-danger">−{del}</span>
+            <span className="text-added">+{added}</span> <span className="text-danger">−{removed}</span>
           </span>
         </div>
       )}
-      <pre className="max-h-[420px] overflow-auto py-1.5 font-mono text-[12.25px] leading-[1.6]">
-        {parts.map((p, i) =>
-          p.value
-            .replace(/\n$/, "")
-            .split("\n")
-            .map((line, j) => (
-              <div
-                key={`${i}-${j}`}
-                className={cn(
-                  "px-3 whitespace-pre",
-                  p.added && "bg-accent-soft text-ink",
-                  p.removed && "bg-danger-soft text-ink-2",
-                  !p.added && !p.removed && "text-ink-3",
-                )}
-              >
-                <span className="mr-3 inline-block w-2 select-none text-ink-4">
-                  {p.added ? "+" : p.removed ? "−" : " "}
-                </span>
-                {line || " "}
-              </div>
-            )),
-        )}
-      </pre>
+      <div className="max-h-[420px] overflow-auto py-1">
+        <DiffLines hunks={hunks} lang={lang} numbers={numbered} headers={numbered && hunks.length > 1} />
+      </div>
     </div>
   );
+}
+
+/** An edit's diff: from Claude Code's result when it has hunks, else from the strings it replaced. */
+function editDiff(structured: unknown, before: string, after: string): { hunks: Hunk[]; numbered: boolean } {
+  const numbered = fromStructured(structured);
+  return numbered
+    ? { hunks: numbered, numbered: true }
+    : { hunks: fromStrings(before, after), numbered: false };
 }
 
 function Output({ text, error }: { text: string; error: boolean }) {
@@ -232,18 +222,21 @@ function Details({ t }: { t: Tool }) {
   const input = t.input;
   const result = t.result;
   switch (t.name) {
-    case "Edit":
+    case "Edit": {
+      // A failed edit changed nothing: its strings say what it meant to.
+      const structured = result?.isError ? undefined : result?.structured;
+      const d = editDiff(structured, str(input.old_string), str(input.new_string));
       return (
         <div className="flex flex-col gap-2">
-          <DiffView
-            before={str(input.old_string)}
-            after={str(input.new_string)}
-            path={str(input.file_path)}
-          />
+          <DiffView hunks={d.hunks} numbered={d.numbered} path={str(input.file_path)} />
           {result?.isError && <Output text={result.text} error />}
         </div>
       );
+    }
     case "MultiEdit": {
+      const path = str(input.file_path);
+      const all = result?.isError ? undefined : fromStructured(result?.structured);
+      if (all) return <DiffView hunks={all} numbered path={path} />;
       const edits = Array.isArray(input.edits)
         ? (input.edits as { old_string?: string; new_string?: string }[])
         : [];
@@ -252,25 +245,34 @@ function Details({ t }: { t: Tool }) {
           {edits.map((e, i) => (
             <DiffView
               key={i}
-              before={e.old_string ?? ""}
-              after={e.new_string ?? ""}
-              path={i === 0 ? str(input.file_path) : undefined}
+              hunks={fromStrings(e.old_string ?? "", e.new_string ?? "")}
+              numbered={false}
+              path={i === 0 ? path : undefined}
             />
           ))}
         </div>
       );
     }
     case "Write": {
+      const path = str(input.file_path);
+      // Over a file that was there: what changed in it, as Claude Code's result says.
+      const changed =
+        !result?.isError && (result?.structured as { type?: string } | undefined)?.type === "update"
+          ? fromStructured(result?.structured)
+          : undefined;
+      if (changed) return <DiffView hunks={changed} numbered path={path} />;
       const content = str(input.content);
       const lines = content.split("\n");
+      const language = languageOf(path, lines[0]);
       return (
         <div className="flex flex-col gap-1.5">
           <div className="font-mono text-[11.5px] text-ink-3">
-            {str(input.file_path)} · {lines.length} lines
+            {path} · {lines.length} lines
           </div>
           <CodeBlock
             code={lines.slice(0, 80).join("\n") + (lines.length > 80 ? "\n…" : "")}
-            lang={langOf(str(input.file_path))}
+            lang={language.id}
+            label={language.label}
           />
         </div>
       );
@@ -537,7 +539,7 @@ function TargetText({ target, find }: { target: Target; find: string }) {
 function LinesChanged({ lines }: { lines: Lines }) {
   return (
     <span className="font-mono text-[11px]">
-      <span className={cn(lines.added > 0 && "text-accent/80")}>+{lines.added}</span>{" "}
+      <span className={cn(lines.added > 0 && "text-added/80")}>+{lines.added}</span>{" "}
       <span className={cn(lines.removed > 0 && "text-danger/80")}>−{lines.removed}</span>
     </span>
   );

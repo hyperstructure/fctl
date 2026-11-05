@@ -115,3 +115,32 @@ export function branchChanges(
   }
   return changed;
 }
+
+/** A branch's state, as the primary repository's or another's is in a git state. */
+type BranchOf = { branch?: string; pushed: boolean; pull_request?: G.PullRequestRef };
+
+/**
+ * Where a repository's files are on GitHub on the session's branch, while
+ * GitHub has the branch: pushed, and its pull request not merged (GitHub
+ * may have deleted it then), as the agent last saw it or as the session's
+ * pull requests (`merged`, their URLs) say since. `repo` is `owner/name`.
+ */
+export function blobLink(
+  repo: string | undefined,
+  b: BranchOf | undefined,
+  merged: ReadonlySet<string> = new Set(),
+): ((path: string) => string) | undefined {
+  const branch = b?.branch;
+  const pr = b?.pull_request;
+  if (!repo || !b || !branch || branch === "HEAD" || !b.pushed) return undefined;
+  if (pr?.state === "merged" || (pr && merged.has(pr.url))) return undefined;
+  const parts = (s: string) => s.split("/").map(encodeURIComponent).join("/");
+  return (path) => `https://github.com/${parts(repo)}/blob/${parts(branch)}/${parts(path)}`;
+}
+
+/** The branch of a repository of the session in its git state: the primary one's, or `owner/name`'s. */
+export function branchOf(git: G.GitState | undefined, repo?: string): BranchOf | undefined {
+  if (!git) return undefined;
+  if (!repo) return git;
+  return git.repos?.find((r) => `${r.owner}/${r.name}` === repo);
+}

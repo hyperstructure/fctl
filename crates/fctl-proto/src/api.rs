@@ -2600,6 +2600,22 @@ pub struct EventPage {
     pub has_more: bool,
 }
 
+/// `GET /api/v1/sessions/{id}/diff`: the diffs of the session's changes, as
+/// its agent last read them, for everyone who can see the session: those
+/// of every repository, or with `?path=` (and `?repo=owner/name` for
+/// another repository than the primary one) that file's alone, answered
+/// as a [`crate::event::FileDiff`]. Agents whose hosts don't pass diffs on
+/// leave it empty.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionDiff {
+    /// By repository, the primary one first, then by path.
+    pub files: Vec<crate::event::FileDiff>,
+    /// When the agent last sent them; absent while it never has.
+    pub updated_at: Option<Millis>,
+}
+
 // ───────────────────────────── search ─────────────────────────────
 
 /// `GET /api/v1/search?q=`: the sessions the caller sees whose title,

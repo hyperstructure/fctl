@@ -444,7 +444,7 @@ function GitItem({ git, repos }: { git: G.GitState; repos: (string | undefined)[
     <Milestone key={r.name ?? ""} icon={<GitBranch />}>
       {r.name && <span className="font-mono text-ink-3">{r.name}: </span>}
       {r.files.length} {r.files.length === 1 ? "file" : "files"} changed{" "}
-      <span className={cn(r.additions > 0 && "text-accent/80")}>+{r.additions}</span>{" "}
+      <span className={cn(r.additions > 0 && "text-added/80")}>+{r.additions}</span>{" "}
       <span className={cn(r.deletions > 0 && "text-danger/80")}>−{r.deletions}</span>
       {r.ahead > 0 && (
         <>
