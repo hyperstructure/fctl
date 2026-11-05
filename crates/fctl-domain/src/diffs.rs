@@ -58,13 +58,13 @@ pub const GIT_DIFF: [&str; 10] = [
 /// Their digests are those of their whole part of the output, which
 /// [`fit`] seals.
 pub fn parse(out: &str) -> Vec<FileDiff> {
-    let mut files = Vec::new();
+    let mut sections = Vec::new();
     let mut start = None;
     let lines: Vec<&str> = out.split('\n').collect();
     for (i, line) in lines.iter().enumerate() {
         if line.starts_with("diff --git ") {
             if let Some(s) = start {
-                files.extend(section(&lines[s..i]));
+                sections.extend(section(&lines[s..i]));
             }
             start = Some(i);
         }
@@ -75,9 +75,38 @@ pub fn parse(out: &str) -> Vec<FileDiff> {
         while end > s + 1 && lines[end - 1].is_empty() {
             end -= 1;
         }
-        files.extend(section(&lines[s..end]));
+        sections.extend(section(&lines[s..end]));
+    }
+    let mut files: Vec<FileDiff> = Vec::with_capacity(sections.len());
+    for f in sections {
+        // A file whose type changed (a file that became a symbolic link, or
+        // back) comes as its deletion, then its addition: one change.
+        match files.last_mut() {
+            Some(last)
+                if last.path == f.path && last.status == "deleted" && f.status == "added" =>
+            {
+                type_changed(last, f);
+            }
+            _ => files.push(f),
+        }
     }
     files
+}
+
+/// `old`, the deletion half of a file whose type changed, with `new`, its
+/// addition half: both halves' hunks, and its modes before and after.
+fn type_changed(old: &mut FileDiff, new: FileDiff) {
+    old.status = "modified".to_owned();
+    old.patch = match (old.patch.take(), new.patch) {
+        (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+        (a, b) => a.or(b),
+    };
+    old.binary |= new.binary;
+    old.new_mode = new.new_mode;
+    let mut hash = Sha256::new();
+    hash.update(old.digest.as_bytes());
+    hash.update(new.digest.as_bytes());
+    old.digest = hex::encode(hash.finalize());
 }
 
 /// One file's part of `git diff`'s output: its header, then its hunks.
@@ -98,10 +127,12 @@ fn section(lines: &[&str]) -> Option<FileDiff> {
             old_mode = Some(m.trim().to_owned());
         } else if let Some(m) = line.strip_prefix("new mode ") {
             new_mode = Some(m.trim().to_owned());
-        } else if line.starts_with("deleted file mode ") {
+        } else if let Some(m) = line.strip_prefix("deleted file mode ") {
             status = "deleted";
-        } else if line.starts_with("new file mode ") {
+            old_mode = Some(m.trim().to_owned());
+        } else if let Some(m) = line.strip_prefix("new file mode ") {
             status = "added";
+            new_mode = Some(m.trim().to_owned());
         } else if let Some(p) = line.strip_prefix("rename from ") {
             from = Some(unquote(p));
             status = "renamed";
@@ -406,12 +437,27 @@ fn repo_name(r: &str) -> bool {
 /// hunks. A binary file's says so, as git's does; one too large for the
 /// session to keep has its header alone.
 pub fn git_patch(f: &FileDiff) -> String {
+    // A type change, as git writes it: the file's deletion, then its addition.
+    if let (Some(o), Some(n)) = (&f.old_mode, &f.new_mode)
+        && (o == SYMLINK) != (n == SYMLINK)
+    {
+        let (gone, came) = split_type_change(f.patch.as_deref());
+        let half = |status: &str, patch: Option<String>, old_mode, new_mode| FileDiff {
+            status: status.to_owned(),
+            patch,
+            old_mode,
+            new_mode,
+            ..f.clone()
+        };
+        return git_patch(&half("deleted", gone, Some(o.clone()), None))
+            + &git_patch(&half("added", came, None, Some(n.clone())));
+    }
     let old = f.old_path.as_deref().unwrap_or(&f.path);
     let q = |prefix: &str, p: &str| quote(&format!("{prefix}{p}"));
     let mut out = format!("diff --git {} {}\n", q("a/", old), q("b/", &f.path));
     let added = matches!(f.status.as_str(), "added" | "untracked");
     let deleted = f.status == "deleted";
-    if let (Some(o), Some(n)) = (&f.old_mode, &f.new_mode) {
+    if let (Some(o), Some(n), false, false) = (&f.old_mode, &f.new_mode, added, deleted) {
         out.push_str(&format!("old mode {o}\nnew mode {n}\n"));
     } else if added {
         out.push_str(&format!(
@@ -447,6 +493,31 @@ pub fn git_patch(f: &FileDiff) -> String {
         out.push_str(&format!("--- {minus}\n+++ {plus}\n{patch}\n"));
     }
     out
+}
+
+/// A symbolic link's mode.
+const SYMLINK: &str = "120000";
+
+/// A type change's hunks, as [`parse`] joined them: those that only take
+/// lines out (`+0,0`), and those that only add them (`-0,0`).
+fn split_type_change(patch: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(patch) = patch else {
+        return (None, None);
+    };
+    let (mut gone, mut came): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+    let mut adding = false;
+    for line in patch.split('\n') {
+        if line.starts_with("@@") {
+            adding = line.starts_with("@@ -0,0 ");
+        }
+        if adding {
+            came.push(line);
+        } else {
+            gone.push(line);
+        }
+    }
+    let joined = |v: Vec<&str>| (!v.is_empty()).then(|| v.join("\n"));
+    (joined(gone), joined(came))
 }
 
 /// A path as git writes it: quoted, with C's escapes, when it has to be.
@@ -633,6 +704,53 @@ index c521009..e3b73eb 100644
         let after = parse(&OUTPUT.replace("731e575..237d8d7", "731e575..6adc4fc"));
         assert_ne!(before[0].digest, after[0].digest);
         assert_eq!(before[1..], after[1..]);
+    }
+
+    #[test]
+    fn a_file_that_became_a_symbolic_link_is_one_change() {
+        // What git printed for `x`, a file of two lines that became a link.
+        let out = "diff --git a/x b/x
+deleted file mode 100644
+index 814f4a4..0000000
+--- a/x
++++ /dev/null
+@@ -1,2 +0,0 @@
+-one
+-two
+diff --git a/x b/x
+new file mode 120000
+index 0000000..1de5659
+--- /dev/null
++++ b/x
+@@ -0,0 +1 @@
++target
+\\ No newline at end of file
+";
+        let files = parse(out);
+        assert_eq!(files.len(), 1);
+        let x = &files[0];
+        assert_eq!((x.path.as_str(), x.status.as_str()), ("x", "modified"));
+        assert_eq!(
+            (x.old_mode.as_deref(), x.new_mode.as_deref()),
+            (Some("100644"), Some("120000"))
+        );
+        assert_eq!(
+            x.patch.as_deref(),
+            Some(
+                "@@ -1,2 +0,0 @@\n-one\n-two\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file"
+            )
+        );
+        // Either half changing changes its digest.
+        let other = parse(&out.replace("+target", "+elsewhere"));
+        assert_ne!(other[0].digest, x.digest);
+        // Printed as git does, the deletion then the addition, but for the
+        // blobs' ids, which aren't kept.
+        let without_index: String = out
+            .lines()
+            .filter(|l| !l.starts_with("index "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(git_patch(x), without_index);
     }
 
     #[test]

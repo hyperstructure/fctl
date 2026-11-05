@@ -90,6 +90,9 @@ describe("git's hunks", () => {
     expect(hiddenBefore(hunks, 0)).toBe(2);
     expect(hiddenBefore(hunks, 1)).toBe(33);
     expect(firstLine(hunks)).toBeUndefined();
+    // A file that became a link: its old lines out, then its new one in.
+    const changed = parsePatch("@@ -1,2 +0,0 @@\n-one\n-two\n@@ -0,0 +1 @@\n+target");
+    expect(hiddenBefore(changed, 1)).toBe(0);
     expect(firstLine(parsePatch("@@ -0,0 +1,2 @@\n+#!/bin/sh\n+echo hi"))).toBe("#!/bin/sh");
   });
 

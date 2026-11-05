@@ -283,7 +283,8 @@ export function hiddenBefore(hunks: Hunk[], i: number): number {
   const h = hunks[i];
   if (!h) return 0;
   const prev = hunks[i - 1];
-  const from = prev ? prev.newStart + prev.newLines : 1;
+  // A hunk that only takes lines out starts after line 0.
+  const from = prev ? Math.max(prev.newStart + prev.newLines, 1) : 1;
   return Math.max(0, h.newStart - from);
 }
 
