@@ -114,20 +114,40 @@ fn type_changed(old: &mut FileDiff, new: FileDiff) {
 /// parts of whole files: all of it up to the start of the part that byte
 /// `at` falls in, which a cut leaves unfinished. `out` reaches a little past
 /// `at` (a header line's worth), so that a part that starts right there
-/// counts the one before it whole.
+/// counts the one before it whole. A file whose type changed comes as two
+/// parts under the same header line (its deletion, then its addition): a
+/// cut in its second leaves both unfinished.
 pub fn whole_parts(out: &[u8], at: usize) -> usize {
-    let mut start = 0;
+    // Where each of the last two parts starts, its header line, and
+    // whether `out` has all of that line.
+    let mut part: Option<(usize, &[u8], bool)> = None;
+    let mut before: Option<(usize, &[u8], bool)> = None;
     let mut line = 0;
     while line <= at && line < out.len() {
+        let end = out[line..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|e| line + e);
         if out[line..].starts_with(b"diff --git ") {
-            start = line;
+            before = part;
+            let header = &out[line..end.unwrap_or(out.len())];
+            part = Some((line, header, end.is_some()));
         }
-        match out[line..].iter().position(|&b| b == b'\n') {
-            Some(end) => line += end + 1,
+        match end {
+            Some(end) => line = end + 1,
             None => break,
         }
     }
-    start
+    match (part, before) {
+        // The second part of a type change, its header line maybe cut short.
+        (Some((_, header, whole)), Some((start, first, _)))
+            if first == header || (!whole && first.starts_with(header)) =>
+        {
+            start
+        }
+        (Some((start, ..)), _) => start,
+        (None, _) => 0,
+    }
 }
 
 /// One file's part of `git diff`'s output: its header, then its hunks.
@@ -831,6 +851,54 @@ index 0000000..1de5659
         assert_eq!(whole_parts(out, 10), 0);
         assert_eq!(whole_parts(b"", 0), 0);
         assert_eq!(parse(&OUTPUT[..third]).len(), 2);
+    }
+
+    #[test]
+    fn a_cut_in_a_type_change_leaves_both_of_its_parts() {
+        let out = "diff --git a/a.txt b/a.txt
+new file mode 100644
+--- /dev/null
++++ b/a.txt
+@@ -0,0 +1 @@
++a
+diff --git a/x b/x
+deleted file mode 100644
+--- a/x
++++ /dev/null
+@@ -1,2 +0,0 @@
+-one
+-two
+diff --git a/x b/x
+new file mode 120000
+--- /dev/null
++++ b/x
+@@ -0,0 +1 @@
++target
+diff --git a/z.txt b/z.txt
+new file mode 100644
+--- /dev/null
++++ b/z.txt
+@@ -0,0 +1 @@
++z
+";
+        let b = out.as_bytes();
+        let starts: Vec<usize> = out.match_indices("diff --git ").map(|(i, _)| i).collect();
+        let (deletion, addition, last) = (starts[1], starts[2], starts[3]);
+        // In the deletion, at the addition's start, in its header line or
+        // in its hunk: a.txt alone is whole.
+        for at in [deletion + 20, addition, addition + 5, addition + 40] {
+            assert_eq!(whole_parts(b, at), deletion, "{at}");
+        }
+        // The same, with `out` ending in the addition's header line.
+        assert_eq!(whole_parts(&b[..addition + 8], addition + 4), deletion);
+        // After the type change: it is whole, joined.
+        assert_eq!(whole_parts(b, last + 5), last);
+        let kept = parse(&out[..last]);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(
+            (kept[1].path.as_str(), kept[1].status.as_str()),
+            ("x", "modified")
+        );
     }
 
     #[test]
