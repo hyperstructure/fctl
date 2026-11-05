@@ -497,7 +497,10 @@ fn personal_enrollment(token: &str) -> Result<String> {
     )?;
     ok("making an enrollment token for one's own sessions", &res)?;
     if res.1["token"]["personal"] != json!(true) {
-        bail!("the enrollment token isn't for its maker's sessions: {}", res.1);
+        bail!(
+            "the enrollment token isn't for its maker's sessions: {}",
+            res.1
+        );
     }
     let secret = res.1["secret"].as_str().context("no secret")?.to_owned();
     let token_id = res.1["token"]["id"]
@@ -508,7 +511,10 @@ fn personal_enrollment(token: &str) -> Result<String> {
     let res = call("GET", "/runner/enroll", Some(&enrolling), None)?;
     ok("asking what the enrollment token enrolls in", &res)?;
     if res.1["owner"]["id"] != me {
-        bail!("the enrollment token doesn't enroll its maker's runners: {}", res.1);
+        bail!(
+            "the enrollment token doesn't enroll its maker's runners: {}",
+            res.1
+        );
     }
     let body = json!({ "name": "smoke-mine", "facts": { "os": "linux", "driver": "process" } });
     let res = call("POST", "/runner/enroll", Some(&enrolling), Some(body))?;
@@ -528,7 +534,10 @@ fn personal_enrollment(token: &str) -> Result<String> {
         || r["personal"] != json!([workspace])
         || !r["pending_until"].is_null()
     {
-        bail!("the enrolled runner doesn't run only its owner's sessions: {}", res.1);
+        bail!(
+            "the enrolled runner doesn't run only its owner's sessions: {}",
+            res.1
+        );
     }
     // It enrolled there and serves no other workspace: taking it out removes it.
     let res = call(
@@ -548,7 +557,10 @@ fn personal_enrollment(token: &str) -> Result<String> {
         None,
     )?;
     ok("revoking the enrollment token", &res)?;
-    Ok(", and one of its owner's enrolled for their sessions alone and went as it was taken out".into())
+    Ok(
+        ", and one of its owner's enrolled for their sessions alone and went as it was taken out"
+            .into(),
+    )
 }
 
 /// What the smoke test's agent keeps in the playground's memory.

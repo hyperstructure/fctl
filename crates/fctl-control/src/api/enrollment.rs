@@ -10,9 +10,9 @@ use crate::error::{AppError, AppResult, not_found};
 use crate::model::{RUNNER_SELECT, RunnerRow, RunnerView, workspace_ref};
 use crate::{http, internal, workspaces as ws};
 use fctl_domain::enrollment::{self, Refusal};
-use fctl_domain::workspace as policy;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::verify::Sensitive;
+use fctl_domain::workspace as policy;
 use fctl_proto::api::{
     CreateEnrollmentTokenRequest, CreatedEnrollmentToken, EnrollRunnerRequest, EnrollmentInfo,
     EnrollmentToken, EnrollmentTokenList, RunnerRegistration,

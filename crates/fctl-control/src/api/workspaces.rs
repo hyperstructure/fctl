@@ -1566,8 +1566,7 @@ pub async fn remove_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResul
     let role = a.require_open()?;
     let user = ctx.user()?.clone();
     let owner = runner_owner(ctx, runner_id).await?;
-    let enrolled_here =
-        owner.created_by.is_some() && owner.workspace_id.as_deref() == Some(a.id());
+    let enrolled_here = owner.created_by.is_some() && owner.workspace_id.as_deref() == Some(a.id());
     if !enrolled_here {
         its_workspaces_own(&owner, &a, runner_id)?;
     }
