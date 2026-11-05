@@ -77,9 +77,10 @@ pub enum HostCmd {
         /// Enroll this machine with a workspace's enrollment token
         /// (fctl_et_…), without signing in: it becomes one of the
         /// workspace's runners, with a runner token of its own, and runs
-        /// everyone's sessions there, once approved if the token says so.
-        /// Run again on a machine that enrolled in the same workspace, it
-        /// keeps that runner.
+        /// everyone's sessions there, or, with a token someone made for
+        /// their own sessions, becomes their runner and runs only theirs;
+        /// once approved if the token says so. Run again on a machine that
+        /// enrolled the same way, it keeps that runner.
         #[arg(
             long,
             env = "FCTL_ENROLL_TOKEN",
@@ -491,8 +492,11 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         (Some(w), Some(until)) => println!(
                             "runner:   {state}, {}",
                             style::amber(&format!(
-                                "waiting for an admin of {} to approve it: it takes sessions once one does (`fctl runners approve {}`), and is removed {} unless one does",
-                                w.name,
+                                "waiting for {} to approve it: it takes sessions once approved (`fctl runners approve {}`), and is removed {} unless it is",
+                                match &d.runner.created_by {
+                                    Some(u) => u.name.clone(),
+                                    None => format!("an admin of {}", w.name),
+                                },
                                 d.runner.id,
                                 style::until(until)
                             ))
@@ -699,14 +703,16 @@ impl Enrolling {
                         .workspace
                         .as_ref()
                         .is_some_and(|w| w.id == info.workspace.id)
+                        && d.runner.created_by.as_ref().map(|u| &u.id)
+                            == info.owner.as_ref().map(|u| &u.id)
                 })
                 .map(|d| (t, d.runner)),
             _ => None,
         };
-        let how = if info.approval {
-            ", once one of its admins approves it"
-        } else {
-            ""
+        let how = match (info.approval, &info.owner) {
+            (false, _) => String::new(),
+            (true, None) => ", once one of its admins approves it".to_owned(),
+            (true, Some(u)) => format!(", once {} approves it", u.name),
         };
         match &kept {
             Some((_, r)) => println!(
@@ -716,10 +722,14 @@ impl Enrolling {
                 info.workspace.name
             ),
             None => println!(
-                "{} Enrolls in {} with “{}”: the runner runs everyone's sessions there{how}",
+                "{} Enrolls in {} with “{}”: the runner runs {} there{how}",
                 style::accent("✓"),
                 style::bold(&info.workspace.name),
-                info.name
+                info.name,
+                match &info.owner {
+                    Some(u) => format!("only {}'s sessions", u.name),
+                    None => "everyone's sessions".to_owned(),
+                }
             ),
         }
         Ok(Self { api, info, kept })
@@ -760,20 +770,35 @@ impl Enrolling {
             style::bold(&r.name),
             r.id
         );
-        if let Some(until) = r.pending_until {
-            println!(
+        match (r.pending_until, &self.info.owner) {
+            (Some(until), None) => println!(
                 "{}",
                 style::amber(&format!(
                     "It waits for an admin of {workspace} to approve it, and takes sessions as soon as one does: they see it on {workspace}'s Runners tab, or run `fctl runners approve {}`. It is removed {} unless one does.",
                     r.id,
                     style::until(until)
                 ))
-            );
-        } else {
-            println!(
+            ),
+            (Some(until), Some(u)) => println!(
+                "{}",
+                style::amber(&format!(
+                    "It waits for {} to approve it, and takes their sessions as soon as they do: they see it on {workspace}'s Runners tab, or run `fctl runners approve {}`. It is removed {} unless they do.",
+                    u.name,
+                    r.id,
+                    style::until(until)
+                ))
+            ),
+            (None, None) => println!(
                 "{}",
                 style::dim(&format!("It runs everyone's sessions in {workspace}."))
-            );
+            ),
+            (None, Some(u)) => println!(
+                "{}",
+                style::dim(&format!(
+                    "It runs only {}'s sessions in {workspace}: it is theirs.",
+                    u.name
+                ))
+            ),
         }
         let gone = match r.remove_offline_after_minutes {
             Some(h) => format!(
@@ -931,9 +956,14 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
             Some(Err(e)) => println!(
                 "{}",
                 style::amber(&format!(
-                    "Could not remove runner {} from {workspace} ({}): its admins remove it from its Runners tab{}.",
+                    "Could not remove runner {} from {workspace} ({}): {} remove{} it from its Runners tab{}.",
                     r.name,
                     e.api().map_or_else(|| e.to_string(), |a| a.message.clone()),
+                    match &r.created_by {
+                        Some(u) => u.name.clone(),
+                        None => "its admins".to_owned(),
+                    },
+                    if r.created_by.is_some() { "s" } else { "" },
                     match r.remove_offline_after_minutes {
                         Some(h) => format!(
                             ", or fctl does once it has been offline for {}",
@@ -1183,7 +1213,8 @@ async fn auto_update(on: Option<bool>, json: bool) -> Result<()> {
 
 /// `fctl host status`'s line about the workspace an enrolled runner
 /// belongs to: `Acme's, enrolled with “Build fleet”; removed once offline
-/// for an hour, and when the host uninstalls`.
+/// for an hour, and when the host uninstalls`, or, for a member's own,
+/// `Acme, Ada's runner for their sessions, enrolled with …`.
 fn workspace_line(workspace: &str, r: &Runner) -> String {
     let with = r
         .enrollment
@@ -1198,7 +1229,11 @@ fn workspace_line(workspace: &str, r: &Runner) -> String {
         ),
         None => "removed when the host uninstalls".to_owned(),
     };
-    format!("{workspace}'s{with}; {}", style::dim(&gone))
+    let whose = match &r.created_by {
+        Some(u) => format!("{workspace}, {}'s runner for their sessions", u.name),
+        None => format!("{workspace}'s"),
+    };
+    format!("{whose}{with}; {}", style::dim(&gone))
 }
 
 /// `fctl host status`'s line about the Claude token the host keeps.

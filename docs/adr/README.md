@@ -77,3 +77,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0069](0069-releases-start-their-sandbox-image-and-homebrew-bump-as-a-github-app.md) | Releases start their sandbox image and Homebrew bump, as a GitHub App |
 | [0070](0070-linux-hosts-run-sandboxes-in-firecracker-microvms.md) | Linux hosts run sandboxes in Firecracker microVMs |
 | [0071](0071-runners-enroll-themselves-with-a-workspaces-enrollment-token.md) | Runners enroll themselves with a workspace's enrollment token |
+| [0072](0072-members-enroll-runners-for-their-own-sessions.md) | Members enroll runners for their own sessions |

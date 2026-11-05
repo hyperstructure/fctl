@@ -105,7 +105,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
 pub(crate) struct Managed {
     pub name: String,
     created_by: Option<String>,
-    /// The workspace it belongs to, when it enrolled in one.
+    /// The workspace it enrolled in: it belongs to it, unless it has an
+    /// owner (`created_by`), who made the token for their own sessions.
     pub workspace_id: Option<String>,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     pub pending_until: Option<i64>,
@@ -116,15 +117,15 @@ impl Managed {
     /// whether they are an admin there, and it is open to them.
     async fn owner(&self, ctx: &Ctx) -> AppResult<RunnerOwner> {
         let user = ctx.user()?;
-        Ok(match &self.workspace_id {
-            Some(w) => RunnerOwner::Workspace {
+        Ok(match (&self.workspace_id, &self.created_by) {
+            (Some(w), None) => RunnerOwner::Workspace {
                 admin: match ws::load(ctx, w).await {
                     Ok(a) => a.require_admin().is_ok(),
                     Err(_) => false,
                 },
             },
-            None => RunnerOwner::Person {
-                mine: self.created_by.as_deref() == Some(user.id.as_str()),
+            (_, owner) => RunnerOwner::Person {
+                mine: owner.as_deref() == Some(user.id.as_str()),
             },
         })
     }
@@ -308,7 +309,7 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 /// heartbeat, which finds the row gone, or, while it is offline, at the
 /// hourly job's sweep, or once its sessions stop waiting for it (ten
 /// minutes), whichever comes first.
-async fn let_go(ctx: &Ctx, id: &str, reason: &str) {
+pub(crate) async fn let_go(ctx: &Ctx, id: &str, reason: &str) {
     if let Err(e) = removed(&ctx.env, id, reason).await {
         worker::console_error!(
             "telling FleetObject runner {id} was removed (it lets it go at its next heartbeat, or its sweep): {}",
@@ -317,8 +318,10 @@ async fn let_go(ctx: &Ctx, id: &str, reason: &str) {
     }
 }
 
-/// A workspace's runner that waits for approval, for the admins of the
-/// workspace it belongs to, who approve or reject it.
+/// A runner that enrolled and may wait for approval, for those who
+/// approve or reject it: the admins of the workspace it belongs to, or,
+/// for one that enrolled with a token a member made for their own
+/// sessions, that member, while the workspace is open to them.
 async fn waiting_for_caller(ctx: &Ctx, id: &str) -> AppResult<(Managed, String)> {
     let runner = managed(ctx, id).await?;
     let Some(w) = runner.workspace_id.clone() else {
@@ -328,21 +331,36 @@ async fn waiting_for_caller(ctx: &Ctx, id: &str) -> AppResult<(Managed, String)>
     };
     // People outside the workspace are told it doesn't exist.
     let a = ws::load(ctx, &w).await.map_err(|_| not_found("Runner"))?;
-    a.require_admin().map_err(|_| {
-        forbidden("Only the admins of the workspace this runner enrolled in approve or reject it")
-    })?;
+    match runner.created_by.as_deref() {
+        Some(owner) => {
+            let mine = owner == ctx.user()?.id.as_str();
+            if !mine {
+                return Err(forbidden(
+                    "Only the person whose runner this is approves or rejects it: it enrolled with a token they made for their own sessions",
+                ));
+            }
+            a.require_open().map_err(|_| not_found("Runner"))?;
+        }
+        None => {
+            a.require_admin().map_err(|_| {
+                forbidden(
+                    "Only the admins of the workspace this runner enrolled in approve or reject it",
+                )
+            })?;
+        }
+    }
     Ok((runner, w))
 }
 
 /// `POST /api/v1/runners/{id}/approve`: an admin of the workspace a runner
-/// enrolled in lets it run everyone's sessions there. Its host takes
-/// sessions at once, without a restart. Approving one that is approved
-/// already changes nothing.
+/// enrolled in lets it run everyone's sessions there, or its owner lets it
+/// run theirs. Its host takes sessions at once, without a restart.
+/// Approving one that is approved already changes nothing.
 pub async fn approve(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let (runner, workspace_id) = waiting_for_caller(ctx, id).await?;
     if runner.pending_until.is_some() {
-        // It gets the workspace's sessions, with their code, secrets and
-        // tokens, as a runner added for everyone's sessions does.
+        // It gets the workspace's sessions, or its owner's, with their
+        // code, secrets and tokens, as a runner added for them does.
         ctx.verified(Sensitive::ApproveRunner)?;
         let me = ctx.user()?.id.clone();
         let changes = crate::db::batch_changes(
@@ -356,7 +374,7 @@ pub async fn approve(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
                 q(
                     &ctx.db,
                     "INSERT OR IGNORE INTO runner_workspaces (runner_id, workspace_id, added_by, created_at, personal) \
-                     SELECT r.id, r.workspace_id, ?3, ?4, 0 FROM runners r \
+                     SELECT r.id, r.workspace_id, ?3, ?4, r.created_by IS NOT NULL FROM runners r \
                      WHERE r.id = ?1 AND r.workspace_id = ?2 AND r.pending_until IS NULL",
                     &[s(id), s(&workspace_id), s(&me), n(ctx.now)],
                 )?,
@@ -378,8 +396,8 @@ pub async fn approve(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 /// `POST /api/v1/runners/{id}/reject`: an admin of the workspace a runner
-/// enrolled in turns it away: it is removed, and its token stops working.
-/// It no longer counts against its enrollment token's limit.
+/// enrolled in, or its owner, turns it away: it is removed, and its token
+/// stops working. It no longer counts against its enrollment token's limit.
 pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let (runner, workspace_id) = waiting_for_caller(ctx, id).await?;
     if runner.pending_until.is_none() {
@@ -412,19 +430,20 @@ pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 /// `POST /api/v1/runners/{id}/token`: a new token for a runner, for the
-/// person who registered it, or the admins of the workspace it belongs to
+/// person it belongs to (who registered it, or enrolled it with a token for
+/// their own sessions), or the admins of the workspace it belongs to
 /// (`fctl_domain::workspace::check_replace_runner_token`).
 pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let user_id = ctx.user()?.id.clone();
     let runner = managed(ctx, id).await?;
     fctl_domain::workspace::check_replace_runner_token(runner.owner(ctx).await?)?;
-    if let Some(w) = runner.workspace_id.clone() {
-        if runner.pending_until.is_some() {
-            return Err(conflict(&format!(
-                "{} waits for approval: approve or reject it first",
-                runner.name
-            )));
-        }
+    if runner.pending_until.is_some() {
+        return Err(conflict(&format!(
+            "{} waits for approval: approve or reject it first",
+            runner.name
+        )));
+    }
+    if let (Some(w), None) = (runner.workspace_id.clone(), &runner.created_by) {
         // Its workspace is open to them as its admin, as `owner` checked:
         // the new token runs its sessions, as approving it does.
         ctx.verified(Sensitive::AddRunner)?;
@@ -661,11 +680,15 @@ pub async fn drain_this_runner(ctx: &mut Ctx, req: &mut Request) -> AppResult<Re
 pub(crate) struct RunnerAuth {
     pub id: String,
     pub name: String,
-    /// The workspace it belongs to, when it enrolled in one.
+    /// The workspace it enrolled in, if it did.
     #[serde(default)]
     pub workspace_id: Option<String>,
     #[serde(default)]
     pub workspace_name: Option<String>,
+    /// The name of the person it belongs to, when it enrolled with a token
+    /// they made for their own sessions: they approve it.
+    #[serde(default)]
+    pub owner_name: Option<String>,
     /// While it waits for approval there: until when.
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     pub pending_until: Option<i64>,
@@ -682,8 +705,10 @@ pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAut
         .ok_or_else(|| AppError(ApiError::unauthorized()))?;
     let row: Option<RunnerAuth> = q(
         &ctx.db,
-        "SELECT r.id, r.name, r.workspace_id, w.name AS workspace_name, r.pending_until, \
+        "SELECT r.id, r.name, r.workspace_id, w.name AS workspace_name, \
+         CASE WHEN r.workspace_id IS NOT NULL THEN u.name END AS owner_name, r.pending_until, \
          r.remove_offline_after_minutes FROM runners r LEFT JOIN workspaces w ON w.id = r.workspace_id \
+         LEFT JOIN users u ON u.id = r.created_by \
          WHERE r.token_hash = ? AND r.enabled = 1",
         &[s(&hash_secret(&token))],
     )?
@@ -716,6 +741,7 @@ pub async fn connect(ctx: &Ctx, req: &Request) -> AppResult<Response> {
             .map(|until| fctl_proto::runner::PendingApproval {
                 workspace: r.workspace_name.clone().unwrap_or_default(),
                 until,
+                owner: r.owner_name.clone(),
             }),
         remove_after_ms: r
             .remove_offline_after_minutes

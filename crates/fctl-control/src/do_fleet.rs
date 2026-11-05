@@ -2917,7 +2917,8 @@ impl FleetObject {
         }
         let waiting: Vec<W> = match crate::db::q(
             db,
-            "SELECT DISTINCT workspace_id FROM runners WHERE pending_until IS NOT NULL AND workspace_id IS NOT NULL",
+            "SELECT DISTINCT workspace_id FROM runners WHERE pending_until IS NOT NULL AND workspace_id IS NOT NULL \
+             AND created_by IS NULL",
             &[],
         ) {
             Ok(q) => q.all().await.unwrap_or_default(),

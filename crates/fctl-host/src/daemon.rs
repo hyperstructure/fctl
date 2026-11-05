@@ -1195,13 +1195,17 @@ impl Daemon {
                 match pending {
                     // A runner that enrolled with a token that needs
                     // approval stays connected meanwhile, and takes
-                    // sessions as soon as an admin approves it.
+                    // sessions as soon as an admin approves it, or its
+                    // owner.
                     Some(p) => {
+                        let who = match &p.owner {
+                            Some(owner) => owner.clone(),
+                            None => format!("an admin of {}", p.workspace),
+                        };
                         tracing::info!(
-                            "registered as {} ({}); waiting for an admin of {} to approve it, until {}: it takes sessions once one does",
+                            "registered as {} ({}); waiting for {who} to approve it, until {}: it takes sessions once approved",
                             runner.name,
                             runner.id,
-                            p.workspace,
                             fctl_domain::account::iso8601(p.until)
                         );
                         self.waiting_for_approval = true;

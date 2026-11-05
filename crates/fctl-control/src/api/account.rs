@@ -286,6 +286,18 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "UPDATE runners SET enabled = 0 WHERE created_by = ?",
         &[s(id)],
     )?);
+    // The ones they enrolled for their own sessions serve no other
+    // workspace, and the tokens they made for that enroll none.
+    statements.push(q(
+        db,
+        "DELETE FROM runners WHERE created_by = ? AND workspace_id IS NOT NULL",
+        &[s(id)],
+    )?);
+    statements.push(q(
+        db,
+        "UPDATE enrollment_tokens SET revoked_at = ?2 WHERE created_by = ?1 AND personal = 1 AND revoked_at IS NULL",
+        &[s(id), n(ctx.now)],
+    )?);
     for table in [
         "identities",
         "tokens",

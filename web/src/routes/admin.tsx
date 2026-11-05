@@ -1418,7 +1418,10 @@ function Runners() {
                   {r.workspace ? (
                     <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-3">
                       <span className="inline-flex items-center gap-1.5">
-                        <WorkspaceAvatar workspace={r.workspace} size={14} /> {r.workspace.name}'s own
+                        <WorkspaceAvatar workspace={r.workspace} size={14} />{" "}
+                        {r.created_by
+                          ? `${r.created_by.name}'s, in ${r.workspace.name}`
+                          : `${r.workspace.name}'s own`}
                       </span>
                       {r.enrollment?.token_name && (
                         <span className="text-ink-4">· enrolled with “{r.enrollment.token_name}”</span>

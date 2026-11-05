@@ -2086,20 +2086,24 @@ pub struct Runner {
     ///
     /// [`HostHello::auto_update`]: crate::runner::HostHello::auto_update
     pub auto_update: Option<bool>,
-    /// The workspace it belongs to: it enrolled with one of the
-    /// workspace's enrollment tokens (`fctl host install --enroll`). Its
-    /// admins manage it, nobody owns it (`created_by` is absent), and it
-    /// runs everyone's sessions there and no other workspace's. Absent for
-    /// runners that belong to the person who registered them, and from
-    /// control planes before enrollment tokens.
+    /// The workspace it enrolled in with one of its enrollment tokens
+    /// (`fctl host install --enroll`), and the only one whose sessions it
+    /// runs. Without `created_by`, it belongs to the workspace: its admins
+    /// manage it, and it runs everyone's sessions there. With `created_by`,
+    /// it belongs to that person, who made the token for their own
+    /// sessions: it runs only theirs there (`personal`). Absent for runners
+    /// that were registered rather than enrolled, and from control planes
+    /// before enrollment tokens.
     pub workspace: Option<WorkspaceRef>,
-    /// How it enrolled, for its workspace's admins and instance admins.
-    /// Absent for other people and for runners that didn't enroll.
+    /// How it enrolled, for those who approve it (its workspace's admins,
+    /// or its owner when it is theirs) and instance admins. Absent for
+    /// other people and for runners that didn't enroll.
     pub enrollment: Option<RunnerEnrollment>,
-    /// Set while it waits for an admin of its workspace to approve it (its
-    /// enrollment token requires that): when it is removed unless one does.
-    /// It runs nothing and gets no credentials until then. Absent once
-    /// approved, and for runners that needed no approval.
+    /// Set while it waits for approval (its enrollment token requires
+    /// that): by an admin of its workspace, or by its owner when it is
+    /// theirs. When it is removed unless approved. It runs nothing and gets
+    /// no credentials until then. Absent once approved, and for runners
+    /// that needed no approval.
     pub pending_until: Option<Millis>,
     /// It is removed once it has been offline this many minutes, as its
     /// enrollment token said. Absent: it stays until someone removes it.
@@ -2170,7 +2174,12 @@ pub struct EnrollmentInfo {
     pub workspace: WorkspaceRef,
     /// The enrollment token's name.
     pub name: String,
-    /// The runners it enrolls wait for an admin to approve them.
+    /// The person whose runners it enrolls, for their own sessions in the
+    /// workspace ([`EnrollmentToken::personal`]). Absent: the workspace's
+    /// own runners, for everyone's sessions there.
+    pub owner: Option<UserRef>,
+    /// The runners it enrolls wait for approval: by an admin of the
+    /// workspace, or by `owner`.
     pub approval: bool,
     pub expires_at: Option<Millis>,
     pub max_runners: Option<u32>,
@@ -2180,9 +2189,10 @@ pub struct EnrollmentInfo {
 }
 
 /// A workspace's enrollment token: machines that autoscaling creates, or
-/// that someone sets up without signing in, enroll with it as the
-/// workspace's runners (`fctl host install --enroll`). Its admins make
-/// them on the Runners tab or with `fctl runners enrollment-tokens create`.
+/// that someone sets up without signing in, enroll with it as runners of
+/// the workspace (`fctl host install --enroll`). Its admins make them on
+/// the Runners tab or with `fctl runners enrollment-tokens create`, for
+/// everyone's sessions, and any member makes them for their own.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -2190,8 +2200,16 @@ pub struct EnrollmentToken {
     pub id: EnrollmentTokenId,
     /// What it is for ("Build fleet"), which the runners it enrolls show.
     pub name: String,
-    /// The runners it enrolls wait for an admin of the workspace to approve
-    /// them before they run anything.
+    /// For its maker's own sessions: the runners it enrolls belong to
+    /// `created_by` and run only their sessions in the workspace, so they
+    /// count as their runners for **Only on my runners** and for a Claude
+    /// token kept on their runners. Otherwise they belong to the workspace
+    /// and run everyone's sessions there. Absent (false) from control
+    /// planes before it, whose tokens are all for everyone's.
+    #[serde(default)]
+    pub personal: bool,
+    /// The runners it enrolls wait for approval before they run anything:
+    /// by an admin of the workspace, or, for `personal`, by its maker.
     pub approval: bool,
     /// The most runners it enrolls that may be there at once: removed,
     /// rejected and expired ones don't count. Absent: no limit.
@@ -2222,12 +2240,17 @@ pub struct EnrollmentTokenList {
     pub tokens: Vec<EnrollmentToken>,
 }
 
-/// `POST /api/v1/workspaces/{id}/enrollment-tokens` (its admins).
+/// `POST /api/v1/workspaces/{id}/enrollment-tokens`: its admins make
+/// tokens for everyone's sessions, and any member for their own.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct CreateEnrollmentTokenRequest {
     pub name: String,
+    /// See [`EnrollmentToken::personal`]. Absent: for your own sessions
+    /// when you are a member, for everyone's when you are an admin; only
+    /// admins make tokens for everyone's.
+    pub personal: Option<bool>,
     /// Hours until it expires, at most a year. Absent: never.
     pub expires_in_hours: Option<u32>,
     /// See [`EnrollmentToken::max_runners`].
