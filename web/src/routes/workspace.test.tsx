@@ -597,8 +597,10 @@ describe("a workspace's GitHub tab", () => {
     expect(page.textContent).toContain(
       "The fctl-sh app reaches no repository you can see on the accounts GitHub shows you, so there is nothing to connect yet.",
     );
-    // The button it points to.
-    expect(page.textContent).toContain("Install fctl-sh on GitHub");
+    // The button it points to, not just its name in the banner.
+    expect(button(page, "Install fctl-sh on GitHub")?.closest("a")?.getAttribute("href")).toBe(
+      github.install_url,
+    );
   });
 
   it("asks people back from GitHub to connect from here", () => {
