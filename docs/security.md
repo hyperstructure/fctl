@@ -557,6 +557,18 @@ sessions, or their token, on their own runners never run sessions on it.
 The admins see where each enrolled from, and the audit log records
 enrollments, approvals and removals.
 
+Any member makes an enrollment token for their own sessions
+([ADR 0072](adr/0072-members-enroll-runners-for-their-own-sessions.md)):
+the machines it enrolls are that member's runners and run only their
+sessions there, as a runner they add for their own does, so whoever has it
+reaches only what that member could read in their sessions, and the
+Claude token they keep on their runners when their machines keep it. It
+enrolls only while its maker is an active member of the workspace, the
+same confirmation makes it, and with approval its maker, not the
+workspace's admins, lets each runner in. The workspace's admins see these
+tokens and revoke them, and take such runners out, which removes them;
+they go when their owner leaves the workspace.
+
 A runner takes only the sessions of the workspaces it is added to, and so
 sees their code, secrets and the tokens of the people who start them: the
 session's GitHub tokens and the Claude token of the person it runs as. Its
@@ -678,9 +690,10 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   audit log, its enrollment tokens and the runners that enrolled with them;
   the instance's audit log records who deleted it.
 - A runner that enrolled keeps the address it enrolled from, and what its
-  host said of the machine, until it is removed: by an admin, as its host
-  uninstalls, once it stays offline longer than its enrollment token lets
-  it, or a week after it enrolled when nobody approves it. Revoked and
+  host said of the machine, until it is removed: by an admin or its owner,
+  as its host uninstalls, once it stays offline longer than its enrollment
+  token lets it, a week after it enrolled when nobody approves it, or, for
+  a member's own, when they leave the workspace or delete their account. Revoked and
   expired enrollment tokens are deleted 90 days on, once no runner they
   enrolled is left.
 - People delete their own account in Settings (Danger zone) or with

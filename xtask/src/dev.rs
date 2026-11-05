@@ -335,6 +335,7 @@ fn smoke(root: &Path, token: &str, local: bool, children: &mut Children) -> Resu
     let mut passed = res?;
     passed.push_str("; ");
     passed.push_str(&enrollment(token)?);
+    passed.push_str(&personal_enrollment(token)?);
     if local {
         passed.push_str("; ");
         passed.push_str(&linear::smoke(root, token, children)?);
@@ -471,6 +472,83 @@ fn enrollment(token: &str) -> Result<String> {
         bail!("a revoked enrollment token still enrolls");
     }
     Ok("a runner enrolled, waited, was approved and removed itself".into())
+}
+
+/// A machine enrolls with an enrollment token its maker made for their own
+/// sessions: the runner is theirs and runs only their sessions in the
+/// workspace, and taking it out of the workspace removes it. Only the API,
+/// as [`enrollment`].
+fn personal_enrollment(token: &str) -> Result<String> {
+    let owner = Auth::Bearer(token.to_owned());
+    let res = call("GET", "/auth/me", Some(&owner), None)?;
+    ok("asking who the CLI is", &res)?;
+    let me = res.1["user"]["id"].clone();
+    let res = call("GET", "/workspaces", Some(&owner), None)?;
+    ok("listing the workspaces", &res)?;
+    let workspace = res.1["workspaces"][0]["id"]
+        .as_str()
+        .context("no workspace")?
+        .to_owned();
+    let res = call(
+        "POST",
+        &format!("/workspaces/{workspace}/enrollment-tokens"),
+        Some(&owner),
+        Some(json!({ "name": "Smoke test, mine", "personal": true, "expires_in_hours": 1 })),
+    )?;
+    ok("making an enrollment token for one's own sessions", &res)?;
+    if res.1["token"]["personal"] != json!(true) {
+        bail!("the enrollment token isn't for its maker's sessions: {}", res.1);
+    }
+    let secret = res.1["secret"].as_str().context("no secret")?.to_owned();
+    let token_id = res.1["token"]["id"]
+        .as_str()
+        .context("no token id")?
+        .to_owned();
+    let enrolling = Auth::Bearer(secret);
+    let res = call("GET", "/runner/enroll", Some(&enrolling), None)?;
+    ok("asking what the enrollment token enrolls in", &res)?;
+    if res.1["owner"]["id"] != me {
+        bail!("the enrollment token doesn't enroll its maker's runners: {}", res.1);
+    }
+    let body = json!({ "name": "smoke-mine", "facts": { "os": "linux", "driver": "process" } });
+    let res = call("POST", "/runner/enroll", Some(&enrolling), Some(body))?;
+    ok("enrolling a runner of one's own", &res)?;
+    let runner = res.1["runner"]["id"]
+        .as_str()
+        .context("no runner")?
+        .to_owned();
+    let runner_token = Auth::Bearer(
+        res.1["token"]
+            .as_str()
+            .context("no runner token")?
+            .to_owned(),
+    );
+    let r = &res.1["runner"];
+    if r["created_by"]["id"] != me
+        || r["personal"] != json!([workspace])
+        || !r["pending_until"].is_null()
+    {
+        bail!("the enrolled runner doesn't run only its owner's sessions: {}", res.1);
+    }
+    // It enrolled there and serves no other workspace: taking it out removes it.
+    let res = call(
+        "DELETE",
+        &format!("/workspaces/{workspace}/runners/{runner}"),
+        Some(&owner),
+        None,
+    )?;
+    ok("taking the runner out of the workspace", &res)?;
+    if call("GET", "/runner", Some(&runner_token), None)?.0 != 401 {
+        bail!("a runner of one's own that was taken out still works");
+    }
+    let res = call(
+        "DELETE",
+        &format!("/workspaces/{workspace}/enrollment-tokens/{token_id}"),
+        Some(&owner),
+        None,
+    )?;
+    ok("revoking the enrollment token", &res)?;
+    Ok(", and one of its owner's enrolled for their sessions alone and went as it was taken out".into())
 }
 
 /// What the smoke test's agent keeps in the playground's memory.
