@@ -327,6 +327,8 @@ export const api = {
       status?: string;
       limit?: number;
       before?: number;
+      /** Without those that ended before then (ms). */
+      activeSince?: number;
       mine?: boolean;
     } = {},
   ) => {
@@ -334,6 +336,7 @@ export const api = {
     if (q.project) p.set("project", q.project);
     if (q.workspace) p.set("workspace", q.workspace);
     if (q.status) p.set("status", q.status);
+    if (q.activeSince) p.set("active_since", String(q.activeSince));
     if (q.limit) p.set("limit", String(q.limit));
     if (q.before) p.set("before", String(q.before));
     if (q.mine) p.set("mine", "1");

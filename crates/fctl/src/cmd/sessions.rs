@@ -94,12 +94,28 @@ pub struct ListArgs {
     /// Only active sessions.
     #[arg(short, long)]
     pub active: bool,
+    /// Only sessions at work in this long, like 1h or 2d: those that
+    /// haven't ended, and those that ended in it.
+    #[arg(long, value_name = "DURATION", value_parser = since_arg)]
+    pub since: Option<Since>,
     /// The archived sessions too, which lists leave out.
     #[arg(long)]
     pub archived: bool,
     /// How many to show.
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
+}
+
+/// How far back `fctl sessions --since` looks, in milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Since(i64);
+
+/// `30m`, `1h`, `2d`, `1h30m`.
+fn since_arg(s: &str) -> std::result::Result<Since, String> {
+    super::schedules::duration_ms(s)
+        .filter(|&ms| ms > 0)
+        .map(Since)
+        .ok_or_else(|| format!("{s:?} isn't a duration fctl reads: give one like 30m, 1h or 2d"))
 }
 
 #[derive(Args)]
@@ -296,15 +312,21 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
         None => args.project.or_else(|| config::CliConfig::load().project),
     };
     let status = args.active.then_some("active");
-    let list = api
+    let since = args.since.map(|Since(ms)| style::now_ms() - ms);
+    let mut list = api
         .sessions_in(
             args.workspace.as_deref(),
             project.as_deref(),
             status,
+            since,
             args.archived,
             args.limit,
         )
         .await?;
+    // A control plane from before `active_since` lists the others too.
+    if let Some(t) = since {
+        list.sessions.retain(|s| active_since(s, t));
+    }
     if json {
         return style::print_json(&list);
     }
@@ -326,6 +348,12 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
         );
     }
     Ok(())
+}
+
+/// Whether `s` was at work at some time since `t`: it hasn't ended, or
+/// ended since.
+fn active_since(s: &Session, t: i64) -> bool {
+    !s.status.is_terminal() || s.ended_at.is_some_and(|e| e >= t)
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -1218,6 +1246,29 @@ mod tests {
                 at("draft, fctl's review agent is reviewing it"),
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn since_keeps_the_sessions_at_work_in_that_time() -> Result<()> {
+        let session = |status: &str, ended_at: Option<i64>| -> Result<Session> {
+            Ok(serde_json::from_value(serde_json::json!({
+                "id": "ses_1", "project_id": "prj_1", "project_slug": "app", "number": 1,
+                "title": "Fix it", "status": status, "ended_at": ended_at,
+                "created_by": { "id": "usr_1", "name": "Ada" },
+                "created_at": 1, "updated_at": 1, "stats": {}, "archived": false
+            }))?)
+        };
+        assert!(active_since(&session("running", None)?, 1_000));
+        assert!(active_since(&session("idle", None)?, 1_000));
+        assert!(active_since(&session("stopped", Some(1_000))?, 1_000));
+        assert!(active_since(&session("failed", Some(2_000))?, 1_000));
+        assert!(!active_since(&session("stopped", Some(999))?, 1_000));
+        assert!(!active_since(&session("stopped", None)?, 1_000));
+        assert_eq!(since_arg("1h"), Ok(Since(3_600_000)));
+        assert_eq!(since_arg("1h30m"), Ok(Since(5_400_000)));
+        assert!(since_arg("0m").is_err());
+        assert!(since_arg("an hour").is_err());
         Ok(())
     }
 }

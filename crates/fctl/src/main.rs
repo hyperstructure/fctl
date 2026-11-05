@@ -591,6 +591,13 @@ mod tests {
             }))
         ));
         assert!(matches!(
+            parse(&["sessions", "--since", "1h"]),
+            Ok(Command::Sessions(cmd::sessions::ListArgs {
+                since: Some(_),
+                ..
+            }))
+        ));
+        assert!(matches!(
             parse(&["projects", "secrets", "set", "STRIPE_KEY", "-p", "my-app"]),
             Ok(Command::Projects(cmd::projects::ProjectsCmd::Secrets(_)))
         ));

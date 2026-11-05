@@ -288,9 +288,13 @@ pub fn source_of(ctx: &Ctx) -> MessageSource {
     }
 }
 
+/// The statuses of sessions that haven't ended, for SQL's `IN`.
+const UNENDED: &str = "'queued','provisioning','preparing','running','idle','paused','stopping'";
+
 /// `GET /api/v1/sessions`: the sessions the caller sees, in all their
 /// workspaces (`?workspace=` one), newest first, without review agents'
-/// (`?reviews=1` keeps them).
+/// (`?reviews=1` keeps them). `?active_since=` leaves out those that
+/// ended before then.
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
     let settings = ctx.settings();
@@ -320,14 +324,33 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     }
     if let Some(status) = http::query(req, "status") {
         match status.as_str() {
-            "active" => sql.push_str(" AND s.status IN ('queued','provisioning','preparing','running','idle','paused','stopping')"),
+            "active" => sql.push_str(&format!(" AND s.status IN ({UNENDED})")),
             "ended" => sql.push_str(" AND s.status IN ('stopped','failed')"),
             other => {
-                let st = SessionStatus::parse(other).ok_or_else(|| validation("status", "Unknown status"))?;
+                let st = SessionStatus::parse(other)
+                    .ok_or_else(|| validation("status", "Unknown status"))?;
                 params.push(s(st.as_str()));
                 sql.push_str(&format!(" AND s.status = ?{}", params.len()));
             }
         }
+    }
+    // The sessions at work at some time since then: those that haven't
+    // ended, and those that ended since (the web app's sidebar lists the
+    // last hour's). Each found by its own index, `sessions_status` and
+    // `sessions_ended`, rather than among all the caller's sessions.
+    if let Some(since) = http::query(req, "active_since") {
+        let since: i64 = since.parse().map_err(|_| {
+            validation(
+                "active_since",
+                "A time in milliseconds since 1970, like created_at",
+            )
+        })?;
+        params.push(n(since));
+        sql.push_str(&format!(
+            " AND s.id IN (SELECT id FROM sessions WHERE status IN ({UNENDED}) \
+             UNION ALL SELECT id FROM sessions WHERE ended_at >= ?{})",
+            params.len()
+        ));
     }
     if http::query(req, "mine").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.created_by = ?1");

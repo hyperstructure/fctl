@@ -107,7 +107,9 @@ It answers with the session, `queued`. A session is:
 - `GET /api/v1/sessions`: the sessions the caller sees, newest first,
   without review agents' and archived ones. `?project=`, `?workspace=`,
   `?status=active` (queued to stopping), `?status=ended` (stopped or
-  failed) or one status, `?mine=1` (started by the caller), `?reviews=1`,
+  failed) or one status, `?active_since=` (a time in milliseconds: those
+  that haven't ended, and those that ended since, as the app's sidebar
+  lists the last hour's), `?mine=1` (started by the caller), `?reviews=1`,
   `?archived=1`, `?limit=` (50 unless set, at most 200), `?before=` (a
   `created_at`). Answers `{"sessions": […], "next_before": …}`.
 - `GET /api/v1/sessions/{id}`: one session.
