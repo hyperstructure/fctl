@@ -110,6 +110,21 @@ async function showTab(page) {
   });
 }
 
+/**
+ * Opens a changed file's diff over the session's page, as someone would
+ * from its Changes: in the rail, or on a phone in the details sheet. Waits
+ * for its colors, and moves the pointer off what it clicked, so that the
+ * dialog's buttons under it don't show hovered.
+ */
+async function openDiff(page, file, { phone = false } = {}) {
+  if (phone) await page.getByRole("button", { name: "Details" }).click();
+  const name = new RegExp(`^${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, `);
+  await page.getByRole("button", { name }).first().click();
+  await page.locator("dialog[open] .diff-code span[style]").first().waitFor({ timeout: 10_000 });
+  await page.mouse.move(1, 1);
+  await page.waitForTimeout(400);
+}
+
 /** Opens the transcript's setup row. */
 async function openSetup(page) {
   await page.locator('button:has-text("Sandbox ready in")').first().click();
@@ -144,6 +159,16 @@ const pages = {
     },
     { name: "phone-floor", path: "/", phone: true, settle: 3000 },
     { name: "phone-session", path: session("shop#231"), phone: true, settle: 2500 },
+    // Asha's agent's fix for the double charge, a file of it over the page.
+    { name: "diff", path: session("platform#437"), act: (page) => openDiff(page, "src/billing/charge.rs") },
+    // The shop's prices in Danish kroner, as shop#231 changed them.
+    {
+      name: "phone-diff",
+      path: session("shop#231"),
+      phone: true,
+      settle: 2500,
+      act: (page) => openDiff(page, "src/lib/money.ts", { phone: true }),
+    },
   ],
   workspaces: [
     { name: "workspace", path: "/w/romanesco", thumb: true },
@@ -193,7 +218,13 @@ const pages = {
     },
     { name: "outside", path: session("milkfloat#94"), settle: 2000 },
     { name: "phone-reviews", path: "/p/platform?tab=reviews", phone: true },
-    { name: "phone-review", path: session("platform#438"), phone: true },
+    // What the review read: a file of the pull request it reviewed.
+    {
+      name: "phone-diff",
+      path: session("platform#438"),
+      phone: true,
+      act: (page) => openDiff(page, "src/billing/charge.rs", { phone: true }),
+    },
   ],
   memory: [
     {
