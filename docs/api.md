@@ -310,7 +310,12 @@ The rest of the API is what the web app and the CLI use for people,
 workspaces, runners, Claude connections, notifications and administration:
 `/api/v1/workspaces/…`, `/api/v1/runners/…`, `/api/v1/me/…`,
 `/api/v1/admin/…`, `/api/v1/auth/…`. Access tokens with limits reach none
-of it. The routes are listed in
+of it. A machine enrolls as a workspace's runner with one of its enrollment
+tokens as the bearer token, as `fctl host install --enroll` does: `GET
+/api/v1/runner/enroll` says what the token enrolls in (or why it can't),
+and `POST /api/v1/runner/enroll` with `{"name": "…", "facts": {…}}` answers
+with the runner and its own runner token
+([Enrollment tokens](architecture.md#enrollment-tokens)). The routes are listed in
 [`crates/fctl-control/src/lib.rs`](../crates/fctl-control/src/lib.rs), and
 [`crates/fctl-client/src/api.rs`](../crates/fctl-client/src/api.rs), the
 CLI's client, calls each with its types.

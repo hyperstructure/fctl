@@ -262,8 +262,9 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
     let Some(kind) = SecretKind::of(&secret) else {
         return Err(AppError(ApiError::unauthorized()));
     };
-    // Runner tokens are checked by the runner endpoints themselves.
-    if kind == SecretKind::Runner {
+    // Runner and enrollment tokens are checked by the endpoints for hosts
+    // themselves.
+    if matches!(kind, SecretKind::Runner | SecretKind::Enrollment) {
         return Ok(());
     }
     if !matches!(

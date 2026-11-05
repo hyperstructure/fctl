@@ -8,6 +8,7 @@ import { Check, Cpu, FolderPlus, KeyRound, Plus, ShieldCheck, Users } from "luci
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { PlanUsageStrip } from "@/components/plan-usage";
 import { ScheduleButton } from "@/components/project/schedules";
+import { RunnerApprovals } from "@/components/runner-approvals";
 import { RunnerUpdate } from "@/components/runner-update";
 import {
   AttachButton,
@@ -760,6 +761,7 @@ export function Home() {
               </Link>
             </div>
           ))}
+          <RunnerApprovals />
           {me && <RunnerUpdate user={me.user.id} />}
           {workspaces.data && mine.length === 0 && (
             <NoWorkspace invited={workspaces.data.invitations.length > 0} />

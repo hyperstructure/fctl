@@ -111,6 +111,25 @@ describe("the note under a start form", () => {
     expect(text.querySelector("a")?.getAttribute("href")).toBe("/w/side-project?tab=runners");
   });
 
+  it("tells its admins when a runner waits for their approval", () => {
+    const waiting = (id: string) =>
+      runner({
+        id,
+        yours: false,
+        workspaces: [],
+        workspace: { id: side.id, slug: side.slug, name: side.name, color: side.color },
+        pending_until: 9,
+      });
+    const text = note(side, [waiting("build-7")]);
+    expect(text.textContent).toBe(
+      "A runner waits for your approval in Side project: sessions you start here wait until it is approved and online. Review it",
+    );
+    expect(text.querySelector("a")?.getAttribute("href")).toBe("/w/side-project?tab=runners");
+    expect(note(side, [waiting("build-7"), waiting("build-8")]).textContent).toBe(
+      "2 runners wait for your approval in Side project: sessions you start here wait until one is approved and online. Review them",
+    );
+  });
+
   it("tells members whom to ask, or to add their own", () => {
     const text = note(member, []);
     expect(text.textContent).toBe(

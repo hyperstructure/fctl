@@ -402,6 +402,10 @@ export const api = {
     request<G.Runner>("PATCH", `/runners/${enc(id)}`, b),
   deleteRunner: (id: string) => request<G.Ok>("DELETE", `/runners/${enc(id)}`),
   rotateRunner: (id: string) => request<G.RunnerRegistration>("POST", `/runners/${enc(id)}/token`, {}),
+  /** Lets a runner that waits in a workspace you are an admin of run everyone's sessions there. */
+  approveRunner: (id: string) => request<G.Runner>("POST", `/runners/${enc(id)}/approve`, {}),
+  /** Removes a runner that waits for approval: its token stops working. */
+  rejectRunner: (id: string) => request<G.Ok>("POST", `/runners/${enc(id)}/reject`, {}),
 
   users: () => request<G.UserList>("GET", "/admin/users"),
   updateUser: (id: string, b: G.UpdateUserRequest) => request<G.User>("PATCH", `/admin/users/${enc(id)}`, b),
@@ -486,6 +490,15 @@ export const workspaces = {
     } satisfies G.AddRunnerRequest),
   removeRunner: (id: string, runner: string) =>
     request<G.RunnerList>("DELETE", `/workspaces/${enc(id)}/runners/${enc(runner)}`),
+  /** Its enrollment tokens (its admins), newest first. */
+  enrollmentTokens: (id: string) =>
+    request<G.EnrollmentTokenList>("GET", `/workspaces/${enc(id)}/enrollment-tokens`),
+  /** A new enrollment token, with its secret, shown once. */
+  createEnrollmentToken: (id: string, b: G.CreateEnrollmentTokenRequest) =>
+    request<G.CreatedEnrollmentToken>("POST", `/workspaces/${enc(id)}/enrollment-tokens`, b),
+  /** Revokes one: it enrolls no more runners, and those it enrolled stay. */
+  revokeEnrollmentToken: (id: string, token: string) =>
+    request<G.EnrollmentToken>("DELETE", `/workspaces/${enc(id)}/enrollment-tokens/${enc(token)}`),
   github: (id: string) => request<G.WorkspaceGithub>("GET", `/workspaces/${enc(id)}/github`),
   // Which app posts review agents' reviews on each of its GitHub accounts.
   reviewApp: (id: string) => request<G.WorkspaceReviewApp>("GET", `/workspaces/${enc(id)}/github/review-app`),

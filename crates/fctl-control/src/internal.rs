@@ -244,6 +244,10 @@ pub struct FeedIdentity {
     /// The workspaces open to them.
     #[serde(default)]
     pub workspaces: Vec<String>,
+    /// Of those, the ones they are an admin of: they see the runners that
+    /// wait there for approval, and how each runner there enrolled.
+    #[serde(default)]
+    pub admin_of: Vec<String>,
     /// The token the feed was opened with, which FleetObject checks again,
     /// with what they see, while the socket stays open.
     #[serde(default)]
@@ -261,6 +265,7 @@ impl FeedIdentity {
             && self.projects == other.projects
             && self.sees_all == other.sees_all
             && self.workspaces == other.workspaces
+            && self.admin_of == other.admin_of
     }
 
     /// Whether they see a session of `project_id` in `workspace_id`: they
@@ -285,6 +290,32 @@ pub struct WorkspacesChanged {
 #[derive(Serialize, Deserialize)]
 pub struct RunnerChanged {
     pub runner_id: String,
+    /// An admin of its workspace approved it: its host hears it takes
+    /// sessions now.
+    #[serde(default)]
+    pub approved: bool,
+}
+
+/// A runner was removed (`/runner-removed`): its connections close, the
+/// sessions it ran stop, and every trace of it in FleetObject goes.
+#[derive(Serialize, Deserialize)]
+pub struct RunnerRemoved {
+    pub runner_id: String,
+    /// What the sessions it ran say, now stopped.
+    pub reason: String,
+}
+
+/// What `/runner` connects: the runner, and, while it waits for approval,
+/// for which workspace and until when.
+#[derive(Serialize, Deserialize)]
+pub struct RunnerIdent {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<fctl_proto::runner::PendingApproval>,
+    /// Its enrollment token removes it once it has been offline this long.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_after_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Default)]

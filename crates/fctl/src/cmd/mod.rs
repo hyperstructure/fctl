@@ -16,6 +16,7 @@ pub mod publish;
 pub mod resolve;
 pub mod retro;
 pub mod review;
+pub mod runners;
 pub mod schedules;
 pub mod search;
 pub mod selfcmd;

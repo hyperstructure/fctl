@@ -1,14 +1,18 @@
-//! `/api/v1/runners/*` (admin) and `/api/v1/runner/*` (hosts).
+//! `/api/v1/runners/*` (people) and `/api/v1/runner/*` (hosts, with their
+//! runner token).
 
+use crate::api::workspaces::Viewer;
 use crate::ctx::Ctx;
-use crate::db::{q, s};
-use crate::error::{AppError, AppResult, forbidden, not_found};
+use crate::db::{n, q, s};
+use crate::error::{AppError, AppResult, conflict, forbidden, not_found};
 use crate::http;
 use crate::internal::{self, FeedIdentity, LiveRunners};
 use crate::model::{RUNNER_SELECT, RunnerRow, RunnerView};
+use crate::workspaces as ws;
 use fctl_domain::tokens::{SecretKind, hash_secret, new_secret};
 use fctl_domain::validate;
 use fctl_domain::verify::Sensitive;
+use fctl_domain::workspace::RunnerOwner;
 use fctl_proto::ApiError;
 use fctl_proto::api::*;
 use worker::{Request, Response};
@@ -20,19 +24,11 @@ async fn live(ctx: &Ctx) -> LiveRunners {
     }
 }
 
-/// What the caller sees of runners: instance admins all of them; others
-/// those of their workspaces, and their own.
-async fn view(ctx: &Ctx) -> AppResult<(Option<Vec<String>>, String)> {
-    crate::api::workspaces::runner_view_for(ctx).await
-}
-
-/// `GET /api/v1/runners`: the runners the caller sees.
+/// `GET /api/v1/runners`: the runners the caller sees: instance admins all
+/// of them; others those of their workspaces, and their own.
 pub async fn list(ctx: &Ctx) -> AppResult<Response> {
-    let (workspaces, user_id) = view(ctx).await?;
-    let view = RunnerView {
-        user_id: Some(&user_id),
-        workspaces: workspaces.as_deref(),
-    };
+    let viewer = Viewer::instance(ctx).await?;
+    let view = viewer.view();
     let rows: Vec<RunnerRow> = q(
         &ctx.db,
         &format!("{RUNNER_SELECT} ORDER BY r.created_at"),
@@ -104,41 +100,69 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     http::created(&reg)
 }
 
-/// The caller may manage a runner as a machine (rename, disable, drain,
-/// remove): its owner, or an instance admin. A new token is for its owner
-/// alone ([`rotate_token`]).
-async fn require_manager(ctx: &Ctx, id: &str) -> AppResult<()> {
-    let user = ctx.user()?;
-    if user.is_admin() {
-        return Ok(());
+/// A runner, as the checks of who may manage it need it.
+#[derive(serde::Deserialize)]
+pub(crate) struct Managed {
+    pub name: String,
+    created_by: Option<String>,
+    /// The workspace it belongs to, when it enrolled in one.
+    pub workspace_id: Option<String>,
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    pub pending_until: Option<i64>,
+}
+
+impl Managed {
+    /// Whom it belongs to, as the caller sees it: for a workspace's runner,
+    /// whether they are an admin there, and it is open to them.
+    async fn owner(&self, ctx: &Ctx) -> AppResult<RunnerOwner> {
+        let user = ctx.user()?;
+        Ok(match &self.workspace_id {
+            Some(w) => RunnerOwner::Workspace {
+                admin: match ws::load(ctx, w).await {
+                    Ok(a) => a.require_admin().is_ok(),
+                    Err(_) => false,
+                },
+            },
+            None => RunnerOwner::Person {
+                mine: self.created_by.as_deref() == Some(user.id.as_str()),
+            },
+        })
     }
-    #[derive(serde::Deserialize)]
-    struct Owner {
-        created_by: Option<String>,
-    }
-    let owner: Option<Owner> = q(
+}
+
+async fn managed(ctx: &Ctx, id: &str) -> AppResult<Managed> {
+    q(
         &ctx.db,
-        "SELECT created_by FROM runners WHERE id = ?",
+        "SELECT name, created_by, workspace_id, pending_until FROM runners WHERE id = ?",
         &[s(id)],
     )?
     .first()
-    .await?;
-    match owner {
-        Some(o) if o.created_by.as_deref() == Some(user.id.as_str()) => Ok(()),
-        Some(_) => Err(forbidden(
-            "Only the runner's owner and instance admins can do this",
-        )),
-        None => Err(not_found("Runner")),
+    .await?
+    .ok_or_else(|| not_found("Runner"))
+}
+
+/// The caller may manage a runner as a machine (rename, disable, drain,
+/// remove): who registered it, the admins of the workspace it belongs to,
+/// or an instance admin (`fctl_domain::workspace::can_manage_runner`). A
+/// new token is for its owners alone ([`rotate_token`]).
+async fn require_manager(ctx: &Ctx, id: &str) -> AppResult<Managed> {
+    let runner = managed(ctx, id).await?;
+    let owner = runner.owner(ctx).await?;
+    if fctl_domain::workspace::can_manage_runner(owner, ctx.user()?.is_admin()) {
+        return Ok(runner);
     }
+    Err(forbidden(match owner {
+        RunnerOwner::Workspace { .. } => {
+            "Only the admins of the workspace this runner belongs to, and instance admins, can do this"
+        }
+        RunnerOwner::Person { .. } => "Only the runner's owner and instance admins can do this",
+    }))
 }
 
 /// One runner as the caller sees it.
 async fn one(ctx: &Ctx, id: &str, live: &LiveRunners) -> AppResult<Runner> {
-    let (workspaces, user_id) = view(ctx).await?;
-    let view = RunnerView {
-        user_id: Some(&user_id),
-        workspaces: workspaces.as_deref(),
-    };
+    let viewer = Viewer::instance(ctx).await?;
+    let view = viewer.view();
     let rows: Vec<RunnerRow> = q(
         &ctx.db,
         &format!("{RUNNER_SELECT} WHERE r.id = ?"),
@@ -152,15 +176,58 @@ async fn one(ctx: &Ctx, id: &str, live: &LiveRunners) -> AppResult<Runner> {
         .to_runner(live, &view))
 }
 
+/// Tells FleetObject that a runner's workspaces changed (after the
+/// response): feeds update, queued sessions may start on it, and the
+/// sessions it runs where it no longer serves stop. `approved`: an admin
+/// of its workspace approved it, which its host hears.
+pub(crate) fn changed(ctx: &Ctx, runner_id: &str, approved: bool) {
+    let env = ctx.env.clone();
+    let runner_id = runner_id.to_owned();
+    ctx.defer(async move {
+        let stub = internal::fleet_stub(&env)?;
+        let _: serde_json::Value = internal::post(
+            &stub,
+            "/runner-changed",
+            &internal::RunnerChanged {
+                runner_id,
+                approved,
+            },
+        )
+        .await?;
+        Ok(())
+    });
+}
+
+/// Tells FleetObject that a runner is gone: its control connection and
+/// uplinks close, the sessions it ran stop, saying `reason`, and lists
+/// drop it. Call it once its row is deleted, which is what decides: a host
+/// that connects as it goes, or a connected runner FleetObject wasn't told
+/// of, finds the row gone at the connection's next hello or heartbeat, and
+/// FleetObject lets the runner go then (`FleetObject::in_d1`); an offline
+/// one goes at the hourly sweep, or once its sessions stop waiting for it.
+pub(crate) async fn removed(env: &worker::Env, runner_id: &str, reason: &str) -> AppResult<()> {
+    let stub = internal::fleet_stub(env)?;
+    let _: serde_json::Value = internal::post(
+        &stub,
+        "/runner-removed",
+        &internal::RunnerRemoved {
+            runner_id: runner_id.to_owned(),
+            reason: reason.to_owned(),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateRunnerRequest = http::body(req).await?;
-    require_manager(ctx, id).await?;
+    let runner = require_manager(ctx, id).await?;
     let name = body
         .name
         .as_deref()
         .map(|v| validate::name("name", v))
         .transpose()?;
-    let changed = q(
+    let updated = q(
         &ctx.db,
         "UPDATE runners SET name = COALESCE(?, name), enabled = COALESCE(?, enabled) WHERE id = ?",
         &[
@@ -171,17 +238,11 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     )?
     .run()
     .await?;
-    if changed == 0 {
+    if updated == 0 {
         return Err(not_found("Runner"));
     }
     if body.enabled == Some(false) {
-        let stub = internal::fleet_stub(&ctx.env)?;
-        let _: serde_json::Value = internal::post(
-            &stub,
-            "/runner-disabled",
-            &serde_json::json!({ "runner_id": id }),
-        )
-        .await?;
+        disconnect(ctx, id).await?;
     }
     if let Some(draining) = body.draining {
         let name: Option<NameRow> = q(&ctx.db, "SELECT name FROM runners WHERE id = ?", &[s(id)])?
@@ -199,19 +260,30 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         .await?;
     }
     ctx.audit("runner.updated", Some(id), None);
+    if let Some(w) = &runner.workspace_id {
+        ctx.audit_in(
+            Some(w),
+            "workspace.runner_updated",
+            Some(id),
+            Some(serde_json::json!({
+                "name": name.as_deref().unwrap_or(&runner.name),
+                "enabled": body.enabled,
+                "draining": body.draining,
+            })),
+        );
+    }
+    // Feeds show its new name.
+    if name.is_some() {
+        changed(ctx, id, false);
+    }
     let live = live(ctx).await;
     http::ok(&one(ctx, id, &live).await?)
 }
 
+/// `DELETE /api/v1/runners/{id}`: removes a runner: its token stops
+/// working, and the sessions it ran stop and resume elsewhere.
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
-    require_manager(ctx, id).await?;
-    let stub = internal::fleet_stub(&ctx.env)?;
-    let _: serde_json::Value = internal::post(
-        &stub,
-        "/runner-disabled",
-        &serde_json::json!({ "runner_id": id }),
-    )
-    .await?;
+    let runner = require_manager(ctx, id).await?;
     let changed = q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(id)])?
         .run()
         .await?;
@@ -219,28 +291,165 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         return Err(not_found("Runner"));
     }
     ctx.audit("runner.deleted", Some(id), None);
+    if let Some(w) = &runner.workspace_id {
+        ctx.audit_in(
+            Some(w),
+            "workspace.runner_removed",
+            Some(id),
+            Some(serde_json::json!({ "name": runner.name })),
+        );
+    }
+    let_go(ctx, id, &format!("Its runner {} was removed.", runner.name)).await;
+    http::ok(&Ok { ok: true })
+}
+
+/// Tells FleetObject that a runner whose row is deleted is gone. Should it
+/// not answer, FleetObject lets the runner go at its connection's next
+/// heartbeat, which finds the row gone, or, while it is offline, at the
+/// hourly job's sweep, or once its sessions stop waiting for it (ten
+/// minutes), whichever comes first.
+async fn let_go(ctx: &Ctx, id: &str, reason: &str) {
+    if let Err(e) = removed(&ctx.env, id, reason).await {
+        worker::console_error!(
+            "telling FleetObject runner {id} was removed (it lets it go at its next heartbeat, or its sweep): {}",
+            e.0.message
+        );
+    }
+}
+
+/// A workspace's runner that waits for approval, for the admins of the
+/// workspace it belongs to, who approve or reject it.
+async fn waiting_for_caller(ctx: &Ctx, id: &str) -> AppResult<(Managed, String)> {
+    let runner = managed(ctx, id).await?;
+    let Some(w) = runner.workspace_id.clone() else {
+        return Err(conflict(
+            "Only runners that enrolled with an enrollment token wait for approval",
+        ));
+    };
+    // People outside the workspace are told it doesn't exist.
+    let a = ws::load(ctx, &w).await.map_err(|_| not_found("Runner"))?;
+    a.require_admin().map_err(|_| {
+        forbidden("Only the admins of the workspace this runner enrolled in approve or reject it")
+    })?;
+    Ok((runner, w))
+}
+
+/// `POST /api/v1/runners/{id}/approve`: an admin of the workspace a runner
+/// enrolled in lets it run everyone's sessions there. Its host takes
+/// sessions at once, without a restart. Approving one that is approved
+/// already changes nothing.
+pub async fn approve(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let (runner, workspace_id) = waiting_for_caller(ctx, id).await?;
+    if runner.pending_until.is_some() {
+        // It gets the workspace's sessions, with their code, secrets and
+        // tokens, as a runner added for everyone's sessions does.
+        ctx.verified(Sensitive::ApproveRunner)?;
+        let me = ctx.user()?.id.clone();
+        let changes = crate::db::batch_changes(
+            &ctx.db,
+            vec![
+                q(
+                    &ctx.db,
+                    "UPDATE runners SET pending_until = NULL WHERE id = ? AND pending_until IS NOT NULL",
+                    &[s(id)],
+                )?,
+                q(
+                    &ctx.db,
+                    "INSERT OR IGNORE INTO runner_workspaces (runner_id, workspace_id, added_by, created_at, personal) \
+                     SELECT r.id, r.workspace_id, ?3, ?4, 0 FROM runners r \
+                     WHERE r.id = ?1 AND r.workspace_id = ?2 AND r.pending_until IS NULL",
+                    &[s(id), s(&workspace_id), s(&me), n(ctx.now)],
+                )?,
+            ],
+        )
+        .await?;
+        if changes.first().copied().unwrap_or(0) > 0 {
+            ctx.audit_in(
+                Some(&workspace_id),
+                "workspace.runner_approved",
+                Some(id),
+                Some(serde_json::json!({ "name": runner.name })),
+            );
+            changed(ctx, id, true);
+        }
+    }
+    let live = live(ctx).await;
+    http::ok(&one(ctx, id, &live).await?)
+}
+
+/// `POST /api/v1/runners/{id}/reject`: an admin of the workspace a runner
+/// enrolled in turns it away: it is removed, and its token stops working.
+/// It no longer counts against its enrollment token's limit.
+pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let (runner, workspace_id) = waiting_for_caller(ctx, id).await?;
+    if runner.pending_until.is_none() {
+        return Err(conflict(&format!(
+            "{} was approved already: remove it instead, from the Runners tab or with `fctl runners remove {id}`.",
+            runner.name
+        )));
+    }
+    let changed = q(
+        &ctx.db,
+        "DELETE FROM runners WHERE id = ? AND pending_until IS NOT NULL",
+        &[s(id)],
+    )?
+    .run()
+    .await?;
+    if changed == 0 {
+        return Err(conflict(&format!(
+            "{} was approved or removed meanwhile",
+            runner.name
+        )));
+    }
+    ctx.audit_in(
+        Some(&workspace_id),
+        "workspace.runner_rejected",
+        Some(id),
+        Some(serde_json::json!({ "name": runner.name })),
+    );
+    let_go(ctx, id, "Its runner was rejected.").await;
     http::ok(&Ok { ok: true })
 }
 
 /// `POST /api/v1/runners/{id}/token`: a new token for a runner, for the
-/// person who registered it (`fctl_domain::workspace::check_replace_runner_token`).
+/// person who registered it, or the admins of the workspace it belongs to
+/// (`fctl_domain::workspace::check_replace_runner_token`).
 pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let user_id = ctx.user()?.id.clone();
-    #[derive(serde::Deserialize)]
-    struct Owner {
-        created_by: Option<String>,
+    let runner = managed(ctx, id).await?;
+    fctl_domain::workspace::check_replace_runner_token(runner.owner(ctx).await?)?;
+    if let Some(w) = runner.workspace_id.clone() {
+        if runner.pending_until.is_some() {
+            return Err(conflict(&format!(
+                "{} waits for approval: approve or reject it first",
+                runner.name
+            )));
+        }
+        // Its workspace is open to them as its admin, as `owner` checked:
+        // the new token runs its sessions, as approving it does.
+        ctx.verified(Sensitive::AddRunner)?;
+        let token = new_secret(SecretKind::Runner);
+        let changed = q(
+            &ctx.db,
+            "UPDATE runners SET token_hash = ? WHERE id = ? AND workspace_id = ?",
+            &[s(&hash_secret(&token)), s(id), s(&w)],
+        )?
+        .run()
+        .await?;
+        if changed == 0 {
+            return Err(not_found("Runner"));
+        }
+        disconnect(ctx, id).await?;
+        ctx.audit("runner.token_rotated", Some(id), None);
+        ctx.audit_in(
+            Some(&w),
+            "workspace.runner_token_rotated",
+            Some(id),
+            Some(serde_json::json!({ "name": runner.name })),
+        );
+        let runner = one(ctx, id, &LiveRunners::default()).await?;
+        return http::ok(&RunnerRegistration { runner, token });
     }
-    let owner: Option<Owner> = q(
-        &ctx.db,
-        "SELECT created_by FROM runners WHERE id = ?",
-        &[s(id)],
-    )?
-    .first()
-    .await?;
-    let owner = owner.ok_or_else(|| not_found("Runner"))?;
-    fctl_domain::workspace::check_replace_runner_token(
-        owner.created_by.as_deref() == Some(user_id.as_str()),
-    )?;
     // The new token gets the sessions of the workspaces the runner serves,
     // as adding it to them would: not while one of them is closed to its
     // owner by its two-factor requirement, which a password alone would
@@ -287,6 +496,15 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     if changed == 0 {
         return Err(not_found("Runner"));
     }
+    disconnect(ctx, id).await?;
+    ctx.audit("runner.token_rotated", Some(id), None);
+    let runner = one(ctx, id, &LiveRunners::default()).await?;
+    http::ok(&RunnerRegistration { runner, token })
+}
+
+/// Closes a runner's control connection and its sessions' uplinks: it was
+/// disabled, or its token replaced.
+async fn disconnect(ctx: &Ctx, id: &str) -> AppResult<()> {
     let stub = internal::fleet_stub(&ctx.env)?;
     let _: serde_json::Value = internal::post(
         &stub,
@@ -294,9 +512,7 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         &serde_json::json!({ "runner_id": id }),
     )
     .await?;
-    ctx.audit("runner.token_rotated", Some(id), None);
-    let runner = one(ctx, id, &LiveRunners::default()).await?;
-    http::ok(&RunnerRegistration { runner, token })
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -402,6 +618,35 @@ pub async fn this_runner(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     http::ok(&detail(ctx, &r.id).await?)
 }
 
+/// `DELETE /api/v1/runner`: a runner that enrolled in a workspace removes
+/// itself, as its host uninstalls (`fctl host uninstall`), so that machines
+/// autoscaling destroys don't pile up. A person's runner is theirs to
+/// remove.
+pub async fn remove_this_runner(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
+    let r = runner_auth(ctx, req).await?;
+    let Some(w) = r.workspace_id.clone() else {
+        return Err(forbidden(
+            "Only runners that enrolled with an enrollment token remove themselves. Its owner removes this one, in the app or with `fctl runners remove`.",
+        ));
+    };
+    q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(&r.id)])?
+        .run()
+        .await?;
+    ctx.audit_in(
+        Some(&w),
+        "workspace.runner_removed",
+        Some(&r.id),
+        Some(serde_json::json!({ "name": r.name, "by": "host" })),
+    );
+    let_go(
+        ctx,
+        &r.id,
+        &format!("Its runner {} was uninstalled.", r.name),
+    )
+    .await;
+    http::ok(&Ok { ok: true })
+}
+
 /// `POST /api/v1/runner/drain`: the host drains its runner (`fctl host
 /// drain`), or stops draining it.
 pub async fn drain_this_runner(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
@@ -416,6 +661,17 @@ pub async fn drain_this_runner(ctx: &mut Ctx, req: &mut Request) -> AppResult<Re
 pub(crate) struct RunnerAuth {
     pub id: String,
     pub name: String,
+    /// The workspace it belongs to, when it enrolled in one.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub workspace_name: Option<String>,
+    /// While it waits for approval there: until when.
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    pub pending_until: Option<i64>,
+    /// Its enrollment token removes it once offline this long.
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    pub remove_offline_after_minutes: Option<i64>,
 }
 
 /// Authenticates a host by its runner token.
@@ -426,7 +682,9 @@ pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAut
         .ok_or_else(|| AppError(ApiError::unauthorized()))?;
     let row: Option<RunnerAuth> = q(
         &ctx.db,
-        "SELECT id, name FROM runners WHERE token_hash = ? AND enabled = 1",
+        "SELECT r.id, r.name, r.workspace_id, w.name AS workspace_name, r.pending_until, \
+         r.remove_offline_after_minutes FROM runners r LEFT JOIN workspaces w ON w.id = r.workspace_id \
+         WHERE r.token_hash = ? AND r.enabled = 1",
         &[s(&hash_secret(&token))],
     )?
     .first()
@@ -434,12 +692,14 @@ pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAut
     row.ok_or_else(|| {
         AppError(ApiError::new(
             fctl_proto::ErrorCode::Unauthorized,
-            "Unknown or disabled runner token",
+            "Unknown or disabled runner token: the runner was removed, rejected or disabled, or its token replaced",
         ))
     })
 }
 
-/// `GET /api/v1/runner/connect`: the host's control connection.
+/// `GET /api/v1/runner/connect`: the host's control connection. A runner
+/// that waits for approval connects as any other, and gets no sessions
+/// until it is approved.
 pub async fn connect(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     if !http::is_websocket_upgrade(req) {
         return Err(AppError(ApiError::bad_request(
@@ -448,7 +708,19 @@ pub async fn connect(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     }
     let r = runner_auth(ctx, req).await?;
     let stub = internal::fleet_stub(&ctx.env)?;
-    let ident = serde_json::json!({ "id": r.id, "name": r.name }).to_string();
+    let ident = serde_json::to_string(&internal::RunnerIdent {
+        id: r.id.clone(),
+        name: r.name.clone(),
+        pending: r
+            .pending_until
+            .map(|until| fctl_proto::runner::PendingApproval {
+                workspace: r.workspace_name.clone().unwrap_or_default(),
+                until,
+            }),
+        remove_after_ms: r
+            .remove_offline_after_minutes
+            .map(|m| m.saturating_mul(fctl_domain::enrollment::MINUTE_MS)),
+    })?;
     internal::upgrade(&stub, "/runner", &[(internal::HDR_RUNNER, &ident)]).await
 }
 

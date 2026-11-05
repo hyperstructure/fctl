@@ -420,7 +420,12 @@ in a turn of its own, checks that the project's
 memory has the note and the session its one retrospective, completed and
 updated,
 then stops the session, checks the model and effort level it reports and
-that the project remembers the model it asked for. Then, in the Linear
+that the project remembers the model it asked for. It makes an enrollment
+token that asks for approval and enrolls a runner with it through the API,
+as `fctl host install --enroll` does, and checks that a second can't take
+the token's one place, that the runner waits and serves no workspace until
+Dev Owner approves it and does after, that it removes itself as an
+uninstall does, and that the revoked token enrolls no more. Then, in the Linear
 stand-in, Dev Owner delegates a new issue to fctl, and the smoke test
 waits until fctl has said in the issue's agent session that it looks at
 the issue and works on it in a session of Playground, moved the issue to

@@ -126,7 +126,8 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   `fctl_domain::cookies`), `fctl_cli_` (CLI,
   issued through the device flow), `fctl_pat_` (personal access token,
   which may be limited: [Access tokens](#access-tokens)), `fctl_rt_`
-  (runner).
+  (runner), `fctl_et_` (a workspace's enrollment token, which only enrolls
+  runners: [Enrollment tokens](#enrollment-tokens)).
 - Cookie requests that change state must come from the app's origin
   (`Origin`/`Sec-Fetch-Site` checks) and carry JSON; file uploads carry
   `application/octet-stream`, which browsers cannot send cross-site without
@@ -372,8 +373,9 @@ token can't do them alone
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
   everyone's sessions there, registering a new one for a workspace (as
-  `fctl host install` does, which asks in the terminal), and replacing the
-  token of one that serves a workspace;
+  `fctl host install` does, which asks in the terminal), replacing the
+  token of one that serves a workspace, making a workspace's enrollment
+  token, and approving a runner that enrolled with one;
 - making someone a workspace's admin, or inviting them as one, and
   handing over or giving a workspace's primary admin role;
 - making an access token, approving a CLI's sign-in, and connecting a
@@ -725,7 +727,11 @@ Admins add theirs for everyone's sessions unless they ask otherwise
 (`--personal`), and adding a runner again changes whose; a demoted admin's
 runners run only their own sessions from then on. A workspace's admins take
 any runner out of it; its owner and instance admins rename, drain, disable
-and remove it.
+and remove it. A runner that enrolled with one of a workspace's enrollment
+tokens belongs to that workspace instead, and nobody owns it
+(`runners.workspace_id`, no `created_by`): it runs everyone's sessions
+there and no other workspace's, and its admins manage it
+([Enrollment tokens](#enrollment-tokens)).
 
 A session runs as the owner of its Claude connection. A member may keep
 their sessions in a workspace on runners they registered
@@ -769,6 +775,85 @@ it. It shows the command that updates the runner, `fctl self update`.
 Skipping the notice hides it for that version of the control plane, in
 that browser (localStorage, per person).
 
+### Enrollment tokens
+
+Machines that autoscaling creates and destroys, or that someone sets up
+without signing in on them, enroll themselves as a workspace's runners with
+one of its enrollment tokens
+([ADR 0071](adr/0071-runners-enroll-themselves-with-a-workspaces-enrollment-token.md)).
+
+1. **Making one.** A workspace's admins make enrollment tokens (`fctl_et_`)
+   on its Runners tab or with `fctl runners enrollment-tokens create`
+   (`POST /api/v1/workspaces/{id}/enrollment-tokens`): a name, an expiry
+   (an hour to a year, or never), the most runners it keeps enrolled at
+   once, whether the runners it enrolls wait for approval, and whether they
+   are removed once offline for a minute to 30 days. A token trusts whatever
+   enrolls with it with everyone's sessions there, as a runner added for
+   everyone's sessions is: making one is a
+   [sensitive action](#confirming-its-you) and needs the workspace open to
+   them (its two-factor requirement). D1 keeps its hash
+   (`enrollment_tokens`). Revoking it stops enrollments and leaves the
+   runners it enrolled, waiting ones too.
+2. **Enrolling.** `fctl host install --enroll fctl_et_…` (or
+   `FCTL_ENROLL_TOKEN`), signed in or not, asks what the token enrolls in
+   (`GET /api/v1/runner/enroll`) before anything else, so that an expired,
+   revoked or full token fails first, then enrolls once the driver is
+   checked (`POST /api/v1/runner/enroll`), with what it knows of the
+   machine (hostname, OS, driver, version, size), which the runners list
+   shows until the host says hello. The runner gets a runner token of its
+   own, kept in `host-token` as any is: the enrollment token goes no
+   further. The statement that inserts the runner checks the token again
+   and counts its runners, so that machines that enroll at once can't take
+   more than its limit. Run again on a machine whose runner belongs to the
+   same workspace, it keeps that runner. A token the control plane doesn't
+   know counts towards the caller's rate limit.
+3. **The workspace's own runner.** It belongs to the workspace
+   (`runners.workspace_id`; `created_by` is empty): it runs everyone's
+   sessions there and no other workspace's (`serves!`), the workspace's
+   admins rename, drain, disable and remove it and replace its token, and
+   nobody's leaving or losing a role changes it. Nobody adds it to another
+   workspace, or takes it out of its own but by removing it. A session whose
+   person keeps their sessions on their own runners, or their Claude token
+   on them, doesn't run on it, as on anyone else's
+   (`fctl_domain::schedule::runs_for`). Deleting the workspace removes it.
+4. **Approval.** With a token that asks for it, the runner waits
+   (`runners.pending_until`) without a `runner_workspaces` row: it serves
+   no workspace, so it gets no sessions, credentials, uplinks, files or
+   Claude sign-ins. Its host connects as any other, FleetDO's welcome says
+   it waits (`FleetToHost::Welcome.pending`), and `fctl host status` says
+   so. The workspace's admins see it on the Runners tab, with what it said
+   of itself, its id, and the address and token it enrolled with, and are
+   told: a notification in each browser where they turned them on, which
+   the next one replaces, and, where the instance sends email, an email
+   when it is the only one that waits. They approve it (a sensitive action)
+   or reject it there or with `fctl runners approve` or `reject` (`POST
+   /api/v1/runners/{id}/approve`, `…/reject`). Approving gives it the row,
+   and FleetDO a second welcome: it takes sessions at once, without a
+   restart. Rejecting removes it. One that nobody approves within 7 days is
+   removed.
+5. **Machines that come and go.** `fctl host uninstall` removes an enrolled
+   runner (`DELETE /api/v1/runner`, with its own token) and its token file.
+   A token can have its runners removed once they have been offline longer
+   than it says. FleetDO does that on its 30-second tick, for the runners it
+   saw connect: it learns each one's window as it connects, and counts only
+   the time it was up and watching (`fctl_domain::enrollment::watching_since`),
+   so that a deploy or an outage of the control plane gives every host the
+   whole window to connect again. The hourly job removes those that never
+   connected, from when they enrolled, and never one FleetDO has connected.
+   Removed, rejected and expired
+   runners free their place in their token's limit, so an autoscaling group
+   keeps replacing its machines within it. Removing any runner stops the
+   sessions it ran at once (FleetDO's `/runner-removed`), which a message
+   resumes elsewhere, and feeds drop it (`runner_removed`). Its row in D1
+   decides: it is deleted first, and FleetDO, told after, also lets go of a
+   runner whose hello or heartbeat finds its row gone, so that a host that
+   connects again as its runner goes doesn't stay. Should FleetDO not hear
+   of a removal, it lets go of the runner at its next heartbeat when
+   connected, and otherwise once its sessions stop waiting for it (ten
+   minutes) or at the hourly job's sweep of the runners D1 no longer has.
+   FleetDO's own removals delete the row only while the runner is still
+   offline and D1 hasn't heard from it since.
+
 ## Data
 
 **D1** (`crates/fctl-control/migrations`) holds relational state: users and
@@ -780,7 +865,7 @@ it's its person), device codes, workspaces
 (with their avatar images), their members,
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
-and runners, projects, their members and
+and runners, with their enrollment tokens, projects, their members and
 repositories, sessions (summary rows, and whether the search index has
 all of each), which sessions list which pull
 request, projects' review agents and their reviews, shares, who follows
@@ -833,10 +918,14 @@ deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
 published screenshots, abandoned Claude logins, and audit
-log entries older than a year. It also looks up pull requests that GitHub
+log entries older than a year. It removes the runners that waited a week
+for approval or stayed offline longer than their enrollment token lets
+them, and revoked or expired enrollment tokens 90 days on, once no runner
+they enrolled is left ([Enrollment tokens](#enrollment-tokens)). It also looks up pull requests that GitHub
 hasn't told about for a while
 ([Pull request state and checks](#pull-request-state-and-checks)).
-Deleting a workspace does the same for all its projects. Deleting an
+Deleting a workspace does the same for all its projects, and removes the
+runners that enrolled in it. Deleting an
 account (`src/api/account.rs`) does it for the workspaces only that
 account is in, passes the primary admin role of its
 other workspaces to their longest-standing admin, or member, deletes its

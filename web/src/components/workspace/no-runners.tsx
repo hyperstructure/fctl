@@ -25,6 +25,11 @@ export function NoRunnerNote({ workspace: w, className }: { workspace?: G.Worksp
   const count = w && runners.data && runnersOf(runners.data.runners, w);
   if (!w || !count || count.online > 0) return null;
   const admin = w.role === "owner" || w.role === "admin";
+  // Runners that enrolled and wait for approval, which only its admins see, and which run
+  // everyone's sessions once approved.
+  const waiting = (runners.data?.runners ?? []).filter(
+    (r) => r.pending_until && r.workspace?.id === w.id,
+  ).length;
   const link = (label: string) => (
     <Link to="/w/$slug" params={{ slug: w.slug }} search={{ tab: "runners" }} className={linkClass}>
       {label}
@@ -34,7 +39,13 @@ export function NoRunnerNote({ workspace: w, className }: { workspace?: G.Worksp
     <p className={cn("flex gap-2 px-1 text-[12.5px] leading-relaxed text-ink-3", className)}>
       <Cpu className="mt-[3px] size-3.5 shrink-0 text-ink-4" />
       <span>
-        {w.own_runners ? (
+        {!w.own_runners && waiting > 0 ? (
+          <>
+            {waiting === 1 ? "A runner waits" : `${waiting} runners wait`} for your approval in {w.name}:
+            sessions you start here wait until {waiting === 1 ? "it is" : "one is"} approved and online.{" "}
+            {link(waiting === 1 ? "Review it" : "Review them")}
+          </>
+        ) : w.own_runners ? (
           count.total > 0 ? (
             <>
               None of your runners in {w.name} is online: your sessions here run only on yours, so sessions

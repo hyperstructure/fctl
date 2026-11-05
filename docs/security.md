@@ -534,6 +534,29 @@ people's machines, not from the sessions that run on it. Removing it from
 a runner applies to the runs that start after, and doesn't revoke it: it
 works until it expires, a year after `claude setup-token` made it.
 
+**Enrollment tokens.** A workspace's admins make enrollment tokens with
+which machines enroll themselves as its runners, without anyone signing in
+on them
+([ADR 0071](adr/0071-runners-enroll-themselves-with-a-workspaces-enrollment-token.md)).
+Whoever has one enrolls machines that run everyone's sessions there, with
+their code, secrets and tokens, so making one takes the same as adding a
+runner for everyone's sessions: an admin of the workspace, open to them
+under its two-factor requirement, who confirms it's them where the
+instance asks for that. A token is limited by its expiry, the most runners
+it keeps enrolled at once and its admins' revoking it, and, with approval,
+enrolls only machines an admin then lets in: a runner that waits gets
+nothing of any session, nor a Claude sign-in, and approving it takes
+confirming it's you too. The control plane keeps only the token's hash, a
+token it doesn't know counts towards its caller's rate limit, and the token
+does nothing but enroll: each machine gets a runner token of its own, so
+removing, disabling or replacing one runner's token leaves the others
+alone, and revoking the enrollment token leaves the runners it enrolled.
+Such a runner belongs to the workspace, runs no other workspace's
+sessions, and keeps no one's Claude token: the people who keep their
+sessions, or their token, on their own runners never run sessions on it.
+The admins see where each enrolled from, and the audit log records
+enrollments, approvals and removals.
+
 A runner takes only the sessions of the workspaces it is added to, and so
 sees their code, secrets and the tokens of the people who start them: the
 session's GitHub tokens and the Claude token of the person it runs as. Its
@@ -651,8 +674,15 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   made it (signing out, revoking or expiry), or when its push service says
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.
-- Deleting a workspace deletes its projects, as deleting each would, and
-  its audit log; the instance's audit log records who deleted it.
+- Deleting a workspace deletes its projects, as deleting each would, its
+  audit log, its enrollment tokens and the runners that enrolled with them;
+  the instance's audit log records who deleted it.
+- A runner that enrolled keeps the address it enrolled from, and what its
+  host said of the machine, until it is removed: by an admin, as its host
+  uninstalls, once it stays offline longer than its enrollment token lets
+  it, or a week after it enrolled when nobody approves it. Revoked and
+  expired enrollment tokens are deleted 90 days on, once no runner they
+  enrolled is left.
 - People delete their own account in Settings (Danger zone) or with
   `fctl account delete`; admins delete members' accounts, and the primary
   instance owner admins' too. Both delete the account's addresses, sign-in methods, passkeys

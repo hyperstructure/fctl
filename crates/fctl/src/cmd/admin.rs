@@ -1222,7 +1222,7 @@ fn pick_runner<'a>(all: &'a [Runner], which: &str, now: i64) -> Result<&'a Runne
     match named.as_slice() {
         [r] => Ok(r),
         [] => bail!(
-            "No runner {} {which}. `fctl admin runners` lists them, with their ids.",
+            "No runner {} {which}. `fctl runners` lists the ones you see, with their ids.",
             if which.starts_with("rnr_") {
                 "has the id"
             } else {
@@ -1369,14 +1369,14 @@ mod tests {
         assert_eq!(
             id("Studio-Mac"),
             Err(
-                "No runner is called Studio-Mac. `fctl admin runners` lists them, with their ids."
+                "No runner is called Studio-Mac. `fctl runners` lists the ones you see, with their ids."
                     .into()
             )
         );
         assert_eq!(
             id("rnr_01GONE"),
             Err(
-                "No runner has the id rnr_01GONE. `fctl admin runners` lists them, with their ids."
+                "No runner has the id rnr_01GONE. `fctl runners` lists the ones you see, with their ids."
                     .into()
             )
         );

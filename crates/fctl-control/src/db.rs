@@ -104,6 +104,18 @@ pub async fn batch(db: &D1Database, statements: Vec<Query>) -> AppResult<()> {
     Ok(())
 }
 
+/// Runs statements in one transaction; returns how many rows each changed.
+pub async fn batch_changes(db: &D1Database, statements: Vec<Query>) -> AppResult<Vec<usize>> {
+    let results = db
+        .batch(statements.into_iter().map(Query::statement).collect())
+        .await?;
+    let mut changes = Vec::with_capacity(results.len());
+    for r in results {
+        changes.push(r.meta()?.and_then(|m| m.changes).unwrap_or(0));
+    }
+    Ok(changes)
+}
+
 /// A single integer column, for `SELECT COUNT(*) AS n`.
 #[derive(serde::Deserialize)]
 pub struct Count {

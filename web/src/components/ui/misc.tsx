@@ -232,16 +232,26 @@ export function CopyButton({
   );
 }
 
-/** A secret or command shown once, with a copy button. */
+/**
+ * A secret or command shown once, with a copy button. A command of several lines (shell
+ * continuations) keeps them, with the button at its top.
+ */
 export function CodeBox({ value, className }: { value: string; className?: string }) {
+  const lines = value.includes("\n");
   return (
     <div
       className={cn(
-        "flex items-center gap-2 rounded-md border border-line-strong bg-sunken py-1.5 pr-1.5 pl-3",
+        "flex gap-2 rounded-md border border-line-strong bg-sunken py-1.5 pr-1.5 pl-3",
+        lines ? "items-start" : "items-center",
         className,
       )}
     >
-      <code className="min-w-0 flex-1 overflow-x-auto font-mono text-[12.5px] whitespace-nowrap text-ink">
+      <code
+        className={cn(
+          "min-w-0 flex-1 overflow-x-auto font-mono text-[12.5px] text-ink",
+          lines ? "py-1 leading-relaxed whitespace-pre" : "whitespace-nowrap",
+        )}
+      >
         {value}
       </code>
       <CopyButton text={value} />

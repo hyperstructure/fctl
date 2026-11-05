@@ -248,7 +248,7 @@ fn collapse_spaces(input: &str) -> String {
 
 /// Text without control characters, but for spaces, and without the ones
 /// that turn it around (`crate::files::bidi_control`).
-fn plain(input: &str) -> String {
+pub fn plain(input: &str) -> String {
     input
         .chars()
         .filter(|c| c.is_whitespace() || !(c.is_control() || crate::files::bidi_control(*c)))

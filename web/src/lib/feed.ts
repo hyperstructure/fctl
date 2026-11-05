@@ -89,6 +89,23 @@ class Feed {
           runners.sort((a, b) => a.created_at - b.created_at);
           this.set({ runners });
           queryClient.setQueryData<G.RunnerList>(keys.runners, { runners });
+          // The Runners tabs it shows on: where it runs sessions, and the workspace it belongs to,
+          // where it may wait for approval.
+          const ids = new Set([...(msg.runner.workspaces ?? []).map((w) => w.id), msg.runner.workspace?.id]);
+          for (const id of ids)
+            if (id) void queryClient.invalidateQueries({ queryKey: keys.workspaceRunners(id) });
+          break;
+        }
+        case "runner_removed": {
+          const runners = this.state.runners.filter((r) => r.id !== msg.runner_id);
+          this.set({ runners });
+          queryClient.setQueryData<G.RunnerList>(keys.runners, { runners });
+          // Whichever Runners tab showed it, and its enrollment token's count of runners.
+          void queryClient.invalidateQueries({
+            predicate: (q) =>
+              q.queryKey[0] === "workspace" &&
+              (q.queryKey[2] === "runners" || q.queryKey[2] === "enrollment-tokens"),
+          });
           break;
         }
         case "session": {

@@ -4,13 +4,14 @@ import type { CredentialId } from "./CredentialId";
 import type { PlanLimit } from "./PlanLimit";
 import type { ProjectId } from "./ProjectId";
 import type { Runner } from "./Runner";
+import type { RunnerId } from "./RunnerId";
 import type { Session } from "./Session";
 import type { SessionId } from "./SessionId";
 
 /**
  * `GET /api/v1/feed/ws`: live updates for the dashboard.
  */
-export type FeedServer = { "type": "hello", runners: Array<Runner>, server_time: number, } | { "type": "session", session: Session, } | { "type": "session_removed", session_id: SessionId, } | { "type": "runner", runner: Runner, } | { "type": "activity", session_id: SessionId, project_id: ProjectId, 
+export type FeedServer = { "type": "hello", runners: Array<Runner>, server_time: number, } | { "type": "session", session: Session, } | { "type": "session_removed", session_id: SessionId, } | { "type": "runner", runner: Runner, } | { "type": "runner_removed", runner_id: RunnerId, } | { "type": "activity", session_id: SessionId, project_id: ProjectId, 
 /**
  * Event kind or Claude message type (`assistant`, `tool_use`, …).
  */

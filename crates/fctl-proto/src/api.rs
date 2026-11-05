@@ -12,9 +12,10 @@ use crate::session::{
     SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
-    AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, IdentityId, InviteId,
-    LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId, RetrospectiveId, RunnerId,
-    ScheduleId, ScheduleRunId, SessionId, TokenId, UserId, WorkspaceId, WorkspaceInviteId,
+    AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, EnrollmentTokenId,
+    IdentityId, InviteId, LoginJobId, MemoryId, Millis, PasskeyId, ProjectId, PushDeviceId,
+    RetrospectiveId, RunnerId, ScheduleId, ScheduleRunId, SessionId, TokenId, UserId, WorkspaceId,
+    WorkspaceInviteId,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -2085,6 +2086,164 @@ pub struct Runner {
     ///
     /// [`HostHello::auto_update`]: crate::runner::HostHello::auto_update
     pub auto_update: Option<bool>,
+    /// The workspace it belongs to: it enrolled with one of the
+    /// workspace's enrollment tokens (`fctl host install --enroll`). Its
+    /// admins manage it, nobody owns it (`created_by` is absent), and it
+    /// runs everyone's sessions there and no other workspace's. Absent for
+    /// runners that belong to the person who registered them, and from
+    /// control planes before enrollment tokens.
+    pub workspace: Option<WorkspaceRef>,
+    /// How it enrolled, for its workspace's admins and instance admins.
+    /// Absent for other people and for runners that didn't enroll.
+    pub enrollment: Option<RunnerEnrollment>,
+    /// Set while it waits for an admin of its workspace to approve it (its
+    /// enrollment token requires that): when it is removed unless one does.
+    /// It runs nothing and gets no credentials until then. Absent once
+    /// approved, and for runners that needed no approval.
+    pub pending_until: Option<Millis>,
+    /// It is removed once it has been offline this many minutes, as its
+    /// enrollment token said. Absent: it stays until someone removes it.
+    pub remove_offline_after_minutes: Option<u32>,
+}
+
+/// How a runner enrolled in its workspace: what its workspace's admins see
+/// when they approve it, and after.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunnerEnrollment {
+    /// The enrollment token it used. Absent once that token is deleted (a
+    /// revoked or expired one goes 90 days after its last runner).
+    pub token_id: Option<EnrollmentTokenId>,
+    /// That token's name, as it was made.
+    pub token_name: Option<String>,
+    /// The address the host enrolled from.
+    pub address: Option<String>,
+    /// Where that address is, as the control plane's network sees it
+    /// ("Stockholm, SE"). Absent where it doesn't say.
+    pub location: Option<String>,
+}
+
+/// What a host says about its machine as it enrolls, before its first
+/// hello: the runners list shows it until the host connects.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct RunnerFacts {
+    /// Its fctl version.
+    pub version: Option<String>,
+    pub hostname: Option<String>,
+    /// `macos` or `linux`.
+    pub os: Option<String>,
+    /// `aarch64` or `x86_64`.
+    pub arch: Option<String>,
+    /// The driver it runs sessions with.
+    pub driver: Option<String>,
+    pub cpus: Option<u32>,
+    pub memory_mb: Option<u64>,
+    /// The most sessions it runs at once.
+    pub capacity: Option<u32>,
+}
+
+/// `POST /api/v1/runner/enroll`, with an enrollment token (`fctl_et_…`) as
+/// the bearer token: the machine registers itself as a runner of the
+/// token's workspace, and gets a runner token of its own
+/// ([`RunnerRegistration`]). The enrollment token goes no further.
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct EnrollRunnerRequest {
+    /// The runner's name (the host's default: its hostname).
+    pub name: String,
+    pub facts: Option<RunnerFacts>,
+}
+
+/// `GET /api/v1/runner/enroll`, with an enrollment token: the workspace a
+/// machine would enroll in, and how, so that `fctl host install --enroll`
+/// says what it does before it does it. A token that can't enroll another
+/// runner (revoked, expired, or as many runners as it may) is refused with
+/// the reason.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct EnrollmentInfo {
+    pub workspace: WorkspaceRef,
+    /// The enrollment token's name.
+    pub name: String,
+    /// The runners it enrolls wait for an admin to approve them.
+    pub approval: bool,
+    pub expires_at: Option<Millis>,
+    pub max_runners: Option<u32>,
+    /// The runners it enrolled that are still there.
+    pub runners: u32,
+    pub remove_offline_after_minutes: Option<u32>,
+}
+
+/// A workspace's enrollment token: machines that autoscaling creates, or
+/// that someone sets up without signing in, enroll with it as the
+/// workspace's runners (`fctl host install --enroll`). Its admins make
+/// them on the Runners tab or with `fctl runners enrollment-tokens create`.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct EnrollmentToken {
+    pub id: EnrollmentTokenId,
+    /// What it is for ("Build fleet"), which the runners it enrolls show.
+    pub name: String,
+    /// The runners it enrolls wait for an admin of the workspace to approve
+    /// them before they run anything.
+    pub approval: bool,
+    /// The most runners it enrolls that may be there at once: removed,
+    /// rejected and expired ones don't count. Absent: no limit.
+    pub max_runners: Option<u32>,
+    /// The runners it enrolls are removed once they have been offline this
+    /// many minutes, of which the control plane was up: a minute to 30
+    /// days. Absent: they stay until someone removes them.
+    pub remove_offline_after_minutes: Option<u32>,
+    /// Absent: it never expires.
+    pub expires_at: Option<Millis>,
+    pub created_at: Millis,
+    pub created_by: Option<UserRef>,
+    /// When it last enrolled a runner.
+    pub last_used_at: Option<Millis>,
+    /// Revoked: it enrolls no more runners, and those it enrolled stay.
+    pub revoked_at: Option<Millis>,
+    pub revoked_by: Option<UserRef>,
+    /// The runners it enrolled that are still there.
+    pub runners: u32,
+    /// Of those, the ones that wait for approval.
+    pub pending: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct EnrollmentTokenList {
+    /// Newest first.
+    pub tokens: Vec<EnrollmentToken>,
+}
+
+/// `POST /api/v1/workspaces/{id}/enrollment-tokens` (its admins).
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct CreateEnrollmentTokenRequest {
+    pub name: String,
+    /// Hours until it expires, at most a year. Absent: never.
+    pub expires_in_hours: Option<u32>,
+    /// See [`EnrollmentToken::max_runners`].
+    pub max_runners: Option<u32>,
+    /// See [`EnrollmentToken::approval`]. Absent: no approval.
+    pub approval: Option<bool>,
+    /// See [`EnrollmentToken::remove_offline_after_minutes`].
+    pub remove_offline_after_minutes: Option<u32>,
+}
+
+/// A new enrollment token, with its secret (`fctl_et_…`), shown once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CreatedEnrollmentToken {
+    pub token: EnrollmentToken,
+    pub secret: String,
 }
 
 /// A runner that drains.
@@ -3822,6 +3981,13 @@ pub enum FeedServer {
     },
     Runner {
         runner: Box<Runner>,
+    },
+    /// A runner was removed (by a person, as its host uninstalled, after
+    /// it stayed offline, or rejected or expired while it waited for
+    /// approval): lists drop it. Every feed hears of it; it names only the
+    /// runner's id.
+    RunnerRemoved {
+        runner_id: RunnerId,
     },
     /// Agent activity for the visualization: one pulse per event, by session.
     Activity {

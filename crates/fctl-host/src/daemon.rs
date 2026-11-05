@@ -96,6 +96,9 @@ pub struct Daemon {
     /// The newer version the control plane runs, as the log last said, for
     /// a host that doesn't update itself.
     said_behind: Option<Version>,
+    /// The control plane's last welcome said the runner waits for an admin
+    /// of its workspace to approve it.
+    waiting_for_approval: bool,
     /// What keeps a Mac from sleeping while the host runs (`caffeinate`).
     awake: Option<std::process::Child>,
 }
@@ -260,6 +263,7 @@ impl Daemon {
             update_check,
             manual,
             said_behind: None,
+            waiting_for_approval: false,
             awake: None,
         })
     }
@@ -1183,9 +1187,35 @@ impl Daemon {
     fn on_fleet(&mut self, msg: FleetToHost) {
         match msg {
             FleetToHost::Welcome {
-                runner, version, ..
+                runner,
+                version,
+                pending,
+                ..
             } => {
-                tracing::info!("registered as {} ({})", runner.name, runner.id);
+                match pending {
+                    // A runner that enrolled with a token that needs
+                    // approval stays connected meanwhile, and takes
+                    // sessions as soon as an admin approves it.
+                    Some(p) => {
+                        tracing::info!(
+                            "registered as {} ({}); waiting for an admin of {} to approve it, until {}: it takes sessions once one does",
+                            runner.name,
+                            runner.id,
+                            p.workspace,
+                            fctl_domain::account::iso8601(p.until)
+                        );
+                        self.waiting_for_approval = true;
+                    }
+                    None if self.waiting_for_approval => {
+                        tracing::info!(
+                            "approved: {} ({}) takes sessions now",
+                            runner.name,
+                            runner.id
+                        );
+                        self.waiting_for_approval = false;
+                    }
+                    None => tracing::info!("registered as {} ({})", runner.name, runner.id),
+                }
                 if let Ok(mut r) = self.ctx.runner_id.lock() {
                     *r = Some(runner.id);
                 }
@@ -2014,6 +2044,7 @@ mod tests {
             heartbeat_secs: 15,
             server_time: 0,
             version: Some(version.into()),
+            pending: None,
         }
     }
 

@@ -9,8 +9,8 @@ use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
     self, Activity, ClaudeUsage, ControlState, Drain, DrainStop, DrainStopped, FeedIdentity,
-    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, Schedule, Stop,
-    WorkspacesChanged,
+    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, RunnerIdent, RunnerRemoved,
+    Schedule, Stop, WorkspacesChanged,
 };
 use crate::spec;
 use fctl_domain::image::HostImages;
@@ -100,6 +100,7 @@ fn feed_view(ident: &FeedIdentity) -> crate::model::RunnerView<'_> {
     crate::model::RunnerView {
         user_id: Some(&ident.user_id),
         workspaces: (!ident.admin).then_some(ident.workspaces.as_slice()),
+        admin_of: (!ident.admin).then_some(ident.admin_of.as_slice()),
     }
 }
 
@@ -124,6 +125,10 @@ struct RunnerSocket {
     id: String,
     name: String,
     since: i64,
+    /// While it waits for an admin of its workspace to approve it, as its
+    /// welcome says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<fctl_proto::runner::PendingApproval>,
 }
 
 #[derive(Deserialize)]
@@ -158,6 +163,16 @@ struct LiveRow {
     draining_since: Option<f64>,
     #[serde(default)]
     drained_by: Option<String>,
+    /// Its enrollment token removes it once it has been offline this long.
+    #[serde(default)]
+    remove_after_ms: Option<f64>,
+}
+
+impl LiveRow {
+    /// Whether FleetObject has its control connection now.
+    fn online(&self, fleet: &FleetObject) -> bool {
+        self.connected > 0.0 && fleet.runner_socket(&self.id).is_some()
+    }
 }
 
 /// A connected runner, as scheduling sees it.
@@ -272,6 +287,9 @@ pub struct FleetObject {
     /// runner id → the workspaces it serves, read from D1 before each
     /// dispatch.
     runner_workspaces: RefCell<std::collections::HashMap<String, Serves>>,
+    /// The workspaces where runners that enrolled wait for approval, read
+    /// with them: a session that no runner takes says so.
+    waiting_workspaces: RefCell<HashSet<String>>,
     /// session id → when it last asked for credentials
     /// (`fctl_domain::throttle`).
     credential_asks: RefCell<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
@@ -291,6 +309,10 @@ impl DurableObject for FleetObject {
             // Sessions stopped because their runner stayed away: they carry
             // on if it comes back with them.
             "CREATE TABLE IF NOT EXISTS stopped_away (session_id TEXT PRIMARY KEY, runner_id TEXT NOT NULL, since INTEGER NOT NULL)",
+            // When the alarm last ticked, and since when it has ticked
+            // without a gap: the time a runner that may be removed counts
+            // as offline (`fctl_domain::enrollment::watching_since`).
+            "CREATE TABLE IF NOT EXISTS watch (key TEXT PRIMARY KEY, at INTEGER NOT NULL)",
         ] {
             if let Err(e) = sql.exec(stmt, None) {
                 worker::console_error!("fleet schema: {e}");
@@ -307,6 +329,9 @@ impl DurableObject for FleetObject {
         // it (JSON), or none when its host did.
         add_column(&sql, "runners", "draining_since", "INTEGER");
         add_column(&sql, "runners", "drained_by", "TEXT");
+        // Set for a runner whose enrollment token removes it once offline
+        // this long (milliseconds), as it said when it connected.
+        add_column(&sql, "runners", "remove_after_ms", "INTEGER");
         Self {
             state,
             env,
@@ -314,6 +339,7 @@ impl DurableObject for FleetObject {
             refreshing: RefCell::new(HashSet::new()),
             dispatching: RefCell::new(false),
             runner_workspaces: RefCell::new(std::collections::HashMap::new()),
+            waiting_workspaces: RefCell::new(HashSet::new()),
             credential_asks: RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -345,9 +371,23 @@ impl DurableObject for FleetObject {
             }
             (worker::Method::Post, "/runner-changed") => match req.json::<RunnerChanged>().await {
                 Ok(b) => {
+                    if b.approved {
+                        self.approved(&b.runner_id);
+                    }
                     self.stop_unserved(&b.runner_id).await;
                     self.feed_runner(&b.runner_id).await;
                     self.dispatch().await;
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
+            (worker::Method::Post, "/sweep") => {
+                let forgot = self.sweep().await;
+                Ok(serde_json::json!({ "removed": forgot }))
+            }
+            (worker::Method::Post, "/runner-removed") => match req.json::<RunnerRemoved>().await {
+                Ok(b) => {
+                    self.removed(&b.runner_id, &b.reason).await;
                     Ok(serde_json::json!({ "ok": true }))
                 }
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
@@ -463,6 +503,7 @@ impl DurableObject for FleetObject {
 
     async fn alarm(&self) -> Result<Response> {
         let now = now_ms();
+        self.remove_gone_runners(now).await;
         self.expire_offline_runners(now).await;
         self.dispatch().await;
         // Keep ticking while there is something to wait for.
@@ -496,13 +537,8 @@ impl FleetObject {
     // ───────────────────────────── connections ─────────────────────────────
 
     fn accept_runner(&self, req: &Request) -> Result<Response> {
-        #[derive(Deserialize)]
-        struct Ident {
-            id: String,
-            name: String,
-        }
         let Some(ident) = crate::http::header(req, internal::HDR_RUNNER)
-            .and_then(|h| serde_json::from_str::<Ident>(&h).ok())
+            .and_then(|h| serde_json::from_str::<RunnerIdent>(&h).ok())
         else {
             return internal::do_error(&ApiError::new(
                 ErrorCode::Unauthorized,
@@ -520,11 +556,18 @@ impl FleetObject {
             id: ident.id.clone(),
             name: ident.name.clone(),
             since: now_ms(),
+            pending: ident.pending.clone(),
         })?;
         let _ = self.sql.exec(
-            "INSERT INTO runners (id, name, connected, last_seen) VALUES (?, ?, 1, ?) \
-             ON CONFLICT (id) DO UPDATE SET name = excluded.name, connected = 1, last_seen = excluded.last_seen",
-            Some(vec![sv(&ident.id), sv(&ident.name), iv(now_ms())]),
+            "INSERT INTO runners (id, name, connected, last_seen, remove_after_ms) VALUES (?, ?, 1, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name, connected = 1, last_seen = excluded.last_seen, \
+             remove_after_ms = excluded.remove_after_ms",
+            Some(vec![
+                sv(&ident.id),
+                sv(&ident.name),
+                iv(now_ms()),
+                SqlStorageValue::from(ident.remove_after_ms),
+            ]),
         );
         Response::from_websocket(pair.client)
     }
@@ -571,7 +614,7 @@ impl FleetObject {
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sql
             .exec(
-                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb, draining_since, drained_by FROM runners",
+                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb, draining_since, drained_by, remove_after_ms FROM runners",
                 None,
             )
             .and_then(|c| c.to_array::<LiveRow>())
@@ -665,6 +708,230 @@ impl FleetObject {
             || count(
                 "SELECT COUNT(*) AS n FROM assignments a JOIN runners r ON r.id = a.runner_id WHERE r.connected = 0",
             ) > 0.0
+            // A runner that goes once offline long enough, while it is.
+            || self
+                .live_rows()
+                .iter()
+                .any(|r| r.remove_after_ms.is_some() && !r.online(self))
+    }
+
+    /// Since when the alarm has ticked without a gap, as of a tick now
+    /// (`fctl_domain::enrollment::watching_since`), which it records.
+    fn watching_since(&self, now: i64) -> i64 {
+        #[derive(Deserialize)]
+        struct At {
+            at: f64,
+        }
+        let get = |key: &str| {
+            self.sql
+                .exec("SELECT at FROM watch WHERE key = ?", Some(vec![sv(key)]))
+                .and_then(|c| c.to_array::<At>())
+                .ok()
+                .and_then(|r| r.first().map(|a| a.at as i64))
+        };
+        let since = fctl_domain::enrollment::watching_since(get("tick"), get("since"), now);
+        for (key, at) in [("tick", now), ("since", since)] {
+            let _ = self.sql.exec(
+                "INSERT INTO watch (key, at) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET at = excluded.at",
+                Some(vec![sv(key), iv(at)]),
+            );
+        }
+        since
+    }
+
+    /// Removes the runners whose enrollment token removes them once they
+    /// have been offline long enough, and that have been, while FleetObject
+    /// watched: a deploy or an outage of the control plane doesn't count,
+    /// so their hosts get the whole window to connect again. D1 decides, as
+    /// the runner goes there; the hourly job removes those it never saw.
+    async fn remove_gone_runners(&self, now: i64) {
+        let watching = self.watching_since(now);
+        let due: Vec<LiveRow> = self
+            .live_rows()
+            .into_iter()
+            .filter(|r| {
+                !r.online(self)
+                    && r.remove_after_ms.is_some_and(|after| {
+                        fctl_domain::enrollment::removal_due(
+                            after as i64,
+                            r.last_seen.map(|t| t as i64),
+                            watching,
+                            now,
+                        )
+                    })
+            })
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        let Ok(db) = self.env.d1("DB") else { return };
+        #[derive(Deserialize)]
+        struct Gone {
+            name: String,
+            workspace_id: Option<String>,
+            #[serde(deserialize_with = "crate::db::int")]
+            minutes: i64,
+        }
+        for r in due {
+            // Its host may have connected again while the runners before it
+            // went: not while it is connected, and only while D1 hasn't
+            // heard from it since either, so that a hello that gets in
+            // first keeps it.
+            let Some(fresh) = self.live_rows().into_iter().find(|x| x.id == r.id) else {
+                continue;
+            };
+            if fresh.online(self) {
+                continue;
+            }
+            let seen = fresh.last_seen.map_or(0, |t| t as i64);
+            let gone: Vec<Gone> = match crate::db::q(
+                &db,
+                "DELETE FROM runners WHERE id = ?1 AND remove_offline_after_minutes IS NOT NULL \
+                 AND COALESCE(last_seen_at, 0) <= ?2 \
+                 RETURNING name, workspace_id, remove_offline_after_minutes AS minutes",
+                &[crate::db::s(&r.id), crate::db::n(seen)],
+            ) {
+                Ok(q) => match q.all().await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        worker::console_error!("removing runner {}: {}", r.id, e.0.message);
+                        continue;
+                    }
+                },
+                Err(_) => continue,
+            };
+            let Some(g) = gone.into_iter().next() else {
+                self.not_removed(&db, &r.id).await;
+                continue;
+            };
+            let offline = fctl_domain::enrollment::minutes(u32::try_from(g.minutes).unwrap_or(1));
+            self.removed(
+                &r.id,
+                &format!(
+                    "Its runner {} was offline for {offline}, and was removed.",
+                    g.name
+                ),
+            )
+            .await;
+            let data = serde_json::json!({ "name": g.name, "by": "fctl", "offline": true });
+            if let Err(e) = crate::housekeeping::audit_runner(
+                &db,
+                now,
+                "workspace.runner_removed",
+                &r.id,
+                g.workspace_id.as_deref(),
+                data,
+            )
+            .await
+            {
+                worker::console_error!("auditing runner {}: {}", r.id, e.0.message);
+            }
+            worker::console_log!("{} was offline for {offline}: removed it", g.name);
+        }
+    }
+
+    /// A runner `remove_gone_runners` found due kept its row, and why: it is
+    /// gone already (someone removed it, and FleetObject may not have heard),
+    /// when everything of it here goes too; it no longer goes when offline,
+    /// when nothing here waits for it any more; or D1 heard from it since,
+    /// when it is back.
+    async fn not_removed(&self, db: &worker::D1Database, runner_id: &str) {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(deserialize_with = "crate::db::opt_int", default)]
+            minutes: Option<i64>,
+        }
+        let row: Vec<Row> = match crate::db::q(
+            db,
+            "SELECT remove_offline_after_minutes AS minutes FROM runners WHERE id = ?",
+            &[crate::db::s(runner_id)],
+        ) {
+            Ok(q) => match q.all().await {
+                Ok(r) => r,
+                Err(_) => return,
+            },
+            Err(_) => return,
+        };
+        match row.first() {
+            None => self.removed(runner_id, "Its runner was removed.").await,
+            Some(Row { minutes: None }) => {
+                let _ = self.sql.exec(
+                    "UPDATE runners SET remove_after_ms = NULL WHERE id = ?",
+                    Some(vec![sv(runner_id)]),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Removes everything FleetObject has of the runners among `ids` whose
+    /// row D1 no longer has: they were removed, and FleetObject wasn't told
+    /// (`api::runners::removed` failed). D1 not answering removes nothing.
+    /// Returns how many went.
+    async fn forget_removed(&self, ids: &[String]) -> usize {
+        #[derive(Deserialize)]
+        struct Id {
+            id: String,
+        }
+        let Ok(db) = self.env.d1("DB") else { return 0 };
+        let Ok(json) = serde_json::to_string(ids) else {
+            return 0;
+        };
+        let existing: Vec<Id> = match crate::db::q(
+            &db,
+            "SELECT id FROM runners WHERE id IN (SELECT value FROM json_each(?))",
+            &[crate::db::s(&json)],
+        ) {
+            Ok(q) => match q.all().await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    worker::console_error!("checking which runners are gone: {}", e.0.message);
+                    return 0;
+                }
+            },
+            Err(_) => return 0,
+        };
+        let mut forgot = 0;
+        for id in ids {
+            if existing.iter().all(|e| &e.id != id) {
+                self.removed(id, "Its runner was removed.").await;
+                forgot += 1;
+            }
+        }
+        forgot
+    }
+
+    /// The hourly sweep: forgets the runners FleetObject has while they are
+    /// offline whose row D1 no longer has. Connected ones it lets go at
+    /// their next heartbeat (`in_d1`).
+    async fn sweep(&self) -> usize {
+        let offline: Vec<String> = self
+            .live_rows()
+            .into_iter()
+            .filter(|r| !r.online(self))
+            .map(|r| r.id)
+            .collect();
+        if offline.is_empty() {
+            return 0;
+        }
+        self.forget_removed(&offline).await
+    }
+
+    /// Writes what a runner's connection says to its row in D1, and says
+    /// whether the row is there: `Some(false)` once the runner was removed,
+    /// so that a connection that got in as it went (its token checked just
+    /// before its row was deleted), or that FleetObject wasn't told of,
+    /// doesn't stay. `None` when D1 doesn't answer, which proves nothing.
+    async fn in_d1(&self, sql: &str, params: &[crate::db::Val]) -> Option<bool> {
+        let db = self.env.d1("DB").ok()?;
+        let changed = crate::db::q(&db, sql, params).ok()?.run().await;
+        match changed {
+            Ok(n) => Some(n > 0),
+            Err(e) => {
+                worker::console_error!("noting a runner's connection in D1: {}", e.0.message);
+                None
+            }
+        }
     }
 
     /// Whether the session waits in the queue (a message or a resume queued
@@ -705,14 +972,15 @@ impl FleetObject {
                     ]),
                 );
                 // Persist liveness in D1 now and then (every heartbeat is fine: one write per 15 s).
-                if let Ok(db) = self.env.d1("DB")
-                    && let Ok(q) = crate::db::q(
-                        &db,
+                let kept = self
+                    .in_d1(
                         "UPDATE runners SET last_seen_at = ? WHERE id = ?",
                         &[crate::db::n(now), crate::db::s(&rs.id)],
                     )
-                {
-                    let _ = q.run().await;
+                    .await;
+                if kept == Some(false) {
+                    self.removed(&rs.id, "Its runner was removed.").await;
+                    return;
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
@@ -835,16 +1103,28 @@ impl FleetObject {
             "UPDATE runners SET hello = ?, sessions = ?, connected = 1, last_seen = ? WHERE id = ?",
             Some(vec![sv(&info), sv(&sessions), iv(now), sv(&rs.id)]),
         );
-        if let Ok(db) = self.env.d1("DB")
-            && let Ok(q) = crate::db::q(
-                &db,
+        let kept = self
+            .in_d1(
                 "UPDATE runners SET info = ?, last_seen_at = ? WHERE id = ?",
                 &[crate::db::s(&info), crate::db::n(now), crate::db::s(&rs.id)],
             )
-        {
-            let _ = q.run().await;
+            .await;
+        if kept == Some(false) {
+            self.removed(&rs.id, "Its runner was removed.").await;
+            return;
         }
-        let welcome = FleetToHost::Welcome {
+        if let Ok(text) = serde_json::to_string(&Self::welcome(rs, now)) {
+            let _ = ws.send_with_str(&text);
+        }
+        self.reconcile(rs, &hello.sessions, now).await;
+        self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
+        self.feed_runner(&rs.id).await;
+        self.dispatch().await;
+    }
+
+    /// What a runner hears as it connects, and again once approved.
+    fn welcome(rs: &RunnerSocket, now: i64) -> FleetToHost {
+        FleetToHost::Welcome {
             runner: RunnerRef {
                 id: RunnerId(rs.id.clone()),
                 name: rs.name.clone(),
@@ -853,13 +1133,72 @@ impl FleetObject {
             server_time: now,
             // Hosts that update themselves update to it.
             version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        };
-        if let Ok(text) = serde_json::to_string(&welcome) {
-            let _ = ws.send_with_str(&text);
+            pending: rs.pending.clone(),
         }
-        self.reconcile(rs, &hello.sessions, now).await;
-        self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
-        self.feed_runner(&rs.id).await;
+    }
+
+    /// An admin approved a runner that waited: its connection no longer
+    /// waits, and its host hears it takes sessions now. It got none
+    /// before: it served no workspace until approved.
+    fn approved(&self, runner_id: &str) {
+        let now = now_ms();
+        for ws in self.state.get_websockets_with_tag(&runner_tag(runner_id)) {
+            let Ok(Some(mut rs)) = ws.deserialize_attachment::<RunnerSocket>() else {
+                continue;
+            };
+            if rs.pending.take().is_none() {
+                continue;
+            }
+            let _ = ws.serialize_attachment(&rs);
+            if let Ok(text) = serde_json::to_string(&Self::welcome(&rs, now)) {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+    }
+
+    /// A runner is gone (removed, uninstalled, rejected, expired, or its
+    /// workspace deleted): its connection and uplinks close, the sessions
+    /// it ran stop now, saying `reason`, rather than once it has been away
+    /// for ten minutes, every trace of it here goes, and feeds drop it.
+    async fn removed(&self, runner_id: &str, reason: &str) {
+        for ws in self.state.get_websockets_with_tag(&runner_tag(runner_id)) {
+            let _ = ws.close(Some(4003), Some("runner removed"));
+        }
+        for a in self.assigned_to_runner(runner_id) {
+            let _ = self.sql.exec(
+                "DELETE FROM assignments WHERE session_id = ? AND runner_id = ?",
+                Some(vec![sv(&a.session_id), sv(runner_id)]),
+            );
+            self.close_uplink(&a.session_id, runner_id).await;
+            if !self.queued(&a.session_id) {
+                self.session_control(
+                    &SessionId(a.session_id.clone()),
+                    Some(SessionStatus::Stopped),
+                    Some(format!(
+                        "{reason} A message or a resume starts it on another runner."
+                    )),
+                    true,
+                )
+                .await;
+            }
+        }
+        for sql in [
+            "DELETE FROM sandboxes WHERE runner_id = ?",
+            "DELETE FROM stopped_away WHERE runner_id = ?",
+            "DELETE FROM runners WHERE id = ?",
+        ] {
+            let _ = self.sql.exec(sql, Some(vec![sv(runner_id)]));
+        }
+        self.runner_workspaces.borrow_mut().remove(runner_id);
+        let msg = FeedServer::RunnerRemoved {
+            runner_id: RunnerId(runner_id.to_owned()),
+        };
+        if let Ok(text) = serde_json::to_string(&msg) {
+            for (ws, _) in self.feed_sockets() {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+        // Sessions that waited for it as their home start elsewhere.
         self.dispatch().await;
     }
 
@@ -1262,6 +1601,22 @@ impl FleetObject {
             "DELETE FROM stopped_away WHERE since < ?",
             Some(vec![iv(now - HOME_KEEP_MS)]),
         );
+        // A runner that was removed while away, and FleetObject wasn't told
+        // (`api::runners::removed` failed): its sessions stop as a removed
+        // runner's do, rather than waiting for it to come back.
+        let away: Vec<String> = self
+            .live_rows()
+            .into_iter()
+            .filter(|r| {
+                r.connected == 0.0
+                    && now - r.last_seen.map_or(now, |t| t as i64) >= RUNNER_GRACE_MS
+                    && !self.assigned_to_runner(&r.id).is_empty()
+            })
+            .map(|r| r.id)
+            .collect();
+        if !away.is_empty() {
+            self.forget_removed(&away).await;
+        }
         for r in self.live_rows() {
             let offline_for = now - r.last_seen.map_or(now, |t| t as i64);
             if r.connected > 0.0 || offline_for < RUNNER_GRACE_MS {
@@ -2514,6 +2869,9 @@ impl FleetObject {
             runners.values().any(|s| s.takes(want)),
             runners.values().any(|s| s.runs(&want.workspace_id)),
             others_online,
+            self.waiting_workspaces
+                .borrow()
+                .contains(&want.workspace_id),
         )
     }
 
@@ -2553,6 +2911,20 @@ impl FleetObject {
             serves.workspaces.push((r.workspace_id, r.personal));
         }
         *self.runner_workspaces.borrow_mut() = map;
+        #[derive(Deserialize)]
+        struct W {
+            workspace_id: String,
+        }
+        let waiting: Vec<W> = match crate::db::q(
+            db,
+            "SELECT DISTINCT workspace_id FROM runners WHERE pending_until IS NOT NULL AND workspace_id IS NOT NULL",
+            &[],
+        ) {
+            Ok(q) => q.all().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        *self.waiting_workspaces.borrow_mut() =
+            waiting.into_iter().map(|w| w.workspace_id).collect();
     }
 
     /// People's workspaces changed: the sessions that run on their Claude

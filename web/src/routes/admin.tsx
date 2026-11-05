@@ -1393,7 +1393,7 @@ function Runners() {
                   "mt-1.5 size-2 shrink-0 rounded-full sm:mt-0",
                   r.status === "disabled"
                     ? "bg-danger"
-                    : r.drain || lowOnDisk(r)
+                    : r.drain || lowOnDisk(r) || r.pending_until
                       ? "bg-amber"
                       : r.status === "online"
                         ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
@@ -1415,7 +1415,16 @@ function Runners() {
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
                   {/* Control planes before workspaces don't say which ones it runs. */}
-                  {r.workspaces?.length ? (
+                  {r.workspace ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-3">
+                      <span className="inline-flex items-center gap-1.5">
+                        <WorkspaceAvatar workspace={r.workspace} size={14} /> {r.workspace.name}'s own
+                      </span>
+                      {r.enrollment?.token_name && (
+                        <span className="text-ink-4">· enrolled with “{r.enrollment.token_name}”</span>
+                      )}
+                    </div>
+                  ) : r.workspaces?.length ? (
                     <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-3">
                       {r.workspaces.map((w) => (
                         <span key={w.id} className="inline-flex items-center gap-1.5">
@@ -1506,9 +1515,13 @@ function Runners() {
   );
 }
 
-/** "online", or why it takes no new sessions: a drain ("draining" while sessions run, then "drained"), or its disk. */
+/**
+ * "online", or why it takes no new sessions: a drain ("draining" while sessions run, then "drained"), its
+ * disk, or its workspace's admins, who haven't approved it yet.
+ */
 function runnerState(r: G.Runner): string {
   if (r.status === "disabled") return r.status;
+  if (r.pending_until) return "waiting for approval";
   if (r.drain) return r.active_sessions > 0 ? "draining" : "drained";
   return lowOnDisk(r) ? "low on disk" : r.status;
 }

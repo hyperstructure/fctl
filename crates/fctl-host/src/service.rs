@@ -172,6 +172,59 @@ fn uid() -> String {
         .unwrap_or_else(|_| "501".into())
 }
 
+/// Where `systemctl --user` finds this user's manager when nothing set
+/// `XDG_RUNTIME_DIR`, as in a boot script or cloud-init, where nobody
+/// logged in: `/run/user/<uid>`, which a manager that lingers
+/// (`loginctl enable-linger`) has, once it exists.
+fn runtime_dir(
+    set: Option<std::ffi::OsString>,
+    uid: &str,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if set.is_some_and(|s| !s.is_empty()) {
+        return None;
+    }
+    let dir = PathBuf::from(format!("/run/user/{uid}"));
+    exists(&dir).then_some(dir)
+}
+
+/// `systemctl --user …`, which finds a lingering manager without a login.
+fn systemctl_user(args: &[&str]) -> Result<String> {
+    let mut all = vec!["--user"];
+    all.extend_from_slice(args);
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args(&all);
+    if let Some(dir) = runtime_dir(std::env::var_os("XDG_RUNTIME_DIR"), &uid(), Path::exists) {
+        cmd.env("XDG_RUNTIME_DIR", dir);
+    }
+    let out = cmd.output().context("running systemctl")?;
+    if !out.status.success() {
+        bail!(
+            "systemctl {}: {}",
+            all.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Checks that the service can be installed here, before anything is
+/// registered: on Linux, that this user's systemd manager answers, which
+/// it doesn't in a boot script unless the user lingers.
+pub fn preflight() -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    systemctl_user(&["show-environment"]).map(|_| ()).map_err(|e| {
+        let user = std::env::var("USER").unwrap_or_else(|_| uid());
+        anyhow::anyhow!(
+            "The host service is a systemd user unit, and {user}'s systemd manager doesn't answer ({e:#}). \
+             Where nobody logs in, as in a boot script, run `loginctl enable-linger {user}` first (as root): fctl finds the manager then. \
+             Or pass --no-service and run `fctl host run` from a unit of your own. Nothing was registered."
+        )
+    })
+}
+
 /// Installs and starts the service. Returns a short description.
 pub fn install(exe: &Path) -> Result<String> {
     if cfg!(target_os = "macos") {
@@ -197,11 +250,8 @@ pub fn install(exe: &Path) -> Result<String> {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(&path, unit(exe))?;
-        sh("systemctl", &["--user", "daemon-reload"])?;
-        sh(
-            "systemctl",
-            &["--user", "enable", "--now", "fctl-host.service"],
-        )?;
+        systemctl_user(&["daemon-reload"])?;
+        systemctl_user(&["enable", "--now", "fctl-host.service"])?;
         Ok(format!(
             "systemd user unit fctl-host.service ({}); run `loginctl enable-linger $USER` to keep it running after you log out",
             path.display()
@@ -216,12 +266,9 @@ pub fn uninstall() -> Result<()> {
         let _ = sh("launchctl", &["bootout", &format!("gui/{}/{LABEL}", uid())]);
         let _ = std::fs::remove_file(plist_path());
     } else {
-        let _ = sh(
-            "systemctl",
-            &["--user", "disable", "--now", "fctl-host.service"],
-        );
+        let _ = systemctl_user(&["disable", "--now", "fctl-host.service"]);
         let _ = std::fs::remove_file(unit_path());
-        let _ = sh("systemctl", &["--user", "daemon-reload"]);
+        let _ = systemctl_user(&["daemon-reload"]);
     }
     Ok(())
 }
@@ -233,7 +280,7 @@ pub fn restart() -> Result<()> {
             &["kickstart", "-k", &format!("gui/{}/{LABEL}", uid())],
         )?;
     } else {
-        sh("systemctl", &["--user", "restart", "fctl-host.service"])?;
+        systemctl_user(&["restart", "fctl-host.service"])?;
     }
     Ok(())
 }
@@ -246,18 +293,9 @@ pub fn runs_this_process() -> bool {
             .ok()
             .and_then(|o| launchd_pid(&o))
     } else {
-        sh(
-            "systemctl",
-            &[
-                "--user",
-                "show",
-                "--property=MainPID",
-                "--value",
-                "fctl-host.service",
-            ],
-        )
-        .ok()
-        .and_then(|o| o.trim().parse().ok())
+        systemctl_user(&["show", "--property=MainPID", "--value", "fctl-host.service"])
+            .ok()
+            .and_then(|o| o.trim().parse().ok())
     };
     main == Some(std::process::id())
 }
@@ -279,7 +317,7 @@ pub fn status() -> (bool, bool) {
         (installed, running)
     } else {
         let installed = unit_path().exists();
-        let running = sh("systemctl", &["--user", "is-active", "fctl-host.service"])
+        let running = systemctl_user(&["is-active", "fctl-host.service"])
             .map(|o| o.trim() == "active")
             .unwrap_or(false);
         (installed, running)
@@ -289,6 +327,27 @@ pub fn status() -> (bool, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn systemctl_finds_a_lingering_manager_without_a_login() {
+        let there = |_: &Path| true;
+        let gone = |_: &Path| false;
+        // A boot script: nothing set, and the manager lingers.
+        assert_eq!(
+            runtime_dir(None, "1000", there),
+            Some(PathBuf::from("/run/user/1000"))
+        );
+        assert_eq!(
+            runtime_dir(Some("".into()), "0", there),
+            Some(PathBuf::from("/run/user/0"))
+        );
+        // A login sets it, and a user who doesn't linger has none.
+        assert_eq!(
+            runtime_dir(Some("/run/user/1000".into()), "1000", there),
+            None
+        );
+        assert_eq!(runtime_dir(None, "1000", gone), None);
+    }
 
     #[test]
     fn finds_the_process_of_a_launchd_job() {

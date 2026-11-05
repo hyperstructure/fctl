@@ -50,6 +50,13 @@ pub enum Sensitive {
     /// Adding a runner someone registered to a workspace, or letting it
     /// run everyone's sessions there.
     AddRunner,
+    /// Making a workspace's enrollment token: whoever holds it enrolls
+    /// machines that run everyone's sessions there, unless an admin has to
+    /// approve each.
+    NewEnrollmentToken,
+    /// Approving a runner that enrolled in a workspace, which then runs
+    /// everyone's sessions there.
+    ApproveRunner,
     /// Making someone a workspace's admin, or inviting them as one.
     MakeWorkspaceAdmin,
     /// Handing a workspace's primary admin role over, or giving it to one
@@ -98,6 +105,8 @@ impl Sensitive {
             StopVerifying => "stop asking people to confirm sensitive actions",
             StopWorkspaceTwoFactor => "stop requiring two-factor sign-in in a workspace",
             AddRunner => "add a runner to a workspace",
+            NewEnrollmentToken => "make an enrollment token",
+            ApproveRunner => "approve a runner",
             MakeWorkspaceAdmin => "make someone a workspace admin",
             TransferWorkspace => "change a workspace's primary admin",
             DeleteWorkspace => "delete a workspace",
@@ -316,6 +325,14 @@ mod tests {
         assert_eq!(
             message(Sensitive::Export, APP),
             "Confirm it's you to export your data, with a code from your authenticator app."
+        );
+        assert_eq!(
+            message(Sensitive::NewEnrollmentToken, PASSKEY),
+            "Confirm it's you to make an enrollment token, with your passkey."
+        );
+        assert_eq!(
+            message(Sensitive::ApproveRunner, APP),
+            "Confirm it's you to approve a runner, with a code from your authenticator app."
         );
         assert_eq!(
             message(Sensitive::NewToken, BOTH),

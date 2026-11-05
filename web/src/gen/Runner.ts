@@ -2,6 +2,7 @@
 import type { DriverInfo } from "./DriverInfo";
 import type { RunnerClaudeToken } from "./RunnerClaudeToken";
 import type { RunnerDrain } from "./RunnerDrain";
+import type { RunnerEnrollment } from "./RunnerEnrollment";
 import type { RunnerId } from "./RunnerId";
 import type { RunnerStatus } from "./RunnerStatus";
 import type { SandboxLimits } from "./SandboxLimits";
@@ -81,4 +82,30 @@ claude_token?: RunnerClaudeToken,
  *
  * [`HostHello::auto_update`]: crate::runner::HostHello::auto_update
  */
-auto_update?: boolean, };
+auto_update?: boolean, 
+/**
+ * The workspace it belongs to: it enrolled with one of the
+ * workspace's enrollment tokens (`fctl host install --enroll`). Its
+ * admins manage it, nobody owns it (`created_by` is absent), and it
+ * runs everyone's sessions there and no other workspace's. Absent for
+ * runners that belong to the person who registered them, and from
+ * control planes before enrollment tokens.
+ */
+workspace?: WorkspaceRef, 
+/**
+ * How it enrolled, for its workspace's admins and instance admins.
+ * Absent for other people and for runners that didn't enroll.
+ */
+enrollment?: RunnerEnrollment, 
+/**
+ * Set while it waits for an admin of its workspace to approve it (its
+ * enrollment token requires that): when it is removed unless one does.
+ * It runs nothing and gets no credentials until then. Absent once
+ * approved, and for runners that needed no approval.
+ */
+pending_until?: number, 
+/**
+ * It is removed once it has been offline this many minutes, as its
+ * enrollment token said. Absent: it stays until someone removes it.
+ */
+remove_offline_after_minutes?: number, };

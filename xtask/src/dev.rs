@@ -333,12 +333,144 @@ fn smoke(root: &Path, token: &str, local: bool, children: &mut Children) -> Resu
         let _ = run(fctl().args(["logs", &id]));
     }
     let mut passed = res?;
+    passed.push_str("; ");
+    passed.push_str(&enrollment(token)?);
     if local {
         passed.push_str("; ");
         passed.push_str(&linear::smoke(root, token, children)?);
     }
     eprintln!("\n\x1b[1msmoke test passed\x1b[0m: {passed}\n");
     Ok(())
+}
+
+/// A machine enrolls with an enrollment token that asks for approval, as
+/// `fctl host install --enroll` does: it waits, an admin approves it, it
+/// runs the workspace's sessions, and it removes itself as its host
+/// uninstalls. Only the API: the runner never connects, so no session goes
+/// to it. Against the standalone image too, so that its D1 takes it.
+fn enrollment(token: &str) -> Result<String> {
+    let owner = Auth::Bearer(token.to_owned());
+    let res = call("GET", "/workspaces", Some(&owner), None)?;
+    ok("listing the workspaces", &res)?;
+    let workspace = res.1["workspaces"][0]["id"]
+        .as_str()
+        .context("no workspace")?
+        .to_owned();
+    let res = call(
+        "POST",
+        &format!("/workspaces/{workspace}/enrollment-tokens"),
+        Some(&owner),
+        Some(
+            json!({ "name": "Smoke test", "approval": true, "max_runners": 1, "expires_in_hours": 1 }),
+        ),
+    )?;
+    ok("making an enrollment token", &res)?;
+    let secret = res.1["secret"].as_str().context("no secret")?.to_owned();
+    let token_id = res.1["token"]["id"]
+        .as_str()
+        .context("no token id")?
+        .to_owned();
+    let enrolling = Auth::Bearer(secret);
+    let res = call("GET", "/runner/enroll", Some(&enrolling), None)?;
+    ok("asking what the enrollment token enrolls in", &res)?;
+    if res.1["workspace"]["id"] != json!(workspace) || res.1["approval"] != json!(true) {
+        bail!("the enrollment token enrolls elsewhere: {}", res.1);
+    }
+    let body = json!({ "name": "smoke-enrolled", "facts": { "os": "linux", "driver": "process" } });
+    let res = call(
+        "POST",
+        "/runner/enroll",
+        Some(&enrolling),
+        Some(body.clone()),
+    )?;
+    ok("enrolling a runner", &res)?;
+    let runner = res.1["runner"]["id"]
+        .as_str()
+        .context("no runner")?
+        .to_owned();
+    let runner_token = Auth::Bearer(
+        res.1["token"]
+            .as_str()
+            .context("no runner token")?
+            .to_owned(),
+    );
+    if res.1["runner"]["pending_until"].is_null()
+        || res.1["runner"]["workspace"]["id"] != json!(workspace)
+    {
+        bail!("the enrolled runner doesn't wait for approval: {}", res.1);
+    }
+    // Its one place is taken.
+    let res = call("POST", "/runner/enroll", Some(&enrolling), Some(body))?;
+    if res.0 != 403 {
+        bail!(
+            "a full enrollment token enrolled another runner: HTTP {}: {}",
+            res.0,
+            res.1
+        );
+    }
+    let res = call("GET", "/runner", Some(&runner_token), None)?;
+    ok("the waiting runner asking about itself", &res)?;
+    if !res.1["runner"]["workspaces"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+    {
+        bail!(
+            "a runner that waits for approval runs a workspace's sessions: {}",
+            res.1
+        );
+    }
+    let res = call(
+        "GET",
+        &format!("/workspaces/{workspace}/runners"),
+        Some(&owner),
+        None,
+    )?;
+    ok("listing the workspace's runners", &res)?;
+    let listed = res.1["runners"].as_array().is_some_and(|l| {
+        l.iter()
+            .any(|r| r["id"] == json!(runner) && !r["pending_until"].is_null())
+    });
+    if !listed {
+        bail!(
+            "the workspace's admins don't see the runner that waits: {}",
+            res.1
+        );
+    }
+    let res = call(
+        "POST",
+        &format!("/runners/{runner}/approve"),
+        Some(&owner),
+        Some(json!({})),
+    )?;
+    ok("approving the runner", &res)?;
+    let res = call("GET", "/runner", Some(&runner_token), None)?;
+    ok("the approved runner asking about itself", &res)?;
+    let serves = res.1["runner"]["workspaces"]
+        .as_array()
+        .is_some_and(|l| l.iter().any(|w| w["id"] == json!(workspace)));
+    if !serves || !res.1["runner"]["pending_until"].is_null() {
+        bail!(
+            "the approved runner doesn't run the workspace's sessions: {}",
+            res.1
+        );
+    }
+    // As `fctl host uninstall` removes it.
+    let res = call("DELETE", "/runner", Some(&runner_token), None)?;
+    ok("the runner removing itself", &res)?;
+    if call("GET", "/runner", Some(&runner_token), None)?.0 != 401 {
+        bail!("a removed runner's token still works");
+    }
+    let res = call(
+        "DELETE",
+        &format!("/workspaces/{workspace}/enrollment-tokens/{token_id}"),
+        Some(&owner),
+        None,
+    )?;
+    ok("revoking the enrollment token", &res)?;
+    if call("GET", "/runner/enroll", Some(&enrolling), None)?.0 != 403 {
+        bail!("a revoked enrollment token still enrolls");
+    }
+    Ok("a runner enrolled, waited, was approved and removed itself".into())
 }
 
 /// What the smoke test's agent keeps in the playground's memory.

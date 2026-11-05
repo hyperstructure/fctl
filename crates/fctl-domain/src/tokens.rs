@@ -2,7 +2,7 @@
 //!
 //! Every secret has a type prefix so leaks are easy to spot and route
 //! (`fctl_ws_…` web session, `fctl_cli_…`, `fctl_pat_…`, `fctl_rt_…` runner,
-//! `fctl_inv_…` invitation, `fctl_rst_…` password reset, `fctl_dc_…` device
+//! `fctl_et_…` a workspace's enrollment token, `fctl_inv_…` invitation, `fctl_rst_…` password reset, `fctl_dc_…` device
 //! code, `fctl_2fa_…` a sign-in that waits for its second factor). Only the
 //! SHA-256 of a secret is stored.
 
@@ -17,6 +17,9 @@ pub enum SecretKind {
     Cli,
     Pat,
     Runner,
+    /// Enrolls machines as a workspace's runners (`fctl host install
+    /// --enroll`), each of which gets a runner token of its own.
+    Enrollment,
     Invite,
     PasswordReset,
     DeviceCode,
@@ -36,6 +39,7 @@ impl SecretKind {
             Self::Cli => "fctl_cli_",
             Self::Pat => "fctl_pat_",
             Self::Runner => "fctl_rt_",
+            Self::Enrollment => "fctl_et_",
             Self::Invite => "fctl_inv_",
             Self::PasswordReset => "fctl_rst_",
             Self::DeviceCode => "fctl_dc_",
@@ -51,6 +55,7 @@ impl SecretKind {
             Self::Cli,
             Self::Pat,
             Self::Runner,
+            Self::Enrollment,
             Self::Invite,
             Self::PasswordReset,
             Self::DeviceCode,
@@ -164,6 +169,15 @@ mod tests {
             assert_eq!(s.len(), "fctl_rt_".len() + 43, "{s}");
             assert_eq!(SecretKind::of(&s), Some(SecretKind::Runner));
         }
+    }
+
+    #[test]
+    fn enrollment_tokens_are_told_apart_from_runner_tokens() {
+        let s = new_secret(SecretKind::Enrollment);
+        assert!(s.starts_with("fctl_et_"), "{s}");
+        assert!(looks_like(&s, SecretKind::Enrollment));
+        assert!(!looks_like(&s, SecretKind::Runner));
+        assert_eq!(SecretKind::of(&s), Some(SecretKind::Enrollment));
     }
 
     #[test]
