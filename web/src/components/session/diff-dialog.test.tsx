@@ -189,11 +189,11 @@ describe("a changed file's diff over the page", () => {
     const names = () =>
       [...dialog.querySelectorAll("aside button[title]")].map((b) => b.getAttribute("title"));
     expect(names()).toEqual(["src/a.rs", "src/b.rs", "src/old.rs"]);
-    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     act(() => {
-      input.dispatchEvent(escape);
+      input.dispatchEvent(esc);
     });
-    expect(escape.defaultPrevented).toBe(true);
+    expect(esc.defaultPrevented).toBe(true);
     expect(input.value).toBe("");
     expect(onClose).not.toHaveBeenCalled();
     // Letters in the filter are its own, not shortcuts.

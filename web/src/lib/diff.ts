@@ -131,10 +131,68 @@ export function fromStrings(before: string, after: string): Hunk[] {
 /** Lines longer than this aren't compared word by word. */
 const LONGEST_COMPARED = 1000;
 
+/** What two lines have in common, word by word, when they have enough for marking what changed to help. */
+function compare(del: DiffLine, add: DiffLine) {
+  if (del.text.length > LONGEST_COMPARED || add.text.length > LONGEST_COMPARED) return undefined;
+  const parts = diffWordsWithSpace(del.text, add.text);
+  const kept = parts.filter((p) => !p.added && !p.removed).reduce((n, p) => n + p.value.trim().length, 0);
+  const longest = Math.max(del.text.trim().length, add.text.trim().length);
+  // Mostly different: marking nearly all of it says nothing.
+  return longest && kept / longest >= 0.4 ? parts : undefined;
+}
+
+type Parts = ReturnType<typeof diffWordsWithSpace>;
+
+/** Past this many pairs of lines, a block's lines pair by position alone. */
+const MOST_COMPARED = 200;
+
 /**
- * Marks the words that changed between lines taken out and those added
- * right after them, pair by pair, when the pair has enough in common for
- * that to help: two lines that share nothing are just different.
+ * Lines taken out beside those added in their place, in order: each taken
+ * out with the first added line after the last pair that has much in
+ * common with it (`parts` says what), and the lines between such pairs side
+ * by side as they come.
+ */
+export function align(dels: DiffLine[], adds: DiffLine[]): (SplitRow & { parts?: Parts })[] {
+  const pairs: [number, number, Parts][] = [];
+  if (dels.length * adds.length <= MOST_COMPARED) {
+    let from = 0;
+    for (const [i, del] of dels.entries()) {
+      for (let j = from; j < adds.length; j++) {
+        const parts = compare(del, adds[j] as DiffLine);
+        if (parts) {
+          pairs.push([i, j, parts]);
+          from = j + 1;
+          break;
+        }
+      }
+    }
+  } else {
+    for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
+      const parts = compare(dels[k] as DiffLine, adds[k] as DiffLine);
+      if (parts) pairs.push([k, k, parts]);
+    }
+  }
+  const rows: (SplitRow & { parts?: Parts })[] = [];
+  let i0 = 0;
+  let j0 = 0;
+  for (const [i, j, parts] of [...pairs, [dels.length, adds.length, undefined] as const]) {
+    for (let k = 0; k < Math.max(i - i0, j - j0); k++) {
+      rows.push({
+        left: i0 + k < i ? dels[i0 + k] : undefined,
+        right: j0 + k < j ? adds[j0 + k] : undefined,
+      });
+    }
+    if (parts) rows.push({ left: dels[i], right: adds[j], parts });
+    i0 = i + 1;
+    j0 = j + 1;
+  }
+  return rows;
+}
+
+/**
+ * Marks the words that changed between lines taken out and those added in
+ * their place ([`align`]), when they have enough in common for that to
+ * help: two lines that share nothing are just different.
  */
 export function markChanges(lines: DiffLine[]) {
   let i = 0;
@@ -147,15 +205,8 @@ export function markChanges(lines: DiffLine[]) {
     while (lines[i]?.kind === "del") dels.push(lines[i++] as DiffLine);
     const adds: DiffLine[] = [];
     while (lines[i]?.kind === "add") adds.push(lines[i++] as DiffLine);
-    for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
-      const del = dels[k] as DiffLine;
-      const add = adds[k] as DiffLine;
-      if (del.text.length > LONGEST_COMPARED || add.text.length > LONGEST_COMPARED) continue;
-      const parts = diffWordsWithSpace(del.text, add.text);
-      const kept = parts.filter((p) => !p.added && !p.removed).reduce((n, p) => n + p.value.trim().length, 0);
-      const longest = Math.max(del.text.trim().length, add.text.trim().length);
-      // Mostly different: marking nearly all of it says nothing.
-      if (!longest || kept / longest < 0.4) continue;
+    for (const { left: del, right: add, parts } of align(dels, adds)) {
+      if (!del || !add || !parts) continue;
       const ranges = (side: "added" | "removed") => {
         const out: [number, number][] = [];
         let at = 0;
@@ -222,7 +273,7 @@ export function splitRows(lines: DiffLine[]): SplitRow[] {
     while (lines[i]?.kind === "del") dels.push(lines[i++] as DiffLine);
     const adds: DiffLine[] = [];
     while (lines[i]?.kind === "add") adds.push(lines[i++] as DiffLine);
-    for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push({ left: dels[k], right: adds[k] });
+    for (const { left, right } of align(dels, adds)) rows.push({ left, right });
   }
   return rows;
 }

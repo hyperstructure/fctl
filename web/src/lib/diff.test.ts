@@ -99,6 +99,45 @@ describe("git's hunks", () => {
   });
 });
 
+describe("lines taken out and those added in their place", () => {
+  it("pair up by what they have in common, not by where they are", () => {
+    const [h] = parsePatch(
+      [
+        "@@ -1,3 +1,4 @@",
+        "-    pub fn location(&self) -> Location {",
+        "-        Stop::Depot(l) => *l,",
+        "+    /// Where it is: a break has no place of its own.",
+        "+    pub fn location(&self) -> Option<Location> {",
+        "+        Stop::Depot(l) => Some(*l),",
+      ].join("\n"),
+    );
+    const lines = h?.lines ?? [];
+    const marked = (l?: DiffLine) => l?.changed?.map(([a, b]) => l.text.slice(a, b));
+    // Nothing of the old lines went; what came in around it is marked.
+    expect(marked(lines[0])).toBeUndefined();
+    expect(marked(lines[3])).toEqual(["Option<", ">"]);
+    expect(marked(lines[1])).toBeUndefined();
+    expect(marked(lines[4])).toEqual(["Some(", ")"]);
+    expect(lines[2]?.changed).toBeUndefined();
+    // Side by side too: the comment on its own, each line beside its new self.
+    expect(splitRows(lines).map((r) => [r.left?.text.trim() ?? null, r.right?.text.trim() ?? null])).toEqual([
+      [null, "/// Where it is: a break has no place of its own."],
+      ["pub fn location(&self) -> Location {", "pub fn location(&self) -> Option<Location> {"],
+      ["Stop::Depot(l) => *l,", "Stop::Depot(l) => Some(*l),"],
+    ]);
+  });
+
+  it("go side by side as they come when nothing pairs them", () => {
+    const lines = parsePatch("@@ -1,2 +1,2 @@\n-alpha one\n-beta two\n+gamma\n+delta").flatMap(
+      (h) => h.lines,
+    );
+    expect(splitRows(lines).map((r) => [r.left?.text ?? null, r.right?.text ?? null])).toEqual([
+      ["alpha one", "gamma"],
+      ["beta two", "delta"],
+    ]);
+  });
+});
+
 describe("side by side", () => {
   it("puts lines taken out beside those added in their place", () => {
     const [h] = parsePatch(PATCH);
