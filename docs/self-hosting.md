@@ -330,6 +330,14 @@ confirm it's you. To hold addresses for later, such as `/w/home` and
 pages use, and a workspace or project whose name makes a reserved one gets
 a random ending instead (`home-829d34`).
 
+People who haven't uploaded a picture show their Gravatar: the control
+plane asks gravatar.com for each one by the SHA-256 hash of their primary
+address, as they sign up and once a day after, and keeps a copy. Each
+person can turn that off in their profile. To turn it off for everyone,
+as for an instance that must not reach gravatar.com or whose privacy
+policy doesn't name Gravatar, use **Admin → Settings → Profile pictures**
+(or `fctl admin set --gravatar off`), which also removes the copies.
+
 ## Connect GitHub (optional, recommended)
 
 With a GitHub App, projects link repositories, agents get short-lived tokens

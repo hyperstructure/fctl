@@ -146,6 +146,19 @@ and fctl, published to `ghcr.io/hyperstructure/sandbox`).
   rather than from Google. Addresses of images on other sites, which people
   typed in before, show until they upload a picture; the control plane
   takes no new ones.
+- **People who have no picture of their own show their Gravatar**
+  (`api::avatars::gravatar`): the control plane asks gravatar.com for the
+  SHA-256 hash of their primary address (`d=404`, so that an address
+  without one answers 404 rather than with a made-up picture) as they sign
+  up, as they turn it on, and as they open fctl once a day after
+  (`GET /auth/me`, after the answer), and copies it into `user_avatars`
+  with `source = 'gravatar'`. A new picture there replaces the copy, and
+  one that's gone takes it away. An upload or Google's picture always
+  wins, and a Google sign-up takes its Gravatar first, which only people
+  who chose a picture have. People turn it off in Settings → Profile
+  (`users.gravatar`), which removing their picture does too, so that their
+  initials stay; instance admins turn it off for everyone
+  (`InstanceSettings::gravatar`), which removes the copies.
 
 ### Early access
 
