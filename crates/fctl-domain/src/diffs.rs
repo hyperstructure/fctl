@@ -109,6 +109,26 @@ fn type_changed(old: &mut FileDiff, new: FileDiff) {
     old.digest = hex::encode(hash.finalize());
 }
 
+/// How much of `git diff`'s output, cut short after byte `at`, holds the
+/// parts of whole files: all of it up to the start of the part that byte
+/// `at` falls in, which a cut leaves unfinished. `out` reaches a little past
+/// `at` (a header line's worth), so that a part that starts right there
+/// counts the one before it whole.
+pub fn whole_parts(out: &[u8], at: usize) -> usize {
+    let mut start = 0;
+    let mut line = 0;
+    while line <= at && line < out.len() {
+        if out[line..].starts_with(b"diff --git ") {
+            start = line;
+        }
+        match out[line..].iter().position(|&b| b == b'\n') {
+            Some(end) => line += end + 1,
+            None => break,
+        }
+    }
+    start
+}
+
 /// One file's part of `git diff`'s output: its header, then its hunks.
 fn section(lines: &[&str]) -> Option<FileDiff> {
     let (first, rest) = lines.split_first()?;
@@ -751,6 +771,29 @@ index 0000000..1de5659
             .map(|l| format!("{l}\n"))
             .collect();
         assert_eq!(git_patch(x), without_index);
+    }
+
+    #[test]
+    fn a_cut_keeps_the_files_before_the_one_it_falls_in() {
+        let out = OUTPUT.as_bytes();
+        let starts: Vec<usize> = OUTPUT
+            .match_indices("diff --git ")
+            .map(|(i, _)| i)
+            .filter(|&i| i == 0 || out[i - 1] == b'\n')
+            .collect();
+        let (second, third) = (starts[1], starts[2]);
+        // Inside the second file's part: the first file alone is whole.
+        assert_eq!(whole_parts(out, second + 30), second);
+        // Inside the third file's header line, or right at its start: the
+        // first two are whole.
+        assert_eq!(whole_parts(out, third + 4), third);
+        assert_eq!(whole_parts(out, third), third);
+        // Right after the second file's last newline is the third's start.
+        assert_eq!(whole_parts(out, third - 1), second);
+        // Inside the first: nothing is whole.
+        assert_eq!(whole_parts(out, 10), 0);
+        assert_eq!(whole_parts(b"", 0), 0);
+        assert_eq!(parse(&OUTPUT[..third]).len(), 2);
     }
 
     #[test]

@@ -905,14 +905,23 @@ async fn diffs_within(
     // What fctl-agent reads at most, of git's diff and of untracked files
     // both: a branch can change far more than a session keeps.
     let mut left = most;
-    let (mut parsed, cut) = match run_bounded(dir, home, "git", &args, &index.env(), left).await {
+    // A little past it too, to see whether a file's part starts right at the cut.
+    let peeked = most + PEEK;
+    let (mut parsed, cut) = match run_bounded(dir, home, "git", &args, &index.env(), peeked).await {
         Ok(read) if read.ok || read.cut => {
-            left -= read.out.len();
-            let mut parsed = diffs::parse(&read.out);
-            // The last file's part may be cut short: it is too large.
-            if read.cut {
-                parsed.pop();
-            }
+            // The parts of whole files: those that end before the cut.
+            let whole = if read.cut {
+                diffs::whole_parts(&read.out, most)
+            } else {
+                read.out.len()
+            };
+            // Bytes as git wrote them: the text may have more.
+            left = if read.cut {
+                0
+            } else {
+                most.saturating_sub(read.out.len())
+            };
+            let parsed = diffs::parse(&String::from_utf8_lossy(&read.out[..whole]));
             (parsed, read.cut)
         }
         Ok(_) => {
@@ -952,6 +961,10 @@ async fn diffs_within(
 /// refresh of a session's diffs: twice what a session keeps.
 const MOST_READ: usize = 2 * diffs::MAX_SESSION_BYTES;
 
+/// How far past what it keeps of git's diff fctl-agent reads, to see where
+/// the file that a cut falls in starts.
+const PEEK: usize = 64 * 1024;
+
 /// The diff of an untracked file in `dir`: what [`diffs::untracked`] makes
 /// of its first bytes, as many as a session keeps of one file's diff and
 /// as are `left` to read, which it takes them from. A symbolic link's is
@@ -987,13 +1000,14 @@ fn untracked_diff(dir: &Path, path: &str, left: &mut usize) -> Option<FileDiff> 
         .ok()?;
     let whole = bytes.len() <= most;
     bytes.truncate(most);
-    *left -= bytes.len();
+    *left = left.saturating_sub(bytes.len());
     Some(diffs::untracked(path, &bytes, whole))
 }
 
 /// What [`run_bounded`] read of a command's output.
 struct Bounded {
-    out: String,
+    /// The bytes as the command wrote them.
+    out: Vec<u8>,
     /// The output went on past what was read: the command was killed.
     cut: bool,
     /// It ended, successfully.
@@ -1039,11 +1053,7 @@ async fn run_bounded(
     } else {
         child.wait().await?.success()
     };
-    Ok(Bounded {
-        out: String::from_utf8_lossy(&out).into_owned(),
-        cut,
-        ok,
-    })
+    Ok(Bounded { out, cut, ok })
 }
 
 /// Pushes the checked-out branch when it has commits the remote lacks.
@@ -2771,14 +2781,10 @@ cat "$answer"
         let (log, _logs) = mpsc::unbounded_channel();
         prepare(&p, &spec, &log).await?;
         commit(&p.workdir, &p.home, "a.txt", "a\n", "Add a.txt").await?;
-        commit(
-            &p.workdir,
-            &p.home,
-            "b.txt",
-            &"b\n".repeat(400),
-            "Add b.txt",
-        )
-        .await?;
+        // Longer than what the reader looks past a cut, in fewer lines
+        // than a file may have to be read at all.
+        let long = format!("{}\n", "b".repeat(99)).repeat(PEEK / 64);
+        commit(&p.workdir, &p.home, "b.txt", &long, "Add b.txt").await?;
         std::fs::write(p.workdir.join("c.txt"), "c\n")?;
         let st = state(&p, &spec, &Pulls::default()).await?;
         let read = |most| diffs_within(&p.workdir, &p.home, "main", None, &st, None, most);
@@ -2809,6 +2815,32 @@ cat "$answer"
     }
 
     #[tokio::test]
+    async fn the_limit_counts_bytes_as_git_writes_them() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        // Latin-1: each byte would read as three of U+FFFD's.
+        let mut latin = vec![0xE9_u8; 2000];
+        latin.push(b'\n');
+        std::fs::write(p.workdir.join("d.txt"), &latin)?;
+        git_ok(&p, &["add", "d.txt"]).await?;
+        git_ok(&p, &["commit", "-q", "-m", "Add d.txt"]).await?;
+        std::fs::write(p.workdir.join("e.txt"), "e\n")?;
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        // Limits between what git wrote and what its text holds once read.
+        for most in [2500, 3500, 4500] {
+            let diffs = diffs_within(&p.workdir, &p.home, "main", None, &st, None, most).await;
+            assert_eq!(diffs.len(), 2, "{most}");
+            assert!(diffs[0].patch.is_some(), "{most}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_command_s_output_is_read_up_to_a_limit() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let script = ["-c", "yes | head -c 100000"];
@@ -2818,7 +2850,7 @@ cat "$answer"
         let short =
             run_bounded(dir.path(), dir.path(), "sh", &["-c", "echo hi"], &[], 1000).await?;
         assert!(!short.cut && short.ok);
-        assert_eq!(short.out, "hi\n");
+        assert_eq!(short.out, b"hi\n");
         Ok(())
     }
 
