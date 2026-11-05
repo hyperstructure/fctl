@@ -104,10 +104,19 @@ export function FileList({
   // The one row Tab stops at: the file in view, or the first one shown.
   const stop = active && order.includes(active) ? active : order[0];
 
-  // The file in view stays in sight in the list.
+  // The file in view stays in sight in the list: in its middle as the list opens, then as near
+  // as it is. A frame later: as the dialog opens, the list renders before the dialog shows, and
+  // nothing scrolls in what doesn't show.
+  const placed = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: when the file in view changes
   useEffect(() => {
-    list.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
+    const raf = requestAnimationFrame(() => {
+      const row = list.current?.querySelector('[aria-current="true"]');
+      if (!row) return;
+      row.scrollIntoView({ block: placed.current ? "nearest" : "center" });
+      placed.current = true;
+    });
+    return () => cancelAnimationFrame(raf);
   }, [active]);
 
   const row = (key: string | undefined) =>

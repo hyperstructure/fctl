@@ -23,6 +23,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
+  vi.restoreAllMocks();
   localStorage.clear();
   vi.unstubAllGlobals();
   api.sessionDiff.mockReset();
@@ -93,13 +94,16 @@ function open(at: DiffTarget, { cached = true }: { cached?: boolean } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  act(() =>
-    root.render(
-      <QueryClientProvider client={client}>
-        <DiffDialog session="ses_1" cliRef="web#12" groups={groups} initial={at} onClose={onClose} />
-      </QueryClientProvider>,
-    ),
-  );
+  // Again with other files, as the page does when the agent changes them.
+  const render = (files: DiffGroup[]) =>
+    act(() =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <DiffDialog session="ses_1" cliRef="web#12" groups={files} initial={at} onClose={onClose} />
+        </QueryClientProvider>,
+      ),
+    );
+  render(groups);
   roots.push(() => {
     act(() => root.unmount());
     container.remove();
@@ -120,7 +124,7 @@ function open(at: DiffTarget, { cached = true }: { cached?: boolean } = {}) {
     [...dialog.querySelectorAll("section")].find(
       (s) => s.querySelector("h3")?.getAttribute("title") === path,
     );
-  return { dialog, onClose, key, text, nav, inView, section };
+  return { dialog, onClose, key, text, nav, inView, section, client, render };
 }
 
 const settle = () => act(() => new Promise((r) => setTimeout(r, 0)));
@@ -309,6 +313,61 @@ describe("the session's changes over the page", () => {
     expect(dialog.querySelector("search")).toBeNull();
     expect(dialog.open).toBe(true);
     expect(text()).not.toContain("match");
+  });
+
+  it("selects what the field holds at each Ctrl+F, and not again as the reader types", async () => {
+    const { dialog, key } = open({ path: "README.md" });
+    await settle();
+    key("f", dialog, { ctrlKey: true });
+    const input = dialog.querySelector("search input") as HTMLInputElement;
+    type(input, "app");
+    // Back in the diffs, then Ctrl+F again: the field, its text selected to type over.
+    const body = dialog.querySelector("[tabindex='0'].overflow-auto") as HTMLElement;
+    act(() => body.focus());
+    key("f", body, { ctrlKey: true });
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 3]);
+    // What the reader types then isn't selected again, for the next key to replace it.
+    type(input, "x");
+    expect([input.selectionStart, input.selectionEnd]).toEqual([1, 1]);
+  });
+
+  it("goes to a match once for each step, not again when diffs change later", async () => {
+    const scrolls = vi.spyOn(HTMLElement.prototype, "scrollTo");
+    const { dialog, key, client, render } = open({ path: "README.md" });
+    await settle();
+    key("f", dialog, { ctrlKey: true });
+    const input = dialog.querySelector("search input") as HTMLInputElement;
+    type(input, "Guide");
+    expect(dialog.querySelector("#diff-find-count")?.textContent).toBe("1 of 1");
+    // Stepping on from the only match goes back to it.
+    scrolls.mockClear();
+    key("Enter", input);
+    await settle();
+    expect(scrolls).toHaveBeenCalled();
+    // Another file changes: the diffs stay where the reader is.
+    scrolls.mockClear();
+    const changed = { ...file("src/a.rs"), digest: "d-src/a.rs-2" };
+    client.setQueryData(
+      keys.fileDiff("ses_1", "", "src/a.rs", "d-src/a.rs-2"),
+      diff("src/a.rs", { digest: "d-src/a.rs-2", patch: "@@ -1 +1 @@\n-x\n+Guide" }),
+    );
+    render(groups.map((g) => ({ ...g, files: g.files.map((f) => (f.path === "src/a.rs" ? changed : f)) })));
+    await settle();
+    // The bar stays at its match, now the second, and the diffs stay where they are.
+    expect(dialog.querySelector("#diff-find-count")?.textContent).toBe("2 of 2");
+    expect(scrolls).not.toHaveBeenCalled();
+  });
+
+  it("shows the file opened in the list once the dialog shows", async () => {
+    const seen: boolean[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+      if (this.getAttribute("aria-current") === "true") seen.push(!!this.closest("dialog")?.open);
+    });
+    open({ path: "src/old.rs" });
+    await act(() => new Promise((r) => requestAnimationFrame(() => r(undefined))));
+    expect(seen).toContain(true);
+    expect(seen).not.toContain(false);
   });
 
   it("asks for every diff at once when it doesn't have them, not one by one", async () => {

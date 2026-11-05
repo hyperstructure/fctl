@@ -140,8 +140,14 @@ export function useDiffFind({
   // The place of the match the bar was at, for finding again from there.
   const last = useRef<DiffPlace | undefined>(undefined);
   if (match) last.current = match;
-  // Whether the page goes to the match: once the reader steps or types, not when diffs come.
-  const going = useRef(false);
+  // The match the page goes to, each time the reader steps or types (not when diffs come):
+  // a new ask each time, gone to once, even when it is the match the bar is at already.
+  const [goal, setGoal] = useState<{ key: string; ask: number }>();
+  const asks = useRef(0);
+  const goToKey = useCallback((key: string) => {
+    setCurrent(key);
+    setGoal({ key, ask: ++asks.current });
+  }, []);
   // The reader scrolled since the page went to the match: finding goes on from where they are.
   const away = useRef(false);
   useEffect(() => {
@@ -174,18 +180,15 @@ export function useDiffFind({
     return out;
   }, [matches]);
 
-  // The field takes the keys as the bar opens, before the next one comes: none of what the
-  // reader types right after ⌘F goes elsewhere.
-  const focusing = useRef(false);
-  const focus = useCallback(() => {
+  // The field takes the keys, its text selected, as the bar renders after each ⌘F: before the
+  // next key comes, so that none of what the reader types right after ⌘F goes elsewhere, and
+  // once, so that what they type next isn't selected again.
+  const [focusAsk, setFocusAsk] = useState(0);
+  useLayoutEffect(() => {
+    if (!focusAsk) return;
     input.current?.focus();
     input.current?.select();
-  }, []);
-  useLayoutEffect(() => {
-    if (!open || !focusing.current) return;
-    focusing.current = false;
-    focus();
-  });
+  }, [focusAsk]);
 
   const show = useCallback(() => {
     // Words selected in a diff are what to find, as in an editor.
@@ -193,10 +196,8 @@ export function useDiffFind({
     if (selected.trim() && !selected.includes("\n") && selected.length <= 200) setQuery(selected);
     if (!open) last.current = undefined;
     setOpen(true);
-    // Open already, the field is there; else once it is.
-    focusing.current = true;
-    if (open) focus();
-  }, [open, focus]);
+    setFocusAsk((n) => n + 1);
+  }, [open]);
 
   const close = useCallback(() => {
     // What the bar was at stays selected, as a browser's find leaves it.
@@ -225,14 +226,14 @@ export function useDiffFind({
       searched.current = re;
       const prev = last.current;
       const i = nearest(matches, prev && here(prev) ? prev : (placeAtTop() ?? prev ?? origin));
-      going.current = i >= 0;
-      setCurrent(i < 0 ? undefined : matchKey(matches[i] as DiffMatch));
+      if (i < 0) setCurrent(undefined);
+      else goToKey(matchKey(matches[i] as DiffMatch));
       return;
     }
     if (!matches.length || (current !== undefined && index.has(current))) return;
     const i = nearest(matches, last.current ?? placeAtTop() ?? origin);
     setCurrent(matchKey(matches[i] as DiffMatch));
-  }, [open, re, matches, index, current, placeAtTop, here]);
+  }, [open, re, matches, index, current, placeAtTop, here, goToKey]);
 
   /** To the next match, or back: from the one the bar is at while it shows, else from the top of the view. */
   const step = useCallback(
@@ -245,20 +246,22 @@ export function useDiffFind({
         const top = placeAtTop();
         i = top ? nearest(matches, top, forward) : forward ? 0 : matches.length - 1;
       }
-      going.current = true;
-      setCurrent(matchKey(matches[i] as DiffMatch));
-      // The same match again (the only one): it comes back into view all the same.
-      if (i === at && match) goTo(match);
+      // The same match again (the only one) comes back into view all the same.
+      goToKey(matchKey(matches[i] as DiffMatch));
     },
-    [matches, match, at, here, placeAtTop, goTo],
+    [matches, match, at, here, placeAtTop, goToKey],
   );
 
+  // Each ask, once its match is there.
+  const gone = useRef(0);
   useLayoutEffect(() => {
-    if (!match || !going.current) return;
-    going.current = false;
+    if (!goal || gone.current === goal.ask) return;
+    const m = matches[index.get(goal.key) ?? -1];
+    if (!m) return;
+    gone.current = goal.ask;
     away.current = false;
-    goTo(match);
-  }, [match, goTo]);
+    goTo(m);
+  }, [goal, matches, index, goTo]);
 
   // The matches light up as they show, the one the bar is at most, as it changes.
   useEffect(() => {
