@@ -12,8 +12,9 @@ CREATE TABLE IF NOT EXISTS enrollment_tokens (
   -- The most runners enrolled with it that may be there at once (NULL: no
   -- limit). Rejected, expired and removed ones don't count.
   max_runners INTEGER,
-  -- The runners it enrolls are removed once offline this long (NULL: kept).
-  remove_offline_after_hours INTEGER,
+  -- The runners it enrolls are removed once offline this many minutes
+  -- (NULL: kept).
+  remove_offline_after_minutes INTEGER,
   expires_at INTEGER,
   created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
@@ -39,7 +40,9 @@ ALTER TABLE runners ADD COLUMN facts TEXT;
 -- is removed unless one does. It has no runner_workspaces row until then,
 -- so it runs nothing and gets nothing for any session.
 ALTER TABLE runners ADD COLUMN pending_until INTEGER;
--- Removed once offline this long, as its enrollment token said (NULL: kept).
-ALTER TABLE runners ADD COLUMN remove_offline_after_hours INTEGER;
+-- Removed once offline this many minutes, as its enrollment token said
+-- (NULL: kept): FleetDO removes it as it watches it, the hourly job one
+-- that never connected.
+ALTER TABLE runners ADD COLUMN remove_offline_after_minutes INTEGER;
 CREATE INDEX IF NOT EXISTS runners_workspace ON runners (workspace_id);
 CREATE INDEX IF NOT EXISTS runners_enrollment ON runners (enrollment_id);

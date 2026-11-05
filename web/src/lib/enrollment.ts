@@ -17,22 +17,43 @@ export const ENROLLMENT_EXPIRIES: readonly { value: string; label: string; hours
   { value: "never", label: "Never" },
 ];
 
-/** What happens to the runners it enrolls once they go offline. */
+/**
+ * What happens to the runners it enrolls once they go offline, in minutes of being offline while the
+ * control plane runs: a deploy or an outage of its own doesn't count.
+ */
 export const OFFLINE_REMOVAL: readonly {
   value: string;
   label: string;
   description: string;
-  hours?: number;
+  minutes?: number;
 }[] = [
   { value: "keep", label: "Keep them", description: "They stay until someone removes them." },
   {
-    value: "1h",
-    label: "Remove after an hour",
-    description: "For machines autoscaling destroys.",
-    hours: 1,
+    value: "1m",
+    label: "Remove after a minute",
+    description: "For machines that never come back: one that loses its network longer is gone for good.",
+    minutes: 1,
   },
-  { value: "1d", label: "Remove after a day", description: "Through a short outage.", hours: 24 },
-  { value: "7d", label: "Remove after a week", description: "Through a weekend's.", hours: 7 * 24 },
+  {
+    value: "5m",
+    label: "Remove after 5 minutes",
+    description: "For machines autoscaling destroys without uninstalling.",
+    minutes: 5,
+  },
+  {
+    value: "15m",
+    label: "Remove after 15 minutes",
+    description: "The same, through a short network outage.",
+    minutes: 15,
+  },
+  { value: "1h", label: "Remove after an hour", description: "Through a longer one.", minutes: 60 },
+  {
+    value: "1d",
+    label: "Remove after a day",
+    description: "For machines that are off overnight.",
+    minutes: 1440,
+  },
+  { value: "7d", label: "Remove after a week", description: "Through a weekend.", minutes: 7 * 1440 },
 ];
 
 /** A new enrollment token, as the form holds it. */
@@ -76,23 +97,26 @@ export function enrollmentRequest(f: EnrollmentForm): G.CreateEnrollmentTokenReq
   if (expires) req.expires_in_hours = expires;
   const limit = limitOf(f.limit);
   if (limit !== undefined && !Number.isNaN(limit)) req.max_runners = limit;
-  const offline = OFFLINE_REMOVAL.find((o) => o.value === f.offline)?.hours;
-  if (offline) req.remove_offline_after_hours = offline;
+  const offline = OFFLINE_REMOVAL.find((o) => o.value === f.offline)?.minutes;
+  if (offline) req.remove_offline_after_minutes = offline;
   return req;
 }
 
-/** `an hour`, `6 hours`, `a day`, `3 days`, `a week`, `30 days`. */
-export function hoursText(h: number): string {
-  if (h === 1) return "an hour";
-  if (h === 24) return "a day";
-  if (h === 168) return "a week";
-  return h % 24 === 0 ? `${h / 24} days` : `${h} hours`;
+/** `a minute`, `5 minutes`, `an hour`, `6 hours`, `a day`, `3 days`, `a week`, as the CLI says them. */
+export function minutesText(m: number): string {
+  if (m === 1) return "a minute";
+  if (m === 60) return "an hour";
+  if (m === 1440) return "a day";
+  if (m === 10080) return "a week";
+  if (m % 1440 === 0) return `${m / 1440} days`;
+  if (m % 60 === 0) return `${m / 60} hours`;
+  return `${m} minutes`;
 }
 
 /**
  * What a token does with the runners it enrolls, in a sentence, as the CLI says it: `Enrolls up to
  * 20 runners at a time, which wait for an admin's approval and are removed once they have been
- * offline for an hour.`
+ * offline for 5 minutes.` `removeOffline` is in minutes.
  */
 export function describeEnrollment(approval: boolean, maxRunners?: number, removeOffline?: number): string {
   const one = maxRunners === 1;
@@ -111,8 +135,8 @@ export function describeEnrollment(approval: boolean, maxRunners?: number, remov
         ? `, which ${waits} for an admin's approval before ${they} anything`
         : `, which ${runs} everyone's sessions at once`
       : approval
-        ? `, which ${waits} for an admin's approval and ${is} removed once ${has} been offline for ${hoursText(removeOffline)}`
-        : `, which ${runs} everyone's sessions at once and ${is} removed once ${has} been offline for ${hoursText(removeOffline)}`;
+        ? `, which ${waits} for an admin's approval and ${is} removed once ${has} been offline for ${minutesText(removeOffline)}`
+        : `, which ${runs} everyone's sessions at once and ${is} removed once ${has} been offline for ${minutesText(removeOffline)}`;
   return `${howMany}${then}.`;
 }
 

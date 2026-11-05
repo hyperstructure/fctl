@@ -115,7 +115,7 @@ describe("enrollment tokens", () => {
         name: "Autoscaling group",
         max_runners: 20,
         runners: 3,
-        remove_offline_after_hours: 1,
+        remove_offline_after_minutes: 5,
         expires_at: now + 30 * 86_400_000,
         created_by: { id: "usr_ada", name: "Ada Lovelace" } as G.UserRef,
       }),
@@ -124,7 +124,7 @@ describe("enrollment tokens", () => {
     ]);
     const text = c.textContent ?? "";
     expect(text).toContain(
-      "Enrolls up to 20 runners at a time, which run everyone's sessions at once and are removed once they have been offline for an hour.",
+      "Enrolls up to 20 runners at a time, which run everyone's sessions at once and are removed once they have been offline for 5 minutes.",
     );
     expect(text).toContain("3 of 20 runners");
     expect(text).toContain("1 waiting");

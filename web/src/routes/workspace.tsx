@@ -53,7 +53,7 @@ import { ApiFailure, api, workspaces } from "@/lib/api";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
-import { hoursText } from "@/lib/enrollment";
+import { minutesText } from "@/lib/enrollment";
 import { ago, agoShort } from "@/lib/format";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
 import {
@@ -986,15 +986,15 @@ function Runners({ w }: { w: G.Workspace }) {
                     {r.driver ? `${r.driver} runner` : "runner"} · {r.active_sessions}/{r.capacity} sessions
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
-                  {own && (r.enrollment?.token_name || r.remove_offline_after_hours) && (
+                  {own && (r.enrollment?.token_name || r.remove_offline_after_minutes) && (
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-4">
                       {r.enrollment?.token_name && (
                         <span className="inline-flex items-center gap-1 text-ink-3">
                           <KeyRound className="size-3 text-ink-4" /> Enrolled with “{r.enrollment.token_name}”
                         </span>
                       )}
-                      {r.remove_offline_after_hours && (
-                        <span>Removed once offline for {hoursText(r.remove_offline_after_hours)}</span>
+                      {r.remove_offline_after_minutes && (
+                        <span>Removed once offline for {minutesText(r.remove_offline_after_minutes)}</span>
                       )}
                     </div>
                   )}

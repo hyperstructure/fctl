@@ -8,7 +8,8 @@ use crate::validate::Result;
 use fctl_proto::api::{CreateEnrollmentTokenRequest, PushMessage, RunnerFacts};
 use fctl_proto::{ApiError, Millis};
 
-pub const HOUR_MS: i64 = 3_600_000;
+pub const MINUTE_MS: i64 = 60_000;
+pub const HOUR_MS: i64 = 60 * MINUTE_MS;
 /// How long a runner waits for an admin of its workspace to approve it
 /// before it is removed.
 pub const PENDING_MS: i64 = 7 * 24 * HOUR_MS;
@@ -17,8 +18,17 @@ pub const MAX_EXPIRY_HOURS: u32 = 365 * 24;
 /// The most runners one token may keep enrolled at once.
 pub const MAX_RUNNERS: u32 = 1000;
 /// The longest a token may let its runners stay offline before they are
-/// removed.
-pub const MAX_REMOVE_OFFLINE_HOURS: u32 = 30 * 24;
+/// removed, in minutes.
+pub const MAX_REMOVE_OFFLINE_MINUTES: u32 = 30 * 24 * 60;
+/// Longer than this between two of FleetObject's ticks (every 30 seconds
+/// while it watches a runner that may go), it wasn't watching: it was down,
+/// or had nothing to watch. Time a runner was offline counts only from the
+/// tick after such a gap ([`watching_since`]). Just over a tick, so that
+/// any outage of the control plane longer than that starts every window
+/// over, and a host, whose reconnect backoff grows to half a minute (with
+/// jitter, 34 seconds), is back within a window of a minute: a tick that is
+/// late only delays a removal.
+pub const MAX_TICK_GAP_MS: i64 = 40_000;
 /// Revoked and expired tokens are deleted this long after they ended, once
 /// no runner they enrolled is left.
 pub const KEEP_ENDED_MS: i64 = 90 * 24 * HOUR_MS;
@@ -30,7 +40,7 @@ pub struct NewToken {
     pub expires_at: Option<i64>,
     pub max_runners: Option<u32>,
     pub approval: bool,
-    pub remove_offline_after_hours: Option<u32>,
+    pub remove_offline_after_minutes: Option<u32>,
 }
 
 /// Checks what a new enrollment token is to be made with, at `now`.
@@ -56,13 +66,13 @@ pub fn check_new(req: &CreateEnrollmentTokenRequest, now: i64) -> Result<NewToke
             ));
         }
     };
-    let remove_offline_after_hours = match req.remove_offline_after_hours {
+    let remove_offline_after_minutes = match req.remove_offline_after_minutes {
         None => None,
-        Some(h) if (1..=MAX_REMOVE_OFFLINE_HOURS).contains(&h) => Some(h),
+        Some(m) if (1..=MAX_REMOVE_OFFLINE_MINUTES).contains(&m) => Some(m),
         Some(_) => {
             return Err(ApiError::validation(
-                "remove_offline_after_hours",
-                "Remove offline runners after an hour to 30 days, or keep them",
+                "remove_offline_after_minutes",
+                "Remove offline runners after a minute to 30 days, or keep them",
             ));
         }
     };
@@ -71,7 +81,7 @@ pub fn check_new(req: &CreateEnrollmentTokenRequest, now: i64) -> Result<NewToke
         expires_at,
         max_runners,
         approval: req.approval.unwrap_or(false),
-        remove_offline_after_hours,
+        remove_offline_after_minutes,
     })
 }
 
@@ -152,33 +162,61 @@ pub fn pending_until(now: i64) -> i64 {
 }
 
 /// Whether a runner whose token removes its runners once they have been
-/// offline `hours` is due for removal at `now`: it was last seen (or, never
-/// connected, enrolled) longer ago than that. A runner that is online now
-/// is never due, whatever D1 last heard of it.
+/// offline `minutes` is due for removal at `now`, as the hourly job sees
+/// it: it was last seen (or, never connected, enrolled) longer ago than
+/// that. A runner that is online now is never due, whatever D1 last heard
+/// of it. FleetObject removes the ones it saw connected sooner
+/// ([`removal_due`]); this is for those it never saw.
 pub fn offline_too_long(
-    hours: u32,
+    minutes: u32,
     last_seen_at: Option<i64>,
     created_at: i64,
     online: bool,
     now: i64,
 ) -> bool {
-    !online && now - last_seen_at.unwrap_or(created_at).max(created_at) > i64::from(hours) * HOUR_MS
+    !online
+        && now - last_seen_at.unwrap_or(created_at).max(created_at) > i64::from(minutes) * MINUTE_MS
 }
 
-/// `an hour`, `6 hours`, `a day`, `3 days`, `a week`, `30 days`.
-pub fn hours(h: u32) -> String {
-    match h {
-        1 => "an hour".into(),
-        24 => "a day".into(),
-        168 => "a week".into(),
-        h if h % 24 == 0 => format!("{} days", h / 24),
-        h => format!("{h} hours"),
+/// Since when FleetObject has been watching its runners without a gap, as
+/// of a tick at `now`: `since`, unless its last tick (`last_tick`) was
+/// longer ago than [`MAX_TICK_GAP_MS`] or there was none, when it starts
+/// watching now. Time a runner spent offline while the control plane was
+/// down, or before it watched, doesn't count towards its removal: a deploy
+/// or an outage longer than a token's window would otherwise remove every
+/// runner before its host could connect again.
+pub fn watching_since(last_tick: Option<i64>, since: Option<i64>, now: i64) -> i64 {
+    match (last_tick, since) {
+        (Some(t), Some(s)) if now - t <= MAX_TICK_GAP_MS => s,
+        _ => now,
+    }
+}
+
+/// Whether a runner that disconnected at `last_seen` is due for removal at
+/// `now`, its token removing runners after `after_ms` offline, counted from
+/// when FleetObject started watching (`watching`) if that is later.
+pub fn removal_due(after_ms: i64, last_seen: Option<i64>, watching: i64, now: i64) -> bool {
+    now - last_seen.unwrap_or(watching).max(watching) >= after_ms
+}
+
+/// `a minute`, `5 minutes`, `an hour`, `6 hours`, `a day`, `3 days`, `a
+/// week`, `30 days`.
+pub fn minutes(m: u32) -> String {
+    match m {
+        1 => "a minute".into(),
+        60 => "an hour".into(),
+        1440 => "a day".into(),
+        10080 => "a week".into(),
+        m if m % 1440 == 0 => format!("{} days", m / 1440),
+        m if m % 60 == 0 => format!("{} hours", m / 60),
+        m => format!("{m} minutes"),
     }
 }
 
 /// What a token does with the runners it enrolls, in a sentence: `Enrolls
 /// up to 20 runners at a time, which wait for an admin's approval and are
-/// removed once they have been offline for an hour.`
+/// removed once they have been offline for 5 minutes.` `remove_offline` is
+/// in minutes.
 pub fn describe(approval: bool, max_runners: Option<u32>, remove_offline: Option<u32>) -> String {
     let how_many = match max_runners {
         None => "Enrolls any number of runners".to_owned(),
@@ -201,43 +239,52 @@ pub fn describe(approval: bool, max_runners: Option<u32>, remove_offline: Option
             if one { "runs" } else { "run" },
             if one { "is" } else { "are" },
             if one { "it has" } else { "they have" },
-            hours(h)
+            minutes(h)
         ),
         (true, Some(h)) => format!(
             ", which {} for an admin's approval and {} removed once {} been offline for {}",
             if one { "waits" } else { "wait" },
             if one { "is" } else { "are" },
             if one { "it has" } else { "they have" },
-            hours(h)
+            minutes(h)
         ),
     };
     format!("{how_many}{then}.")
 }
 
-/// A duration in hours as people type it: `90m` rounds up to whole hours,
-/// `12h`, `30d`, `2w`, `1y`; a number alone is days. `never`, `none` and
-/// `off` are `None`.
-pub fn parse_hours(input: &str) -> std::result::Result<Option<u32>, String> {
+/// A duration in minutes as people type it: `5m`, `12h`, `30d`, `2w`,
+/// `1y`, with its unit. `never`, `none`, `off` and `keep` are `None`.
+pub fn parse_minutes(input: &str) -> std::result::Result<Option<u32>, String> {
     let s = input.trim().to_ascii_lowercase();
     if matches!(s.as_str(), "never" | "none" | "off" | "keep") {
         return Ok(None);
     }
-    let bad = || format!("{input:?} isn't a duration: use 1h, 12h, 7d, 30d, 1y or never");
+    let bad = || format!("{input:?} isn't a duration: use 5m, 1h, 7d, 1y or never");
     let digits = s.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-    let unit = &s[digits.len()..];
+    let unit = s[digits.len()..].trim();
     let n: u64 = digits.trim().parse().map_err(|_| bad())?;
-    let hours = match unit {
-        "m" | "min" | "mins" | "minute" | "minutes" => n.div_ceil(60),
-        "h" | "hr" | "hrs" | "hour" | "hours" => n,
-        "" | "d" | "day" | "days" => n * 24,
-        "w" | "week" | "weeks" => n * 24 * 7,
-        "y" | "year" | "years" => n * 24 * 365,
+    let minutes = match unit {
+        "m" | "min" | "mins" | "minute" | "minutes" => n,
+        "h" | "hr" | "hrs" | "hour" | "hours" => n * 60,
+        "d" | "day" | "days" => n * 1440,
+        "w" | "week" | "weeks" => n * 10080,
+        "y" | "year" | "years" => n * 525_600,
+        "" => {
+            return Err(format!(
+                "{input:?} needs a unit: 5m, 1h, 7d or 1y, for instance"
+            ));
+        }
         _ => return Err(bad()),
     };
-    if hours == 0 {
-        return Err(format!("{input:?} is no time at all: use at least 1h"));
+    if minutes == 0 {
+        return Err(format!("{input:?} is no time at all"));
     }
-    u32::try_from(hours).map(Some).map_err(|_| bad())
+    u32::try_from(minutes).map(Some).map_err(|_| bad())
+}
+
+/// A duration as [`parse_minutes`] reads it, in whole hours, rounded up.
+pub fn parse_hours(input: &str) -> std::result::Result<Option<u32>, String> {
+    Ok(parse_minutes(input)?.map(|m| m.div_ceil(60)))
 }
 
 /// What a host said about its machine as it enrolled, trimmed to what the
@@ -393,7 +440,7 @@ mod tests {
                 expires_in_hours: Some(24 * 90),
                 max_runners: Some(20),
                 approval: Some(true),
-                remove_offline_after_hours: Some(1),
+                remove_offline_after_minutes: Some(5),
             },
             NOW,
         )
@@ -405,7 +452,7 @@ mod tests {
                 expires_at: Some(NOW + 90 * 24 * HOUR_MS),
                 max_runners: Some(20),
                 approval: true,
-                remove_offline_after_hours: Some(1),
+                remove_offline_after_minutes: Some(5),
             })
         );
         // Without settings: never expires, no limit, no approval, kept.
@@ -415,7 +462,7 @@ mod tests {
                 t.expires_at,
                 t.max_runners,
                 t.approval,
-                t.remove_offline_after_hours
+                t.remove_offline_after_minutes
             )),
             Some((None, None, false, None))
         );
@@ -427,18 +474,18 @@ mod tests {
             (Some(MAX_EXPIRY_HOURS + 1), None, None, "expires_in_hours"),
             (None, Some(0), None, "max_runners"),
             (None, Some(MAX_RUNNERS + 1), None, "max_runners"),
-            (None, None, Some(0), "remove_offline_after_hours"),
+            (None, None, Some(0), "remove_offline_after_minutes"),
             (
                 None,
                 None,
-                Some(MAX_REMOVE_OFFLINE_HOURS + 1),
-                "remove_offline_after_hours",
+                Some(MAX_REMOVE_OFFLINE_MINUTES + 1),
+                "remove_offline_after_minutes",
             ),
         ] {
             let r = CreateEnrollmentTokenRequest {
                 expires_in_hours: expires,
                 max_runners: max,
-                remove_offline_after_hours: offline,
+                remove_offline_after_minutes: offline,
                 ..request("CI")
             };
             assert_eq!(field(r).as_deref(), Some(which));
@@ -505,49 +552,87 @@ mod tests {
     #[test]
     fn runners_are_removed_once_offline_for_longer_than_their_token_says() {
         let made = NOW - 10 * HOUR_MS;
+        let seen = Some(NOW - 90 * MINUTE_MS);
         // Seen 90 minutes ago, removed after an hour offline.
-        assert!(offline_too_long(
-            1,
-            Some(NOW - 90 * 60_000),
-            made,
-            false,
-            NOW
-        ));
-        assert!(!offline_too_long(
-            2,
-            Some(NOW - 90 * 60_000),
-            made,
-            false,
-            NOW
-        ));
+        assert!(offline_too_long(60, seen, made, false, NOW));
+        assert!(!offline_too_long(120, seen, made, false, NOW));
         // Online now, whatever the last heartbeat D1 kept says.
-        assert!(!offline_too_long(
-            1,
-            Some(NOW - 90 * 60_000),
-            made,
-            true,
+        assert!(!offline_too_long(60, seen, made, true, NOW));
+        // Never connected: counted from when it enrolled.
+        assert!(offline_too_long(9 * 60, None, made, false, NOW));
+        assert!(!offline_too_long(11 * 60, None, made, false, NOW));
+    }
+
+    #[test]
+    fn only_time_the_control_plane_watched_counts_towards_removal() {
+        let tick = NOW - 30_000;
+        // Ticking along: it has watched since it started.
+        assert_eq!(
+            watching_since(Some(tick), Some(NOW - HOUR_MS), NOW),
+            NOW - HOUR_MS
+        );
+        // After a gap (it was down, or had nothing to watch), or before its
+        // first tick, it watches from now: a minute's outage gives every
+        // host its window again.
+        assert_eq!(
+            watching_since(Some(NOW - 10 * MINUTE_MS), Some(NOW - HOUR_MS), NOW),
+            NOW
+        );
+        assert_eq!(
+            watching_since(Some(NOW - MINUTE_MS), Some(NOW - HOUR_MS), NOW),
+            NOW
+        );
+        assert_eq!(watching_since(None, None, NOW), NOW);
+        let five = 5 * MINUTE_MS;
+        // Gone for six minutes while watched: due after five.
+        assert!(removal_due(
+            five,
+            Some(NOW - 6 * MINUTE_MS),
+            NOW - HOUR_MS,
             NOW
         ));
-        // Never connected: counted from when it enrolled.
-        assert!(offline_too_long(9, None, made, false, NOW));
-        assert!(!offline_too_long(11, None, made, false, NOW));
+        assert!(!removal_due(
+            five,
+            Some(NOW - 4 * MINUTE_MS),
+            NOW - HOUR_MS,
+            NOW
+        ));
+        // Gone for an hour, but the control plane came back two minutes
+        // ago: the host gets its five minutes to connect again.
+        assert!(!removal_due(
+            five,
+            Some(NOW - HOUR_MS),
+            NOW - 2 * MINUTE_MS,
+            NOW
+        ));
+        assert!(removal_due(
+            five,
+            Some(NOW - HOUR_MS),
+            NOW - 5 * MINUTE_MS,
+            NOW
+        ));
     }
 
     #[test]
     fn durations_read_as_people_type_them() {
-        assert_eq!(parse_hours("1h"), Ok(Some(1)));
+        assert_eq!(parse_minutes("1m"), Ok(Some(1)));
+        assert_eq!(parse_minutes("15 minutes"), Ok(Some(15)));
+        assert_eq!(parse_minutes("1h"), Ok(Some(60)));
+        assert_eq!(parse_minutes("7d"), Ok(Some(10080)));
+        assert_eq!(parse_minutes("2w"), Ok(Some(20160)));
+        assert_eq!(parse_minutes("Never"), Ok(None));
+        assert_eq!(parse_minutes("keep"), Ok(None));
+        // A number alone could mean anything.
+        assert!(parse_minutes("30").is_err_and(|e| e.contains("needs a unit")));
+        assert!(parse_minutes("0m").is_err());
+        assert!(parse_minutes("soon").is_err());
+        assert!(parse_minutes("3 fortnights").is_err());
+        assert!(parse_minutes("99999999y").is_err());
+        // Expiries are whole hours.
         assert_eq!(parse_hours("90m"), Ok(Some(2)));
-        assert_eq!(parse_hours("12 hours"), Ok(Some(12)));
-        assert_eq!(parse_hours("7d"), Ok(Some(168)));
-        assert_eq!(parse_hours("30"), Ok(Some(720)));
-        assert_eq!(parse_hours("2w"), Ok(Some(336)));
+        assert_eq!(parse_hours("90d"), Ok(Some(2160)));
         assert_eq!(parse_hours("1y"), Ok(Some(8760)));
-        assert_eq!(parse_hours("Never"), Ok(None));
-        assert_eq!(parse_hours("off"), Ok(None));
-        assert!(parse_hours("0h").is_err());
-        assert!(parse_hours("soon").is_err());
-        assert!(parse_hours("3 fortnights").is_err());
-        assert!(parse_hours("99999999y").is_err());
+        assert_eq!(parse_hours("never"), Ok(None));
     }
 
     #[test]
@@ -557,20 +642,23 @@ mod tests {
             "Enrolls any number of runners, which run everyone's sessions at once."
         );
         assert_eq!(
-            describe(true, Some(20), Some(1)),
-            "Enrolls up to 20 runners at a time, which wait for an admin's approval and are removed once they have been offline for an hour."
+            describe(true, Some(20), Some(5)),
+            "Enrolls up to 20 runners at a time, which wait for an admin's approval and are removed once they have been offline for 5 minutes."
         );
         assert_eq!(
-            describe(false, Some(1), Some(24)),
+            describe(false, Some(1), Some(1440)),
             "Enrolls one runner at a time, which runs everyone's sessions at once and is removed once it has been offline for a day."
         );
         assert_eq!(
             describe(true, Some(1), None),
             "Enrolls one runner at a time, which waits for an admin's approval before it runs anything."
         );
-        assert_eq!(hours(168), "a week");
-        assert_eq!(hours(72), "3 days");
-        assert_eq!(hours(6), "6 hours");
+        assert_eq!(minutes(1), "a minute");
+        assert_eq!(minutes(15), "15 minutes");
+        assert_eq!(minutes(60), "an hour");
+        assert_eq!(minutes(360), "6 hours");
+        assert_eq!(minutes(4320), "3 days");
+        assert_eq!(minutes(10080), "a week");
     }
 
     #[test]

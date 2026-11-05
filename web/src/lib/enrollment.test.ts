@@ -6,9 +6,9 @@ import {
   enrolledFrom,
   enrollmentReady,
   enrollmentRequest,
-  hoursText,
   limitOf,
   machineFacts,
+  minutesText,
   NEW_ENROLLMENT,
   tokenState,
   waitingByWorkspace,
@@ -33,7 +33,7 @@ describe("enrollmentRequest", () => {
     });
     expect(
       enrollmentRequest({ name: "CI", expires: "never", limit: "20", approval: true, offline: "1h" }),
-    ).toEqual({ name: "CI", approval: true, max_runners: 20, remove_offline_after_hours: 1 });
+    ).toEqual({ name: "CI", approval: true, max_runners: 20, remove_offline_after_minutes: 60 });
   });
 
   it("takes a limit of whole runners within bounds, or none", () => {
@@ -54,10 +54,10 @@ describe("describeEnrollment", () => {
     expect(describeEnrollment(false)).toBe(
       "Enrolls any number of runners, which run everyone's sessions at once.",
     );
-    expect(describeEnrollment(true, 20, 1)).toBe(
-      "Enrolls up to 20 runners at a time, which wait for an admin's approval and are removed once they have been offline for an hour.",
+    expect(describeEnrollment(true, 20, 5)).toBe(
+      "Enrolls up to 20 runners at a time, which wait for an admin's approval and are removed once they have been offline for 5 minutes.",
     );
-    expect(describeEnrollment(false, 1, 24)).toBe(
+    expect(describeEnrollment(false, 1, 1440)).toBe(
       "Enrolls one runner at a time, which runs everyone's sessions at once and is removed once it has been offline for a day.",
     );
     expect(describeEnrollment(true, 1)).toBe(
@@ -66,7 +66,15 @@ describe("describeEnrollment", () => {
   });
 
   it("names durations as people say them", () => {
-    expect([1, 6, 24, 72, 168].map(hoursText)).toEqual(["an hour", "6 hours", "a day", "3 days", "a week"]);
+    expect([1, 15, 60, 360, 1440, 4320, 10080].map(minutesText)).toEqual([
+      "a minute",
+      "15 minutes",
+      "an hour",
+      "6 hours",
+      "a day",
+      "3 days",
+      "a week",
+    ]);
   });
 });
 

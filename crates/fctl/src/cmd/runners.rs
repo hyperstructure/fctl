@@ -94,7 +94,7 @@ pub enum RunnersCmd {
         visible_alias = "enroll-tokens",
         after_help = "Examples:
   fctl runners enrollment-tokens -w acme
-  fctl runners enrollment-tokens create \"Build fleet\" -w acme --expires 90d --max-runners 20 --remove-offline-after 1h
+  fctl runners enrollment-tokens create \"Build fleet\" -w acme --expires 90d --max-runners 20 --remove-offline-after 5m
   fctl runners enrollment-tokens create \"Contractors\" -w acme --approval --expires 7d
   fctl runners enrollment-tokens revoke \"Build fleet\" -w acme
 
@@ -132,10 +132,11 @@ pub enum EnrollmentTokensCmd {
         #[arg(long)]
         approval: bool,
         /// Remove the runners it enrolls once they have been offline this
-        /// long, as machines autoscaling destroys are: 1h, 1d, 7d.
-        /// Default: they stay until someone removes them.
-        #[arg(long, value_name = "DURATION", value_parser = hours_arg)]
-        remove_offline_after: Option<Hours>,
+        /// long, as machines autoscaling destroys are: 1m, 5m, 15m, 1h, 1d,
+        /// 7d (time the control plane is down doesn't count). Default: they
+        /// stay until someone removes them.
+        #[arg(long, value_name = "DURATION", value_parser = minutes_arg)]
+        remove_offline_after: Option<Minutes>,
     },
     /// Revoke an enrollment token: it enrolls no more runners. The ones it
     /// enrolled stay, and the ones that wait for approval still wait.
@@ -153,6 +154,15 @@ pub struct Hours(Option<u32>);
 /// `90d` and the like; `never`.
 fn hours_arg(s: &str) -> std::result::Result<Hours, String> {
     enrollment::parse_hours(s).map(Hours)
+}
+
+/// A duration in minutes, or none (`never`, `keep`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Minutes(Option<u32>);
+
+/// `5m`, `1h` and the like; `keep`.
+fn minutes_arg(s: &str) -> std::result::Result<Minutes, String> {
+    enrollment::parse_minutes(s).map(Minutes)
 }
 
 pub async fn run(server: Option<&str>, cmd: RunnersCmd, json: bool) -> Result<()> {
@@ -389,7 +399,7 @@ async fn enrollment_tokens(
                         expires_in_hours: expires.0,
                         max_runners,
                         approval: Some(approval),
-                        remove_offline_after_hours: remove_offline_after.and_then(|h| h.0),
+                        remove_offline_after_minutes: remove_offline_after.and_then(|m| m.0),
                     },
                 )
                 .await?;
@@ -402,7 +412,7 @@ async fn enrollment_tokens(
                 "{}",
                 style::dim(&format!(
                     "{} {}",
-                    enrollment::describe(t.approval, t.max_runners, t.remove_offline_after_hours),
+                    enrollment::describe(t.approval, t.max_runners, t.remove_offline_after_minutes),
                     expiry(t.expires_at)
                 ))
             );
@@ -546,12 +556,12 @@ fn print_runner(r: &Runner) {
     if let Some(d) = low_disk_line(r) {
         println!("  {}", style::amber(&d));
     }
-    if let Some(h) = r.remove_offline_after_hours {
+    if let Some(h) = r.remove_offline_after_minutes {
         println!(
             "  {}",
             style::dim(&format!(
                 "removed once offline for {}",
-                enrollment::hours(h)
+                enrollment::minutes(h)
             ))
         );
     }
@@ -591,7 +601,7 @@ fn print_token(t: &EnrollmentToken) {
         "  {}",
         style::dim(&format!(
             "{} {} {made}{used}.",
-            enrollment::describe(t.approval, t.max_runners, t.remove_offline_after_hours),
+            enrollment::describe(t.approval, t.max_runners, t.remove_offline_after_minutes),
             expiry(t.expires_at)
         ))
     );
@@ -616,6 +626,10 @@ mod tests {
         assert_eq!(hours_arg("90d"), Ok(Hours(Some(2160))));
         assert_eq!(hours_arg("never"), Ok(Hours(None)));
         assert!(hours_arg("soon").is_err());
+        assert_eq!(minutes_arg("5m"), Ok(Minutes(Some(5))));
+        assert_eq!(minutes_arg("1h"), Ok(Minutes(Some(60))));
+        assert_eq!(minutes_arg("keep"), Ok(Minutes(None)));
+        assert!(minutes_arg("5").is_err());
     }
 
     #[test]

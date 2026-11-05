@@ -297,7 +297,7 @@ Examples:
   fctl runners approve build-7                  # its name or id
   fctl runners reject rnr_01JC…
   fctl runners remove build-7 --yes
-  fctl runners enrollment-tokens create \"Build fleet\" -w acme --remove-offline-after 1h"
+  fctl runners enrollment-tokens create \"Build fleet\" -w acme --remove-offline-after 5m"
     )]
     Runners {
         #[command(subcommand)]
@@ -661,7 +661,7 @@ mod tests {
             "acme",
             "--approval",
             "--remove-offline-after",
-            "1h",
+            "5m",
             "--expires",
             "never",
         ])

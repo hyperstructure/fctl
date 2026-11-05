@@ -20,4 +20,4 @@ approval: boolean, expires_at?: number, max_runners?: number,
 /**
  * The runners it enrolled that are still there.
  */
-runners: number, remove_offline_after_hours?: number, };
+runners: number, remove_offline_after_minutes?: number, };

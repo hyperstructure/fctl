@@ -787,7 +787,7 @@ one of its enrollment tokens
    (`POST /api/v1/workspaces/{id}/enrollment-tokens`): a name, an expiry
    (an hour to a year, or never), the most runners it keeps enrolled at
    once, whether the runners it enrolls wait for approval, and whether they
-   are removed once offline for an hour to 30 days. A token trusts whatever
+   are removed once offline for a minute to 30 days. A token trusts whatever
    enrolls with it with everyone's sessions there, as a runner added for
    everyone's sessions is: making one is a
    [sensitive action](#confirming-its-you) and needs the workspace open to
@@ -834,8 +834,13 @@ one of its enrollment tokens
 5. **Machines that come and go.** `fctl host uninstall` removes an enrolled
    runner (`DELETE /api/v1/runner`, with its own token) and its token file.
    A token can have its runners removed once they have been offline longer
-   than it says, which the hourly job does from the last heartbeat D1 has,
-   never for a runner FleetDO has connected. Removed, rejected and expired
+   than it says. FleetDO does that on its 30-second tick, for the runners it
+   saw connect: it learns each one's window as it connects, and counts only
+   the time it was up and watching (`fctl_domain::enrollment::watching_since`),
+   so that a deploy or an outage of the control plane gives every host the
+   whole window to connect again. The hourly job removes those that never
+   connected, from when they enrolled, and never one FleetDO has connected.
+   Removed, rejected and expired
    runners free their place in their token's limit, so an autoscaling group
    keeps replacing its machines within it. Removing any runner stops the
    sessions it ran at once (FleetDO's `/runner-removed`), which a message

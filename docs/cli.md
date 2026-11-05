@@ -954,7 +954,7 @@ enrollment tokens, which its admins make:
 
 ```sh
 fctl runners enrollment-tokens -w acme       # what each does, its runners, when it expires
-fctl runners enrollment-tokens create "Build fleet" -w acme --max-runners 20 --remove-offline-after 1h
+fctl runners enrollment-tokens create "Build fleet" -w acme --max-runners 20 --remove-offline-after 5m
 fctl runners enrollment-tokens create "Laptops" -w acme --approval --expires 7d
 fctl runners enrollment-tokens revoke "Build fleet" -w acme   # it enrolls no more; its runners stay
 ```
@@ -978,8 +978,11 @@ says it waits, with its id. One nobody approves within 7 days is removed.
 `fctl host install --enroll` again keeps the runner the machine has in that
 workspace, so a boot script can run it every time, and `fctl host
 uninstall` removes it. With `--remove-offline-after`, runners that stay
-offline that long (an hour to 30 days) go too, as machines that
-autoscaling destroys do without uninstalling.
+offline that long (`1m` to `30d`) go too, as machines that autoscaling
+destroys do without uninstalling. Only time the control plane is up counts,
+so a deploy or an outage of its own removes none, but a host that loses
+its network for longer is gone, and enrolls again: give a fleet whose
+machines stay up `15m` or more.
 
 ## Admin
 

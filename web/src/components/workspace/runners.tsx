@@ -47,10 +47,10 @@ import {
   enrolledFrom,
   enrollmentReady,
   enrollmentRequest,
-  hoursText,
   limitOf,
   MAX_RUNNERS,
   machineFacts,
+  minutesText,
   NEW_ENROLLMENT,
   OFFLINE_REMOVAL,
   tokenState,
@@ -556,7 +556,7 @@ function TokenRow({
           )}
         </div>
         <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-3">
-          {describeEnrollment(t.approval, t.max_runners, t.remove_offline_after_hours)}
+          {describeEnrollment(t.approval, t.max_runners, t.remove_offline_after_minutes)}
         </p>
         <Meta
           parts={[
@@ -621,7 +621,7 @@ function NewEnrollmentToken({ w, open, onClose }: { w: G.Workspace; open: boolea
           ? describeEnrollment(
               created.token.approval,
               created.token.max_runners,
-              created.token.remove_offline_after_hours,
+              created.token.remove_offline_after_minutes,
             )
           : `Machines that have it enroll themselves as ${w.name}'s runners, without signing in.`
       }
@@ -650,7 +650,7 @@ function TokenForm({
   const err = (f: string) => (field === f ? create.error?.message : undefined);
   const limit = limitOf(form.limit);
   const expires = ENROLLMENT_EXPIRIES.find((e) => e.value === form.expires)?.hours;
-  const offline = OFFLINE_REMOVAL.find((o) => o.value === form.offline)?.hours;
+  const offline = OFFLINE_REMOVAL.find((o) => o.value === form.offline)?.minutes;
   return (
     <form
       className="flex flex-col gap-5"
@@ -700,7 +700,7 @@ function TokenForm({
           )}
         </Field>
       </div>
-      <Field label="When they go offline" error={err("remove_offline_after_hours")}>
+      <Field label="When they go offline" error={err("remove_offline_after_minutes")}>
         {(id) => (
           <Select
             id={id}
@@ -784,8 +784,8 @@ function Created({
         In a boot script (cloud-init's user data, a launch template) both run as they are; on Linux, where
         nobody logs in, run <code className="font-mono text-[11.5px] text-ink-3">loginctl enable-linger</code>{" "}
         for that user first. Run again, the install keeps the runner the machine enrolled.{" "}
-        {t.remove_offline_after_hours
-          ? `A runner goes when its host uninstalls, or once it has been offline for ${hoursText(t.remove_offline_after_hours)}.`
+        {t.remove_offline_after_minutes
+          ? `A runner goes when its host uninstalls, or once it has been offline for ${minutesText(t.remove_offline_after_minutes)}.`
           : "A runner goes when its host uninstalls (fctl host uninstall)."}
       </p>
       <div className="flex justify-end">

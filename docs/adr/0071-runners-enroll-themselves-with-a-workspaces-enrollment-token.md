@@ -82,8 +82,12 @@ has and nothing in front of it.
 - **Ephemeral runners don't pile up.** `fctl host uninstall` removes an
   enrolled runner (`DELETE /api/v1/runner`, with its own token) and the
   token file. A token can also have its runners removed once they have
-  been offline for an hour to 30 days, which the hourly job does from the
-  last heartbeat D1 has, never for a runner FleetDO has connected. The
+  been offline for a minute to 30 days. FleetDO removes them on its
+  30-second tick, counting only the time it was up and watching, so that a
+  deploy or an outage of the control plane longer than the window doesn't
+  remove every host before it can connect again; the hourly job removes
+  those that never connected. A minute is for machines that never come
+  back: a host that loses its network longer is gone, and enrolls again. The
   limit counts the runners a token enrolled that are still there, waiting
   ones too, so removed, rejected and expired ones free their place, and
   an autoscaling group keeps replacing machines within it.

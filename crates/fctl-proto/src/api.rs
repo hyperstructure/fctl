@@ -2101,9 +2101,9 @@ pub struct Runner {
     /// It runs nothing and gets no credentials until then. Absent once
     /// approved, and for runners that needed no approval.
     pub pending_until: Option<Millis>,
-    /// It is removed once it has been offline this many hours, as its
+    /// It is removed once it has been offline this many minutes, as its
     /// enrollment token said. Absent: it stays until someone removes it.
-    pub remove_offline_after_hours: Option<u32>,
+    pub remove_offline_after_minutes: Option<u32>,
 }
 
 /// How a runner enrolled in its workspace: what its workspace's admins see
@@ -2176,7 +2176,7 @@ pub struct EnrollmentInfo {
     pub max_runners: Option<u32>,
     /// The runners it enrolled that are still there.
     pub runners: u32,
-    pub remove_offline_after_hours: Option<u32>,
+    pub remove_offline_after_minutes: Option<u32>,
 }
 
 /// A workspace's enrollment token: machines that autoscaling creates, or
@@ -2197,8 +2197,9 @@ pub struct EnrollmentToken {
     /// rejected and expired ones don't count. Absent: no limit.
     pub max_runners: Option<u32>,
     /// The runners it enrolls are removed once they have been offline this
-    /// many hours. Absent: they stay until someone removes them.
-    pub remove_offline_after_hours: Option<u32>,
+    /// many minutes, of which the control plane was up: a minute to 30
+    /// days. Absent: they stay until someone removes them.
+    pub remove_offline_after_minutes: Option<u32>,
     /// Absent: it never expires.
     pub expires_at: Option<Millis>,
     pub created_at: Millis,
@@ -2233,8 +2234,8 @@ pub struct CreateEnrollmentTokenRequest {
     pub max_runners: Option<u32>,
     /// See [`EnrollmentToken::approval`]. Absent: no approval.
     pub approval: Option<bool>,
-    /// See [`EnrollmentToken::remove_offline_after_hours`], at most 30 days.
-    pub remove_offline_after_hours: Option<u32>,
+    /// See [`EnrollmentToken::remove_offline_after_minutes`].
+    pub remove_offline_after_minutes: Option<u32>,
 }
 
 /// A new enrollment token, with its secret (`fctl_et_…`), shown once.

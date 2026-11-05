@@ -105,7 +105,7 @@ enrollment?: RunnerEnrollment,
  */
 pending_until?: number, 
 /**
- * It is removed once it has been offline this many hours, as its
+ * It is removed once it has been offline this many minutes, as its
  * enrollment token said. Absent: it stays until someone removes it.
  */
-remove_offline_after_hours?: number, };
+remove_offline_after_minutes?: number, };

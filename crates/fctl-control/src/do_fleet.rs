@@ -163,6 +163,16 @@ struct LiveRow {
     draining_since: Option<f64>,
     #[serde(default)]
     drained_by: Option<String>,
+    /// Its enrollment token removes it once it has been offline this long.
+    #[serde(default)]
+    remove_after_ms: Option<f64>,
+}
+
+impl LiveRow {
+    /// Whether FleetObject has its control connection now.
+    fn online(&self, fleet: &FleetObject) -> bool {
+        self.connected > 0.0 && fleet.runner_socket(&self.id).is_some()
+    }
 }
 
 /// A connected runner, as scheduling sees it.
@@ -299,6 +309,10 @@ impl DurableObject for FleetObject {
             // Sessions stopped because their runner stayed away: they carry
             // on if it comes back with them.
             "CREATE TABLE IF NOT EXISTS stopped_away (session_id TEXT PRIMARY KEY, runner_id TEXT NOT NULL, since INTEGER NOT NULL)",
+            // When the alarm last ticked, and since when it has ticked
+            // without a gap: the time a runner that may be removed counts
+            // as offline (`fctl_domain::enrollment::watching_since`).
+            "CREATE TABLE IF NOT EXISTS watch (key TEXT PRIMARY KEY, at INTEGER NOT NULL)",
         ] {
             if let Err(e) = sql.exec(stmt, None) {
                 worker::console_error!("fleet schema: {e}");
@@ -315,6 +329,9 @@ impl DurableObject for FleetObject {
         // it (JSON), or none when its host did.
         add_column(&sql, "runners", "draining_since", "INTEGER");
         add_column(&sql, "runners", "drained_by", "TEXT");
+        // Set for a runner whose enrollment token removes it once offline
+        // this long (milliseconds), as it said when it connected.
+        add_column(&sql, "runners", "remove_after_ms", "INTEGER");
         Self {
             state,
             env,
@@ -482,6 +499,7 @@ impl DurableObject for FleetObject {
 
     async fn alarm(&self) -> Result<Response> {
         let now = now_ms();
+        self.remove_gone_runners(now).await;
         self.expire_offline_runners(now).await;
         self.dispatch().await;
         // Keep ticking while there is something to wait for.
@@ -537,9 +555,15 @@ impl FleetObject {
             pending: ident.pending.clone(),
         })?;
         let _ = self.sql.exec(
-            "INSERT INTO runners (id, name, connected, last_seen) VALUES (?, ?, 1, ?) \
-             ON CONFLICT (id) DO UPDATE SET name = excluded.name, connected = 1, last_seen = excluded.last_seen",
-            Some(vec![sv(&ident.id), sv(&ident.name), iv(now_ms())]),
+            "INSERT INTO runners (id, name, connected, last_seen, remove_after_ms) VALUES (?, ?, 1, ?, ?) \
+             ON CONFLICT (id) DO UPDATE SET name = excluded.name, connected = 1, last_seen = excluded.last_seen, \
+             remove_after_ms = excluded.remove_after_ms",
+            Some(vec![
+                sv(&ident.id),
+                sv(&ident.name),
+                iv(now_ms()),
+                SqlStorageValue::from(ident.remove_after_ms),
+            ]),
         );
         Response::from_websocket(pair.client)
     }
@@ -586,7 +610,7 @@ impl FleetObject {
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sql
             .exec(
-                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb, draining_since, drained_by FROM runners",
+                "SELECT id, name, hello, connected, last_seen, memory_available_mb, disk_available_mb, draining_since, drained_by, remove_after_ms FROM runners",
                 None,
             )
             .and_then(|c| c.to_array::<LiveRow>())
@@ -680,6 +704,119 @@ impl FleetObject {
             || count(
                 "SELECT COUNT(*) AS n FROM assignments a JOIN runners r ON r.id = a.runner_id WHERE r.connected = 0",
             ) > 0.0
+            // A runner that goes once offline long enough, while it is.
+            || self
+                .live_rows()
+                .iter()
+                .any(|r| r.remove_after_ms.is_some() && !r.online(self))
+    }
+
+    /// Since when the alarm has ticked without a gap, as of a tick now
+    /// (`fctl_domain::enrollment::watching_since`), which it records.
+    fn watching_since(&self, now: i64) -> i64 {
+        #[derive(Deserialize)]
+        struct At {
+            at: f64,
+        }
+        let get = |key: &str| {
+            self.sql
+                .exec("SELECT at FROM watch WHERE key = ?", Some(vec![sv(key)]))
+                .and_then(|c| c.to_array::<At>())
+                .ok()
+                .and_then(|r| r.first().map(|a| a.at as i64))
+        };
+        let since = fctl_domain::enrollment::watching_since(get("tick"), get("since"), now);
+        for (key, at) in [("tick", now), ("since", since)] {
+            let _ = self.sql.exec(
+                "INSERT INTO watch (key, at) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET at = excluded.at",
+                Some(vec![sv(key), iv(at)]),
+            );
+        }
+        since
+    }
+
+    /// Removes the runners whose enrollment token removes them once they
+    /// have been offline long enough, and that have been, while FleetObject
+    /// watched: a deploy or an outage of the control plane doesn't count,
+    /// so their hosts get the whole window to connect again. D1 decides, as
+    /// the runner goes there; the hourly job removes those it never saw.
+    async fn remove_gone_runners(&self, now: i64) {
+        let watching = self.watching_since(now);
+        let due: Vec<LiveRow> = self
+            .live_rows()
+            .into_iter()
+            .filter(|r| {
+                !r.online(self)
+                    && r.remove_after_ms.is_some_and(|after| {
+                        fctl_domain::enrollment::removal_due(
+                            after as i64,
+                            r.last_seen.map(|t| t as i64),
+                            watching,
+                            now,
+                        )
+                    })
+            })
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        let Ok(db) = self.env.d1("DB") else { return };
+        #[derive(Deserialize)]
+        struct Gone {
+            name: String,
+            workspace_id: Option<String>,
+            #[serde(deserialize_with = "crate::db::int")]
+            minutes: i64,
+        }
+        for r in due {
+            let gone: Vec<Gone> = match crate::db::q(
+                &db,
+                "DELETE FROM runners WHERE id = ? AND remove_offline_after_minutes IS NOT NULL \
+                 RETURNING name, workspace_id, remove_offline_after_minutes AS minutes",
+                &[crate::db::s(&r.id)],
+            ) {
+                Ok(q) => match q.all().await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        worker::console_error!("removing runner {}: {}", r.id, e.0.message);
+                        continue;
+                    }
+                },
+                Err(_) => continue,
+            };
+            let Some(g) = gone.into_iter().next() else {
+                // Removed meanwhile by someone, or it keeps its runners:
+                // nothing here waits for it any more.
+                let _ = self.sql.exec(
+                    "UPDATE runners SET remove_after_ms = NULL WHERE id = ?",
+                    Some(vec![sv(&r.id)]),
+                );
+                continue;
+            };
+            let offline = fctl_domain::enrollment::minutes(u32::try_from(g.minutes).unwrap_or(1));
+            self.removed(
+                &r.id,
+                &format!(
+                    "Its runner {} was offline for {offline}, and was removed.",
+                    g.name
+                ),
+            )
+            .await;
+            let data = serde_json::json!({ "name": g.name, "by": "fctl", "offline": true });
+            if let Err(e) = crate::housekeeping::audit_runner(
+                &db,
+                now,
+                "workspace.runner_removed",
+                &r.id,
+                g.workspace_id.as_deref(),
+                data,
+            )
+            .await
+            {
+                worker::console_error!("auditing runner {}: {}", r.id, e.0.message);
+            }
+            worker::console_log!("{} was offline for {offline}: removed it", g.name);
+        }
     }
 
     /// Whether the session waits in the queue (a message or a resume queued

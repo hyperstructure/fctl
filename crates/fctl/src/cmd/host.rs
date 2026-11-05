@@ -775,10 +775,10 @@ impl Enrolling {
                 style::dim(&format!("It runs everyone's sessions in {workspace}."))
             );
         }
-        let gone = match r.remove_offline_after_hours {
+        let gone = match r.remove_offline_after_minutes {
             Some(h) => format!(
                 "It is removed once it has been offline for {}, and when `fctl host uninstall` uninstalls it.",
-                fctl_domain::enrollment::hours(h)
+                fctl_domain::enrollment::minutes(h)
             ),
             None => "`fctl host uninstall` removes it from the workspace.".to_owned(),
         };
@@ -934,10 +934,10 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                     "Could not remove runner {} from {workspace} ({}): its admins remove it from its Runners tab{}.",
                     r.name,
                     e.api().map_or_else(|| e.to_string(), |a| a.message.clone()),
-                    match r.remove_offline_after_hours {
+                    match r.remove_offline_after_minutes {
                         Some(h) => format!(
                             ", or fctl does once it has been offline for {}",
-                            fctl_domain::enrollment::hours(h)
+                            fctl_domain::enrollment::minutes(h)
                         ),
                         None => String::new(),
                     }
@@ -1191,10 +1191,10 @@ fn workspace_line(workspace: &str, r: &Runner) -> String {
         .and_then(|e| e.token_name.as_deref())
         .map(|t| format!(", enrolled with “{t}”"))
         .unwrap_or_default();
-    let gone = match r.remove_offline_after_hours {
+    let gone = match r.remove_offline_after_minutes {
         Some(h) => format!(
             "removed once offline for {}, and when the host uninstalls",
-            fctl_domain::enrollment::hours(h)
+            fctl_domain::enrollment::minutes(h)
         ),
         None => "removed when the host uninstalls".to_owned(),
     };
@@ -1224,7 +1224,7 @@ fn runner_api() -> Result<fctl_client::Api> {
 /// This machine's runner, for commands about a runner that leave it out.
 /// `api` is the instance they go to, which must be the one it runs for.
 pub(crate) async fn this_runner(api: &fctl_client::Api) -> Result<Runner> {
-    const NAME_IT: &str = "Which runner? This machine isn't one: give the runner's name or id (`fctl admin runners` lists them)";
+    const NAME_IT: &str = "Which runner? This machine isn't one: give the runner's name or id (`fctl runners` lists them)";
     if !HostConfig::path().exists() {
         bail!(NAME_IT);
     }

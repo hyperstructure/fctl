@@ -25,9 +25,10 @@ approval: boolean,
 max_runners?: number, 
 /**
  * The runners it enrolls are removed once they have been offline this
- * many hours. Absent: they stay until someone removes them.
+ * many minutes, of which the control plane was up: a minute to 30
+ * days. Absent: they stay until someone removes them.
  */
-remove_offline_after_hours?: number, 
+remove_offline_after_minutes?: number, 
 /**
  * Absent: it never expires.
  */

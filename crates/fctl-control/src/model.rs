@@ -894,7 +894,7 @@ pub struct RunnerRow {
     #[serde(deserialize_with = "opt_int", default)]
     pub pending_until: Option<i64>,
     #[serde(deserialize_with = "opt_int", default)]
-    pub remove_offline_after_hours: Option<i64>,
+    pub remove_offline_after_minutes: Option<i64>,
 }
 
 /// Who looks at runners: what of a runner they see.
@@ -1088,8 +1088,8 @@ impl RunnerRow {
                 }
             }),
             pending_until: self.pending_until,
-            remove_offline_after_hours: self
-                .remove_offline_after_hours
+            remove_offline_after_minutes: self
+                .remove_offline_after_minutes
                 .and_then(|h| u32::try_from(h).ok()),
         }
     }
@@ -1121,7 +1121,7 @@ pub const RUNNER_SELECT: &str = concat!(
     ") AS workspaces, \
     r.workspace_id, ow.slug AS owner_slug, ow.name AS owner_name, ow.color AS owner_color, \
     ow.avatar_updated_at AS owner_avatar_at, r.enrollment_id, et.name AS enrollment_name, \
-    r.enrolled_ip, r.enrolled_location, r.facts, r.pending_until, r.remove_offline_after_hours \
+    r.enrolled_ip, r.enrolled_location, r.facts, r.pending_until, r.remove_offline_after_minutes \
     FROM runners r LEFT JOIN users u ON u.id = r.created_by \
     LEFT JOIN workspaces ow ON ow.id = r.workspace_id \
     LEFT JOIN enrollment_tokens et ON et.id = r.enrollment_id"

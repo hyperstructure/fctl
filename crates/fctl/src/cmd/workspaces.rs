@@ -256,7 +256,7 @@ pub enum WorkspacesCmd {
     /// you are one of its admins, or only yours. Adding it again changes
     /// whose.
     #[command(
-        after_help = "Examples:\n  fctl workspaces add-runner -w side-project              # on the runner: this machine\n  fctl workspaces add-runner studio-mac -w side-project\n  fctl workspaces add-runner studio-mac -w acme --personal   # only your sessions in acme\n  fctl workspaces add-runner rnr_01… -w side-project      # an id from `fctl admin runners`"
+        after_help = "Examples:\n  fctl workspaces add-runner -w side-project              # on the runner: this machine\n  fctl workspaces add-runner studio-mac -w side-project\n  fctl workspaces add-runner studio-mac -w acme --personal   # only your sessions in acme\n  fctl workspaces add-runner rnr_01… -w side-project      # an id from `fctl runners`"
     )]
     AddRunner {
         /// The runner's name or id (default: this machine's, on a runner).

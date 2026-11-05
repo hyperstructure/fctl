@@ -313,6 +313,9 @@ pub struct RunnerIdent {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<fctl_proto::runner::PendingApproval>,
+    /// Its enrollment token removes it once it has been offline this long.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_after_ms: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Default)]

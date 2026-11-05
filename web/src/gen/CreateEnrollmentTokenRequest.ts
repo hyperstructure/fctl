@@ -17,6 +17,6 @@ max_runners?: number,
  */
 approval?: boolean, 
 /**
- * See [`EnrollmentToken::remove_offline_after_hours`], at most 30 days.
+ * See [`EnrollmentToken::remove_offline_after_minutes`].
  */
-remove_offline_after_hours?: number, };
+remove_offline_after_minutes?: number, };

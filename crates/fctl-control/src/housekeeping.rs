@@ -295,63 +295,101 @@ pub async fn runners(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
         name: String,
         workspace_id: Option<String>,
     }
+    let mut removed = 0;
+    // Those that waited a week for approval.
     let expired: Vec<Gone> = q(
         db,
-        "DELETE FROM runners WHERE pending_until IS NOT NULL AND pending_until < ? \
-         RETURNING id, name, workspace_id",
+        "SELECT id, name, workspace_id FROM runners WHERE pending_until IS NOT NULL AND pending_until < ?",
         &[n(now)],
     )?
     .all()
     .await?;
+    for g in &expired {
+        if remove(
+            env,
+            db,
+            now,
+            Removal {
+                id: &g.id,
+                name: &g.name,
+                workspace_id: g.workspace_id.as_deref(),
+                still: "pending_until IS NOT NULL AND pending_until < ?2",
+                action: "workspace.runner_expired",
+                reason: "Its runner was never approved.",
+            },
+        )
+        .await
+        {
+            removed += 1;
+        }
+    }
     // Those offline too long, but for the ones FleetObject has connected
-    // now, whatever D1 last heard of them.
+    // now, whatever D1 last heard of them. FleetObject removes the ones it
+    // saw go as it watches them, within a minute; these are those it never
+    // saw connect, and any it missed. Without FleetObject's word on who is
+    // online, none goes this hour.
     #[derive(Deserialize)]
     struct Offline {
         id: String,
+        name: String,
+        workspace_id: Option<String>,
         #[serde(deserialize_with = "crate::db::opt_int", default)]
         last_seen_at: Option<i64>,
         #[serde(deserialize_with = "crate::db::int")]
         created_at: i64,
         #[serde(deserialize_with = "crate::db::int")]
-        hours: i64,
+        minutes: i64,
     }
     let candidates: Vec<Offline> = q(
         db,
-        "SELECT id, last_seen_at, created_at, remove_offline_after_hours AS hours FROM runners \
-         WHERE remove_offline_after_hours IS NOT NULL \
-         AND COALESCE(last_seen_at, created_at) < ? - remove_offline_after_hours * 3600000",
+        "SELECT id, name, workspace_id, last_seen_at, created_at, remove_offline_after_minutes AS minutes \
+         FROM runners WHERE remove_offline_after_minutes IS NOT NULL \
+         AND COALESCE(last_seen_at, created_at) < ? - remove_offline_after_minutes * 60000",
         &[n(now)],
     )?
     .all()
     .await?;
-    let mut offline: Vec<Gone> = Vec::new();
     if !candidates.is_empty() {
-        let live: internal::LiveRunners = match internal::fleet_stub(env) {
-            Ok(stub) => internal::get(&stub, "/runners").await?,
-            Err(e) => return Err(e),
-        };
-        let due: Vec<&str> = candidates
-            .iter()
-            .filter(|c| {
-                fctl_domain::enrollment::offline_too_long(
-                    u32::try_from(c.hours).unwrap_or(u32::MAX),
-                    c.last_seen_at,
-                    c.created_at,
-                    live.online.contains(&c.id),
-                    now,
-                )
-            })
-            .map(|c| c.id.as_str())
-            .collect();
-        if !due.is_empty() {
-            offline = q(
-                db,
-                "DELETE FROM runners WHERE id IN (SELECT value FROM json_each(?)) \
-                 RETURNING id, name, workspace_id",
-                &[s(&serde_json::to_string(&due)?)],
-            )?
-            .all()
-            .await?;
+        let live: AppResult<internal::LiveRunners> = async {
+            let stub = internal::fleet_stub(env)?;
+            internal::get(&stub, "/runners").await
+        }
+        .await;
+        match live {
+            Ok(live) => {
+                for c in candidates.iter().filter(|c| {
+                    fctl_domain::enrollment::offline_too_long(
+                        u32::try_from(c.minutes).unwrap_or(u32::MAX),
+                        c.last_seen_at,
+                        c.created_at,
+                        live.online.contains(&c.id),
+                        now,
+                    )
+                }) {
+                    if remove(
+                        env,
+                        db,
+                        now,
+                        Removal {
+                            id: &c.id,
+                            name: &c.name,
+                            workspace_id: c.workspace_id.as_deref(),
+                            still: "remove_offline_after_minutes IS NOT NULL \
+                                    AND COALESCE(last_seen_at, created_at) < ?2 - remove_offline_after_minutes * 60000",
+                            action: "workspace.runner_removed",
+                            reason: "Its runner stayed offline too long and was removed.",
+                        },
+                    )
+                    .await
+                    {
+                        removed += 1;
+                    }
+                }
+            }
+            Err(e) => worker::console_error!(
+                "removing runners offline too long: FleetObject didn't say which are online: {}",
+                e.0.message
+            ),
         }
     }
     let ended = q(
@@ -365,47 +403,85 @@ pub async fn runners(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
     if ended > 0 {
         worker::console_log!("housekeeping: deleted {ended} ended enrollment tokens");
     }
-    for (gone, action, reason) in expired
-        .iter()
-        .map(|g| {
-            (
-                g,
-                "workspace.runner_expired",
-                "Its runner was never approved.",
-            )
-        })
-        .chain(offline.iter().map(|g| {
-            (
-                g,
-                "workspace.runner_removed",
-                "Its runner stayed offline too long and was removed.",
-            )
-        }))
-    {
-        if let Err(e) = crate::api::runners::removed(env, &gone.id, reason).await {
-            worker::console_error!("removing runner {}: {}", gone.id, e.0.message);
-        }
-        let data = serde_json::json!({ "name": gone.name, "by": "fctl", "offline": action == "workspace.runner_removed" });
-        if let Err(e) = q(
+    Ok(removed)
+}
+
+/// A runner the hourly job removes, and why.
+struct Removal<'a> {
+    id: &'a str,
+    name: &'a str,
+    workspace_id: Option<&'a str>,
+    /// What must still hold of its row for it to go (`?2` is now).
+    still: &'a str,
+    action: &'a str,
+    /// What the sessions it ran say.
+    reason: &'a str,
+}
+
+/// Removes one runner: FleetObject first, which closes its connections and
+/// stops its sessions, then its row, while `still` holds, then the audit
+/// log. A step that fails leaves the rest, and the row, for the next run.
+/// Returns whether it went.
+async fn remove(env: &Env, db: &D1Database, now: i64, r: Removal<'_>) -> bool {
+    if let Err(e) = crate::api::runners::removed(env, r.id, r.reason).await {
+        worker::console_error!("removing runner {}: {}", r.id, e.0.message);
+        return false;
+    }
+    let deleted = async {
+        q(
             db,
-            "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip, workspace_id) \
-             VALUES (?, ?, NULL, ?, ?, ?, NULL, ?)",
-            &[
-                s(&fctl_domain::ids::new_id("aud", now)),
-                n(now),
-                s(action),
-                s(&gone.id),
-                s(&data.to_string()),
-                crate::db::os(gone.workspace_id.as_deref()),
-            ],
+            &format!("DELETE FROM runners WHERE id = ?1 AND {}", r.still),
+            &[s(r.id), n(now)],
         )?
         .run()
         .await
-        {
-            worker::console_error!("auditing runner {}: {}", gone.id, e.0.message);
+    }
+    .await;
+    match deleted {
+        Ok(0) => return false,
+        Ok(_) => {}
+        Err(e) => {
+            worker::console_error!("removing runner {}: {}", r.id, e.0.message);
+            return false;
         }
     }
-    Ok(expired.len() + offline.len())
+    let data = serde_json::json!({
+        "name": r.name,
+        "by": "fctl",
+        "offline": r.action == "workspace.runner_removed",
+    });
+    if let Err(e) = audit_runner(db, now, r.action, r.id, r.workspace_id, data).await {
+        worker::console_error!("auditing runner {}: {}", r.id, e.0.message);
+    }
+    true
+}
+
+/// Records what fctl itself did to a runner in its workspace's audit log
+/// (the instance's, without one): no one did it.
+pub async fn audit_runner(
+    db: &D1Database,
+    now: i64,
+    action: &str,
+    runner_id: &str,
+    workspace_id: Option<&str>,
+    data: serde_json::Value,
+) -> AppResult<()> {
+    q(
+        db,
+        "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip, workspace_id) \
+         VALUES (?, ?, NULL, ?, ?, ?, NULL, ?)",
+        &[
+            s(&fctl_domain::ids::new_id("aud", now)),
+            n(now),
+            s(action),
+            s(runner_id),
+            s(&data.to_string()),
+            crate::db::os(workspace_id),
+        ],
+    )?
+    .run()
+    .await?;
+    Ok(())
 }
 
 /// What a Worker from before workspaces left while a deploy's migration had

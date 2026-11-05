@@ -280,18 +280,20 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
 /// working, and the sessions it ran stop and resume elsewhere.
 pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let runner = require_manager(ctx, id).await?;
-    let changed = q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(id)])?
-        .run()
-        .await?;
-    if changed == 0 {
-        return Err(not_found("Runner"));
-    }
+    // FleetObject first, so that a failure there leaves the runner as it
+    // was, for another try, rather than gone with its connection open.
     removed(
         &ctx.env,
         id,
         &format!("Its runner {} was removed.", runner.name),
     )
     .await?;
+    let changed = q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(id)])?
+        .run()
+        .await?;
+    if changed == 0 {
+        return Err(not_found("Runner"));
+    }
     ctx.audit("runner.deleted", Some(id), None);
     if let Some(w) = &runner.workspace_id {
         ctx.audit_in(
@@ -375,6 +377,10 @@ pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             runner.name
         )));
     }
+    // FleetObject first, as for `delete`: it gets nothing but a welcome
+    // while it waits, so a race with an approval only drops its connection
+    // for its host to open again.
+    removed(&ctx.env, id, "Its runner was rejected.").await?;
     let changed = q(
         &ctx.db,
         "DELETE FROM runners WHERE id = ? AND pending_until IS NOT NULL",
@@ -388,7 +394,6 @@ pub async fn reject(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             runner.name
         )));
     }
-    removed(&ctx.env, id, "Its runner was rejected.").await?;
     ctx.audit_in(
         Some(&workspace_id),
         "workspace.runner_rejected",
@@ -616,15 +621,16 @@ pub async fn remove_this_runner(ctx: &mut Ctx, req: &Request) -> AppResult<Respo
             "Only runners that enrolled with an enrollment token remove themselves. Its owner removes this one, in the app or with `fctl runners remove`.",
         ));
     };
-    q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(&r.id)])?
-        .run()
-        .await?;
+    // FleetObject first, as for `delete`: the host tries again otherwise.
     removed(
         &ctx.env,
         &r.id,
         &format!("Its runner {} was uninstalled.", r.name),
     )
     .await?;
+    q(&ctx.db, "DELETE FROM runners WHERE id = ?", &[s(&r.id)])?
+        .run()
+        .await?;
     ctx.audit_in(
         Some(&w),
         "workspace.runner_removed",
@@ -656,6 +662,9 @@ pub(crate) struct RunnerAuth {
     /// While it waits for approval there: until when.
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     pub pending_until: Option<i64>,
+    /// Its enrollment token removes it once offline this long.
+    #[serde(deserialize_with = "crate::db::opt_int", default)]
+    pub remove_offline_after_minutes: Option<i64>,
 }
 
 /// Authenticates a host by its runner token.
@@ -666,8 +675,8 @@ pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAut
         .ok_or_else(|| AppError(ApiError::unauthorized()))?;
     let row: Option<RunnerAuth> = q(
         &ctx.db,
-        "SELECT r.id, r.name, r.workspace_id, w.name AS workspace_name, r.pending_until \
-         FROM runners r LEFT JOIN workspaces w ON w.id = r.workspace_id \
+        "SELECT r.id, r.name, r.workspace_id, w.name AS workspace_name, r.pending_until, \
+         r.remove_offline_after_minutes FROM runners r LEFT JOIN workspaces w ON w.id = r.workspace_id \
          WHERE r.token_hash = ? AND r.enabled = 1",
         &[s(&hash_secret(&token))],
     )?
@@ -701,6 +710,9 @@ pub async fn connect(ctx: &Ctx, req: &Request) -> AppResult<Response> {
                 workspace: r.workspace_name.clone().unwrap_or_default(),
                 until,
             }),
+        remove_after_ms: r
+            .remove_offline_after_minutes
+            .map(|m| m.saturating_mul(fctl_domain::enrollment::MINUTE_MS)),
     })?;
     internal::upgrade(&stub, "/runner", &[(internal::HDR_RUNNER, &ident)]).await
 }

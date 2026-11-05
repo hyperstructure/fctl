@@ -32,7 +32,7 @@ struct TokenRow {
     #[serde(deserialize_with = "opt_int", default)]
     max_runners: Option<i64>,
     #[serde(deserialize_with = "opt_int", default)]
-    remove_offline_after_hours: Option<i64>,
+    remove_offline_after_minutes: Option<i64>,
     #[serde(deserialize_with = "opt_int", default)]
     expires_at: Option<i64>,
     created_by: Option<String>,
@@ -52,7 +52,7 @@ struct TokenRow {
 }
 
 const TOKEN_SELECT: &str = "SELECT t.id, t.workspace_id, t.name, t.approval, t.max_runners, \
-    t.remove_offline_after_hours, t.expires_at, t.created_by, cu.name AS creator_name, t.created_at, \
+    t.remove_offline_after_minutes, t.expires_at, t.created_by, cu.name AS creator_name, t.created_at, \
     t.last_used_at, t.revoked_at, t.revoked_by, ru.name AS revoker_name, \
     (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) AS runners, \
     (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NOT NULL) AS pending \
@@ -81,7 +81,7 @@ impl TokenRow {
             name: self.name.clone(),
             approval: self.approval,
             max_runners: count(self.max_runners),
-            remove_offline_after_hours: count(self.remove_offline_after_hours),
+            remove_offline_after_minutes: count(self.remove_offline_after_minutes),
             expires_at: self.expires_at,
             created_at: self.created_at,
             created_by: user_ref(&self.created_by, &self.creator_name),
@@ -147,7 +147,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     q(
         &ctx.db,
         "INSERT INTO enrollment_tokens (id, workspace_id, name, token_hash, approval, max_runners, \
-         remove_offline_after_hours, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         remove_offline_after_minutes, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(token_id.as_str()),
             s(a.id()),
@@ -155,7 +155,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             s(&hash_secret(&secret)),
             b(new.approval),
             on(new.max_runners.map(i64::from)),
-            on(new.remove_offline_after_hours.map(i64::from)),
+            on(new.remove_offline_after_minutes.map(i64::from)),
             on(new.expires_at),
             s(&user),
             n(ctx.now),
@@ -171,7 +171,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             "name": new.name,
             "approval": new.approval,
             "max_runners": new.max_runners,
-            "remove_offline_after_hours": new.remove_offline_after_hours,
+            "remove_offline_after_minutes": new.remove_offline_after_minutes,
             "expires_at": new.expires_at,
         })),
     );
@@ -283,7 +283,7 @@ pub async fn info(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         expires_at: p.token.expires_at,
         max_runners: count(p.token.max_runners),
         runners: count(Some(p.token.runners)).unwrap_or_default(),
-        remove_offline_after_hours: count(p.token.remove_offline_after_hours),
+        remove_offline_after_minutes: count(p.token.remove_offline_after_minutes),
     })
 }
 
@@ -313,8 +313,8 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             q(
                 &ctx.db,
                 "INSERT INTO runners (id, name, token_hash, enabled, created_by, created_at, workspace_id, \
-                 enrollment_id, enrolled_ip, enrolled_location, facts, pending_until, remove_offline_after_hours) \
-                 SELECT ?1, ?2, ?3, 1, NULL, ?4, t.workspace_id, t.id, ?5, ?6, ?7, ?8, t.remove_offline_after_hours \
+                 enrollment_id, enrolled_ip, enrolled_location, facts, pending_until, remove_offline_after_minutes) \
+                 SELECT ?1, ?2, ?3, 1, NULL, ?4, t.workspace_id, t.id, ?5, ?6, ?7, ?8, t.remove_offline_after_minutes \
                  FROM enrollment_tokens t WHERE t.id = ?9 AND t.revoked_at IS NULL \
                  AND (t.expires_at IS NULL OR t.expires_at > ?4) \
                  AND (t.max_runners IS NULL OR (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) < t.max_runners)",
