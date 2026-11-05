@@ -31,7 +31,7 @@ export const OFFLINE_REMOVAL: readonly {
   {
     value: "1m",
     label: "Remove after a minute",
-    description: "For machines that never come back: one that loses its network longer is gone for good.",
+    description: "For machines that never come back: one that loses its network for longer is gone for good.",
     minutes: 1,
   },
   {
