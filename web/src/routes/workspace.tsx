@@ -830,7 +830,8 @@ function Runners({ w }: { w: G.Workspace }) {
     onError: (e) => toast(e.message, "error"),
   });
   const here = new Set(list.data?.runners.map((r) => r.id));
-  const yours = (all.data?.runners ?? []).filter((r) => r.yours && !here.has(r.id));
+  // Not the ones that enrolled somewhere: those run that workspace's sessions alone.
+  const yours = (all.data?.runners ?? []).filter((r) => r.yours && !here.has(r.id) && !r.workspace);
   // The ones that wait for approval show apart, for its admins.
   const waiting = (list.data?.runners ?? []).filter((r) => r.pending_until);
   const runners = (list.data?.runners ?? []).filter((r) => !r.pending_until);

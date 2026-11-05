@@ -182,6 +182,16 @@ describe("a workspace with runners", () => {
     );
   });
 
+  it("doesn't offer runners of yours that enrolled in another workspace, which run only its sessions", () => {
+    const pod = runner({
+      id: "pod-7",
+      workspaces: [],
+      workspace: { id: "wsp_other", slug: "other", name: "Other" } as G.WorkspaceRef,
+      created_by: { id: "usr_ada", name: "Ada Lovelace" },
+    });
+    expect(runnersTab(side, [mini], [mini, pod]).textContent).not.toContain("Or add one of yours");
+  });
+
   it("tells members that a runner they add runs only their sessions", () => {
     const member: G.Workspace = { ...side, role: "member", email: "grace@example.com" };
     const adas = { ...mini, yours: false };
