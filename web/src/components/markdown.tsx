@@ -161,10 +161,13 @@ function decode(s: string): string {
 export const CodeBlock = memo(function CodeBlock({
   code,
   lang,
+  label = lang,
   className,
 }: {
   code: string;
   lang: string;
+  /** What the corner calls its language: `lang` as written, unless a name reads better. */
+  label?: string;
   className?: string;
 }) {
   const [html, setHtml] = useState<string | null>(null);
@@ -192,7 +195,7 @@ export const CodeBlock = memo(function CodeBlock({
           data-find-skip=""
           className="absolute top-2 right-3 font-sans text-[10.5px] tracking-wide text-ink-4 uppercase group-hover/code:opacity-0"
         >
-          {lang}
+          {label}
         </span>
       )}
       {html ? (

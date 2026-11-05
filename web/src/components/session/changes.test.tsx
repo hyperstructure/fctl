@@ -83,6 +83,25 @@ describe("a repository's changes", () => {
     expect(paths(changes(repo(12)))).toHaveLength(10);
   });
 
+  it("opens a file's diff when asked to", () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const onOpen = vi.fn();
+    act(() => root.render(<Changes repo={repo(3)} showTotals onOpen={onOpen} />));
+    roots.push(() => {
+      act(() => root.unmount());
+      container.remove();
+    });
+    const buttons = [...container.querySelectorAll("li button")];
+    expect(buttons).toHaveLength(3);
+    expect(buttons[1]?.getAttribute("aria-label")).toBe("src/01.rs, modified: show its diff");
+    act(() => (buttons[1] as HTMLButtonElement).click());
+    expect(onOpen).toHaveBeenCalledWith("src/01.rs");
+    // Without it, the files are no buttons.
+    expect(changes(repo(3)).querySelector("li button")).toBeNull();
+  });
+
   it("says when there are no changes yet", () => {
     const c = changes(repo(0));
     expect(c.querySelector("ul")).toBeNull();

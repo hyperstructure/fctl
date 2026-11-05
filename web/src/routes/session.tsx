@@ -26,6 +26,7 @@ import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access"
 import { ReviewFacts, ReviewFooter, useSessionReview } from "@/components/review";
 import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
+import { DiffDialog, type DiffGroup, type DiffTarget } from "@/components/session/diff-dialog";
 import { FindBar, findShortcut, Reveal, useFind } from "@/components/session/find";
 import {
   SessionMemory,
@@ -68,7 +69,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { followUpHint } from "@/lib/follow-ups";
 import { ago, duration, num, until } from "@/lib/format";
-import { hasChanges, repoChanges } from "@/lib/git";
+import { blobLink, branchOf, hasChanges, repoChanges } from "@/lib/git";
 import { onGithub, sessionGithub } from "@/lib/github-access";
 import { useLiveSession } from "@/lib/live";
 import {
@@ -910,6 +911,27 @@ function Details({
   );
   // Several repositories: each under its name, those without changes left out.
   const changed = others.filter(hasChanges);
+  // The diff shown over the page, of the file opened in the lists below.
+  const [diffAt, setDiffAt] = useState<DiffTarget>();
+  const primaryTitle = project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace";
+  const merged = new Set(
+    pullRequests(session)
+      .filter((p) => p.state === "merged")
+      .map((p) => p.url),
+  );
+  const diffGroups: DiffGroup[] = [
+    {
+      title: primaryTitle,
+      files: primary?.files ?? [],
+      blob: blobLink(project?.repo && primaryTitle, branchOf(git), merged),
+    },
+    ...changed.map((r) => ({
+      repo: r.name,
+      title: r.name,
+      files: r.files,
+      blob: blobLink(r.name, branchOf(git, r.name), merged),
+    })),
+  ].filter((g) => g.files.length > 0);
   const prs = pullRequests(session);
   const rc = session.remote_control;
   const claudeUrl = remoteControlUrl(rc, session.created_by, me);
@@ -968,20 +990,37 @@ function Details({
       {pullsFirst && pulls}
       <RailSection title={session.review ? "Changes reviewed" : "Changes"}>
         {primary && others.length === 0 ? (
-          <Changes repo={primary} showTotals={!!git} />
+          <Changes repo={primary} showTotals={!!git} onOpen={(path) => setDiffAt({ path })} />
         ) : (
           <div className="flex flex-col gap-5">
             {primary && (hasChanges(primary) || changed.length === 0) && (
               <Changes
                 repo={primary}
-                title={project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace"}
+                title={primaryTitle}
                 showTotals={hasChanges(primary)}
+                onOpen={(path) => setDiffAt({ path })}
               />
             )}
             {changed.map((r) => (
-              <Changes key={r.name} repo={r} title={r.name} showTotals />
+              <Changes
+                key={r.name}
+                repo={r}
+                title={r.name}
+                showTotals
+                onOpen={(path) => setDiffAt({ repo: r.name, path })}
+              />
             ))}
           </div>
+        )}
+        {diffAt && (
+          <DiffDialog
+            session={session.id}
+            cliRef={`${session.project_slug}#${session.number}`}
+            groups={diffGroups}
+            current={diffAt}
+            onSelect={setDiffAt}
+            onClose={() => setDiffAt(undefined)}
+          />
         )}
       </RailSection>
       {!pullsFirst && pulls}

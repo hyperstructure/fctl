@@ -726,6 +726,25 @@ pub async fn events(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     http::ok(&page)
 }
 
+/// `GET /api/v1/sessions/{id}/diff`: the diffs of the session's changes, as
+/// its agent last read them, for anyone who can see the session: all of
+/// them, or with `?path=` (and `?repo=owner/name` for another repository
+/// than the primary one) that file's.
+pub async fn diff(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
+    access::session(ctx, id).await?;
+    let mut path = String::from("/diff?");
+    for key in ["repo", "path"] {
+        if let Some(v) = http::query(req, key) {
+            let v: String = url::form_urlencoded::byte_serialize(v.as_bytes()).collect();
+            path.push_str(&format!("{key}={v}&"));
+        }
+    }
+    let stub = internal::session_stub(&ctx.env, id)?;
+    // As SessionDO wrote it: a diff can be large, and needs no reading here.
+    let diff: Box<serde_json::value::RawValue> = internal::get(&stub, &path).await?;
+    http::ok(&diff)
+}
+
 /// Upgrades to the viewer WebSocket of a session.
 pub async fn websocket(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     if !http::is_websocket_upgrade(req) {

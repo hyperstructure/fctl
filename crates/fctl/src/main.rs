@@ -196,6 +196,16 @@ Examples:
         #[arg(short, long)]
         follow: bool,
     },
+    /// Print the diffs of a session's changes, as its agent last read them
+    /// (since its branch left the base branch, uncommitted work included):
+    /// every changed file's, or those of the paths given.
+    #[command(after_help = "Examples:
+  fctl diff my-app#12                    # every changed file, as git prints them
+  fctl diff my-app#12 src/auth           # the files in a directory
+  fctl diff my-app#12 --repo acme/docs   # another repository the agent changed
+  fctl diff my-app#12 | git apply        # the same changes, here
+  fctl diff --json my-app#12 | jq -r '.files[].path'")]
+    Diff(cmd::sessions::DiffArgs),
     /// Send a message to a session's agent. A stopped session resumes for
     /// it, on the Claude subscription it ran on.
     Send {
@@ -438,6 +448,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Logs { session, follow } => {
             cmd::sessions::logs(server, &session, follow, json).await
         }
+        Command::Diff(args) => cmd::sessions::diff(server, args, json).await,
         Command::Send {
             session,
             message,

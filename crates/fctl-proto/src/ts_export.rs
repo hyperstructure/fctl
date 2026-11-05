@@ -189,6 +189,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::SendMessageResponse,
         api::ResumeSessionRequest,
         api::EventPage,
+        api::SessionDiff,
         api::SearchResults,
         api::SessionMatches,
         api::SearchMatch,

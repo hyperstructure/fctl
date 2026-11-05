@@ -78,3 +78,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0070](0070-linux-hosts-run-sandboxes-in-firecracker-microvms.md) | Linux hosts run sandboxes in Firecracker microVMs |
 | [0071](0071-runners-enroll-themselves-with-a-workspaces-enrollment-token.md) | Runners enroll themselves with a workspace's enrollment token |
 | [0072](0072-members-enroll-runners-for-their-own-sessions.md) | Members enroll runners for their own sessions |
+| [0074](0074-sessions-keep-their-changes-diffs-for-their-viewers.md) | Sessions keep their changes' diffs for their viewers |

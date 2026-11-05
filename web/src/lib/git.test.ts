@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { branchChanges, hasChanges, type RepoChanges, repoChanges, whereCommits } from "./git";
+import {
+  blobLink,
+  branchChanges,
+  branchOf,
+  hasChanges,
+  type RepoChanges,
+  repoChanges,
+  whereCommits,
+} from "./git";
 
 const file = (path: string, additions?: number, deletions?: number): G.FileChange => ({
   path,
@@ -205,5 +213,61 @@ describe("branchChanges", () => {
     const before = { ...state("c1", 1, false), repos: [lib("l0", 0)] };
     const after = { ...state("c1", 1, false), repos: [lib("l1", 1), docs] };
     expect(branchChanges(before, after, new Set())).toEqual(["acme/lib", "acme/docs"]);
+  });
+});
+
+describe("a file's link on GitHub", () => {
+  const git = (b: Partial<G.GitState>): G.GitState => ({
+    ahead: 1,
+    behind: 0,
+    files: [],
+    uncommitted: 0,
+    pushed: true,
+    branch: "fctl/12-diffs",
+    ...b,
+  });
+
+  it("is on the session's branch once GitHub has it", () => {
+    const link = blobLink("acme/web", branchOf(git({})));
+    expect(link?.("src/a b#c.ts")).toBe("https://github.com/acme/web/blob/fctl/12-diffs/src/a%20b%23c.ts");
+  });
+
+  it("isn't there before the push, after the merge, or without a repository", () => {
+    expect(blobLink("acme/web", branchOf(git({ pushed: false })))).toBeUndefined();
+    const merged = {
+      number: 1,
+      url: "https://github.com/acme/web/pull/1",
+      state: "merged",
+    } as G.PullRequestRef;
+    expect(blobLink("acme/web", branchOf(git({ pull_request: merged })))).toBeUndefined();
+    expect(blobLink(undefined, branchOf(git({})))).toBeUndefined();
+    expect(blobLink("acme/web", branchOf(git({ branch: "HEAD" })))).toBeUndefined();
+    // Merged since the agent last looked: the session's pull requests say so.
+    const open = { number: 1, url: "https://github.com/acme/web/pull/1", state: "open" } as G.PullRequestRef;
+    const st = branchOf(git({ pull_request: open }));
+    expect(blobLink("acme/web", st)).toBeDefined();
+    expect(blobLink("acme/web", st, new Set([open.url]))).toBeUndefined();
+  });
+
+  it("takes another repository's branch from its own state", () => {
+    const st = git({
+      repos: [
+        {
+          owner: "acme",
+          name: "docs",
+          access: "write",
+          ahead: 1,
+          behind: 0,
+          files: [],
+          uncommitted: 0,
+          pushed: true,
+          branch: "fctl/12-docs",
+        },
+      ],
+    });
+    expect(blobLink("acme/docs", branchOf(st, "acme/docs"))?.("a.md")).toBe(
+      "https://github.com/acme/docs/blob/fctl/12-docs/a.md",
+    );
+    expect(branchOf(st, "acme/other")).toBeUndefined();
   });
 });

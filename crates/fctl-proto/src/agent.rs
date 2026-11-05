@@ -16,7 +16,7 @@
 //! retrospectives, without credentials for the control plane.
 
 use crate::api::{AgentAnswer, AgentCall};
-use crate::event::{Attachment, LogLine, PublishedFile};
+use crate::event::{Attachment, FileDiff, LogLine, PublishedFile};
 use crate::runner::{
     ClaudeCredential, CredentialKind, GithubCredential, SandboxSize, SessionSpec, StopReason,
 };
@@ -62,6 +62,12 @@ pub struct AgentConfig {
     /// host keeps them.
     #[serde(default)]
     pub cache: Option<SandboxCache>,
+    /// The host passes the repositories' diffs on to the control plane
+    /// ([`AgentToHost::Diff`]), so fctl-agent reads them. Older hosts
+    /// don't.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub diffs: bool,
 }
 
 /// Where a sandbox finds its project's package caches, which the project's
@@ -225,6 +231,15 @@ pub enum AgentToHost {
     Call {
         request_id: String,
         call: AgentCall,
+    },
+    /// The diffs of the session's changes, every changed file's in every
+    /// repository, as fctl-agent read them with the `git` event that
+    /// follows: sent when they changed, and again to a host that attaches.
+    /// The host passes on to SessionDO those its uplink hasn't sent
+    /// ([`crate::uplink::UplinkUp::Diff`]). Agents send it only to hosts
+    /// that ask for it ([`AgentConfig::diffs`]).
+    Diff {
+        files: Vec<FileDiff>,
     },
     /// The supervisor is exiting.
     Exited {

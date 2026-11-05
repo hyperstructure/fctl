@@ -12,6 +12,7 @@ use crate::internal::{
     self, CloseUplink, ControlState, Deliver, Delivered, DrainStop, DrainStopped, ForgetSession,
     Indexed, InitSession, PutDocs, ViewerIdentity,
 };
+use fctl_domain::diffs;
 use fctl_domain::events::{self as ev, ClaudeKind};
 use fctl_domain::files;
 use fctl_domain::follow_ups;
@@ -21,9 +22,10 @@ use fctl_domain::notify;
 use fctl_domain::search;
 use fctl_domain::tickets::Progress;
 use fctl_domain::usage as plan;
-use fctl_proto::api::{EventPage, PlanLimit};
+use fctl_proto::api::{EventPage, PlanLimit, SessionDiff};
 use fctl_proto::event::{
-    EventBody, FollowUp, FollowUpEvent, GitState, KeptImage, StatusChange, UserMessage,
+    DiffKey, EventBody, FileDiff, FollowUp, FollowUpEvent, GitState, KeptImage, StatusChange,
+    UserMessage,
 };
 use fctl_proto::session::{PullRequestRef, RepoRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
@@ -34,6 +36,7 @@ use fctl_proto::viewer::{Presence, ViewerClient, ViewerServer};
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use worker::{
     DurableObject, Env, Headers, Request, Response, Result, SqlStorage, SqlStorageValue, State,
     WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object,
@@ -263,6 +266,12 @@ fn create_schema(sql: &SqlStorage) {
         "CREATE TABLE IF NOT EXISTS kept_images (id TEXT PRIMARY KEY, media_type TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
         "CREATE INDEX IF NOT EXISTS kept_images_expiry ON kept_images (expires_at)",
         "CREATE TABLE IF NOT EXISTS kept_image_chunks (image_id TEXT NOT NULL, n INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (image_id, n))",
+        // The diffs of the files its agent changed, as the agent last read
+        // them, for its viewers (`fctl_domain::diffs`): by repository (''
+        // for the primary one) and path, the diff as JSON without its
+        // patch (`meta`), and the patch. `trimmed`: kept without its patch,
+        // past what a session keeps.
+        "CREATE TABLE IF NOT EXISTS diff_files (repo TEXT NOT NULL, path TEXT NOT NULL, digest TEXT NOT NULL, meta TEXT NOT NULL, patch TEXT, trimmed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, path))",
     ] {
         if let Err(e) = sql.exec(stmt, None) {
             worker::console_error!("session schema: {e}");
@@ -336,6 +345,7 @@ impl DurableObject for SessionObject {
             },
             (worker::Method::Get, "/events") => return self.events_page(&req),
             (worker::Method::Get, "/image") => return self.kept_image(&req),
+            (worker::Method::Get, "/diff") => self.diff(&req),
             (worker::Method::Get, "/viewer") => return self.accept_viewer(&req),
             (worker::Method::Get, "/uplink") => return self.accept_uplink(&req),
             (worker::Method::Post, "/purge") => self.purge().await,
@@ -2284,6 +2294,7 @@ impl SessionObject {
                 }
             }
             UplinkUp::State { state } => self.apply_state(state, now).await,
+            UplinkUp::Diff { keep, files } => self.keep_diffs(&keep, files, now),
             UplinkUp::Log { line } => {
                 if let Some(json) = self.append(now, &EventBody::Log(line), None) {
                     self.broadcast_events(&[json]);
@@ -3321,6 +3332,151 @@ impl SessionObject {
         h.set("Cross-Origin-Resource-Policy", "same-origin")?;
         h.set("Referrer-Policy", "same-origin")?;
         Ok(Response::from_bytes(bytes)?.with_headers(h))
+    }
+
+    // ───────────────────────────── diffs ─────────────────────────────
+
+    /// Keeps the diffs an uplink sent, and forgets those of the files
+    /// `keep` no longer lists (`fctl_domain::diffs`). What runs in the
+    /// sandbox can pose as its agent: a diff no agent sends goes, and past
+    /// what a session keeps, the largest are kept without their patches.
+    fn keep_diffs(&self, keep: &[DiffKey], files: Vec<FileDiff>, now: i64) {
+        #[derive(Deserialize)]
+        struct Stored {
+            repo: String,
+            path: String,
+            size: Option<f64>,
+        }
+        let key =
+            |repo: &Option<String>, path: &str| (repo.clone().unwrap_or_default(), path.to_owned());
+        let listed: HashSet<(String, String)> = keep
+            .iter()
+            .take(diffs::MAX_FILES)
+            .map(|k| key(&k.repo, &k.path))
+            .collect();
+        let stored = |sql: &SqlStorage| -> Vec<Stored> {
+            sql.exec(
+                "SELECT repo, path, length(CAST(patch AS BLOB)) AS size FROM diff_files",
+                None,
+            )
+            .and_then(|c| c.to_array())
+            .unwrap_or_else(|e| {
+                worker::console_error!("reading the diffs: {e}");
+                Vec::new()
+            })
+        };
+        let forget = |repo: &str, path: &str| {
+            if let Err(e) = self.sql.exec(
+                "DELETE FROM diff_files WHERE repo = ? AND path = ?",
+                Some(vec![sv(repo), sv(path)]),
+            ) {
+                worker::console_error!("forgetting a diff: {e}");
+            }
+        };
+        for row in stored(&self.sql) {
+            if !listed.contains(&(row.repo.clone(), row.path.clone())) {
+                forget(&row.repo, &row.path);
+            }
+        }
+        for mut f in files {
+            if let Err(why) = diffs::check(&f) {
+                worker::console_error!("dropping a diff with {why}");
+                continue;
+            }
+            let (repo, path) = key(&f.repo, &f.path);
+            if !listed.contains(&(repo.clone(), path.clone())) {
+                continue;
+            }
+            let patch = f.patch.take();
+            let Ok(meta) = serde_json::to_string(&f) else {
+                continue;
+            };
+            let r = self.sql.exec(
+                "INSERT INTO diff_files (repo, path, digest, meta, patch, trimmed) VALUES (?, ?, ?, ?, ?, 0) \
+                 ON CONFLICT (repo, path) DO UPDATE SET digest = excluded.digest, meta = excluded.meta, patch = excluded.patch, trimmed = 0",
+                Some(vec![
+                    sv(&repo),
+                    sv(&path),
+                    sv(&f.digest),
+                    sv(&meta),
+                    patch.map_or(SqlStorageValue::Null, |p| sv(&p)),
+                ]),
+            );
+            if let Err(e) = r {
+                worker::console_error!("keeping a diff: {e}");
+            }
+        }
+        // The smallest first, as fctl-agent keeps them.
+        let mut kept = stored(&self.sql);
+        kept.sort_by(|a, b| a.size.unwrap_or(0.0).total_cmp(&b.size.unwrap_or(0.0)));
+        let mut left = diffs::MAX_SESSION_BYTES as f64;
+        for row in kept {
+            let size = row.size.unwrap_or(0.0);
+            if size <= left {
+                left -= size;
+            } else if let Err(e) = self.sql.exec(
+                "UPDATE diff_files SET patch = NULL, trimmed = 1 WHERE repo = ? AND path = ?",
+                Some(vec![sv(&row.repo), sv(&row.path)]),
+            ) {
+                worker::console_error!("trimming a diff: {e}");
+            }
+        }
+        self.set_meta("diffs_at", &now.to_string());
+    }
+
+    /// The diffs the session keeps: one file's (`?path=`, and `?repo=` for
+    /// another than the primary repository), or all of them, as an
+    /// `api::SessionDiff`. The Worker checks that the caller can see the
+    /// session.
+    fn diff(&self, req: &Request) -> std::result::Result<serde_json::Value, ApiError> {
+        #[derive(Deserialize)]
+        struct Row {
+            meta: String,
+            patch: Option<String>,
+            trimmed: f64,
+        }
+        let read = |row: Row| -> Option<FileDiff> {
+            let mut d: FileDiff = serde_json::from_str(&row.meta).ok()?;
+            d.patch = row.patch;
+            if row.trimmed != 0.0 {
+                d.too_large = true;
+            }
+            Some(d)
+        };
+        let failed =
+            |e: worker::Error| api_err(ErrorCode::Internal, &format!("reading diffs: {e}"));
+        let Some(path) = crate::http::query(req, "path") else {
+            let files: Vec<FileDiff> = self
+                .sql
+                .exec(
+                    "SELECT meta, patch, trimmed FROM diff_files ORDER BY repo, path",
+                    None,
+                )
+                .and_then(|c| c.to_array::<Row>())
+                .map_err(failed)?
+                .into_iter()
+                .filter_map(read)
+                .collect();
+            let updated_at = self.meta("diffs_at").and_then(|v| v.parse().ok());
+            return Ok(serde_json::json!(SessionDiff { files, updated_at }));
+        };
+        let repo = crate::http::query(req, "repo").unwrap_or_default();
+        self.sql
+            .exec(
+                "SELECT meta, patch, trimmed FROM diff_files WHERE repo = ? AND path = ?",
+                Some(vec![sv(&repo), sv(&path)]),
+            )
+            .and_then(|c| c.to_array::<Row>())
+            .map_err(failed)?
+            .into_iter()
+            .find_map(read)
+            .map(|d| serde_json::json!(d))
+            .ok_or_else(|| {
+                api_err(
+                    ErrorCode::NotFound,
+                    "The session keeps no diff of this file",
+                )
+            })
     }
 
     /// Deletes the images that expired, and has the alarm go off when the

@@ -12,4 +12,11 @@ status: string,
 /**
  * Absent for binary files.
  */
-additions?: number, deletions?: number, };
+additions?: number, deletions?: number, 
+/**
+ * The [`FileDiff::digest`] of its diff, which the session keeps for
+ * the people who can see it (`GET /api/v1/sessions/{id}/diff`):
+ * it changes whenever the diff does. Absent from agents that don't
+ * read diffs, and from those whose hosts don't pass them on.
+ */
+digest?: string, };

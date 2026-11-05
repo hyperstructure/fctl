@@ -1262,6 +1262,28 @@ agent posts a notice; a primary repository out of reach fails the session.
   The session page's Changes section and the session lists take the newest
   state; the transcript shows one when a branch gets a commit, a push or a
   new pull request (`fctl_domain::branches`).
+- **Diffs.** With each state, fctl-agent reads the changed files' diffs
+  (`git diff` from the same commit, with fixed options; every line of an
+  untracked file added) and gives each changed file the digest of its
+  diff (`FileChange.digest`), which changes whenever the diff does
+  (`fctl_domain::diffs`). A session keeps at most 512 KB of a file's diff
+  and 8 MB of them all, the smallest first, and fctl-agent doesn't read a
+  file's past 50,000 changed lines, nor more than 16 MB of git's diff and
+  untracked files in a refresh: the others are `too_large`. When they
+  changed, it hands them all to its host (`AgentToHost::Diff`) before the
+  `git` event that has their digests, and again to a host that attaches.
+  The host passes them on over the session's uplink (`UplinkUp::Diff`), so
+  that they come before that event: over a new connection all of them,
+  then those that changed, in frames of at most 768 KB that each list
+  every changed file. SessionDO keeps the latest of each (`diff_files`),
+  forgets those of files no longer listed, and checks each against what an
+  agent sends, since what runs in the sandbox can pose as its agent.
+  Anyone who can see the session reads them (`GET
+  /api/v1/sessions/{id}/diff`, `fctl diff`): the session page opens a
+  file's from Changes, and asks again when its digest changes. Agents ask
+  for diffs only of hosts that pass them on (`AgentConfig.diffs`); older
+  hosts' agents send none, and the page says so
+  ([ADR 0074](adr/0074-sessions-keep-their-changes-diffs-for-their-viewers.md)).
 
 Older hosts and agents ignore the list and the second token, and work on the
 primary repository alone
@@ -3241,8 +3263,9 @@ All protocols are JSON with a `type` tag and live in `fctl-proto`:
 - `uplink` — SessionDO ⇄ host (one per session).
 - `agent` — host ⇄ fctl-agent (attachments' bytes travel here as `file`
   frames, published screenshots' as `publish` frames, what agents ask of
-  the control plane about their project as `call` frames), and `fctl` ⇄
-  fctl-agent in the sandbox (the session socket).
+  the control plane about their project as `call` frames, the changes'
+  diffs as `diff` frames), and `fctl` ⇄ fctl-agent in the sandbox (the
+  session socket).
 - `event` — the session event model shared by all of them.
 
 Changing a type means: update `fctl-proto`, run `cargo xtask gen` (regenerates

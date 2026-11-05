@@ -767,6 +767,65 @@ fn sh_with(command: &str, env: &[(String, String)]) -> (String, bool) {
     }
 }
 
+/// What changed between `before` and `after`, as Claude Code's
+/// `structuredPatch` has it: git's hunks, three lines of context around
+/// each change, each line with its `+`, `-` or space.
+pub fn structured_patch(before: &str, after: &str) -> Vec<Value> {
+    let dir = std::env::temp_dir().join(format!(
+        "fake-claude-patch-{}-{}",
+        std::process::id(),
+        crate::short_id(8)
+    ));
+    let diff = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("a"), before))
+        .and_then(|()| std::fs::write(dir.join("b"), after))
+        .and_then(|()| {
+            std::process::Command::new("git")
+                .args([
+                    "diff",
+                    "--no-index",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "-U3",
+                    "a",
+                    "b",
+                ])
+                .current_dir(&dir)
+                .output()
+        });
+    let _ = std::fs::remove_dir_all(&dir);
+    let Ok(out) = diff else {
+        return Vec::new();
+    };
+    let mut hunks: Vec<Value> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(header) = line.strip_prefix("@@ -") {
+            let Some(((old_start, old_lines), (new_start, new_lines))) = hunk_ranges(header) else {
+                continue;
+            };
+            hunks.push(json!({"oldStart": old_start, "oldLines": old_lines, "newStart": new_start, "newLines": new_lines, "lines": []}));
+        } else if let Some(Value::Array(lines)) = hunks.last_mut().map(|h| &mut h["lines"])
+            && line.starts_with([' ', '+', '-', '\\'])
+        {
+            lines.push(json!(line));
+        }
+    }
+    hunks
+}
+
+/// The lines a hunk covers before and after, from its `@@` line after
+/// `@@ -`: `start,count` each, a count of one left out.
+fn hunk_ranges(header: &str) -> Option<((u64, u64), (u64, u64))> {
+    let range = |s: &str| -> Option<(u64, u64)> {
+        let (start, count) = s.split_once(',').unwrap_or((s, "1"));
+        Some((start.parse().ok()?, count.parse().ok()?))
+    };
+    let mut parts = header.split(' ');
+    let old = range(parts.next()?)?;
+    let new = range(parts.next()?.strip_prefix('+')?)?;
+    Some((old, new))
+}
+
 /// `path` in the working directory, as Claude Code names files: absolute.
 fn absolute(path: &str) -> PathBuf {
     let p = Path::new(path);
@@ -893,8 +952,11 @@ impl crate::Session {
         input
     }
 
-    /// What a call does for real, and what it prints.
-    fn perform(c: &Call, env: &[(String, String)]) -> (String, bool) {
+    /// What a call does for real, what it prints, and Claude Code's own
+    /// copy of its result (`tool_use_result`), when it has one: an edit's
+    /// or a write's, with what changed in the file.
+    fn perform(c: &Call, env: &[(String, String)]) -> (String, bool, Option<Value>) {
+        let mut structured = None;
         let (output, error) = match &c.effect {
             Effect::None => (String::new(), false),
             Effect::Run(command) => sh_with(command, env),
@@ -920,9 +982,17 @@ impl crate::Session {
                         } else {
                             text.replacen(old.as_str(), new, 1)
                         };
-                        if let Err(e) = std::fs::write(&file, changed) {
+                        if let Err(e) = std::fs::write(&file, &changed) {
                             warn(&format!("editing {}: {e}", file.display()));
                         }
+                        structured = Some(json!({
+                            "filePath": file.display().to_string(),
+                            "oldString": old,
+                            "newString": new,
+                            "structuredPatch": structured_patch(&text, &changed),
+                            "userModified": false,
+                            "replaceAll": all,
+                        }));
                     }
                     _ => warn(&format!(
                         "{} doesn't have what the replay's edit replaces: only the transcript shows it",
@@ -937,6 +1007,13 @@ impl crate::Session {
             Effect::Write { path, content } => {
                 let file = absolute(path);
                 let existed = file.exists();
+                let before = std::fs::read_to_string(&file).ok();
+                structured = Some(json!({
+                    "type": if existed { "update" } else { "create" },
+                    "filePath": file.display().to_string(),
+                    "content": content,
+                    "structuredPatch": before.as_deref().map_or_else(Vec::new, |b| structured_patch(b, content)),
+                }));
                 let written = file
                     .parent()
                     .map_or(Ok(()), std::fs::create_dir_all)
@@ -991,8 +1068,8 @@ impl crate::Session {
             ),
         };
         match &c.output {
-            Some(written) => (written.clone(), c.error),
-            None => (output, error || c.error),
+            Some(written) => (written.clone(), c.error, structured),
+            None => (output, error || c.error, structured),
         }
     }
 
@@ -1025,12 +1102,14 @@ impl crate::Session {
                 );
                 return false;
             }
-            let (output, error) = Self::perform(c, env);
+            let (output, error, structured) = Self::perform(c, env);
             self.unread += output.len() as u64 / 4;
             self.tick(id, &c.name, c.seconds.map(|d| paced(d, speed)), None);
-            crate::out(
-                &json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": output, "is_error": error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": crate::uuid()}),
-            );
+            let mut result = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": output, "is_error": error}]}, "parent_tool_use_id": null, "session_id": self.id, "uuid": crate::uuid()});
+            if let Some(structured) = structured {
+                result["tool_use_result"] = structured;
+            }
+            crate::out(&result);
         }
         !crate::INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -1105,7 +1184,7 @@ impl crate::Session {
                         &agent,
                         json!([{"type": "tool_use", "id": tool_id, "name": c.name, "input": Self::shown_input(c)}]),
                     );
-                    let (output, error) = Self::perform(c, env);
+                    let (output, error, _) = Self::perform(c, env);
                     let parent = agent.tool_use_id.clone();
                     self.tick(
                         &tool_id,
@@ -1182,8 +1261,32 @@ impl crate::Session {
 
 #[cfg(test)]
 mod tests {
-    use super::{Effect, Library, Step, github_repo, numbered, parse, parse_duration, parse_env};
+    use super::{
+        Effect, Library, Step, github_repo, hunk_ranges, numbered, parse, parse_duration,
+        parse_env, structured_patch,
+    };
+    use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn edits_report_their_hunks_as_claude_code_does() {
+        let before = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
+        let after = "one\ntwo\nthree\nfour\n5\nsix\nseven\neight\nnine";
+        let hunks = structured_patch(before, after);
+        assert_eq!(
+            hunks,
+            [
+                json!({"oldStart": 2, "oldLines": 7, "newStart": 2, "newLines": 8, "lines": [
+                    " two", " three", " four", "-five", "+5", " six", " seven", " eight", "+nine",
+                    "\\ No newline at end of file"
+                ]})
+            ]
+        );
+        assert!(structured_patch("same\n", "same\n").is_empty());
+        assert_eq!(hunk_ranges("3 +4 @@"), Some(((3, 1), (4, 1))));
+        assert_eq!(hunk_ranges("0,0 +1,2 @@ fn"), Some(((0, 0), (1, 2))));
+        assert_eq!(hunk_ranges("x"), None);
+    }
 
     #[test]
     fn durations_read_as_people_write_them() {
