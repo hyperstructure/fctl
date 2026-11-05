@@ -37,6 +37,9 @@ export const keys = {
   retrospectives: (project: string, outcome?: string) =>
     ["retrospectives", project, outcome ?? "all"] as const,
   sessionRetrospectives: (id: string) => ["session-retrospectives", id] as const,
+  /** A changed file's diff, by session, repository ("" for the primary one), path and digest. */
+  fileDiff: (session: string, repo: string, path: string, digest: string) =>
+    ["file-diff", session, repo, path, digest] as const,
   /** A project's review agents, by project id. */
   reviewAgents: (project: string) => ["review-agents", project] as const,
   /** The apps that opened a project's newest pull requests, and one looked up by its bot, by project id. */
@@ -168,6 +171,45 @@ export const useSidebarSessions = () => {
  */
 export const recentSessions = (sessions: G.Session[], now: number) =>
   sessions.filter((s) => !s.archived && (!ended(s) || (s.ended_at != null && s.ended_at >= now - RECENT_MS)));
+/** A changed file of a session: in which repository (`owner/name`, none for the primary one), and how. */
+export interface ChangedFile {
+  repo?: string;
+  file: G.FileChange;
+}
+
+/** The options of the query for a changed file's diff, for `useFileDiff` and for loading it ahead. */
+export const fileDiffQuery = (session: string, f: ChangedFile) => ({
+  queryKey: keys.fileDiff(session, f.repo ?? "", f.file.path, f.file.digest ?? ""),
+  queryFn: () => api.fileDiff(session, f.file.path, f.repo),
+  // A digest's diff never changes.
+  staleTime: Number.POSITIVE_INFINITY,
+  gcTime: 10 * 60_000,
+});
+
+/**
+ * A changed file's diff, for agents that send them (the file has a digest).
+ * The agent sends a diff before the state that lists it, but the session
+ * may still have the one before: until the digests agree, it asks again.
+ */
+export const useFileDiff = (session: string, f: ChangedFile | undefined) => {
+  const digest = f?.file.digest;
+  return useQuery({
+    ...fileDiffQuery(session, f ?? { file: { path: "", status: "" } }),
+    enabled: !!f && !!digest,
+    retry: (count, err) => (err instanceof ApiFailure && err.status === 404 ? count < 4 : count < 2),
+    retryDelay: (count) => 600 * 2 ** count,
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      return d && d.digest !== digest && q.state.dataUpdateCount < 8 ? 1500 : false;
+    },
+    // The same file, with its diff before, until the new one comes.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[3] === f?.file.path && previousQuery?.queryKey[2] === (f?.repo ?? "")
+        ? previous
+        : undefined,
+  });
+};
+
 export const useRunners = () =>
   useQuery({ queryKey: keys.runners, queryFn: api.runners, refetchInterval: 30_000 });
 

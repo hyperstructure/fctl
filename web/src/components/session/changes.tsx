@@ -1,10 +1,12 @@
 // A repository's changed files and totals, as the session page's rail and
 // details sheet show them: the first few files, and the rest a click away.
+// A file opens into its diff.
 
 import { ChevronDown } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { type RepoChanges, whereCommits } from "@/lib/git";
+import { changeOf } from "./diff-dialog";
 
 /** The files a repository's list shows until someone asks for the rest. */
 const FEW = 10;
@@ -14,11 +16,14 @@ export function Changes({
   repo,
   title,
   showTotals,
+  onOpen,
 }: {
   repo: RepoChanges;
   /** The repository's name, when the session has more than one. */
   title?: string;
   showTotals: boolean;
+  /** Shows a file's diff. */
+  onOpen?: (path: string) => void;
 }) {
   const [all, setAll] = useState(false);
   const list = useId();
@@ -41,37 +46,48 @@ export function Changes({
       {files.length === 0 ? (
         <p className="text-[12.5px] text-ink-4">No changes yet.</p>
       ) : (
-        <ul id={list} className="flex flex-col gap-1">
+        <ul id={list} className={cn("flex flex-col", onOpen ? "gap-px" : "gap-1")}>
           {shown.map((f) => {
             const a = f.additions ?? 0;
             const d = f.deletions ?? 0;
-            return (
-              <li key={f.path} className="flex items-center gap-2 text-[12px]">
+            const change = changeOf(f.status);
+            const row = (
+              <>
+                <span className={cn("w-3 shrink-0 text-center font-mono text-[11px]", change.tone)}>
+                  {change.letter}
+                </span>
                 <span
                   className={cn(
-                    "w-3 shrink-0 text-center font-mono text-[11px]",
-                    f.status === "added" || f.status === "untracked"
-                      ? "text-accent"
-                      : f.status === "deleted"
-                        ? "text-danger"
-                        : "text-blue",
+                    "min-w-0 flex-1 truncate font-mono text-ink-2",
+                    onOpen && "transition-colors group-hover/file:text-ink",
                   )}
                 >
-                  {f.status === "added" || f.status === "untracked"
-                    ? "A"
-                    : f.status === "deleted"
-                      ? "D"
-                      : f.status === "renamed"
-                        ? "R"
-                        : "M"}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-ink-2" title={f.path}>
                   {f.path}
                 </span>
                 <span className="flex h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-raised">
                   <span className="bg-accent/80" style={{ width: `${(a / maxChange) * 100}%` }} />
                   <span className="bg-danger/70" style={{ width: `${(d / maxChange) * 100}%` }} />
                 </span>
+              </>
+            );
+            return (
+              <li key={f.path} className="text-[12px]">
+                {onOpen ? (
+                  // Lined up with the rows that don't open, its fill reaching past them.
+                  <button
+                    type="button"
+                    onClick={() => onOpen(f.path)}
+                    title={`${f.path}: ${change.label.toLowerCase()}, +${a} −${d}`}
+                    aria-label={`${f.path}, ${change.label.toLowerCase()}: show its diff`}
+                    className="group/file -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-[3px] text-left transition-colors hover:bg-hover"
+                  >
+                    {row}
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2" title={f.path}>
+                    {row}
+                  </div>
+                )}
               </li>
             );
           })}

@@ -372,6 +372,14 @@ export const api = {
     p.set("limit", String(q.limit ?? 300));
     return request<G.EventPage>("GET", `/sessions/${enc(id)}/events?${p}`);
   },
+  /** The diffs of a session's changes, as its agent last read them. */
+  sessionDiff: (id: string) => request<G.SessionDiff>("GET", `/sessions/${enc(id)}/diff`),
+  /** One changed file's diff; `repo` (`owner/name`) for another repository than the primary one. */
+  fileDiff: (id: string, path: string, repo?: string) => {
+    const p = new URLSearchParams({ path });
+    if (repo) p.set("repo", repo);
+    return request<G.FileDiff>("GET", `/sessions/${enc(id)}/diff?${p}`);
+  },
   /** Deletes a published screenshot before it expires, by its link's token. */
   unpublish: (token: string) => request<G.Ok>("DELETE", `/published/${enc(token)}`),
   follow: (id: string) => request<G.Session>("PUT", `/sessions/${enc(id)}/follow`, {}),
