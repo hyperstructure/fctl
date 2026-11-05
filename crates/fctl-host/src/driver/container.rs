@@ -52,6 +52,10 @@ pub const SANDBOX_NETWORK: &str = "fctl-sandboxes";
 /// network inspect --format` prints it.
 const ICC_FORMAT: &str = r#"{{index .Options "com.docker.network.bridge.enable_icc"}}"#;
 
+/// How long `container system start` may take: it waits for the service to
+/// answer, which after a restart takes longer than a command.
+const SERVICE_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3 * 60);
+
 /// Why a sandbox wasn't created.
 enum Create {
     /// Its image isn't on this host and pulling it failed.
@@ -164,13 +168,40 @@ impl ContainerDriver {
                 (_, true, _) => "ready".into(),
                 (Flavor::Apple, false, true) => "the `container` service is not answering".into(),
                 (Flavor::Apple, false, false) => {
-                    "the `container` service is not running (run `container system start`)".into()
+                    "the `container` service is not running (the host service starts it; `container system start` starts it now)".into()
                 }
                 (Flavor::Docker, false, true) => "the docker daemon is not answering".into(),
                 (Flavor::Docker, false, false) => "the docker daemon is not running".into(),
             }),
             version,
         }
+    }
+
+    /// Starts Apple's `container` service when its CLI is here and the
+    /// service isn't running, as after the Mac restarts: `container system
+    /// start` registers it with launchd only until then. It never installs
+    /// a kernel, which the first start offers to download. Says whether it
+    /// started the service; Docker's daemon is left to its owner.
+    pub async fn start_service(&self) -> Result<bool> {
+        if self.flavor != Flavor::Apple
+            || (cfg!(not(target_os = "macos")) && self.bin == "container")
+            || !installed(&self.bin)
+        {
+            return Ok(false);
+        }
+        let status = self.run(&["system", "status"]).await;
+        // A service that doesn't answer is there, stuck: starting it again
+        // won't help.
+        if status.is_ok() || timed_out(&status) {
+            return Ok(false);
+        }
+        run_cmd_within(
+            &self.bin,
+            &["system", "start", "--disable-kernel-install"],
+            SERVICE_START_TIMEOUT,
+        )
+        .await?;
+        Ok(true)
     }
 
     /// The Docker daemon's CPUs and memory: on macOS, its VM's rather than
@@ -1895,6 +1926,50 @@ esac
             let got = info.detail.unwrap_or_default();
             assert!(got.starts_with(detail), "{bin}: {got}");
         }
+    }
+
+    #[tokio::test]
+    async fn starts_apples_service_when_it_is_not_running() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bin = dir.path().join("container");
+        // `system status` fails until `system start` has run.
+        let script = format!(
+            r#"#!/bin/sh
+echo "$*" >> '{dir}/calls'
+case "$*" in
+  "system status") test -e '{dir}/up' ;;
+  "system start --disable-kernel-install") touch '{dir}/up' ;;
+  *) exit 1 ;;
+esac
+"#,
+            dir = dir.path().display()
+        );
+        write_script(&bin, &script)?;
+        let apple = ContainerDriver::with_bin(Flavor::Apple, bin.display().to_string());
+        assert!(!apple.probe().await.available);
+        assert!(apple.start_service().await?);
+        assert!(apple.probe().await.available);
+        // Once it runs, it is left alone.
+        assert!(!apple.start_service().await?);
+        let calls = std::fs::read_to_string(dir.path().join("calls"))?;
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|c| c.starts_with("system start"))
+                .count(),
+            1,
+            "{calls}"
+        );
+        // Docker's daemon is its owner's to start.
+        let docker = ContainerDriver::with_bin(Flavor::Docker, bin.display().to_string());
+        std::fs::remove_file(dir.path().join("up"))?;
+        assert!(!docker.start_service().await?);
+        // A CLI that is missing, or whose service won't start, starts nothing.
+        let missing = ContainerDriver::with_bin(Flavor::Apple, "fctl-test-missing".into());
+        assert!(!missing.start_service().await?);
+        let broken = ContainerDriver::with_bin(Flavor::Apple, "false".into());
+        assert!(broken.start_service().await.is_err());
+        Ok(())
     }
 
     #[tokio::test]

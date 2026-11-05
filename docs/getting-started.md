@@ -157,6 +157,8 @@ Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
    container system start
    ```
 
+   It stops when the Mac restarts; the host service starts it again.
+
    On older macOS, install [Lima](https://lima-vm.io) (`brew install lima`)
    instead; on Linux, Docker, or for a microVM of its own for each session,
    KVM and `passt` ([Firecracker](cli.md#hosts): `sudo usermod -aG kvm

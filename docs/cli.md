@@ -793,6 +793,12 @@ auto_update = true       # update fctl to the version the control plane runs (fa
 disk_gb = 64             # each sandbox's own disk, which takes only what its session writes
 ```
 
+Apple's `container` service stops when the Mac restarts. A host whose
+driver is apple (or auto) starts it again (`container system start`, never
+installing a kernel): when the host starts, and when its probe of the
+drivers, every five minutes, finds the service stopped. Docker's daemon is
+left to its owner.
+
 On Linux, `--driver firecracker` runs each session in a
 [Firecracker](https://firecracker-microvm.github.io) microVM with a kernel
 of its own, from the same images as Docker, with nothing running as root.

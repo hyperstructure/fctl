@@ -112,8 +112,11 @@ impl HostCtx {
     /// VM may have been resized), and finds where their disk is. The
     /// runner's hello reports what this found last, so the control
     /// connection never waits on a runtime; a Docker daemon that doesn't
-    /// answer leaves the limits and the disk's place as they were.
+    /// answer leaves the limits and the disk's place as they were. First it
+    /// starts Apple's `container` service when that is the driver and it
+    /// isn't running (the Mac restarted, say).
     pub async fn refresh_facts(&self) {
+        self.driver.start_service().await;
         let data_dir = self.cfg.data_dir();
         let (drivers, size, spot) = tokio::join!(
             Driver::probe_all(&self.cfg),
