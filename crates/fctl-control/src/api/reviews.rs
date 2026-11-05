@@ -123,8 +123,8 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         model != c.model
             || effort != c.effort
             || instructions != c.instructions
-            || bots != reviews::bots(Some(c))
-            || skipped != rv::stored_skipped(c.skipped_repos.as_deref())
+            || !rv::same_names(&bots, &reviews::bots(Some(c)))
+            || !rv::same_names(&skipped, &rv::stored_skipped(c.skipped_repos.as_deref()))
             || drafts != reviews::drafts(Some(c))
             || description_summary != c.description_summary
     });

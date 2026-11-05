@@ -199,6 +199,18 @@ pub fn takes_over(change: Change) -> bool {
         || (change.on && change.settings && !change.mine)
 }
 
+/// Whether two lists of names on GitHub (apps' bots, repositories) name the
+/// same ones, in any order: GitHub ignores case. The same apps or
+/// repositories in another order change nothing.
+pub fn same_names(a: &[String], b: &[String]) -> bool {
+    let set = |l: &[String]| {
+        l.iter()
+            .map(|n| n.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>()
+    };
+    set(a) == set(b)
+}
+
 // ───────────────────────────── the repositories they review ─────────────────────────────
 
 /// The repositories a project's review agents skip, as D1 keeps them
@@ -3517,6 +3529,23 @@ mod tests {
         }));
         // Saving nothing new takes nothing over.
         assert!(!takes_over(on));
+    }
+
+    #[test]
+    fn the_same_apps_or_repositories_in_another_order_are_no_change() {
+        let names = |l: &[&str]| l.iter().map(|&n| n.to_owned()).collect::<Vec<_>>();
+        let stored = names(&["dependabot[bot]", "renovate[bot]"]);
+        assert!(same_names(
+            &names(&["renovate[bot]", "dependabot[bot]"]),
+            &stored
+        ));
+        assert!(same_names(
+            &names(&["Acme/Shared-Lib"]),
+            &names(&["acme/shared-lib"])
+        ));
+        assert!(!same_names(&names(&["renovate[bot]"]), &stored));
+        assert!(!same_names(&[], &stored));
+        assert!(same_names(&[], &[]));
     }
 
     #[test]
