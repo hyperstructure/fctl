@@ -1436,8 +1436,12 @@ posts what it found on GitHub
    The project's owners, its workspace's admins among them, turn them on,
    and they run on the Claude subscription of whoever did: their operator,
    whose connection for the workspace each review session runs on.
-   Another owner takes them over (`run_as_me`), and nobody puts them on
-   someone else's subscription; the operator may always turn them off.
+   Another owner takes them over (`run_as_me`), and so does a change of
+   theirs to how they review while they are on
+   (`fctl_domain::reviews::takes_over`,
+   [ADR 0073](adr/0073-changing-review-agents-runs-them-on-the-changers-subscription.md)):
+   nobody puts them on someone else's subscription, or changes what runs
+   there. Turning them off moves nothing; the operator may always do it.
    Owners also choose their model and effort level (else the project's),
    instructions that follow fctl's own, whether their agents sum each
    pull request up in its description first (`description_summary`,

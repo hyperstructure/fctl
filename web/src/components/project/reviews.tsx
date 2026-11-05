@@ -1,7 +1,8 @@
 // A project's review agents: whether an agent reviews each new commit of its pull requests, on
 // whose Claude subscription and how, and the reviews they ran, newest first. The project's owners
-// turn them on (on their own subscription), take them over and say how they review; the person
-// they run for may turn them off; people who start sessions ask for a review of a pull request.
+// turn them on (on their own subscription), take them over and say how they review, which takes them
+// over too; the person they run for may turn them off; people who start sessions ask for a review of
+// a pull request.
 
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -242,10 +243,10 @@ function Intro({ project, agents }: { project: G.Project; agents: G.ReviewAgents
 }
 
 /** Why turning them on failed, with the way out when it is a missing Claude connection. */
-function OnError({ error }: { error: Error }) {
+function OnError({ error, className = "mt-6 max-w-xl" }: { error: Error; className?: string }) {
   const claude = error instanceof ApiFailure && error.field === "claude";
   return (
-    <Banner tone="error" className="mt-6 max-w-xl">
+    <Banner tone="error" className={className}>
       {error.message}
       {claude && (
         <>
@@ -624,9 +625,13 @@ function effortOptions(project: G.Project): SelectOption[] {
   ];
 }
 
+/** The fields of the settings form that show their own errors; it shows the others below them. */
+const FIELDS = ["model", "effort", "instructions", "bots", "skipped_repos"];
+
 /**
  * Whose subscription they run on, the repositories they review and whether drafts get reviews, their
  * model, effort level and instructions, and the apps that start reviews: for the project's owners.
+ * Saving another owner's runs them on yours.
  */
 function SettingsForm({
   project,
@@ -653,8 +658,13 @@ function SettingsForm({
   // Those the project's agents may still write to, should a repository leave meanwhile.
   const skips = skipped.filter((s) => repos.some((r) => repoName(r).toLowerCase() === s.toLowerCase()));
   const skipsChanged = !sameRepos(skips, agents.skipped_repos.map(repoName));
+  const { data: me } = useMe();
   const save = useUpdate(project, () => {
-    toast("Saved: the next review runs with it");
+    toast(
+      mine
+        ? "Saved: the next review runs with it"
+        : "Saved: review agents run on your Claude subscription now",
+    );
     onDone();
   });
   const takeOver = useUpdate(project, () => toast("Review agents run on your Claude subscription now"));
@@ -777,20 +787,30 @@ function SettingsForm({
       </Field>
       <DescriptionSummary on={summary} onChange={setSummary} />
       <ReviewBots project={project} value={bots} saved={agents.bots} onChange={setBots} error={err("bots")} />
-      {save.error && !(save.error as { field?: string }).field && (
-        <Banner tone="error">{save.error.message}</Banner>
+      {save.error && !FIELDS.includes((save.error as { field?: string }).field ?? "") && (
+        <OnError error={save.error} className="" />
       )}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-        <Button type="button" variant="quiet" size="sm" onClick={onTurnOff}>
-          Turn off review agents
-        </Button>
-        <div className="flex gap-2">
-          <Button type="button" variant="ghost" onClick={onDone}>
-            Cancel
+      <div className="flex flex-col gap-3 border-t border-line pt-4">
+        {!mine && (
+          <p className="flex min-w-0 items-center gap-2 text-[12.5px] leading-snug text-ink-3">
+            {me && <Avatar user={me.user} size={18} />}
+            {agents.operator
+              ? `Saving runs them on your Claude subscription, instead of ${agents.operator.name}'s.`
+              : "Saving runs them on your Claude subscription."}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Button type="button" variant="quiet" size="sm" onClick={onTurnOff}>
+            Turn off review agents
           </Button>
-          <Button type="submit" variant="primary" loading={save.isPending} disabled={!changed}>
-            Save
-          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={onDone}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={save.isPending} disabled={!changed}>
+              Save
+            </Button>
+          </div>
         </div>
       </div>
     </form>

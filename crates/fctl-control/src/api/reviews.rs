@@ -50,7 +50,8 @@ async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<Revi
 
 /// `PATCH /api/v1/projects/{id}/review-agents`: the project's owners turn
 /// them on (on their own Claude subscription) or off, take them over and
-/// say how they run; the person they run for may turn them off.
+/// say how they run, which takes them over too; the person they run for
+/// may turn them off.
 pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: UpdateReviewAgentsRequest = http::body(req).await?;
     let p = access::project(ctx, id).await?;
@@ -104,11 +105,40 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             .collect(),
         None => rv::stored_skipped(conf.as_ref().and_then(|c| c.skipped_repos.as_deref())),
     };
+    let keep = |new: Option<Option<String>>, old: Option<String>| new.unwrap_or(old);
+    let model = keep(model, conf.as_ref().and_then(|c| c.model.clone()));
+    let effort = keep(effort, conf.as_ref().and_then(|c| c.effort.clone()));
+    let instructions = keep(
+        instructions,
+        conf.as_ref().and_then(|c| c.instructions.clone()),
+    );
+    let drafts = body
+        .drafts
+        .unwrap_or_else(|| reviews::drafts(conf.as_ref()));
+    let description_summary = body
+        .description_summary
+        .unwrap_or_else(|| conf.as_ref().is_some_and(|c| c.description_summary));
+    // Whether this changes how they review, from what they review with now.
+    let settings = conf.as_ref().is_none_or(|c| {
+        model != c.model
+            || effort != c.effort
+            || instructions != c.instructions
+            || !rv::same_names(&bots, &reviews::bots(Some(c)))
+            || !rv::same_names(&skipped, &rv::stored_skipped(c.skipped_repos.as_deref()))
+            || drafts != reviews::drafts(Some(c))
+            || description_summary != c.description_summary
+    });
     let was_on = conf.as_ref().is_some_and(|c| c.enabled);
     let enabled = body.enabled.unwrap_or(was_on);
-    // Turning them on, or taking them over, runs them on the caller's
-    // subscription: nobody spends someone else's.
-    let takes_over = (enabled && !was_on) || body.run_as_me == Some(true);
+    // Turning them on, taking them over or changing how they review runs
+    // them on the caller's subscription: nobody spends someone else's.
+    let takes_over = rv::takes_over(rv::Change {
+        mine,
+        was_on,
+        on: enabled,
+        run_as_me: body.run_as_me == Some(true),
+        settings,
+    });
     if takes_over {
         if ctx.cfg.github.is_none() {
             return Err(not_configured(
@@ -140,19 +170,6 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
     } else {
         conf.as_ref().and_then(|c| c.operator_id.clone())
     };
-    let keep = |new: Option<Option<String>>, old: Option<String>| new.unwrap_or(old);
-    let model = keep(model, conf.as_ref().and_then(|c| c.model.clone()));
-    let effort = keep(effort, conf.as_ref().and_then(|c| c.effort.clone()));
-    let instructions = keep(
-        instructions,
-        conf.as_ref().and_then(|c| c.instructions.clone()),
-    );
-    let drafts = body
-        .drafts
-        .unwrap_or_else(|| reviews::drafts(conf.as_ref()));
-    let description_summary = body
-        .description_summary
-        .unwrap_or_else(|| conf.as_ref().is_some_and(|c| c.description_summary));
     q(
         &ctx.db,
         "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, skipped_repos, \
@@ -198,6 +215,9 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             "skipped_repos": skipped,
             "drafts": drafts,
             "description_summary": description_summary,
+            "taken_over_from": (takes_over && !mine)
+                .then(|| conf.as_ref().and_then(|c| c.operator_id.as_deref()))
+                .flatten(),
         })),
     );
     http::ok(&agents(ctx, &p.row).await?)

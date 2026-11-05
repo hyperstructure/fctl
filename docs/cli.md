@@ -585,7 +585,8 @@ end of its description (how risky it looks, what it does and what
 deserves a closer look), in place of an earlier review's summary, and
 fctl leaves the rest of the description as it is. The project's owners
 turn them on (on their own subscription), take them over and say how
-they review; the person they run for may turn them off:
+they review, which runs them on the subscription of whoever changes
+them; the person they run for may turn them off:
 
 ```sh
 fctl review settings -p my-app                 # on or off, on whose subscription, how

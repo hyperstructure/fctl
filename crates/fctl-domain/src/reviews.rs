@@ -167,6 +167,50 @@ pub fn trusted(pr: &PullRequest, app_login: Option<&str>) -> bool {
         || by_app(pr.author.as_deref(), app_login)
 }
 
+// ───────────────────────────── whose subscription ─────────────────────────────
+
+/// A change to a project's review agents' settings, as far as whose Claude
+/// subscription they run on goes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Change {
+    /// The person who changes them is the one they run for, their operator.
+    pub mine: bool,
+    /// They were on before the change.
+    pub was_on: bool,
+    /// They are on after it.
+    pub on: bool,
+    /// The person asked to run them on theirs (`run_as_me`).
+    pub run_as_me: bool,
+    /// It changes how they review: their model, effort level, instructions,
+    /// the repositories they skip, whether drafts get reviews, whether they
+    /// sum pull requests up, the apps that start reviews.
+    pub settings: bool,
+}
+
+/// Whether `change` runs a project's review agents on the subscription of
+/// the person who makes it from then on: turning them on, taking them over,
+/// and changing how they review while they stay on, unless it is their
+/// operator's own, so that nobody puts work on someone else's subscription.
+/// Turning them off puts none there, and while they are off nothing runs:
+/// whoever turns them on again takes them over.
+pub fn takes_over(change: Change) -> bool {
+    (change.on && !change.was_on)
+        || change.run_as_me
+        || (change.on && change.settings && !change.mine)
+}
+
+/// Whether two lists of names on GitHub (apps' bots, repositories) name the
+/// same ones, in any order: GitHub ignores case. The same apps or
+/// repositories in another order change nothing.
+pub fn same_names(a: &[String], b: &[String]) -> bool {
+    let set = |l: &[String]| {
+        l.iter()
+            .map(|n| n.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>()
+    };
+    set(a) == set(b)
+}
+
 // ───────────────────────────── the repositories they review ─────────────────────────────
 
 /// The repositories a project's review agents skip, as D1 keeps them
@@ -3439,6 +3483,69 @@ mod tests {
         }
         let none = skipped_repos(&["web".to_owned()], &[]).err();
         assert!(none.is_some_and(|e| e.message.contains("may write to none")));
+    }
+
+    #[test]
+    fn a_change_by_anyone_but_their_operator_runs_them_on_theirs() {
+        let on = Change {
+            was_on: true,
+            on: true,
+            ..Change::default()
+        };
+        // Turning them on, or taking them over, always does.
+        assert!(takes_over(Change {
+            on: true,
+            ..Change::default()
+        }));
+        assert!(takes_over(Change {
+            run_as_me: true,
+            ..on
+        }));
+        // Another owner's change to how they review, while they stay on.
+        assert!(takes_over(Change {
+            settings: true,
+            ..on
+        }));
+        // Their operator's own change keeps them where they run.
+        assert!(!takes_over(Change {
+            mine: true,
+            settings: true,
+            ..on
+        }));
+        // Turning them off puts no work on anyone's subscription, whatever
+        // else it changes; turning them on again takes them over.
+        let off = Change {
+            was_on: true,
+            ..Change::default()
+        };
+        assert!(!takes_over(off));
+        assert!(!takes_over(Change {
+            settings: true,
+            ..off
+        }));
+        assert!(!takes_over(Change {
+            settings: true,
+            ..Change::default()
+        }));
+        // Saving nothing new takes nothing over.
+        assert!(!takes_over(on));
+    }
+
+    #[test]
+    fn the_same_apps_or_repositories_in_another_order_are_no_change() {
+        let names = |l: &[&str]| l.iter().map(|&n| n.to_owned()).collect::<Vec<_>>();
+        let stored = names(&["dependabot[bot]", "renovate[bot]"]);
+        assert!(same_names(
+            &names(&["renovate[bot]", "dependabot[bot]"]),
+            &stored
+        ));
+        assert!(same_names(
+            &names(&["Acme/Shared-Lib"]),
+            &names(&["acme/shared-lib"])
+        ));
+        assert!(!same_names(&names(&["renovate[bot]"]), &stored));
+        assert!(!same_names(&[], &stored));
+        assert!(same_names(&[], &[]));
     }
 
     #[test]

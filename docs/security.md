@@ -408,7 +408,9 @@ its VM, and nothing outside it except through these channels:
   its task needs and a token that runs sessions in its project alone, and
   pause it to stop what tools start at once.
 - **Review agents** run on their operator's Claude subscription, with
-  their Claude access token in the sandbox like any session's, and read
+  their Claude access token in the sandbox like any session's (another
+  owner who changes how they review takes them over, so nobody changes
+  what runs on someone else's subscription), and read
   what pull requests say, which can steer them as any text can. Their
   GitHub token only reads, fctl posts what they find, and they get no
   secrets, setup script, memory, retrospectives, screenshots or

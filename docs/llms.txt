@@ -99,7 +99,7 @@ queued → provisioning → preparing → running ⇄ idle → stopping → stop
 ## Claude credentials and usage
 
 - Each person connects their own subscription (Pro or Max) in Settings → Claude or with `fctl claude connect --login` (full login through a host; Remote Control and claude.ai connectors), `fctl claude connect` (paste a `claude setup-token` token; lasts a year), or `fctl claude connect --on-runners` after `fctl host claude set-token` on each of their runners (the token never reaches fctl; their sessions then run only on those runners).
-- A session runs on the connection of the person it runs for: who started it (or resumed it last; a schedule's owner; whoever delegated a Linear ticket; the access token's person). A member chooses which connection each workspace's sessions use (`fctl workspaces claude <connection> -w <workspace>`).
+- A session runs on the connection of the person it runs for: who started it (or resumed it last; a schedule's owner; review agents' operator; whoever delegated a Linear ticket; the access token's person). Changing a schedule, or how review agents review, runs it on the subscription of whoever changes it from then on: nobody changes what runs on someone else's subscription. A member chooses which connection each workspace's sessions use (`fctl workspaces claude <connection> -w <workspace>`).
 - `fctl claude status` shows each connection's plan usage (five-hour window, week, per-model week) as sessions last reported it, and `ultra` for Claude's Ultra plan, which has no five-hour window. Sessions pause at a limit and resume when it resets.
 
 ## Driving fctl from an agent or a script

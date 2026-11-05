@@ -16,10 +16,20 @@ const state = vi.hoisted(() => ({
   sent: [] as G.UpdateReviewAgentsRequest[],
   /** How often the form asked which apps opened pull requests lately. */
   botsAsked: 0,
+  /** Why the control plane refuses the next PATCH, if it does. */
+  refuse: undefined as { message: string; field?: string } | undefined,
 }));
+const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 
 vi.mock("@/lib/api", () => {
-  class ApiFailure extends Error {}
+  class ApiFailure extends Error {
+    constructor(
+      message: string,
+      readonly field?: string,
+    ) {
+      super(message);
+    }
+  }
   return {
     ApiFailure,
     api: {
@@ -33,6 +43,7 @@ vi.mock("@/lib/api", () => {
         throw new ApiFailure("GitHub shows no app by that name.");
       },
       updateReviewAgents: async (_project: string, b: G.UpdateReviewAgentsRequest) => {
+        if (state.refuse) throw new ApiFailure(state.refuse.message, state.refuse.field);
         state.sent.push(b);
         const all = [...state.agents.repos, ...state.agents.skipped_repos];
         const skipped = b.skipped_repos?.map((n) => n.toLowerCase());
@@ -54,6 +65,10 @@ vi.mock("@/lib/api", () => {
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }));
+vi.mock("@/components/ui", async (actual) => ({
+  ...(await actual<typeof import("@/components/ui")>()),
+  toast,
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -62,6 +77,8 @@ beforeEach(() => {
   state.sent = [];
   state.reviews = [];
   state.botsAsked = 0;
+  state.refuse = undefined;
+  toast.mockReset();
   state.agents = {
     enabled: true,
     operator: me,
@@ -127,12 +144,63 @@ async function openSettings(c: HTMLElement) {
   await settle();
 }
 
+/** Types `text` in place of the instructions for reviews. */
+function instruct(c: HTMLElement, text: string) {
+  const field = c.querySelector("textarea") as HTMLTextAreaElement;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 async function save(c: HTMLElement) {
   const form = c.querySelector("form") as HTMLFormElement;
   act(() => form.requestSubmit());
   await settle();
   await settle();
 }
+
+describe("whose subscription saving runs them on", () => {
+  const bo = { id: "usr_bo" as G.UserId, name: "Bo" };
+
+  it("stays their operator's when they save", async () => {
+    const c = await render();
+    await openSettings(c);
+    expect(c.textContent).not.toContain("Saving runs them on your Claude subscription");
+    instruct(c, "Mind the migrations.");
+    await save(c);
+    expect(toast).toHaveBeenCalledWith("Saved: the next review runs with it");
+  });
+
+  it("becomes yours when you save another owner's, which the form says first", async () => {
+    state.agents = { ...state.agents, operator: bo };
+    const c = await render();
+    await openSettings(c);
+    expect(c.textContent).toContain("Saving runs them on your Claude subscription, instead of Bo's.");
+    instruct(c, "Mind the migrations.");
+    await save(c);
+    expect(state.sent.at(-1)?.instructions).toBe("Mind the migrations.");
+    expect(toast).toHaveBeenCalledWith("Saved: review agents run on your Claude subscription now");
+  });
+
+  it("says why it can't be yours, with the way out", async () => {
+    state.agents = { ...state.agents, operator: bo };
+    state.refuse = {
+      message: "Connect your Claude subscription first (Settings → Claude): reviews run on it.",
+      field: "claude",
+    };
+    const c = await render();
+    await openSettings(c);
+    instruct(c, "Mind the migrations.");
+    await save(c);
+    expect(c.textContent).toContain("Connect your Claude subscription first");
+    const link = [...c.querySelectorAll("a")].find((a) => a.textContent === "Connect Claude");
+    expect(link?.getAttribute("href")).toBe("/settings");
+    // The form stays open, with what was typed.
+    expect((c.querySelector("textarea") as HTMLTextAreaElement).value).toBe("Mind the migrations.");
+    expect(toast).not.toHaveBeenCalled();
+  });
+});
 
 describe("the repositories review agents review", () => {
   it("say which they review and which they skip", async () => {
