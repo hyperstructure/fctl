@@ -2,6 +2,17 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.29.1 (2026-11-05)
+
+### Features
+
+- **web:** Read all changed files' diffs in one scroll, and find in them ([#388](https://github.com/hyperstructure/fctl/pull/388))
+- Change a running session's model and effort level ([#389](https://github.com/hyperstructure/fctl/pull/389))
+
+### Fixes
+
+- **web:** Highlight code in diffs and answers on app.fctl.sh ([#387](https://github.com/hyperstructure/fctl/pull/387))
+
 ## 0.29.0 (2026-11-05)
 
 ### Features
