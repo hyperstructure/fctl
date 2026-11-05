@@ -6,7 +6,7 @@
 
 use crate::attachments;
 use crate::caches;
-use crate::claude::{self, Claude, ClaudeOut, LaunchSpec};
+use crate::claude::{self, AskError, Claude, ClaudeOut, LaunchSpec};
 use crate::followed::Pulls;
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
@@ -112,8 +112,8 @@ pub(crate) enum Work {
     /// ([`DeliveryKind::Settings`]): what was asked for, and the answer.
     Settings {
         delivery: DeliveryId,
-        model: Option<(String, std::result::Result<Value, String>)>,
-        effort: Option<(String, std::result::Result<Value, String>)>,
+        model: Option<(String, std::result::Result<Value, AskError>)>,
+        effort: Option<(String, std::result::Result<Value, AskError>)>,
         /// The model and effort level the spec had before: what Claude
         /// starts on again if it refuses the new ones.
         before: (Option<String>, Option<String>),
@@ -1162,8 +1162,8 @@ impl Supervisor {
     fn settings_applied(
         &mut self,
         delivery: DeliveryId,
-        model: Option<(String, std::result::Result<Value, String>)>,
-        effort: Option<(String, std::result::Result<Value, String>)>,
+        model: Option<(String, std::result::Result<Value, AskError>)>,
+        effort: Option<(String, std::result::Result<Value, AskError>)>,
         before: (Option<String>, Option<String>),
     ) {
         self.settings_waiting.remove(&delivery.0);
@@ -1179,13 +1179,20 @@ impl Supervisor {
                             .to_owned(),
                     );
                 }
-                Err(e) => {
+                Err(AskError::Refused(e)) => {
                     refused.push(format!("Claude didn't switch to {asked}: {e}"));
                     // It starts on the one it had, if it starts again.
                     if let Some(c) = self.config.as_mut() {
                         c.spec.model = before.0.clone();
                     }
                 }
+                // It started again on the new one, as its `system/init` says.
+                Err(AskError::Exited) => {}
+                // It may switch yet, and starts on the new one if it starts
+                // again.
+                Err(AskError::TimedOut) => refused.push(format!(
+                    "Claude didn't say in time whether it switched to {asked}; it works on it if it starts again in this run."
+                )),
             }
         }
         if let Some((asked, answer)) = effort {
@@ -1193,7 +1200,7 @@ impl Supervisor {
                 // Until Claude says what it works at (`get_settings`), which
                 // its limits may make less.
                 Ok(_) => self.state.effort = Some(asked),
-                Err(e) => {
+                Err(AskError::Refused(e)) => {
                     refused.push(format!(
                         "Claude didn't change its effort level to {asked}: {e}"
                     ));
@@ -1201,6 +1208,10 @@ impl Supervisor {
                         c.spec.effort = before.1.clone();
                     }
                 }
+                Err(AskError::Exited) => {}
+                Err(AskError::TimedOut) => refused.push(format!(
+                    "Claude didn't say in time whether it works at {asked} effort; it does if it starts again in this run."
+                )),
             }
         }
         if let Some(c) = self.claude.as_mut() {
@@ -3900,6 +3911,61 @@ done
                 .iter()
                 .any(|(id, ok, _)| id.0 == "dlv_3" && !ok)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn only_claude_refusing_a_change_puts_the_old_one_back() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        sup.host = Some((1, host_tx));
+        sup.config = Some(config(dir.path(), false)?);
+        let spec = |sup: &Supervisor| {
+            sup.config
+                .as_ref()
+                .map(|c| (c.spec.model.clone(), c.spec.effort.clone()))
+        };
+        let before = (Some("opus".to_owned()), Some("xhigh".to_owned()));
+        let asked = |sup: &mut Supervisor| {
+            if let Some(c) = sup.config.as_mut() {
+                c.spec.model = Some("sonnet".into());
+                c.spec.effort = Some("medium".into());
+            }
+        };
+        // Claude exited while it was asked: it started again on the new ones.
+        asked(&mut sup);
+        sup.settings_applied(
+            DeliveryId("dlv_1".into()),
+            Some(("sonnet".into(), Err(AskError::Exited))),
+            Some(("medium".into(), Err(AskError::Exited))),
+            before.clone(),
+        );
+        assert_eq!(
+            spec(&sup),
+            Some((Some("sonnet".into()), Some("medium".into())))
+        );
+        assert!(delivered_sent(&mut host)[0].1);
+        // No answer in time: it may switch yet, so they stay, and the
+        // transcript says it didn't say.
+        sup.settings_applied(
+            DeliveryId("dlv_2".into()),
+            Some(("sonnet".into(), Err(AskError::TimedOut))),
+            None,
+            before.clone(),
+        );
+        assert_eq!(spec(&sup).and_then(|s| s.0), Some("sonnet".into()));
+        let told = delivered_sent(&mut host);
+        assert!(!told[0].1);
+        assert!(told[0].2.as_deref().is_some_and(|e| e.contains("in time")));
+        // Refused: Claude starts on the old ones again.
+        sup.settings_applied(
+            DeliveryId("dlv_3".into()),
+            Some(("sonnet".into(), Err(AskError::Refused("not_found".into())))),
+            Some(("medium".into(), Err(AskError::Refused("no".into())))),
+            before.clone(),
+        );
+        assert_eq!(spec(&sup), Some(before));
         Ok(())
     }
 

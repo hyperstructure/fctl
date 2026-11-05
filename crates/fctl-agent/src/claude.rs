@@ -131,7 +131,28 @@ pub struct LaunchSpec<'a> {
     pub env: BTreeMap<String, String>,
 }
 
-type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<std::result::Result<Value, String>>>>>;
+type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<std::result::Result<Value, AskError>>>>>;
+
+/// Why a control request got no answer to use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AskError {
+    /// Claude answered with an error: it refused.
+    Refused(String),
+    /// Claude exited before it answered.
+    Exited,
+    /// Claude didn't answer in time; it may still act on the request.
+    TimedOut,
+}
+
+impl std::fmt::Display for AskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(e) => f.write_str(e),
+            Self::Exited => f.write_str("Claude exited"),
+            Self::TimedOut => f.write_str("Claude did not answer in time"),
+        }
+    }
+}
 
 pub struct Claude {
     child: Child,
@@ -418,11 +439,12 @@ impl Claude {
                                 if resp.get("subtype").and_then(Value::as_str) == Some("success") {
                                     Ok(resp.get("response").cloned().unwrap_or(Value::Null))
                                 } else {
-                                    Err(resp
-                                        .get("error")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("control request failed")
-                                        .to_owned())
+                                    Err(AskError::Refused(
+                                        resp.get("error")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("control request failed")
+                                            .to_owned(),
+                                    ))
                                 };
                             let _ = tx.send(result);
                         }
@@ -477,7 +499,7 @@ impl Claude {
         request: Value,
         timeout: Duration,
     ) -> std::result::Result<Value, String> {
-        self.ask(request, timeout).await
+        self.ask(request, timeout).await.map_err(|e| e.to_string())
     }
 
     /// Sends a control request. The answer comes from the future, which
@@ -486,7 +508,7 @@ impl Claude {
         &mut self,
         request: Value,
         timeout: Duration,
-    ) -> impl Future<Output = std::result::Result<Value, String>> + Send + use<> {
+    ) -> impl Future<Output = std::result::Result<Value, AskError>> + Send + use<> {
         self.next_id += 1;
         let id = format!("fctl_{}", self.next_id);
         let (tx, rx) = oneshot::channel();
@@ -498,12 +520,12 @@ impl Claude {
         async move {
             match tokio::time::timeout(timeout, rx).await {
                 Ok(Ok(r)) => r,
-                Ok(Err(_)) => Err("Claude exited".into()),
+                Ok(Err(_)) => Err(AskError::Exited),
                 Err(_) => {
                     if let Ok(mut p) = pending.lock() {
                         p.remove(&id);
                     }
-                    Err("Claude did not answer in time".into())
+                    Err(AskError::TimedOut)
                 }
             }
         }

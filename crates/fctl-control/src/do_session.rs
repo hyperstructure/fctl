@@ -2515,8 +2515,11 @@ impl SessionObject {
                 ok,
                 error,
             } => {
-                // What it was, before it leaves the outbox.
-                let settings = self
+                // What it was, before it leaves the outbox. One that isn't
+                // there any more was taken before (a link lost the answer),
+                // or is a change of model or effort level that a later one
+                // took into it (`Self::settings`), which says how that went.
+                let kind = self
                     .sql
                     .exec(
                         "SELECT data FROM outbox WHERE id = ?",
@@ -2526,10 +2529,7 @@ impl SessionObject {
                     .unwrap_or_default()
                     .first()
                     .and_then(|r| serde_json::from_str::<Delivery>(&r.data).ok())
-                    .and_then(|d| match d.kind {
-                        DeliveryKind::Settings { effort, .. } => Some(effort),
-                        _ => None,
-                    });
+                    .map(|d| d.kind);
                 let _ = self.sql.exec(
                     "DELETE FROM outbox WHERE id = ?",
                     Some(vec![sv(delivery_id.as_str())]),
@@ -2537,10 +2537,18 @@ impl SessionObject {
                 // The agent took it: a turn starts, whatever the status says
                 // yet. A change of model or effort level starts none, and so
                 // doesn't keep a draining runner from stopping the session.
-                if settings.is_none() {
+                if kind.as_ref().is_some_and(|k| !k.is_settings()) {
                     self.set_meta("last_delivered", &now.to_string());
                 }
-                if !ok && matches!(settings, Some(Some(_))) {
+                if !ok
+                    && matches!(
+                        kind,
+                        Some(DeliveryKind::Settings {
+                            effort: Some(_),
+                            ..
+                        })
+                    )
+                {
                     self.set_meta(EFFORT_REFUSED, "1");
                 }
                 if !ok {
