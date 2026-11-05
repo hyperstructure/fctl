@@ -71,7 +71,7 @@ pub struct RunArgs {
     clap::ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["title", "description"])
+        .args(["title", "description", "model", "effort"])
 ))]
 pub struct EditArgs {
     /// A session: its id (ses_…), its URL, or project#number. In an fctl

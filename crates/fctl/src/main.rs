@@ -624,6 +624,32 @@ mod tests {
     }
 
     #[test]
+    fn edit_changes_the_model_or_effort_alone() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("fctl").chain(args.iter().copied()))
+                .map(|c| c.command)
+        };
+        assert!(matches!(
+            parse(&["edit", "my-app#12", "--effort", "medium"]),
+            Ok(Command::Edit(cmd::sessions::EditArgs {
+                effort: Some(_),
+                title: None,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parse(&["edit", "my-app#12", "--model", "sonnet", "--effort", "high"]),
+            Ok(Command::Edit(cmd::sessions::EditArgs {
+                model: Some(_),
+                effort: Some(_),
+                ..
+            }))
+        ));
+        // Something to change.
+        assert!(parse(&["edit", "my-app#12"]).is_err());
+    }
+
+    #[test]
     fn runners_are_approved_and_enrolled_from_the_top() {
         let parse = |args: &[&str]| {
             Cli::try_parse_from(std::iter::once("fctl").chain(args.iter().copied()))

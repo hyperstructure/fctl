@@ -1593,6 +1593,44 @@ impl SessionObject {
             .collect()
     }
 
+    /// A host from before changes of model and effort level said hello with
+    /// some waiting for it: Claude keeps working on the ones it had, and the
+    /// session goes back to them as its agent reports them.
+    fn old_host_settings(&self, now: i64) {
+        let pending = self.pending_settings();
+        if pending.is_empty() {
+            return;
+        }
+        for d in &pending {
+            let _ = self.sql.exec(
+                "DELETE FROM outbox WHERE id = ?",
+                Some(vec![sv(d.id.as_str())]),
+            );
+        }
+        let runner = self.summary().and_then(|s| s.runner).map_or_else(
+            || "This session's runner".to_owned(),
+            |r| format!("The runner {}", r.name),
+        );
+        let notice = fctl_proto::event::Notice {
+            ticket: None,
+            level: fctl_proto::event::NoticeLevel::Warn,
+            code: "settings_unsupported".into(),
+            message: format!(
+                "{runner} runs a version of fctl that can't change the model or the effort level while Claude runs, so Claude keeps working on the ones it had. Run `fctl self update` on it, then change them again."
+            ),
+            until: None,
+            published: None,
+            memory: None,
+            retrospective: None,
+            review: None,
+            summarized: None,
+            follow_up: None,
+        };
+        if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+            self.broadcast_events(&[json]);
+        }
+    }
+
     /// Someone changed the model or the effort level (`/settings`). The
     /// session shows the new ones until its agent says what Claude works on,
     /// and the API keeps them in D1 for its next run. A run under way gets
@@ -2244,6 +2282,8 @@ impl SessionObject {
                             let _ = ws.send_with_str(&text);
                         }
                     }
+                } else {
+                    self.old_host_settings(now);
                 }
                 if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() {
                     info.features = Some(features);
@@ -2862,11 +2902,28 @@ impl SessionObject {
         if let Some(b) = state.branch {
             s.branch = Some(b);
         }
-        if let Some(m) = state.model {
+        // A change its agent hasn't taken yet shows until it has.
+        let (asked_model, asked_effort) = if state.model.is_some() || state.effort.is_some() {
+            self.pending_settings()
+                .iter()
+                .fold((false, false), |(m, e), d| match &d.kind {
+                    DeliveryKind::Settings { model, effort, .. } => {
+                        (m || model.is_some(), e || effort.is_some())
+                    }
+                    _ => (m, e),
+                })
+        } else {
+            (false, false)
+        };
+        if let Some(m) = state.model
+            && !asked_model
+        {
             s.model = Some(m);
         }
         // Empty when Claude's model takes no effort level.
-        if let Some(e) = state.effort {
+        if let Some(e) = state.effort
+            && !asked_effort
+        {
             s.effort = fctl_domain::validate::effort(&e).ok();
         }
         if let Some(mut rc) = state.remote_control {

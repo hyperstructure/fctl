@@ -1185,13 +1185,15 @@ impl Supervisor {
             read_context(c, &self.work_tx);
         }
         self.flush();
-        self.send(&AgentToHost::State {
-            state: self.state.clone(),
-        });
+        // The delivery first: SessionDO shows the change until it is done,
+        // and then what the state says.
         self.send(&AgentToHost::Delivered {
             delivery_id: delivery,
             ok: refused.is_empty(),
             error: (!refused.is_empty()).then(|| refused.join(" ")),
+        });
+        self.send(&AgentToHost::State {
+            state: self.state.clone(),
         });
     }
 
