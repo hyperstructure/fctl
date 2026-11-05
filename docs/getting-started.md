@@ -375,10 +375,11 @@ started.
   swipe on a phone, step through the session's others, and on a phone a
   pinch or a double tap zooms in on it. The details beside the transcript
   show how full Claude's context is, with where Claude compacts the
-  conversation to make room. On the session page, as on the project's, the
-  sidebar lists the project's sessions that haven't ended under the project
-  (starting, at work, waiting or paused), the one you are on marked, so a
-  click switches to another. On a phone, tap the session's title for its
+  conversation to make room. On every page, the sidebar lists each
+  project's sessions under it, in all your workspaces: those that haven't
+  ended (starting, at work, waiting or paused), and for an hour those that
+  stopped or failed, dimmer, the one you are on marked, so a click switches
+  to another. On a phone, tap the session's title for its
   details: its pull requests, the files changed, its branch and who else is
   watching. Type below to message the agent, with files attached if you
   like; it reads your message at its next step. **Interrupt** stops the

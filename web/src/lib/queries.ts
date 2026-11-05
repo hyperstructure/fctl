@@ -143,43 +143,36 @@ export const useSessions = (
   },
   { enabled = true }: { enabled?: boolean } = {},
 ) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q), enabled });
+/** How long the sidebar goes on listing a session after it ends. */
+export const RECENT_MS = 60 * 60_000;
+// The sidebar's sessions, under one key whatever the time it asks from.
+const SIDEBAR_SESSIONS = { since: "1h", limit: 100 };
 /**
- * A project's sessions that haven't ended (not review agents'), newest
- * first, by project id: the sidebar lists them under it on its page and
- * its sessions'. Until they come, those the lists in the cache have.
+ * The sessions the sidebar lists under their projects (not review agents'),
+ * newest first: those that haven't ended, and those that ended in the last
+ * hour (`recentSessions` keeps those still in it). Until they come, those
+ * the lists in the cache have.
  */
-export const useLiveSessions = (project: string | undefined) => {
+export const useSidebarSessions = () => {
   const qc = useQueryClient();
-  const q = { project, status: "active", limit: 50 };
   return useQuery({
-    queryKey: keys.sessions(q),
-    queryFn: () => api.sessions(q),
-    enabled: !!project,
-    placeholderData: () =>
-      project ? { sessions: cachedSessions(qc).filter((s) => s.project_id === project) } : undefined,
-    select: unended,
+    queryKey: keys.sessions(SIDEBAR_SESSIONS),
+    queryFn: () => api.sessions({ activeSince: Date.now() - RECENT_MS, limit: SIDEBAR_SESSIONS.limit }),
+    placeholderData: () => ({ sessions: cachedSessions(qc) }),
   });
 };
 /**
- * A session's summary, by id, for what shows around its page: as a list
- * has it until its own comes, so that a session opened from a list is
- * known at once.
+ * The sessions in `sessions` that haven't ended, or ended in the hour before
+ * `now`, and aren't archived: the feed marks one that ends or is archived
+ * before the list comes again.
  */
-export const useSessionSummary = (id: string | undefined) => {
-  const qc = useQueryClient();
-  return useQuery({
-    queryKey: keys.session(id ?? ""),
-    queryFn: () => api.session(id ?? ""),
-    enabled: !!id,
-    placeholderData: () => (id ? cachedSessions(qc).find((s) => s.id === id) : undefined),
-  });
-};
+export const recentSessions = (sessions: G.Session[], now: number) =>
+  sessions.filter((s) => !s.archived && (!ended(s) || (s.ended_at != null && s.ended_at >= now - RECENT_MS)));
 export const useRunners = () =>
   useQuery({ queryKey: keys.runners, queryFn: api.runners, refetchInterval: 30_000 });
 
-/** The sessions of a list that haven't ended: the feed marks one that ends before the list comes again. */
-const unended = (list: G.SessionList) =>
-  list.sessions.filter((s) => s.status !== "stopped" && s.status !== "failed");
+/** Whether a session has ended: stopped or failed. */
+const ended = (s: G.Session) => s.status === "stopped" || s.status === "failed";
 
 /** The sessions the lists in the cache hold, each once, newest first. */
 function cachedSessions(qc: QueryClient): G.Session[] {

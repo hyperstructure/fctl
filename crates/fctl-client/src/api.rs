@@ -577,16 +577,19 @@ impl Api {
         status: Option<&str>,
         limit: u32,
     ) -> Result<SessionList> {
-        self.sessions_in(None, project, status, false, limit).await
+        self.sessions_in(None, project, status, None, false, limit)
+            .await
     }
 
-    /// Sessions, of one workspace when it is given, with the archived ones
-    /// among them when `archived` says so.
+    /// Sessions, of one workspace when it is given, without those that
+    /// ended before `active_since` (ms) when it is given, with the archived
+    /// ones among them when `archived` says so.
     pub async fn sessions_in(
         &self,
         workspace: Option<&str>,
         project: Option<&str>,
         status: Option<&str>,
+        active_since: Option<i64>,
         archived: bool,
         limit: u32,
     ) -> Result<SessionList> {
@@ -599,6 +602,9 @@ impl Api {
         }
         if let Some(s) = status {
             q.push_str(&format!("&status={}", enc(s)));
+        }
+        if let Some(t) = active_since {
+            q.push_str(&format!("&active_since={t}"));
         }
         if archived {
             q.push_str("&archived=1");

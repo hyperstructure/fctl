@@ -85,6 +85,7 @@ fctl run -p my-app -a screenshot.png "Make the header match this"   # attach fil
 
 fctl sessions                    # recent sessions (only the default project's, once fctl projects use set one)
 fctl sessions --active -p my-app
+fctl sessions --since 1h         # at work in the last hour: those that haven't ended, and those that ended in it
 fctl sessions -w acme --limit 100   # a workspace's (30 unless --limit says)
 fctl show my-app#12              # status, branch, pull requests with their checks and review, model and effort, usage
 fctl edit my-app#12 --title "Fix the flaky login test"

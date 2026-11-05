@@ -17,7 +17,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Avatar,
   Kbd,
@@ -40,11 +40,11 @@ import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import {
   keys,
   queryClient,
+  recentSessions,
   useInstance,
-  useLiveSessions,
   useMe,
   useProjects,
-  useSessionSummary,
+  useSidebarSessions,
   useWorkspaces,
 } from "@/lib/queries";
 import { forgetSidebar, type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
@@ -221,14 +221,11 @@ export function Sidebar({
   const { workspaces, projects, kept } = useSidebarLists(me?.user.id, workspaceList, projectList);
   const [folded, toggleFold] = useFolded();
   const groups = groupProjects(workspaces?.workspaces ?? [], projects ?? []);
-  // On a project's page, and on its sessions' pages, the project's sessions that haven't ended
-  // show under it, to switch between.
-  const viewed = useSessionSummary(SESSION_PATH.exec(path)?.[1]).data;
-  const opened = PROJECT_PATH.exec(path)?.[1];
-  const liveProject = projects?.find((p) =>
-    viewed ? p.id === viewed.project_id : p.slug === opened || p.id === opened,
-  )?.id;
-  const live = useLiveSessions(liveProject).data;
+  // Under each project, on every page: its sessions at work, and those that ended in the last
+  // hour, to go back and forth between.
+  const now = useMinute();
+  const listed = useSidebarSessions().data?.sessions;
+  const sessions = useMemo(() => byProject(recentSessions(listed ?? [], now)), [listed, now]);
   // Each session at work lights a thread on the Agent Floor's row.
   const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
   const sort = useSortable({
@@ -310,7 +307,7 @@ export function Sidebar({
             onFold={() => toggleFold(workspace.id)}
             onNavigate={onNavigate}
             sort={sort}
-            live={liveProject && live ? { project: liveProject, sessions: live } : undefined}
+            sessions={sessions}
           />
         ))}
         <p id={ORDER_HELP} hidden>
@@ -422,14 +419,25 @@ export function Sidebar({
 // The text that says how to move workspaces and projects, for screen readers.
 const ORDER_HELP = "sidebar-order-help";
 
-// A session's page, and the session's id; a project's page, and the project's slug (or id).
-const SESSION_PATH = /^\/s\/([^/]+)$/;
-const PROJECT_PATH = /^\/p\/([^/]+)$/;
+/** The time, again every minute: a session leaves the sidebar an hour after it ended. */
+function useMinute(): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
 
-/** The sessions the sidebar shows under a project. */
-interface LiveSessions {
-  project: string;
-  sessions: G.Session[];
+/** Sessions by their project's id, in the order they come. */
+function byProject(sessions: G.Session[]): Map<string, G.Session[]> {
+  const by = new Map<string, G.Session[]>();
+  for (const s of sessions) {
+    const list = by.get(s.project_id);
+    if (list) list.push(s);
+    else by.set(s.project_id, [s]);
+  }
+  return by;
 }
 
 const notSaved = (e: unknown) =>
@@ -453,7 +461,7 @@ function WorkspaceGroup({
   onFold,
   onNavigate,
   sort,
-  live,
+  sessions,
 }: {
   workspace: SidebarWorkspace;
   projects: SidebarProject[];
@@ -467,8 +475,8 @@ function WorkspaceGroup({
   onNavigate: () => void;
   /** The sidebar's workspaces, which people drag by their headers. */
   sort: Sortable;
-  /** The sessions to show under a project, which may be one of these. */
-  live?: LiveSessions;
+  /** The sessions to show under each project, by its id. */
+  sessions: Map<string, G.Session[]>;
 }) {
   const here = path === `/w/${workspace.slug}`;
   const active = projects.reduce((n, p) => n + p.active_sessions, 0);
@@ -569,7 +577,7 @@ function WorkspaceGroup({
                   project={p}
                   path={path}
                   sort={sortProjects}
-                  sessions={live?.project === p.id ? live.sessions : undefined}
+                  sessions={sessions.get(p.id)}
                   onNavigate={onNavigate}
                 />
               ))}
@@ -661,8 +669,8 @@ function ProjectRow({
 }
 
 /**
- * A project's sessions under it in the sidebar, the one whose page shows marked: a line runs down
- * beside them from the project's dot.
+ * A project's sessions under it in the sidebar, those that ended dimmer and the one whose page
+ * shows marked: a line runs down beside them from the project's dot.
  */
 function ProjectSessions({
   project,
@@ -680,11 +688,12 @@ function ProjectSessions({
 }) {
   return (
     <ul
-      aria-label={`${project.name}'s active sessions`}
+      aria-label={`${project.name}'s recent sessions`}
       className="relative mt-0.5 flex flex-col gap-0.5 pl-[26px] before:absolute before:-top-2.5 before:bottom-1 before:left-[17.5px] before:w-px before:bg-line"
     >
       {sessions.map((s) => {
         const here = path === `/s/${s.id}`;
+        const ended = s.status === "stopped" || s.status === "failed";
         return (
           <li key={s.id}>
             <Link
@@ -694,7 +703,11 @@ function ProjectSessions({
               title={`${s.title} · ${statusLabel(s.status)}`}
               className={cn(
                 "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
-                here ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]" : "text-ink-3",
+                here
+                  ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+                  : ended
+                    ? "text-ink-4"
+                    : "text-ink-3",
                 !here && !lifted && "hover:bg-hover/60 hover:text-ink",
               )}
             >

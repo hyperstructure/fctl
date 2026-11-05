@@ -537,7 +537,7 @@ fn at(input: &str) -> Result<i64> {
 }
 
 /// `90m`, `2h`, `1d`, `1h30m`.
-fn duration_ms(s: &str) -> Option<i64> {
+pub(crate) fn duration_ms(s: &str) -> Option<i64> {
     if s.is_empty() {
         return None;
     }

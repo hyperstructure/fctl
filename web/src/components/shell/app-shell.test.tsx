@@ -1,15 +1,25 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
 import { keepSidebar } from "@/lib/sidebar";
 import { AppShell, Sidebar } from "./app-shell";
 
-// No request is answered: the sidebar shows what the cache holds, and what this browser kept.
+// No request is answered: the sidebar shows what the cache holds, and what this browser kept. What
+// it asks for sessions with is kept.
+const asked = vi.hoisted(() => ({ sessions: [] as unknown[] }));
 vi.mock("@/lib/api", () => {
-  const pending = new Proxy({}, { get: () => () => new Promise(() => {}) });
+  const pending = new Proxy(
+    {},
+    {
+      get: (_, name) => (q: unknown) => {
+        if (name === "sessions") asked.sessions.push(q);
+        return new Promise(() => {});
+      },
+    },
+  );
   return { api: pending, workspaces: pending, ApiFailure: class extends Error {} };
 });
 vi.mock("@tanstack/react-router", () => ({
@@ -58,6 +68,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const clean of cleanups.splice(0)) clean();
   localStorage.clear();
+  asked.sessions.length = 0;
 });
 
 const workspace = (id: string, name: string): G.Workspace =>
@@ -160,92 +171,132 @@ describe("the sidebar", () => {
   });
 });
 
-const session = (n: number, title: string, status: G.SessionStatus, project = "prj_web"): G.Session =>
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const NOW = Date.UTC(2026, 10, 5, 14);
+
+const session = (
+  n: number,
+  title: string,
+  status: G.SessionStatus,
+  project = "prj_web",
+  more: Partial<G.Session> = {},
+): G.Session =>
   ({
     id: `ses_${n}`,
     project_id: project,
-    project_slug: "web",
+    project_slug: project.replace("prj_", ""),
     number: n,
     title,
     status,
     created_at: n,
+    archived: false,
+    ...more,
   }) as G.Session;
 
-// The list of a project's sessions that haven't ended, as the sidebar asks for it, and the Agent Floor's.
-const live = (project: string) => ({ project, status: "active", limit: 50 });
-const floor = { status: "active", limit: 50 };
+// The sessions the sidebar asks for, and the Agent Floor's lists.
+const recent = { since: "1h", limit: 100 };
+const working = { status: "active", limit: 50 };
+const ended = { status: "ended", limit: 12 };
 
-describe("a session's page", () => {
-  const building = session(3, "Fix the build", "running");
-  const waiting = session(2, "Add dark mode", "idle");
-  const paused = session(1, "Export audit logs", "paused");
+describe("the sidebar's sessions", () => {
+  // The sidebar's clock, which moves on every minute.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
 
-  it("lists the sessions of its project that haven't ended under the project", async () => {
-    const sidebar = reload("/s/ses_2");
-    await sidebar.come({ workspaces, projects, session: waiting });
-    expect(sidebar.sessions()).toEqual({});
-    await sidebar.come({
-      sessions: [live("prj_web"), [building, waiting, session(4, "Retry uploads", "stopped"), paused]],
-    });
-    expect(sidebar.sessions()).toEqual({
-      "web's active sessions": [
-        ["/s/ses_3", "Fix the build: Working"],
-        ["/s/ses_2", "Add dark mode: Waiting"],
-        ["/s/ses_1", "Export audit logs: Paused"],
-      ],
-    });
-    // The feed says one ended, before the list comes again.
-    await sidebar.come({
-      sessions: [live("prj_web"), [{ ...building, status: "stopped" }, waiting, paused]],
-    });
-    expect(sidebar.sessions()["web's active sessions"]).toEqual([
-      ["/s/ses_2", "Add dark mode: Waiting"],
-      ["/s/ses_1", "Export audit logs: Paused"],
-    ]);
+  const building = session(6, "Fix the build", "running");
+  const waiting = session(5, "Add dark mode", "idle");
+  const docs = session(4, "Write the docs", "paused", "prj_api");
+  const retried = session(3, "Retry uploads", "stopped", "prj_web", { ended_at: NOW - 20 * MINUTE });
+  const broke = session(2, "Bump the SDK", "failed", "prj_api", { ended_at: NOW - 59 * MINUTE });
+  const exported = session(1, "Export audit logs", "stopped", "prj_web", { ended_at: NOW - 2 * HOUR });
+
+  it("lists under each project on every page its sessions at work and those that ended in the last hour", async () => {
+    for (const path of ["/", "/settings", "/w/acme", "/p/web", "/s/ses_5"]) {
+      const sidebar = reload(path);
+      await sidebar.come({
+        workspaces,
+        projects,
+        sessions: [recent, [building, waiting, docs, retried, broke, exported]],
+      });
+      expect(sidebar.sessions()).toEqual({
+        "web's recent sessions": [
+          ["/s/ses_6", "Fix the build: Working"],
+          ["/s/ses_5", "Add dark mode: Waiting"],
+          ["/s/ses_3", "Retry uploads: Stopped"],
+        ],
+        "api's recent sessions": [
+          ["/s/ses_4", "Write the docs: Paused"],
+          ["/s/ses_2", "Bump the SDK: Failed"],
+        ],
+      });
+    }
+    // Those the control plane has from an hour back.
+    expect(asked.sessions.at(-1)).toEqual({ activeSince: NOW - HOUR, limit: 100 });
   });
 
-  it("lists them at once for a session opened from a list, as the lists in the cache have them", () => {
-    const sidebar = reload("/s/ses_3", (client) => {
+  it("goes on listing one that ended for an hour", async () => {
+    const sidebar = reload("/s/ses_6");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [building, waiting]] });
+    // The feed says it ended, before the list comes again.
+    await sidebar.come({
+      sessions: [recent, [{ ...building, status: "stopped", ended_at: NOW }, waiting]],
+    });
+    const web = () => sidebar.sessions()["web's recent sessions"];
+    expect(web()).toEqual([
+      ["/s/ses_6", "Fix the build: Stopped"],
+      ["/s/ses_5", "Add dark mode: Waiting"],
+    ]);
+    act(() => vi.advanceTimersByTime(HOUR));
+    expect(web()).toHaveLength(2);
+    act(() => vi.advanceTimersByTime(MINUTE));
+    expect(web()).toEqual([["/s/ses_5", "Add dark mode: Waiting"]]);
+  });
+
+  it("leaves out archived sessions, and those of projects it doesn't show", async () => {
+    const sidebar = reload("/s/ses_8");
+    await sidebar.come({
+      workspaces,
+      projects,
+      sessions: [
+        recent,
+        [
+          session(8, "Shared with Ada", "running", "prj_x"),
+          { ...waiting, archived: true },
+          { ...retried, archived: true },
+          building,
+        ],
+      ],
+    });
+    expect(sidebar.sessions()).toEqual({ "web's recent sessions": [["/s/ses_6", "Fix the build: Working"]] });
+  });
+
+  it("lists them at once as the lists in the cache have them, until its own comes", async () => {
+    const sidebar = reload("/s/ses_6", (client) => {
       client.setQueryData(keys.workspaces, workspaces);
       client.setQueryData(keys.projects, projects);
-      client.setQueryData(keys.sessions(floor), {
-        sessions: [building, session(9, "Write the docs", "running", "prj_api"), paused],
-      });
+      client.setQueryData(keys.sessions(working), { sessions: [building, docs] });
+      client.setQueryData(keys.sessions(ended), { sessions: [retried, exported] });
     });
     expect(sidebar.sessions()).toEqual({
-      "web's active sessions": [
-        ["/s/ses_3", "Fix the build: Working"],
-        ["/s/ses_1", "Export audit logs: Paused"],
+      "web's recent sessions": [
+        ["/s/ses_6", "Fix the build: Working"],
+        ["/s/ses_3", "Retry uploads: Stopped"],
       ],
+      "api's recent sessions": [["/s/ses_4", "Write the docs: Paused"]],
     });
+    await sidebar.come({ sessions: [recent, [waiting]] });
+    expect(sidebar.sessions()).toEqual({ "web's recent sessions": [["/s/ses_5", "Add dark mode: Waiting"]] });
   });
 
-  it("lists none for a session of a project the sidebar doesn't show, or on other pages", async () => {
-    const shared = reload("/s/ses_8");
-    await shared.come({ workspaces, projects, session: session(8, "Shared with Ada", "running", "prj_x") });
-    await shared.come({ sessions: [live("prj_x"), [session(8, "Shared with Ada", "running", "prj_x")]] });
-    expect(shared.sessions()).toEqual({});
-    const home = reload("/");
-    await home.come({ workspaces, projects, sessions: [live("prj_web"), [building]] });
-    expect(home.sessions()).toEqual({});
-  });
-});
-
-describe("a project's page", () => {
-  it("lists the project's sessions that haven't ended under it, by its slug or its id", async () => {
-    const web = reload("/p/web");
-    await web.come({ workspaces, projects });
-    await web.come({
-      sessions: [
-        live("prj_web"),
-        [session(3, "Fix the build", "running"), session(1, "Retry uploads", "failed")],
-      ],
-    });
-    expect(web.sessions()).toEqual({ "web's active sessions": [["/s/ses_3", "Fix the build: Working"]] });
-    const api = reload("/p/prj_api");
-    await api.come({ workspaces, projects });
-    await api.come({ sessions: [live("prj_api"), [session(9, "Write the docs", "idle", "prj_api")]] });
-    expect(api.sessions()).toEqual({ "api's active sessions": [["/s/ses_9", "Write the docs: Waiting"]] });
+  it("lists none in a folded workspace", async () => {
+    localStorage.setItem("fctl:folded-workspaces", JSON.stringify(["ws_acme"]));
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [building]] });
+    expect(sidebar.sessions()).toEqual({});
   });
 });
 
