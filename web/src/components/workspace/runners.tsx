@@ -758,7 +758,7 @@ function TokenForm({
         )}
       </Field>
       {admin && (
-        <Field label="Runs" hint={personal ? undefined : "Approve each runner below to vet them one by one."}>
+        <Field label="Runs">
           {(id) => (
             <Select
               id={id}
