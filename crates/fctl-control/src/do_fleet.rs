@@ -9,8 +9,8 @@ use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
     self, Activity, ClaudeUsage, ControlState, Drain, DrainStop, DrainStopped, FeedIdentity,
-    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, Schedule, Stop,
-    WorkspacesChanged,
+    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, RunnerIdent, RunnerRemoved,
+    Schedule, Stop, WorkspacesChanged,
 };
 use crate::spec;
 use fctl_domain::image::HostImages;
@@ -100,6 +100,7 @@ fn feed_view(ident: &FeedIdentity) -> crate::model::RunnerView<'_> {
     crate::model::RunnerView {
         user_id: Some(&ident.user_id),
         workspaces: (!ident.admin).then_some(ident.workspaces.as_slice()),
+        admin_of: (!ident.admin).then_some(ident.admin_of.as_slice()),
     }
 }
 
@@ -124,6 +125,10 @@ struct RunnerSocket {
     id: String,
     name: String,
     since: i64,
+    /// While it waits for an admin of its workspace to approve it, as its
+    /// welcome says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<fctl_proto::runner::PendingApproval>,
 }
 
 #[derive(Deserialize)]
@@ -345,9 +350,19 @@ impl DurableObject for FleetObject {
             }
             (worker::Method::Post, "/runner-changed") => match req.json::<RunnerChanged>().await {
                 Ok(b) => {
+                    if b.approved {
+                        self.approved(&b.runner_id);
+                    }
                     self.stop_unserved(&b.runner_id).await;
                     self.feed_runner(&b.runner_id).await;
                     self.dispatch().await;
+                    Ok(serde_json::json!({ "ok": true }))
+                }
+                Err(e) => Err(ApiError::bad_request(e.to_string())),
+            },
+            (worker::Method::Post, "/runner-removed") => match req.json::<RunnerRemoved>().await {
+                Ok(b) => {
+                    self.removed(&b.runner_id, &b.reason).await;
                     Ok(serde_json::json!({ "ok": true }))
                 }
                 Err(e) => Err(ApiError::bad_request(e.to_string())),
@@ -496,13 +511,8 @@ impl FleetObject {
     // ───────────────────────────── connections ─────────────────────────────
 
     fn accept_runner(&self, req: &Request) -> Result<Response> {
-        #[derive(Deserialize)]
-        struct Ident {
-            id: String,
-            name: String,
-        }
         let Some(ident) = crate::http::header(req, internal::HDR_RUNNER)
-            .and_then(|h| serde_json::from_str::<Ident>(&h).ok())
+            .and_then(|h| serde_json::from_str::<RunnerIdent>(&h).ok())
         else {
             return internal::do_error(&ApiError::new(
                 ErrorCode::Unauthorized,
@@ -520,6 +530,7 @@ impl FleetObject {
             id: ident.id.clone(),
             name: ident.name.clone(),
             since: now_ms(),
+            pending: ident.pending.clone(),
         })?;
         let _ = self.sql.exec(
             "INSERT INTO runners (id, name, connected, last_seen) VALUES (?, ?, 1, ?) \
@@ -844,7 +855,18 @@ impl FleetObject {
         {
             let _ = q.run().await;
         }
-        let welcome = FleetToHost::Welcome {
+        if let Ok(text) = serde_json::to_string(&Self::welcome(rs, now)) {
+            let _ = ws.send_with_str(&text);
+        }
+        self.reconcile(rs, &hello.sessions, now).await;
+        self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
+        self.feed_runner(&rs.id).await;
+        self.dispatch().await;
+    }
+
+    /// What a runner hears as it connects, and again once approved.
+    fn welcome(rs: &RunnerSocket, now: i64) -> FleetToHost {
+        FleetToHost::Welcome {
             runner: RunnerRef {
                 id: RunnerId(rs.id.clone()),
                 name: rs.name.clone(),
@@ -853,13 +875,72 @@ impl FleetObject {
             server_time: now,
             // Hosts that update themselves update to it.
             version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        };
-        if let Ok(text) = serde_json::to_string(&welcome) {
-            let _ = ws.send_with_str(&text);
+            pending: rs.pending.clone(),
         }
-        self.reconcile(rs, &hello.sessions, now).await;
-        self.stop_idle_if_draining(&rs.id, &hello.sessions).await;
-        self.feed_runner(&rs.id).await;
+    }
+
+    /// An admin approved a runner that waited: its connection no longer
+    /// waits, and its host hears it takes sessions now. It got none
+    /// before: it served no workspace until approved.
+    fn approved(&self, runner_id: &str) {
+        let now = now_ms();
+        for ws in self.state.get_websockets_with_tag(&runner_tag(runner_id)) {
+            let Ok(Some(mut rs)) = ws.deserialize_attachment::<RunnerSocket>() else {
+                continue;
+            };
+            if rs.pending.take().is_none() {
+                continue;
+            }
+            let _ = ws.serialize_attachment(&rs);
+            if let Ok(text) = serde_json::to_string(&Self::welcome(&rs, now)) {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+    }
+
+    /// A runner is gone (removed, uninstalled, rejected, expired, or its
+    /// workspace deleted): its connection and uplinks close, the sessions
+    /// it ran stop now, saying `reason`, rather than once it has been away
+    /// for ten minutes, every trace of it here goes, and feeds drop it.
+    async fn removed(&self, runner_id: &str, reason: &str) {
+        for ws in self.state.get_websockets_with_tag(&runner_tag(runner_id)) {
+            let _ = ws.close(Some(4003), Some("runner removed"));
+        }
+        for a in self.assigned_to_runner(runner_id) {
+            let _ = self.sql.exec(
+                "DELETE FROM assignments WHERE session_id = ? AND runner_id = ?",
+                Some(vec![sv(&a.session_id), sv(runner_id)]),
+            );
+            self.close_uplink(&a.session_id, runner_id).await;
+            if !self.queued(&a.session_id) {
+                self.session_control(
+                    &SessionId(a.session_id.clone()),
+                    Some(SessionStatus::Stopped),
+                    Some(format!(
+                        "{reason} A message or a resume starts it on another runner."
+                    )),
+                    true,
+                )
+                .await;
+            }
+        }
+        for sql in [
+            "DELETE FROM sandboxes WHERE runner_id = ?",
+            "DELETE FROM stopped_away WHERE runner_id = ?",
+            "DELETE FROM runners WHERE id = ?",
+        ] {
+            let _ = self.sql.exec(sql, Some(vec![sv(runner_id)]));
+        }
+        self.runner_workspaces.borrow_mut().remove(runner_id);
+        let msg = FeedServer::RunnerRemoved {
+            runner_id: RunnerId(runner_id.to_owned()),
+        };
+        if let Ok(text) = serde_json::to_string(&msg) {
+            for (ws, _) in self.feed_sockets() {
+                let _ = ws.send_with_str(&text);
+            }
+        }
+        // Sessions that waited for it as their home start elsewhere.
         self.dispatch().await;
     }
 

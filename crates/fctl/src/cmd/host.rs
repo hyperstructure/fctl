@@ -10,12 +10,21 @@ use fctl_domain::{disk, image, size};
 use fctl_host::config::{NOT_A_RUNNER, means_default_image};
 use fctl_host::driver::{DiskSpot, Driver};
 use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
-use fctl_proto::api::{Runner, RunnerDetail, RunnerStatus};
+use fctl_proto::api::{
+    EnrollRunnerRequest, EnrollmentInfo, Runner, RunnerDetail, RunnerFacts, RunnerStatus,
+};
 use std::io::IsTerminal;
 
 #[derive(Subcommand)]
 pub enum HostCmd {
-    /// Register this machine as a runner and start it as a service.
+    /// Register this machine as a runner and start it as a service: signed
+    /// in, for a workspace you are in; with a runner token; or, without
+    /// signing in, with a workspace's enrollment token (`--enroll`).
+    #[command(after_help = "Examples:
+  fctl host install --workspace acme              # signed in (fctl login)
+  fctl host install --enroll fctl_et_…            # as one of a workspace's runners, without signing in
+  FCTL_SERVER=https://app.fctl.sh FCTL_ENROLL_TOKEN=fctl_et_… fctl host install   # from a boot script
+  fctl host install --token fctl_rt_…             # with a runner token from a Runners tab")]
     Install {
         /// Runner name (default: the hostname).
         #[arg(long)]
@@ -65,6 +74,20 @@ pub enum HostCmd {
         /// Use an existing runner token instead of registering a new runner.
         #[arg(long, env = "FCTL_RUNNER_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Enroll this machine with a workspace's enrollment token
+        /// (fctl_et_…), without signing in: it becomes one of the
+        /// workspace's runners, with a runner token of its own, and runs
+        /// everyone's sessions there, once approved if the token says so.
+        /// Run again on a machine that enrolled in the same workspace, it
+        /// keeps that runner.
+        #[arg(
+            long,
+            env = "FCTL_ENROLL_TOKEN",
+            hide_env_values = true,
+            value_name = "TOKEN",
+            conflicts_with_all = ["token", "workspace", "personal"]
+        )]
+        enroll: Option<String>,
         /// Write the configuration but do not install a service.
         #[arg(long)]
         no_service: bool,
@@ -171,12 +194,21 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             workspace,
             personal,
             token,
+            enroll,
             no_service,
             build_image,
             auto_update,
         } => {
-            const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token";
-            let server = config::server(server)?;
+            const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token or --enroll";
+            let server = match (&enroll, config::server(server)) {
+                (_, Ok(server)) => server,
+                (Some(_), Err(_)) => bail!(
+                    "Which fctl instance is the enrollment token for? Pass --server https://app.fctl.sh, or set FCTL_SERVER."
+                ),
+                (None, Err(e)) => return Err(e),
+            };
+            // The runner this machine has now, for the instance it runs for.
+            let before = HostConfig::load().ok().map(|c| c.server);
             let mut cfg = HostConfig::load().unwrap_or_default();
             cfg.server = server.clone();
             if let Some(n) = name {
@@ -212,9 +244,15 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             if let Some(problem) = cfg.image_problems().first() {
                 bail!("{problem}");
             }
+            // What the enrollment token enrolls in, or why it can't, before
+            // anything else: that fails fastest.
+            let enrolling = match enroll {
+                Some(secret) => Some(Enrolling::ask(&server, secret, before.as_deref()).await?),
+                None => None,
+            };
             // Registering a runner leaves something behind, so it waits until
             // everything that can fail on this machine has passed.
-            let api = if token.is_some() {
+            let api = if token.is_some() || enrolling.is_some() {
                 None
             } else {
                 Some(config::api(Some(&server)).context(SIGN_IN)?)
@@ -270,9 +308,14 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 style::accent("✓"),
                 size::limits(&cfg.sandbox_limits(d.resources().await))
             );
-            let token = match token {
-                Some(t) => t,
-                None => {
+            // The service would fail to install after the runner exists.
+            if !no_service {
+                service::preflight()?;
+            }
+            let token = match (token, &enrolling) {
+                (Some(t), _) => t,
+                (None, Some(e)) => e.finish(&cfg, d.name()).await?,
+                (None, None) => {
                     let workspace = workspace.or_else(|| config::CliConfig::load().workspace);
                     let reg = api
                         .context(SIGN_IN)?
@@ -344,7 +387,8 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     style::dim(&format!("Logs: {}", service::log_location()))
                 );
             }
-            if matches!(claude_token::load(&cfg.claude_token()), Ok(None)) {
+            // A workspace's runner keeps nobody's Claude token.
+            if enrolling.is_none() && matches!(claude_token::load(&cfg.claude_token()), Ok(None)) {
                 println!(
                     "{}",
                     style::dim(
@@ -443,9 +487,23 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                         RunnerStatus::Offline => style::dim("offline"),
                         RunnerStatus::Disabled => style::red("disabled"),
                     };
-                    match admin::drain_line(&d.runner) {
-                        Some(drain) => println!("runner:   {state}, {}", style::amber(&drain)),
-                        None => println!("runner:   {state}"),
+                    match (&d.runner.workspace, d.runner.pending_until) {
+                        (Some(w), Some(until)) => println!(
+                            "runner:   {state}, {}",
+                            style::amber(&format!(
+                                "waiting for an admin of {} to approve it: it takes sessions once one does (`fctl runners approve {}`), and is removed {} unless one does",
+                                w.name,
+                                d.runner.id,
+                                style::until(until)
+                            ))
+                        ),
+                        _ => match admin::drain_line(&d.runner) {
+                            Some(drain) => println!("runner:   {state}, {}", style::amber(&drain)),
+                            None => println!("runner:   {state}"),
+                        },
+                    }
+                    if let Some(w) = &d.runner.workspace {
+                        println!("workspace: {}", workspace_line(&w.name, &d.runner));
                     }
                     if !d.sessions.is_empty() {
                         println!("sessions:");
@@ -600,6 +658,135 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
     }
 }
 
+/// `fctl host install --enroll`: the enrollment token, what it enrolls in,
+/// and the runner this machine has there already, if any.
+struct Enrolling {
+    api: fctl_client::Api,
+    info: EnrollmentInfo,
+    /// The runner token this machine has, and its runner, when that runner
+    /// belongs to the same workspace: installing again keeps it.
+    kept: Option<(String, Runner)>,
+}
+
+impl Enrolling {
+    /// Asks the instance at `server` what the enrollment token `secret`
+    /// enrolls in, and whether this machine's runner (`before`: the
+    /// instance it runs for) is one of that workspace's already.
+    async fn ask(server: &str, secret: String, before: Option<&str>) -> Result<Self> {
+        let secret = secret.trim().to_owned();
+        if !fctl_domain::tokens::looks_like(&secret, fctl_domain::tokens::SecretKind::Enrollment) {
+            bail!(
+                "That isn't an enrollment token: they start with fctl_et_. A workspace's admins make them on its Runners tab, or with `fctl runners enrollment-tokens create`."
+            );
+        }
+        let api = fctl_client::Api::new(server, Some(secret));
+        let info = api.enrollment().await.map_err(|e| match e.api() {
+            Some(a) if a.code == fctl_proto::ErrorCode::NotFound => anyhow::anyhow!(
+                "{server} doesn't take enrollment tokens: it runs an older version of fctl. Register this machine signed in instead (`fctl login`, then `fctl host install`)."
+            ),
+            Some(a) => anyhow::anyhow!("{}", a.message),
+            None => anyhow::anyhow!("Could not reach {server}: {e}"),
+        })?;
+        let same_server =
+            before.is_some_and(|b| config::normalize_server(b) == config::normalize_server(server));
+        let kept = match HostConfig::load_token() {
+            Ok(t) if same_server => fctl_client::Api::new(server, Some(t.clone()))
+                .this_runner()
+                .await
+                .ok()
+                .filter(|d| {
+                    d.runner
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|w| w.id == info.workspace.id)
+                })
+                .map(|d| (t, d.runner)),
+            _ => None,
+        };
+        let how = if info.approval {
+            ", once one of its admins approves it"
+        } else {
+            ""
+        };
+        match &kept {
+            Some((_, r)) => println!(
+                "{} {} is a runner of {} already: installing again keeps it",
+                style::accent("✓"),
+                style::bold(&r.name),
+                info.workspace.name
+            ),
+            None => println!(
+                "{} Enrolls in {} with “{}”: the runner runs everyone's sessions there{how}",
+                style::accent("✓"),
+                style::bold(&info.workspace.name),
+                info.name
+            ),
+        }
+        Ok(Self { api, info, kept })
+    }
+
+    /// The runner token to install: the one this machine has, or a new
+    /// runner's, which it enrolls now.
+    async fn finish(&self, cfg: &HostConfig, driver: &str) -> Result<String> {
+        if let Some((token, _)) = &self.kept {
+            return Ok(token.clone());
+        }
+        let facts = RunnerFacts {
+            version: Some(update::VERSION.to_owned()),
+            hostname: Some(fctl_host::config::hostname()),
+            os: Some(fctl_host::sysinfo::os().to_owned()),
+            arch: Some(fctl_host::sysinfo::arch().to_owned()),
+            driver: Some(driver.to_owned()),
+            cpus: Some(fctl_host::sysinfo::cpus()),
+            memory_mb: Some(fctl_host::sysinfo::memory_mb()),
+            capacity: Some(cfg.capacity),
+        };
+        let reg = self
+            .api
+            .enroll(&EnrollRunnerRequest {
+                name: cfg.name.clone(),
+                facts: Some(facts),
+            })
+            .await
+            .map_err(|e| match e.api() {
+                Some(a) => anyhow::anyhow!("{}", a.message),
+                None => anyhow::anyhow!("Could not enroll this machine: {e}"),
+            })?;
+        let r = &reg.runner;
+        let workspace = &self.info.workspace.name;
+        println!(
+            "{} Enrolled runner {} ({}) in {workspace}",
+            style::accent("✓"),
+            style::bold(&r.name),
+            r.id
+        );
+        if let Some(until) = r.pending_until {
+            println!(
+                "{}",
+                style::amber(&format!(
+                    "It waits for an admin of {workspace} to approve it, and takes sessions as soon as one does: they see it on {workspace}'s Runners tab, or run `fctl runners approve {}`. It is removed {} unless one does.",
+                    r.id,
+                    style::until(until)
+                ))
+            );
+        } else {
+            println!(
+                "{}",
+                style::dim(&format!("It runs everyone's sessions in {workspace}."))
+            );
+        }
+        let gone = match r.remove_offline_after_hours {
+            Some(h) => format!(
+                "It is removed once it has been offline for {}, and when `fctl host uninstall` uninstalls it.",
+                fctl_domain::enrollment::hours(h)
+            ),
+            None => "`fctl host uninstall` removes it from the workspace.".to_owned(),
+        };
+        println!("{}", style::dim(&gone));
+        Ok(reg.token)
+    }
+}
+
 /// `fctl host uninstall`: sessions that run here finish first (`--wait`) or
 /// stop properly (`--force`, or yes when asked), so that no agent keeps
 /// working where nobody sees it.
@@ -612,6 +799,15 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
         Err(e) => Err(e),
     };
     let mut drained = false;
+    // A runner that enrolled in a workspace goes with its host.
+    let enrolled = match &asked {
+        Ok((api, d)) => d
+            .runner
+            .workspace
+            .as_ref()
+            .map(|w| (api.clone(), d.runner.clone(), w.name.clone())),
+        Err(_) => None,
+    };
     match asked {
         Ok((_, d)) if d.sessions.is_empty() => {}
         Ok((api, d)) => {
@@ -705,10 +901,52 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
         }
     }
     service::uninstall()?;
+    let removed = match &enrolled {
+        Some((api, _, _)) => Some(api.remove_this_runner().await),
+        None => None,
+    };
+    if let Some(Ok(_)) = &removed
+        && let Err(e) = HostConfig::remove_token()
+    {
+        eprintln!(
+            "{}",
+            style::red(&format!("removing the runner token: {e:#}"))
+        );
+    }
     if json {
-        return style::print_json(&serde_json::json!({ "uninstalled": true, "drained": drained }));
+        return style::print_json(&serde_json::json!({
+            "uninstalled": true,
+            "drained": drained,
+            "runner_removed": removed.as_ref().map(Result::is_ok),
+        }));
     }
     println!("Removed the service. Configuration and sandboxes are kept.");
+    if let Some((_, r, workspace)) = &enrolled {
+        match &removed {
+            Some(Ok(_)) => println!(
+                "{} Removed runner {} from {workspace}: it enrolled there, and its token no longer works. `fctl host install --enroll` enrolls this machine again.",
+                style::accent("✓"),
+                style::bold(&r.name)
+            ),
+            Some(Err(e)) => println!(
+                "{}",
+                style::amber(&format!(
+                    "Could not remove runner {} from {workspace} ({}): its admins remove it from its Runners tab{}.",
+                    r.name,
+                    e.api().map_or_else(|| e.to_string(), |a| a.message.clone()),
+                    match r.remove_offline_after_hours {
+                        Some(h) => format!(
+                            ", or fctl does once it has been offline for {}",
+                            fctl_domain::enrollment::hours(h)
+                        ),
+                        None => String::new(),
+                    }
+                ))
+            ),
+            None => {}
+        }
+        return Ok(());
+    }
     if drained {
         println!(
             "{}",
@@ -941,6 +1179,26 @@ async fn auto_update(on: Option<bool>, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `fctl host status`'s line about the workspace an enrolled runner
+/// belongs to: `Acme's, enrolled with “Build fleet”; removed once offline
+/// for an hour, and when the host uninstalls`.
+fn workspace_line(workspace: &str, r: &Runner) -> String {
+    let with = r
+        .enrollment
+        .as_ref()
+        .and_then(|e| e.token_name.as_deref())
+        .map(|t| format!(", enrolled with “{t}”"))
+        .unwrap_or_default();
+    let gone = match r.remove_offline_after_hours {
+        Some(h) => format!(
+            "removed once offline for {}, and when the host uninstalls",
+            fctl_domain::enrollment::hours(h)
+        ),
+        None => "removed when the host uninstalls".to_owned(),
+    };
+    format!("{workspace}'s{with}; {}", style::dim(&gone))
 }
 
 /// `fctl host status`'s line about the Claude token the host keeps.

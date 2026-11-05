@@ -287,6 +287,28 @@ Examples:
     /// Run this machine as a host for agent sandboxes.
     #[command(subcommand)]
     Host(cmd::host::HostCmd),
+    /// Runners: the ones you see, approving the ones that wait in your
+    /// workspaces, managing them, and workspaces' enrollment tokens.
+    #[command(
+        visible_alias = "runner",
+        after_help = "Examples:
+  fctl runners                                  # yours, your workspaces' (every one for instance admins)
+  fctl runners --pending                        # the ones that wait for approval
+  fctl runners approve build-7                  # its name or id
+  fctl runners reject rnr_01JC…
+  fctl runners remove build-7 --yes
+  fctl runners enrollment-tokens create \"Build fleet\" -w acme --remove-offline-after 1h"
+    )]
+    Runners {
+        #[command(subcommand)]
+        cmd: Option<cmd::runners::RunnersCmd>,
+        /// Only this workspace's (its slug or id), without a command.
+        #[arg(short, long)]
+        workspace: Option<String>,
+        /// Only the ones that wait for approval, without a command.
+        #[arg(long)]
+        pending: bool,
+    },
     /// Manage people, invitations, workspaces, GitHub and runners
     /// (instance admins).
     #[command(subcommand)]
@@ -444,6 +466,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Claude(c) => cmd::claude::run(server, c, json).await,
         Command::Notifications(c) => cmd::notifications::run(server, c, json).await,
         Command::Host(c) => cmd::host::run(server, c, json).await,
+        Command::Runners {
+            cmd: c,
+            workspace,
+            pending,
+        } => {
+            let c = c.unwrap_or(cmd::runners::RunnersCmd::List { workspace, pending });
+            cmd::runners::run(server, c, json).await
+        }
         Command::Admin(c) => cmd::admin::run(server, c, json).await,
         Command::Account(c) => cmd::account::run(server, c, json).await,
         Command::Token(args) => cmd::tokens::create(server, args, json).await,
@@ -570,5 +600,104 @@ mod tests {
         ));
         // A secret's value never comes as an argument.
         assert!(parse(&["projects", "secrets", "set", "STRIPE_KEY", "sk_live_123"]).is_err());
+    }
+
+    #[test]
+    fn runners_are_approved_and_enrolled_from_the_top() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("fctl").chain(args.iter().copied()))
+                .map(|c| c.command)
+        };
+        use cmd::runners::{EnrollmentTokensCmd, RunnersCmd};
+        assert!(matches!(
+            parse(&["runners"]),
+            Ok(Command::Runners {
+                cmd: None,
+                pending: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["runners", "--pending", "-w", "acme"]),
+            Ok(Command::Runners {
+                cmd: None,
+                pending: true,
+                workspace: Some(_),
+            })
+        ));
+        assert!(matches!(
+            parse(&["runners", "approve", "build-7", "--json"]),
+            Ok(Command::Runners {
+                cmd: Some(RunnersCmd::Approve { .. }),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["runner", "reject", "rnr_01ABC"]),
+            Ok(Command::Runners {
+                cmd: Some(RunnersCmd::Reject { .. }),
+                ..
+            })
+        ));
+        let Ok(Command::Runners {
+            cmd:
+                Some(RunnersCmd::EnrollmentTokens {
+                    cmd:
+                        Some(EnrollmentTokensCmd::Create {
+                            name,
+                            approval,
+                            remove_offline_after,
+                            ..
+                        }),
+                    workspace,
+                }),
+            ..
+        }) = parse(&[
+            "runners",
+            "enrollment-tokens",
+            "create",
+            "Build fleet",
+            "-w",
+            "acme",
+            "--approval",
+            "--remove-offline-after",
+            "1h",
+            "--expires",
+            "never",
+        ])
+        else {
+            panic!("expected an enrollment token to be made");
+        };
+        assert_eq!(
+            (name.as_str(), approval, workspace.as_deref()),
+            ("Build fleet", true, Some("acme"))
+        );
+        assert!(remove_offline_after.is_some());
+        assert!(
+            parse(&[
+                "runners",
+                "enroll-tokens",
+                "create",
+                "x",
+                "--expires",
+                "soon"
+            ])
+            .is_err()
+        );
+        // An enrollment token is the whole registration: no runner token,
+        // workspace or personal runner with it.
+        assert!(matches!(
+            parse(&["host", "install", "--enroll", "fctl_et_x"]),
+            Ok(Command::Host(cmd::host::HostCmd::Install { .. }))
+        ));
+        for other in [
+            &["--token", "fctl_rt_x"][..],
+            &["--workspace", "acme"],
+            &["--personal"],
+        ] {
+            let mut args = vec!["host", "install", "--enroll", "fctl_et_x"];
+            args.extend_from_slice(other);
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
     }
 }

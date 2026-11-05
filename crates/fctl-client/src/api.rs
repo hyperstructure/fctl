@@ -1135,9 +1135,58 @@ impl Api {
         self.patch(&format!("/runners/{}", enc(id)), req).await
     }
 
+    /// A new token for a runner (its owner, or the admins of the workspace
+    /// it belongs to): the old one stops working, and its host
+    /// disconnects until it has the new one.
+    pub async fn replace_runner_token(&self, id: &str) -> Result<RunnerRegistration> {
+        self.post(
+            &format!("/runners/{}/token", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Approves a runner that waits in a workspace you are an admin of: it
+    /// runs everyone's sessions there from now on.
+    pub async fn approve_runner(&self, id: &str) -> Result<Runner> {
+        self.post(
+            &format!("/runners/{}/approve", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Rejects a runner that waits in a workspace you are an admin of: it
+    /// is removed, and its token stops working.
+    pub async fn reject_runner(&self, id: &str) -> Result<Ok> {
+        self.post(
+            &format!("/runners/{}/reject", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     /// The runner whose token this client has, and the sessions it runs.
     pub async fn this_runner(&self) -> Result<RunnerDetail> {
         self.get("/runner").await
+    }
+
+    /// Removes the runner whose token this client has, which enrolled in a
+    /// workspace (`fctl host uninstall`).
+    pub async fn remove_this_runner(&self) -> Result<Ok> {
+        self.delete("/runner").await
+    }
+
+    /// The workspace the enrollment token this client has enrolls runners
+    /// in, and how; or why it enrolls none now.
+    pub async fn enrollment(&self) -> Result<EnrollmentInfo> {
+        self.get("/runner/enroll").await
+    }
+
+    /// Enrolls this machine as a runner of the workspace of the enrollment
+    /// token this client has: the answer holds its own runner token.
+    pub async fn enroll(&self, req: &EnrollRunnerRequest) -> Result<RunnerRegistration> {
+        self.post("/runner/enroll", req).await
     }
 
     /// Drains the runner whose token this client has, or stops draining it.
@@ -1525,6 +1574,34 @@ impl Api {
     pub async fn remove_workspace_runner(&self, id: &str, runner: &str) -> Result<RunnerList> {
         self.delete(&format!("/workspaces/{}/runners/{}", enc(id), enc(runner)))
             .await
+    }
+
+    /// A workspace's enrollment tokens (its admins), newest first.
+    pub async fn enrollment_tokens(&self, id: &str) -> Result<EnrollmentTokenList> {
+        self.get(&format!("/workspaces/{}/enrollment-tokens", enc(id)))
+            .await
+    }
+
+    /// Makes an enrollment token for a workspace (its admins); the answer
+    /// holds its secret, once.
+    pub async fn create_enrollment_token(
+        &self,
+        id: &str,
+        req: &CreateEnrollmentTokenRequest,
+    ) -> Result<CreatedEnrollmentToken> {
+        self.post(&format!("/workspaces/{}/enrollment-tokens", enc(id)), req)
+            .await
+    }
+
+    /// Revokes a workspace's enrollment token: it enrolls no more runners,
+    /// and those it enrolled stay.
+    pub async fn revoke_enrollment_token(&self, id: &str, token: &str) -> Result<EnrollmentToken> {
+        self.delete(&format!(
+            "/workspaces/{}/enrollment-tokens/{}",
+            enc(id),
+            enc(token)
+        ))
+        .await
     }
 
     pub async fn workspace_github(&self, id: &str) -> Result<WorkspaceGithub> {

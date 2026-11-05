@@ -244,19 +244,43 @@ pub fn check_add_runner(
     Ok(())
 }
 
-/// Whether someone may replace a runner's token, which they then hold: only
-/// the person who registered it. The token runs the sessions of the
-/// workspaces the runner serves, with their code, secrets and tokens, and
-/// an instance admin need not be a member of those; they disable, drain or
-/// remove the runner instead.
-pub fn check_replace_runner_token(registered_it: bool) -> Result<()> {
-    if registered_it {
-        Ok(())
-    } else {
-        Err(denied(
+/// Whom a runner belongs to, as the person who asks sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunnerOwner {
+    /// The person who registered it; `mine`: that is who asks.
+    Person { mine: bool },
+    /// The workspace it enrolled in (with one of its enrollment tokens);
+    /// `admin`: who asks is one of its admins, and it is open to them.
+    Workspace { admin: bool },
+}
+
+/// Whether someone may replace a runner's token, which they then hold: the
+/// person who registered it, or the admins of the workspace it belongs to.
+/// The token runs the sessions of the workspaces the runner serves, with
+/// their code, secrets and tokens, and an instance admin need not be a
+/// member of those; they disable, drain or remove the runner instead.
+pub fn check_replace_runner_token(owner: RunnerOwner) -> Result<()> {
+    match owner {
+        RunnerOwner::Person { mine: true } | RunnerOwner::Workspace { admin: true } => Ok(()),
+        RunnerOwner::Person { mine: false } => Err(denied(
             "Only the person who registered a runner can replace its token, since the new token runs its workspaces' sessions. Instance admins can disable or remove it.",
-        ))
+        )),
+        RunnerOwner::Workspace { admin: false } => Err(denied(
+            "Only the admins of the workspace a runner belongs to can replace its token, since the new token runs the workspace's sessions. Instance admins can disable or remove it.",
+        )),
     }
+}
+
+/// Whether someone may manage a runner as a machine (rename, drain,
+/// disable, remove): the person who registered it, the admins of the
+/// workspace it belongs to, and instance admins, who run the instance's
+/// machines.
+pub fn can_manage_runner(owner: RunnerOwner, instance_admin: bool) -> bool {
+    instance_admin
+        || matches!(
+            owner,
+            RunnerOwner::Person { mine: true } | RunnerOwner::Workspace { admin: true }
+        )
 }
 
 /// Whether someone may take a runner out of a workspace: they registered
@@ -442,10 +466,27 @@ mod tests {
 
     #[test]
     fn only_a_runners_owner_holds_its_new_token() {
-        assert!(check_replace_runner_token(true).is_ok());
+        assert!(check_replace_runner_token(RunnerOwner::Person { mine: true }).is_ok());
         // An instance admin who didn't register it would run the sessions
         // of workspaces they may not be in.
-        assert!(check_replace_runner_token(false).is_err());
+        assert!(check_replace_runner_token(RunnerOwner::Person { mine: false }).is_err());
+        // A workspace's runner is its admins' to replace.
+        assert!(check_replace_runner_token(RunnerOwner::Workspace { admin: true }).is_ok());
+        assert!(check_replace_runner_token(RunnerOwner::Workspace { admin: false }).is_err());
+    }
+
+    #[test]
+    fn a_workspaces_runners_are_its_admins_to_manage_and_nobody_elses() {
+        use RunnerOwner::*;
+        assert!(can_manage_runner(Person { mine: true }, false));
+        assert!(!can_manage_runner(Person { mine: false }, false));
+        assert!(can_manage_runner(Workspace { admin: true }, false));
+        // Its members, and the person who made the token that enrolled it,
+        // as such, don't.
+        assert!(!can_manage_runner(Workspace { admin: false }, false));
+        // Instance admins run the instance's machines.
+        assert!(can_manage_runner(Person { mine: false }, true));
+        assert!(can_manage_runner(Workspace { admin: false }, true));
     }
 
     #[test]

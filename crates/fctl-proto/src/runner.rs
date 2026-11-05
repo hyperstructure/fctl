@@ -528,6 +528,17 @@ pub enum HostToFleet {
     Pong,
 }
 
+/// A runner that waits for an admin of its workspace to approve it, as its
+/// `Welcome` says ([`FleetToHost::Welcome`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PendingApproval {
+    /// The workspace's name.
+    pub workspace: String,
+    /// When the runner is removed unless one of its admins approves it.
+    pub until: Millis,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -542,6 +553,13 @@ pub enum FleetToHost {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         version: Option<String>,
+        /// Set while the runner waits for an admin of its workspace to
+        /// approve it: it gets no sessions until then, and another
+        /// `Welcome` without it once approved. Absent otherwise, and from
+        /// control planes before enrollment tokens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        pending: Option<PendingApproval>,
     },
     StartSession {
         spec: Box<SessionSpec>,
@@ -747,12 +765,44 @@ mod tests {
         assert_eq!(version, &None);
         assert!(serde_json::to_value(&msg)?.get("version").is_none());
         let msg = FleetToHost::Welcome {
-            runner: serde_json::from_value(runner)?,
+            runner: serde_json::from_value(runner.clone())?,
             heartbeat_secs: 15,
             server_time: 1,
             version: Some("0.22.0".into()),
+            pending: None,
         };
         assert_eq!(serde_json::to_value(&msg)?["version"], "0.22.0");
+        assert!(serde_json::to_value(&msg)?.get("pending").is_none());
+        // A runner that waits for approval is told so; a host from before
+        // enrollment tokens reads it as any other welcome.
+        let msg = FleetToHost::Welcome {
+            runner: serde_json::from_value(runner)?,
+            heartbeat_secs: 15,
+            server_time: 1,
+            version: Some("0.28.0".into()),
+            pending: Some(PendingApproval {
+                workspace: "Acme".into(),
+                until: 2,
+            }),
+        };
+        let json = serde_json::to_value(&msg)?;
+        assert_eq!(
+            json["pending"],
+            serde_json::json!({ "workspace": "Acme", "until": 2 })
+        );
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Older {
+            Welcome {
+                runner: RunnerRef,
+                version: Option<String>,
+            },
+        }
+        let Older::Welcome { runner, version } = serde_json::from_value(json)?;
+        assert_eq!(
+            (runner.name.as_str(), version.as_deref()),
+            ("mini", Some("0.28.0"))
+        );
 
         let mut hello: HostHello = serde_json::from_value(serde_json::json!({
             "protocol": 1, "version": "0.21.0", "hostname": "mini", "os": "macos",

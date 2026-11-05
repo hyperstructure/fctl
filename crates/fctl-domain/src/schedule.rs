@@ -945,6 +945,18 @@ mod tests {
     }
 
     #[test]
+    fn a_workspaces_own_runners_run_everyones_sessions_but_those_kept_on_their_peoples() {
+        // A runner that enrolled in a workspace belongs to it, not to a
+        // person: no owner, and it runs everyone's sessions there.
+        let ada = Some("usr_ada");
+        assert!(runs_for(None, false, ada, only_theirs(false, false)));
+        // Someone who keeps their sessions on their own runners, or their
+        // Claude token on them, keeps them off it, as off anyone else's.
+        assert!(!runs_for(None, false, ada, only_theirs(true, false)));
+        assert!(!runs_for(None, false, ada, only_theirs(false, true)));
+    }
+
+    #[test]
     fn sessions_say_whose_runners_they_wait_for() {
         assert_eq!(
             no_runner_takes(None, true, true, false),

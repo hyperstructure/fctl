@@ -307,6 +307,18 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
     }
     ctx.verified(Sensitive::DeleteWorkspace)?;
     let members = ws::member_ids(&ctx.db, &row.id).await?;
+    // The runners that enrolled in it belong to it, and go with it.
+    #[derive(Deserialize)]
+    struct Own {
+        id: String,
+    }
+    let own: Vec<Own> = q(
+        &ctx.db,
+        "SELECT id FROM runners WHERE workspace_id = ?",
+        &[s(&row.id)],
+    )?
+    .all()
+    .await?;
     // Rows cascade from the workspace, and its audit log goes with it; the
     // sessions' event logs and the projects' files live in Durable
     // Objects, so they are queued for purging in the same batch.
@@ -325,6 +337,7 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
                 &[n(ctx.now), s(&row.id)],
             )?,
             q(&ctx.db, "DELETE FROM audit_log WHERE workspace_id = ?", &[s(&row.id)])?,
+            q(&ctx.db, "DELETE FROM runners WHERE workspace_id = ?", &[s(&row.id)])?,
             q(&ctx.db, "DELETE FROM workspaces WHERE id = ?", &[s(&row.id)])?,
         ],
     )
@@ -332,6 +345,16 @@ pub async fn erase(ctx: &mut Ctx, row: &WorkspaceRow, typed: &str) -> AppResult<
     let env = ctx.env.clone();
     let db = crate::db::handle(&ctx.db);
     ctx.defer(async move { crate::housekeeping::purge_deleted(&env, &db).await });
+    if !own.is_empty() {
+        let env = ctx.env.clone();
+        let reason = format!("Its runner's workspace, {}, was deleted.", row.name);
+        ctx.defer(async move {
+            for r in own {
+                crate::api::runners::removed(&env, &r.id, &reason).await?;
+            }
+            Ok(())
+        });
+    }
     ctx.audit(
         "workspace.deleted",
         Some(&row.id),
@@ -1188,32 +1211,73 @@ pub async fn decline(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 
 // ───────────────────────────── runners ─────────────────────────────
 
-fn runner_view<'a>(user: &'a UserRow, workspaces: &'a [String]) -> RunnerView<'a> {
-    RunnerView {
-        user_id: Some(&user.id),
-        workspaces: Some(workspaces),
+/// Who looks at runners, as [`RunnerView`] needs them.
+pub struct Viewer {
+    user_id: String,
+    /// The workspaces open to them; `None` for instance admins outside a
+    /// workspace's own lists, who see everything.
+    workspaces: Option<Vec<String>>,
+    /// Of those, the ones they are an admin of.
+    admin_of: Option<Vec<String>>,
+}
+
+impl Viewer {
+    /// As a member of their workspaces, whatever their instance role.
+    pub async fn member(ctx: &Ctx) -> AppResult<Self> {
+        let user = ctx.user()?;
+        let open: Vec<ws::WorkspaceRow> = ws::mine(&ctx.db, &user.id)
+            .await?
+            .into_iter()
+            .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
+            .collect();
+        Ok(Self {
+            user_id: user.id.clone(),
+            admin_of: Some(
+                open.iter()
+                    .filter(|w| {
+                        w.role()
+                            .is_some_and(fctl_proto::session::WorkspaceRole::is_admin)
+                    })
+                    .map(|w| w.id.clone())
+                    .collect(),
+            ),
+            workspaces: Some(open.into_iter().map(|w| w.id).collect()),
+        })
+    }
+
+    /// As the instance's lists show them: instance admins see every runner
+    /// and all of it; others, as [`Viewer::member`].
+    pub async fn instance(ctx: &Ctx) -> AppResult<Self> {
+        let user = ctx.user()?;
+        if user.is_admin() {
+            return Ok(Self {
+                user_id: user.id.clone(),
+                workspaces: None,
+                admin_of: None,
+            });
+        }
+        Self::member(ctx).await
+    }
+
+    pub fn view(&self) -> RunnerView<'_> {
+        RunnerView {
+            user_id: Some(&self.user_id),
+            workspaces: self.workspaces.as_deref(),
+            admin_of: self.admin_of.as_deref(),
+        }
     }
 }
 
-async fn my_workspace_ids(ctx: &Ctx, user: &UserRow) -> AppResult<Vec<String>> {
-    Ok(ws::mine(&ctx.db, &user.id)
-        .await?
-        .into_iter()
-        .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
-        .map(|w| w.id)
-        .collect())
-}
-
-/// `GET /api/v1/workspaces/{id}/runners`: the runners its sessions run on.
+/// `GET /api/v1/workspaces/{id}/runners`: the runners its sessions run on,
+/// and, for its admins, those that wait for their approval.
 pub async fn runners(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let a = ws::load(ctx, id).await?;
     a.require_open()?;
-    let user = ctx.user()?;
     let rows: Vec<RunnerRow> = q(
         &ctx.db,
         &format!(
             "{RUNNER_SELECT} WHERE EXISTS (SELECT 1 FROM runner_workspaces rw WHERE rw.runner_id = r.id \
-             AND rw.workspace_id = ? AND {}) ORDER BY r.created_at",
+             AND rw.workspace_id = ?1 AND {}) OR r.workspace_id = ?1 ORDER BY r.created_at",
             crate::serves!()
         ),
         &[s(a.id())],
@@ -1221,10 +1285,14 @@ pub async fn runners(ctx: &Ctx, id: &str) -> AppResult<Response> {
     .all()
     .await?;
     let live = live(ctx).await;
-    let mine = my_workspace_ids(ctx, user).await?;
-    let view = runner_view(user, &mine);
+    let viewer = Viewer::member(ctx).await?;
+    let view = viewer.view();
     http::ok(&RunnerList {
-        runners: rows.iter().map(|r| r.to_runner(&live, &view)).collect(),
+        runners: rows
+            .iter()
+            .filter(|r| r.visible_to(&view))
+            .map(|r| r.to_runner(&live, &view))
+            .collect(),
     })
 }
 
@@ -1285,10 +1353,10 @@ pub async fn register_runner(
     )?
     .first()
     .await?;
-    let mine = my_workspace_ids(ctx, actor).await?;
+    let viewer = Viewer::member(ctx).await?;
     let runner = row
         .ok_or_else(|| not_found("Runner"))?
-        .to_runner(&LiveRunners::default(), &runner_view(actor, &mine));
+        .to_runner(&LiveRunners::default(), &viewer.view());
     Ok(RunnerRegistration { runner, token })
 }
 
@@ -1317,17 +1385,41 @@ pub fn runs_whose(a: &ws::WorkspaceAccess, personal: Option<bool>) -> AppResult<
 struct RunnerOwner {
     created_by: Option<String>,
     name: String,
+    /// The workspace it belongs to, when it enrolled in one: it runs that
+    /// one's sessions and no other's.
+    workspace_id: Option<String>,
 }
 
 async fn runner_owner(ctx: &Ctx, runner_id: &str) -> AppResult<RunnerOwner> {
     q(
         &ctx.db,
-        "SELECT created_by, name FROM runners WHERE id = ?",
+        "SELECT created_by, name, workspace_id FROM runners WHERE id = ?",
         &[s(runner_id)],
     )?
     .first()
     .await?
     .ok_or_else(|| not_found("Runner"))
+}
+
+/// A workspace's own runner (it enrolled there) runs that workspace's
+/// sessions alone, everyone's, from its approval until it is removed:
+/// nobody adds it elsewhere, changes whose sessions it runs, or takes it
+/// out but by removing it.
+fn its_workspaces_own(
+    owner: &RunnerOwner,
+    workspace: &ws::WorkspaceAccess,
+    runner_id: &str,
+) -> AppResult<()> {
+    match &owner.workspace_id {
+        None => Ok(()),
+        Some(w) if w == workspace.id() => Err(conflict(&format!(
+            "{} belongs to {}: it runs everyone's sessions there once approved, and goes when it is removed (`fctl runners remove {runner_id}`)",
+            owner.name, workspace.row.name
+        ))),
+        Some(_) => Err(forbidden(
+            "This runner belongs to another workspace and runs only that workspace's sessions",
+        )),
+    }
 }
 
 /// Tells FleetObject that the runners `user_id` registered changed: they
@@ -1362,7 +1454,10 @@ fn runner_changed(ctx: &Ctx, runner_id: &str) {
         let _: serde_json::Value = internal::post(
             &stub,
             "/runner-changed",
-            &internal::RunnerChanged { runner_id },
+            &internal::RunnerChanged {
+                runner_id,
+                approved: false,
+            },
         )
         .await?;
         Ok(())
@@ -1387,6 +1482,7 @@ pub async fn add_runner(
     let role = a.require_open()?;
     let me = ctx.user()?.id.clone();
     let owner = runner_owner(ctx, runner_id).await?;
+    its_workspaces_own(&owner, &a, runner_id)?;
     let personal = body.personal.unwrap_or(!role.is_admin());
     policy::check_add_runner(
         owner.created_by.as_deref() == Some(me.as_str()),
@@ -1435,6 +1531,7 @@ pub async fn remove_runner(ctx: &mut Ctx, id: &str, runner_id: &str) -> AppResul
     let role = a.require_open()?;
     let user = ctx.user()?.clone();
     let owner = runner_owner(ctx, runner_id).await?;
+    its_workspaces_own(&owner, &a, runner_id)?;
     if !policy::can_remove_runner(
         owner.created_by.as_deref() == Some(user.id.as_str()),
         Some(role),
@@ -1485,14 +1582,4 @@ pub async fn joined_after_sign_up(
         ws::changed(ctx, vec![user.id.clone()]);
     }
     Ok(joined)
-}
-
-/// Makes sure the instance-wide view of a runner list carries what the
-/// caller may see.
-pub async fn runner_view_for(ctx: &Ctx) -> AppResult<(Option<Vec<String>>, String)> {
-    let user = ctx.user()?;
-    if user.is_admin() {
-        return Ok((None, user.id.clone()));
-    }
-    Ok((Some(my_workspace_ids(ctx, user).await?), user.id.clone()))
 }

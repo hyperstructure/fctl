@@ -820,6 +820,11 @@ pub async fn feed_identity(
             .map(|w| w.id.clone())
             .collect(),
         workspaces: open.iter().map(|w| w.id.clone()).collect(),
+        admin_of: open
+            .iter()
+            .filter(|w| w.role().is_some_and(WorkspaceRole::is_admin))
+            .map(|w| w.id.clone())
+            .collect(),
         token_id: None,
         checked_at: None,
     })

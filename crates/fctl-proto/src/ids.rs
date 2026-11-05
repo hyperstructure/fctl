@@ -164,6 +164,13 @@ id_type!(
     ScheduleRunId,
     "srn"
 );
+id_type!(
+    /// A workspace's enrollment token, with which machines register
+    /// themselves as runners of the workspace (`fctl host install
+    /// --enroll`).
+    EnrollmentTokenId,
+    "enr"
+);
 
 #[cfg(test)]
 mod tests {

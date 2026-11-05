@@ -7,6 +7,7 @@ pub mod calls;
 pub mod claude;
 pub mod early_access;
 pub mod emails;
+pub mod enrollment;
 pub mod github;
 pub mod google;
 pub mod kept_images;

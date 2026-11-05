@@ -716,6 +716,7 @@ fctl host install --allow-image 'ghcr.io/acme/*' --allow-build 'acme/*'   # what
 fctl host install --workspace acme   # for a workspace you are in (default: the one you administer, or your only one)
 fctl host install --workspace acme --personal   # only your sessions there (a member's always)
 fctl host install --token fctl_rt_…   # with a runner token from a workspace's Runners tab (or FCTL_RUNNER_TOKEN)
+fctl host install --enroll fctl_et_…  # without signing in, as one of a workspace's runners (or FCTL_ENROLL_TOKEN)
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host run                    # run in the foreground (what the service runs)
@@ -751,7 +752,15 @@ agents nobody sees: when sessions run on the host, it lists them and asks
 before it stops them, or, without a terminal, needs `--wait` or `--force`.
 Stopped this way, their agents stop and push their work, and a message
 resumes each on another runner, in a new sandbox without its conversation.
-The runner keeps draining until `fctl host undrain`.
+The runner keeps draining until `fctl host undrain`. A runner that enrolled
+with an enrollment token is removed instead, with its token file: the
+machine enrolls again with `fctl host install --enroll`.
+
+`fctl host install` on Linux installs a systemd user unit, so it checks
+first that your user's systemd manager answers, before it registers
+anything. Where nobody logs in, as in a boot script, run `loginctl
+enable-linger $USER` first (as root): fctl then finds the manager by itself.
+Or pass `--no-service` and run `fctl host run` from a unit of your own.
 
 The host service is a launchd agent on macOS and a systemd user unit on
 Linux. On macOS, launchd writes its log to `~/Library/Logs/fctl/host.log`;
@@ -918,6 +927,59 @@ when you install). Where Homebrew installed fctl, `brew upgrade fctl` updates
 it, and a host that can't write to fctl's directory doesn't update itself
 either: `fctl host status` and `fctl host doctor` say so
 ([Host updates](architecture.md#host-updates)).
+
+## Runners
+
+```sh
+fctl runners                     # the runners you see: yours, your workspaces' (every one for instance admins)
+fctl runners -w acme             # one workspace's
+fctl runners --pending           # the ones that wait for approval
+fctl runners approve build-7     # its name or id: it runs the workspace's sessions from now on
+fctl runners reject build-7      # it is removed, and its token stops working
+fctl runners rename build-7 build-07
+fctl runners drain build-7       # no new sessions start on it (undrain: they do again)
+fctl runners disable build-7     # it disconnects until enabled (enable)
+fctl runners remove build-7      # asks first in a terminal (--yes without asking)
+fctl runners token build-7       # replace its token, which it prints once
+```
+
+These take a runner you may manage: one you registered, one that belongs
+to a workspace you are an admin of, and, as an instance admin, any.
+
+### Enrollment tokens
+
+Machines that autoscaling creates, or that you set up without signing in
+on them, enroll themselves as a workspace's runners with one of its
+enrollment tokens, which its admins make:
+
+```sh
+fctl runners enrollment-tokens -w acme       # what each does, its runners, when it expires
+fctl runners enrollment-tokens create "Build fleet" -w acme --max-runners 20 --remove-offline-after 1h
+fctl runners enrollment-tokens create "Laptops" -w acme --approval --expires 7d
+fctl runners enrollment-tokens revoke "Build fleet" -w acme   # it enrolls no more; its runners stay
+```
+
+`create` prints the token once, on stdout. Without `--expires` it expires
+in 90 days (`1h` to `1y`, or `never`); without `--max-runners`, it enrolls
+any number of runners, and with it, that many at once: removed and
+rejected ones free their place. On each machine, signed in or not:
+
+```sh
+curl -fsSL https://fctl.sh/install | sh
+FCTL_SERVER=https://app.fctl.sh FCTL_ENROLL_TOKEN=fctl_et_… fctl host install
+```
+
+The runner belongs to the workspace, not to you or the token's maker: it
+runs everyone's sessions there and no other workspace's, and its admins
+manage it. With `--approval`, it waits until one of them runs `fctl
+runners approve` (or approves it on the Runners tab) and takes sessions as
+soon as they do, without a restart; meanwhile `fctl host status` on it
+says it waits, with its id. One nobody approves within 7 days is removed.
+`fctl host install --enroll` again keeps the runner the machine has in that
+workspace, so a boot script can run it every time, and `fctl host
+uninstall` removes it. With `--remove-offline-after`, runners that stay
+offline that long (an hour to 30 days) go too, as machines that
+autoscaling destroys do without uninstalling.
 
 ## Admin
 

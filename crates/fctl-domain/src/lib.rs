@@ -14,6 +14,7 @@ pub mod cookies;
 pub mod crawlers;
 pub mod cron;
 pub mod disk;
+pub mod enrollment;
 pub mod events;
 pub mod files;
 pub mod follow_ups;

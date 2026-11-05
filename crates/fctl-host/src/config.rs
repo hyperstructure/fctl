@@ -335,6 +335,14 @@ impl HostConfig {
         write_private(&path, token)
     }
 
+    /// Deletes the runner token, once the runner it was for is gone.
+    pub fn remove_token() -> Result<()> {
+        match std::fs::remove_file(Self::token_path()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir.clone().unwrap_or_else(default_data_dir)
     }

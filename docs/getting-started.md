@@ -223,6 +223,41 @@ run on it: `fctl self update`, which restarts the host service while its
 sessions carry on. **Skip this version** hides the notice in that browser
 until the app runs a newer version.
 
+### Many machines and autoscaling
+
+Machines that autoscaling starts and stops, or that you set up without
+signing in on them, enroll themselves with one of the workspace's
+**enrollment tokens**. Its admins make one under **Enrollment tokens** on
+its Runners tab (or with `fctl runners enrollment-tokens create`): a name,
+how long it works, how many runners it may enroll at once, whether each
+waits for an admin's approval, and whether runners that stay offline are
+removed. The token is shown once. On each machine, from its boot script
+(cloud-init's user data, a launch template) or a shell:
+
+```sh
+curl -fsSL https://fctl.sh/install | sh
+FCTL_SERVER=https://app.fctl.sh FCTL_ENROLL_TOKEN=fctl_et_… fctl host install
+```
+
+The machine becomes a runner of the workspace, with a token of its own:
+the enrollment token is for enrolling, nothing else. The runner belongs to
+the workspace rather than to a person, runs everyone's sessions there and
+no other workspace's, and stays when people leave. Its admins rename,
+drain, disable and remove it on the Runners tab. On Linux, where nobody
+logs in, run `loginctl enable-linger` for the user the host runs as first,
+so that its systemd user service can start.
+
+With approval, a new runner waits on the Runners tab, with what it said of
+itself and where it enrolled from, and the workspace's admins get a
+notification. It runs nothing until one of them approves it, and then
+takes sessions at once; `fctl host status` on the machine shows its id to
+compare. Run again, `fctl host install` keeps the runner the machine has,
+and `fctl host uninstall` removes it; a token can also have runners that
+stay offline removed after a while, for machines that go without
+uninstalling. A runner of the workspace keeps no one's Claude token: people
+who run their sessions only on their own runners, or keep their token on
+them, don't run sessions on it.
+
 ## 6. Create a project
 
 In the app, choose **New project** (or the **+** beside a workspace in the

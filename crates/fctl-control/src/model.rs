@@ -841,6 +841,34 @@ pub struct RunnerRow {
     /// The workspaces it serves (JSON, from [`RUNNER_SELECT`]).
     #[serde(default)]
     pub workspaces: Option<String>,
+    /// The workspace it belongs to, when it enrolled in one (and its parts,
+    /// from [`RUNNER_SELECT`]).
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub owner_slug: Option<String>,
+    #[serde(default)]
+    pub owner_name: Option<String>,
+    #[serde(default)]
+    pub owner_color: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub owner_avatar_at: Option<i64>,
+    /// The enrollment token it used, and that token's name.
+    #[serde(default)]
+    pub enrollment_id: Option<String>,
+    #[serde(default)]
+    pub enrollment_name: Option<String>,
+    #[serde(default)]
+    pub enrolled_ip: Option<String>,
+    #[serde(default)]
+    pub enrolled_location: Option<String>,
+    /// What its host said of the machine as it enrolled (JSON).
+    #[serde(default)]
+    pub facts: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub pending_until: Option<i64>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub remove_offline_after_hours: Option<i64>,
 }
 
 /// Who looks at runners: what of a runner they see.
@@ -850,6 +878,10 @@ pub struct RunnerView<'a> {
     /// The workspaces they are a member of; `None` for instance admins, who
     /// see every workspace a runner serves.
     pub workspaces: Option<&'a [String]>,
+    /// Of those, the ones they are an admin of: they see the runners that
+    /// wait there for approval, and how each of its runners enrolled.
+    /// `None` with `workspaces` (instance admins).
+    pub admin_of: Option<&'a [String]>,
 }
 
 #[derive(Deserialize)]
@@ -871,6 +903,36 @@ impl RunnerRow {
         self.workspace_list().into_iter().map(|w| w.id).collect()
     }
 
+    /// The workspace it belongs to, when it enrolled in one.
+    pub fn owner_workspace(&self) -> Option<WorkspaceRef> {
+        let id = self.workspace_id.as_deref()?;
+        Some(workspace_ref(
+            id,
+            self.owner_slug.as_deref().unwrap_or_default(),
+            self.owner_name.as_deref().unwrap_or_default(),
+            self.owner_color.as_deref(),
+            self.owner_avatar_at,
+        ))
+    }
+
+    /// Whether `view` is an admin of the workspace it belongs to (or an
+    /// instance admin, who sees everything of it).
+    fn admin_sees(&self, view: &RunnerView) -> bool {
+        match (view.workspaces, &self.workspace_id) {
+            (None, _) => true,
+            (Some(_), Some(w)) => view.admin_of.is_some_and(|a| a.contains(w)),
+            (Some(_), None) => false,
+        }
+    }
+
+    /// What its host said of the machine as it enrolled.
+    fn facts(&self) -> fctl_proto::api::RunnerFacts {
+        self.facts
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
     fn workspace_list(&self) -> Vec<RunnerWorkspace> {
         self.workspaces
             .as_deref()
@@ -879,10 +941,12 @@ impl RunnerRow {
     }
 
     /// Whether `view` may see it: it serves one of their workspaces, they
-    /// registered it, or they are an instance admin.
+    /// registered it, or they are an instance admin. One that waits for
+    /// approval only its workspace's admins see.
     pub fn visible_to(&self, view: &RunnerView) -> bool {
         match view.workspaces {
             None => true,
+            Some(_) if self.pending_until.is_some() => self.admin_sees(view),
             Some(mine) => {
                 view.user_id.is_some() && self.created_by.as_deref() == view.user_id
                     || self.workspace_ids().iter().any(|w| mine.contains(w))
@@ -923,6 +987,8 @@ impl RunnerRow {
         let online = live.online.contains(&self.id);
         let free = live.free.get(&self.id).copied().unwrap_or_default();
         let yours = view.user_id.is_some() && self.created_by.as_deref() == view.user_id;
+        // Until its host says hello, what it said as it enrolled.
+        let facts = self.facts();
         Runner {
             id: RunnerId(self.id.clone()),
             name: self.name.clone(),
@@ -933,19 +999,26 @@ impl RunnerRow {
             } else {
                 RunnerStatus::Offline
             },
-            version: hello.as_ref().map(|h| h.version.clone()),
-            hostname: hello.as_ref().map(|h| h.hostname.clone()),
-            os: hello.as_ref().map(|h| h.os.clone()),
-            arch: hello.as_ref().map(|h| h.arch.clone()),
-            driver: hello.as_ref().map(|h| h.driver.clone()),
+            version: hello.as_ref().map(|h| h.version.clone()).or(facts.version),
+            hostname: hello
+                .as_ref()
+                .map(|h| h.hostname.clone())
+                .or(facts.hostname),
+            os: hello.as_ref().map(|h| h.os.clone()).or(facts.os),
+            arch: hello.as_ref().map(|h| h.arch.clone()).or(facts.arch),
+            driver: hello.as_ref().map(|h| h.driver.clone()).or(facts.driver),
             drivers: hello
                 .as_ref()
                 .map(|h| h.drivers.clone())
                 .unwrap_or_default(),
-            capacity: hello.as_ref().map_or(0, |h| h.capacity),
+            capacity: hello
+                .as_ref()
+                .map(|h| h.capacity)
+                .or(facts.capacity)
+                .unwrap_or(0),
             active_sessions: self.active_sessions.max(0) as u32,
-            cpus: hello.as_ref().map(|h| h.cpus),
-            memory_mb: hello.as_ref().map(|h| h.memory_mb),
+            cpus: hello.as_ref().map(|h| h.cpus).or(facts.cpus),
+            memory_mb: hello.as_ref().map(|h| h.memory_mb).or(facts.memory_mb),
             memory_available_mb: free.memory_mb,
             disk_available_mb: free.disk_mb,
             min_free_disk_mb: hello.as_ref().and_then(|h| h.min_free_disk_mb),
@@ -974,6 +1047,24 @@ impl RunnerRow {
                 .and_then(|h| h.claude_token)
                 .filter(|_| yours),
             auto_update: hello.as_ref().and_then(|h| h.auto_update),
+            workspace: self.owner_workspace(),
+            // Where it enrolled from is for those who decide whether it
+            // runs their workspace's sessions.
+            enrollment: (self.workspace_id.is_some() && self.admin_sees(view)).then(|| {
+                fctl_proto::api::RunnerEnrollment {
+                    token_id: self
+                        .enrollment_id
+                        .clone()
+                        .map(fctl_proto::EnrollmentTokenId),
+                    token_name: self.enrollment_name.clone(),
+                    address: self.enrolled_ip.clone(),
+                    location: self.enrolled_location.clone(),
+                }
+            }),
+            pending_until: self.pending_until,
+            remove_offline_after_hours: self
+                .remove_offline_after_hours
+                .and_then(|h| u32::try_from(h).ok()),
         }
     }
 }
@@ -981,11 +1072,15 @@ impl RunnerRow {
 /// Whether runner `r` serves the workspace of `runner_workspaces` row `rw`:
 /// while its owner is an active member there (a runner whose owner's
 /// account is gone serves where it was put before workspaces had owners).
+/// A runner that belongs to a workspace (it enrolled there) serves that
+/// one alone, and only once approved: one that waits for approval has no
+/// `runner_workspaces` row anyway.
 #[macro_export]
 macro_rules! serves {
     () => {
-        "(r.created_by IS NULL OR EXISTS (SELECT 1 FROM workspace_members sm JOIN users su ON su.id = sm.user_id \
-         WHERE sm.workspace_id = rw.workspace_id AND sm.user_id = r.created_by AND su.status = 'active'))"
+        "((r.created_by IS NULL OR EXISTS (SELECT 1 FROM workspace_members sm JOIN users su ON su.id = sm.user_id \
+         WHERE sm.workspace_id = rw.workspace_id AND sm.user_id = r.created_by AND su.status = 'active')) \
+         AND (r.workspace_id IS NULL OR r.workspace_id = rw.workspace_id) AND r.pending_until IS NULL)"
     };
 }
 
@@ -997,8 +1092,13 @@ pub const RUNNER_SELECT: &str = concat!(
       'avatar_at', w.avatar_updated_at, 'personal', rw.personal)) FROM runner_workspaces rw JOIN workspaces w ON w.id = rw.workspace_id \
       WHERE rw.runner_id = r.id AND ",
     serves!(),
-    ") AS workspaces \
-    FROM runners r LEFT JOIN users u ON u.id = r.created_by"
+    ") AS workspaces, \
+    r.workspace_id, ow.slug AS owner_slug, ow.name AS owner_name, ow.color AS owner_color, \
+    ow.avatar_updated_at AS owner_avatar_at, r.enrollment_id, et.name AS enrollment_name, \
+    r.enrolled_ip, r.enrolled_location, r.facts, r.pending_until, r.remove_offline_after_hours \
+    FROM runners r LEFT JOIN users u ON u.id = r.created_by \
+    LEFT JOIN workspaces ow ON ow.id = r.workspace_id \
+    LEFT JOIN enrollment_tokens et ON et.id = r.enrollment_id"
 );
 
 #[derive(Clone, Debug, Deserialize)]

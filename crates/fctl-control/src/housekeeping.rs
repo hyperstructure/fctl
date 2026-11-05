@@ -11,7 +11,9 @@
 //! delegations in Linear that waited an hour for their person, and gives
 //! up fctl's access to Linear workspaces no fctl workspace works in. And it
 //! has sessions put what the search index lacks of them there
-//! (`index_sessions`).
+//! (`index_sessions`). It removes the runners that waited a week for an
+//! admin to approve them, and those that stayed offline longer than their
+//! enrollment token lets them (`runners`).
 
 use crate::db::{n, q, s};
 use crate::error::AppResult;
@@ -241,6 +243,11 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
     .run()
     .await?;
     deleted += settle(&db).await?;
+    match runners(env, &db, now).await {
+        Ok(0) => {}
+        Ok(removed) => worker::console_log!("housekeeping: removed {removed} runners"),
+        Err(e) => worker::console_error!("removing runners: {}", e.0.message),
+    }
     // Delegations in Linear that waited an hour for their person.
     if let Err(e) = crate::delegations::expire(&db, now).await {
         worker::console_error!("forgetting delegations that waited: {}", e.0.message);
@@ -274,6 +281,131 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         );
     }
     Ok(())
+}
+
+/// Removes the runners that enrolled in a workspace and either waited
+/// longer than a week for one of its admins to approve them, or stayed
+/// offline longer than their enrollment token lets them, and the revoked
+/// and expired enrollment tokens that no runner is left of after 90 days.
+/// The workspace's audit log records each. Returns how many runners went.
+pub async fn runners(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
+    #[derive(Deserialize)]
+    struct Gone {
+        id: String,
+        name: String,
+        workspace_id: Option<String>,
+    }
+    let expired: Vec<Gone> = q(
+        db,
+        "DELETE FROM runners WHERE pending_until IS NOT NULL AND pending_until < ? \
+         RETURNING id, name, workspace_id",
+        &[n(now)],
+    )?
+    .all()
+    .await?;
+    // Those offline too long, but for the ones FleetObject has connected
+    // now, whatever D1 last heard of them.
+    #[derive(Deserialize)]
+    struct Offline {
+        id: String,
+        #[serde(deserialize_with = "crate::db::opt_int", default)]
+        last_seen_at: Option<i64>,
+        #[serde(deserialize_with = "crate::db::int")]
+        created_at: i64,
+        #[serde(deserialize_with = "crate::db::int")]
+        hours: i64,
+    }
+    let candidates: Vec<Offline> = q(
+        db,
+        "SELECT id, last_seen_at, created_at, remove_offline_after_hours AS hours FROM runners \
+         WHERE remove_offline_after_hours IS NOT NULL \
+         AND COALESCE(last_seen_at, created_at) < ? - remove_offline_after_hours * 3600000",
+        &[n(now)],
+    )?
+    .all()
+    .await?;
+    let mut offline: Vec<Gone> = Vec::new();
+    if !candidates.is_empty() {
+        let live: internal::LiveRunners = match internal::fleet_stub(env) {
+            Ok(stub) => internal::get(&stub, "/runners").await?,
+            Err(e) => return Err(e),
+        };
+        let due: Vec<&str> = candidates
+            .iter()
+            .filter(|c| {
+                fctl_domain::enrollment::offline_too_long(
+                    u32::try_from(c.hours).unwrap_or(u32::MAX),
+                    c.last_seen_at,
+                    c.created_at,
+                    live.online.contains(&c.id),
+                    now,
+                )
+            })
+            .map(|c| c.id.as_str())
+            .collect();
+        if !due.is_empty() {
+            offline = q(
+                db,
+                "DELETE FROM runners WHERE id IN (SELECT value FROM json_each(?)) \
+                 RETURNING id, name, workspace_id",
+                &[s(&serde_json::to_string(&due)?)],
+            )?
+            .all()
+            .await?;
+        }
+    }
+    let ended = q(
+        db,
+        "DELETE FROM enrollment_tokens WHERE (revoked_at < ?1 OR expires_at < ?1) \
+         AND NOT EXISTS (SELECT 1 FROM runners r WHERE r.enrollment_id = enrollment_tokens.id)",
+        &[n(now - fctl_domain::enrollment::KEEP_ENDED_MS)],
+    )?
+    .run()
+    .await?;
+    if ended > 0 {
+        worker::console_log!("housekeeping: deleted {ended} ended enrollment tokens");
+    }
+    for (gone, action, reason) in expired
+        .iter()
+        .map(|g| {
+            (
+                g,
+                "workspace.runner_expired",
+                "Its runner was never approved.",
+            )
+        })
+        .chain(offline.iter().map(|g| {
+            (
+                g,
+                "workspace.runner_removed",
+                "Its runner stayed offline too long and was removed.",
+            )
+        }))
+    {
+        if let Err(e) = crate::api::runners::removed(env, &gone.id, reason).await {
+            worker::console_error!("removing runner {}: {}", gone.id, e.0.message);
+        }
+        let data = serde_json::json!({ "name": gone.name, "by": "fctl", "offline": action == "workspace.runner_removed" });
+        if let Err(e) = q(
+            db,
+            "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip, workspace_id) \
+             VALUES (?, ?, NULL, ?, ?, ?, NULL, ?)",
+            &[
+                s(&fctl_domain::ids::new_id("aud", now)),
+                n(now),
+                s(action),
+                s(&gone.id),
+                s(&data.to_string()),
+                crate::db::os(gone.workspace_id.as_deref()),
+            ],
+        )?
+        .run()
+        .await
+        {
+            worker::console_error!("auditing runner {}: {}", gone.id, e.0.message);
+        }
+    }
+    Ok(expired.len() + offline.len())
 }
 
 /// What a Worker from before workspaces left while a deploy's migration had

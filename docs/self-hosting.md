@@ -859,6 +859,19 @@ fctl login fctl.acme.dev            # or with its scheme: fctl login http://192.
 fctl host install
 ```
 
+Machines that autoscaling makes, or that nobody signs in on, enroll with a
+workspace's enrollment token instead, which its admins make on its Runners
+tab
+([Many machines and autoscaling](getting-started.md#many-machines-and-autoscaling)):
+
+```sh
+FCTL_SERVER=https://fctl.acme.dev FCTL_ENROLL_TOKEN=fctl_et_… fctl host install
+```
+
+The control plane enrolls them, holds the ones that wait for approval and
+removes the ones that go, in its own code and D1, the same with this image
+as on Cloudflare: nothing to set up for it.
+
 Hosts download their release from `https://fctl.sh/releases` by default; set
 `download_base` in `host.toml` to mirror them elsewhere (`fctl host image
 build` installs fctl in the default image from there too). They pull the
