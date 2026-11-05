@@ -1098,6 +1098,30 @@ impl Api {
         .await
     }
 
+    /// The diffs of a session's changes, as its agent last read them.
+    pub async fn session_diff(&self, session: &str) -> Result<SessionDiff> {
+        self.get(&format!("/sessions/{}/diff", enc(session))).await
+    }
+
+    /// One changed file's diff: `repo` is `owner/name` for another
+    /// repository than the session's primary one.
+    pub async fn file_diff(
+        &self,
+        session: &str,
+        repo: Option<&str>,
+        path: &str,
+    ) -> Result<fctl_proto::event::FileDiff> {
+        let repo = repo
+            .map(|r| format!("&repo={}", enc(r)))
+            .unwrap_or_default();
+        self.get(&format!(
+            "/sessions/{}/diff?path={}{repo}",
+            enc(session),
+            enc(path)
+        ))
+        .await
+    }
+
     pub fn session_ws_url(&self, session: &str, after: Option<u64>) -> String {
         let mut u = self.url(&format!("/sessions/{}/ws", enc(session)));
         if let Some(a) = after {

@@ -47,4 +47,10 @@ sandbox?: SandboxSize,
  * them ([`crate::session::ProjectSettings::package_caches`]) and the
  * host keeps them.
  */
-cache?: SandboxCache, };
+cache?: SandboxCache, 
+/**
+ * The host passes the repositories' diffs on to the control plane
+ * ([`AgentToHost::Diff`]), so fctl-agent reads them. Older hosts
+ * don't.
+ */
+diffs?: boolean, };
