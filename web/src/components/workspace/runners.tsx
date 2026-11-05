@@ -441,7 +441,7 @@ export function EnrollmentTokens({
     queryKey: keys.enrollmentTokens(w.id),
     queryFn: () => workspaces.enrollmentTokens(w.id),
   });
-  const me = useMe().data?.user.id;
+  const me = useMe().data?.user?.id;
   const [creating, setCreating] = useState(false);
   const [showEnded, setShowEnded] = useState(false);
   const [revoking, setRevoking] = useState<G.EnrollmentToken | null>(null);
