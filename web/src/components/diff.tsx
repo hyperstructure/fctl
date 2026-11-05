@@ -5,7 +5,16 @@
 // transcript's edits (session/tool.tsx).
 
 import { CircleSlash } from "lucide-react";
-import { type CSSProperties, Fragment, memo, type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  Fragment,
+  memo,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "@/lib/cn";
 import { type DiffLine, type Hunk, hiddenBefore, splitRows } from "@/lib/diff";
 import { type Token, tokenize } from "@/lib/highlight";
@@ -14,48 +23,50 @@ import { type Token, tokenize } from "@/lib/highlight";
 const MOST_HIGHLIGHTED = 6000;
 
 /**
- * Each line's tokens once Shiki has them: the lines before (context and
- * taken out) and after (context and added) of each hunk are highlighted as
- * pieces of code, so that what spans lines (a comment, a string) shows as
- * it does in the file. None until then, and for plain text.
+ * Each line's tokens once Shiki has them, by hunk and line: the lines before
+ * (context and taken out) and after (context and added) of each hunk are
+ * highlighted as pieces of code, so that what spans lines (a comment, a
+ * string) shows as it does in the file. None until then, and for plain
+ * text. Hunks made again with the same lines, as a transcript's edit's are
+ * at each render, keep theirs.
  */
-export function useTokens(hunks: Hunk[], lang: string): Map<DiffLine, Token[]> | undefined {
-  const [tokens, setTokens] = useState<Map<DiffLine, Token[]>>();
+export function useTokens(hunks: Hunk[], lang: string): Token[][][] | undefined {
+  const [tokens, setTokens] = useState<{ key: string; lines: Token[][][] }>();
+  const key = useMemo(
+    () =>
+      `${lang}\u0000${hunks.map((h) => h.lines.map((l) => l.kind[0] + l.text).join("\n")).join("\u0001")}`,
+    [hunks, lang],
+  );
+  const latest = useRef(hunks);
+  latest.current = hunks;
   useEffect(() => {
-    setTokens(undefined);
+    const hunks = latest.current;
     const total = hunks.reduce((n, h) => n + h.lines.length, 0);
     if (lang === "text" || !total || total > MOST_HIGHLIGHTED) return;
     let alive = true;
     (async () => {
-      const found = new Map<DiffLine, Token[]>();
+      const found: Token[][][] = [];
       for (const h of hunks) {
-        const before = h.lines.filter((l) => l.kind !== "add");
-        const after = h.lines.filter((l) => l.kind !== "del");
-        const [old, now] = await Promise.all([
-          tokenize(
-            before.map((l) => l.text),
-            lang,
-          ),
-          tokenize(
-            after.map((l) => l.text),
-            lang,
-          ),
-        ]);
-        if (!alive) return;
-        if (!old || !now) return;
-        for (const [i, l] of before.entries()) found.set(l, old[i] ?? []);
+        const before = h.lines.flatMap((l, i) => (l.kind !== "add" ? [i] : []));
+        const after = h.lines.flatMap((l, i) => (l.kind !== "del" ? [i] : []));
+        const text = (at: number[]) => at.map((i) => h.lines[i]?.text ?? "");
+        const [old, now] = await Promise.all([tokenize(text(before), lang), tokenize(text(after), lang)]);
+        if (!alive || !old || !now) return;
+        const lines: Token[][] = [];
+        for (const [k, i] of before.entries()) lines[i] = old[k] ?? [];
         // Context lines take their colors from the file as it is now.
-        for (const [i, l] of after.entries()) found.set(l, now[i] ?? []);
+        for (const [k, i] of after.entries()) lines[i] = now[k] ?? [];
+        found.push(lines);
         // Let the page breathe between hunks.
         await new Promise((r) => setTimeout(r));
       }
-      if (alive) setTokens(found);
+      if (alive) setTokens({ key, lines: found });
     })().catch(() => {});
     return () => {
       alive = false;
     };
-  }, [hunks, lang]);
-  return tokens;
+  }, [key, lang]);
+  return tokens?.key === key ? tokens.lines : undefined;
 }
 
 /** A piece of a line: its text, its colors, and whether it changed. */
@@ -161,7 +172,19 @@ export function DiffLines({
   headers?: boolean;
   className?: string;
 }) {
-  const tokens = useTokens(hunks, lang);
+  const highlighted = useTokens(hunks, lang);
+  // Each line's tokens, for the rows side by side as below each other.
+  const tokens = useMemo(() => {
+    if (!highlighted) return undefined;
+    const byLine = new Map<DiffLine, Token[]>();
+    for (const [i, h] of hunks.entries()) {
+      for (const [j, l] of h.lines.entries()) {
+        const t = highlighted[i]?.[j];
+        if (t) byLine.set(l, t);
+      }
+    }
+    return byLine;
+  }, [highlighted, hunks]);
   // The gutters are as wide as the longest number.
   const digits = useMemo(() => {
     let most = 0;

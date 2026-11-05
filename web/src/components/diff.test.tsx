@@ -4,14 +4,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parsePatch } from "@/lib/diff";
 import { DiffLines } from "./diff";
 
-// No Shiki in tests: lines show as plain text.
-vi.mock("@/lib/highlight", () => ({ tokenize: () => Promise.resolve(undefined) }));
+// No Shiki in tests: lines show as plain text, unless a test colors them.
+const highlight = vi.hoisted(() => ({
+  tokenize: vi.fn((_lines: string[], _lang: string): Promise<unknown> => Promise.resolve(undefined)),
+}));
+vi.mock("@/lib/highlight", () => highlight);
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const roots: (() => void)[] = [];
 afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
+  highlight.tokenize.mockReset();
+  highlight.tokenize.mockImplementation(() => Promise.resolve(undefined));
 });
 
 function render(node: React.ReactNode) {
@@ -102,6 +107,30 @@ describe("a diff's lines", () => {
     ]);
     // Side by side, long lines wrap.
     expect(c.querySelector(".diff")?.classList.contains("diff-wrap")).toBe(true);
+  });
+
+  it("keep their colors when their hunks are made again with the same lines", async () => {
+    highlight.tokenize.mockImplementation((lines: string[]) =>
+      Promise.resolve(lines.map((l) => [{ content: l, style: { "--shiki-dark": "#abcdef" } }])),
+    );
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const draw = () => act(() => root.render(<DiffLines hunks={parsePatch(PATCH)} lang="rust" />));
+    draw();
+    roots.push(() => {
+      act(() => root.unmount());
+      container.remove();
+    });
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    const colored = () => container.querySelectorAll(".diff-code span[style]").length;
+    expect(colored()).toBeGreaterThan(0);
+    const asked = highlight.tokenize.mock.calls.length;
+    // A transcript's edit makes its hunks again at each render.
+    draw();
+    expect(colored()).toBeGreaterThan(0);
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(highlight.tokenize.mock.calls.length).toBe(asked);
   });
 
   it("go without numbers when nobody knows them", () => {
