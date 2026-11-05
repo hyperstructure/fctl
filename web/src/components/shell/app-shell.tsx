@@ -35,6 +35,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
+import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import {
   keys,
@@ -80,6 +81,7 @@ export function AppShell() {
   usePaletteKeys(openPalette);
   useFeed(); // live updates for every page
   usePush();
+  useGravatarNews();
   useFactorsWatch();
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
@@ -127,6 +129,15 @@ export function AppShell() {
       <CommandPalette open={palette} onClose={() => setPalette(false)} onNavigate={dropDrawer} />
     </div>
   );
+}
+
+/** Says once that their picture is their Gravatar now: where it came from, and where to change it. */
+function useGravatarNews() {
+  const { data: me } = useMe();
+  const picture = gravatarPicture(me);
+  useEffect(() => {
+    if (gravatarNews(picture)) toast("Your picture is your Gravatar now. Change it in Settings → Profile.");
+  }, [picture]);
 }
 
 /** Notifications in this browser: keep its subscription current, and open what a click is about. */

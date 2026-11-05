@@ -113,6 +113,40 @@ impl UserStatus {
     }
 }
 
+/// Where someone's picture came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum AvatarSource {
+    /// They uploaded it.
+    Upload,
+    /// Their Google account's, copied as they linked it or signed up with
+    /// it.
+    Google,
+    /// Their Gravatar's, copied while they have no picture of their own
+    /// ([`Me::gravatar`]).
+    Gravatar,
+}
+
+impl AvatarSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Google => "google",
+            Self::Gravatar => "gravatar",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "upload" => Some(Self::Upload),
+            "google" => Some(Self::Google),
+            "gravatar" => Some(Self::Gravatar),
+            _ => None,
+        }
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -201,6 +235,15 @@ pub struct Me {
     /// them, and each workspace knows you by one.
     #[serde(default)]
     pub emails: Vec<EmailAddress>,
+    /// Where your picture (`user.avatar_url`) came from: absent when you
+    /// have none, or it is one from before fctl recorded that.
+    pub avatar_source: Option<AvatarSource>,
+    /// Whether you show your Gravatar while you have no picture of your
+    /// own (on unless you turn it off: [`UpdateMeRequest::gravatar`]). fctl
+    /// looks it up by your primary address, keeps a copy and looks again
+    /// once a day. Absent where the instance's admins turned Gravatar off
+    /// ([`InstanceSettings::gravatar`]).
+    pub gravatar: Option<bool>,
     /// The access token of the request, when it is one. A limited one sees
     /// only `user` and this here: the rest stays empty.
     pub token: Option<TokenInfo>,
@@ -288,12 +331,18 @@ pub struct UpdateMeRequest {
     /// What agents call you (`User.preferred_name`); an empty one leaves
     /// them your first names.
     pub preferred_name: Option<String>,
-    /// `""` removes your picture. `PUT /api/v1/me/avatar` uploads one: an
-    /// address is refused, unless it is the one you have.
+    /// `""` removes your picture, and turns `gravatar` off. `PUT
+    /// /api/v1/me/avatar` uploads one: an address is refused, unless it is
+    /// the one you have.
     pub avatar_url: Option<String>,
     /// The address commits credit you with (`Me.commit_email`); an empty
     /// one removes it.
     pub commit_email: Option<String>,
+    /// `true` shows your Gravatar while you have no picture of your own
+    /// (`Me.gravatar`), looking it up at once; `false` stops that, and
+    /// removes the picture if it is your Gravatar. Removing your picture
+    /// (`DELETE /api/v1/me/avatar`) turns it off too.
+    pub gravatar: Option<bool>,
 }
 
 #[skip_serializing_none]
@@ -1304,7 +1353,7 @@ pub struct AuditList {
 }
 
 /// `GET /api/v1/admin/settings`: what admins decide for the whole instance.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct InstanceSettings {
@@ -1334,6 +1383,24 @@ pub struct InstanceSettings {
     /// default; only the primary instance owner turns it on or off, and
     /// turning it off is one of those actions.
     pub verify_sensitive_actions: bool,
+    /// People who have no picture of their own show their Gravatar, unless
+    /// they turn that off ([`Me::gravatar`]): the control plane looks it up
+    /// on gravatar.com by the SHA-256 hash of their primary address, once a
+    /// day, and keeps a copy. On by default. Turning it off removes those
+    /// copies, and fctl looks nothing up.
+    pub gravatar: bool,
+}
+
+impl Default for InstanceSettings {
+    fn default() -> Self {
+        Self {
+            publish_screenshots: false,
+            require_two_factor: false,
+            two_factor_google: false,
+            verify_sensitive_actions: false,
+            gravatar: true,
+        }
+    }
 }
 
 /// `PATCH /api/v1/admin/settings`: absent fields stay as they are.
@@ -1346,6 +1413,7 @@ pub struct UpdateInstanceSettingsRequest {
     pub two_factor_google: Option<bool>,
     /// Only the primary instance owner changes it.
     pub verify_sensitive_actions: Option<bool>,
+    pub gravatar: Option<bool>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────

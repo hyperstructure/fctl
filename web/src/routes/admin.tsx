@@ -1672,6 +1672,23 @@ function InstanceSettings() {
           />
         </div>
       </Section>
+      <Section title="Profile pictures" description="What people show where they haven't uploaded a picture.">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Gravatar
+            <span className="block text-[12.5px] text-ink-4">
+              People who have no picture of their own show their Gravatar, unless they turn that off in their
+              profile. fctl looks each one up on gravatar.com by the SHA-256 hash of their primary address,
+              once a day, and keeps a copy here. Off removes those copies, and fctl looks nothing up.
+            </span>
+          </span>
+          <Switch
+            checked={s?.gravatar ?? true}
+            onChange={(v) => save.mutate({ gravatar: v })}
+            label="Gravatar"
+          />
+        </div>
+      </Section>
       <ReservedSlugs />
     </>
   );
@@ -1802,6 +1819,10 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
     return s.two_factor_google
       ? "Google sign-ins ask for a code too"
       : "Google sign-ins ask only those who chose that";
+  if (b.gravatar !== undefined)
+    return s.gravatar
+      ? "People without a picture of their own show their Gravatar"
+      : "Gravatar is off: fctl removed the pictures it copied";
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
@@ -1828,6 +1849,7 @@ function SignInSettings({
     require_two_factor: false,
     two_factor_google: false,
     verify_sensitive_actions: false,
+    gravatar: true,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

@@ -37,4 +37,12 @@ two_factor_google: boolean,
  * default; only the primary instance owner turns it on or off, and
  * turning it off is one of those actions.
  */
-verify_sensitive_actions: boolean, };
+verify_sensitive_actions: boolean, 
+/**
+ * People who have no picture of their own show their Gravatar, unless
+ * they turn that off ([`Me::gravatar`]): the control plane looks it up
+ * on gravatar.com by the SHA-256 hash of their primary address, once a
+ * day, and keeps a copy. On by default. Turning it off removes those
+ * copies, and fctl looks nothing up.
+ */
+gravatar: boolean, };

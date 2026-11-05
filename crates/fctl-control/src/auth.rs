@@ -425,6 +425,8 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
         passkeys: crate::api::passkeys::list(ctx, &user.id).await?,
         emails: crate::api::emails::list(ctx, user).await?,
         token: None,
+        avatar_source: user.picture().source.filter(|_| user.avatar_url.is_some()),
+        gravatar: ctx.settings().gravatar.then_some(user.gravatar),
     })
 }
 

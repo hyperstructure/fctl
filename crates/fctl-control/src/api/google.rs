@@ -354,11 +354,16 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     .run()
     .await?;
     insert_identity(ctx, id.as_str(), &claims, Some(&email)).await?;
-    adopt_picture(ctx, id.as_str(), &claims).await;
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| not_found("User"))?;
     auth::start_web_session(ctx, &user, false).await?;
+    // Their Gravatar first, which only people who chose a picture have;
+    // else Google's, which is a letter for those who didn't.
+    let user = crate::api::auth::new_gravatar(ctx, user).await?;
+    if user.avatar_url.is_none() {
+        adopt_picture(ctx, &user.id, &claims).await;
+    }
     ctx.audit(
         "user.signup",
         Some(&user.id),

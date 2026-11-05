@@ -210,6 +210,14 @@ impl<'a> World<'a> {
         dev::ok("setting the instance up", &res)?;
         let cookie = res.2.context("no session cookie from the setup")?;
         self.ops = token_for(&cookie, "cargo xtask demo")?;
+        // The cast's pictures are the ones it uploads: nobody's Gravatar,
+        // which a made-up address might yet have.
+        self.api(
+            "ops",
+            "PATCH",
+            "/admin/settings",
+            Some(json!({ "gravatar": false })),
+        )?;
         for p in &self.cast.people {
             let invite = self.api(
                 "ops",

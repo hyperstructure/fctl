@@ -1,9 +1,12 @@
-//! Avatars: the pictures people and workspaces upload, and the one a
-//! person's Google account brings when they link it.
+//! Avatars: the pictures people and workspaces upload, the one a person's
+//! Google account brings when they link it, and their Gravatar while they
+//! have none of their own.
 
 use crate::files;
 use crate::validate::Result;
 use fctl_proto::ApiError;
+use fctl_proto::api::AvatarSource;
+use sha2::{Digest, Sha256};
 
 /// The largest avatar image, in bytes. The web app makes them 256 px square.
 pub const MAX_BYTES: usize = 256 * 1000;
@@ -73,6 +76,57 @@ pub fn google_picture(picture: &str) -> Option<String> {
     Some(format!("https://{host}/{path}"))
 }
 
+/// How long fctl waits before it looks at someone's Gravatar again: a new
+/// one shows the next day, and a removed one goes.
+pub const GRAVATAR_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Where to fetch the Gravatar of `email`, 256 px square, by the SHA-256
+/// hash of the address trimmed and in lower case, as Gravatar asks: the
+/// address itself never leaves the instance. `d=404` makes an address
+/// without one answer 404 rather than with a made-up picture; the rating
+/// stays Gravatar's default, `g`, the pictures suitable for everyone.
+pub fn gravatar_url(email: &str) -> String {
+    let hash = Sha256::digest(email.trim().to_lowercase().as_bytes());
+    format!(
+        "https://gravatar.com/avatar/{}?s=256&d=404",
+        hex::encode(hash)
+    )
+}
+
+/// Someone's picture, as far as their Gravatar goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Picture {
+    /// They have one (`users.avatar_url`).
+    pub some: bool,
+    /// Where it came from, when fctl recorded that.
+    pub source: Option<AvatarSource>,
+}
+
+impl Picture {
+    /// A picture of their own: one they uploaded, their Google account's,
+    /// or an address from before fctl kept pictures. Their Gravatar never
+    /// replaces it.
+    pub fn own(self) -> bool {
+        self.some && self.source != Some(AvatarSource::Gravatar)
+    }
+}
+
+/// Whether to look up someone's Gravatar now: the instance's admins and
+/// they themselves allow it, they have no picture of their own, and fctl
+/// hasn't looked in the last [`GRAVATAR_EVERY_MS`] (`checked_at`).
+pub fn gravatar_due(
+    instance: bool,
+    theirs: bool,
+    picture: Picture,
+    checked_at: Option<i64>,
+    now: i64,
+) -> bool {
+    instance
+        && theirs
+        && !picture.own()
+        && checked_at.is_none_or(|at| now - at >= GRAVATAR_EVERY_MS || at > now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +153,54 @@ mod tests {
             user_path("usr_01", 1_700_000_000_000),
             "/api/v1/users/usr_01/avatar?v=1700000000000"
         );
+    }
+
+    #[test]
+    fn gravatars_are_looked_up_by_the_hash_of_the_address() {
+        // sha256("someone@example.com").
+        assert_eq!(
+            gravatar_url("someone@example.com"),
+            "https://gravatar.com/avatar/72497f475e4f76d0b28f57c73a084ece576d170874eba3ee2609d9afe4b71aab?s=256&d=404"
+        );
+        // Gravatar hashes the address trimmed and in lower case.
+        assert_eq!(
+            gravatar_url("  Someone@Example.COM "),
+            gravatar_url("someone@example.com")
+        );
+        assert!(!gravatar_url("someone@example.com").contains("someone"));
+    }
+
+    #[test]
+    fn gravatars_stand_in_only_for_pictures_people_have_not_chosen() {
+        const DAY: i64 = GRAVATAR_EVERY_MS;
+        let now = 100 * DAY;
+        let none = Picture {
+            some: false,
+            source: None,
+        };
+        let gravatar = Picture {
+            some: true,
+            source: Some(AvatarSource::Gravatar),
+        };
+        // Never looked, or a day ago: due.
+        assert!(gravatar_due(true, true, none, None, now));
+        assert!(gravatar_due(true, true, none, Some(now - DAY), now));
+        assert!(gravatar_due(true, true, gravatar, Some(now - DAY), now));
+        // Within the day: not yet. A time ahead of the clock doesn't wait.
+        assert!(!gravatar_due(true, true, none, Some(now - DAY + 1), now));
+        assert!(!gravatar_due(true, true, gravatar, Some(now - 1), now));
+        assert!(gravatar_due(true, true, none, Some(now + DAY), now));
+        // Turned off, by the instance or by them.
+        assert!(!gravatar_due(false, true, none, None, now));
+        assert!(!gravatar_due(true, false, none, None, now));
+        // A picture of their own: uploaded, Google's, or an address from
+        // before fctl recorded where pictures came from.
+        for source in [Some(AvatarSource::Upload), Some(AvatarSource::Google), None] {
+            let own = Picture { some: true, source };
+            assert!(own.own());
+            assert!(!gravatar_due(true, true, own, None, now));
+        }
+        assert!(!gravatar.own() && !none.own());
     }
 
     #[test]
