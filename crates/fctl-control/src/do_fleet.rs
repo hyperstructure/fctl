@@ -277,6 +277,9 @@ pub struct FleetObject {
     /// runner id → the workspaces it serves, read from D1 before each
     /// dispatch.
     runner_workspaces: RefCell<std::collections::HashMap<String, Serves>>,
+    /// The workspaces where runners that enrolled wait for approval, read
+    /// with them: a session that no runner takes says so.
+    waiting_workspaces: RefCell<HashSet<String>>,
     /// session id → when it last asked for credentials
     /// (`fctl_domain::throttle`).
     credential_asks: RefCell<std::collections::HashMap<String, std::collections::VecDeque<i64>>>,
@@ -319,6 +322,7 @@ impl DurableObject for FleetObject {
             refreshing: RefCell::new(HashSet::new()),
             dispatching: RefCell::new(false),
             runner_workspaces: RefCell::new(std::collections::HashMap::new()),
+            waiting_workspaces: RefCell::new(HashSet::new()),
             credential_asks: RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -2595,6 +2599,9 @@ impl FleetObject {
             runners.values().any(|s| s.takes(want)),
             runners.values().any(|s| s.runs(&want.workspace_id)),
             others_online,
+            self.waiting_workspaces
+                .borrow()
+                .contains(&want.workspace_id),
         )
     }
 
@@ -2634,6 +2641,20 @@ impl FleetObject {
             serves.workspaces.push((r.workspace_id, r.personal));
         }
         *self.runner_workspaces.borrow_mut() = map;
+        #[derive(Deserialize)]
+        struct W {
+            workspace_id: String,
+        }
+        let waiting: Vec<W> = match crate::db::q(
+            db,
+            "SELECT DISTINCT workspace_id FROM runners WHERE pending_until IS NOT NULL AND workspace_id IS NOT NULL",
+            &[],
+        ) {
+            Ok(q) => q.all().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        *self.waiting_workspaces.borrow_mut() =
+            waiting.into_iter().map(|w| w.workspace_id).collect();
     }
 
     /// People's workspaces changed: the sessions that run on their Claude

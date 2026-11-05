@@ -326,8 +326,16 @@ impl TokenWait {
 /// they keep their sessions in the workspace on their own runners.
 /// `takes`: one of the workspace's runners that is offline now would take
 /// it; `any`: the workspace has runners at all; `others_online`: some that
-/// run only their owners' sessions are online.
-pub fn no_runner_takes(own: Option<&str>, takes: bool, any: bool, others_online: bool) -> String {
+/// run only their owners' sessions are online; `waiting`: runners that
+/// enrolled in it wait for its admins' approval, and would take it once
+/// approved.
+pub fn no_runner_takes(
+    own: Option<&str>,
+    takes: bool,
+    any: bool,
+    others_online: bool,
+    waiting: bool,
+) -> String {
     match own.map(str::trim) {
         Some(name) => {
             let name = if name.is_empty() { "its person" } else { name };
@@ -343,6 +351,7 @@ pub fn no_runner_takes(own: Option<&str>, takes: bool, any: bool, others_online:
         }
         None if takes && others_online => "Waiting for a runner: the ones online here run only their owners' sessions, and the others are offline".into(),
         None if takes => Wait::Workspace.reason(),
+        None if waiting => "Waiting for a runner: one that enrolled in this workspace waits for its admins' approval on its Runners tab".into(),
         None if any => "Waiting for a runner: this workspace's runners run only their owners' sessions. Its admins add one for everyone's on its Runners tab.".into(),
         None => "Waiting for a runner: this workspace has none yet. Its admins add one on its Runners tab.".into(),
     }
@@ -957,25 +966,45 @@ mod tests {
     }
 
     #[test]
+    fn sessions_say_when_the_runner_that_would_take_them_waits_for_approval() {
+        assert_eq!(
+            no_runner_takes(None, false, false, false, true),
+            "Waiting for a runner: one that enrolled in this workspace waits for its admins' approval on its Runners tab"
+        );
+        // A runner that takes it, offline, says that first; someone who
+        // keeps to their own runners waits for theirs.
+        assert_eq!(
+            no_runner_takes(None, true, true, false, true),
+            Wait::Workspace.reason()
+        );
+        assert!(
+            no_runner_takes(Some("Ada"), false, true, false, true)
+                .starts_with("Waiting for one of Ada's")
+        );
+    }
+
+    #[test]
     fn sessions_say_whose_runners_they_wait_for() {
         assert_eq!(
-            no_runner_takes(None, true, true, false),
+            no_runner_takes(None, true, true, false, false),
             "Waiting for a runner: none of this workspace's runners is online"
         );
-        assert!(no_runner_takes(None, true, true, true).contains("the others are offline"));
-        assert!(no_runner_takes(None, false, false, false).contains("has none yet"));
-        assert!(no_runner_takes(None, false, true, true).contains("only their owners' sessions"));
+        assert!(no_runner_takes(None, true, true, true, false).contains("the others are offline"));
+        assert!(no_runner_takes(None, false, false, false, false).contains("has none yet"));
+        assert!(
+            no_runner_takes(None, false, true, true, false).contains("only their owners' sessions")
+        );
         assert_eq!(
-            no_runner_takes(Some("Ada Lovelace"), true, true, true),
+            no_runner_takes(Some("Ada Lovelace"), true, true, true, false),
             "Waiting for one of Ada Lovelace's runners: their sessions in this workspace run only on their own, and none of those is online"
         );
         assert!(
-            no_runner_takes(Some("Ada Lovelace"), false, true, true).ends_with(
+            no_runner_takes(Some("Ada Lovelace"), false, true, true, false).ends_with(
                 "none of theirs runs its sessions yet. They add one on its Runners tab."
             )
         );
         assert!(
-            no_runner_takes(Some(" "), true, true, false)
+            no_runner_takes(Some(" "), true, true, false, false)
                 .starts_with("Waiting for one of its person's runners")
         );
     }
