@@ -77,18 +77,21 @@ impl Uplink {
     }
 }
 
-/// What SessionDO got of the diffs over this connection: each file's digest.
-type Sent = HashMap<(Option<String>, String), String>;
+/// What SessionDO got of the diffs over this connection: each file's
+/// digest. None before the connection's first frame: SessionDO may still
+/// keep diffs from an earlier one, which that frame's `keep` lets go.
+type Sent = Option<HashMap<(Option<String>, String), String>>;
 
 /// The frames that bring SessionDO up to `files`, given what it `sent`
 /// already over this connection, which they then add to: each lists every
 /// file (`keep`), and the diffs SessionDO lacks are spread over them, at
 /// most [`diffs::MAX_FRAME_BYTES`] a frame but for one larger diff alone.
-/// None when SessionDO has them all, and no others.
+/// None when SessionDO has them all, and no others; at least one over a
+/// new connection, even for no files.
 fn diff_frames(files: &[FileDiff], sent: &mut Sent) -> Vec<UplinkUp> {
-    let lacks = |f: &&FileDiff| sent.get(&(f.repo.clone(), f.path.clone())) != Some(&f.digest);
-    let new: Vec<&FileDiff> = files.iter().filter(lacks).collect();
-    if new.is_empty() && sent.len() == files.len() {
+    let had = |f: &FileDiff| sent.as_ref()?.get(&(f.repo.clone(), f.path.clone()));
+    let new: Vec<&FileDiff> = files.iter().filter(|f| had(f) != Some(&f.digest)).collect();
+    if new.is_empty() && sent.as_ref().is_some_and(|s| s.len() == files.len()) {
         return Vec::new();
     }
     let keep: Vec<DiffKey> = files.iter().map(FileDiff::key).collect();
@@ -112,10 +115,12 @@ fn diff_frames(files: &[FileDiff], sent: &mut Sent) -> Vec<UplinkUp> {
     if !batch.is_empty() || frames.is_empty() {
         frames.push(UplinkUp::Diff { keep, files: batch });
     }
-    *sent = files
-        .iter()
-        .map(|f| ((f.repo.clone(), f.path.clone()), f.digest.clone()))
-        .collect();
+    *sent = Some(
+        files
+            .iter()
+            .map(|f| ((f.repo.clone(), f.path.clone()), f.digest.clone()))
+            .collect(),
+    );
     frames
 }
 
@@ -183,7 +188,7 @@ async fn run(
         for m in pending_logs.drain(..) {
             let _ = ws::send_json(&mut sink, &m).await;
         }
-        let mut sent = Sent::new();
+        let mut sent: Sent = None;
         if let Some(files) = &last_diffs {
             for frame in diff_frames(files, &mut sent) {
                 let _ = ws::send_json(&mut sink, &frame).await;
@@ -264,7 +269,7 @@ mod tests {
 
     #[test]
     fn a_connection_gets_every_diff_then_those_that_change() {
-        let mut sent = Sent::new();
+        let mut sent: Sent = None;
         let (a, b) = (file("a.rs", "a\n"), file("b.rs", "b\n"));
         let frames = diff_frames(&[a.clone(), b.clone()], &mut sent);
         assert_eq!(sent_in(&frames), [vec!["a.rs", "b.rs"]]);
@@ -286,12 +291,15 @@ mod tests {
         };
         assert_eq!(keep, &[a.key()]);
         // A new connection starts over.
-        let frames = diff_frames(std::slice::from_ref(&a), &mut Sent::new());
+        let frames = diff_frames(std::slice::from_ref(&a), &mut None);
         assert_eq!(sent_in(&frames), [vec!["a.rs"]]);
         // And none at all, once there were some: SessionDO forgets them.
         let frames = diff_frames(&[], &mut sent);
         assert_eq!(sent_in(&frames), [Vec::<String>::new()]);
         assert!(diff_frames(&[], &mut sent).is_empty());
+        // None over a new connection: SessionDO may keep an earlier one's.
+        let frames = diff_frames(&[], &mut None);
+        assert_eq!(sent_in(&frames), [Vec::<String>::new()]);
     }
 
     #[test]
@@ -302,7 +310,7 @@ mod tests {
             f
         };
         let files: Vec<FileDiff> = ["a", "b", "c", "d", "e"].into_iter().map(big).collect();
-        let frames = diff_frames(&files, &mut Sent::new());
+        let frames = diff_frames(&files, &mut None);
         // Each takes about half a frame, which also lists every file: one
         // a frame, each frame within bounds, every file once.
         assert_eq!(
@@ -314,7 +322,7 @@ mod tests {
         }
         // Small ones share a frame.
         let small: Vec<FileDiff> = (0..50).map(|i| file(&format!("f{i}"), "z\n")).collect();
-        assert_eq!(diff_frames(&small, &mut Sent::new()).len(), 1);
+        assert_eq!(diff_frames(&small, &mut None).len(), 1);
     }
 
     #[test]
