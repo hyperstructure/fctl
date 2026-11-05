@@ -2,6 +2,17 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.29.0 (2026-11-05)
+
+### Features
+
+- Open each changed file's diff, highlighted, from the session page ([#386](https://github.com/hyperstructure/fctl/pull/386))
+
+### Fixes
+
+- Say when a GitHub account has no repository to connect yet ([#384](https://github.com/hyperstructure/fctl/pull/384))
+- Run review agents on the subscription of whoever changes them ([#385](https://github.com/hyperstructure/fctl/pull/385))
+
 ## 0.28.1 (2026-11-05)
 
 ### Features
