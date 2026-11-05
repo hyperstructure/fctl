@@ -851,6 +851,20 @@ pub async fn diffs_at(
     st: &GitState,
     repo: Option<&str>,
 ) -> Vec<FileDiff> {
+    diffs_within(dir, home, base, followed, st, repo, MOST_READ).await
+}
+
+/// [`diffs_at`], reading at most `most` bytes of git's diff and of
+/// untracked files.
+async fn diffs_within(
+    dir: &Path,
+    home: &Path,
+    base: &str,
+    followed: Option<(&RepoRef, &Pulls)>,
+    st: &GitState,
+    repo: Option<&str>,
+    most: usize,
+) -> Vec<FileDiff> {
     let mut found = Vec::new();
     if st.files.is_empty() || st.head.is_none() {
         return found;
@@ -888,28 +902,41 @@ pub async fn diffs_at(
     }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let index = IndexCopy::of(dir, home).await;
-    let mut parsed = match run_with(dir, home, "git", &args, &index.env()).await {
-        Ok(o) if o.ok => diffs::parse(&o.stdout),
-        Ok(o) => {
-            tracing::debug!("git diff in {}: {}", dir.display(), o.stderr.trim());
-            Vec::new()
+    // What fctl-agent reads at most, of git's diff and of untracked files
+    // both: a branch can change far more than a session keeps.
+    let mut left = most;
+    let (mut parsed, cut) = match run_bounded(dir, home, "git", &args, &index.env(), left).await {
+        Ok(read) if read.ok || read.cut => {
+            left -= read.out.len();
+            let mut parsed = diffs::parse(&read.out);
+            // The last file's part may be cut short: it is too large.
+            if read.cut {
+                parsed.pop();
+            }
+            (parsed, read.cut)
+        }
+        Ok(_) => {
+            tracing::debug!("git diff in {} failed", dir.display());
+            (Vec::new(), false)
         }
         Err(e) => {
             tracing::debug!("git diff in {}: {e:#}", dir.display());
-            Vec::new()
+            (Vec::new(), false)
         }
     };
     for f in &st.files {
+        let counted = || format!("{:?} {:?}", f.additions, f.deletions);
         let diff = if f.status == "untracked" {
-            untracked_diff(dir, &f.path)
+            untracked_diff(dir, &f.path, &mut left)
         } else if too_large.iter().any(|t| t.path == f.path) {
-            let counted = format!("{:?} {:?}", f.additions, f.deletions);
-            Some(diffs::too_large(&f.path, &counted))
+            Some(diffs::too_large(&f.path, &counted()))
         } else {
-            parsed
-                .iter()
-                .position(|d| d.path == f.path)
-                .map(|i| parsed.swap_remove(i))
+            match parsed.iter().position(|d| d.path == f.path) {
+                Some(i) => Some(parsed.swap_remove(i)),
+                // Past what fctl-agent read of git's diff.
+                None if cut => Some(diffs::too_large(&f.path, &counted())),
+                None => None,
+            }
         };
         if let Some(mut d) = diff {
             d.repo = repo.map(str::to_owned);
@@ -921,11 +948,16 @@ pub async fn diffs_at(
     found
 }
 
+/// The most of git's diff and of untracked files fctl-agent reads for one
+/// refresh of a session's diffs: twice what a session keeps.
+const MOST_READ: usize = 2 * diffs::MAX_SESSION_BYTES;
+
 /// The diff of an untracked file in `dir`: what [`diffs::untracked`] makes
-/// of its first bytes, as many as a session keeps of one file's diff. A
-/// symbolic link's is the path it points to, as git has it; there is none
-/// of anything else that isn't a regular file (a pipe would never end).
-fn untracked_diff(dir: &Path, path: &str) -> Option<FileDiff> {
+/// of its first bytes, as many as a session keeps of one file's diff and
+/// as are `left` to read, which it takes them from. A symbolic link's is
+/// the path it points to, as git has it; there is none of anything else
+/// that isn't a regular file (a pipe would never end).
+fn untracked_diff(dir: &Path, path: &str, left: &mut usize) -> Option<FileDiff> {
     use std::io::Read;
     let full = dir.join(path);
     let meta = std::fs::symlink_metadata(&full).ok()?;
@@ -940,16 +972,78 @@ fn untracked_diff(dir: &Path, path: &str) -> Option<FileDiff> {
     if !meta.is_file() {
         return None;
     }
-    let most = diffs::MAX_PATCH_BYTES as u64;
+    if *left == 0 {
+        // Nothing left to read with: too large, as its size and time say.
+        let modified = meta.modified().ok();
+        let what = format!("{} {modified:?}", meta.len());
+        return Some(diffs::too_large(path, &what));
+    }
+    let most = diffs::MAX_PATCH_BYTES.min(*left);
     let mut bytes = Vec::new();
     std::fs::File::open(&full)
         .ok()?
-        .take(most + 1)
+        .take(most as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    let whole = bytes.len() as u64 <= most;
-    bytes.truncate(diffs::MAX_PATCH_BYTES);
+    let whole = bytes.len() <= most;
+    bytes.truncate(most);
+    *left -= bytes.len();
     Some(diffs::untracked(path, &bytes, whole))
+}
+
+/// What [`run_bounded`] read of a command's output.
+struct Bounded {
+    out: String,
+    /// The output went on past what was read: the command was killed.
+    cut: bool,
+    /// It ended, successfully.
+    ok: bool,
+}
+
+/// [`run_with`] for a command whose output can be larger than fctl-agent
+/// should hold: its first `most` bytes, after which it is killed.
+async fn run_bounded(
+    dir: &Path,
+    home: &Path,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &OsStr)],
+    most: usize,
+) -> Result<Bounded> {
+    use tokio::io::AsyncReadExt;
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("running {program}"))?;
+    let mut out = Vec::new();
+    child
+        .stdout
+        .take()
+        .context("stdout")?
+        .take(most as u64 + 1)
+        .read_to_end(&mut out)
+        .await?;
+    let cut = out.len() > most;
+    let ok = if cut {
+        let _ = child.kill().await;
+        out.truncate(most);
+        false
+    } else {
+        child.wait().await?.success()
+    };
+    Ok(Bounded {
+        out: String::from_utf8_lossy(&out).into_owned(),
+        cut,
+        ok,
+    })
 }
 
 /// Pushes the checked-out branch when it has commits the remote lacks.
@@ -2668,24 +2762,93 @@ cat "$answer"
     }
 
     #[tokio::test]
+    async fn what_is_read_of_the_diffs_has_a_limit() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        commit(&p.workdir, &p.home, "a.txt", "a\n", "Add a.txt").await?;
+        commit(
+            &p.workdir,
+            &p.home,
+            "b.txt",
+            &"b\n".repeat(400),
+            "Add b.txt",
+        )
+        .await?;
+        std::fs::write(p.workdir.join("c.txt"), "c\n")?;
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        let read = |most| diffs_within(&p.workdir, &p.home, "main", None, &st, None, most);
+        let shown = |diffs: Vec<FileDiff>| -> Vec<(String, bool, bool)> {
+            diffs
+                .into_iter()
+                .map(|d| (d.path, d.patch.is_some(), d.too_large))
+                .collect()
+        };
+        let all = vec![
+            ("a.txt".to_owned(), true, false),
+            ("b.txt".to_owned(), true, false),
+            ("c.txt".to_owned(), true, false),
+        ];
+        assert_eq!(shown(read(MOST_READ).await), all);
+        // Enough for a.txt's part of git's diff, not b.txt's, and nothing
+        // left for the untracked file.
+        let cut = shown(read(400).await);
+        assert_eq!(
+            cut,
+            [
+                ("a.txt".to_owned(), true, false),
+                ("b.txt".to_owned(), false, true),
+                ("c.txt".to_owned(), false, true),
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_command_s_output_is_read_up_to_a_limit() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let script = ["-c", "yes | head -c 100000"];
+        let long = run_bounded(dir.path(), dir.path(), "sh", &script, &[], 1000).await?;
+        assert!(long.cut && !long.ok);
+        assert_eq!(long.out.len(), 1000);
+        let short =
+            run_bounded(dir.path(), dir.path(), "sh", &["-c", "echo hi"], &[], 1000).await?;
+        assert!(!short.cut && short.ok);
+        assert_eq!(short.out, "hi\n");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn untracked_files_that_are_not_regular_have_their_own_diffs() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let work = dir.path();
         std::fs::write(work.join("big.log"), "x".repeat(diffs::MAX_PATCH_BYTES + 1))?;
-        let big = untracked_diff(work, "big.log").context("big")?;
+        let mut left = MOST_READ;
+        let big = untracked_diff(work, "big.log", &mut left).context("big")?;
         assert!(big.too_large && big.patch.is_none());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("target/file.txt", work.join("link"))?;
-            let link = untracked_diff(work, "link").context("link")?;
+            let link = untracked_diff(work, "link", &mut left).context("link")?;
             assert_eq!(
                 link.patch.as_deref(),
                 Some("@@ -0,0 +1 @@\n+target/file.txt\n\\ No newline at end of file")
             );
         }
         std::fs::create_dir(work.join("dir"))?;
-        assert!(untracked_diff(work, "dir").is_none());
-        assert!(untracked_diff(work, "missing").is_none());
+        assert!(untracked_diff(work, "dir", &mut left).is_none());
+        assert!(untracked_diff(work, "missing", &mut left).is_none());
+        // What was read counts: with nothing left, a file isn't read at all.
+        assert_eq!(left, MOST_READ - diffs::MAX_PATCH_BYTES);
+        std::fs::write(work.join("small.txt"), "small\n")?;
+        let unread = untracked_diff(work, "small.txt", &mut 0).context("small")?;
+        assert!(unread.too_large && unread.patch.is_none());
+        let partly = untracked_diff(work, "small.txt", &mut 3).context("partly")?;
+        assert!(partly.too_large);
         Ok(())
     }
 
