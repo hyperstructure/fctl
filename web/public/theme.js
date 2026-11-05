@@ -1,6 +1,6 @@
 // Applies the theme before the first paint (no flash), and colors the browser's
 // and the installed app's title bar to match. Kept outside the bundle so the
-// Content-Security-Policy can stay at script-src 'self'.
+// Content-Security-Policy needn't allow inline scripts.
 try {
   var t = localStorage.getItem("fctl-theme");
   var dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;

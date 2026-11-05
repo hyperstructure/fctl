@@ -367,7 +367,9 @@ each. The session page and the session lists name every pull request the
 session opens, with its repository (`fctl#120`, `design#14`), as does
 `fctl show`. The session page's Changes section shows what the branch
 changed since it left the base, the first ten files of each repository and
-the rest a click away; once its pull request is merged, Changes
+the rest a click away. A file opens the diffs of all of them, one after the
+other, at that file: `j` and `k` go from file to file, `n` and `p` from
+change to change, and ⌘F (Ctrl+F) finds in all of them. Once its pull request is merged, Changes
 says so, and fctl no longer pushes the branch. Once it understands the task it renames the session to what it
 is working on and describes it in a sentence or two, so the Agent Floor shows
 the work rather than the first line of your task.

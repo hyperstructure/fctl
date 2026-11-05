@@ -1,24 +1,33 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys } from "@/lib/queries";
 import { byDirectory, DiffDialog, type DiffGroup, type DiffTarget, modeChange } from "./diff-dialog";
 
-// Diffs come from the cache; the files beside the one shown load ahead, and never come.
-vi.mock("@/lib/api", () => {
-  const pending = new Proxy({}, { get: () => () => new Promise(() => {}) });
-  return { api: pending, ApiFailure: class extends Error {} };
-});
+// Diffs come from the cache, or all at once from `sessionDiff`; one by one they never come.
+const api = vi.hoisted(() => ({
+  sessionDiff: vi.fn(),
+  fileDiff: vi.fn(() => new Promise(() => {})),
+}));
+vi.mock("@/lib/api", () => ({ api, ApiFailure: class extends Error {} }));
 vi.mock("@/lib/highlight", () => ({ tokenize: () => Promise.resolve(undefined) }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const roots: (() => void)[] = [];
+beforeEach(() => {
+  // Every file shows its lines at once, as files near the view do.
+  vi.stubGlobal("IntersectionObserver", undefined);
+});
 afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
+  vi.restoreAllMocks();
   localStorage.clear();
+  vi.unstubAllGlobals();
+  api.sessionDiff.mockReset();
+  api.fileDiff.mockClear();
 });
 
 const file = (path: string, status = "modified", a = 1, d = 1): G.FileChange => ({
@@ -68,70 +77,102 @@ const diffs: G.FileDiff[] = [
   }),
   diff("src/a.rs", { patch: "@@ -1,2 +1,2 @@\n fn a() {\n-    1\n+    2" }),
   diff("src/b.rs", { status: "renamed", old_path: "src/b_old.rs" }),
-  diff("guide.md", { repo: "acme/docs", status: "added", patch: "@@ -0,0 +1,2 @@\n+# Guide\n+Hi" }),
+  diff("guide.md", { repo: "acme/docs", status: "added", patch: "@@ -0,0 +1,2 @@\n+# Guide\n+Hi app" }),
 ];
 
-function open(at: DiffTarget) {
-  const client = new QueryClient();
-  for (const g of groups) {
-    for (const f of g.files) {
-      const d = diffs.find((x) => x.path === f.path && x.repo === g.repo);
-      if (d) client.setQueryData(keys.fileDiff("ses_1", g.repo ?? "", f.path, f.digest ?? ""), d);
+function open(at: DiffTarget, { cached = true }: { cached?: boolean } = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (cached) {
+    for (const g of groups) {
+      for (const f of g.files) {
+        const d = diffs.find((x) => x.path === f.path && x.repo === g.repo);
+        if (d) client.setQueryData(keys.fileDiff("ses_1", g.repo ?? "", f.path, f.digest ?? ""), d);
+      }
     }
   }
-  const onSelect = vi.fn();
   const onClose = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  const render = (t: DiffTarget) =>
+  // Again with other files, as the page does when the agent changes them.
+  const render = (files: DiffGroup[]) =>
     act(() =>
       root.render(
         <QueryClientProvider client={client}>
-          <DiffDialog
-            session="ses_1"
-            cliRef="web#12"
-            groups={groups}
-            current={t}
-            onSelect={onSelect}
-            onClose={onClose}
-          />
+          <DiffDialog session="ses_1" cliRef="web#12" groups={files} initial={at} onClose={onClose} />
         </QueryClientProvider>,
       ),
     );
-  render(at);
+  render(groups);
   roots.push(() => {
     act(() => root.unmount());
     container.remove();
   });
   // The newest: a test may open several.
   const dialog = [...document.querySelectorAll("dialog")].pop() as HTMLDialogElement;
-  const key = (k: string, target: Element = dialog) =>
+  const key = (k: string, target: Element = dialog, init: KeyboardEventInit = {}) => {
+    const e = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init });
     act(() => {
-      target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      target.dispatchEvent(e);
     });
+    return e;
+  };
   const text = () => dialog.textContent ?? "";
-  return { dialog, onSelect, onClose, render, key, text };
+  const nav = () => dialog.querySelector("nav")?.textContent;
+  const inView = () => dialog.querySelector('aside [aria-current="true"]')?.getAttribute("title");
+  const section = (path: string) =>
+    [...dialog.querySelectorAll("section")].find(
+      (s) => s.querySelector("h3")?.getAttribute("title") === path,
+    );
+  return { dialog, onClose, key, text, nav, inView, section, client, render };
 }
 
 const settle = () => act(() => new Promise((r) => setTimeout(r, 0)));
 
-describe("a changed file's diff over the page", () => {
-  it("shows the file's lines and how it changed, its place among the others", async () => {
-    const { dialog } = open({ path: "src/a.rs" });
+const type = (input: HTMLInputElement, value: string) =>
+  act(() => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    set?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+describe("the session's changes over the page", () => {
+  it("shows every changed file's lines, one after the other, from the file opened", async () => {
+    const { dialog, nav, inView, section } = open({ path: "src/a.rs" });
     await settle();
     expect(dialog.open).toBe(true);
-    expect(dialog.querySelector("h2")?.textContent).toBe("src/a.rs");
-    expect(dialog.querySelector("header")?.textContent).toContain("Modified+1 −1Rust");
-    expect(dialog.querySelector("nav")?.textContent).toContain("6/9");
-    expect([...dialog.querySelectorAll(".diff-code")].map((c) => c.textContent)).toEqual([
+    expect(dialog.querySelector("h2")?.textContent).toBe("Changes");
+    expect(dialog.querySelector("header")?.textContent).toContain("9 files+907 −304");
+    expect([...dialog.querySelectorAll("section h3")].map((h) => h.getAttribute("title"))).toEqual([
+      "README.md",
+      "package-lock.json",
+      "assets/logo.png",
+      "scripts/deploy",
+      "scripts/link",
+      "src/a.rs",
+      "src/b.rs",
+      "src/old.rs",
+      "guide.md",
+    ]);
+    expect(nav()).toBe("6/9");
+    expect(inView()).toBe("src/a.rs");
+    const a = section("src/a.rs");
+    expect(a?.textContent).toContain("Modified");
+    expect([...(a?.querySelectorAll(".diff-code") ?? [])].map((c) => c.textContent)).toEqual([
       "fn a() {",
       "    1",
       "    2",
     ]);
+    expect(section("README.md")?.querySelector(".diff-code")?.textContent).toBe("# Web");
+    // Each line says where it is, for finding and stepping to it.
+    expect([...(a?.querySelectorAll("[data-l]") ?? [])].map((l) => l.getAttribute("data-l"))).toEqual([
+      "0:0",
+      "0:1",
+      "0:2",
+    ]);
   });
 
-  it("lists the changed files of each repository under their directories, the one shown marked", () => {
+  it("lists the changed files of each repository under their directories, the one in view marked", () => {
     const { dialog } = open({ path: "src/a.rs" });
     const list = dialog.querySelector("aside") as HTMLElement;
     const lines = [...list.querySelectorAll("ul ul > li, ul > li > div")].map((e) => e.textContent?.trim());
@@ -140,7 +181,10 @@ describe("a changed file's diff over the page", () => {
     expect(list.textContent).toContain("acme/docs");
     const current = list.querySelector('[aria-current="true"]');
     expect(current?.textContent).toContain("a.rs");
-    expect(current?.getAttribute("title")).toBe("src/a.rs");
+    // Tab stops at it alone: the arrow keys move within the list.
+    expect(
+      [...list.querySelectorAll("button[data-row]")].filter((b) => b.getAttribute("tabindex") === "0"),
+    ).toEqual([current]);
   });
 
   it("groups each directory's files once, those at the root first", () => {
@@ -162,17 +206,39 @@ describe("a changed file's diff over the page", () => {
     ]);
   });
 
-  it("steps to the next and previous files with j and k, across repositories", () => {
-    const { key, onSelect, render } = open({ path: "src/old.rs" });
+  it("goes to the next and previous files with j and k, across repositories", () => {
+    const { key, nav, inView } = open({ path: "src/old.rs" });
     key("j");
-    expect(onSelect).toHaveBeenLastCalledWith({ repo: "acme/docs", path: "guide.md" });
-    key("k");
-    expect(onSelect).toHaveBeenLastCalledWith({ repo: undefined, path: "src/b.rs" });
+    expect(inView()).toBe("guide.md");
+    expect(nav()).toBe("9/9");
     // From the last file there is none further.
-    render({ repo: "acme/docs", path: "guide.md" });
-    onSelect.mockClear();
     key("j");
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(inView()).toBe("guide.md");
+    key("k");
+    key("k");
+    expect(inView()).toBe("src/b.rs");
+    expect(nav()).toBe("7/9");
+  });
+
+  it("goes from file to file with the arrow keys in the list, the focus with them", () => {
+    const { dialog, key, inView } = open({ path: "README.md" });
+    const row = (path: string) => dialog.querySelector(`aside button[title="${path}"]`) as HTMLButtonElement;
+    act(() => row("README.md").click());
+    act(() => row("README.md").focus());
+    key("ArrowDown", row("README.md"));
+    expect(inView()).toBe("package-lock.json");
+    expect(document.activeElement).toBe(row("package-lock.json"));
+    expect(row("package-lock.json").getAttribute("tabindex")).toBe("0");
+    key("End", row("package-lock.json"));
+    expect(inView()).toBe("guide.md");
+    key("ArrowUp", row("guide.md"));
+    expect(inView()).toBe("src/old.rs");
+    // j and k in the list are its arrows.
+    key("k", row("src/old.rs"));
+    expect(document.activeElement).toBe(row("src/b.rs"));
+    // A click goes to the file too.
+    act(() => row("scripts/deploy").click());
+    expect(inView()).toBe("scripts/deploy");
   });
 
   it("wraps lines with w and lays them side by side with s, and keeps the choice", async () => {
@@ -186,52 +252,158 @@ describe("a changed file's diff over the page", () => {
     expect(localStorage.getItem("fctl.diff.layout")).toBe("split");
   });
 
+  it("folds a file to its header, and opens it again", () => {
+    const { section } = open({ path: "src/a.rs" });
+    const fold = section("src/a.rs")?.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    act(() => fold.click());
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
+    expect(section("src/a.rs")?.querySelector(".diff-code")).toBeNull();
+    act(() => fold.click());
+    expect(section("src/a.rs")?.querySelector(".diff-code")).not.toBeNull();
+  });
+
   it("filters the list, and Escape clears the filter before it closes", () => {
-    const { dialog, onClose } = open({ path: "src/a.rs" });
-    const input = dialog.querySelector("input") as HTMLInputElement;
-    act(() => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      set?.call(input, "src");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    const { dialog, onClose, key } = open({ path: "src/a.rs" });
+    const input = dialog.querySelector("aside input") as HTMLInputElement;
+    type(input, "src");
     const names = () =>
       [...dialog.querySelectorAll("aside button[title]")].map((b) => b.getAttribute("title"));
     expect(names()).toEqual(["src/a.rs", "src/b.rs", "src/old.rs"]);
-    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-    act(() => {
-      input.dispatchEvent(esc);
-    });
+    const esc = key("Escape", input);
     expect(esc.defaultPrevented).toBe(true);
     expect(input.value).toBe("");
     expect(onClose).not.toHaveBeenCalled();
     // Letters in the filter are its own, not shortcuts.
-    const j = new KeyboardEvent("keydown", { key: "j", bubbles: true, cancelable: true });
-    act(() => {
-      input.dispatchEvent(j);
-    });
-    expect(j.defaultPrevented).toBe(false);
+    expect(key("j", input).defaultPrevented).toBe(false);
   });
 
-  it("says why it shows no lines", async () => {
-    const say = async (path: string, repo?: string) => {
-      const { text } = open({ path, repo });
-      await settle();
-      return text();
-    };
-    expect(await say("assets/logo.png")).toContain("A binary file");
-    const large = await say("package-lock.json");
+  it("finds in every file's lines with Ctrl+F, steps with Enter, and Escape closes the bar first", async () => {
+    const { dialog, key, text } = open({ path: "README.md" });
+    await settle();
+    expect(key("f", dialog, { ctrlKey: true }).defaultPrevented).toBe(true);
+    const input = dialog.querySelector("search input") as HTMLInputElement;
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+    type(input, "app");
+    const count = () => dialog.querySelector("#diff-find-count")?.textContent;
+    expect(count()).toBe("1 of 2");
+    // The list says how many each file has, and dims those without.
+    const row = (path: string) => dialog.querySelector(`aside button[title="${path}"]`) as HTMLElement;
+    expect(row("README.md").textContent).toContain("1 match");
+    expect(row("guide.md").textContent).toContain("1 match");
+    expect(row("src/a.rs").className).toContain("opacity-45");
+    key("Enter", input);
+    expect(count()).toBe("2 of 2");
+    key("Enter", input);
+    expect(count()).toBe("1 of 2");
+    key("Enter", input, { shiftKey: true });
+    expect(count()).toBe("2 of 2");
+    key("g", input, { ctrlKey: true });
+    expect(count()).toBe("1 of 2");
+    // Case, whole words and expressions, from the keyboard as from the toggles.
+    key("c", input, { altKey: true, code: "KeyC" } as KeyboardEventInit);
+    expect(localStorage.getItem("fctl.diff.find.case")).toBe("on");
+    type(input, "App");
+    expect(count()).toBe("No matches");
+    key("r", input, { altKey: true, code: "KeyR" } as KeyboardEventInit);
+    type(input, "(");
+    expect(count()).toMatch(/group|\)/i);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    key("Escape", input);
+    expect(dialog.querySelector("search")).toBeNull();
+    expect(dialog.open).toBe(true);
+    expect(text()).not.toContain("match");
+  });
+
+  it("selects what the field holds at each Ctrl+F, and not again as the reader types", async () => {
+    const { dialog, key } = open({ path: "README.md" });
+    await settle();
+    key("f", dialog, { ctrlKey: true });
+    const input = dialog.querySelector("search input") as HTMLInputElement;
+    type(input, "app");
+    // Back in the diffs, then Ctrl+F again: the field, its text selected to type over.
+    const body = dialog.querySelector("[tabindex='0'].overflow-auto") as HTMLElement;
+    act(() => body.focus());
+    key("f", body, { ctrlKey: true });
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 3]);
+    // What the reader types then isn't selected again, for the next key to replace it.
+    type(input, "x");
+    expect([input.selectionStart, input.selectionEnd]).toEqual([1, 1]);
+  });
+
+  it("goes to a match once for each step, not again when diffs change later", async () => {
+    const scrolls = vi.spyOn(HTMLElement.prototype, "scrollTo");
+    const { dialog, key, client, render } = open({ path: "README.md" });
+    await settle();
+    key("f", dialog, { ctrlKey: true });
+    const input = dialog.querySelector("search input") as HTMLInputElement;
+    type(input, "Guide");
+    expect(dialog.querySelector("#diff-find-count")?.textContent).toBe("1 of 1");
+    // Stepping on from the only match goes back to it.
+    scrolls.mockClear();
+    key("Enter", input);
+    await settle();
+    expect(scrolls).toHaveBeenCalled();
+    // Another file changes: the diffs stay where the reader is.
+    scrolls.mockClear();
+    const changed = { ...file("src/a.rs"), digest: "d-src/a.rs-2" };
+    client.setQueryData(
+      keys.fileDiff("ses_1", "", "src/a.rs", "d-src/a.rs-2"),
+      diff("src/a.rs", { digest: "d-src/a.rs-2", patch: "@@ -1 +1 @@\n-x\n+Guide" }),
+    );
+    render(groups.map((g) => ({ ...g, files: g.files.map((f) => (f.path === "src/a.rs" ? changed : f)) })));
+    await settle();
+    // The bar stays at its match, now the second, and the diffs stay where they are.
+    expect(dialog.querySelector("#diff-find-count")?.textContent).toBe("2 of 2");
+    expect(scrolls).not.toHaveBeenCalled();
+  });
+
+  it("shows the file opened in the list once the dialog shows", async () => {
+    const seen: boolean[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+      if (this.getAttribute("aria-current") === "true") seen.push(!!this.closest("dialog")?.open);
+    });
+    open({ path: "src/old.rs" });
+    await act(() => new Promise((r) => requestAnimationFrame(() => r(undefined))));
+    expect(seen).toContain(true);
+    expect(seen).not.toContain(false);
+  });
+
+  it("asks for every diff at once when it doesn't have them, not one by one", async () => {
+    api.sessionDiff.mockResolvedValue({ files: diffs });
+    const { section } = open({ path: "src/a.rs" }, { cached: false });
+    expect(section("src/a.rs")?.querySelector('[aria-busy="true"]')).not.toBeNull();
+    await settle();
+    await settle();
+    expect(api.sessionDiff).toHaveBeenCalledTimes(1);
+    expect(api.fileDiff).not.toHaveBeenCalled();
+    expect(section("src/a.rs")?.querySelector(".diff-code")?.textContent).toBe("fn a() {");
+    expect(section("guide.md")?.querySelector(".diff-code")?.textContent).toBe("# Guide");
+  });
+
+  it("says why a file shows no lines", async () => {
+    const { section } = open({ path: "README.md" });
+    await settle();
+    const say = (path: string) => section(path)?.textContent ?? "";
+    expect(say("assets/logo.png")).toContain("A binary file");
+    const large = say("package-lock.json");
     expect(large).toContain("This diff is too large to show here");
     expect(large).toContain("900 lines added and 300 taken out");
     expect(large).toContain("fctl diff 'web#12' package-lock.json");
-    const mode = await say("scripts/deploy");
-    expect(mode).toContain("Only its mode changed100644 → 100755: executable now.");
-    expect(await say("src/b.rs")).toContain("Renamed, its lines as they wereFrom src/b_old.rs.");
-    const link = await say("scripts/link");
+    expect(say("scripts/deploy")).toContain("Only its mode changed100644 → 100755: executable now.");
+    expect(say("src/b.rs")).toContain("Renamed, its lines as they wereFrom src/b_old.rs.");
+    const link = say("scripts/link");
     expect(link).toContain("Mode 100644 → 120000: a symbolic link now");
     expect(link).toContain("target");
     expect(link).not.toContain("A binary file");
-    expect(await say("src/old.rs")).toContain("its runner runs an older version of fctl");
-    expect(await say("gone.rs")).toContain("No changes in this file any more");
+    expect(say("src/old.rs")).toContain("its runner runs an older version of fctl");
+  });
+
+  it("opens at the first file when the one opened changes no more", () => {
+    const { nav, inView } = open({ path: "gone.rs" });
+    expect(nav()).toBe("1/9");
+    expect(inView()).toBe("README.md");
   });
 
   it("says what a change of mode means", () => {
@@ -246,5 +418,22 @@ describe("a changed file's diff over the page", () => {
     const { dialog, onClose } = open({ path: "src/a.rs" });
     act(() => (dialog.querySelector('button[aria-label="Close (Esc)"]') as HTMLButtonElement).click());
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("gives the focus back to what a click opened it from without the keyboard's ring, until it leaves", () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+    // A click focused it: without the keyboard's ring (which happy-dom gives every focus).
+    const matches = opener.matches.bind(opener);
+    vi.spyOn(opener, "matches").mockImplementation((s) => s !== ":focus-visible" && matches(s));
+    const { dialog } = open({ path: "src/a.rs" });
+    expect(opener.dataset.quietFocus).toBe("");
+    act(() => dialog.close());
+    for (const unmount of roots.splice(0)) unmount();
+    opener.focus();
+    act(() => opener.blur());
+    expect(opener.dataset.quietFocus).toBeUndefined();
+    opener.remove();
   });
 });

@@ -83,6 +83,46 @@ export function parsePatch(patch: string): Hunk[] {
   return hunks;
 }
 
+/** A line of a diff where `parsePatch` puts it: the `j`th line of its `h`th hunk. */
+export interface PatchLine {
+  h: number;
+  j: number;
+  kind: LineKind;
+  text: string;
+}
+
+/**
+ * A diff's lines as `parsePatch` numbers them, without the rest it works out
+ * (line numbers, the words that changed): what finding in a diff, and
+ * stepping from change to change, go through for every file at once.
+ */
+export function patchLines(patch: string): PatchLine[] {
+  const out: PatchLine[] = [];
+  let h = -1;
+  let j = 0;
+  for (const raw of patch.split("\n")) {
+    if (raw.startsWith("@@") && HEADER.test(raw)) {
+      h++;
+      j = 0;
+      continue;
+    }
+    if (h < 0) continue;
+    const mark = raw[0];
+    const kind: LineKind | undefined =
+      mark === " " ? "context" : mark === "+" ? "add" : mark === "-" ? "del" : undefined;
+    if (kind) out.push({ h, j: j++, kind, text: raw.slice(1).replace(/\r$/, "") });
+  }
+  return out;
+}
+
+/** Where each run of lines added or taken out starts: what stepping from change to change goes to. */
+export function changeStarts(lines: PatchLine[]): PatchLine[] {
+  return lines.filter((l, i) => {
+    const before = lines[i - 1];
+    return l.kind !== "context" && (!before || before.h !== l.h || before.kind === "context");
+  });
+}
+
 /** A hunk of Claude Code's `structuredPatch` (an Edit's or a Write's result). */
 interface StructuredHunk {
   oldStart: number;
