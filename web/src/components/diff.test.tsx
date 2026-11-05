@@ -122,8 +122,11 @@ describe("a diff's lines", () => {
       act(() => root.unmount());
       container.remove();
     });
-    await act(() => new Promise((r) => setTimeout(r, 20)));
     const colored = () => container.querySelectorAll(".diff-code span[style]").length;
+    // Shiki's tokens come a few turns of the event loop later.
+    for (let i = 0; i < 50 && colored() === 0; i++) {
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    }
     expect(colored()).toBeGreaterThan(0);
     const asked = highlight.tokenize.mock.calls.length;
     // A transcript's edit makes its hunks again at each render.
