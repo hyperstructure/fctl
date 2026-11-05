@@ -2,7 +2,7 @@
 // along with the paperclip, a paste, or a drop anywhere on the page.
 
 import { ArrowUp, Square } from "lucide-react";
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 import { Spinner, Textarea, TextareaControls, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
@@ -26,6 +26,7 @@ export function Composer({
   onInterrupt,
   onTyping,
   onResume,
+  choices,
 }: {
   status?: G.SessionStatus;
   role?: G.SessionRole;
@@ -36,6 +37,8 @@ export function Composer({
   onInterrupt: () => void;
   onTyping: () => void;
   onResume: (text: string, files: SentFiles) => Promise<void>;
+  /** The model and effort pickers, beside the paperclip, for the session's owner. */
+  choices?: ReactNode;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -152,7 +155,14 @@ export function Composer({
                 ref.current?.focus();
               }}
             />
-            <span className="pointer-events-none truncate text-[11.5px] text-ink-4 opacity-0 transition-opacity group-focus-within:opacity-100">
+            {choices}
+            <span
+              className={cn(
+                "pointer-events-none truncate text-[11.5px] text-ink-4 opacity-0 transition-opacity group-focus-within:opacity-100",
+                // A phone has room for the pickers and the buttons only.
+                choices && "max-sm:hidden",
+              )}
+            >
               {failed ? "↵ resume" : resumes ? "↵ send and resume · ⇧↵ new line" : "↵ send · ⇧↵ new line"}
             </span>
           </div>

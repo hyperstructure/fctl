@@ -147,6 +147,11 @@ export class TranscriptBuilder {
   items: Item[] = [];
   latestGit?: G.GitState;
   model?: string;
+  /**
+   * Whether an effort change keeps Claude's prompt cache, as Claude Code last said
+   * (`per_turn_effort_active`); unknown before it did, and from versions that don't say.
+   */
+  perTurnEffort?: boolean;
   /** Where each tool call is: in the transcript, or in the steps of the subagent `parent` started. */
   private tools = new Map<string, { index: number; parent?: string }>();
   /** The calls of subagents that Claude Code reported started, by task id. */
@@ -363,6 +368,8 @@ export class TranscriptBuilder {
     if (isInit(m)) {
       this.closeSetup(items, ev.ts);
       this.model = m.model;
+      this.perTurnEffort =
+        typeof m.per_turn_effort_active === "boolean" ? m.per_turn_effort_active : undefined;
       if (!items.some((x) => x.kind === "init")) {
         items.push({
           ...base,
@@ -434,6 +441,11 @@ export class TranscriptBuilder {
     }
     if (isTask(m)) {
       this.task(items, m);
+      return;
+    }
+    // The API refused the effort level in the conversation: changes rewrite the cache from now on.
+    if (m.type === "system" && m.subtype === "per_turn_effort_changed") {
+      this.perTurnEffort = false;
       return;
     }
     if (isResult(m)) {

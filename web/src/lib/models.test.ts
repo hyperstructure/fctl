@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { asked, chosenModel, effortOffers, modelChoice, modelOffers, startChoice } from "./models";
+import {
+  asked,
+  chosenModel,
+  costsCache,
+  effortOffers,
+  modelChoice,
+  modelOffers,
+  startChoice,
+  switchEfforts,
+  switchModels,
+} from "./models";
 
 describe("project models", () => {
   it("shows Claude's default, an alias, or a model ID", () => {
@@ -122,5 +132,35 @@ describe("the composer's model and effort", () => {
       label: "Extra high",
       own: true,
     });
+  });
+});
+
+describe("a running session's model and effort level", () => {
+  const values = (list: { value: string }[]) => list.map((o) => o.value);
+
+  it("offers the model it works on, then the aliases", () => {
+    expect(values(switchModels("claude-opus-5-5"))).toEqual([
+      "claude-opus-5-5",
+      "opus",
+      "sonnet",
+      "haiku",
+      "fable",
+    ]);
+    expect(values(switchModels("sonnet"))).toEqual(["opus", "sonnet", "haiku", "fable"]);
+    // Before Claude said, on Claude's default.
+    expect(switchModels("")[0]).toEqual({ value: "", label: "Claude's default" });
+  });
+
+  it("offers the level it works at, then the levels", () => {
+    expect(values(switchEfforts("xhigh"))).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(values(switchEfforts(""))).toEqual(["", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("knows which changes cost Claude its prompt cache", () => {
+    expect(costsCache("model")).toBe(true);
+    expect(costsCache("model", true)).toBe(true);
+    expect(costsCache("effort", true)).toBe(false);
+    expect(costsCache("effort")).toBe(false);
+    expect(costsCache("effort", false)).toBe(true);
   });
 });

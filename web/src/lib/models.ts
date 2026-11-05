@@ -147,3 +147,40 @@ export function effortOffers(p: Project, shown: string): Offer[] {
     own: value === own,
   }));
 }
+
+/** A model or an effort level a session's owner can change a session to while it runs. */
+export interface Switch {
+  value: string;
+  label: string;
+}
+
+/**
+ * The models a session's owner can switch it to: the one it works on (by its ID once Claude has
+ * named it, "" for Claude's default before then), then Claude Code's aliases.
+ */
+export function switchModels(current: string): Switch[] {
+  const aliases: string[] = ALIASES.map((a) => a.value);
+  return [...(aliases.includes(current) ? [] : [current]), ...aliases].map((value) => ({
+    value,
+    label: modelLabel(value),
+  }));
+}
+
+/** The effort levels a session's owner can change it to: the one it works at, then the levels. */
+export function switchEfforts(current: string): Switch[] {
+  const levels: string[] = EFFORTS.map((e) => e.value);
+  return [...(levels.includes(current) ? [] : [current]), ...levels].map((value) => ({
+    value,
+    label: effortLabel(value),
+  }));
+}
+
+/**
+ * Whether a change makes Claude read the session's conversation again without its prompt cache: a
+ * new model always does, as the cache belongs to the model it was written for; a new effort level
+ * only where Claude sends it for the whole conversation rather than with each turn (Claude Code
+ * says which, `perTurnEffort`, and when it doesn't, it keeps the cache on the models that take it).
+ */
+export function costsCache(change: "model" | "effort", perTurnEffort?: boolean): boolean {
+  return change === "model" || perTurnEffort === false;
+}

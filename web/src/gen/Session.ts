@@ -49,11 +49,18 @@ pull_request?: PullRequestRef,
  * (`fctl_domain::pulls`). Absent while it has none, and from control
  * planes before it, which have `pull_request` only.
  */
-pull_requests?: Array<PullRequestRef>, runner?: RunnerRef, model?: string, 
+pull_requests?: Array<PullRequestRef>, runner?: RunnerRef, 
+/**
+ * The model Claude works on, as its agent last reported it, or the one
+ * its owner switched it to since (`UpdateSessionRequest::model`), until
+ * it does. Before Claude starts, the one the session asked for.
+ */
+model?: string, 
 /**
  * The effort level Claude works at (`low` … `max`), as its agent last
- * reported it. Absent until Claude starts, when its model takes no
- * effort level, and from agents and control planes before it.
+ * reported it, or the one its owner asked for since, until it does.
+ * Absent until Claude starts, when its model takes no effort level,
+ * and from agents and control planes before it.
  */
 effort?: string, 
 /**

@@ -17,4 +17,12 @@ author_called?: string,
  * (`GET /api/v1/runner/sessions/{id}/attachments/{attachment}`) and
  * hands them to fctl-agent before the message.
  */
-attachments?: Array<Attachment>, } | { "kind": "interrupt", by?: UserRef, });
+attachments?: Array<Attachment>, } | { "kind": "interrupt", by?: UserRef, } | { "kind": "settings", 
+/**
+ * An alias (`opus`, `sonnet`, …) or a model's ID.
+ */
+model?: string, 
+/**
+ * `low` … `max`.
+ */
+effort?: string, by?: UserRef, });

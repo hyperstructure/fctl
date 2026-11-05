@@ -86,10 +86,13 @@ enum Command {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
     },
-    /// Rename a session or say what it is about (agents: the session they run in).
+    /// Rename a session or say what it is about (agents: the session they
+    /// run in), or change the model and effort level its agent works at.
     #[command(
         after_help = "Examples:\n  fctl edit my-app#12 --title \"Fix the flaky login test\"\n  \
                             fctl edit my-app#12 --description \"\"       # clear the description\n  \
+                            fctl edit my-app#12 --effort medium        # plan at xhigh, then build at medium\n  \
+                            fctl edit my-app#12 --model sonnet         # its next step reads the conversation without the cache\n  \
                             fctl edit --title \"Retry failed uploads\"   # an agent, in its sandbox"
     )]
     Edit(cmd::sessions::EditArgs),
@@ -618,6 +621,32 @@ mod tests {
         ));
         // A secret's value never comes as an argument.
         assert!(parse(&["projects", "secrets", "set", "STRIPE_KEY", "sk_live_123"]).is_err());
+    }
+
+    #[test]
+    fn edit_changes_the_model_or_effort_alone() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("fctl").chain(args.iter().copied()))
+                .map(|c| c.command)
+        };
+        assert!(matches!(
+            parse(&["edit", "my-app#12", "--effort", "medium"]),
+            Ok(Command::Edit(cmd::sessions::EditArgs {
+                effort: Some(_),
+                title: None,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parse(&["edit", "my-app#12", "--model", "sonnet", "--effort", "high"]),
+            Ok(Command::Edit(cmd::sessions::EditArgs {
+                model: Some(_),
+                effort: Some(_),
+                ..
+            }))
+        ));
+        // Something to change.
+        assert!(parse(&["edit", "my-app#12"]).is_err());
     }
 
     #[test]

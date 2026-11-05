@@ -9,7 +9,9 @@
 use fctl_client::ws;
 use fctl_domain::diffs;
 use fctl_proto::event::{DiffKey, FileDiff, LogLine};
-use fctl_proto::uplink::{AgentEvent, FEATURE_ATTACHMENTS, SessionState, UplinkDown, UplinkUp};
+use fctl_proto::uplink::{
+    AgentEvent, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SessionState, UplinkDown, UplinkUp,
+};
 use fctl_proto::{PROTOCOL_VERSION, RunnerId};
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -171,7 +173,7 @@ async fn run(
             &UplinkUp::Hello {
                 runner_id: runner_id.clone(),
                 protocol: PROTOCOL_VERSION,
-                features: vec![FEATURE_ATTACHMENTS.to_owned()],
+                features: vec![FEATURE_ATTACHMENTS.to_owned(), FEATURE_SETTINGS.to_owned()],
             },
         )
         .await

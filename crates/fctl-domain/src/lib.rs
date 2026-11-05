@@ -29,6 +29,7 @@ pub mod kept_images;
 pub mod limits;
 pub mod linear;
 pub mod memory;
+pub mod models;
 pub mod naming;
 pub mod notify;
 pub mod order;

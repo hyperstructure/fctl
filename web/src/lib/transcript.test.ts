@@ -88,6 +88,22 @@ describe("TranscriptBuilder", () => {
     expect(b.model).toBe("claude-opus-5-5");
   });
 
+  it("knows whether an effort change keeps Claude's prompt cache", () => {
+    const b = new TranscriptBuilder();
+    b.add([claude({ type: "system", subtype: "init", model: "claude-opus-5-5" })]);
+    expect(b.perTurnEffort).toBeUndefined();
+    b.add([
+      claude({ type: "system", subtype: "init", model: "claude-opus-5-5", per_turn_effort_active: true }),
+    ]);
+    expect(b.perTurnEffort).toBe(true);
+    // The API refused the effort level in the conversation: changes rewrite the cache from then on.
+    const items = b.add([
+      claude({ type: "system", subtype: "per_turn_effort_changed", per_turn_effort_active: false }),
+    ]);
+    expect(b.perTurnEffort).toBe(false);
+    expect(items.filter((i) => i.kind !== "init")).toEqual([]);
+  });
+
   it("attaches tool results to their call and keeps other items identical", () => {
     const b = new TranscriptBuilder();
     const first = b.add([

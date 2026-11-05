@@ -42,6 +42,18 @@ pub struct Delivered {
     pub delivery_id: DeliveryId,
 }
 
+/// Someone changed the model or the effort level the session's Claude works
+/// at (`UpdateSessionRequest`): the run under way switches, if there is one
+/// and its host can, and the transcript says so.
+#[derive(Serialize, Deserialize)]
+pub struct SessionSettings {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    pub by: UserRef,
+}
+
 /// A status change decided by the control plane (queue, stop, failure).
 #[derive(Serialize, Deserialize, Default)]
 pub struct ControlState {

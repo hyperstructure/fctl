@@ -4,4 +4,20 @@ export type UpdateSessionRequest = { title?: string,
 /**
  * What the session is about; an empty string clears it.
  */
-description?: string, archived?: boolean, };
+description?: string, archived?: boolean, 
+/**
+ * The model its agent works on from now on, in this run and the
+ * next: an alias (`opus`, `sonnet`, `haiku`, `fable`) or a model's
+ * ID. A running Claude switches at its next request, and reads the
+ * whole conversation again without its prompt cache, which belongs to
+ * the model it leaves. Control planes from before it ignore it.
+ */
+model?: string, 
+/**
+ * The effort level its agent works at from now on (`low` … `max`).
+ * A running Claude changes it at its next request, keeping its prompt
+ * cache where it sends the effort level with each turn
+ * (`per_turn_effort_active` in Claude Code's `system/init`). Control
+ * planes from before it ignore it.
+ */
+effort?: string, };

@@ -90,6 +90,8 @@ fctl sessions -w acme --limit 100   # a workspace's (30 unless --limit says)
 fctl show my-app#12              # status, branch, pull requests with their checks and review, model and effort, usage
 fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
+fctl edit my-app#12 --effort medium     # its agent works at medium effort from its next step
+fctl edit my-app#12 --model sonnet      # …on Sonnet: its next step reads the conversation without the prompt cache
 fctl logs my-app#12              # the transcript
 fctl logs -f my-app#12           # …and keep following
 fctl diff my-app#12              # what its branch changed, as git prints it (uncommitted work too)

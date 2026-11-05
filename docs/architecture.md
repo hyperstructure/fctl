@@ -2361,6 +2361,38 @@ resumed session still follows its project's setting. Claude Code before
 `get_settings`, and agents before this, report none, and the session shows
 no effort level.
 
+A session's owner changes both while it runs, with the lists beside the
+session page's message box or `fctl edit --model … --effort …`
+(`UpdateSessionRequest`): to plan at `xhigh` and build at `medium`, say.
+The API writes them to D1's `model` and `effort`, which the session's next
+run starts on. SessionDO shows them in the session until its agent says
+what Claude works on, says in the transcript who changed what (a
+`settings_changed` notice) and, while a run is under way, queues a
+`settings` delivery for it, merged with any its agent hasn't taken yet.
+fctl-agent sends Claude the `set_model` and `apply_flag_settings`
+(`effortLevel`) control requests, which Claude applies from its next
+request, keeps them in the spec it would start Claude again with, and
+reports the model Claude names in its answer and the effort level
+`get_settings` gives. A refusal fails the delivery with Claude's reason,
+which the transcript shows, and the session goes back to what Claude works
+on. Hosts and agents from before this can't read the delivery, not even in
+the `Welcome` that lists the unconfirmed ones, so they announce the
+`settings` feature in their hello: SessionDO leaves those deliveries out
+of `Welcome` and sends them after a host's hello that has it, and refuses
+the change (`409`) while the run's host lacks it, and hosts fail it for an
+agent that lacks it.
+
+Claude's prompt cache belongs to the model that wrote it, so a new model
+reads the whole conversation again at its next step, slower and with more
+of the plan's usage; the web app asks before it switches. Claude Code
+2.1.318 sends the effort level inside the conversation, at the turn where
+it changes, on the models whose API takes it per message (Opus 5.5 among
+them), which keeps the cache, and says so in `system/init`
+(`per_turn_effort_active`). Where it sends the level for the whole
+conversation, or the API refused it in the conversation
+(`system/per_turn_effort_changed`), a new effort level rewrites the cache
+too, and the web app asks before that change as well.
+
 The Work section of the session page and `fctl show` show how full
 Claude's context is, against the window and where Claude compacts the
 conversation on its own, and how often it did. SessionDO counts the

@@ -12,7 +12,9 @@ use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{
     CreateSessionRequest, CreateShareRequest, ReviewState, SessionShare, UpdateSessionRequest,
 };
-use fctl_proto::session::{GithubAccess, PullRequestRef, Session, SessionRole, SessionStats};
+use fctl_proto::session::{
+    GithubAccess, PullRequestRef, Session, SessionRole, SessionStats, SessionStatus,
+};
 use fctl_proto::{AttachmentId, SessionId};
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -69,7 +71,7 @@ pub struct RunArgs {
     clap::ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["title", "description"])
+        .args(["title", "description", "model", "effort"])
 ))]
 pub struct EditArgs {
     /// A session: its id (ses_…), its URL, or project#number. In an fctl
@@ -81,6 +83,18 @@ pub struct EditArgs {
     /// What the session is about, in a sentence or two ("" clears it).
     #[arg(long)]
     pub description: Option<String>,
+    /// The model its agent works on from now on: opus, sonnet, haiku, fable
+    /// or a full model name. A running Claude switches at its next step and
+    /// reads the whole conversation again without its prompt cache, which
+    /// belongs to the model it leaves. Its owner's, not an agent's.
+    #[arg(long)]
+    pub model: Option<String>,
+    /// The effort level its agent works at from now on: low, medium, high,
+    /// xhigh or max. A running Claude changes it at its next step, and keeps
+    /// its prompt cache where it sends the level with each turn. Its
+    /// owner's, not an agent's.
+    #[arg(long)]
+    pub effort: Option<String>,
 }
 
 #[derive(Args)]
@@ -636,6 +650,8 @@ pub async fn edit(server: Option<&str>, args: EditArgs, json: bool) -> Result<()
         .context("Which session? `fctl edit my-app#12 --title \"Fix the flaky login test\"`")?;
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
+    let switched = args.model.is_some();
+    let settings = switched || args.effort.is_some();
     let s = api
         .update_session(
             &s.id.0,
@@ -643,6 +659,8 @@ pub async fn edit(server: Option<&str>, args: EditArgs, json: bool) -> Result<()
                 title: args.title,
                 description: args.description,
                 archived: None,
+                model: args.model,
+                effort: args.effort,
             },
         )
         .await?;
@@ -654,7 +672,31 @@ pub async fn edit(server: Option<&str>, args: EditArgs, json: bool) -> Result<()
         &s.title,
         s.description.as_deref(),
     );
+    if settings {
+        let shown = [
+            ("model", s.model.as_deref()),
+            ("effort", s.effort.as_deref()),
+        ];
+        for (k, v) in shown {
+            if let Some(v) = v.filter(|v| !v.is_empty()) {
+                println!("  {} {}", style::dim(&format!("{k:<7}")), style::plain(v));
+            }
+        }
+        println!("  {}", style::dim(settings_note(s.status, switched)));
+    }
     Ok(())
+}
+
+/// When a session's Claude works on the model and effort level just asked
+/// for, which its status says.
+fn settings_note(status: SessionStatus, switched: bool) -> &'static str {
+    match (status.accepts_messages(), switched) {
+        (true, true) => {
+            "Claude switches at its next step, and reads the whole conversation again without its prompt cache."
+        }
+        (true, false) => "Claude works at it from its next step.",
+        (false, _) => "The session starts on them when it resumes.",
+    }
 }
 
 pub(crate) fn this_sandbox(reference: Option<&str>) -> Option<(PathBuf, String)> {
@@ -679,6 +721,11 @@ fn sandbox_session(
 }
 
 async fn edit_here(socket: &Path, id: String, args: EditArgs, json: bool) -> Result<()> {
+    if args.model.is_some() || args.effort.is_some() {
+        bail!(
+            "An agent doesn't change the model or the effort level it works at: the session's owner does, on its page or with `fctl edit` outside the sandbox."
+        );
+    }
     let request = SessionRequest::Edit {
         session_id: Some(SessionId(id)),
         title: args.title,
@@ -1060,6 +1107,8 @@ pub async fn archive(
                 title: None,
                 description: None,
                 archived: Some(archived),
+                model: None,
+                effort: None,
             },
         )
         .await?;

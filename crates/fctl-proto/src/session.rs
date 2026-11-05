@@ -1265,10 +1265,14 @@ pub struct Session {
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<PullRequestRef>>", optional))]
     pub pull_requests: Vec<PullRequestRef>,
     pub runner: Option<RunnerRef>,
+    /// The model Claude works on, as its agent last reported it, or the one
+    /// its owner switched it to since (`UpdateSessionRequest::model`), until
+    /// it does. Before Claude starts, the one the session asked for.
     pub model: Option<String>,
     /// The effort level Claude works at (`low` … `max`), as its agent last
-    /// reported it. Absent until Claude starts, when its model takes no
-    /// effort level, and from agents and control planes before it.
+    /// reported it, or the one its owner asked for since, until it does.
+    /// Absent until Claude starts, when its model takes no effort level,
+    /// and from agents and control planes before it.
     pub effort: Option<String>,
     /// What its agent may do on GitHub, within its project's
     /// `github_access` as it is now. Absent: push, as from control planes
