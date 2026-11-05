@@ -201,6 +201,12 @@
   /* Code as it is written: no arrows for -> nor spaced-out ::. */
   font-variant-ligatures: none;
 }
+/* What gets the focus back from an overlay a click opened (the diff dialog)
+   shows no ring, as it had none before: the ring is for the keyboard. Until
+   it loses the focus again (session/diff-dialog.tsx). */
+[data-quiet-focus]:focus-visible {
+  outline: none;
+}
 /* Over the page (session/diff-dialog.tsx), the light theme's lines sit on white. */
 :root[data-theme="light"] .diff-on-surface {
   --diff-bg: var(--c-surface);
@@ -373,20 +379,25 @@
   animation: text-shimmer 4s ease-in-out infinite;
 }
 
-/* Finding in a session's transcript (components/session/find.tsx): its
-   matches marked as with a highlighter in the brand's yellow (lime on light
-   backgrounds), and the one the reader is at filled with it. */
-::highlight(fctl-find) {
+/* Finding in a session's transcript (components/session/find.tsx) and in
+   its diffs (session/diff-find.tsx): the matches marked as with a
+   highlighter in the brand's yellow (lime on light backgrounds), and the
+   one the reader is at filled with it. */
+::highlight(fctl-find),
+::highlight(fctl-diff-find) {
   background-color: color-mix(in srgb, var(--c-highlight) 24%, transparent);
 }
-::highlight(fctl-find-current) {
+::highlight(fctl-find-current),
+::highlight(fctl-diff-find-current) {
   background-color: var(--c-highlight);
   color: var(--c-highlight-ink);
 }
-:root[data-theme="light"] ::highlight(fctl-find) {
+:root[data-theme="light"] ::highlight(fctl-find),
+:root[data-theme="light"] ::highlight(fctl-diff-find) {
   background-color: color-mix(in srgb, var(--c-highlight) 45%, transparent);
 }
-:root[data-theme="light"] ::highlight(fctl-find-current) {
+:root[data-theme="light"] ::highlight(fctl-find-current),
+:root[data-theme="light"] ::highlight(fctl-diff-find-current) {
   background-color: color-mix(in srgb, var(--c-highlight), var(--c-ink) 14%);
   text-decoration: underline 2px var(--c-ink);
 }

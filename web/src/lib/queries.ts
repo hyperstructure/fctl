@@ -40,6 +40,8 @@ export const keys = {
   /** A changed file's diff, by session, repository ("" for the primary one), path and digest. */
   fileDiff: (session: string, repo: string, path: string, digest: string) =>
     ["file-diff", session, repo, path, digest] as const,
+  /** All of a session's diffs at once, which fill the cache of each file's (`fileDiff`). */
+  sessionDiff: (session: string) => ["session-diff", session] as const,
   /** A project's review agents, by project id. */
   reviewAgents: (project: string) => ["review-agents", project] as const,
   /** The apps that opened a project's newest pull requests, and one looked up by its bot, by project id. */
@@ -187,15 +189,42 @@ export const fileDiffQuery = (session: string, f: ChangedFile) => ({
 });
 
 /**
+ * All of a session's diffs, in one request, for the diff dialog that shows
+ * them all: each goes into its file's cache (`fileDiffQuery`), from which
+ * `useFileDiff` takes it without asking again. Its own data is only when it
+ * came, for the dialog to know.
+ */
+export function useSessionDiffs(session: string, enabled = true) {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: keys.sessionDiff(session),
+    enabled,
+    queryFn: async () => {
+      const all = await api.sessionDiff(session);
+      for (const d of all.files) {
+        const key = keys.fileDiff(session, d.repo ?? "", d.path, d.digest);
+        if (qc.getQueryData(key) === undefined) qc.setQueryData(key, d);
+      }
+      return Date.now();
+    },
+    // Each file's diff then follows its digest, one at a time.
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+    retry: 1,
+  });
+}
+
+/**
  * A changed file's diff, for agents that send them (the file has a digest).
  * The agent sends a diff before the state that lists it, but the session
  * may still have the one before: until the digests agree, it asks again.
+ * `wait`: not yet, while all of them come at once (`useSessionDiffs`).
  */
-export const useFileDiff = (session: string, f: ChangedFile | undefined) => {
+export const useFileDiff = (session: string, f: ChangedFile | undefined, wait = false) => {
   const digest = f?.file.digest;
   return useQuery({
     ...fileDiffQuery(session, f ?? { file: { path: "", status: "" } }),
-    enabled: !!f && !!digest,
+    enabled: !!f && !!digest && !wait,
     retry: (count, err) => (err instanceof ApiFailure && err.status === 404 ? count < 4 : count < 2),
     retryDelay: (count) => 600 * 2 ** count,
     refetchInterval: (q) => {

@@ -1,19 +1,23 @@
-// A changed file's diff over the session page: opened from the files its
-// Changes list, it shows one file's diff, highlighted, with the session's
-// other changed files beside it to step through. It follows the agent:
-// when the file changes again, its diff does too.
+// The session's changes over its page: opened from a file of its Changes
+// list, every changed file's diff, highlighted, one after the other in one
+// scroll, at the file opened. The list of files beside them marks the one
+// in view and goes to another; keys step from file to file and change to
+// change; ⌘F finds in all of them. It follows the agent: when a file
+// changes again, its diff does too.
 
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   Binary,
+  Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Columns2,
+  Copy,
   FilePen,
   FileQuestion,
   FileX2,
-  Folder,
   History,
   PanelLeft,
   Rows3,
@@ -22,6 +26,8 @@ import {
   X,
 } from "lucide-react";
 import {
+  type KeyboardEvent,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -33,56 +39,29 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { type DiffLayout, DiffLines } from "@/components/diff";
-import { Button, CodeBox, CopyButton, IconButton, Kbd, Skeleton } from "@/components/ui";
+import { Button, CodeBox, IconButton, Skeleton } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { firstLine, parsePatch } from "@/lib/diff";
+import { changeStarts, firstLine, type PatchLine, parsePatch, patchLines } from "@/lib/diff";
+import { compare, type DiffMatch, type DiffPlace, type FindOptions } from "@/lib/diff-find";
 import { useHoldPage } from "@/lib/hold-page";
+import { apple } from "@/lib/hotkeys";
 import { languageOf } from "@/lib/languages";
-import { fileDiffQuery, useFileDiff } from "@/lib/queries";
+import { fileDiffQuery, useFileDiff, useSessionDiffs } from "@/lib/queries";
 import { diffCommand } from "@/lib/shell";
+import {
+  byDirectory,
+  changeOf,
+  type DiffGroup,
+  type DiffTarget,
+  entryKey,
+  FileList,
+  splitPath,
+} from "./diff-files";
+import { DiffFindBar, matchRanges, modKey, sectionOf, TOGGLES, useDiffFind } from "./diff-find";
 
-/** A repository's changed files, as the dialog lists them. */
-export interface DiffGroup {
-  /** `owner/name`; absent for the primary repository. */
-  repo?: string;
-  /** What the list calls it, when the session has several. */
-  title?: string;
-  files: G.FileChange[];
-  /** Where a file is on GitHub on the session's branch, while the branch is pushed. */
-  blob?: (path: string) => string;
-}
-
-/** Which file: its repository and path. */
-export interface DiffTarget {
-  repo?: string;
-  path: string;
-}
-
-const same = (a: DiffTarget, b: DiffTarget) => a.path === b.path && (a.repo ?? "") === (b.repo ?? "");
-
-/** How a file changed, as its letter in lists and its word in the dialog's header. */
-export function changeOf(status: string): { letter: string; label: string; tone: string } {
-  switch (status) {
-    case "added":
-      return { letter: "A", label: "Added", tone: "text-added" };
-    case "untracked":
-      return { letter: "A", label: "New, untracked", tone: "text-added" };
-    case "deleted":
-      return { letter: "D", label: "Deleted", tone: "text-danger" };
-    case "renamed":
-      return { letter: "R", label: "Renamed", tone: "text-blue" };
-    default:
-      return { letter: "M", label: "Modified", tone: "text-blue" };
-  }
-}
-
-/** A path's directory, with its slash, and its name. */
-const split = (path: string) => {
-  const cut = path.lastIndexOf("/") + 1;
-  return { dir: path.slice(0, cut), name: path.slice(cut) };
-};
+export { byDirectory, changeOf, type DiffGroup, type DiffTarget };
 
 /** A preference this browser keeps, such as how diffs are laid out. */
 function useKept<T extends string>(key: string, initial: T, allowed: readonly T[]): [T, (v: T) => void] {
@@ -120,31 +99,109 @@ function useWide(px: number) {
   return wide;
 }
 
+/** A changed file as the dialog shows it: its key ([`entryKey`]), repository and change. */
+type Entry = {
+  key: string;
+  repo?: string;
+  file: G.FileChange;
+  /** Where it is on GitHub, on the session's branch, while the branch is pushed. */
+  blob?: string;
+};
+
+/** The same file, changed the same way, there the same: what it showed is still right. */
+const sameEntry = (a: Entry, b: Entry) =>
+  a.key === b.key &&
+  a.blob === b.blob &&
+  a.file.status === b.file.status &&
+  a.file.digest === b.file.digest &&
+  a.file.additions === b.file.additions &&
+  a.file.deletions === b.file.deletions;
+
+/** How tall a file's header is, which stays at the top while its lines scroll under it (px). */
+const FILE_HEADER = 40;
+/** A line of a diff, and a hunk's `@@` line (px): for the room a file not shown yet takes. */
+const LINE = 20;
+const HUNK = 28;
+/** How far from the view files start showing their lines, so that they have them once there (px). */
+const AHEAD = 1600;
+/** Where a change the reader steps to goes: this far under its file's header, its context above it (px). */
+const CHANGE_MARGIN = 3 * LINE;
+/** Keys that scroll the diffs, after which the file the reader went to is no longer held at the top. */
+const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
 /**
- * A changed file's diff over the page, on the native modal <dialog>: Escape,
- * the X or a click beside it closes it, and focus goes back to what opened
- * it. `j` and `k` (or the arrows in its header) step through the session's
- * changed files, which the list at its side shows; `s` lays the diff out
- * side by side, `w` wraps long lines.
+ * Calls back once an element comes within `AHEAD` px of what `root` shows,
+ * one observer for all of them: each file starts showing its lines there.
+ * Without IntersectionObserver, at once.
+ */
+function useNear(root: React.RefObject<HTMLElement | null>) {
+  const [watched] = useState(() => new Map<Element, () => void>());
+  const observer = useRef<IntersectionObserver | undefined>(undefined);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          watched.get(e.target)?.();
+          watched.delete(e.target);
+          io.unobserve(e.target);
+        }
+      },
+      { root: root.current, rootMargin: `${AHEAD}px 0px` },
+    );
+    observer.current = io;
+    for (const el of watched.keys()) io.observe(el);
+    return () => io.disconnect();
+  }, [root, watched]);
+  return useCallback(
+    (el: Element, near: () => void) => {
+      if (typeof IntersectionObserver === "undefined") {
+        near();
+        return () => {};
+      }
+      watched.set(el, near);
+      observer.current?.observe(el);
+      return () => {
+        watched.delete(el);
+        observer.current?.unobserve(el);
+      };
+    },
+    [watched],
+  );
+}
+
+/** Where to bring a line of a file: a match in it, or the start of a change. */
+type Want = DiffPlace & { start?: number; end?: number; how: "match" | "change"; seq: number };
+
+/**
+ * The session's changes over the page, on the native modal <dialog>:
+ * Escape, the X or a click beside it closes it, and the focus goes back to
+ * what opened it, without the ring a keyboard's focus has when a click
+ * opened it. Every file's diff is in it, one after the other, from the file
+ * `initial`. `j` and `k` (or the arrows in its header, or those of the list
+ * at its side) go from file to file, `n` and `p` from change to change; ⌘F
+ * finds in all of them; `s` lays the diffs out side by side, `w` wraps long
+ * lines.
  */
 export function DiffDialog({
   session,
   cliRef,
   groups,
-  current,
-  onSelect,
+  initial,
   onClose,
 }: {
   session: string;
   /** How `fctl` names the session (`project#12`), for the command that prints a diff too large to show. */
   cliRef: string;
   groups: DiffGroup[];
-  current: DiffTarget;
-  onSelect: (t: DiffTarget) => void;
+  /** The file it opens at. */
+  initial: DiffTarget;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const body = useRef<HTMLDivElement>(null);
+  const column = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const [layout, setLayout] = useKept<DiffLayout>("fctl.diff.layout", "unified", ["unified", "split"]);
   // On a phone's narrow screen long lines wrap, unless someone chose otherwise.
@@ -157,77 +214,416 @@ export function DiffDialog({
     "shown",
     "hidden",
   ]);
-  // On a phone the list covers the diff while it is open.
+  const onOff = ["on", "off"] as const;
+  const [matchCase, setMatchCase] = useKept("fctl.diff.find.case", "off", onOff);
+  const [wholeWord, setWholeWord] = useKept("fctl.diff.find.word", "off", onOff);
+  const [regex, setRegex] = useKept("fctl.diff.find.regex", "off", onOff);
+  const options: FindOptions = useMemo(
+    () => ({ matchCase: matchCase === "on", wholeWord: wholeWord === "on", regex: regex === "on" }),
+    [matchCase, wholeWord, regex],
+  );
+  const toggle = (o: keyof FindOptions) => {
+    const set = { matchCase: setMatchCase, wholeWord: setWholeWord, regex: setRegex }[o];
+    set(options[o] ? "off" : "on");
+  };
+  // On a phone the list covers the diffs while it is open.
   const [listOpen, setListOpen] = useState(false);
   const wide = useWide(1024);
   // Side by side takes room: below it, lines go one below the other.
   const roomy = useWide(900);
+  const shownLayout: DiffLayout = roomy ? layout : "unified";
   const pressedOutside = useRef(false);
 
-  // In the order the list shows them.
-  const all = useMemo(
-    () =>
-      groups.flatMap((g) =>
-        byDirectory(g.files).flatMap((d) => d.files.map((file) => ({ repo: g.repo, file, group: g }))),
+  // In the order the list shows them. The page lists the files anew at each step the agent
+  // takes: a file that didn't change keeps its entry, and its diff isn't drawn again.
+  const kept = useRef(new Map<string, Entry>());
+  const all: Entry[] = useMemo(() => {
+    const next = groups.flatMap((g) =>
+      byDirectory(g.files).flatMap((d) =>
+        d.files.map((file): Entry => {
+          const key = entryKey(g.repo, file.path);
+          const blob = file.status !== "deleted" ? g.blob?.(file.path) : undefined;
+          const e: Entry = { key, repo: g.repo, file, blob };
+          const before = kept.current.get(key);
+          return before && sameEntry(before, e) ? before : e;
+        }),
       ),
-    [groups],
-  );
-  const index = all.findIndex((f) => same({ repo: f.repo, path: f.file.path }, current));
-  const entry = all[index];
+    );
+    kept.current = new Map(next.map((e) => [e.key, e]));
+    return next;
+  }, [groups]);
+  const indexOf = useMemo(() => new Map(all.map((e, i) => [e.key, i])), [all]);
+  const several = groups.length > 1;
 
-  useEffect(() => {
-    ref.current?.setAttribute("autofocus", "");
-    ref.current?.showModal();
-    ref.current?.focus();
+  // Every diff at once, in one request, unless the cache has them all.
+  const qc = useQueryClient();
+  const [needAll] = useState(() =>
+    all.some((e) => !!e.file.digest && qc.getQueryData(fileDiffQuery(session, e).queryKey) === undefined),
+  );
+  const bulk = useSessionDiffs(session, needAll);
+  const waiting = needAll && bulk.isPending;
+
+  // The diffs the files show, for finding in them and stepping from change to change.
+  const shown = useRef(new Map<string, G.FileDiff>());
+  const [version, setVersion] = useState(0);
+  const bumping = useRef(false);
+  const onDiff = useCallback((key: string, d: G.FileDiff | undefined) => {
+    if (shown.current.get(key) === d) return;
+    if (d) shown.current.set(key, d);
+    else shown.current.delete(key);
+    if (bumping.current) return;
+    bumping.current = true;
+    queueMicrotask(() => {
+      bumping.current = false;
+      setVersion((v) => v + 1);
+    });
   }, []);
+  const parsed = useRef(new Map<string, PatchLine[]>());
+  const lastLines = useRef<(PatchLine[] | undefined)[]>([]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `version` says the diffs changed
+  const lines = useMemo(() => {
+    const next = new Map<string, PatchLine[]>();
+    const out = all.map((e) => {
+      const d = shown.current.get(e.key);
+      if (!d?.patch) return undefined;
+      const k = `${e.key}\u0001${d.digest}`;
+      const l = parsed.current.get(k) ?? patchLines(d.patch);
+      next.set(k, l);
+      return l;
+    });
+    parsed.current = next;
+    // The same lines: finding doesn't look through them again.
+    const before = lastLines.current;
+    if (out.length === before.length && out.every((l, i) => l === before[i])) return before;
+    lastLines.current = out;
+    return out;
+  }, [all, version]);
+  const changes = useMemo(
+    () => lines.flatMap((l, file) => (l ? changeStarts(l).map((c) => ({ file, h: c.h, j: c.j })) : [])),
+    [lines],
+  );
+
+  // The file in view, and the one the reader went to, which stays at the top while files
+  // above it take their room, until they scroll.
+  const [active, setActive] = useState(() => entryKey(initial.repo, initial.path));
+  const activeIndex = indexOf.get(active) ?? (all.length ? 0 : -1);
+  const pinned = useRef<string | undefined>(indexOf.has(active) ? active : undefined);
+  // Files whose lines show wherever they are, for what the reader goes to; folded files.
+  const [forced, setForced] = useState<ReadonlySet<string>>(() => new Set([active]));
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
+  const watch = useNear(body);
+  // The change the reader stepped to, and where the diffs were then.
+  const changeAt = useRef<{ index: number; top: number } | undefined>(undefined);
+
+  // The focus goes back, on closing, to what opened it: with its ring only when the keyboard
+  // did. Read as the dialog first renders, before it takes the focus (and before development's
+  // second run of the effect below, which finds the focus in it).
+  const [quiet] = useState(() => {
+    const opener = document.activeElement;
+    if (!(opener instanceof HTMLElement) || opener === document.body) return undefined;
+    try {
+      return opener.matches(":focus-visible") ? undefined : opener;
+    } catch {
+      return undefined;
+    }
+  });
+  useEffect(() => {
+    if (quiet) quiet.dataset.quietFocus = "";
+    ref.current?.setAttribute("autofocus", "");
+    if (!ref.current?.open) ref.current?.showModal();
+    body.current?.focus({ preventScroll: true });
+    return () => {
+      if (!quiet) return;
+      // Until it loses the focus it got back.
+      if (document.activeElement === quiet)
+        quiet.addEventListener("blur", () => delete quiet.dataset.quietFocus, { once: true });
+      else delete quiet.dataset.quietFocus;
+    };
+  }, [quiet]);
   useHoldPage();
 
-  const go = useCallback(
-    (by: -1 | 1) => {
-      const next = all[index + by];
-      if (next) onSelect({ repo: next.repo, path: next.file.path });
+  const letGo = useCallback(() => {
+    pinned.current = undefined;
+    changeAt.current = undefined;
+  }, []);
+
+  /** Goes to a file: its header at the top. */
+  const jumpTo = useCallback(
+    (key: string) => {
+      const b = body.current;
+      const i = indexOf.get(key);
+      if (!b || i === undefined) return;
+      letGo();
+      pinned.current = key;
+      setActive(key);
+      const s = sectionOf(b, i);
+      if (s) b.scrollTo({ top: s.offsetTop });
     },
-    [all, index, onSelect],
+    [indexOf, letGo],
   );
 
-  // Another file starts at its top.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: when the file shown changes
+  // It opens at the file opened.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once
   useLayoutEffect(() => {
-    body.current?.scrollTo({ top: 0, left: 0 });
-  }, [current.path, current.repo]);
+    if (pinned.current) jumpTo(pinned.current);
+  }, []);
 
-  // The files beside this one load ahead, so that stepping to them is instant.
-  const qc = useQueryClient();
+  // The file the reader went to stays at the top as files above it show their lines.
   useEffect(() => {
-    for (const n of [all[index + 1], all[index - 1]]) {
-      if (n?.file.digest) void qc.prefetchQuery(fileDiffQuery(session, { repo: n.repo, file: n.file }));
-    }
-  }, [all, index, qc, session]);
+    const c = column.current;
+    const b = body.current;
+    if (!c || !b || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      const i = pinned.current === undefined ? undefined : indexOf.get(pinned.current);
+      const s = i === undefined ? undefined : sectionOf(b, i);
+      if (s && Math.abs(b.scrollTop - s.offsetTop) > 1) b.scrollTop = s.offsetTop;
+    });
+    ro.observe(c);
+    return () => ro.disconnect();
+  }, [indexOf]);
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  // The file in view: the one under the top of the view, or the one the reader went to.
+  useEffect(() => {
+    const b = body.current;
+    if (!b) return;
+    let raf = 0;
+    const spy = () => {
+      raf = 0;
+      if (pinned.current !== undefined) return;
+      const sections = b.querySelectorAll<HTMLElement>("section[data-file]");
+      const top = b.scrollTop + 1;
+      let lo = 0;
+      let hi = sections.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if ((sections[mid]?.offsetTop ?? 0) <= top) lo = mid;
+        else hi = mid - 1;
+      }
+      const e = all[Number(sections[lo]?.dataset.file)];
+      if (e) setActive(e.key);
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(spy);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (SCROLL_KEYS.has(e.key) && e.target === b) letGo();
+    };
+    b.addEventListener("scroll", onScroll, { passive: true });
+    b.addEventListener("wheel", letGo, { passive: true });
+    b.addEventListener("touchstart", letGo, { passive: true });
+    b.addEventListener("pointerdown", letGo);
+    b.addEventListener("keydown", onKey);
+    return () => {
+      b.removeEventListener("scroll", onScroll);
+      b.removeEventListener("wheel", letGo);
+      b.removeEventListener("touchstart", letGo);
+      b.removeEventListener("pointerdown", letGo);
+      b.removeEventListener("keydown", onKey);
+      cancelAnimationFrame(raf);
+    };
+  }, [all, letGo]);
+
+  /** To the next file, or back: back goes to the top of the file in view first, when the reader is down in it. */
+  const go = useCallback(
+    (by: -1 | 1) => {
+      const b = body.current;
+      const s = b && sectionOf(b, activeIndex);
+      const e = all[activeIndex];
+      if (by === -1 && b && s && e && pinned.current === undefined && b.scrollTop > s.offsetTop + 4) {
+        jumpTo(e.key);
+        return;
+      }
+      const next = all[activeIndex + by];
+      if (next) jumpTo(next.key);
+    },
+    [all, activeIndex, jumpTo],
+  );
+
+  /** The line at this far under the top of the view (under the header of the file there). */
+  const placeAt = useCallback((below = 0): DiffPlace | undefined => {
+    const b = body.current;
+    if (!b) return undefined;
+    const y = b.getBoundingClientRect().top + FILE_HEADER + below + 1;
+    const first = <T extends Element>(list: ArrayLike<T>) => {
+      let lo = 0;
+      let hi = list.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if ((list[mid]?.getBoundingClientRect().bottom ?? 0) <= y) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    };
+    const sections = b.querySelectorAll<HTMLElement>("section[data-file]");
+    const s = sections[first(sections)];
+    if (!s) return undefined;
+    const file = Number(s.dataset.file);
+    const rows = s.querySelectorAll<HTMLElement>("[data-l]");
+    if (!rows.length) return { file, h: 0, j: 0 };
+    const row = rows[first(rows)];
+    if (!row) return { file: file + 1, h: 0, j: 0 };
+    const [h = 0, j = 0] = (row.dataset.l ?? "").split(":").map(Number);
+    return { file, h, j };
+  }, []);
+  const placeAtTop = useCallback(() => placeAt(0), [placeAt]);
+
+  /** Whether a line shows, under its file's header. */
+  const inView = useCallback((p: DiffPlace) => {
+    const b = body.current;
+    const row = b && sectionOf(b, p.file)?.querySelector(`[data-l="${p.h}:${p.j}"]`);
+    if (!b || !row) return false;
+    const r = row.getBoundingClientRect();
+    const v = b.getBoundingClientRect();
+    return r.bottom > v.top + FILE_HEADER && r.top < v.bottom;
+  }, []);
+
+  // Where to bring a line, once its file shows it.
+  const [want, setWant] = useState<Want>();
+  const reveal = useCallback(
+    (w: Omit<Want, "seq">) => {
+      const e = all[w.file];
+      if (!e) return;
+      pinned.current = undefined;
+      setFolded((f) => {
+        if (!f.has(e.key)) return f;
+        const next = new Set(f);
+        next.delete(e.key);
+        return next;
+      });
+      setForced((f) => (f.has(e.key) ? f : new Set(f).add(e.key)));
+      setWant({ ...w, seq: performance.now() });
+    },
+    [all],
+  );
+  const goTo = useCallback((m: DiffMatch) => reveal({ ...m, how: "match" }), [reveal]);
+  useLayoutEffect(() => {
+    if (!want) return;
+    let frames = 0;
+    let raf = 0;
+    const attempt = () => {
+      const b = body.current;
+      const row = b && sectionOf(b, want.file)?.querySelector<HTMLElement>(`[data-l="${want.h}:${want.j}"]`);
+      if (!b || !row) {
+        // Its file is still loading, or showing its lines.
+        if (frames++ < 120) raf = requestAnimationFrame(attempt);
+        return;
+      }
+      if (want.how === "match") {
+        const range = matchRanges(b, { ...want, start: want.start ?? 0, end: want.end ?? 0 })[0];
+        bringIntoView(b, range ?? row);
+      } else {
+        const v = b.getBoundingClientRect();
+        b.scrollTop += row.getBoundingClientRect().top - v.top - FILE_HEADER - CHANGE_MARGIN;
+        if (changeAt.current) changeAt.current.top = b.scrollTop;
+      }
+    };
+    attempt();
+    return () => cancelAnimationFrame(raf);
+  }, [want]);
+
+  /** To the next change, or back: from the one the reader stepped to while they stay there, else from the view. */
+  const stepChange = useCallback(
+    (forward: boolean) => {
+      const b = body.current;
+      if (!b || !changes.length) return;
+      const was = changeAt.current;
+      let i: number;
+      if (was && Math.abs(b.scrollTop - was.top) < 2) i = was.index + (forward ? 1 : -1);
+      else {
+        const at = placeAt(CHANGE_MARGIN) ?? { file: Math.max(activeIndex, 0), h: 0, j: 0 };
+        i = forward
+          ? changes.findIndex((c) => compare(c, at) > 0)
+          : changes.findLastIndex((c) => compare(c, at) < 0);
+      }
+      const c = changes[i];
+      if (!c) return;
+      reveal({ ...c, how: "change" });
+      changeAt.current = { index: i, top: Number.NaN };
+    },
+    [changes, placeAt, activeIndex, reveal],
+  );
+
+  const find = useDiffFind({ lines, body, options, placeAtTop, inView, goTo });
+
+  const onFold = useCallback((key: string) => {
+    setFolded((f) => {
+      const next = new Set(f);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }, []);
+
+  const showList = () => (wide ? setListShown("shown") : setListOpen(true));
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.nativeEvent.isComposing) return;
     const t = e.target as HTMLElement;
-    if (e.metaKey || e.ctrlKey || e.altKey || t.tagName === "INPUT" || t.tagName === "TEXTAREA") return;
+    const typing = t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+    // Elsewhere than on Apple's systems, ⌘ too, for a Mac whose browser says it is another.
+    const mod = e.metaKey || (!apple() && e.ctrlKey);
     const key = e.key.toLowerCase();
+    if (mod && !e.altKey && !e.shiftKey && key === "f") {
+      // Once more in the bar, the browser's own find opens.
+      if (find.open && t === find.input.current) return;
+      e.preventDefault();
+      find.show();
+      return;
+    }
+    if (find.open && ((mod && !e.altKey && key === "g") || e.key === "F3")) {
+      e.preventDefault();
+      find.step(!e.shiftKey);
+      return;
+    }
+    if (find.open && e.altKey && !e.ctrlKey) {
+      const option = TOGGLES.find((x) => x.code === e.code)?.option;
+      if (option) {
+        e.preventDefault();
+        toggle(option);
+        return;
+      }
+    }
+    if (e.key === "Escape" && find.open) {
+      e.preventDefault();
+      find.close();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey || typing) return;
     if (key === "j" || key === "k") go(key === "j" ? 1 : -1);
+    else if (key === "n" || key === "p") stepChange(key === "n");
     else if (key === "s") setLayout(layout === "split" ? "unified" : "split");
     else if (key === "w") setWrap(wrap === "wrap" ? "scroll" : "wrap");
-    else if (key === "/") document.getElementById(`${titleId}-filter`)?.focus();
-    else return;
+    else if (key === "/") {
+      showList();
+      requestAnimationFrame(() => document.getElementById(`${titleId}-filter`)?.focus());
+    } else return;
     e.preventDefault();
   };
+
+  // What finding found in each file, by key, for the list.
+  const found = useMemo(() => {
+    if (!find.byFile) return undefined;
+    return new Map(all.map((e, i) => [e.key, find.byFile?.get(i) ?? 0]));
+  }, [find.byFile, all]);
 
   const list = (
     <FileList
       groups={groups}
-      current={current}
+      active={all[activeIndex]?.key}
       filterId={`${titleId}-filter`}
-      onSelect={(t) => {
-        onSelect(t);
-        setListOpen(false);
+      found={found}
+      sideBySide={roomy}
+      onSelect={(key) => {
+        jumpTo(key);
+        if (!wide) setListOpen(false);
       }}
     />
   );
   const listVisible = wide ? listShown === "shown" : listOpen;
+  const totals = all.reduce(
+    (t, e) => ({ a: t.a + (e.file.additions ?? 0), d: t.d + (e.file.deletions ?? 0) }),
+    { a: 0, d: 0 },
+  );
+  // Buttons of the header leave the focus where it is: in the diffs, for the keys that scroll them.
+  const keepFocus = (e: React.MouseEvent) => e.preventDefault();
 
   return createPortal(
     <dialog
@@ -248,25 +644,108 @@ export function DiffDialog({
       )}
     >
       <div className="flex h-full flex-col">
-        <Header
-          entry={entry}
-          current={current}
-          titleId={titleId}
-          index={index}
-          count={all.length}
-          go={go}
-          layout={layout}
-          setLayout={setLayout}
-          sideBySide={roomy}
-          wrap={wrap === "wrap"}
-          toggleWrap={() => setWrap(wrap === "wrap" ? "scroll" : "wrap")}
-          listVisible={listVisible}
-          toggleList={() =>
-            wide ? setListShown(listShown === "shown" ? "hidden" : "shown") : setListOpen(!listOpen)
-          }
-          close={() => ref.current?.close()}
-          session={session}
-        />
+        <header className="flex shrink-0 items-center gap-2 border-b border-line py-2.5 pr-2.5 pl-2.5 sm:gap-3 sm:pl-3">
+          <IconButton
+            label={listVisible ? "Hide the changed files" : "Show the changed files"}
+            aria-expanded={listVisible}
+            onMouseDown={keepFocus}
+            onClick={() =>
+              wide ? setListShown(listShown === "shown" ? "hidden" : "shown") : setListOpen(!listOpen)
+            }
+            className={cn(listVisible && "text-ink")}
+          >
+            <PanelLeft className="size-4" />
+          </IconButton>
+          <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
+            <h2 id={titleId} className="shrink-0 text-[14px] font-medium text-ink">
+              Changes
+            </h2>
+            <span className="min-w-0 truncate text-[12px] text-ink-3 max-sm:hidden">
+              {all.length} {all.length === 1 ? "file" : "files"}
+              {(totals.a > 0 || totals.d > 0) && (
+                <span className="ml-2 font-mono text-[11.5px] tabular-nums">
+                  {totals.a > 0 && <span className="text-added">+{totals.a}</span>}
+                  {totals.a > 0 && totals.d > 0 && " "}
+                  {totals.d > 0 && <span className="text-danger">−{totals.d}</span>}
+                </span>
+              )}
+            </span>
+          </div>
+          <IconButton
+            label={`Find in the diffs (${modKey("F")})`}
+            aria-pressed={find.open}
+            onClick={() => (find.open ? find.close() : find.show())}
+            className={cn(find.open && "bg-hover text-ink")}
+          >
+            <Search className="size-4" />
+          </IconButton>
+          <nav aria-label="Changed files" className="flex shrink-0 items-center">
+            <IconButton
+              label="Previous file (k)"
+              onMouseDown={keepFocus}
+              onClick={() => go(-1)}
+              disabled={activeIndex <= 0}
+            >
+              <ChevronUp className="size-4" />
+            </IconButton>
+            <span
+              className="min-w-[4.5ch] text-center font-mono text-[11.5px] text-ink-3 tabular-nums"
+              aria-live="polite"
+            >
+              {activeIndex >= 0 ? activeIndex + 1 : "–"}
+              <span className="text-ink-4">/{all.length}</span>
+            </span>
+            <IconButton
+              label="Next file (j)"
+              onMouseDown={keepFocus}
+              onClick={() => go(1)}
+              disabled={activeIndex >= all.length - 1}
+            >
+              <ChevronDown className="size-4" />
+            </IconButton>
+          </nav>
+          <div className="hidden h-5 w-px bg-line sm:block" />
+          {roomy && (
+            <div className="flex shrink-0 rounded-md border border-line p-0.5">
+              {(
+                [
+                  ["unified", "One below the other (s)", <Rows3 key="u" className="size-3.5" />],
+                  ["split", "Side by side (s)", <Columns2 key="s" className="size-3.5" />],
+                ] as const
+              ).map(([value, label, icon]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={layout === value}
+                  aria-label={label}
+                  title={label}
+                  onMouseDown={keepFocus}
+                  onClick={() => setLayout(value)}
+                  className={cn(
+                    "inline-flex h-6.5 w-7.5 items-center justify-center rounded-[5px] transition-colors",
+                    layout === value
+                      ? "bg-raised text-ink shadow-[0_0_0_1px_var(--c-line-strong)]"
+                      : "text-ink-4 hover:text-ink-2",
+                  )}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
+          )}
+          <IconButton
+            label={wrap === "wrap" ? "Scroll long lines (w)" : "Wrap long lines (w)"}
+            aria-pressed={wrap === "wrap"}
+            onMouseDown={keepFocus}
+            onClick={() => setWrap(wrap === "wrap" ? "scroll" : "wrap")}
+            className={cn(wrap === "wrap" && "bg-hover text-ink")}
+          >
+            <TextWrap className="size-4" />
+          </IconButton>
+          <IconButton label="Close (Esc)" onClick={() => ref.current?.close()}>
+            <X className="size-4" />
+          </IconButton>
+        </header>
         <div className="relative flex min-h-0 flex-1">
           {listVisible && (
             <aside
@@ -281,22 +760,44 @@ export function DiffDialog({
               {list}
             </aside>
           )}
-          <div
-            ref={body}
-            // The diff scrolls; a key moves it once it has focus.
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region takes focus to scroll
-            tabIndex={0}
-            className="min-w-0 flex-1 overflow-auto bg-canvas/40 outline-none"
-          >
-            <Body
-              key={`${current.repo ?? ""}\u0000${current.path}`}
-              session={session}
-              cliRef={cliRef}
-              entry={entry}
-              current={current}
-              layout={roomy ? layout : "unified"}
-              wrap={wrap === "wrap"}
-            />
+          <div className="flex min-w-0 flex-1 flex-col">
+            {find.open && <DiffFindBar find={find} options={options} onToggle={toggle} loading={waiting} />}
+            <div
+              ref={body}
+              // The diffs scroll; the keys move them once they have the focus.
+              // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region takes focus to scroll
+              tabIndex={0}
+              className="min-h-0 flex-1 overflow-auto overscroll-contain bg-canvas/40 outline-none"
+            >
+              <div ref={column} className="relative">
+                {all.map((e, i) => (
+                  <FileSection
+                    key={e.key}
+                    entry={e}
+                    index={i}
+                    session={session}
+                    cliRef={cliRef}
+                    layout={shownLayout}
+                    wrap={wrap === "wrap"}
+                    lines={lines[i]}
+                    folded={folded.has(e.key)}
+                    forced={forced.has(e.key)}
+                    waiting={waiting}
+                    several={several}
+                    watch={watch}
+                    onFold={onFold}
+                    onDiff={onDiff}
+                  />
+                ))}
+              </div>
+              {all.length === 0 ? (
+                <Note icon={<FileQuestion />} title="No changes any more">
+                  The agent's work no longer changes any file.
+                </Note>
+              ) : (
+                <p className="px-4 pt-8 pb-12 text-center text-[12px] text-ink-4">End of the changes</p>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -305,160 +806,227 @@ export function DiffDialog({
   );
 }
 
-type Entry = { repo?: string; file: G.FileChange; group: DiffGroup };
+/**
+ * Brings a match, or a line, into view: across its diff's long lines, then
+ * up or down the diffs to the middle of the view, unless it shows already
+ * (not under its file's header).
+ * Far, the diffs jump there, as a browser's find does; near, they glide.
+ */
+function bringIntoView(b: HTMLElement, to: Range | Element) {
+  const start = to instanceof Range ? to.startContainer : to;
+  const el = start.nodeType === 1 ? (start as Element) : start.parentElement;
+  // Across, in a diff whose long lines scroll: clear of the line numbers that stay put.
+  const across = el?.closest<HTMLElement>(".diff-scroll");
+  if (across && across.scrollWidth > across.clientWidth) {
+    const r = to.getBoundingClientRect();
+    const box = across.getBoundingClientRect();
+    const gutter =
+      (el?.closest(".diff-line")?.querySelector(".diff-gutter")?.getBoundingClientRect().width ?? 0) + 20;
+    const left = box.left + gutter;
+    if (r.left < left || r.right > box.right)
+      across.scrollLeft += r.left - left - Math.max(0, (box.right - left - r.width) / 3);
+  }
+  const r = to.getBoundingClientRect();
+  const v = b.getBoundingClientRect();
+  const top = v.top + FILE_HEADER;
+  // Clear of its file's header and the bottom edge, it stays where it is.
+  const margin = LINE / 2;
+  if (r.top >= top + margin && r.bottom <= v.bottom - margin) return;
+  const by = r.top + r.height / 2 - (top + (v.bottom - top) / 2);
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  b.scrollTo({
+    top: b.scrollTop + by,
+    behavior: reduce || Math.abs(by) > (v.bottom - top) * 1.5 ? "instant" : "smooth",
+  });
+}
 
-/** The file's name and how it changed, and what moves between files and lays the diff out. */
-function Header({
+/** The room a file takes before it shows its lines (px): as many lines as it has, or as it changed. */
+function roomFor(file: G.FileChange, diff: G.FileDiff | undefined, lines: PatchLine[] | undefined): number {
+  if (lines) {
+    const hunks = new Set(lines.map((l) => l.h)).size;
+    return lines.length * LINE + (hunks > 1 ? hunks * HUNK : 0) + 8;
+  }
+  if (diff || !file.digest) return 220;
+  return Math.min(4000, ((file.additions ?? 0) + (file.deletions ?? 0) + 6) * LINE);
+}
+
+/**
+ * A changed file: its header, which stays at the top while its lines scroll
+ * under it, and its diff, which shows once it comes near the view.
+ */
+const FileSection = memo(function FileSection({
   entry,
-  current,
-  titleId,
   index,
-  count,
-  go,
-  layout,
-  setLayout,
-  sideBySide,
-  wrap,
-  toggleWrap,
-  listVisible,
-  toggleList,
-  close,
   session,
+  cliRef,
+  layout,
+  wrap,
+  lines,
+  folded,
+  forced,
+  waiting,
+  several,
+  watch,
+  onFold,
+  onDiff,
 }: {
-  entry?: Entry;
-  current: DiffTarget;
-  titleId: string;
+  entry: Entry;
   index: number;
-  count: number;
-  go: (by: -1 | 1) => void;
-  layout: DiffLayout;
-  setLayout: (l: DiffLayout) => void;
-  /** The window is wide enough to show the diff side by side. */
-  sideBySide: boolean;
-  wrap: boolean;
-  toggleWrap: () => void;
-  listVisible: boolean;
-  toggleList: () => void;
-  close: () => void;
   session: string;
+  cliRef: string;
+  layout: DiffLayout;
+  wrap: boolean;
+  /** Its diff's lines, once the dialog has them, for the room it takes before it shows them. */
+  lines?: PatchLine[];
+  folded: boolean;
+  /** Its lines show, wherever it is: the reader goes there. */
+  forced: boolean;
+  /** All the diffs are coming at once: not one by one yet. */
+  waiting: boolean;
+  several: boolean;
+  watch: (el: Element, near: () => void) => () => void;
+  onFold: (key: string) => void;
+  onDiff: (key: string, d: G.FileDiff | undefined) => void;
 }) {
-  const { dir, name } = split(current.path);
-  const change = changeOf(entry?.file.status ?? "modified");
-  const a = entry?.file.additions;
-  const d = entry?.file.deletions;
-  const blob = entry && entry.file.status !== "deleted" ? entry.group.blob?.(entry.file.path) : undefined;
-  const lang = languageOf(current.path);
+  const q = useFileDiff(session, entry, waiting);
+  const diff = q.data;
+  const { key } = entry;
+  useEffect(() => onDiff(key, diff), [key, diff, onDiff]);
+  useEffect(() => () => onDiff(key, undefined), [key, onDiff]);
+  const el = useRef<HTMLElement>(null);
+  const [near, setNear] = useState(forced);
+  if (forced && !near) setNear(true);
+  useEffect(() => {
+    if (near || !el.current) return;
+    return watch(el.current, () => setNear(true));
+  }, [near, watch]);
+  const room = roomFor(entry.file, diff, lines);
+  const headingId = useId();
   return (
-    <header className="flex shrink-0 items-center gap-2 border-b border-line py-2.5 pr-2.5 pl-2.5 sm:gap-3 sm:pl-3">
-      <IconButton
-        label={listVisible ? "Hide the changed files" : "Show the changed files"}
-        aria-expanded={listVisible}
-        onClick={toggleList}
-        className={cn(listVisible && "text-ink")}
+    <section ref={el} data-file={index} aria-labelledby={headingId} className="border-b border-line">
+      <FileHeader
+        entry={entry}
+        diff={diff}
+        headingId={headingId}
+        folded={folded}
+        several={several}
+        onFold={() => onFold(key)}
+      />
+      {!folded &&
+        (near ? (
+          <FileBody entry={entry} q={q} cliRef={cliRef} layout={layout} wrap={wrap} />
+        ) : (
+          <div style={{ height: room }} aria-hidden="true" />
+        ))}
+    </section>
+  );
+});
+
+/** A file's name, how it changed and by how much, what folds it, and where it is on GitHub. */
+function FileHeader({
+  entry,
+  diff,
+  headingId,
+  folded,
+  several,
+  onFold,
+}: {
+  entry: Entry;
+  diff?: G.FileDiff;
+  headingId: string;
+  folded: boolean;
+  several: boolean;
+  onFold: () => void;
+}) {
+  const { file } = entry;
+  const { dir, name } = splitPath(file.path);
+  const change = changeOf(file.status);
+  const a = file.additions ?? 0;
+  const d = file.deletions ?? 0;
+  const { blob } = entry;
+  return (
+    <div
+      className="sticky top-0 z-[3] flex items-center gap-2 border-b border-line bg-surface pr-2 pl-1.5"
+      style={{ height: FILE_HEADER }}
+    >
+      <button
+        type="button"
+        onClick={onFold}
+        aria-expanded={!folded}
+        aria-label={folded ? `Show the lines of ${file.path}` : `Hide the lines of ${file.path}`}
+        title={folded ? "Show its lines" : "Hide its lines"}
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-4 transition-colors hover:bg-hover hover:text-ink"
       >
-        <PanelLeft className="size-4" />
-      </IconButton>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <h2
-            id={titleId}
-            className="flex min-w-0 font-mono text-[13.5px] leading-tight"
-            title={current.path}
-          >
-            {dir && <span className="min-w-0 shrink-[1000] truncate text-ink-4">{dir}</span>}
-            <span className="min-w-0 truncate font-medium text-ink">{name}</span>
-          </h2>
-          <span className="hidden shrink-0 sm:inline-flex">
-            <CopyButton text={current.path} label="Copy path" className="py-0.5" />
-          </span>
-        </div>
-        <div className="flex min-w-0 items-center gap-x-2.5 overflow-hidden text-[12px] whitespace-nowrap text-ink-3">
-          <span className={cn("font-medium", change.tone)}>{change.label}</span>
-          {(!!a || !!d) && (
-            <span className="font-mono text-[11.5px] tabular-nums">
-              {!!a && <span className="text-added">+{a}</span>}
-              {!!a && !!d && " "}
-              {!!d && <span className="text-danger">−{d}</span>}
-            </span>
-          )}
-          {lang.id !== "text" && <span className="hidden text-ink-4 sm:inline">{lang.label}</span>}
-          {entry?.repo && <span className="truncate font-mono text-[11.5px] text-ink-4">{entry.repo}</span>}
-          <Updated session={session} entry={entry} />
-        </div>
-      </div>
-      <nav aria-label="Changed files" className="flex shrink-0 items-center">
-        <IconButton label="Previous file (k)" onClick={() => go(-1)} disabled={index <= 0}>
-          <ChevronUp className="size-4" />
-        </IconButton>
+        <ChevronRight className={cn("size-3.5 transition-transform duration-150", !folded && "rotate-90")} />
+      </button>
+      <span className={cn("w-3 shrink-0 text-center font-mono text-[11px]", change.tone)} aria-hidden="true">
+        {change.letter}
+      </span>
+      <h3 id={headingId} className="flex min-w-0 items-baseline font-mono text-[12.5px]" title={file.path}>
+        <span className="sr-only">{change.label}: </span>
+        {several && entry.repo && <span className="mr-2 shrink-0 text-ink-4">{entry.repo}</span>}
+        {dir && <span className="min-w-0 shrink-[1000] truncate text-ink-4">{dir}</span>}
+        <span className="min-w-0 truncate font-medium text-ink">{name}</span>
+      </h3>
+      <CopyPath path={file.path} />
+      {diff?.old_path && (
         <span
-          className="min-w-[4.5ch] text-center font-mono text-[11.5px] text-ink-3 tabular-nums"
-          aria-live="polite"
+          className="hidden min-w-0 truncate font-mono text-[11.5px] text-ink-4 md:inline"
+          title={diff.old_path}
         >
-          {index >= 0 ? index + 1 : "–"}
-          <span className="text-ink-4">/{count}</span>
+          from {diff.old_path}
         </span>
-        <IconButton label="Next file (j)" onClick={() => go(1)} disabled={index < 0 || index >= count - 1}>
-          <ChevronDown className="size-4" />
-        </IconButton>
-      </nav>
-      <div className="hidden h-5 w-px bg-line sm:block" />
-      {sideBySide && (
-        <div className="flex shrink-0 rounded-md border border-line p-0.5">
-          {(
-            [
-              ["unified", "One below the other", <Rows3 key="u" className="size-3.5" />],
-              ["split", "Side by side (s)", <Columns2 key="s" className="size-3.5" />],
-            ] as const
-          ).map(([value, label, icon]) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={layout === value}
-              aria-label={label}
-              title={label}
-              onClick={() => setLayout(value)}
-              className={cn(
-                "inline-flex h-6.5 w-7.5 items-center justify-center rounded-[5px] transition-colors",
-                layout === value
-                  ? "bg-raised text-ink shadow-[0_0_0_1px_var(--c-line-strong)]"
-                  : "text-ink-4 hover:text-ink-2",
-              )}
-            >
-              {icon}
-            </button>
-          ))}
-        </div>
       )}
-      <IconButton
-        label={wrap ? "Scroll long lines (w)" : "Wrap long lines (w)"}
-        aria-pressed={wrap}
-        onClick={toggleWrap}
-        className={cn(wrap && "bg-hover text-ink")}
-      >
-        <TextWrap className="size-4" />
-      </IconButton>
+      <span className="flex-1" />
+      <Updated digest={diff?.digest} />
+      {(a > 0 || d > 0) && (
+        <span className="shrink-0 font-mono text-[11.5px] tabular-nums">
+          {a > 0 && <span className="text-added">+{a}</span>}
+          {a > 0 && d > 0 && " "}
+          {d > 0 && <span className="text-danger">−{d}</span>}
+        </span>
+      )}
       {blob && (
         <a
           href={blob}
           target="_blank"
           rel="noreferrer"
           title="The file on GitHub, on the session's branch"
-          className="hidden h-8 shrink-0 items-center gap-1 rounded-md px-2 text-[12.5px] text-ink-3 transition-colors hover:bg-hover hover:text-ink md:inline-flex"
+          className="hidden h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink md:inline-flex"
         >
           GitHub <ArrowUpRight className="size-3.5" />
         </a>
       )}
-      <IconButton label="Close (Esc)" onClick={close}>
-        <X className="size-4" />
-      </IconButton>
-    </header>
+    </div>
   );
 }
 
-/** Says, for a moment, that the file's diff changed while it is open: the agent is at work on it. */
-function Updated({ session, entry }: { session: string; entry?: Entry }) {
-  const q = useFileDiff(session, entry);
-  const digest = q.data?.digest;
+/** Copies a file's path. */
+function CopyPath({ path }: { path: string }) {
+  const [done, setDone] = useState(false);
+  const t = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(t.current), []);
+  const label = done ? "Copied" : "Copy the path";
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={async () => {
+        await navigator.clipboard.writeText(path);
+        setDone(true);
+        clearTimeout(t.current);
+        t.current = setTimeout(() => setDone(false), 1600);
+      }}
+      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-ink-4 transition-colors hover:bg-hover hover:text-ink"
+    >
+      {done ? <Check className="size-3.5 text-ink" /> : <Copy className="size-3.5" />}
+    </button>
+  );
+}
+
+/** Says, for a moment, that a file's diff changed while it shows: the agent is at work on it. */
+function Updated({ digest }: { digest?: string }) {
   const seen = useRef<string | undefined>(undefined);
   const [shown, setShown] = useState(false);
   useEffect(() => {
@@ -470,228 +1038,33 @@ function Updated({ session, entry }: { session: string; entry?: Entry }) {
     const t = setTimeout(() => setShown(false), 2600);
     return () => clearTimeout(t);
   }, [digest]);
-  // Another file: what it saw goes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: when the file changes
-  useEffect(() => {
-    seen.current = undefined;
-    setShown(false);
-  }, [entry?.file.path, entry?.repo]);
   if (!shown) return null;
   return (
-    <span className="inline-flex animate-fade items-center gap-1 rounded-full bg-accent-soft px-1.5 py-px text-[11px] text-accent">
+    <span className="inline-flex shrink-0 animate-fade items-center gap-1 rounded-full bg-accent-soft px-1.5 py-px text-[11px] text-accent">
       <span className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
       Updated
     </span>
   );
 }
 
-/** The changed files of every repository, the one shown marked, with a filter for long lists. */
-function FileList({
-  groups,
-  current,
-  filterId,
-  onSelect,
-}: {
-  groups: DiffGroup[];
-  current: DiffTarget;
-  filterId: string;
-  onSelect: (t: DiffTarget) => void;
-}) {
-  const [filter, setFilter] = useState("");
-  const list = useRef<HTMLDivElement>(null);
-  const total = groups.reduce((n, g) => n + g.files.length, 0);
-  const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = groups
-    .map((g) => ({
-      ...g,
-      files: g.files.filter((f) => words.every((w) => f.path.toLowerCase().includes(w))),
-    }))
-    .filter((g) => g.files.length);
-  const several = groups.filter((g) => g.files.length).length > 1;
-  // The file shown stays in sight in the list.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: when the file shown changes
-  useEffect(() => {
-    list.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
-  }, [current.path, current.repo]);
-  return (
-    <>
-      {total > 6 && (
-        <div className="shrink-0 border-b border-line p-2">
-          <label className="flex h-8 items-center gap-2 rounded-md border border-line bg-sunken px-2.5 focus-within:border-line-strong">
-            <Search className="size-3.5 shrink-0 text-ink-4" />
-            <input
-              id={filterId}
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              onKeyDown={(e) => {
-                // Escape clears the filter before it closes the dialog.
-                if (e.key === "Escape" && filter) {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setFilter("");
-                } else if (e.key === "Enter") {
-                  const first = shown[0]?.files[0];
-                  if (first) onSelect({ repo: shown[0]?.repo, path: first.path });
-                }
-              }}
-              placeholder={`Filter ${total} files`}
-              aria-label="Filter the changed files"
-              autoComplete="off"
-              spellCheck={false}
-              className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-ink-4"
-            />
-            {!filter && (
-              <span className="hidden sm:inline-flex">
-                <Kbd>/</Kbd>
-              </span>
-            )}
-          </label>
-        </div>
-      )}
-      <div ref={list} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
-        {shown.length === 0 && (
-          <p className="px-2.5 py-3 text-[12.5px] text-ink-4">No changed file matches.</p>
-        )}
-        {shown.map((g) => (
-          <div key={g.repo ?? ""} className="mb-1.5 last:mb-0">
-            {several && (
-              <div className="truncate px-2.5 pt-2 pb-1 font-mono text-[11.5px] text-ink-3" title={g.title}>
-                {g.title}
-              </div>
-            )}
-            <ul>
-              {byDirectory(g.files).map(({ dir, files }) => (
-                <li key={dir}>
-                  {dir && (
-                    <div
-                      className="flex min-w-0 items-center gap-1.5 px-2.5 pt-2 pb-0.5 font-mono text-[11px] text-ink-4"
-                      title={dir}
-                    >
-                      <Folder className="size-3 shrink-0" aria-hidden="true" />
-                      <span className="truncate">{dir.slice(0, -1)}</span>
-                    </div>
-                  )}
-                  <ul>
-                    {files.map((f) => (
-                      <li key={f.path}>
-                        <FileRow
-                          file={f}
-                          nested={!!dir}
-                          active={same({ repo: g.repo, path: f.path }, current)}
-                          onClick={() => onSelect({ repo: g.repo, path: f.path })}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-      <div className="hidden shrink-0 items-center gap-1.5 border-t border-line px-3 py-2 text-[11.5px] text-ink-4 lg:flex">
-        <Kbd>j</Kbd>
-        <Kbd>k</Kbd>
-        <span className="mr-2">files</span>
-        <Kbd>s</Kbd>
-        <span className="mr-2">side by side</span>
-        <Kbd>w</Kbd>
-        <span>wrap</span>
-      </div>
-    </>
-  );
-}
-
-/**
- * A repository's files under their directories: those at its root first,
- * then each directory once, in the order the list has them, above its files.
- */
-export function byDirectory(files: G.FileChange[]): { dir: string; files: G.FileChange[] }[] {
-  const dirs = new Map<string, G.FileChange[]>([["", []]]);
-  for (const f of files) {
-    const { dir } = split(f.path);
-    const list = dirs.get(dir);
-    if (list) list.push(f);
-    else dirs.set(dir, [f]);
-  }
-  return [...dirs].map(([dir, files]) => ({ dir, files })).filter((d) => d.files.length > 0);
-}
-
-/** A file in the list: how it changed, its name (its directory is above it), its lines added and taken out. */
-function FileRow({
-  file,
-  nested,
-  active,
-  onClick,
-}: {
-  file: G.FileChange;
-  /** Under its directory: indented. */
-  nested: boolean;
-  active: boolean;
-  onClick: () => void;
-}) {
-  const { name } = split(file.path);
-  const change = changeOf(file.status);
-  const a = file.additions ?? 0;
-  const d = file.deletions ?? 0;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-current={active}
-      title={file.path}
-      className={cn(
-        "group/file relative flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left transition-colors",
-        nested ? "pl-[22px]" : "pl-2.5",
-        active ? "bg-hover text-ink" : "text-ink-2 hover:bg-hover hover:text-ink",
-      )}
-    >
-      {active && (
-        <span className="absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-accent" aria-hidden="true" />
-      )}
-      <span className="sr-only">{change.label}: </span>
-      <span className={cn("w-3 shrink-0 text-center font-mono text-[11px]", change.tone)} aria-hidden="true">
-        {change.letter}
-      </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{name}</span>
-      {(a > 0 || d > 0) && (
-        <span className="shrink-0 font-mono text-[10.5px] text-ink-4 tabular-nums">
-          {a > 0 && <span className="text-added/80">+{a}</span>}
-          {a > 0 && d > 0 && " "}
-          {d > 0 && <span className="text-danger/80">−{d}</span>}
-        </span>
-      )}
-    </button>
-  );
-}
-
-/** The diff of the file shown, or why there is none to show. */
-function Body({
-  session,
-  cliRef,
+/** A file's diff, or why there is none to show. */
+function FileBody({
   entry,
-  current,
+  q,
+  cliRef,
   layout,
   wrap,
 }: {
-  session: string;
+  entry: Entry;
+  q: ReturnType<typeof useFileDiff>;
   cliRef: string;
-  entry?: Entry;
-  current: DiffTarget;
   layout: DiffLayout;
   wrap: boolean;
 }) {
-  const q = useFileDiff(session, entry);
   const diff = q.data;
+  const path = entry.file.path;
   const hunks = useMemo(() => (diff?.patch ? parsePatch(diff.patch) : []), [diff?.patch]);
-  const lang = useMemo(() => languageOf(current.path, firstLine(hunks)).id, [current.path, hunks]);
-  if (!entry) {
-    return (
-      <Note icon={<FileQuestion />} title="No changes in this file any more">
-        The agent's work no longer changes <code className="font-mono text-ink-2">{current.path}</code>.
-      </Note>
-    );
-  }
+  const lang = useMemo(() => languageOf(path, firstLine(hunks)).id, [path, hunks]);
   if (!entry.file.digest) {
     return (
       <Note icon={<History />} title="No diff of this file">
@@ -716,9 +1089,9 @@ function Body({
         </Note>
       );
     }
-    return <Loading />;
+    return <Loading lines={(entry.file.additions ?? 0) + (entry.file.deletions ?? 0)} />;
   }
-  const command = diffCommand(cliRef, current.path, entry.repo);
+  const command = diffCommand(cliRef, path, entry.repo);
   // What changed beside its lines: where a renamed file was, and its mode.
   const mode = diff.old_mode && diff.new_mode ? modeChange(diff.old_mode, diff.new_mode) : undefined;
   const from = diff.old_path && <code className="font-mono text-ink-2">{diff.old_path}</code>;
@@ -765,19 +1138,19 @@ function Body({
         lang={lang}
         layout={layout}
         wrap={wrap}
-        className={cn("diff-on-surface flex-1 pb-10", (q.isFetching || q.isPlaceholderData) && "opacity-90")}
+        className={cn("diff-on-surface pb-2", (q.isFetching || q.isPlaceholderData) && "opacity-90")}
       />
     );
   }
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex flex-col">
       {above && (from || mode) && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-line bg-surface px-4 py-2 text-[12px] text-ink-3">
           {from && <span>Renamed from {from}</span>}
           {mode && <span>Mode {mode}</span>}
         </div>
       )}
-      <div className="flex flex-1 animate-fade flex-col">{content}</div>
+      <div className="flex animate-fade flex-col">{content}</div>
     </div>
   );
 }
@@ -799,15 +1172,16 @@ export function modeChange(before: string, after: string): string {
   return `${before} → ${after}${meaning && `: ${meaning}`}`;
 }
 
-/** Lines that shimmer while the diff loads, as long as the file's change. */
-function Loading() {
+/** Lines that shimmer while a diff loads, as many as the file's change, up to a screenful. */
+function Loading({ lines }: { lines: number }) {
   const widths = ["w-2/5", "w-3/5", "w-1/3", "w-4/5", "w-1/2", "w-2/3", "w-1/4", "w-3/4", "w-2/5", "w-1/2"];
+  const n = Math.max(3, Math.min(widths.length, lines + 2));
   return (
-    <div className="flex flex-col gap-2.5 px-5 py-5" aria-busy="true">
+    <div className="flex flex-col gap-2.5 px-5 py-4" aria-busy="true">
       <span className="sr-only" role="status">
         Loading the diff
       </span>
-      {widths.map((w, i) => (
+      {widths.slice(0, n).map((w, i) => (
         <div key={i} className="flex items-center gap-4" style={{ opacity: 1 - i * 0.07 }}>
           <Skeleton className="h-3 w-8 shrink-0" />
           <Skeleton className={cn("h-3", w)} />
@@ -817,7 +1191,7 @@ function Loading() {
   );
 }
 
-/** Why the dialog shows no lines: a binary file, one too large, one an older agent sent no diff of. */
+/** Why a file shows no lines: a binary file, one too large, one an older agent sent no diff of. */
 function Note({
   icon,
   title,
@@ -830,13 +1204,13 @@ function Note({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-[60%] animate-rise flex-col items-center justify-center px-6 py-16 text-center">
-      <div className="mb-4 flex size-11 items-center justify-center rounded-full border border-line bg-sunken text-ink-3 [&_svg]:size-5">
+    <div className="flex animate-fade flex-col items-center justify-center px-6 py-8 text-center">
+      <div className="mb-3 flex size-9 items-center justify-center rounded-full border border-line bg-sunken text-ink-3 [&_svg]:size-4">
         {icon}
       </div>
-      <h3 className="text-[15px] font-medium text-ink">{title}</h3>
-      {children && <div className="mt-1.5 max-w-md text-[13px] leading-relaxed text-ink-3">{children}</div>}
-      {action && <div className="mt-5">{action}</div>}
+      <h4 className="text-[14px] font-medium text-ink">{title}</h4>
+      {children && <div className="mt-1 max-w-md text-[13px] leading-relaxed text-ink-3">{children}</div>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }

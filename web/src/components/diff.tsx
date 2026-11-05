@@ -192,6 +192,21 @@ export function DiffLines({
     return Math.max(2, String(most).length);
   }, [hunks]);
   const split = layout === "split";
+  // Side by side, each hunk's rows, with where their lines are in it (`h:j`).
+  const sides = useMemo(
+    () =>
+      split
+        ? hunks.map((h, i) => {
+            const at = new Map(h.lines.map((l, j) => [l, `${i}:${j}`]));
+            return splitRows(h.lines).map((r) => ({
+              ...r,
+              leftAt: r.left && at.get(r.left),
+              rightAt: r.right && at.get(r.right),
+            }));
+          })
+        : undefined,
+    [hunks, split],
+  );
   // One hunk from the file's top, as a new or deleted file's: its `@@` line says nothing the numbers don't.
   const first = hunks[0];
   const wholeFile =
@@ -212,17 +227,19 @@ export function DiffLines({
             {headers && !wholeFile && (
               <HunkHeader hunk={h} hidden={hiddenBefore(hunks, i)} numbers={numbers} split={split} />
             )}
-            {split
-              ? splitRows(h.lines).map((row, j) => (
+            {sides
+              ? sides[i]?.map((row, j) => (
                   <div key={j} className="grid grid-cols-2">
                     <Side
                       line={row.left}
+                      at={row.leftAt}
                       side="old"
                       tokens={row.left && tokens?.get(row.left)}
                       numbers={numbers}
                     />
                     <Side
                       line={row.right}
+                      at={row.rightAt}
                       side="new"
                       tokens={row.right && tokens?.get(row.right)}
                       numbers={numbers}
@@ -230,7 +247,9 @@ export function DiffLines({
                     />
                   </div>
                 ))
-              : h.lines.map((l, j) => <Row key={j} line={l} tokens={tokens?.get(l)} numbers={numbers} />)}
+              : h.lines.map((l, j) => (
+                  <Row key={j} line={l} at={`${i}:${j}`} tokens={tokens?.get(l)} numbers={numbers} />
+                ))}
           </Fragment>
         ))}
       </div>
@@ -276,9 +295,20 @@ function HunkHeader({
 }
 
 /** A line below the others: its numbers before and after, its mark, its code. */
-function Row({ line, tokens, numbers }: { line: DiffLine; tokens?: Token[]; numbers: boolean }) {
+function Row({
+  line,
+  at,
+  tokens,
+  numbers,
+}: {
+  line: DiffLine;
+  /** Its hunk and its place in it, `h:j`, which finding in the diff goes by (`data-l`). */
+  at: string;
+  tokens?: Token[];
+  numbers: boolean;
+}) {
   return (
-    <div className="diff-line flex" data-kind={line.kind}>
+    <div className="diff-line flex" data-kind={line.kind} data-l={at}>
       {numbers && (
         <span className="diff-gutter diff-gutter-two flex shrink-0 select-none">
           <LineNumber n={line.old} />
@@ -296,12 +326,14 @@ function Row({ line, tokens, numbers }: { line: DiffLine; tokens?: Token[]; numb
 /** One side of a line side by side: before (`old`) or after (`new`), empty where that side has none. */
 function Side({
   line,
+  at,
   side,
   tokens,
   numbers,
   divided,
 }: {
   line?: DiffLine;
+  at?: string;
   side: "old" | "new";
   tokens?: Token[];
   numbers: boolean;
@@ -309,7 +341,11 @@ function Side({
 }) {
   if (!line) return <div className={cn("diff-line diff-empty", divided && "diff-divided")} />;
   return (
-    <div className={cn("diff-line flex min-w-0", divided && "diff-divided")} data-kind={line.kind}>
+    <div
+      className={cn("diff-line flex min-w-0", divided && "diff-divided")}
+      data-kind={line.kind}
+      data-l={at}
+    >
       {numbers && (
         <span className="diff-gutter flex shrink-0 select-none">
           <LineNumber n={side === "old" ? line.old : line.new} />
