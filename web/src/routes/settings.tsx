@@ -60,6 +60,7 @@ import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
+import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
@@ -142,6 +143,17 @@ function Profile({ me }: { me: G.Me }) {
     onSuccess: saved,
     onError: (e) => toast(e.message, "error"),
   });
+  const gravatar = useMutation({
+    mutationFn: (on: boolean) => api.updateMe({ gravatar: on }),
+    onSuccess: (m) => {
+      // This says it, not the app's own notice.
+      gravatarNews(gravatarPicture(m));
+      saved(m);
+      toast(gravatarSaid(m));
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const fromGravatar = me.avatar_source === "gravatar";
   const err = (f: string) =>
     (save.error as { field?: string } | null)?.field === f ? save.error?.message : undefined;
   return (
@@ -162,6 +174,19 @@ function Profile({ me }: { me: G.Me }) {
                       : ""}
                   joined {ago(me.user.created_at)}
                 </div>
+                {fromGravatar && (
+                  <div className="text-[12px] text-ink-4">
+                    Your Gravatar, from{" "}
+                    <a
+                      href="https://gravatar.com"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline underline-offset-2 hover:text-ink"
+                    >
+                      gravatar.com
+                    </a>
+                  </div>
+                )}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -197,6 +222,17 @@ function Profile({ me }: { me: G.Me }) {
             </div>
           </div>
         </div>
+        {me.gravatar !== undefined && (
+          <ul className="divide-y divide-line border-y border-line">
+            <SwitchRow
+              label="Show my Gravatar while I have no picture of my own"
+              hint={gravatarHint(me)}
+              checked={me.gravatar}
+              disabled={gravatar.isPending}
+              onChange={(v) => gravatar.mutate(v)}
+            />
+          </ul>
+        )}
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => {
@@ -231,6 +267,24 @@ function Profile({ me }: { me: G.Me }) {
       </div>
     </Section>
   );
+}
+
+/** What the Gravatar switch does for `me` now. */
+function gravatarHint(me: G.Me): string {
+  if (!me.gravatar) return "Off: fctl doesn't look it up on gravatar.com.";
+  if (me.avatar_source === "gravatar")
+    return `fctl looks it up on gravatar.com by ${me.user.email} once a day, and shows a new one the next day.`;
+  if (me.user.avatar_url)
+    return "Your own picture shows instead. Use your initials, then turn this on, for your Gravatar.";
+  return `${me.user.email} has no Gravatar yet, so your initials show. fctl looks again once a day.`;
+}
+
+/** What turning the Gravatar switch on or off did. */
+function gravatarSaid(me: G.Me): string {
+  if (!me.gravatar) return "fctl doesn't show your Gravatar";
+  if (me.avatar_source === "gravatar") return "Your picture is your Gravatar";
+  if (me.user.avatar_url) return "Your Gravatar shows while you have no picture of your own";
+  return `${me.user.email} has no Gravatar yet: fctl looks again once a day`;
 }
 
 /** Your addresses: each signs in, has its own commit email, and is how workspaces know you. */

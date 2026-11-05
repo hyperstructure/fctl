@@ -446,7 +446,7 @@ pub async fn remove_allow(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         let primary = if gone.contains(&u.email.as_str()) {
             q(
                 &ctx.db,
-                "UPDATE users SET email = ?, updated_at = ? WHERE id = ?",
+                "UPDATE users SET email = ?, gravatar_checked_at = NULL, updated_at = ? WHERE id = ?",
                 &[s(first), n(ctx.now), s(&u.id)],
             )?
             .run()
@@ -892,7 +892,36 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.verify_sensitive_actions {
         settings.verify_sensitive_actions = on;
     }
+    let gravatar_off = body.gravatar == Some(false) && settings.gravatar;
+    if let Some(on) = body.gravatar {
+        settings.gravatar = on;
+    }
     crate::instance::save(&ctx.db, &settings).await?;
+    if gravatar_off {
+        // The copies go, and turned on again, it looks for everyone anew.
+        crate::db::batch(
+            &ctx.db,
+            vec![
+                q(
+                    &ctx.db,
+                    "UPDATE users SET avatar_url = NULL, updated_at = ? WHERE id IN \
+                     (SELECT user_id FROM user_avatars WHERE source = 'gravatar')",
+                    &[n(ctx.now)],
+                )?,
+                q(
+                    &ctx.db,
+                    "DELETE FROM user_avatars WHERE source = 'gravatar'",
+                    &[],
+                )?,
+                q(
+                    &ctx.db,
+                    "UPDATE users SET gravatar_checked_at = NULL WHERE gravatar_checked_at IS NOT NULL",
+                    &[],
+                )?,
+            ],
+        )
+        .await?;
+    }
     ctx.audit(
         "instance.settings_updated",
         None,

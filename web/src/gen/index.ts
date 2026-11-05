@@ -27,6 +27,7 @@ export type { AuditList } from "./AuditList";
 export type { AuthResponse } from "./AuthResponse";
 export type { AuthenticatorAdded } from "./AuthenticatorAdded";
 export type { AuthenticatorSetup } from "./AuthenticatorSetup";
+export type { AvatarSource } from "./AvatarSource";
 export type { BaseRole } from "./BaseRole";
 export type { ChallengeReason } from "./ChallengeReason";
 export type { ChangePasswordRequest } from "./ChangePasswordRequest";

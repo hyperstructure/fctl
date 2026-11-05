@@ -959,6 +959,7 @@ fctl admin set --publish-screenshots on    # projects may publish screenshots
 fctl admin set --require-two-factor on     # everyone who signs in with a password needs it
 fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
 fctl admin set --verify-sensitive-actions on   # sensitive actions take a passkey or a code (the primary instance owner)
+fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the copies and looks nothing up
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
 
@@ -994,6 +995,8 @@ the ones before them.
 ```sh
 fctl account emails                        # your addresses, their commit emails and workspaces
 fctl account set --avatar me.png           # your picture (PNG, JPEG, GIF or WebP; --avatar none for your initials)
+fctl account set --gravatar off            # your initials, not your Gravatar, while you have no picture (on by default)
+fctl account set --avatar none --gravatar on   # your Gravatar instead of your picture
 fctl account set --preferred-name "Carl Oscar"   # what agents call you ("" for your first names)
 fctl account set --commit-email 1234+ada@users.noreply.github.com      # your primary address's
 fctl account set --for ada.lovelace@acme.example --commit-email ada.lovelace@acme.example

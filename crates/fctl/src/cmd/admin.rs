@@ -184,8 +184,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -213,6 +213,13 @@ pub enum AdminCmd {
         /// it's you.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         verify_sensitive_actions: Option<bool>,
+        /// Show the Gravatar of people who have no picture of their own,
+        /// unless they turn that off: fctl looks each one up on gravatar.com
+        /// by the SHA-256 hash of their primary address, once a day, and
+        /// keeps a copy. On by default; off removes those copies and looks
+        /// nothing up.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        gravatar: Option<bool>,
     },
 }
 
@@ -508,6 +515,22 @@ fn print_settings(s: &InstanceSettings) {
             "Deleting projects, new access tokens and other sensitive actions take a passkey or a code first, from people who have one."
         } else {
             "Sensitive actions don't ask people to confirm it's them."
+        })
+    );
+    println!(
+        "Gravatar               {}",
+        if s.gravatar {
+            style::accent("on")
+        } else {
+            style::dim("off")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.gravatar {
+            "People without a picture of their own show their Gravatar, unless they turn it off."
+        } else {
+            "fctl looks up nobody's Gravatar: people without a picture show their initials."
         })
     );
 }
@@ -1040,6 +1063,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             require_two_factor,
             two_factor_google,
             verify_sensitive_actions,
+            gravatar,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
@@ -1047,6 +1071,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     require_two_factor,
                     two_factor_google,
                     verify_sensitive_actions,
+                    gravatar,
                 })
                 .await?;
             if json {

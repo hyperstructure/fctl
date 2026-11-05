@@ -163,7 +163,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, email: &str) -> AppResult<
     if body.primary == Some(true) && email != user.email {
         q(
             &ctx.db,
-            "UPDATE users SET email = ?, updated_at = ? WHERE id = ?",
+            "UPDATE users SET email = ?, gravatar_checked_at = NULL, updated_at = ? WHERE id = ?",
             &[s(&email), n(ctx.now), s(&user.id)],
         )?
         .run()
