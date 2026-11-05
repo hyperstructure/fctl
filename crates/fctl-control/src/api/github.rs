@@ -896,6 +896,8 @@ async fn check_and_offer(
     )
     .await;
     let mut offered: Vec<&str> = Vec::new();
+    // Why each of the others offers nothing.
+    let mut refusals: Vec<Refusal> = Vec::new();
     let mut unanswered = None;
     for (info, standing) in found.iter().zip(standings) {
         let standing = match standing {
@@ -908,9 +910,12 @@ async fn check_and_offer(
             }
             Err(e) => return Err(e),
         };
-        if let Ok(offer) = fctl_domain::github::offer(&standing) {
-            keep_offer(ctx, row, info, &viewer.login, &offer).await?;
-            offered.push(&info.account);
+        match fctl_domain::github::offer(&standing) {
+            Ok(offer) => {
+                keep_offer(ctx, row, info, &viewer.login, &offer).await?;
+                offered.push(&info.account);
+            }
+            Err(reason) => refusals.push(reason),
         }
     }
     if let (true, Some(e)) = (offered.is_empty(), unanswered) {
@@ -919,18 +924,9 @@ async fn check_and_offer(
     match offered.as_slice() {
         [] => {
             let account = found.first().filter(|_| named).map(|i| i.account.clone());
-            refused(
-                ctx,
-                row,
-                account.as_deref(),
-                Refusal::NoAdmin,
-                &[],
-                &viewer.login,
-            );
-            Ok(Outcome::Refused {
-                account,
-                reason: Refusal::NoAdmin,
-            })
+            let reason = fctl_domain::github::nothing_offered(&refusals);
+            refused(ctx, row, account.as_deref(), reason, &[], &viewer.login);
+            Ok(Outcome::Refused { account, reason })
         }
         [one] => Ok(Outcome::Offered {
             account: Some((*one).to_owned()),
