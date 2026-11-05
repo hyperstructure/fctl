@@ -23,6 +23,14 @@ interface FeedState {
   sessions: Map<string, G.Session>;
 }
 
+/**
+ * Whether a session's new summary may take it into or out of lists of sessions, or change its
+ * project's count of active ones: it is new to the feed, its status changed, or it was archived or
+ * brought back.
+ */
+export const movesLists = (before: G.Session | undefined, after: G.Session) =>
+  !before || before.status !== after.status || before.archived !== after.archived;
+
 class Feed {
   state: FeedState = { connected: false, runners: [], sessions: new Map() };
   private listeners = new Set<() => void>();
@@ -114,9 +122,13 @@ class Feed {
           sessions.set(msg.session.id, msg.session);
           this.set({ sessions });
           patchSession(queryClient, msg.session);
-          // New sessions and status changes may move lists; refresh them lazily.
-          void queryClient.invalidateQueries({ queryKey: ["sessions"], refetchType: "active" });
-          void queryClient.invalidateQueries({ queryKey: keys.projects, refetchType: "active" });
+          // New sessions and status changes may move lists; refresh them lazily. Patching them has
+          // the rest, as an agent's every step changes its session's summary, and the sidebar's list
+          // shows on every page.
+          if (movesLists(before, msg.session)) {
+            void queryClient.invalidateQueries({ queryKey: ["sessions"], refetchType: "active" });
+            void queryClient.invalidateQueries({ queryKey: keys.projects, refetchType: "active" });
+          }
           // A review agent's session starting or moving on: its project's reviews show it.
           if (msg.session.review && before?.status !== msg.session.status)
             void queryClient.invalidateQueries({
