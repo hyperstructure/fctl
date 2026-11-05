@@ -2,6 +2,21 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.28.0 (2026-11-05)
+
+### Features
+
+- Show people's Gravatar while they have no picture of their own ([#380](https://github.com/hyperstructure/fctl/pull/380))
+- Enroll runners with a workspace's enrollment token ([#381](https://github.com/hyperstructure/fctl/pull/381))
+- Enrollment tokens for a member's own sessions ([#382](https://github.com/hyperstructure/fctl/pull/382))
+- **web:** List recent sessions of every workspace in the sidebar ([#383](https://github.com/hyperstructure/fctl/pull/383))
+
+### Fixes
+
+- **control:** Read data exports from D1 in pages ([#372](https://github.com/hyperstructure/fctl/pull/372))
+- **web:** Keep long invited addresses inside the Google sign-in button ([#373](https://github.com/hyperstructure/fctl/pull/373))
+- **host:** Start Apple's container service when it isn't running ([#379](https://github.com/hyperstructure/fctl/pull/379))
+
 ## 0.27.4 (2026-11-02)
 
 ### Documentation
