@@ -1017,8 +1017,7 @@ function Details({
             session={session.id}
             cliRef={`${session.project_slug}#${session.number}`}
             groups={diffGroups}
-            current={diffAt}
-            onSelect={setDiffAt}
+            initial={diffAt}
             onClose={() => setDiffAt(undefined)}
           />
         )}
