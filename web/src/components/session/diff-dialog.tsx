@@ -315,25 +315,31 @@ export function DiffDialog({
   // The change the reader stepped to, and where the diffs were then.
   const changeAt = useRef<{ index: number; top: number } | undefined>(undefined);
 
-  // The focus goes back, on closing, to what opened it: with its ring only when the keyboard did.
-  useEffect(() => {
+  // The focus goes back, on closing, to what opened it: with its ring only when the keyboard
+  // did. Read as the dialog first renders, before it takes the focus (and before development's
+  // second run of the effect below, which finds the focus in it).
+  const [quiet] = useState(() => {
     const opener = document.activeElement;
-    let quiet = false;
+    if (!(opener instanceof HTMLElement) || opener === document.body) return undefined;
     try {
-      quiet = opener instanceof HTMLElement && opener !== document.body && !opener.matches(":focus-visible");
-    } catch {}
-    if (quiet && opener instanceof HTMLElement) opener.dataset.quietFocus = "";
+      return opener.matches(":focus-visible") ? undefined : opener;
+    } catch {
+      return undefined;
+    }
+  });
+  useEffect(() => {
+    if (quiet) quiet.dataset.quietFocus = "";
     ref.current?.setAttribute("autofocus", "");
-    ref.current?.showModal();
+    if (!ref.current?.open) ref.current?.showModal();
     body.current?.focus({ preventScroll: true });
     return () => {
-      if (!quiet || !(opener instanceof HTMLElement)) return;
+      if (!quiet) return;
       // Until it loses the focus it got back.
-      if (document.activeElement === opener)
-        opener.addEventListener("blur", () => delete opener.dataset.quietFocus, { once: true });
-      else delete opener.dataset.quietFocus;
+      if (document.activeElement === quiet)
+        quiet.addEventListener("blur", () => delete quiet.dataset.quietFocus, { once: true });
+      else delete quiet.dataset.quietFocus;
     };
-  }, []);
+  }, [quiet]);
   useHoldPage();
 
   const letGo = useCallback(() => {
