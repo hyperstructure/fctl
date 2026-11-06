@@ -3468,10 +3468,18 @@ in `firecracker/` in the host's data directory.
 - **Network.** The VM's `eth0` is a TAP device inside the VM, with
   `10.0.2.15/24`, whose frames `vm-serve` carries over the vsock to a
   `passt` of the VM's own on the host, which turns them into the host's
-  own connections. The host has no bridge, TAP device or firewall rule for
-  it. A VM reaches the internet and the host's network as a Docker
-  container does, but neither other VMs nor the host's loopback, and
-  nothing reaches it from outside; DNS goes to the host's resolver.
+  own connections. The host makes the link once the VM is up: it connects
+  to the VM's vsock port 1025 and hands passt the connection (`--fd`), so
+  that passt exits as the VM does; passt can't take Firecracker's
+  connection on a socket of its own where Ubuntu's AppArmor profile for it
+  applies (`accept` fails). The host has no bridge, TAP device or firewall
+  rule for it. A VM reaches the internet and the host's network as a
+  Docker container does, but neither other VMs nor the host's loopback,
+  and nothing reaches it from outside. It asks the host's nameservers, as
+  a Docker container does: those in `/etc/resolv.conf` but for any on the
+  loopback, and where only those are left (systemd-resolved's
+  `127.0.0.53`), the servers systemd-resolved asks; with none, passt's
+  forwarder to the host's resolver.
 - **Processes.** Firecracker and `passt` run in process groups of their
   own, as the process driver's agents do, so restarting or updating the
   host leaves them running; the host finds a VM's processes by the ids it

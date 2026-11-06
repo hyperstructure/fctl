@@ -13,9 +13,9 @@
 //!   and starting it again boots from it.
 //! - **The VM** boots the kernel with fctl-agent as its init
 //!   ([`assets::initrd`]); Firecracker and `passt`, which gives the VM its
-//!   network over the vsock without a TAP device or root on the host, run
-//!   in process groups of their own, so that restarting the host leaves
-//!   them running ([`vm`]).
+//!   network over a vsock connection the host makes once the VM is up,
+//!   without a TAP device or root on the host, run in process groups of
+//!   their own, so that restarting the host leaves them running ([`vm`]).
 //! - **The host runs programs** in the VM through its vsock, as `docker
 //!   exec` would ([`vsock`]).
 //! - **Package caches** are a directory of the host's for each project, as
@@ -637,7 +637,7 @@ impl FirecrackerDriver {
         remove_stale(&self.root.join("unpacking"));
         let vm = Vm::new(self.root.join("unpacking").join(&name))?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
-        vm.start(&spec, &firecracker, None).await?;
+        vm.start(&spec, &firecracker).await?;
         let result = async {
             vm.wait_ready().await?;
             let within =
@@ -714,6 +714,14 @@ impl FirecrackerDriver {
             let socket = vm.vsock();
             let answers = tokio::time::timeout(Duration::from_secs(10), vsock::hello(&socket));
             if matches!(answers.await, Ok(Ok(_))) {
+                // Its passt exited, or was stopped: the VM gets another.
+                if !vm.linked() {
+                    log(format!("Linking the network of {} again", spec.name));
+                    let passt = self
+                        .passt()
+                        .context("passt is not installed: it gives the VMs their network")?;
+                    vm.link_network(&passt).await?;
+                }
                 return Ok(sb);
             }
             log(format!(
@@ -784,8 +792,12 @@ impl FirecrackerDriver {
             network: true,
             share: share.clone(),
         };
-        vm.start(&boot, &firecracker, Some(&passt)).await?;
+        vm.start(&boot, &firecracker).await?;
         vm.wait_ready().await?;
+        if let Err(e) = vm.link_network(&passt).await {
+            vm.kill().await;
+            return Err(e);
+        }
         record.agent = Some(agent);
         self.save_record(&spec.name, &record)?;
         if share.is_some()
@@ -1223,7 +1235,7 @@ mod tests {
     async fn network_report(d: &super::super::Driver, sb: &Sandbox, data: &Path) -> String {
         let dir = data.join("firecracker/sandboxes").join(&sb.name);
         let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
-        let passt_runs = read("passt.pid")
+        let passt = read("passt.pid")
             .trim()
             .parse::<u32>()
             .ok()
@@ -1232,13 +1244,14 @@ mod tests {
         let vm = d
             .exec(
                 sb,
-                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' && echo 'TCP to 1.1.1.1:80 works'",
+                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev 2>&1; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1 && echo 'TCP to 1.1.1.1:80 works'; true",
             )
             .await;
         format!(
-            "passt runs: {passt_runs:?}\npasst said:\n{}\nthe VM's console:\n{}\nthe VM's network: {vm:?}",
+            "passt runs: {passt:?}\npasst said:\n{}\nthe VM's console:\n{}\nthe VM's network:\n{}",
             read("passt.log").trim(),
-            read("console.log").trim()
+            read("console.log").trim(),
+            vm.unwrap_or_else(|e| format!("{e:#}"))
         )
     }
 

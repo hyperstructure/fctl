@@ -139,10 +139,6 @@ jobs:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
         run: |
           cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
-      - name: What AppArmor and the kernel said
-        if: failure()
-        # journald takes the kernel's audit records, AppArmor's among them.
-        run: sudo journalctl --no-pager -b _TRANSPORT=audit _TRANSPORT=kernel | grep -iE 'apparmor|passt|firecracker|kvm|vsock' | tail -60
 
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that
