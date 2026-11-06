@@ -882,8 +882,9 @@ The host downloads Firecracker and the VMs' kernel itself, and pulls
 images without Docker: a short-lived VM unpacks each, so its first pull
 takes a little longer than Docker's. A host whose service root installed
 runs each VM through Firecracker's jailer, as a user of its own in a
-chroot, unless `jailer = false` in `host.toml`'s `[firecracker]`; its
-data directory must then be on a filesystem that allows device files. Its sandboxes get no package caches
+chroot, unless `jailer = false` in `host.toml`'s `[firecracker]`; that
+needs cgroup v2 and a data directory on a filesystem that allows device
+files, and `fctl host doctor` says when either is missing. Its sandboxes get no package caches
 and it builds no images; projects' own images run as with Docker.
 [Architecture](architecture.md#firecracker) has the details.
 

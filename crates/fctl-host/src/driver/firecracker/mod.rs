@@ -71,6 +71,21 @@ pub struct FirecrackerDriver {
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
+/// The jailer beside the Firecracker `firecracker`: `jailer`, or the
+/// release's name for it, which the archive gives both (`jailer-v1.17.0`
+/// beside `firecracker-v1.17.0`, `jailer-v1.17.0-x86_64` beside
+/// `firecracker-v1.17.0-x86_64`).
+fn jailer_beside(firecracker: &Path) -> Option<PathBuf> {
+    let name = firecracker.file_name()?.to_string_lossy().into_owned();
+    let released = name
+        .strip_prefix("firecracker")
+        .map(|rest| firecracker.with_file_name(format!("jailer{rest}")));
+    [Some(firecracker.with_file_name("jailer")), released]
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_file())
+}
+
 /// Finds `program` on the PATH, or in the directories where Linux keeps
 /// what administrators run, which users' PATHs may lack.
 pub fn find_program(program: &str) -> Option<PathBuf> {
@@ -221,35 +236,50 @@ impl FirecrackerDriver {
         })
     }
 
-    /// How `vm` runs: through Firecracker's jailer, which comes with the
-    /// pinned Firecracker or sits beside the one `host.toml` names, as a
-    /// user of its own; or without it, where the host doesn't run as root.
+    /// How `vm` runs: through Firecracker's jailer, on a host that runs as
+    /// root ([`jailer`](Self::jailer)); or without it, where the host
+    /// doesn't run as root.
     fn jail_for(&self, vm: &Vm, firecracker: &Path) -> Result<Option<vm::Jail>> {
         if vm.jails.is_none() {
             return Ok(None);
         }
+        let jailer = self.jailer(firecracker).with_context(|| {
+            format!(
+                "Firecracker's jailer isn't beside {} (as jailer, or named as the release names it) or on the PATH: install it there, or set jailer = false in host.toml's [firecracker]",
+                firecracker.display()
+            )
+        })?;
+        Ok(Some(vm::Jail { jailer }))
+    }
+
+    /// Firecracker's jailer for `firecracker`: the pinned release's, which
+    /// comes with it; else beside it, as `jailer` or as the release names it
+    /// (`jailer-v1.17.0-x86_64` beside `firecracker-v1.17.0-x86_64`); else
+    /// on the PATH.
+    fn jailer(&self, firecracker: &Path) -> Option<PathBuf> {
         let pinned = assets::pinned_jailer(&self.root.join("bin"));
-        let jailer = if pinned.is_file() && self.cfg().firecracker.is_none() {
-            pinned
-        } else {
-            let beside = firecracker.with_file_name("jailer");
-            if beside.is_file() {
-                beside
-            } else {
-                find_program("jailer").with_context(|| {
-                    format!(
-                        "Firecracker's jailer isn't beside {}: install it there, or set jailer = false in host.toml's [firecracker]",
-                        firecracker.display()
-                    )
-                })?
-            }
+        if self.cfg().firecracker.is_none() {
+            return Some(pinned);
+        }
+        jailer_beside(firecracker).or_else(|| find_program("jailer"))
+    }
+
+    /// Removes the jails of VMs that don't run, which a host that stopped
+    /// or crashed left ([`vm::remove_stale_jails`]).
+    fn remove_stale_jails(&self) {
+        let Some(jails) = self.jails() else {
+            return;
         };
-        let id = vm.jail_id();
-        Ok(Some(vm::Jail {
-            jailer,
-            uid: id,
-            gid: id,
-        }))
+        let running: std::collections::HashSet<String> =
+            [self.sandboxes(), self.root.join("unpacking")]
+                .iter()
+                .filter_map(|d| std::fs::read_dir(d).ok())
+                .flat_map(|entries| entries.flatten())
+                .filter_map(|e| Vm::new(e.path()).ok())
+                .filter(Vm::running)
+                .map(|vm| vm.key)
+                .collect();
+        vm::remove_stale_jails(&jails, &running, Duration::from_secs(10 * 60));
     }
 
     fn record(&self, name: &str) -> Option<Record> {
@@ -393,6 +423,24 @@ impl FirecrackerDriver {
                 }),
             None => None,
         };
+        if let Some(jails) = self.jails() {
+            if let Some(why) = vm::jails_problem(&jails) {
+                return info(false, why, version);
+            }
+            if let Some(b) = &binary
+                && self.cfg().firecracker.is_some()
+                && self.jailer(b).is_none()
+            {
+                return info(
+                    false,
+                    format!(
+                        "Firecracker's jailer isn't beside {} (as jailer, or named as the release names it) or on the PATH: install it there, or set jailer = false in host.toml's [firecracker]",
+                        b.display()
+                    ),
+                    version,
+                );
+            }
+        }
         let mut later = Vec::new();
         if binary.is_none() {
             later.push(format!("Firecracker {}", assets::FIRECRACKER_VERSION));
@@ -673,8 +721,10 @@ impl FirecrackerDriver {
             hex::encode(fctl_domain::random_bytes::<6>())
         );
         remove_stale(&self.root.join("unpacking"));
+        self.remove_stale_jails();
         let vm = self.with_jails(Vm::new(self.root.join("unpacking").join(&name))?)?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
+        self.remove_stale_jails();
         let jail = self.jail_for(&vm, &firecracker)?;
         vm.start(&spec, &firecracker, jail.as_ref()).await?;
         let result = async {
@@ -1107,6 +1157,24 @@ mod tests {
         FirecrackerDriver::new(&host)
     }
 
+    /// Beside a Firecracker that `host.toml` names, the jailer is `jailer`
+    /// or named as the release names it.
+    #[test]
+    fn finds_the_jailer_beside_firecracker() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let firecracker = dir.path().join("firecracker-v1.17.0-x86_64");
+        std::fs::write(&firecracker, b"")?;
+        assert_eq!(jailer_beside(&firecracker), None);
+        let released = dir.path().join("jailer-v1.17.0-x86_64");
+        std::fs::write(&released, b"")?;
+        assert_eq!(jailer_beside(&firecracker), Some(released));
+        let plain = dir.path().join("jailer");
+        std::fs::write(&plain, b"")?;
+        assert_eq!(jailer_beside(&firecracker), Some(plain.clone()));
+        assert_eq!(jailer_beside(&dir.path().join("firecracker")), Some(plain));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn names_and_sandboxes_keep_their_images() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -1369,6 +1437,15 @@ mod tests {
             // A stopped sandbox keeps its disk, and starts again from it.
             d.exec(&sb, "echo kept > \"$HOME/note\"").await?;
             d.stop(&sb).await?;
+            // Its disk, which its jail had, is the host's again.
+            if nix::unistd::geteuid().is_root() {
+                use std::os::unix::fs::MetadataExt;
+                let dir = cfg.data_dir().join("firecracker/sandboxes").join(&name);
+                for entry in std::fs::read_dir(&dir)?.flatten() {
+                    let owner = entry.metadata()?.uid();
+                    assert!(owner < vm::JAIL_ID_BASE, "{:?} is {owner}'s", entry.path());
+                }
+            }
             let listed = d.list().await?;
             assert!(listed.iter().any(|s| s.name == name && !s.running), "{listed:?}");
             d.ensure(&spec, &log).await?;
