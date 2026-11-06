@@ -2214,22 +2214,23 @@ impl Supervisor {
     /// turn it cut off, which the transcript then tells of ([`Self::carry_on`]).
     pub async fn take_over(&mut self) {
         let left = self.persisted.claude.take();
-        let unseen = match left {
+        let ran_on = match left {
             Some(claude) => claude.stop(Duration::from_secs(5)).await,
             None => false,
         };
-        if unseen {
+        if ran_on {
             tracing::warn!(
                 "stopped Claude (pid {}), or what it started, which the supervisor before this one left running",
                 left.map_or(0, |c| c.pid)
             );
         }
-        let now = if unseen {
-            Some(CutOff::Unseen)
-        } else if self.persisted.working {
-            Some(CutOff::Stopped)
-        } else {
-            None
+        // Only a turn under way was cut off: a session that waited has
+        // nothing to carry on, whatever Claude left running (a dev server,
+        // a watcher) or Claude itself, which ends once its input closes.
+        let now = match (self.persisted.working, ran_on) {
+            (false, _) => None,
+            (true, true) => Some(CutOff::Unseen),
+            (true, false) => Some(CutOff::Stopped),
         };
         // One that a supervisor before took over, and died before Claude
         // ran again, still counts.
@@ -4737,15 +4738,31 @@ done
         assert_eq!(next.persisted.cut_off, Some(CutOff::Stopped));
 
         // A session that waited, or that a person stopped, has nothing to
-        // carry on.
+        // carry on, also with what Claude started still running.
         let dir = tempfile::tempdir()?;
         let (mut sup, _host) = in_a_turn(dir.path())?;
         sup.on_claude_message(result()).await;
         assert!(!sup.persisted.working);
+        #[cfg(target_os = "linux")]
+        let mut server = {
+            use std::os::unix::process::CommandExt;
+            let server = std::process::Command::new("sleep")
+                .arg("60")
+                .process_group(0)
+                .spawn()?;
+            sup.persisted.claude = orphan::Process::of(server.id());
+            sup.persist();
+            server
+        };
         drop(sup);
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.take_over().await;
         assert_eq!(next.persisted.cut_off, None);
+        #[cfg(target_os = "linux")]
+        {
+            let ended = tokio::task::spawn_blocking(move || server.wait()).await??;
+            assert!(!ended.success(), "what Claude left running wasn't stopped");
+        }
 
         let dir = tempfile::tempdir()?;
         let (mut sup, _host) = in_a_turn(dir.path())?;
