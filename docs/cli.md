@@ -941,6 +941,17 @@ that starts a container). With less free than that:
   queued and says "Waiting for a runner: the ones online are low on disk".
 - `fctl host status`, `fctl host doctor`, `fctl admin runners` and the
   runners list say how much is free.
+- It measures every 5 seconds rather than 30 (not inside Docker's VM).
+- Its running sessions hear of it: their transcripts get a
+  `runner_low_on_disk` notice, and their pages and `fctl attach` say how
+  much is free until there is room again. Below 2 GiB free (or below
+  `min_free_disk_gb`, if that is lower), writes are about to fail: they
+  get `runner_out_of_disk`, the runners list says "out of disk" in red,
+  and with the Firecracker driver the host pauses their sandboxes, whose
+  VMs keep what they hold in memory rather than lose it on a full disk. It
+  resumes them once twice that is free, or when the session stops. Once
+  the runner has had room for ten minutes, its sessions get
+  `runner_disk_ok`.
 
 Sessions that run carry on, and nothing stops them for disk. When no
 stopped sandbox is left to remove, the host takes sessions again once

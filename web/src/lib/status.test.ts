@@ -50,6 +50,15 @@ describe("status", () => {
       "resumes in 4 min",
       "Waiting for the usage limit to reset",
     ]);
+    // A runner short of disk comes after the work that doesn't come through, in red once nearly out.
+    const disk = { room: "out" as const, free_mb: 800, min_free_mb: 20_480, since: now, runner: "dev-host" };
+    expect(statusNotes({ status: "running" }, { reconnecting: false, stall, disk }, now)).toEqual([
+      { text: stallLabel(stall, now), warn: true },
+      { text: "Runner nearly out of disk: 800 MiB free", warn: true, danger: true },
+    ]);
+    expect(
+      statusNotes({ status: "running" }, { reconnecting: false, disk: { ...disk, room: "low" } }, now),
+    ).toEqual([{ text: "Runner low on disk: 800 MiB free", warn: true, danger: false }]);
     // The pill says it all.
     expect(statusNotes({ status: "idle", status_reason: "Waiting for a message" }, quiet, now)).toEqual([]);
     expect(

@@ -2,8 +2,14 @@
 import type { AgentUnreachable } from "./AgentUnreachable";
 import type { ApiError } from "./ApiError";
 import type { Presence } from "./Presence";
+import type { RunnerDisk } from "./RunnerDisk";
+import type { SandboxPaused } from "./SandboxPaused";
 import type { Session } from "./Session";
 import type { SessionEvent } from "./SessionEvent";
 import type { Snapshot } from "./Snapshot";
 
-export type ViewerServer = { "type": "snapshot" } & Snapshot | { "type": "events", events: Array<SessionEvent>, } | { "type": "stream", event: import('../lib/claude-types').ClaudeStreamEvent, } | { "type": "session", session: Session, } | { "type": "presence", viewers: Array<Presence>, } | { "type": "runner_connected", connected: boolean, last_seen_at?: number, agent_unreachable?: AgentUnreachable, } | { "type": "result", client_id: string, ok: boolean, error?: ApiError, } | { "type": "error", error: ApiError, } | { "type": "pong" };
+export type ViewerServer = { "type": "snapshot" } & Snapshot | { "type": "events", events: Array<SessionEvent>, } | { "type": "stream", event: import('../lib/claude-types').ClaudeStreamEvent, } | { "type": "session", session: Session, } | { "type": "presence", viewers: Array<Presence>, } | { "type": "runner_connected", connected: boolean, last_seen_at?: number, agent_unreachable?: AgentUnreachable, 
+/**
+ * As the snapshot's `runner_disk`.
+ */
+disk?: RunnerDisk, sandbox_paused?: SandboxPaused, } | { "type": "result", client_id: string, ok: boolean, error?: ApiError, } | { "type": "error", error: ApiError, } | { "type": "pong" };

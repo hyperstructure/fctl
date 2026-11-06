@@ -3,7 +3,7 @@
 //! host (whose service stops only its main process) leaves them running.
 
 use super::vsock;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use fctl_proto::vm::{ADDRESS, Boot, DNS, GATEWAY, Mode, NET_PORT, PREFIX};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -18,6 +18,9 @@ pub const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// How long a VM may take to stop once its init is asked to.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long Firecracker has to answer a request on its API socket.
+const API_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The kernel's command line, before what fctl-agent reads: the console, a
 /// reset that ends Firecracker, and no modules to look for. On x86_64 also
@@ -273,8 +276,57 @@ impl Vm {
         result
     }
 
-    /// Asks the VM's init to stop it, and stops what is left.
+    /// What Firecracker says its VM does: `Running`, `Paused` or `Not
+    /// started`.
+    pub async fn state(&self) -> Result<String> {
+        let body = api(&self.api(), "GET", "/", None).await?;
+        let info: Value = serde_json::from_slice(&body).context("reading Firecracker's answer")?;
+        info["state"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Firecracker didn't say what its VM does")
+    }
+
+    /// Whether the VM is paused. One that doesn't run, or whose Firecracker
+    /// doesn't answer, isn't.
+    pub async fn paused(&self) -> bool {
+        self.state().await.is_ok_and(|s| s == "Paused")
+    }
+
+    /// Pauses the VM: its CPUs stop, and its memory keeps what it holds,
+    /// what it has yet to write to its disks too, until it resumes.
+    pub async fn pause(&self) -> Result<()> {
+        api(
+            &self.api(),
+            "PATCH",
+            "/vm",
+            Some(&json!({ "state": "Paused" })),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// Resumes a paused VM.
+    pub async fn resume(&self) -> Result<()> {
+        api(
+            &self.api(),
+            "PATCH",
+            "/vm",
+            Some(&json!({ "state": "Resumed" })),
+        )
+        .await
+        .map(drop)
+    }
+
+    /// Asks the VM's init to stop it, and stops what is left. A paused VM
+    /// resumes first, so that its init can write out its disks.
     pub async fn stop(&self) {
+        if self.running()
+            && self.paused().await
+            && let Err(e) = self.resume().await
+        {
+            tracing::warn!("resuming {} to stop it: {e:#}", self.dir.display());
+        }
         if self.running() {
             let asked =
                 tokio::time::timeout(Duration::from_secs(10), vsock::shutdown(&self.vsock())).await;
@@ -314,6 +366,67 @@ impl Vm {
             _ => Ok(()),
         }
     }
+}
+
+/// A request to Firecracker's API on `socket`: its answer's body.
+async fn api(socket: &Path, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>> {
+    tokio::time::timeout(API_TIMEOUT, request(socket, method, path, body))
+        .await
+        .map_err(|_| anyhow!("Firecracker didn't answer {method} {path} within 10 seconds"))?
+}
+
+async fn request(socket: &Path, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    let body = body.map(Value::to_string).unwrap_or_default();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    let mut answer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some((status, body)) = response(&answer)? {
+            if !(200..300).contains(&status) {
+                let fault = serde_json::from_slice::<Value>(body)
+                    .ok()
+                    .and_then(|v| v["fault_message"].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| String::from_utf8_lossy(body).trim().to_owned());
+                bail!("Firecracker answered {method} {path} with {status}: {fault}");
+            }
+            return Ok(body.to_vec());
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            bail!("Firecracker closed its API socket before it answered {method} {path}");
+        }
+        answer.extend_from_slice(&chunk[..n]);
+    }
+}
+
+/// The HTTP answer in `buf`, once all of it is there: its status and body.
+fn response(buf: &[u8]) -> Result<Option<(u16, &[u8])>> {
+    let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return Ok(None);
+    };
+    let head = String::from_utf8_lossy(&buf[..end]);
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok())
+        .context("Firecracker's answer has no status")?;
+    let len = lines
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let body = &buf[end + 4..];
+    Ok((body.len() >= len).then(|| (status, &body[..len])))
 }
 
 /// The arguments of `passt` for a VM named `name` whose frames come to
@@ -453,6 +566,122 @@ mod tests {
         assert!(!vm.running());
         child.kill()?;
         child.wait()?;
+        Ok(())
+    }
+
+    /// What a stand-in Firecracker was asked, in order.
+    type Requests = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A stand-in for Firecracker's API on `socket`: it says what its VM
+    /// does, pauses and resumes it as Firecracker does, and refuses to
+    /// resume one that runs. It answers each request on a connection of its
+    /// own, and keeps them in `requests`.
+    fn firecracker_api(socket: &Path) -> Result<(tokio::task::JoinHandle<()>, Requests)> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        std::fs::create_dir_all(socket.parent().context("no parent")?)?;
+        let listener = tokio::net::UnixListener::bind(socket)?;
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let task = tokio::spawn(async move {
+            let mut state = "Running";
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                let request = loop {
+                    let Ok(n) = stream.read(&mut chunk).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).into_owned();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                        continue;
+                    };
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Content-Length: "))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(0);
+                    if body.len() >= len {
+                        let line = head.lines().next().unwrap_or_default();
+                        break format!("{line} {body}");
+                    }
+                };
+                if let Ok(mut r) = seen.lock() {
+                    r.push(request.clone());
+                }
+                let answer = if request.starts_with("GET / ") {
+                    let body = format!(
+                        r#"{{"id":"fctl-ses-x","state":"{state}","vmm_version":"1.17.0"}}"#
+                    );
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else if request.contains(r#""state":"Paused""#) {
+                    state = "Paused";
+                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+                } else if request.contains(r#""state":"Resumed""#) && state == "Paused" {
+                    state = "Running";
+                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+                } else {
+                    let body = r#"{"fault_message":"The requested operation is not supported in the current VM state."}"#;
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(answer.as_bytes()).await;
+            }
+        });
+        Ok((task, requests))
+    }
+
+    #[tokio::test]
+    async fn pauses_and_resumes_the_vm_through_firecrackers_api() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
+        // No Firecracker: nothing is paused.
+        assert!(!vm.paused().await);
+        assert!(vm.pause().await.is_err());
+        let (api, requests) = firecracker_api(&vm.api())?;
+        assert_eq!(vm.state().await?, "Running");
+        vm.pause().await?;
+        assert!(vm.paused().await);
+        vm.resume().await?;
+        assert_eq!(vm.state().await?, "Running");
+        // What Firecracker refuses comes back with its reason.
+        let refused = vm.resume().await.map_err(|e| e.to_string());
+        assert_eq!(
+            refused,
+            Err("Firecracker answered PATCH /vm with 400: The requested operation is not supported in the current VM state.".into())
+        );
+        let requests = requests.lock().map(|r| r.clone()).unwrap_or_default();
+        let (get, pause, resume) = (
+            "GET / HTTP/1.1 ",
+            r#"PATCH /vm HTTP/1.1 {"state":"Paused"}"#,
+            r#"PATCH /vm HTTP/1.1 {"state":"Resumed"}"#,
+        );
+        assert_eq!(requests, [get, pause, get, resume, get, resume]);
+        api.abort();
+        let _ = std::fs::remove_dir_all(&vm.run);
+        Ok(())
+    }
+
+    #[test]
+    fn reads_an_answer_once_all_of_it_is_there() -> Result<()> {
+        let whole =
+            b"HTTP/1.1 200 OK\r\nServer: Firecracker API\r\ncontent-length: 4\r\n\r\n{\"a\"";
+        assert_eq!(response(&whole[..20])?, None);
+        assert_eq!(response(&whole[..whole.len() - 1])?, None);
+        assert_eq!(response(whole)?, Some((200, &b"{\"a\""[..])));
+        assert_eq!(
+            response(b"HTTP/1.1 204 No Content\r\n\r\n")?,
+            Some((204, &b""[..]))
+        );
+        assert!(response(b"nonsense\r\n\r\n").is_err());
         Ok(())
     }
 

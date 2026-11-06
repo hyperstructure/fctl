@@ -16,7 +16,8 @@ use std::sync::{Mutex, PoisonError};
 /// while a container uses it; Apple's `image delete` doesn't check. A
 /// `build` lists its context in `context`, copies its Dockerfile to
 /// `dockerfile` and makes a build without labels, and with `fail_build` it
-/// fails; `size` holds the size images have (1000 bytes without it).
+/// fails; `size` holds the size images have (1000 bytes without it). With
+/// `fail_run`, `run` fails, and with `full_disk` as for a full disk.
 /// `network create` makes `network`, which holds whether its containers
 /// reach each other, unless `no_networks` is there. Each volume is a file in
 /// `volumes` holding the KiB it takes, which `run` makes when a container
@@ -104,6 +105,7 @@ case "$1 $2" in
   "inspect "*) exit 1 ;;
   "run "*)
     [ ! -e "$d/fail_run" ] || { echo "no room for it" >&2; exit 1; }
+    [ ! -e "$d/full_disk" ] || { echo "docker: Error response from daemon: mkdir /var/lib/docker/overlay2/4f1c/merged: no space left on device." >&2; exit 125; }
     name=; rm=; vol=
     while [ $# -gt 0 ] && [ "$1" != --entrypoint ]; do
       case "$1" in
@@ -257,6 +259,12 @@ impl FakeCli {
     /// Makes every `run` fail as if for some other reason than the image.
     pub fn fail_runs(&self) -> Result<()> {
         std::fs::write(self.dir.path().join("fail_run"), "")?;
+        Ok(())
+    }
+
+    /// Makes every `run` fail as Docker's does when its disk is full.
+    pub fn full_disk(&self) -> Result<()> {
+        std::fs::write(self.dir.path().join("full_disk"), "")?;
         Ok(())
     }
 

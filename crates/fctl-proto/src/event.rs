@@ -542,6 +542,8 @@ pub struct Notice {
     pub level: NoticeLevel,
     /// Stable identifier, for example `usage_limit`, `overage_blocked`,
     /// `api_key_refused`, `credential_expired`, `runner_lost`,
+    /// `runner_low_on_disk`, `runner_out_of_disk`, `runner_disk_ok`,
+    /// `sandbox_paused`, `sandbox_resumed`, `agent_restarted`,
     /// `screenshot_published`, `memory_added`, `memory_stale`,
     /// `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
     /// `pull_request_summarized`, `follow_up_held`, `ticket_created`,
@@ -574,6 +576,25 @@ pub struct Notice {
     /// What the agent, or fctl for it, did in the project's ticket tracker,
     /// in a `ticket_*` notice. Clients from before it show the message.
     pub ticket: Option<crate::tickets::TicketNotice>,
+}
+
+impl Notice {
+    /// A notice that is only its message.
+    pub fn new(level: NoticeLevel, code: &str, message: impl Into<String>) -> Self {
+        Self {
+            level,
+            code: code.into(),
+            message: message.into(),
+            until: None,
+            published: None,
+            memory: None,
+            retrospective: None,
+            review: None,
+            summarized: None,
+            follow_up: None,
+            ticket: None,
+        }
+    }
 }
 
 /// A screenshot an agent published on the control plane (`fctl publish`):

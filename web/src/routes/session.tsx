@@ -86,7 +86,16 @@ import {
 } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote-control";
-import { type Stall, stallLabel, stallText, useStall } from "@/lib/stall";
+import {
+  type DiskShort,
+  diskLabel,
+  diskOf,
+  diskText,
+  type Stall,
+  stallLabel,
+  stallText,
+  useStall,
+} from "@/lib/stall";
 import { type StatusNote, statusNotes, statusReason } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import type { Item } from "@/lib/transcript";
@@ -105,6 +114,7 @@ export function SessionPage() {
   const prs = session ? pullRequests(session) : [];
   const workspaceIndex = useWorkspaceIndex();
   const stall = useStall(session, s);
+  const disk = diskOf(session, s, stall);
   const review = useSessionReview(session);
   const [rail, setRail] = useState(true);
   // The details sheet, where the rail doesn't fit.
@@ -202,7 +212,9 @@ export function SessionPage() {
   const claudeUrl = session && remoteControlUrl(session.remote_control, session.created_by, me?.user.id);
   const role = s.role ?? session?.role;
   const isOwner = role === "owner";
-  const notes = session ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall }) : [];
+  const notes = session
+    ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall, disk })
+    : [];
 
   return (
     <div className="flex min-h-dvh">
@@ -237,9 +249,7 @@ export function SessionPage() {
                           ·
                         </span>
                         {notes[0] ? (
-                          <span className={cn("truncate", notes[0].warn ? "text-amber" : "text-ink-3")}>
-                            {notes[0].text}
-                          </span>
+                          <span className={cn("truncate", noteTone(notes[0]))}>{notes[0].text}</span>
                         ) : (
                           <span className="truncate font-mono text-[12px] text-ink-3">
                             {session.project_slug}#{session.number}
@@ -318,6 +328,11 @@ export function SessionPage() {
                             <span className="text-amber">Reconnecting…</span>
                           )}
                           {stall && <span className="text-amber">{stallLabel(stall)}</span>}
+                          {disk && (
+                            <span className={disk.room === "out" ? "text-danger" : "text-amber"}>
+                              {diskLabel(disk)}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </>
@@ -561,6 +576,7 @@ export function SessionPage() {
                 live={s.live}
                 status={status}
                 stall={stall}
+                disk={disk}
                 canManage={isOwner}
                 startedBy={session.created_by}
                 me={me?.user.id}
@@ -633,6 +649,7 @@ export function SessionPage() {
             model={s.model}
             runnerConnected={s.runnerConnected}
             stall={stall}
+            disk={disk}
           />
         </aside>
       )}
@@ -650,6 +667,7 @@ export function SessionPage() {
             model={s.model}
             runnerConnected={s.runnerConnected}
             stall={stall}
+            disk={disk}
             pullsFirst
           />
         </Sheet>
@@ -658,6 +676,17 @@ export function SessionPage() {
     </div>
   );
 }
+
+/** The color of the runner's dot: whether it is connected, reaches the agent, and has room on its disk. */
+function runnerDot(connected: boolean, stall?: Stall, disk?: DiskShort): string {
+  if (stall?.kind === "unreachable" || stall?.kind === "paused") return "bg-amber";
+  if (!connected) return "bg-ink-4";
+  if (disk) return disk.room === "out" ? "bg-danger" : "bg-amber";
+  return "bg-accent";
+}
+
+/** The color of a note beside the status pill. */
+const noteTone = (n: StatusNote) => (n.danger ? "text-danger" : n.warn ? "text-amber" : "text-ink-3");
 
 /** A review agent's session waits for nobody: once its turn ends, it finishes and stops. */
 const reviewLabel = (session: G.Session) =>
@@ -847,7 +876,7 @@ function Overview({
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <StatusPill status={session.status} label={reviewLabel(session)} />
         {notes.map((n) => (
-          <span key={n.text} className={n.warn ? "text-amber" : "text-ink-3"}>
+          <span key={n.text} className={noteTone(n)}>
             {n.text}
           </span>
         ))}
@@ -900,6 +929,7 @@ function Details({
   model,
   runnerConnected,
   stall,
+  disk,
   pullsFirst,
 }: {
   session: G.Session;
@@ -916,6 +946,8 @@ function Details({
   model?: string;
   runnerConnected: boolean;
   stall?: Stall;
+  /** How short of disk its runner is. */
+  disk?: DiskShort;
   /** The pull requests before the changes, as the sheet has them: on phones they're what people open. */
   pullsFirst?: boolean;
 }) {
@@ -1100,13 +1132,11 @@ function Details({
           <Row
             k="Runner"
             v={
-              <span className="inline-flex items-center gap-1.5" title={stall && stallText(stall).title}>
-                <span
-                  className={cn(
-                    "size-1.5 rounded-full",
-                    stall?.kind === "unreachable" ? "bg-amber" : runnerConnected ? "bg-accent" : "bg-ink-4",
-                  )}
-                />
+              <span
+                className="inline-flex items-center gap-1.5"
+                title={stall ? stallText(stall).title : disk && diskText(disk).title}
+              >
+                <span className={cn("size-1.5 rounded-full", runnerDot(runnerConnected, stall, disk))} />
                 {session.runner.name}
               </span>
             }
