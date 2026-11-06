@@ -830,6 +830,7 @@ agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's r
 # kernel = "/var/lib/fctl/vmlinux"             # a file, or an image whose /vmlinux it is (unset: the published one)
 disk_gb = 64             # each sandbox's own disk, which takes only what its session writes
 snapshots = true         # a stopped sandbox keeps its VM's memory, and resumes as it was
+# jailer = true          # on a host that runs as root: each VM as a user of its own, in a chroot and a cgroup
 ```
 
 With Docker on Linux, the daemon's socket lets in only root and the
@@ -880,7 +881,11 @@ fctl host install --driver firecracker
 
 The host downloads Firecracker and the VMs' kernel itself, and pulls
 images without Docker: a short-lived VM unpacks each, so its first pull
-takes a little longer than Docker's. Its sandboxes get no package caches
+takes a little longer than Docker's. A host whose service root installed
+runs each VM through Firecracker's jailer, as a user of its own in a
+chroot, unless `jailer = false` in `host.toml`'s `[firecracker]`; that
+needs cgroup v2 and a data directory on a filesystem that allows device
+files, and `fctl host doctor` says when either is missing. Its sandboxes get no package caches
 and it builds no images; projects' own images run as with Docker.
 [Architecture](architecture.md#firecracker) has the details.
 
@@ -936,7 +941,8 @@ stopped for `keep_stopped_hours`, or until the disk runs low. With
 Firecracker it also keeps its VM's state, the memory the VM used, so that
 a message resumes the session with Claude running where it was rather
 than starting it again; the host lets those states go first when the disk
-runs low, and `snapshots = false` keeps none. With Apple's
+runs low, and `snapshots = false` keeps none (nor does a host that runs
+its VMs through the jailer, yet). With Apple's
 `container`, a sandbox's disk image keeps the space of the files its
 session deleted (a build of fctl leaves about 5.5 GB) until the host
 stops the sandbox: then the host gives that space back to the Mac with

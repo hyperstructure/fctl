@@ -87,6 +87,21 @@ pub struct FirecrackerDriver {
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
+/// The jailer beside the Firecracker `firecracker`: `jailer`, or the
+/// release's name for it, which the archive gives both (`jailer-v1.17.0`
+/// beside `firecracker-v1.17.0`, `jailer-v1.17.0-x86_64` beside
+/// `firecracker-v1.17.0-x86_64`).
+fn jailer_beside(firecracker: &Path) -> Option<PathBuf> {
+    let name = firecracker.file_name()?.to_string_lossy().into_owned();
+    let released = name
+        .strip_prefix("firecracker")
+        .map(|rest| firecracker.with_file_name(format!("jailer{rest}")));
+    [Some(firecracker.with_file_name("jailer")), released]
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_file())
+}
+
 /// Finds `program` on the PATH, or in the directories where Linux keeps
 /// what administrators run, which users' PATHs may lack.
 pub fn find_program(program: &str) -> Option<PathBuf> {
@@ -285,7 +300,66 @@ impl FirecrackerDriver {
     }
 
     fn vm(&self, name: &str) -> Result<Vm> {
-        Vm::new(self.sandboxes().join(name))
+        self.with_jails(Vm::new(self.sandboxes().join(name))?)
+    }
+
+    /// Where the VMs' jails go, when they run through Firecracker's jailer:
+    /// on a host that runs as root, unless `host.toml` says otherwise.
+    fn jails(&self) -> Option<PathBuf> {
+        (self.cfg().jailer && nix::unistd::geteuid().is_root()).then(|| self.root.join("jail"))
+    }
+
+    fn with_jails(&self, vm: Vm) -> Result<Vm> {
+        Ok(match self.jails() {
+            Some(jails) => vm.with_jails(jails),
+            None => vm,
+        })
+    }
+
+    /// How `vm` runs: through Firecracker's jailer, on a host that runs as
+    /// root ([`jailer`](Self::jailer)); or without it, where the host
+    /// doesn't run as root.
+    fn jail_for(&self, vm: &Vm, firecracker: &Path) -> Result<Option<vm::Jail>> {
+        if vm.jails.is_none() {
+            return Ok(None);
+        }
+        let jailer = self.jailer(firecracker).with_context(|| {
+            format!(
+                "Firecracker's jailer isn't beside {} (as jailer, or named as the release names it) or on the PATH: install it there, or set jailer = false in host.toml's [firecracker]",
+                firecracker.display()
+            )
+        })?;
+        Ok(Some(vm::Jail { jailer }))
+    }
+
+    /// Firecracker's jailer for `firecracker`: the pinned release's, which
+    /// comes with it; else beside it, as `jailer` or as the release names it
+    /// (`jailer-v1.17.0-x86_64` beside `firecracker-v1.17.0-x86_64`); else
+    /// on the PATH.
+    fn jailer(&self, firecracker: &Path) -> Option<PathBuf> {
+        let pinned = assets::pinned_jailer(&self.root.join("bin"));
+        if self.cfg().firecracker.is_none() {
+            return Some(pinned);
+        }
+        jailer_beside(firecracker).or_else(|| find_program("jailer"))
+    }
+
+    /// Removes the jails of VMs that don't run, which a host that stopped
+    /// or crashed left ([`vm::remove_stale_jails`]).
+    fn remove_stale_jails(&self) {
+        let Some(jails) = self.jails() else {
+            return;
+        };
+        let running: std::collections::HashSet<String> =
+            [self.sandboxes(), self.root.join("unpacking")]
+                .iter()
+                .filter_map(|d| std::fs::read_dir(d).ok())
+                .flat_map(|entries| entries.flatten())
+                .filter_map(|e| Vm::new(e.path()).ok())
+                .filter(Vm::running)
+                .map(|vm| vm.key)
+                .collect();
+        vm::remove_stale_jails(&jails, &running, Duration::from_secs(10 * 60));
     }
 
     fn record(&self, name: &str) -> Option<Record> {
@@ -429,6 +503,24 @@ impl FirecrackerDriver {
                 }),
             None => None,
         };
+        if let Some(jails) = self.jails() {
+            if let Some(why) = vm::jails_problem(&jails) {
+                return info(false, why, version);
+            }
+            if let Some(b) = &binary
+                && self.cfg().firecracker.is_some()
+                && self.jailer(b).is_none()
+            {
+                return info(
+                    false,
+                    format!(
+                        "Firecracker's jailer isn't beside {} (as jailer, or named as the release names it) or on the PATH: install it there, or set jailer = false in host.toml's [firecracker]",
+                        b.display()
+                    ),
+                    version,
+                );
+            }
+        }
         let mut later = Vec::new();
         if binary.is_none() {
             later.push(format!("Firecracker {}", assets::FIRECRACKER_VERSION));
@@ -709,9 +801,12 @@ impl FirecrackerDriver {
             hex::encode(fctl_domain::random_bytes::<6>())
         );
         remove_stale(&self.root.join("unpacking"));
-        let vm = Vm::new(self.root.join("unpacking").join(&name))?;
+        self.remove_stale_jails();
+        let vm = self.with_jails(Vm::new(self.root.join("unpacking").join(&name))?)?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
-        vm.start(&spec, &firecracker).await?;
+        self.remove_stale_jails();
+        let jail = self.jail_for(&vm, &firecracker)?;
+        vm.start(&spec, &firecracker, jail.as_ref()).await?;
         let result = async {
             vm.wait_ready().await?;
             let within =
@@ -806,7 +901,10 @@ impl FirecrackerDriver {
             ));
             vm.kill().await;
         }
+        // A jailed VM saves no state ([`stop`](Self::stop)): one saved before
+        // the host ran as root goes.
         if let Some(saved) = self.record(&spec.name).and_then(|r| r.saved)
+            && vm.jails.is_none()
             && !self.resized(&vm, spec, log)
         {
             match self.resume_saved(&vm, &spec.name, &saved, log).await {
@@ -871,7 +969,8 @@ impl FirecrackerDriver {
             memory_mb: spec.memory_mb,
             network: true,
         };
-        vm.start(&boot, &firecracker).await?;
+        let jail = self.jail_for(&vm, &firecracker)?;
+        vm.start(&boot, &firecracker, jail.as_ref()).await?;
         vm.wait_ready().await?;
         if let Err(e) = vm.link_network(&passt).await {
             vm.kill().await;
@@ -1115,12 +1214,13 @@ impl FirecrackerDriver {
     /// Stops the sandbox's VM, saving its state first where the host
     /// keeps them (`snapshots`) and the disk has room for its memory, so
     /// that it resumes where it was. A VM paused while the disk was nearly
-    /// full stops without.
+    /// full stops without, as does one in the jailer's chroot, which
+    /// Firecracker would write its state into and which goes as it stops.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
         let lock = self.lock(&format!("sandbox {}", sb.name));
         let _held = lock.lock().await;
         let vm = self.vm(&sb.name)?;
-        if self.cfg().snapshots && vm.running() && !vm.paused().await {
+        if self.cfg().snapshots && vm.jails.is_none() && vm.running() && !vm.paused().await {
             match self.save(&vm, &sb.name).await {
                 Ok(true) => {
                     vm.kill().await;
@@ -1337,6 +1437,24 @@ mod tests {
             ..HostConfig::default()
         };
         FirecrackerDriver::new(&host)
+    }
+
+    /// Beside a Firecracker that `host.toml` names, the jailer is `jailer`
+    /// or named as the release names it.
+    #[test]
+    fn finds_the_jailer_beside_firecracker() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let firecracker = dir.path().join("firecracker-v1.17.0-x86_64");
+        std::fs::write(&firecracker, b"")?;
+        assert_eq!(jailer_beside(&firecracker), None);
+        let released = dir.path().join("jailer-v1.17.0-x86_64");
+        std::fs::write(&released, b"")?;
+        assert_eq!(jailer_beside(&firecracker), Some(released));
+        let plain = dir.path().join("jailer");
+        std::fs::write(&plain, b"")?;
+        assert_eq!(jailer_beside(&firecracker), Some(plain.clone()));
+        assert_eq!(jailer_beside(&dir.path().join("firecracker")), Some(plain));
+        Ok(())
     }
 
     #[tokio::test]
@@ -1704,6 +1822,25 @@ mod tests {
                 assert_eq!(out, format!("0\n{name}\n/root\n/\n"));
             }
             assert_eq!(out.lines().nth(1), Some(name.as_str()));
+            // As root, the VM runs in Firecracker's jailer, as a user of
+            // its own.
+            if nix::unistd::geteuid().is_root() {
+                let pid = std::fs::read_to_string(
+                    cfg.data_dir()
+                        .join("firecracker/sandboxes")
+                        .join(&name)
+                        .join("firecracker.pid"),
+                )?;
+                let status = std::fs::read_to_string(format!("/proc/{}/status", pid.trim()))?;
+                let uid: u32 = status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Uid:"))
+                    .and_then(|l| l.split_whitespace().next())
+                    .and_then(|u| u.parse().ok())
+                    .context("Firecracker's uid")?;
+                assert!(uid >= vm::JAIL_ID_BASE, "Firecracker runs as {uid}");
+                eprintln!("jailed as {uid}");
+            }
             if let Ok(command) = std::env::var("FCTL_TEST_FIRECRACKER_RUN") {
                 eprintln!("{command}: {}", d.exec(&sb, &command).await?.trim());
             }
@@ -1747,6 +1884,26 @@ mod tests {
             // A stopped sandbox keeps its disk, and starts again from it.
             d.exec(&sb, "echo kept > \"$HOME/note\"").await?;
             d.stop(&sb).await?;
+            // Its disk, which its jail had, is the host's again, as are the
+            // images' filesystems, which their unpacking VMs' jails had.
+            if nix::unistd::geteuid().is_root() {
+                use std::os::unix::fs::MetadataExt;
+                let firecracker = cfg.data_dir().join("firecracker");
+                let images = std::fs::read_dir(firecracker.join("images"))?
+                    .flatten()
+                    .map(|e| e.path().join("rootfs.ext4"))
+                    .filter(|p| p.is_file());
+                let disks = std::fs::read_dir(firecracker.join("sandboxes").join(&name))?
+                    .flatten()
+                    .map(|e| e.path());
+                for path in images.chain(disks) {
+                    let owner = std::fs::symlink_metadata(&path)?.uid();
+                    assert!(owner < vm::JAIL_ID_BASE, "{path:?} is {owner}'s");
+                }
+                // A jailed VM saves no state yet.
+                let saved = firecracker.join("sandboxes").join(&name).join("saved");
+                assert!(!saved.exists(), "the jailed VM saved its state");
+            }
             let listed = d.list().await?;
             assert!(listed.iter().any(|s| s.name == name && !s.running), "{listed:?}");
             d.ensure(&spec, &log).await?;
@@ -1781,6 +1938,9 @@ mod tests {
         };
         cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
         cfg.firecracker.disk_gb = 4;
+        // Jailed VMs save no state yet: as root, this tests saving without
+        // the jailer.
+        cfg.firecracker.jailer = false;
         let d = Driver::select("firecracker", &cfg).await?;
         let log = |line: String| eprintln!("{line}");
         let name = format!(
