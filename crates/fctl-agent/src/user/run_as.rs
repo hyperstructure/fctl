@@ -1,16 +1,29 @@
-//! `fctl-agent vm-run UID GID GROUPS CWD -- PROGRAM ARGS…`: what `vm-serve`
-//! starts for each program the host runs. As root, it takes the user's
-//! identity and a session of its own, so that the init can stop the program
-//! with everything it started, then becomes the program.
+//! `fctl-agent run-as UID GID GROUPS CWD -- PROGRAM ARGS…`: how fctl-agent
+//! starts a program as another user. `vm-serve` starts every program the
+//! host runs in a microVM with it, and a supervisor that runs as root
+//! ([`super::protect`]) the programs it runs for the session: Claude, git,
+//! `gh`, the setup script. As root, it takes the user's identity and a
+//! session of its own, so that whoever started it can stop the program with
+//! everything it started, then becomes the program.
 
 use anyhow::{Context, Result, bail};
-use nix::unistd::{Gid, Uid, execvp, setgid, setgroups, setsid, setuid};
+use nix::unistd::{Gid, Uid, execvp, getresuid, setgid, setgroups, setresuid, setsid, setuid};
 use std::ffi::CString;
 
 pub fn run_as(uid: u32, gid: u32, groups: &str, cwd: &str, argv: &[String]) -> Result<()> {
     let Some(program) = argv.first() else {
         bail!("no program to run");
     };
+    // A protected supervisor works as its user with root as its real user
+    // ([`super::protect`]): its programs start so, and take root back to
+    // become the user, all of it.
+    let ids = getresuid().context("reading the user")?;
+    if ids.real.is_root() && !ids.effective.is_root() {
+        setresuid(Uid::from_raw(0), Uid::from_raw(0), Uid::from_raw(0))
+            .context("taking root back")?;
+    }
+    // The supervisor keeps itself from the OOM killer; its programs don't.
+    super::reset_oom_score();
     setsid().context("starting a session")?;
     let groups = groups
         .split(',')

@@ -757,6 +757,20 @@ pub fn unfinished_tasks(tasks: &[Task]) -> String {
     s
 }
 
+/// What Claude is told when it carries on with a turn that was cut off:
+/// `unseen` when it ran on after fctl-agent died, until the next one
+/// stopped it, so that nothing it did meanwhile is in the transcript.
+pub fn cut_off_turn(unseen: bool) -> String {
+    let why = if unseen {
+        "fctl-agent, which runs you in this sandbox and passes on what you do, restarted while you worked on your last turn, so the session's transcript doesn't show what you did after that, and you were stopped then, with the commands you ran"
+    } else {
+        "the sandbox or fctl-agent, which runs you in it, stopped while you worked on your last turn, and you with it"
+    };
+    format!(
+        "Your last turn was cut off: {why}. Check where you left off first (the repositories' state, the pull requests, anything you had started), then finish what that turn was doing, and end with the answer it would have given. Don't repeat what is already done."
+    )
+}
+
 /// One attached file, as a message describes it to Claude.
 pub struct FileNote<'a> {
     pub attachment: &'a Attachment,

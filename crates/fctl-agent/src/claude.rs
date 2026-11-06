@@ -15,7 +15,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot};
 
 /// Environment variables that would move Claude off the subscription or
@@ -72,7 +72,7 @@ impl std::fmt::Display for Version {
 /// sessions can't run with it: it is missing, or older than
 /// [`MIN_VERSION`]. `Ok(None)` when it doesn't say.
 pub async fn check_version(bin: &str) -> std::result::Result<Option<Version>, String> {
-    let run = Command::new(bin)
+    let run = crate::user::command(bin)
         .arg("--version")
         .stdin(Stdio::null())
         .kill_on_drop(true)
@@ -363,7 +363,10 @@ impl Claude {
         }
         args.extend(spec.extra_args.iter().cloned());
 
-        let mut cmd = Command::new(spec.bin);
+        // As the session's user, leading a process group of its own: a
+        // supervisor that takes over from this one stops that group
+        // (crate::orphan).
+        let mut cmd = crate::user::command_in_own_group(spec.bin);
         cmd.args(&args)
             .current_dir(spec.cwd)
             .env_clear()
@@ -374,7 +377,7 @@ impl Claude {
         for key in [
             "PATH", "LANG", "LC_ALL", "TZ", "TMPDIR", "USER", "LOGNAME", "SHELL", "TERM",
         ] {
-            if let Ok(v) = std::env::var(key) {
+            if let Some(v) = crate::user::var(key) {
                 cmd.env(key, v);
             }
         }

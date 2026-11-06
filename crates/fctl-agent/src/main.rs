@@ -1,9 +1,12 @@
 //! fctl-agent: the supervisor that runs Claude Code inside a sandbox.
 //!
-//! - `fctl-agent serve` runs the supervisor (started detached by the host).
+//! - `fctl-agent serve` runs the supervisor (started detached by the host),
+//!   as root with `--user` in container and VM sandboxes (src/user).
 //! - `fctl-agent attach` connects stdin/stdout to it (the host's channel).
-//! - As PID 1 it is a Firecracker microVM's init, and `vm-serve` and
-//!   `vm-run` run what the host asks there (src/vm).
+//! - As PID 1 it is a Firecracker microVM's init, and `vm-serve` runs what
+//!   the host asks there (src/vm).
+//! - `fctl-agent run-as` runs a program as another user, for `vm-serve` and
+//!   for a supervisor that runs as root.
 //!
 //! See docs/architecture.md and crates/fctl-proto/src/agent.rs.
 
@@ -14,10 +17,14 @@ mod followed;
 mod journal;
 mod link;
 mod local;
+mod orphan;
 mod prompt;
+#[cfg(target_os = "linux")]
+mod protected;
 mod refresh;
 mod supervisor;
 mod tasks;
+mod user;
 #[cfg(target_os = "linux")]
 mod vm;
 mod workspace;
@@ -53,6 +60,13 @@ enum Command {
         /// Log file (default: stderr).
         #[arg(long)]
         log: Option<PathBuf>,
+        /// Run as root, and Claude and the commands for the session as this
+        /// user (a name or a uid, as `docker exec -u` takes them), whose
+        /// processes can't stop fctl-agent then. Its socket, state and log
+        /// go where only root may reach them; the session socket and the
+        /// GitHub tokens stay in the user's `~/.fctl`. Linux only.
+        #[arg(long)]
+        user: Option<String>,
     },
     /// Bridge stdin/stdout to a running supervisor.
     Attach {
@@ -67,10 +81,11 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
     VmServe,
-    /// Run a program as a user, in a session of its own (for vm-serve).
+    /// Run a program as a user, in a session of its own (for vm-serve, and
+    /// a supervisor that runs as root).
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
-    VmRun {
+    RunAs {
         uid: u32,
         gid: u32,
         /// Supplementary groups, separated by commas.
@@ -89,7 +104,7 @@ fn main() -> anyhow::Result<()> {
     }
     let cli = Cli::parse();
     #[cfg(target_os = "linux")]
-    if let Command::VmRun {
+    if let Command::RunAs {
         uid,
         gid,
         groups,
@@ -97,22 +112,34 @@ fn main() -> anyhow::Result<()> {
         argv,
     } = &cli.command
     {
-        return vm::run_as(*uid, *gid, groups, cwd, argv);
+        return user::run_as::run_as(*uid, *gid, groups, cwd, argv);
     }
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
+    // Built once a supervisor that runs as root has taken its user's
+    // identity, which applies to the threads there are.
+    let runtime = || {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+    };
     match cli.command {
-        Command::Serve { socket, state, log } => {
+        Command::Serve {
+            socket,
+            state,
+            log,
+            user,
+        } => {
             init_logging(log.as_deref())?;
-            let r = rt.block_on(supervisor::serve(socket, state));
+            let r = match user {
+                Some(user) => serve_as_root(&user, socket, state, log.as_deref()),
+                None => runtime()?.block_on(supervisor::serve(socket, state)),
+            };
             if let Err(e) = &r {
                 tracing::error!("fctl-agent stopped: {e:#}");
             }
             r
         }
-        Command::Attach { socket } => rt.block_on(link::attach(&socket)),
+        Command::Attach { socket } => runtime()?.block_on(link::attach(&socket)),
         #[cfg(target_os = "linux")]
         Command::VmServe => {
             // To the VM's console, which the host keeps in a file.
@@ -124,11 +151,40 @@ fn main() -> anyhow::Result<()> {
                 .with_ansi(false)
                 .with_writer(std::io::stderr)
                 .init();
-            rt.block_on(vm::serve())
+            runtime()?.block_on(vm::serve())
         }
         #[cfg(target_os = "linux")]
-        Command::VmRun { .. } => Ok(()),
+        Command::RunAs { .. } => Ok(()),
     }
+}
+
+/// `serve --user`: readies what only root may do, takes the user's identity
+/// ([`user::protect`]), then serves.
+#[cfg(target_os = "linux")]
+fn serve_as_root(
+    user: &str,
+    socket: PathBuf,
+    state: PathBuf,
+    log: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    match protected::start(user, &socket, &state, log)? {
+        protected::Start::Serving(started) => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?
+            .block_on(supervisor::serve_protected(*started)),
+        protected::Start::Taken => Ok(()),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn serve_as_root(
+    _: &str,
+    _: PathBuf,
+    _: PathBuf,
+    _: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    anyhow::bail!("fctl-agent serve --user runs on Linux only")
 }
 
 fn init_logging(path: Option<&std::path::Path>) -> anyhow::Result<()> {

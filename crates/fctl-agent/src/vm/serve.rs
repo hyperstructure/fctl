@@ -1,8 +1,8 @@
 //! `fctl-agent vm-serve`: runs what the host asks over the vsock, as
 //! `docker exec` would, and keeps the VM's network linked to the host.
 
-use super::users::{self, User};
 use super::{VERSION, net};
+use crate::user::accounts::{self as users, User};
 use anyhow::{Context, Result};
 use fctl_proto::vm::{Exec, MAX_LINE, PORT, Reply, Request, frame};
 use nix::sys::signal::{Signal, kill, killpg};
@@ -148,7 +148,7 @@ async fn run(
         .unwrap_or_else(|| "/".into());
     let groups: Vec<String> = user.groups.iter().map(u32::to_string).collect();
     let mut cmd = tokio::process::Command::new("/proc/self/exe");
-    cmd.arg("vm-run")
+    cmd.arg("run-as")
         .arg(user.uid.to_string())
         .arg(user.gid.to_string())
         .arg(groups.join(","))
@@ -319,6 +319,7 @@ mod tests {
             gid: 1000,
             groups: vec![1000],
             home: "/home/agent".into(),
+            name: Some("agent".into()),
         };
         let env = environment(
             &[
