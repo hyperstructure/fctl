@@ -966,7 +966,11 @@ impl FirecrackerDriver {
             after: super::COMMAND_TIMEOUT,
         })??;
         if out.code != 0 {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+            let said = String::from_utf8_lossy(&out.stderr);
+            match said.trim() {
+                "" => bail!("the command exited with {} in {}", out.code, sb.name),
+                said => bail!("{said}"),
+            }
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -1222,8 +1226,28 @@ mod tests {
             if let Ok(command) = std::env::var("FCTL_TEST_FIRECRACKER_RUN") {
                 eprintln!("{command}: {}", d.exec(&sb, &command).await?.trim());
             }
-            let resolved = d.exec(&sb, "getent hosts example.com").await?;
-            assert!(!resolved.trim().is_empty());
+            // The network, through passt: what it and the VM say when it
+            // doesn't work.
+            let resolved = d.exec(&sb, "getent hosts example.com").await;
+            if resolved.as_ref().is_ok_and(|r| !r.trim().is_empty()) {
+                eprintln!("example.com is {}", resolved.unwrap_or_default().trim());
+            } else {
+                let passt = std::fs::read_to_string(
+                    cfg.data_dir()
+                        .join("firecracker/sandboxes")
+                        .join(&name)
+                        .join("passt.log"),
+                );
+                let net = d
+                    .exec(
+                        &sb,
+                        "cat /etc/resolv.conf /proc/net/route /sys/class/net/eth0/operstate; ls -l /etc/resolv.conf",
+                    )
+                    .await;
+                bail!(
+                    "no address for example.com in the sandbox ({resolved:?}); passt said {passt:?}; the VM's network: {net:?}"
+                );
+            }
             let fetched = d
                 .exec(
                     &sb,
