@@ -20,7 +20,9 @@
 //!   exec` would ([`vsock`]).
 
 pub mod assets;
+mod builds;
 pub mod images;
+pub mod oci;
 pub mod registry;
 pub mod vm;
 pub mod vsock;
@@ -639,27 +641,8 @@ impl FirecrackerDriver {
             let (rootfs, files, bytes) = self
                 .download_and_unpack(image, &registry, &resolved, &downloads, log)
                 .await?;
-            let config = resolved.config.clone();
-            let pulled = Image {
-                id: resolved.id.clone(),
-                reference: key,
-                user: config.user.filter(|u| !u.is_empty()),
-                env: config.env.unwrap_or_default(),
-                workdir: config.working_dir.filter(|w| !w.is_empty()),
-                labels: config.labels.unwrap_or_default(),
-                files,
-                bytes,
-                pulled_ms: vsock::now_ms(),
-            };
-            let _images = self.lock_images().await?;
-            // Another pull may have brought the same image meanwhile, which
-            // sandboxes may use already.
-            if self.store.image(&pulled.id).is_some() {
-                self.store.tag(image, &pulled.id)?;
-            } else {
-                self.store.add(&pulled, &rootfs)?;
-            }
-            self.remove_unused();
+            self.keep(image, key, &resolved, &rootfs, files, bytes)
+                .await?;
             Ok::<_, anyhow::Error>((files, bytes))
         }
         .await;
@@ -669,6 +652,41 @@ impl FirecrackerDriver {
             "Pulled {image}: {files} files, {} MB",
             bytes.div_ceil(1_000_000)
         ));
+        Ok(())
+    }
+
+    /// Keeps the image `resolved`, whose layers unpacked to `rootfs`
+    /// (`files` and `bytes`), named `name` (`key` as the store keeps it).
+    async fn keep(
+        &self,
+        name: &str,
+        key: String,
+        resolved: &registry::Resolved,
+        rootfs: &Path,
+        files: u64,
+        bytes: u64,
+    ) -> Result<()> {
+        let config = resolved.config.clone();
+        let image = Image {
+            id: resolved.id.clone(),
+            reference: key,
+            user: config.user.filter(|u| !u.is_empty()),
+            env: config.env.unwrap_or_default(),
+            workdir: config.working_dir.filter(|w| !w.is_empty()),
+            labels: config.labels.unwrap_or_default(),
+            files,
+            bytes,
+            pulled_ms: vsock::now_ms(),
+        };
+        let _images = self.lock_images().await?;
+        // Another pull may have brought the same image meanwhile, which
+        // sandboxes may use already.
+        if self.store.image(&image.id).is_some() {
+            self.store.tag(name, &image.id)?;
+        } else {
+            self.store.add(&image, rootfs)?;
+        }
+        self.remove_unused();
         Ok(())
     }
 
@@ -1122,7 +1140,13 @@ impl FirecrackerDriver {
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
         let lock = self.lock(&format!("sandbox {}", sb.name));
         let _held = lock.lock().await;
-        self.vm(&sb.name)?.remove().await?;
+        let vm = self.vm(&sb.name)?;
+        // A builder runs only while it builds, and starts under this lock:
+        // one that the sweep found stopped, and that builds now, stays.
+        if crate::driver::is_builder(&sb.name) && vm.running() {
+            bail!("it is building an image");
+        }
+        vm.remove().await?;
         let _images = self.lock_images().await?;
         self.remove_unused();
         Ok(())
@@ -1226,6 +1250,44 @@ mod tests {
         assert!(!listed[0].running);
         let exec = d.sh("fctl-ses-01abc", "true");
         assert_eq!(exec.argv, ["sh", "-c", "true"]);
+        Ok(())
+    }
+
+    /// A builder that the sweep found stopped, and that builds by the time
+    /// its removal comes up, stays: it runs only while it builds.
+    #[tokio::test]
+    async fn a_builder_that_builds_stays() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let name = "fctl-builder-prj-01abc";
+        let sb = Sandbox {
+            name: name.into(),
+            root: None,
+        };
+        let vm = d.vm(name)?;
+        std::fs::create_dir_all(d.sandboxes().join(name))?;
+        // A process whose command line has the VM's socket directory.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30; true", &vm.api().display().to_string()])
+            .spawn()?;
+        let pid_file = d.sandboxes().join(name).join("firecracker.pid");
+        std::fs::write(&pid_file, child.id().to_string())?;
+        // Until its exec, other tests' threads may show it as this process.
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !vm.running() && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(vm.running());
+        let removed = d.remove(&sb).await;
+        assert_eq!(
+            removed.map_err(|e| e.to_string()),
+            Err("it is building an image".to_owned())
+        );
+        assert!(d.sandboxes().join(name).exists());
+        child.kill()?;
+        child.wait()?;
+        d.remove(&sb).await?;
+        assert!(!d.sandboxes().join(name).exists());
         Ok(())
     }
 
@@ -1463,6 +1525,87 @@ mod tests {
         .await;
         d.remove(&sb).await?;
         assert!(!d.list().await?.iter().any(|s| s.name == name));
+        result
+    }
+
+    /// Builds an image from a Dockerfile with BuildKit in a VM, and boots a
+    /// sandbox from it: its files, modes, user, environment and working
+    /// directory as the Dockerfile says. As [`boots_a_sandbox`] says.
+    #[tokio::test]
+    #[ignore = "needs KVM, passt and a static fctl-agent"]
+    async fn builds_an_image_in_a_vm() -> Result<()> {
+        use super::super::{BuildJob, Driver};
+        let temp = tempfile::tempdir()?;
+        let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| temp.path().to_owned());
+        let mut cfg = HostConfig {
+            data_dir: Some(data),
+            agent_bin: Some(
+                std::env::var("FCTL_TEST_FIRECRACKER_AGENT")
+                    .context("FCTL_TEST_FIRECRACKER_AGENT isn't set")?
+                    .into(),
+            ),
+            cpus: 2,
+            memory_mb: 2048,
+            ..HostConfig::default()
+        };
+        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
+        cfg.firecracker.disk_gb = 8;
+        let d = Driver::select("firecracker", &cfg).await?;
+        assert!(d.builds_images());
+        let log = |line: String| eprintln!("{line}");
+        let build = temp.path().join("build");
+        std::fs::create_dir_all(build.join("src"))?;
+        std::fs::write(build.join("src/hello.txt"), b"hello\n")?;
+        std::fs::write(
+            build.join("Dockerfile"),
+            "FROM docker.io/library/debian:trixie-slim\nCOPY hello.txt /hello.txt\nARG GREETING\nRUN echo \"$GREETING\" > /greeting && cp /bin/true /built && chmod 4755 /built\nENV BUILT=yes\nWORKDIR /tmp\nUSER nobody\n",
+        )?;
+        let project = hex::encode(fctl_domain::random_bytes::<4>());
+        let tag = format!("fctl-build-prj_{project}:abc");
+        let args = std::collections::BTreeMap::from([("GREETING".to_owned(), "hi".to_owned())]);
+        let job = BuildJob {
+            tag: &tag,
+            dockerfile: &build.join("Dockerfile"),
+            context: &build.join("src"),
+            args: &args,
+            target: None,
+            limit: Duration::from_secs(30 * 60),
+        };
+        let started = std::time::Instant::now();
+        d.build(&job, &log).await?;
+        eprintln!("built in {:?}", started.elapsed());
+        assert!(d.has_image(&tag).await);
+        // The builder stopped, and the sweep counts its time from now.
+        let builder = super::builds::builder_name(&tag);
+        let stopped = crate::expiry::load(&crate::expiry::path(&cfg.data_dir()));
+        assert!(stopped.contains_key(&builder), "{stopped:?}");
+        let name = format!("fctl-test-{project}");
+        let spec = SandboxSpec {
+            name: name.clone(),
+            image: tag.clone(),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: None,
+        };
+        let sb = d.ensure(&spec, &log).await?;
+        let result = async {
+            let out = d
+                .exec(
+                    &sb,
+                    "cat /hello.txt /greeting; id -un; pwd; echo $BUILT; stat -c %a /built",
+                )
+                .await?;
+            assert_eq!(out, "hello\nhi\nnobody\n/tmp\nyes\n4755\n");
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        d.remove(&sb).await?;
+        d.remove(&d.handle(&super::builds::builder_name(&tag)))
+            .await?;
+        d.remove_image(&tag).await?;
         result
     }
 }

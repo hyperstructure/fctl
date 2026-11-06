@@ -38,7 +38,8 @@ microVM of its own.
   owners, modes, setuid bits and capabilities stay as the image has them,
   without root on the host, and no file of an image touches the host's
   filesystem. Projects' own images run as with Docker; building images
-  (`allowed_builds`) is for later.
+  (`allowed_builds`) is for later. (Since session #802, BuildKit builds
+  them in a VM of each project's own.)
 - **An image's filesystem is shared; each sandbox has a disk.** The
   sandboxes made from an image share its filesystem, read only, and each
   has its own sparse ext4 disk (`disk_gb`, 64 GiB unless `host.toml` says

@@ -190,6 +190,13 @@ pub fn session_of(name: &str) -> Option<String> {
     Some(format!("ses_{}", rest.to_uppercase()))
 }
 
+/// Whether `name` is a project's image builder (`fctl-builder-…`, with the
+/// firecracker driver): a sandbox no session runs in, which only runs while
+/// it builds, and keeps the project's build cache once stopped.
+pub fn is_builder(name: &str) -> bool {
+    name.starts_with("fctl-builder-")
+}
+
 /// Where fctl-agent lives inside container and VM sandboxes.
 pub const AGENT_PATH: &str = "/opt/fctl/bin/fctl-agent";
 
@@ -395,10 +402,10 @@ impl Driver {
         matches!(self, Self::Container(_) | Self::Firecracker(_))
     }
 
-    /// Whether it builds images from Dockerfiles (Firecracker pulls them
-    /// only).
+    /// Whether it builds images from Dockerfiles: Docker and Apple's
+    /// `container` themselves, Firecracker with BuildKit in a VM.
     pub fn builds_images(&self) -> bool {
-        matches!(self, Self::Container(_))
+        matches!(self, Self::Container(_) | Self::Firecracker(_))
     }
 
     /// Whether `image` is on this host.
@@ -470,7 +477,7 @@ impl Driver {
     ) -> Result<()> {
         match self {
             Self::Container(d) => d.build(job, log).await,
-            Self::Firecracker(_) => anyhow::bail!("the firecracker driver builds no images"),
+            Self::Firecracker(d) => d.build(job, log).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
         }
     }
