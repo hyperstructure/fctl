@@ -3303,6 +3303,12 @@ pub struct Schedule {
     /// project allows. One this version doesn't know reads as `read`.
     #[serde(default, deserialize_with = "crate::session::least_if_unknown")]
     pub github_access: Option<GithubAccess>,
+    /// Its sessions stay off session lists (the Agent Floor, the sidebar,
+    /// its project's sessions and `fctl ls`, unless they ask for them with
+    /// `?hidden=1` or `--hidden`): its runs list them, and search finds them.
+    /// Absent from control planes before it.
+    #[serde(default)]
+    pub hide_sessions: bool,
     /// `false` while it is paused: it starts nothing until it is resumed,
     /// not even when asked.
     pub enabled: bool,
@@ -3469,6 +3475,8 @@ pub struct CreateScheduleRequest {
     pub base_branch: Option<String>,
     /// At most what the project allows; absent: that much.
     pub github_access: Option<GithubAccess>,
+    /// `true`: its sessions stay off session lists (`Schedule::hide_sessions`).
+    pub hide_sessions: Option<bool>,
     /// `false`: it starts paused.
     pub enabled: Option<bool>,
 }
@@ -3498,6 +3506,9 @@ pub struct UpdateScheduleRequest {
     /// `push`, `comment`, `triage` or `read`; `""` for as much as the
     /// project allows.
     pub github_access: Option<String>,
+    /// `true`: its sessions, those it started already too, stay off session
+    /// lists (`Schedule::hide_sessions`); `false`: they show again.
+    pub hide_sessions: Option<bool>,
     /// `false` pauses it; `true` resumes it.
     pub enabled: Option<bool>,
     /// `true`: run it on the caller's Claude subscription from now on.

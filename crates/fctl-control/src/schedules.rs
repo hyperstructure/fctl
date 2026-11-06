@@ -146,6 +146,8 @@ pub struct ScheduleRow {
     pub effort: Option<String>,
     pub base_branch: Option<String>,
     pub github_access: Option<String>,
+    #[serde(deserialize_with = "int_bool", default)]
+    pub hide_sessions: bool,
     pub owner_id: Option<String>,
     pub owner_name: Option<String>,
     pub owner_avatar: Option<String>,
@@ -168,7 +170,7 @@ pub struct ScheduleRow {
 
 /// SELECT for [`ScheduleRow`]; `WHERE` and `ORDER BY` follow.
 pub const SCHEDULE_SELECT: &str = "SELECT sc.id, sc.project_id, sc.name, sc.prompt, sc.cron, sc.at, sc.timezone, \
-    sc.model, sc.effort, sc.base_branch, sc.github_access, sc.owner_id, ou.name AS owner_name, \
+    sc.model, sc.effort, sc.base_branch, sc.github_access, sc.hide_sessions, sc.owner_id, ou.name AS owner_name, \
     ou.avatar_url AS owner_avatar, sc.enabled, sc.paused_reason, sc.next_run_at, \
     sc.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, sc.created_at, \
     sc.updated_by, uu.name AS updater_name, uu.avatar_url AS updater_avatar, sc.updated_at \
@@ -229,6 +231,7 @@ impl ScheduleRow {
             effort: self.effort.clone(),
             base_branch: self.base_branch.clone(),
             github_access: self.github(),
+            hide_sessions: self.hide_sessions,
             enabled: self.enabled,
             state: sch::state(self.enabled, self.timed(), self.next_run_at),
             paused_reason: self.paused_reason.clone().filter(|_| !self.enabled),

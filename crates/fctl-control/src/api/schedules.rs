@@ -142,8 +142,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     q(
         &ctx.db,
         "INSERT INTO schedules (id, project_id, name, prompt, cron, at, timezone, model, effort, base_branch, github_access, \
-         owner_id, enabled, next_run_at, created_by, created_at, updated_by, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?12, ?15, ?12, ?15)",
+         owner_id, enabled, next_run_at, created_by, created_at, updated_by, updated_at, hide_sessions) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?12, ?15, ?12, ?15, ?16)",
         &[
             s(id.as_str()),
             s(&p.row.id),
@@ -160,6 +160,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             b(enabled),
             on(next),
             n(ctx.now),
+            b(body.hide_sessions.unwrap_or(false)),
         ],
     )?
     .run()
@@ -198,6 +199,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         || body.effort.is_some()
         || body.base_branch.is_some()
         || body.github_access.is_some();
+    // Hiding its sessions or showing them puts nothing on anyone's
+    // subscription, so it takes nothing over: the change rights decide.
     let pauses = body.enabled == Some(false);
     let resumes = body.enabled == Some(true) && !row.enabled;
     let takes_over = body.run_as_me == Some(true) && !mine;
@@ -279,6 +282,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     } else {
         github_access
     };
+    let hide_sessions = body.hide_sessions.unwrap_or(row.hide_sessions);
     let enabled = body.enabled.unwrap_or(row.enabled);
     let next = if !enabled {
         None
@@ -309,7 +313,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
          enabled = CASE WHEN ?11 THEN ?12 ELSE enabled END, \
          paused_reason = CASE WHEN ?11 THEN NULL ELSE paused_reason END, \
          next_run_at = CASE WHEN ?13 THEN ?14 ELSE next_run_at END, \
-         updated_by = ?15, updated_at = ?16 WHERE id = ?17",
+         updated_by = ?15, updated_at = ?16, hide_sessions = ?18 WHERE id = ?17",
         &[
             s(&name),
             s(&prompt),
@@ -328,6 +332,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             s(&user.id),
             n(ctx.now),
             s(&row.id),
+            b(hide_sessions),
         ],
     )?
     .run()

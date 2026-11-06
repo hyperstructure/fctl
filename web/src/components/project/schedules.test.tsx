@@ -138,6 +138,7 @@ describe("Schedule, beside a task box's Start", () => {
       prompt: task,
       cron: "0 9 * * 1-5",
       timezone: "UTC",
+      hide_sessions: false,
       enabled: true,
       state: "active",
       next_run_at: Date.now() + 3_600_000,
@@ -148,6 +149,21 @@ describe("Schedule, beside a task box's Start", () => {
     await settle();
     expect(createSchedule).toHaveBeenCalledWith(project.id, expect.objectContaining({ prompt: task }));
     expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a new schedule's sessions off session lists when asked to", async () => {
+    const { tab } = handOverAndOpen();
+    const hide = tab.querySelector<HTMLButtonElement>(
+      "[role='switch'][aria-label='Keep its sessions off session lists']",
+    );
+    expect(hide?.getAttribute("aria-checked")).toBe("false");
+    press(hide);
+    expect(hide?.getAttribute("aria-checked")).toBe("true");
+    expect(tab.textContent).toContain("They're listed under its runs");
+    createSchedule.mockReturnValue(new Promise(() => {}));
+    press(named(tab, "Set up schedule"));
+    await settle();
+    expect(createSchedule).toHaveBeenCalledWith(project.id, expect.objectContaining({ hide_sessions: true }));
   });
 
   it("leaves the draft where it was written when the form is cancelled", () => {
@@ -198,6 +214,7 @@ describe("Triage new issues", () => {
       cron: "0 8 * * 1-5",
       timezone: "UTC",
       github_access,
+      hide_sessions: false,
       enabled: true,
       state: "active",
       created_at: 0,

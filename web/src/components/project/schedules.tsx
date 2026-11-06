@@ -48,6 +48,7 @@ import {
   type SelectOption,
   Skeleton,
   StatusDot,
+  Switch,
   Textarea,
   TextareaControls,
   toast,
@@ -975,6 +976,7 @@ function Details({
               {githubLevel(lowerAccess(s.github_access ?? own.github, own.github)).label}
             </Fact>
           )}
+          {s.hide_sessions && <Fact k="Sessions">Kept off session lists: they're under its runs</Fact>}
           {s.base_branch && (
             <Fact k="From">
               <span className="font-mono">{s.base_branch}</span>
@@ -1343,6 +1345,7 @@ function Editor({
     effort: schedule?.effort ?? draft?.effort ?? own.effort,
     github: lowerAccess(schedule?.github_access ?? draft?.github ?? own.github, own.github),
   }));
+  const [hidden, setHidden] = useState(schedule?.hide_sessions ?? false);
   const [zone, setZone] = useState(schedule?.timezone ?? here);
   const [pickZone, setPickZone] = useState(false);
   const initialRepeat = (schedule?.cron && cronRepeat(schedule.cron)) || draft?.repeat || DEFAULT_REPEAT;
@@ -1405,6 +1408,7 @@ function Editor({
           timezone: zone,
           ...timing,
           ...asks,
+          hide_sessions: hidden || undefined,
         };
         return api.createSchedule(project.id, body);
       }
@@ -1416,11 +1420,15 @@ function Editor({
         model: asks.model ?? "",
         effort: asks.effort ?? "",
         github_access: asks.github_access ?? "",
+        hide_sessions: hidden,
       };
       return api.updateSchedule(schedule.id, body);
     },
     onSuccess: (s) => {
       saved(project, s);
+      // Its sessions leave the session lists, or come back to them.
+      if (schedule && schedule.hide_sessions !== s.hide_sessions)
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
       if (!schedule) draft?.onSaved?.();
       toast(
         schedule
@@ -1629,6 +1637,18 @@ function Editor({
           once={mode === "once"}
         />
       </fieldset>
+
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[12.5px] font-medium text-ink-2">Keep its sessions off session lists</p>
+          <p className="mt-1 max-w-xl text-[12.5px] leading-relaxed text-ink-3">
+            {hidden
+              ? "Its sessions stay out of Working now, the sidebar and the project's sessions. They're listed under its runs, and search finds them."
+              : "Its sessions show in session lists like any other. Turn it on for a schedule that runs often, such as an hourly triage."}
+          </p>
+        </div>
+        <Switch checked={hidden} onChange={setHidden} label="Keep its sessions off session lists" />
+      </div>
 
       {save.error && !failure?.field && <Banner tone="error">{save.error.message}</Banner>}
       {failure?.field === "claude" && (

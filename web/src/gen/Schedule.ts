@@ -45,6 +45,13 @@ model?: string, effort?: string, base_branch?: string,
  */
 github_access?: GithubAccess, 
 /**
+ * Its sessions stay off session lists (the Agent Floor, the sidebar,
+ * its project's sessions and `fctl ls`, unless they ask for them with
+ * `?hidden=1` or `--hidden`): its runs list them, and search finds them.
+ * Absent from control planes before it.
+ */
+hide_sessions: boolean, 
+/**
  * `false` while it is paused: it starts nothing until it is resumed,
  * not even when asked.
  */

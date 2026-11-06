@@ -116,6 +116,7 @@ fctl unshare my-app#12 grace@example.com
 fctl archive my-app#12           # out of the lists; its pull requests no longer bring its agent back
 fctl unarchive my-app#12
 fctl sessions --archived         # the archived ones too
+fctl sessions --hidden           # and those of schedules that keep theirs off lists
 fctl open my-app#12              # in the browser
 fctl open my-app#12 --claude     # in the Claude app (Remote Control)
 ```
@@ -653,6 +654,7 @@ fctl schedules show "Weekly dependencies" -p my-app   # by name or id: its task,
 fctl schedules edit "Weekly dependencies" -p my-app --cron "0 7 * * 1" --effort high
 fctl schedules edit sch_01JC… --mine           # run it on your subscription from now on
 fctl schedules edit sch_01JC… --name "Monday dependencies"
+fctl schedules edit "Triage new issues" -p my-app --hide-sessions   # its sessions stay off session lists (--show-sessions)
 fctl schedules pause sch_01JC…                 # it starts nothing until it's resumed
 fctl schedules resume sch_01JC…
 fctl schedules run sch_01JC…                   # its task now, in a session on your subscription

@@ -28,6 +28,12 @@ Floor's in a wide window, turns what you wrote there into one.
   from fctl: which schedule started it and when, its previous run, and
   that nobody watches it start, so that it works without waiting for
   answers and says plainly what only a person can decide.
+- **Out of the lists, when it runs often.** Turn on **Keep its sessions
+  off session lists** for a schedule such as an hourly triage (`fctl
+  schedules add --hide-sessions`, or `edit --hide-sessions`): its
+  sessions, those it started already too, stay out of Working now, the
+  sidebar, the project's sessions and `fctl sessions` (`--hidden` keeps
+  them in). Its runs list them, and search finds them.
 - **On whose subscription.** A schedule runs on the Claude subscription of
   the person who set it up, its owner, who follows its sessions as they
   follow the ones they start (unless they turned that off in Settings). A

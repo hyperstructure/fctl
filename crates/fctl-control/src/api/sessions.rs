@@ -293,7 +293,8 @@ const UNENDED: &str = "'queued','provisioning','preparing','running','idle','pau
 
 /// `GET /api/v1/sessions`: the sessions the caller sees, in all their
 /// workspaces (`?workspace=` one), newest first, without review agents'
-/// (`?reviews=1` keeps them). `?active_since=` leaves out those that
+/// (`?reviews=1` keeps them) or those of schedules that hide theirs
+/// (`?hidden=1` keeps them). `?active_since=` leaves out those that
 /// ended before then.
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
@@ -359,6 +360,11 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     // reviews), and stay off the Agent Floor and the project's sessions.
     if !http::query(req, "reviews").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND rv.session_id IS NULL");
+    }
+    // Nor do those of schedules that keep theirs off them, such as an
+    // hourly triage's: their runs list them.
+    if !http::query(req, "hidden").is_some_and(|v| v == "1" || v == "true") {
+        sql.push_str(" AND (sc.hide_sessions IS NULL OR sc.hide_sessions = 0)");
     }
     if !http::query(req, "archived").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.archived = 0");

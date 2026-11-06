@@ -28,6 +28,10 @@ timezone?: string, model?: string, effort?: string, base_branch?: string,
  */
 github_access?: GithubAccess, 
 /**
+ * `true`: its sessions stay off session lists (`Schedule::hide_sessions`).
+ */
+hide_sessions?: boolean, 
+/**
  * `false`: it starts paused.
  */
 enabled?: boolean, };
