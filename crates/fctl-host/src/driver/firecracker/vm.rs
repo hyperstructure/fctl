@@ -63,7 +63,31 @@ pub struct Spec {
 pub struct Vm {
     pub dir: PathBuf,
     pub run: PathBuf,
+    /// What tells the VM's processes and jail from others': the start of
+    /// the SHA-256 of `dir`.
+    pub key: String,
+    /// Where the VMs' jails are, when they run through Firecracker's jailer
+    /// ([`Jail`]): `run` is then a link to this VM's.
+    pub jails: Option<PathBuf>,
 }
+
+/// How a VM runs through Firecracker's jailer, which a host that runs as
+/// root can: as `uid` and `gid`, which no other VM runs as, in a chroot of
+/// its own (`<jails>/<Firecracker's file name>/<key>/root`) that holds only
+/// its files, and in a cgroup of its own (`fctl/<key>`).
+#[derive(Clone, Debug)]
+pub struct Jail {
+    pub jailer: PathBuf,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// The first uid and gid of the VMs' jails: far from those people, systems
+/// and user namespaces' ranges take.
+pub const JAIL_ID_BASE: u32 = 1_900_000_000;
+
+/// How many uids the jails take, one for each VM that runs at once.
+const JAIL_IDS: u32 = 1 << 16;
 
 /// Where VMs' sockets go: a directory of this user's in /tmp, private.
 /// One that another user made first is theirs, and refused.
@@ -95,7 +119,59 @@ impl Vm {
     pub fn new(dir: PathBuf) -> Result<Self> {
         let key = hex::encode(&Sha256::digest(dir.display().to_string().as_bytes())[..8]);
         let run = socket_base()?.join(format!("vm-{key}"));
-        Ok(Self { dir, run })
+        Ok(Self {
+            dir,
+            run,
+            key,
+            jails: None,
+        })
+    }
+
+    /// The VM, its jail among the jails in `jails`, should it run in one.
+    pub fn with_jails(self, jails: PathBuf) -> Self {
+        Self {
+            jails: Some(jails),
+            ..self
+        }
+    }
+
+    /// The directories of this VM's jails: one for each Firecracker binary
+    /// that ran it (one, but for an update of the host's Firecracker).
+    fn jail_dirs(&self) -> Vec<PathBuf> {
+        let Some(jails) = &self.jails else {
+            return Vec::new();
+        };
+        let Ok(execs) = std::fs::read_dir(jails) else {
+            return Vec::new();
+        };
+        execs
+            .flatten()
+            .map(|e| e.path().join(&self.key))
+            .filter(|d| d.is_dir())
+            .collect()
+    }
+
+    /// A uid and gid for this VM's jail that no other running VM's jail
+    /// has: the same each time, unless another VM's took it.
+    pub fn jail_id(&self) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        let taken: std::collections::HashSet<u32> = self
+            .jails
+            .as_ref()
+            .and_then(|jails| std::fs::read_dir(jails).ok())
+            .into_iter()
+            .flat_map(|execs| execs.flatten())
+            .filter_map(|exec| std::fs::read_dir(exec.path()).ok())
+            .flat_map(|vms| vms.flatten())
+            .filter(|vm| vm.file_name().to_string_lossy() != self.key)
+            .filter_map(|vm| std::fs::metadata(vm.path().join("root")).ok())
+            .map(|m| m.uid())
+            .collect();
+        let start = u32::from_str_radix(&self.key[..8], 16).unwrap_or(0) % JAIL_IDS;
+        (0..JAIL_IDS)
+            .map(|i| JAIL_ID_BASE + (start + i) % JAIL_IDS)
+            .find(|id| !taken.contains(id))
+            .unwrap_or(JAIL_ID_BASE + start)
     }
 
     pub fn api(&self) -> PathBuf {
@@ -133,10 +209,13 @@ impl Vm {
         let ours = self.run.display().to_string();
         // A kernel thread, which may take the id too, has no executable.
         let starting = cmdline.is_empty() && std::fs::read_link(format!("/proc/{pid}/exe")).is_ok();
+        // A jailed Firecracker has its jail's paths, and this VM's key as
+        // its `--id`.
         let mine = starting
-            || cmdline
-                .split(|b| *b == 0)
-                .any(|arg| String::from_utf8_lossy(arg).starts_with(&ours));
+            || cmdline.split(|b| *b == 0).any(|arg| {
+                let arg = String::from_utf8_lossy(arg);
+                arg.starts_with(&ours) || arg == self.key
+            });
         (mine && !zombie).then_some(pid)
     }
 
@@ -154,13 +233,105 @@ impl Vm {
     /// `passt` of a VM that powered off, say. What it started goes again
     /// when it fails. A VM that gets a network gets it once it is up
     /// ([`link_network`](Self::link_network)).
-    pub async fn start(&self, spec: &Spec, firecracker: &Path) -> Result<()> {
+    pub async fn start(&self, spec: &Spec, firecracker: &Path, jail: Option<&Jail>) -> Result<()> {
         self.kill().await;
-        let started = self.start_processes(spec, firecracker).await;
+        let started = match jail {
+            Some(jail) => self.start_jailed(spec, firecracker, jail).await,
+            None => self.start_processes(spec, firecracker).await,
+        };
         if started.is_err() {
             self.kill().await;
         }
         started
+    }
+
+    /// Firecracker through its jailer ([`Jail`]): in a chroot that holds
+    /// the VM's kernel, initramfs and disks (hard links, which the jail's
+    /// user owns where the VM writes them), its configuration and its
+    /// sockets, which the host reaches through `run`, a link to the chroot.
+    async fn start_jailed(&self, spec: &Spec, firecracker: &Path, jail: &Jail) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let jails = self
+            .jails
+            .as_ref()
+            .context("no directory for the VM's jail")?;
+        let exec = firecracker
+            .file_name()
+            .context("Firecracker's path has no file name")?;
+        let dir = jails.join(exec).join(&self.key);
+        let root = dir.join("root");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&root)?;
+        // The jailer makes /dev/kvm in the chroot, which a filesystem
+        // mounted nodev (a tmpfs on /tmp, say) won't open.
+        if nix::sys::statvfs::statvfs(&root)
+            .is_ok_and(|v| v.flags().contains(nix::sys::statvfs::FsFlags::ST_NODEV))
+        {
+            bail!(
+                "the VMs' jails need a filesystem that allows device files, and {} is on one mounted nodev: move data_dir in host.toml, or set jailer = false in its [firecracker]",
+                jails.display()
+            );
+        }
+        std::os::unix::fs::chown(&root, Some(jail.uid), Some(jail.gid))?;
+        let mut inside = spec.clone();
+        inside.kernel = link_into(&root, &spec.kernel, "vmlinux", true)?;
+        inside.initrd = link_into(&root, &spec.initrd, "initrd.cpio", true)?;
+        for (i, drive) in inside.drives.iter_mut().enumerate() {
+            let name = format!("drive{i}.ext4");
+            let host = drive.path.clone();
+            drive.path = link_into(&root, &host, &name, false)?;
+            if drive.writable {
+                std::os::unix::fs::chown(&host, Some(jail.uid), Some(jail.gid))?;
+            } else {
+                let mode = std::fs::metadata(&host)?.permissions().mode();
+                if mode & 0o004 == 0 {
+                    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(mode | 0o444))?;
+                }
+            }
+        }
+        let mut config = self.config(&inside);
+        config["vsock"]["uds_path"] = json!("/v.sock");
+        std::fs::write(
+            root.join("firecracker.json"),
+            serde_json::to_vec_pretty(&config)?,
+        )?;
+        let _ = std::fs::remove_file(&self.run);
+        let _ = std::fs::remove_dir_all(&self.run);
+        std::os::unix::fs::symlink(&root, &self.run)
+            .with_context(|| format!("linking {} to the VM's jail", self.run.display()))?;
+        std::fs::create_dir_all(&self.dir)?;
+        let console = std::fs::File::create(self.console())?;
+        let mut cmd = std::process::Command::new(&jail.jailer);
+        cmd.args(["--id", &self.key])
+            .arg("--exec-file")
+            .arg(firecracker)
+            .args([
+                "--uid",
+                &jail.uid.to_string(),
+                "--gid",
+                &jail.gid.to_string(),
+            ])
+            .arg("--chroot-base-dir")
+            .arg(jails)
+            // Its cgroup's own: Firecracker runs a thread for each vCPU and
+            // a few of its own.
+            .args(["--cgroup-version", "2", "--parent-cgroup", "fctl"])
+            .args(["--cgroup", "pids.max=256"])
+            .args([
+                "--",
+                "--api-sock",
+                "/api.sock",
+                "--config-file",
+                "/firecracker.json",
+                "--level",
+                "Warning",
+            ])
+            .stdin(Stdio::null())
+            .stdout(console.try_clone()?)
+            .stderr(console);
+        spawn_detached(&mut cmd, &self.pid_file("firecracker"))
+            .with_context(|| format!("starting {}", jail.jailer.display()))?;
+        Ok(())
     }
 
     async fn start_processes(&self, spec: &Spec, firecracker: &Path) -> Result<()> {
@@ -375,7 +546,17 @@ impl Vm {
         for what in ["firecracker", "passt"] {
             self.kill_one(what).await;
         }
+        // A link to its jail, or its own directory.
+        let _ = std::fs::remove_file(&self.run);
         let _ = std::fs::remove_dir_all(&self.run);
+        for jail in self.jail_dirs() {
+            if let Err(e) = std::fs::remove_dir_all(&jail) {
+                tracing::warn!("removing the jail {}: {e}", jail.display());
+            }
+        }
+        if self.jails.is_some() {
+            let _ = std::fs::remove_dir(format!("/sys/fs/cgroup/fctl/{}", self.key));
+        }
     }
 
     /// Kills the VM's process `what`, if it runs.
@@ -488,6 +669,29 @@ fn passt_args(pid: &Path) -> Vec<String> {
         // The gateway's address doesn't lead to the host's loopback.
         "--no-map-gw".into(),
     ]
+}
+
+/// Puts the file `from` in a jail's chroot `root` as `name`, a hard link,
+/// or with `copy` a copy where it is on another filesystem (a kernel that
+/// `host.toml` names, say); its path in the chroot.
+fn link_into(root: &Path, from: &Path, name: &str, copy: bool) -> Result<PathBuf> {
+    let to = root.join(name);
+    match std::fs::hard_link(from, &to) {
+        Ok(()) => {}
+        Err(e) if copy && e.kind() == std::io::ErrorKind::CrossesDevices => {
+            std::fs::copy(from, &to)
+                .with_context(|| format!("copying {} into the VM's jail", from.display()))?;
+        }
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "linking {} into the VM's jail, which must be on its filesystem",
+                    from.display()
+                )
+            });
+        }
+    }
+    Ok(Path::new("/").join(name))
 }
 
 /// How long a VM that is up may take to take its network's link: its
@@ -636,6 +840,8 @@ mod tests {
         let vm = Vm {
             dir: PathBuf::from("/data/firecracker/sandboxes/fctl-ses-1"),
             run: PathBuf::from("/tmp/fctl-ada/vm-0123"),
+            key: "0123".into(),
+            jails: None,
         };
         let spec = Spec {
             kernel: "/k/vmlinux".into(),
@@ -987,7 +1193,7 @@ mod tests {
         write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
         let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
         let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
-        vm.start(&spec, &firecracker).await?;
+        vm.start(&spec, &firecracker, None).await?;
         assert!(vm.running() && !vm.linked());
         let (close, got) = vsock_stand_in(&vm.vsock())?;
         // A passt that fails once it has made its pid's file: no link.
@@ -1048,7 +1254,7 @@ mod tests {
         );
         // A start that fails leaves nothing running.
         let missing = dir.path().join("no-firecracker");
-        assert!(vm.start(&spec, &missing).await.is_err());
+        assert!(vm.start(&spec, &missing, None).await.is_err());
         assert!(!vm.linked() && !vm.running());
         let _ = std::fs::remove_dir_all(&other.run);
         Ok(())

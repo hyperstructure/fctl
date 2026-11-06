@@ -205,7 +205,51 @@ impl FirecrackerDriver {
     }
 
     fn vm(&self, name: &str) -> Result<Vm> {
-        Vm::new(self.sandboxes().join(name))
+        self.with_jails(Vm::new(self.sandboxes().join(name))?)
+    }
+
+    /// Where the VMs' jails go, when they run through Firecracker's jailer:
+    /// on a host that runs as root, unless `host.toml` says otherwise.
+    fn jails(&self) -> Option<PathBuf> {
+        (self.cfg().jailer && nix::unistd::geteuid().is_root()).then(|| self.root.join("jail"))
+    }
+
+    fn with_jails(&self, vm: Vm) -> Result<Vm> {
+        Ok(match self.jails() {
+            Some(jails) => vm.with_jails(jails),
+            None => vm,
+        })
+    }
+
+    /// How `vm` runs: through Firecracker's jailer, which comes with the
+    /// pinned Firecracker or sits beside the one `host.toml` names, as a
+    /// user of its own; or without it, where the host doesn't run as root.
+    fn jail_for(&self, vm: &Vm, firecracker: &Path) -> Result<Option<vm::Jail>> {
+        if vm.jails.is_none() {
+            return Ok(None);
+        }
+        let pinned = assets::pinned_jailer(&self.root.join("bin"));
+        let jailer = if pinned.is_file() && self.cfg().firecracker.is_none() {
+            pinned
+        } else {
+            let beside = firecracker.with_file_name("jailer");
+            if beside.is_file() {
+                beside
+            } else {
+                find_program("jailer").with_context(|| {
+                    format!(
+                        "Firecracker's jailer isn't beside {}: install it there, or set jailer = false in host.toml's [firecracker]",
+                        firecracker.display()
+                    )
+                })?
+            }
+        };
+        let id = vm.jail_id();
+        Ok(Some(vm::Jail {
+            jailer,
+            uid: id,
+            gid: id,
+        }))
     }
 
     fn record(&self, name: &str) -> Option<Record> {
@@ -629,9 +673,10 @@ impl FirecrackerDriver {
             hex::encode(fctl_domain::random_bytes::<6>())
         );
         remove_stale(&self.root.join("unpacking"));
-        let vm = Vm::new(self.root.join("unpacking").join(&name))?;
+        let vm = self.with_jails(Vm::new(self.root.join("unpacking").join(&name))?)?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
-        vm.start(&spec, &firecracker).await?;
+        let jail = self.jail_for(&vm, &firecracker)?;
+        vm.start(&spec, &firecracker, jail.as_ref()).await?;
         let result = async {
             vm.wait_ready().await?;
             let within =
@@ -776,7 +821,8 @@ impl FirecrackerDriver {
             memory_mb: spec.memory_mb,
             network: true,
         };
-        vm.start(&boot, &firecracker).await?;
+        let jail = self.jail_for(&vm, &firecracker)?;
+        vm.start(&boot, &firecracker, jail.as_ref()).await?;
         vm.wait_ready().await?;
         if let Err(e) = vm.link_network(&passt).await {
             vm.kill().await;
@@ -1261,6 +1307,25 @@ mod tests {
                 assert_eq!(out, format!("0\n{name}\n/root\n/\n"));
             }
             assert_eq!(out.lines().nth(1), Some(name.as_str()));
+            // As root, the VM runs in Firecracker's jailer, as a user of
+            // its own.
+            if nix::unistd::geteuid().is_root() {
+                let pid = std::fs::read_to_string(
+                    cfg.data_dir()
+                        .join("firecracker/sandboxes")
+                        .join(&name)
+                        .join("firecracker.pid"),
+                )?;
+                let status = std::fs::read_to_string(format!("/proc/{}/status", pid.trim()))?;
+                let uid: u32 = status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Uid:"))
+                    .and_then(|l| l.split_whitespace().next())
+                    .and_then(|u| u.parse().ok())
+                    .context("Firecracker's uid")?;
+                assert!(uid >= vm::JAIL_ID_BASE, "Firecracker runs as {uid}");
+                eprintln!("jailed as {uid}");
+            }
             if let Ok(command) = std::env::var("FCTL_TEST_FIRECRACKER_RUN") {
                 eprintln!("{command}: {}", d.exec(&sb, &command).await?.trim());
             }
