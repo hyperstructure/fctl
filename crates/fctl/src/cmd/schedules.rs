@@ -646,6 +646,17 @@ fn when_line(s: &Schedule) -> String {
         .join(" · ")
 }
 
+/// What a schedule's agents may do on GitHub, when it holds them to less
+/// than pushing, as the web app's rows say it.
+fn held_to(access: Option<GithubAccess>) -> Option<&'static str> {
+    match access? {
+        GithubAccess::Push => None,
+        GithubAccess::Comment => Some("comments only"),
+        GithubAccess::Triage => Some("triage only: labels and comments"),
+        GithubAccess::Read => Some("read only"),
+    }
+}
+
 fn print_schedule(s: &Schedule) {
     let (dot, state) = match s.state {
         ScheduleState::Active => (style::accent("●"), String::new()),
@@ -658,6 +669,7 @@ fn print_schedule(s: &Schedule) {
         style::dim(s.id.as_str())
     );
     let mut facts = vec![when_line(s)];
+    facts.extend(held_to(s.github_access).map(str::to_owned));
     match &s.owner {
         // Each run is on the subscription of whoever runs it.
         Some(owner) if s.cron.is_none() && s.at.is_none() => {
@@ -717,6 +729,17 @@ fn print_run(r: &ScheduleRun, lead: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_what_a_schedules_agents_may_do_on_github() {
+        assert_eq!(held_to(None), None);
+        assert_eq!(held_to(Some(GithubAccess::Push)), None);
+        assert_eq!(
+            held_to(Some(GithubAccess::Triage)),
+            Some("triage only: labels and comments")
+        );
+        assert_eq!(held_to(Some(GithubAccess::Read)), Some("read only"));
+    }
 
     #[test]
     fn reads_how_far_ahead() {

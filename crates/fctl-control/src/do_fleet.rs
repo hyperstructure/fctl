@@ -22,7 +22,7 @@ use fctl_proto::runner::{
     ClaudeLoginUpdate, CredentialKind, FEATURE_REVIEWS, FEATURE_TRIAGE, FleetToHost, HostHello,
     HostSessionReport, HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
 };
-use fctl_proto::session::{RunnerRef, SessionStatus};
+use fctl_proto::session::{GithubAccess, RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -2001,9 +2001,13 @@ impl FleetObject {
             let spec = match built {
                 Ok(mut s) => {
                     s.run_id = Some(fctl_domain::ids::new_id("run", now));
-                    s.github_access = s.github_access.map(|g| {
-                        fctl_domain::limits::for_host(g, self.host_has(&runner_id, FEATURE_TRIAGE))
-                    });
+                    // Hosts from before triage can't read a spec that has it.
+                    if let Some(g @ GithubAccess::Triage) = s.github_access {
+                        s.github_access = Some(fctl_domain::limits::for_host(
+                            g,
+                            self.host_has(&runner_id, FEATURE_TRIAGE),
+                        ));
+                    }
                     s
                 }
                 Err(e) => {
