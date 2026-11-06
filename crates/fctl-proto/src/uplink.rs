@@ -8,7 +8,7 @@
 //! host replays the journal from there and re-sends deliveries to the agent,
 //! which ignores ids it has already handled.
 
-use crate::event::{Attachment, DiffKey, EventBody, FileDiff, LogLine};
+use crate::event::{Attachment, DiffKey, EventBody, FileDiff, LogLine, Notice};
 use crate::session::{RemoteControlState, SessionStats, SessionStatus, UserRef};
 use crate::{DeliveryId, Millis, RunnerId};
 use serde::{Deserialize, Serialize};
@@ -163,6 +163,18 @@ pub struct AgentUnreachable {
     pub reason: String,
 }
 
+/// The host paused the session's sandbox, a VM, because its runner is
+/// nearly out of disk: what the VM writes would be lost. It holds what the
+/// agent wrote in its memory, and the host doesn't reach the agent until it
+/// resumes the VM, once there is room.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SandboxPaused {
+    pub since: Millis,
+    /// Why, as the host says it.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -221,6 +233,17 @@ pub enum UplinkUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         unreachable: Option<AgentUnreachable>,
+        /// The host paused the sandbox, and doesn't try to reach the agent
+        /// until it resumes it. Absent while it runs, and from older hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        paused: Option<SandboxPaused>,
+    },
+    /// Something the host itself says in the transcript, such as that it
+    /// paused the sandbox (`sandbox_paused`). Older hosts send none, and
+    /// older control planes ignore it.
+    Notice {
+        notice: Notice,
     },
     Ping,
 }
@@ -255,14 +278,18 @@ mod tests {
                 since: 1_000,
                 reason: "nothing came from fctl-agent for a minute".into(),
             }),
+            paused: None,
         };
         let json = serde_json::to_value(&down)?;
         assert_eq!(json["type"], "agent_link");
         assert_eq!(json["unreachable"]["since"], 1_000);
         assert_eq!(serde_json::from_value::<UplinkUp>(json)?, down);
 
-        // Reachable again: nothing but the tag.
-        let up = UplinkUp::AgentLink { unreachable: None };
+        // Reachable again: nothing but the tag, as older hosts send it.
+        let up = UplinkUp::AgentLink {
+            unreachable: None,
+            paused: None,
+        };
         assert_eq!(
             serde_json::to_string(&up)?,
             r#"{"type":"agent_link"}"#.to_owned()
@@ -271,6 +298,27 @@ mod tests {
             serde_json::from_str::<UplinkUp>(r#"{"type":"agent_link"}"#)?,
             up
         );
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_say_when_they_pause_the_sandbox() -> serde_json::Result<()> {
+        let paused = UplinkUp::AgentLink {
+            unreachable: None,
+            paused: Some(SandboxPaused {
+                since: 2_000,
+                reason: "it is nearly out of disk, with 800 MiB free".into(),
+            }),
+        };
+        let json = serde_json::to_value(&paused)?;
+        assert_eq!(json["paused"]["since"], 2_000);
+        assert!(json.get("unreachable").is_none());
+        assert_eq!(serde_json::from_value::<UplinkUp>(json)?, paused);
+        let notice: UplinkUp = serde_json::from_value(serde_json::json!({
+            "type": "notice",
+            "notice": { "level": "error", "code": "sandbox_paused", "message": "Paused" }
+        }))?;
+        assert!(matches!(notice, UplinkUp::Notice { notice } if notice.code == "sandbox_paused"));
         Ok(())
     }
 

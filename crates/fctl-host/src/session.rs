@@ -11,19 +11,20 @@ use crate::uplink::Uplink;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use fctl_domain::disk;
 use fctl_domain::image::ImageWant;
-use fctl_domain::size::Want;
+use fctl_domain::size::{self, Want};
 use fctl_proto::agent::{AgentConfig, AgentToHost, HostToAgent, MAX_FRAME_BYTES, SandboxCache};
 use fctl_proto::api::{AgentAnswer, AgentCall};
-use fctl_proto::event::{LogLevel, LogLine, LogSource, PublishedFile};
+use fctl_proto::event::{LogLevel, LogLine, LogSource, Notice, NoticeLevel, PublishedFile};
 use fctl_proto::runner::{
     ClaudeCredential, CredentialKind, DriverInfo, GithubCredential, SandboxLimits, SandboxSize,
     SessionSpec, StopReason,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::uplink::{
-    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SessionState,
-    UplinkDown, UplinkUp,
+    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SandboxPaused,
+    SessionState, UplinkDown, UplinkUp,
 };
 use fctl_proto::{ApiError, DeliveryId, ErrorCode, Millis, RunnerId, SessionId};
 use std::collections::HashMap;
@@ -51,6 +52,11 @@ pub struct HostCtx {
     pub build_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Held while `builds.json` changes.
     pub build_record: Mutex<()>,
+    /// The free disk (MiB) where sandboxes are, as last measured: sessions
+    /// pause their sandboxes while it is nearly full
+    /// (`fctl_domain::disk::holds`). `None` until measured, and while it
+    /// can't be.
+    pub disk: tokio::sync::watch::Sender<Option<u64>>,
 }
 
 impl HostCtx {
@@ -71,6 +77,7 @@ impl HostCtx {
             builds: tokio::sync::Mutex::new(()),
             build_locks: Mutex::new(HashMap::new()),
             build_record: Mutex::new(()),
+            disk: tokio::sync::watch::channel(None).0,
         }
     }
 
@@ -702,6 +709,10 @@ async fn ask(
     }
 }
 
+/// How long a sandbox that stayed paused as it was resumed waits before the
+/// host tries again.
+const RESUME_AGAIN_AFTER: Duration = Duration::from_secs(10);
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -710,8 +721,9 @@ fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     });
 }
 
-/// Tells the session's viewers whether the host reaches the agent.
-fn report_reach(uplink: &Uplink, reached: Reached) {
+/// Tells the session's viewers whether the host reaches the agent, and
+/// whether it holds the sandbox paused, which each such message says.
+fn report_reach(uplink: &Uplink, reached: Reached, paused: Option<&SandboxPaused>) {
     let unreachable = match reached {
         Reached::Not { since, reason } => Some(AgentUnreachable {
             since: wall_ms(since),
@@ -719,13 +731,98 @@ fn report_reach(uplink: &Uplink, reached: Reached) {
         }),
         Reached::Again => None,
     };
-    uplink.send(UplinkUp::AgentLink { unreachable });
+    uplink.send(UplinkUp::AgentLink {
+        unreachable,
+        paused: paused.cloned(),
+    });
 }
 
 /// `t` as milliseconds since the Unix epoch.
 fn wall_ms(t: Instant) -> Millis {
     let ago = Instant::now().saturating_duration_since(t).as_millis();
     crate::expiry::now_ms() - i64::try_from(ago).unwrap_or(i64::MAX)
+}
+
+/// Why a session couldn't start, as its status says: a full disk by name,
+/// ahead of what went wrong.
+fn failure(runner: &str, e: &anyhow::Error) -> String {
+    if disk::out_of_space(e.as_ref()) {
+        format!("Runner {runner} ran out of disk: {e:#}")
+    } else {
+        format!("{e:#}")
+    }
+}
+
+/// `with 800 MiB free`, or nothing for a disk not measured yet.
+fn with_free(free_mb: Option<u64>) -> String {
+    free_mb.map_or_else(String::new, |f| format!(", with {} free", size::memory(f)))
+}
+
+/// What the session's viewers hear of a sandbox the host paused.
+fn paused_for(free_mb: Option<u64>) -> SandboxPaused {
+    SandboxPaused {
+        since: crate::expiry::now_ms(),
+        reason: format!("it is nearly out of disk{}", with_free(free_mb)),
+    }
+}
+
+/// What the transcript says as the host pauses the sandbox.
+fn paused_notice(runner: &str, free_mb: Option<u64>) -> Notice {
+    Notice::new(
+        NoticeLevel::Warn,
+        "sandbox_paused",
+        format!(
+            "Runner {runner} is nearly out of disk{}, so its host paused this session's sandbox, where what the agent writes would be lost. The sandbox keeps what it holds, and the agent carries on where it was once there is room.",
+            with_free(free_mb)
+        ),
+    )
+}
+
+/// What the transcript says as the host resumes the sandbox: it has room
+/// again, or the session stops.
+fn resumed_notice(runner: &str, free_mb: Option<u64>, stopping: bool) -> Notice {
+    let message = if stopping {
+        format!("Runner {runner} resumed this session's sandbox to stop it.")
+    } else {
+        format!(
+            "Runner {runner} has room on its disk again{}, so its host resumed this session's sandbox.",
+            with_free(free_mb)
+        )
+    };
+    Notice::new(NoticeLevel::Info, "sandbox_resumed", message)
+}
+
+/// What the transcript says as the host starts fctl-agent again while its
+/// disk is below its floor, which may be why the agent stopped answering.
+/// Nothing with room.
+fn restart_notice(runner: &str, free_mb: Option<u64>, min_free_mb: Option<u64>) -> Option<Notice> {
+    let free = size::memory(free_mb?);
+    let what = match disk::room(free_mb, min_free_mb)? {
+        fctl_proto::runner::DiskRoom::Out => format!(
+            "fctl-agent stopped answering in the sandbox, perhaps because runner {runner} is nearly out of disk, with {free} free"
+        ),
+        fctl_proto::runner::DiskRoom::Low => format!(
+            "fctl-agent stopped answering in the sandbox while runner {runner} is low on disk, with {free} free, below the {} its host keeps free",
+            size::memory(min_free_mb?)
+        ),
+    };
+    Some(Notice::new(
+        NoticeLevel::Warn,
+        "agent_restarted",
+        format!("{what}. Its host is starting it again."),
+    ))
+}
+
+/// What the transcript says when starting fctl-agent again failed for want
+/// of disk.
+fn start_failed_notice(runner: &str, e: &anyhow::Error) -> Notice {
+    Notice::new(
+        NoticeLevel::Error,
+        "agent_restarted",
+        format!(
+            "Its host couldn't start fctl-agent in the sandbox again: runner {runner} ran out of disk ({e:#}). It tries again."
+        ),
+    )
 }
 
 /// Makes the session's sandbox, or starts the one it has, and starts
@@ -881,6 +978,8 @@ async fn run(
     };
     // Where the agent finds the project's package caches.
     let mut cache = None;
+    // A sandbox found paused as the host restarted.
+    let mut found_paused = false;
     let sb = match &spec {
         Some(spec) => {
             uplink.state(state(
@@ -909,7 +1008,7 @@ async fn run(
                     sb
                 }
                 Ok(Err(e)) => {
-                    let msg = format!("{e:#}");
+                    let msg = failure(&ctx.cfg.name, &e);
                     host_log(&uplink, LogLevel::Error, msg.clone());
                     uplink.state(state(SessionStatus::Failed, &msg));
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -932,7 +1031,12 @@ async fn run(
         }
         None => {
             let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
-            if let Err(e) = start_again(&ctx, &sb).await {
+            // Paused while the disk was nearly full: it stays so until the
+            // disk has room, and its agent runs on once it resumes.
+            if ctx.driver.pauses() && ctx.driver.paused(&sb).await {
+                tracing::info!("{} is paused until there is room on the disk", sb.name);
+                found_paused = true;
+            } else if let Err(e) = start_again(&ctx, &sb).await {
                 tracing::warn!("restarting fctl-agent in {}: {e:#}", sb.name);
             }
             sb
@@ -959,7 +1063,9 @@ async fn run(
     // Attaching runs in a task of its own, so that a runtime that hangs
     // doesn't hold up the session; after a failure it waits, and starts
     // fctl-agent again first in case it is gone (harmless when it isn't).
-    let mut attaching: Option<tokio::task::JoinHandle<Result<AgentIo>>> = None;
+    // It gives why starting it failed, if it did, and the link.
+    let mut attaching: Option<tokio::task::JoinHandle<(Option<anyhow::Error>, Result<AgentIo>)>> =
+        None;
     let mut attach_at = Some(Instant::now());
     let mut restart_agent = false;
     let mut retry = Retry::default();
@@ -980,27 +1086,77 @@ async fn run(
         uplink.state(state(SessionStatus::Failed, &msg));
         (SessionStatus::Failed, Some(msg))
     };
+    // The free disk where sandboxes are, which pauses the sandbox while it
+    // is nearly full (`disk::holds`): looked at once before anything else.
+    let mut free_disk = ctx.disk.subscribe();
+    free_disk.mark_changed();
+    let mut measuring = true;
+    // The sandbox, while the host holds it paused for want of disk.
+    let mut held: Option<SandboxPaused> = None;
+    if found_paused {
+        let p = paused_for(*free_disk.borrow());
+        uplink.send(UplinkUp::AgentLink {
+            unreachable: None,
+            paused: Some(p.clone()),
+        });
+        held = Some(p);
+    }
+    // Pausing failed while the disk is nearly full: tried once.
+    let mut pause_failed = false;
+    // Resuming failed, and the sandbox is still paused: tried again then.
+    let mut resume_again_at: Option<Instant> = None;
+    // Whether the transcript said why the host starts fctl-agent again,
+    // since the agent last said hello.
+    let mut told_restart = false;
 
     let outcome = loop {
         if link.is_none()
             && attaching.is_none()
             && exited.is_none()
+            && held.is_none()
             && attach_at.is_some_and(|at| Instant::now() >= at)
         {
             attach_at = None;
-            let (ctx, sb) = (ctx.clone(), sb.clone());
             let restart = std::mem::take(&mut restart_agent);
+            if restart
+                && !told_restart
+                && let Some(n) = restart_notice(
+                    &ctx.cfg.name,
+                    *free_disk.borrow(),
+                    ctx.cfg.min_free_disk_mb(),
+                )
+            {
+                uplink.send(UplinkUp::Notice { notice: n });
+                told_restart = true;
+            }
+            let (ctx, sb) = (ctx.clone(), sb.clone());
             attaching = Some(tokio::spawn(async move {
-                if restart && let Err(e) = start_again(&ctx, &sb).await {
+                let started = if restart {
+                    start_again(&ctx, &sb).await.err()
+                } else {
+                    None
+                };
+                if let Some(e) = &started {
                     tracing::warn!("starting fctl-agent in {}: {e:#}", sb.name);
                 }
-                ctx.driver.attach(&sb).await
+                (started, ctx.driver.attach(&sb).await)
             }));
         }
         tokio::select! {
             r = async { match attaching.as_mut() { Some(a) => a.await, None => std::future::pending().await } } => {
                 attaching = None;
-                match r.map_err(anyhow::Error::from).and_then(|r| r) {
+                let (started, attached) = match r {
+                    Ok((started, attached)) => (started, attached),
+                    Err(e) => (None, Err(anyhow::Error::from(e))),
+                };
+                if let Some(e) = started
+                    && !told_restart
+                    && disk::out_of_space(e.as_ref())
+                {
+                    uplink.send(UplinkUp::Notice { notice: start_failed_notice(&ctx.cfg.name, &e) });
+                    told_restart = true;
+                }
+                match attached {
                     Ok(io) => link = Some(AgentLink::open(io, &sb.name, secrets.clone())),
                     Err(e) => {
                         tracing::warn!("attaching to {}: {e:#}", sb.name);
@@ -1041,8 +1197,9 @@ async fn run(
                 match msg {
                     AgentToHost::Hello(h) => {
                         retry.reset();
+                        told_restart = false;
                         if let Some(r) = reach.up() {
-                            report_reach(&uplink, r);
+                            report_reach(&uplink, r, held.as_ref());
                         }
                         tracing::info!(
                             "attached to fctl-agent {} in {} (journal at agent_seq {})",
@@ -1219,8 +1376,89 @@ async fn run(
                     None => queued.push(frame),
                 }
             }
+            changed = free_disk.changed(), if measuring => {
+                if changed.is_err() {
+                    measuring = false;
+                    continue;
+                }
+                let free = *free_disk.borrow_and_update();
+                // A session that stops wants its sandbox to run, room or not.
+                let hold = stop.is_none() && disk::holds(held.is_some(), free, ctx.cfg.min_free_disk_mb());
+                if !hold {
+                    pause_failed = false;
+                }
+                match (&held, hold) {
+                    (None, true)
+                        if ctx.driver.pauses()
+                            && stop.is_none()
+                            && exited.is_none()
+                            && !pause_failed =>
+                    {
+                        let paused = match ctx.driver.pause(&sb).await {
+                            Ok(()) => Ok(()),
+                            // Firecracker may have paused it before its
+                            // answer failed to come.
+                            Err(e) if ctx.driver.paused(&sb).await => {
+                                tracing::warn!("pausing {}: {e:#}, but it is paused", sb.name);
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        };
+                        match paused {
+                            Ok(()) => {
+                                let p = paused_for(free);
+                                tracing::warn!("paused {}: {}", sb.name, p.reason);
+                                uplink.send(UplinkUp::AgentLink { unreachable: None, paused: Some(p.clone()) });
+                                uplink.send(UplinkUp::Notice { notice: paused_notice(&ctx.cfg.name, free) });
+                                held = Some(p);
+                                // The viewers hear of the pause now, not of the link.
+                                reach.told_nothing(Instant::now());
+                                // An attach under way waits for the sandbox.
+                                if let Some(a) = attaching.take() {
+                                    a.abort();
+                                    attach_at = Some(Instant::now());
+                                }
+                            }
+                            Err(e) => {
+                                pause_failed = true;
+                                tracing::warn!("pausing {}: {e:#}", sb.name);
+                                host_log(&uplink, LogLevel::Warn, format!("Runner {} is nearly out of disk, but its host couldn't pause this session's sandbox: {e:#}", ctx.cfg.name));
+                            }
+                        }
+                    }
+                    (Some(_), false) => {
+                        let notice = resumed_notice(&ctx.cfg.name, free, stop.is_some());
+                        if resume(&ctx, &sb, &uplink, notice).await {
+                            held = None;
+                            reach.told_nothing(Instant::now());
+                            if let Some(l) = link.as_mut() {
+                                l.health.heard(Instant::now());
+                            }
+                        } else {
+                            resume_again_at = Some(Instant::now() + RESUME_AGAIN_AFTER);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             c = cmds.recv() => match c {
                 Some(SessionCmd::Stop { reason, destroy }) => {
+                    // The agent stops what it does, and the sandbox writes
+                    // out its disk, only once it runs: one that stays paused
+                    // is resumed again until it does, or until the deadline
+                    // stops it, which resumes it first.
+                    if held.is_some() {
+                        if resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, None, true)).await {
+                            held = None;
+                            resume_again_at = None;
+                            reach.told_nothing(Instant::now());
+                            if let Some(l) = link.as_mut() {
+                                l.health.heard(Instant::now());
+                            }
+                        } else {
+                            resume_again_at = Some(Instant::now() + RESUME_AGAIN_AFTER);
+                        }
+                    }
                     if stop.is_none() {
                         // Without a link, the agent gets it once the host
                         // attaches again, or its sandbox stops at the deadline.
@@ -1252,7 +1490,17 @@ async fn run(
                     && let Some(done) = exited.clone() {
                         break done;
                     }
-                // A link that goes quiet is replaced.
+                // A sandbox that stayed paused as it was resumed: the disk
+                // is looked at again, which resumes it if there is room.
+                if resume_again_at.is_some_and(|at| Instant::now() >= at) {
+                    resume_again_at = None;
+                    free_disk.mark_changed();
+                }
+                // A link that goes quiet is replaced. A paused sandbox's
+                // says nothing, and the viewers know why.
+                if held.is_some() {
+                    continue;
+                }
                 if let Some(l) = link.as_mut() {
                     match l.health.check(Instant::now()) {
                         Check::Fine => {}
@@ -1272,7 +1520,7 @@ async fn run(
                     }
                 }
                 if let Some(r) = reach.check(Instant::now()) {
-                    report_reach(&uplink, r);
+                    report_reach(&uplink, r, held.as_ref());
                 }
             }
         }
@@ -1303,6 +1551,36 @@ async fn run(
     set_report(status, None);
     tokio::time::sleep(Duration::from_millis(500)).await;
     (status, reason)
+}
+
+/// Resumes the sandbox the host held paused, and says so. False while it
+/// stays paused: resuming failed, and the host tries again. One that isn't
+/// paused after a failure (its VM may have resumed before the answer failed
+/// to come, or stopped) is no longer held, and the agent's link says which;
+/// only one that resumed is said to have resumed.
+async fn resume(ctx: &HostCtx, sb: &Sandbox, uplink: &Uplink, notice: Notice) -> bool {
+    let resumed = match ctx.driver.resume(sb).await {
+        Ok(()) => {
+            tracing::info!("resumed {}", sb.name);
+            true
+        }
+        Err(e) if ctx.driver.paused(sb).await => {
+            tracing::warn!("resuming {}: {e:#}; trying again", sb.name);
+            return false;
+        }
+        Err(e) => {
+            tracing::warn!("resuming {}: {e:#}, but it isn't paused", sb.name);
+            false
+        }
+    };
+    uplink.send(UplinkUp::AgentLink {
+        unreachable: None,
+        paused: None,
+    });
+    if resumed {
+        uplink.send(UplinkUp::Notice { notice });
+    }
+    true
 }
 
 fn agent_config(
@@ -1352,6 +1630,86 @@ mod tests {
                 by: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn a_session_that_fails_for_a_full_disk_says_so() -> Result<()> {
+        use crate::driver::container::Flavor;
+        use crate::driver::fake::FakeCli;
+        const IMAGE: &str = "ghcr.io/hyperstructure/sandbox:0.3.0";
+        let spec = SandboxSpec {
+            name: "fctl-ses-1".into(),
+            image: IMAGE.into(),
+            fallback_image: None,
+            cpus: 2,
+            memory_mb: 2048,
+            cache: None,
+        };
+        let cli = FakeCli::new(&[IMAGE], &[])?;
+        cli.full_disk()?;
+        let Err(e) = cli.ensure(Flavor::Docker, &spec).await else {
+            panic!("the sandbox was made on a full disk");
+        };
+        let said = failure("now", &e);
+        assert!(
+            said.starts_with("Runner now ran out of disk: starting fctl-ses-1: "),
+            "{said}"
+        );
+        assert!(said.ends_with("no space left on device."), "{said}");
+        // Other failures say only what went wrong.
+        let other = FakeCli::new(&[IMAGE], &[])?;
+        other.fail_runs()?;
+        let Err(e) = other.ensure(Flavor::Docker, &spec).await else {
+            panic!("the sandbox was made");
+        };
+        assert_eq!(failure("now", &e), format!("{e:#}"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_transcript_says_why_the_sandbox_pauses_and_the_agent_starts_again() {
+        let paused = paused_notice("now", Some(800));
+        assert_eq!(
+            (paused.level, paused.code.as_str()),
+            (NoticeLevel::Warn, "sandbox_paused")
+        );
+        assert_eq!(
+            paused.message,
+            "Runner now is nearly out of disk, with 800 MiB free, so its host paused this session's sandbox, where what the agent writes would be lost. The sandbox keeps what it holds, and the agent carries on where it was once there is room."
+        );
+        assert_eq!(paused_for(None).reason, "it is nearly out of disk");
+        assert_eq!(
+            resumed_notice("now", Some(5 * 1024), false).message,
+            "Runner now has room on its disk again, with 5 GiB free, so its host resumed this session's sandbox."
+        );
+        assert_eq!(
+            resumed_notice("now", None, true).message,
+            "Runner now resumed this session's sandbox to stop it."
+        );
+        let floor = Some(20 * 1024);
+        // With room, a restart is no news here.
+        assert_eq!(restart_notice("now", Some(30 * 1024), floor), None);
+        assert_eq!(restart_notice("now", None, floor), None);
+        let low = restart_notice("now", Some(12_595), floor).map(|n| n.message);
+        assert_eq!(
+            low.as_deref(),
+            Some(
+                "fctl-agent stopped answering in the sandbox while runner now is low on disk, with 12.3 GiB free, below the 20 GiB its host keeps free. Its host is starting it again."
+            )
+        );
+        let out = restart_notice("now", Some(300), floor).map(|n| n.message);
+        assert_eq!(
+            out.as_deref(),
+            Some(
+                "fctl-agent stopped answering in the sandbox, perhaps because runner now is nearly out of disk, with 300 MiB free. Its host is starting it again."
+            )
+        );
+        let full = anyhow::Error::from(std::io::Error::from_raw_os_error(28))
+            .context("copying fctl-agent into the sandbox");
+        assert_eq!(
+            start_failed_notice("now", &full).message,
+            "Its host couldn't start fctl-agent in the sandbox again: runner now ran out of disk (copying fctl-agent into the sandbox: No space left on device (os error 28)). It tries again."
+        );
     }
 
     #[test]

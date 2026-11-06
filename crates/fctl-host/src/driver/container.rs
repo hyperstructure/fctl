@@ -356,7 +356,7 @@ impl ContainerDriver {
                 "/",
             ];
             match run_cmd_within(&self.bin, &args, COMMAND_TIMEOUT).await {
-                Ok(out) => return crate::sysinfo::df_available_mb(&out),
+                Ok(out) => return fctl_domain::disk::df_free_mb(&out),
                 Err(e) if e.is::<TimedOut>() => return None,
                 Err(_) => {}
             }

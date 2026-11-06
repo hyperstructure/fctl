@@ -175,6 +175,9 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 const FACTS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often the host measures its free disk elsewhere.
 const DISK_EVERY: Duration = Duration::from_secs(30);
+/// How often below its floor: its sessions may fill the rest within
+/// [`DISK_EVERY`].
+const DISK_LOW_EVERY: Duration = Duration::from_secs(5);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 /// How often the host probes its drivers while the one it uses isn't ready.
 const NOT_READY_EVERY: Duration = Duration::from_secs(30);
@@ -901,6 +904,12 @@ impl Daemon {
     fn note_disk(&mut self, free_mb: Option<u64>) {
         let was_low = self.low_on_disk();
         self.disk_free_mb = free_mb;
+        // Sessions pause and resume their sandboxes by it.
+        self.ctx.disk.send_if_modified(|was| {
+            let changed = *was != free_mb;
+            *was = free_mb;
+            changed
+        });
         match (was_low, self.low_on_disk(), free_mb) {
             (false, true, _) => tracing::warn!(
                 "{} at {}: removing stopped sandboxes, those stopped longest first, and taking no new sessions until there is room",
@@ -1466,8 +1475,10 @@ async fn clean_up_images(ctx: &HostCtx) {
 }
 
 /// Measures the free disk where sandboxes are, now and then, in the
-/// background, and tells the daemon: every [`DISK_EVERY`], or inside the
-/// Docker VM, where measuring starts a container, every [`FACTS_EVERY`].
+/// background, and tells the daemon: every [`DISK_EVERY`], or
+/// [`DISK_LOW_EVERY`] below the floor, so that sandboxes pause before the
+/// disk is full; inside the Docker VM, where measuring starts a container,
+/// every [`FACTS_EVERY`].
 fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
     tokio::spawn(async move {
         loop {
@@ -1477,6 +1488,9 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
             }
             let every = match ctx.disk_spot() {
                 DiskSpot::DockerVm => FACTS_EVERY,
+                DiskSpot::Dir(_) if disk::low(free_mb, ctx.cfg.min_free_disk_mb()) => {
+                    DISK_LOW_EVERY
+                }
                 DiskSpot::Dir(_) => DISK_EVERY,
             };
             tokio::time::sleep(every).await;

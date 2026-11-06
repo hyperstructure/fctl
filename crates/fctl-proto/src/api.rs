@@ -2040,6 +2040,10 @@ pub struct Runner {
     /// below it, no new session starts on it. Absent when it keeps none,
     /// and from older hosts.
     pub min_free_disk_mb: Option<u64>,
+    /// How short of room it is on its disk (`fctl_domain::disk::room`):
+    /// below its floor, or nearly out. Absent while it has room, and from
+    /// older control planes.
+    pub disk_room: Option<crate::runner::DiskRoom>,
     /// What it gives each sandbox (absent from older hosts).
     pub sandbox: Option<SandboxLimits>,
     /// The image it gives sessions whose project sets none.
