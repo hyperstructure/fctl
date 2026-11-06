@@ -41,14 +41,38 @@ const reduced = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").ma
 /** How many columns a line's text takes, tabs as four. */
 const columns = (text: string) => text.length + (text.split("\t").length - 1) * 3;
 
+/** The diffs whose new versions play, gathered from one commit (each file's diff is its own). */
+const queued = new Map<LiveView, Set<HTMLElement>>();
+
 /**
  * Plays a new version's rows in `box`: those with `data-open` (`in` as they
  * come, `out` as they go) open or close, and those with `data-how` (how
- * their code came) are written in or lit.
+ * their code came) are written in or lit. The diffs that change together,
+ * in one commit, play together, once it is done: their rows are measured
+ * where they end up, before any opens from nothing.
  */
 export function play(box: HTMLElement, live: LiveView) {
-  const opening = [...box.querySelectorAll<HTMLElement>("[data-open]")];
-  const writing = [...box.querySelectorAll<HTMLElement>("[data-how]")];
+  const boxes = queued.get(live);
+  if (boxes) {
+    boxes.add(box);
+    return;
+  }
+  queued.set(live, new Set([box]));
+  queueMicrotask(() => {
+    const all = queued.get(live);
+    queued.delete(live);
+    if (all)
+      playAll(
+        [...all].filter((b) => b.isConnected),
+        live,
+      );
+  });
+}
+
+function playAll(boxes: HTMLElement[], live: LiveView) {
+  const pick = (selector: string) => boxes.flatMap((b) => [...b.querySelectorAll<HTMLElement>(selector)]);
+  const opening = pick("[data-open]");
+  const writing = pick("[data-how]");
   // What still played on these rows from the version before is done (and the layout read
   // below lets it play again).
   for (const el of writing) delete el.dataset.play;
@@ -78,7 +102,7 @@ export function play(box: HTMLElement, live: LiveView) {
 
   // One after another from the top, rows side by side together: a wave down what shows, as
   // quick for a screenful as for a few.
-  const tops = [...new Set([...seen].map((el) => Math.round(top(el))))];
+  const tops = [...new Set([...seen].map((el) => Math.round(top(el))))].sort((a, b) => a - b);
   const step = tops.length > 1 ? Math.min(STAGGER_MS, CASCADE_MS / (tops.length - 1)) : 0;
   const order = new Map(tops.map((t, i) => [t, i]));
   const wave = (el: HTMLElement) => Math.round((order.get(Math.round(top(el))) ?? 0) * step);
@@ -145,7 +169,7 @@ export function play(box: HTMLElement, live: LiveView) {
     }
   }
   if (lit.length) light(lit);
-  if (lastLit) setTimeout(() => done(box), lastLit + 200);
+  if (lastLit) setTimeout(() => boxes.forEach(done), lastLit + 200);
   if (longest) live.moving(longest + 32);
   if (unseen.length) live.unseen(unseen);
 }
