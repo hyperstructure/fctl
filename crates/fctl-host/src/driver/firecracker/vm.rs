@@ -723,6 +723,17 @@ impl Vm {
         }
     }
 
+    /// Kills the VM's processes at once, without waiting: for code that
+    /// can't wait (a drop).
+    pub fn kill_now(&self) {
+        use nix::sys::signal::{Signal, kill};
+        for what in ["firecracker", "passt"] {
+            if let Some(pid) = self.pid(what).and_then(|p| i32::try_from(p).ok()) {
+                let _ = kill(nix::unistd::Pid::from_raw(pid), Signal::SIGKILL);
+            }
+        }
+    }
+
     /// Where passt writes its pid, the path naming this VM's key, which
     /// tells passt from other processes; recorded in the VM's directory.
     /// Beside `run`, in the host's user's directory in /tmp, where passt's
@@ -1230,6 +1241,7 @@ pub fn unpack_spec(kernel: PathBuf, initrd: PathBuf, name: &str, rootfs: &Path) 
             name: name.into(),
             time_ms: Some(vsock::now_ms()),
             dns: Vec::new(),
+            lowers: 1,
         },
         drives: vec![Drive {
             path: rootfs.to_owned(),
@@ -1262,6 +1274,7 @@ mod tests {
                 name: "fctl-ses-1".into(),
                 time_ms: Some(5),
                 dns: vec![[168, 63, 129, 16].into()],
+                lowers: 1,
             },
             drives: vec![
                 Drive {

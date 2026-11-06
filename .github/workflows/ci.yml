@@ -149,6 +149,13 @@ jobs:
             "$bin" driver::firecracker::tests::boots_a_sandbox --ignored --nocapture
           # Jails lend disks to their users, which only root can.
           sudo "$bin" driver::firecracker::vm::tests::stale_jails_go --exact --nocapture
+      # Whiteouts kept as overlayfs reads them, for images that lie over
+      # others, need root, which the VMs' init is.
+      - name: Unpack layers as root
+        run: |
+          bin=$(CARGO_TERM_COLOR=never cargo test --locked -p fctl-agent --bin fctl-agent --no-run 2>&1 | sed -n 's/.*Executable unittests src\/main.rs (\(.*\))/\1/p')
+          test -x "$bin"
+          sudo env FCTL_TEST_WHITEOUTS=1 "$bin" vm::unpack --nocapture
 
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that

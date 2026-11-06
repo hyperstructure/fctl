@@ -1161,7 +1161,7 @@ fn cache_mount(spot: &Spot) -> String {
 }
 
 /// Sends each line `r` gives to `tx`.
-fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
+pub(crate) fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
     r: R,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {
@@ -1178,7 +1178,7 @@ fn forward_lines<R: AsyncRead + Unpin + Send + 'static>(
 /// Whether a line of a build's output starts one of its steps, or says it
 /// failed: BuildKit's `#5 [2/4] RUN …`, the older builder's `Step 2/4 :`,
 /// Podman's `STEP 2/4:`.
-fn build_step(line: &str) -> bool {
+pub(crate) fn build_step(line: &str) -> bool {
     let l = line.trim_start();
     let buildkit = l.strip_prefix('#').is_some_and(|rest| {
         let digits = rest.chars().take_while(char::is_ascii_digit).count();
@@ -1188,7 +1188,7 @@ fn build_step(line: &str) -> bool {
 }
 
 /// A line of a build's output, cut short when it is long.
-fn short(line: &str) -> String {
+pub(crate) fn short(line: &str) -> String {
     let line = line.trim_end();
     match line.char_indices().nth(240) {
         Some((cut, _)) => format!("{}…", &line[..cut]),

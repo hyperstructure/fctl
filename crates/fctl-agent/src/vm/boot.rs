@@ -74,7 +74,7 @@ fn first() -> Result<()> {
     let boot = boot_params()?;
     match boot.mode {
         Mode::Unpack => unpack_image(),
-        Mode::Sandbox => switch_root(),
+        Mode::Sandbox => switch_root(boot.lowers),
     }
 }
 
@@ -116,17 +116,57 @@ fn wait_for(device: &str) -> Result<()> {
     Ok(())
 }
 
-/// Puts the sandbox's root together, copies fctl-agent into it, and runs it
-/// there as PID 1. Returns only when something fails.
-fn switch_root() -> Result<()> {
-    wait_for("/dev/vda")?;
-    wait_for("/dev/vdb")?;
-    mount_fs("/dev/vda", "/image", "ext4", MsFlags::MS_RDONLY, None)?;
+/// The VM's disk `i`: `/dev/vda` for the first.
+fn disk_device(i: u32) -> String {
+    format!(
+        "/dev/vd{}",
+        char::from(b'a' + u8::try_from(i).unwrap_or(25).min(25))
+    )
+}
+
+/// Where the image `i` of a sandbox's stack is mounted, the one at the
+/// bottom (`/image`) first; in the sandbox's root, under `/run/fctl`.
+fn image_dir(i: u32) -> String {
+    if i == 0 {
+        "/image".into()
+    } else {
+        format!("/image{i}")
+    }
+}
+
+/// The overlay of a sandbox's root: the `lowers` images' filesystems, the
+/// top one (the last disk of them) first as overlayfs lists them, under
+/// the sandbox's own disk.
+fn overlay_options(lowers: u32) -> String {
+    let lowerdir: Vec<String> = (0..lowers).rev().map(image_dir).collect();
+    format!(
+        "lowerdir={},upperdir=/disk/root,workdir=/disk/work",
+        lowerdir.join(":")
+    )
+}
+
+/// Puts the sandbox's root together from the `lowers` images' filesystems
+/// on its first disks and its own disk after them, copies fctl-agent into
+/// it, and runs it there as PID 1. Returns only when something fails.
+fn switch_root(lowers: u32) -> Result<()> {
+    let lowers = lowers.max(1);
+    for i in 0..lowers {
+        wait_for(&disk_device(i))?;
+        mount_fs(
+            &disk_device(i),
+            &image_dir(i),
+            "ext4",
+            MsFlags::MS_RDONLY,
+            None,
+        )?;
+    }
+    let disk = disk_device(lowers);
+    wait_for(&disk)?;
     // `discard` gives the host back what the session deletes;
     // `noinit_itable` keeps the kernel from zeroing the inode tables of a
     // new disk, which would make it take room on the host.
     mount_fs(
-        "/dev/vdb",
+        &disk,
         "/disk",
         "ext4",
         MsFlags::empty(),
@@ -135,12 +175,13 @@ fn switch_root() -> Result<()> {
     for dir in ["/disk/root", "/disk/work"] {
         std::fs::create_dir_all(dir).with_context(|| format!("making {dir}"))?;
     }
+    // The image at the top of the stack first, as overlayfs takes them.
     mount_fs(
         "overlay",
         NEW_ROOT,
         "overlay",
         MsFlags::empty(),
-        Some("lowerdir=/image,upperdir=/disk/root,workdir=/disk/work"),
+        Some(&overlay_options(lowers)),
     )?;
     let run = format!("{NEW_ROOT}/run");
     mount_fs(
@@ -150,7 +191,10 @@ fn switch_root() -> Result<()> {
         MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
         Some("mode=0755"),
     )?;
-    move_mount("/image", &format!("{NEW_ROOT}{IMAGE_MOUNT}"))?;
+    for i in 0..lowers {
+        let suffix = if i == 0 { String::new() } else { i.to_string() };
+        move_mount(&image_dir(i), &format!("{NEW_ROOT}{IMAGE_MOUNT}{suffix}"))?;
+    }
     move_mount("/disk", &format!("{NEW_ROOT}{DISK_MOUNT}"))?;
     install_self(&format!("{NEW_ROOT}{AGENT_PATH}"))?;
     for dir in ["/dev", "/proc", "/sys"] {
@@ -339,5 +383,30 @@ fn reap_until(server: Pid) {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The images' filesystems are the first disks, the bottom one first,
+    /// and the sandbox's own disk comes after them; overlayfs lists the
+    /// top one first.
+    #[test]
+    fn a_sandbox_stacks_its_images_in_their_order() {
+        assert_eq!(disk_device(0), "/dev/vda");
+        assert_eq!(disk_device(3), "/dev/vdd");
+        assert_eq!(disk_device(40), "/dev/vdz");
+        assert_eq!(image_dir(0), "/image");
+        assert_eq!(image_dir(2), "/image2");
+        assert_eq!(
+            overlay_options(1),
+            "lowerdir=/image,upperdir=/disk/root,workdir=/disk/work"
+        );
+        assert_eq!(
+            overlay_options(3),
+            "lowerdir=/image2:/image1:/image,upperdir=/disk/root,workdir=/disk/work"
+        );
     }
 }
