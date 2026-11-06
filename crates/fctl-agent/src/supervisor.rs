@@ -11,9 +11,11 @@ use crate::followed::Pulls;
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
 use crate::local;
+use crate::orphan;
 use crate::prompt;
 use crate::refresh::Refresh;
 use crate::tasks::{self, Task, Tasks};
+use crate::user;
 use crate::workspace::{self, Moment, Paths};
 use anyhow::Result;
 use base64::Engine;
@@ -89,7 +91,39 @@ struct Persisted {
     /// fctl-agent reminded a review agent that ended without posting.
     #[serde(default)]
     review_nudged: bool,
+    /// The Claude this supervisor started, while it may run: one that takes
+    /// the session over after this one died stops it first.
+    #[serde(default)]
+    claude: Option<orphan::Process>,
+    /// Claude was on a turn (the session ran) when the state was saved.
+    #[serde(default)]
+    working: bool,
+    /// When fctl-agent last had Claude carry on with a turn that was cut
+    /// off ([`Supervisor::take_over`]).
+    #[serde(default)]
+    carried_on_at: Option<i64>,
+    /// A turn of Claude's that a supervisor before this one didn't see to
+    /// its end: the transcript says so once Claude runs again, also when
+    /// this supervisor dies before it does.
+    #[serde(default)]
+    cut_off: Option<CutOff>,
 }
+
+/// A turn of Claude's that a supervisor before this one didn't see to its
+/// end ([`Supervisor::take_over`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CutOff {
+    /// Claude ran on without it, unseen, until this one stopped it.
+    Unseen,
+    /// Claude stopped with it: the sandbox, or fctl-agent, stopped.
+    Stopped,
+}
+
+/// How long after Claude carried on with a turn that was cut off a second
+/// cut-off turn waits for a message instead: a sandbox that keeps losing
+/// fctl-agent doesn't keep Claude going.
+const CARRY_ON_AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// How long a review agent that ended without posting waits before
 /// fctl-agent reminds it ([`Supervisor::remind_reviewer`]).
@@ -138,6 +172,10 @@ enum CredFor {
 
 pub struct Supervisor {
     state_dir: PathBuf,
+    /// Where the GitHub tokens and git's credential helper go, which the
+    /// session's user reads: `state_dir`, or the user's `~/.fctl/state`
+    /// where fctl-agent runs as root.
+    user_state: PathBuf,
     /// Where programs in the sandbox reach us (`fctl edit`), told to Claude.
     session_socket: Option<PathBuf>,
     journal: Journal,
@@ -236,14 +274,16 @@ impl Supervisor {
         mpsc::UnboundedReceiver<Work>,
     )> {
         let journal = Journal::open(&state_dir)?;
-        let persisted: Persisted = std::fs::read_to_string(state_dir.join("state.json"))
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let persisted: Persisted =
+            user::as_root(|| std::fs::read_to_string(state_dir.join("state.json")))
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
         let (claude_tx, claude_rx) = mpsc::unbounded_channel();
         let (work_tx, work_rx) = mpsc::unbounded_channel();
         Ok((
             Self {
+                user_state: state_dir.clone(),
                 state_dir,
                 session_socket,
                 journal,
@@ -533,6 +573,12 @@ impl Supervisor {
         let waited = self.state.status == SessionStatus::Idle;
         self.state.status = status;
         self.state.reason = reason;
+        // Whether Claude was on a turn, for a supervisor that takes over.
+        let working = status == SessionStatus::Running;
+        if self.persisted.working != working {
+            self.persisted.working = working;
+            self.persist();
+        }
         self.state.resume_at = if status == SessionStatus::Paused {
             self.resume_at
         } else {
@@ -574,7 +620,8 @@ impl Supervisor {
 
     fn persist(&self) {
         if let Ok(text) = serde_json::to_string(&self.persisted) {
-            let _ = std::fs::write(self.state_dir.join("state.json"), text);
+            let path = self.state_dir.join("state.json");
+            let _ = user::as_root(|| std::fs::write(path, text));
         }
     }
 
@@ -947,7 +994,7 @@ impl Supervisor {
             .home
             .clone()
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .or_else(user::home)
             .unwrap_or_else(|| PathBuf::from("/root"));
         // `~/workspace` (container sandboxes) is relative to HOME.
         let workdir = match config.workdir.strip_prefix("~/") {
@@ -956,7 +1003,7 @@ impl Supervisor {
         };
         let mut config = config;
         config.workdir = workdir.display().to_string();
-        let paths = Paths::new(&workdir, &home, &self.state_dir);
+        let paths = Paths::new(&workdir, &home, &self.user_state);
         self.state.branch = Some(config.spec.branch.clone());
         self.state.claude_session_id = Some(config.spec.claude_session_id.clone());
         let creds = &config.spec.credentials;
@@ -1502,6 +1549,8 @@ impl Supervisor {
         };
         self.model_name.started(launch.model);
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
+        self.persisted.claude = c.pid().and_then(orphan::Process::of);
+        self.persist();
         self.log(
             LogSource::Agent,
             LogLevel::Info,
@@ -1581,6 +1630,9 @@ impl Supervisor {
             self.send_content(&text, files.images, None).await;
         } else if !resume && let Some(p) = spec.prompt.clone() {
             self.send_turn(&p, None, None, &spec.task_attachments).await;
+        }
+        if let Some(cut_off) = self.persisted.cut_off.take() {
+            self.carry_on(cut_off).await;
         }
         if self.turn_active {
             self.set_status(SessionStatus::Running, None);
@@ -2156,6 +2208,82 @@ impl Supervisor {
         }
     }
 
+    /// Takes the session over from a supervisor that died: stops the
+    /// Claude it left running, which works on unseen and would share the
+    /// conversation with the one this supervisor starts, and remembers a
+    /// turn it cut off, which the transcript then tells of ([`Self::carry_on`]).
+    pub async fn take_over(&mut self) {
+        let left = self.persisted.claude.take();
+        let ran_on = match left {
+            Some(claude) => claude.stop(Duration::from_secs(5)).await,
+            None => false,
+        };
+        if ran_on {
+            tracing::warn!(
+                "stopped Claude (pid {}), or what it started, which the supervisor before this one left running",
+                left.map_or(0, |c| c.pid)
+            );
+        }
+        // Only a turn under way was cut off: a session that waited has
+        // nothing to carry on, whatever Claude left running (a dev server,
+        // a watcher) or Claude itself, which ends once its input closes.
+        let now = match (self.persisted.working, ran_on) {
+            (false, _) => None,
+            (true, true) => Some(CutOff::Unseen),
+            (true, false) => Some(CutOff::Stopped),
+        };
+        // One that a supervisor before took over, and died before Claude
+        // ran again, still counts.
+        let cut_off = match (self.persisted.cut_off, now) {
+            (Some(CutOff::Unseen), _) | (_, Some(CutOff::Unseen)) => Some(CutOff::Unseen),
+            (before, now) => before.or(now),
+        };
+        if left.is_some() || self.persisted.working || cut_off != self.persisted.cut_off {
+            self.persisted.working = false;
+            self.persisted.cut_off = cut_off;
+            self.persist();
+        }
+    }
+
+    /// Says in the transcript that a turn of Claude's was cut off, and has
+    /// Claude carry on with it, unless it did so for another one shortly
+    /// before: then Claude waits for a message.
+    async fn carry_on(&mut self, cut_off: CutOff) {
+        // Said once: it was taken from the saved state.
+        self.persist();
+        let now = now_ms();
+        let again = self
+            .persisted
+            .carried_on_at
+            .is_some_and(|at| now.saturating_sub(at) < CARRY_ON_AGAIN_AFTER.as_millis() as i64);
+        let what = match cut_off {
+            CutOff::Unseen => {
+                "fctl-agent restarted in the sandbox while Claude worked, so Claude's last steps aren't shown here, and fctl stopped that Claude to start it again on the conversation."
+            }
+            CutOff::Stopped => {
+                "Claude's turn was cut off: fctl-agent stopped in the sandbox while Claude worked."
+            }
+        };
+        let then = if again {
+            "It was cut off shortly before too, so Claude waits for a message."
+        } else {
+            "Claude carries on with the turn, from where it left off."
+        };
+        self.notice(
+            NoticeLevel::Warn,
+            "turn_cut_off",
+            &format!("{what} {then}"),
+            None,
+        );
+        if again {
+            return;
+        }
+        self.persisted.carried_on_at = Some(now);
+        self.persist();
+        let text = prompt::cut_off_turn(cut_off == CutOff::Unseen);
+        self.send_turn(&text, None, None, &[]).await;
+    }
+
     async fn on_claude_exit(&mut self, _code: Option<i32>) {
         let code = match self.claude.take() {
             Some(mut c) => tokio::time::timeout(Duration::from_secs(5), c.wait())
@@ -2164,6 +2292,8 @@ impl Supervisor {
                 .flatten(),
             None => return,
         };
+        self.persisted.claude = None;
+        self.persist();
         self.turn_active = false;
         self.claude_turn = false;
         // A restarted Claude Code doesn't follow the old one's background
@@ -2354,6 +2484,12 @@ impl Supervisor {
         }
         if let Some(mut c) = self.claude.take() {
             c.kill().await;
+        }
+        // A session stopped or failed doesn't carry on with a turn cut off
+        // before.
+        let cut_off = self.persisted.cut_off.take();
+        if self.persisted.claude.take().is_some() || cut_off.is_some() {
+            self.persist();
         }
         if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) {
             let (push, last) = (config.push_on_commit, self.last_git.as_ref());
@@ -2633,11 +2769,38 @@ pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
             return Ok(());
         }
     };
+    let session_socket = local::socket_path(&socket);
+    let user_state = state_dir.clone();
+    serving(listener, socket, state_dir, session_socket, user_state).await
+}
+
+/// [`serve`], as root, with the host's socket already bound
+/// ([`crate::protected`]).
+#[cfg(target_os = "linux")]
+pub async fn serve_protected(started: crate::protected::Started) -> Result<()> {
+    let crate::protected::Started {
+        listener,
+        lock: _lock,
+        socket,
+        state,
+        session_socket,
+        user_state,
+    } = started;
+    let listener = tokio::net::UnixListener::from_std(listener)?;
+    serving(listener, socket, state, session_socket, user_state).await
+}
+
+async fn serving(
+    listener: tokio::net::UnixListener,
+    socket: PathBuf,
+    state_dir: PathBuf,
+    session_socket: PathBuf,
+    user_state: PathBuf,
+) -> Result<()> {
     let (link_tx, link_rx) = mpsc::unbounded_channel();
     tokio::spawn(link::accept_loop(listener, link_tx));
     // Without the session socket the agent cannot rename the session, but
     // the session still runs.
-    let session_socket = local::socket_path(&socket);
     let (local_tx, local_rx) = mpsc::unbounded_channel();
     let session_socket = match link::bind(&session_socket).await {
         Ok(listener) => {
@@ -2649,10 +2812,12 @@ pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
             None
         }
     };
-    let (sup, claude_rx, work_rx) = Supervisor::new(state_dir, session_socket.clone())?;
+    let (mut sup, claude_rx, work_rx) = Supervisor::new(state_dir, session_socket.clone())?;
+    sup.user_state = user_state;
+    sup.take_over().await;
     tracing::info!("fctl-agent {VERSION} serving {}", socket.display());
     let r = sup.run(link_rx, claude_rx, work_rx, local_rx).await;
-    let _ = std::fs::remove_file(&socket);
+    let _ = user::as_root(|| std::fs::remove_file(&socket));
     if let Some(s) = session_socket {
         let _ = std::fs::remove_file(s);
     }
@@ -4467,6 +4632,156 @@ done
         assert_eq!(text(1).as_deref(), Some("And then this"));
         let (later, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         assert!(later.persisted.unfinished.is_empty());
+        Ok(())
+    }
+
+    /// The notices the host got: their codes and messages.
+    fn notices_sent(host: &mut mpsc::UnboundedReceiver<String>) -> Vec<(String, String)> {
+        events_sent(host)
+            .into_iter()
+            .filter_map(|e| match e {
+                EventBody::Notice(n) => Some((n.code, n.message)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_supervisor_that_takes_over_stops_the_claude_left_running_and_carries_on()
+    -> anyhow::Result<()> {
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir()?;
+        // A supervisor started Claude, which leads a process group of its
+        // own, and Claude works on a turn.
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        let mut left = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()?;
+        sup.persisted.claude = orphan::Process::of(left.id());
+        sup.persisted.claude_started = true;
+        sup.persist();
+        assert!(sup.persisted.claude.is_some_and(|c| c.running()));
+        // Then the supervisor dies, and Claude works on, unseen.
+        drop(sup);
+
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        let ended = tokio::task::spawn_blocking(move || left.wait()).await??;
+        assert!(!ended.success(), "the Claude left running wasn't stopped");
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Unseen));
+        let (saved, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        assert_eq!(
+            (saved.persisted.claude, saved.persisted.working),
+            (None, false)
+        );
+        // That supervisor dies too, before Claude ran again: the next one
+        // still knows the turn was cut off.
+        drop((next, saved));
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Unseen));
+
+        // Once Claude runs again, the transcript says what happened, and
+        // Claude carries on with the turn.
+        next.config = Some(config(dir.path(), false)?);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        next.host = Some((1, host_tx));
+        next.claude = Some(stub_claude(dir.path(), &next)?);
+        let cut_off = next
+            .persisted
+            .cut_off
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("no cut-off turn"))?;
+        next.carry_on(cut_off).await;
+        assert_eq!(
+            notices_sent(&mut host),
+            vec![(
+                "turn_cut_off".to_owned(),
+                "fctl-agent restarted in the sandbox while Claude worked, so Claude's last steps aren't shown here, and fctl stopped that Claude to start it again on the conversation. Claude carries on with the turn, from where it left off.".to_owned()
+            )]
+        );
+        let sent = sent_to_claude(dir.path(), 1).await?;
+        let text = sent[0]["message"]["content"][0]["text"].as_str();
+        assert_eq!(text, Some(prompt::cut_off_turn(true).as_str()));
+        assert!(
+            text.is_some_and(
+                |t| t.starts_with("Your last turn was cut off: fctl-agent, which runs you")
+            ),
+            "{text:?}"
+        );
+        assert_eq!(next.state.status, SessionStatus::Running);
+
+        // Cut off again soon after, it waits for a message instead.
+        next.carry_on(CutOff::Stopped).await;
+        next.flush();
+        assert_eq!(
+            notices_sent(&mut host),
+            vec![(
+                "turn_cut_off".to_owned(),
+                "Claude's turn was cut off: fctl-agent stopped in the sandbox while Claude worked. It was cut off shortly before too, so Claude waits for a message.".to_owned()
+            )]
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(sent_to_claude(dir.path(), 1).await?.len(), 1);
+        // Said once.
+        let (saved, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        assert_eq!(saved.persisted.cut_off, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn only_a_turn_cut_off_short_is_carried_on() -> anyhow::Result<()> {
+        // The sandbox stopped while Claude worked, and Claude with it.
+        let dir = tempfile::tempdir()?;
+        let (sup, _host) = in_a_turn(dir.path())?;
+        assert!(sup.persisted.working);
+        drop(sup);
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Stopped));
+
+        // A session that waited, or that a person stopped, has nothing to
+        // carry on, also with what Claude started still running.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.on_claude_message(result()).await;
+        assert!(!sup.persisted.working);
+        #[cfg(target_os = "linux")]
+        let mut server = {
+            use std::os::unix::process::CommandExt;
+            let server = std::process::Command::new("sleep")
+                .arg("60")
+                .process_group(0)
+                .spawn()?;
+            sup.persisted.claude = orphan::Process::of(server.id());
+            sup.persist();
+            server
+        };
+        drop(sup);
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        assert_eq!(next.persisted.cut_off, None);
+        #[cfg(target_os = "linux")]
+        {
+            let ended = tokio::task::spawn_blocking(move || server.wait()).await??;
+            assert!(!ended.success(), "what Claude left running wasn't stopped");
+        }
+
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.on_frame(HostToAgent::Stop {
+            reason: StopReason::User,
+            grace_ms: 30_000,
+        })
+        .await;
+        // A person stopping it mid-turn cuts nothing short.
+        assert_eq!(waiting(&sup).0, SessionStatus::Stopping);
+        drop(sup);
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        assert_eq!(next.persisted.cut_off, None);
         Ok(())
     }
 

@@ -171,11 +171,19 @@ fn switch_root() -> Result<()> {
 }
 
 /// Copies the running fctl-agent (`/init`) to `to`, where the host's
-/// commands find it.
+/// commands find it. Its directory and the one above are root's, where an
+/// image gives them to its user, since fctl-agent runs as root from there
+/// (the host's `driver::AGENT_DIR_SCRIPT`).
 fn install_self(to: &str) -> Result<()> {
     let to = Path::new(to);
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [Some(dir), dir.parent()].into_iter().flatten() {
+            std::os::unix::fs::chown(dir, Some(0), Some(0))
+                .with_context(|| format!("giving {} to root", dir.display()))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
+        }
     }
     let new = to.with_extension("new");
     std::fs::copy("/init", &new).with_context(|| format!("copying /init to {}", new.display()))?;

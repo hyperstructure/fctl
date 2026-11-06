@@ -20,7 +20,6 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::mpsc;
 
 /// Most other repositories reported after a turn, and files per repository.
@@ -88,7 +87,7 @@ async fn run_with(
     args: &[&str],
     env: &[(&str, &OsStr)],
 ) -> Result<Output> {
-    let out = Command::new(program)
+    let out = crate::user::command(program)
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
@@ -561,7 +560,7 @@ pub async fn setup_script(
     log: &LogSink,
 ) -> Result<bool> {
     let _ = log.send((LogLevel::Info, "Running the setup script".into()));
-    let mut cmd = Command::new("bash");
+    let mut cmd = crate::user::command("bash");
     cmd.args(["-lc", script])
         .current_dir(&p.workdir)
         .env("HOME", &p.home)
@@ -1126,7 +1125,7 @@ async fn run_bounded(
     most: usize,
 ) -> Result<Bounded> {
     use tokio::io::AsyncReadExt;
-    let mut child = Command::new(program)
+    let mut child = crate::user::command(program)
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
@@ -1820,6 +1819,7 @@ pub fn detached(st: &GitState) -> bool {
 pub(crate) mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
 
     pub(crate) fn spec() -> Result<SessionSpec> {
         spec_with(serde_json::Value::Null)

@@ -3166,11 +3166,49 @@ agent can't be reached, and since when ([Viewers](#viewers)); a host that
 wakes from sleep to silent links attaches again within them.
 
 A host that restarts starts fctl-agent again too, before it attaches, in
-case the sandbox restarted with it. A supervisor holds a lock on
-`~/.fctl/agent.lock` while it runs, so a second one sees the first and
-exits without connecting to its socket: the supervisor takes every
-connection for a host link, and the newest replaces the host's. Agents from
-before the lock are found on the socket instead.
+case the sandbox restarted with it, and puts its own fctl-agent in the
+sandbox first, beside the one that may run and then in its place. A
+supervisor holds a lock on `agent.lock`, beside its socket, while it runs,
+so a second one sees the first and exits without connecting to its socket:
+the supervisor takes every connection for a host link, and the newest
+replaces the host's. Agents from before the lock are found on the socket
+instead.
+
+In container and VM sandboxes fctl-agent runs as root, out of reach of the
+user Claude runs as (`crates/fctl-agent/src/user`): the host starts
+`fctl-agent serve --user <uid>` with `docker exec -u 0`, `sudo` in Lima
+(as the VM's user where `sudo` asks for a password) or as root over the
+vsock, and attaches as root. It keeps root as its real and saved user, so
+that a `kill` or `pkill` from the agent's commands fails with `EPERM`, and
+works as the user otherwise, so what it writes in the user's home stays
+the user's. Its socket, log, journal and state are in
+`/var/lib/fctl-agent`, which only root may enter and which it reaches as
+root (Linux keeps a filesystem user per thread); the session socket and
+the GitHub tokens stay in the user's `~/.fctl`. Claude, git, `gh` and the
+setup script run as the user, with the user's groups, through `fctl-agent
+run-as`, which also puts back the OOM score fctl-agent lowered for itself
+where root may (`CAP_SYS_RESOURCE`, which Docker's containers lack). A
+supervisor that finds one from before running as the user in `~/.fctl`
+leaves the session to it, with a link to its socket in place of its own,
+and moves its journal and state once it has stopped: regular files only,
+since the user owns them. Once a supervisor has served a sandbox as root,
+`~/.fctl` has no say in who serves it. A sandbox's user has
+`sudo`, so this guards against accidents (an agent stopping its own dev
+stack by a pattern that matches fctl-agent too), not against an agent set
+on stopping it. The process driver runs fctl-agent as the host's user.
+
+Claude leads a process group of its own, which the supervisor records with
+its pid and start time in its state. Claude's output goes to the
+supervisor that started it, so a Claude whose supervisor died anyway (the
+OOM killer, `sudo kill`) works on unseen: the supervisor that takes the
+session over stops that group, or what is left of it once Claude has
+ended, before it starts Claude again on the conversation, so that two
+never share it. When the session was running, it
+says in the transcript that Claude's turn was cut off (a `turn_cut_off`
+notice) and has Claude carry on with it, from a message that tells Claude
+what happened; a second turn cut off within ten minutes of that waits for
+a person's message instead. The state keeps a cut-off turn until Claude
+carries on with it, also across another supervisor that dies first.
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
