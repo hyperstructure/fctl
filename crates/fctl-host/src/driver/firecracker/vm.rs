@@ -347,13 +347,14 @@ impl Vm {
             .stdin(Stdio::from(std::os::fd::OwnedFd::from(conn)))
             .stdout(log.try_clone()?)
             .stderr(log);
-        spawn_detached(&mut cmd, &self.pid_file("passt"))
+        let spawned = spawn_detached(&mut cmd, &self.pid_file("passt"))
             .with_context(|| format!("starting {}", passt.display()))?;
         // passt makes its pid's file as it reads its options, writes its
         // pid there once it has set itself up and is about to take frames,
         // and exits when it can't.
-        let has_pid =
-            || std::fs::read_to_string(&ready).is_ok_and(|p| p.trim().parse::<u32>().is_ok());
+        let has_pid = || {
+            std::fs::read_to_string(&ready).is_ok_and(|p| p.trim().parse::<u32>() == Ok(spawned))
+        };
         let until = Instant::now() + Duration::from_secs(10);
         while !has_pid() {
             if Instant::now() > until || self.pid("passt").is_none() {
@@ -552,6 +553,9 @@ impl Vm {
             self.run
                 .with_file_name(format!("vm-{}.passt.pid", self.key))
         };
+        // One an earlier passt left, whose record went with the VM's
+        // directory, say.
+        let _ = std::fs::remove_file(&pid);
         std::fs::create_dir_all(&self.dir)?;
         std::fs::write(
             self.dir.join("passt.pid-file"),
@@ -1335,7 +1339,14 @@ mod tests {
         vm.start(&spec, &firecracker, None).await?;
         assert!(vm.running() && !vm.linked());
         let (close, got) = vsock_stand_in(&vm.vsock())?;
-        // A passt that fails once it has made its pid's file: no link.
+        // A passt that fails once it has made its pid's file: no link,
+        // though an earlier passt's pid is where this one's goes.
+        if !nix::unistd::geteuid().is_root() {
+            std::fs::write(
+                vm.run.with_file_name(format!("vm-{}.passt.pid", vm.key)),
+                std::process::id().to_string(),
+            )?;
+        }
         let e = vm.link_network(&failing).await.err().map(|e| e.to_string());
         assert_eq!(
             e.as_deref(),
