@@ -1168,23 +1168,75 @@ mod tests {
     async fn network_report(d: &super::super::Driver, sb: &Sandbox, data: &Path) -> String {
         let dir = data.join("firecracker/sandboxes").join(&sb.name);
         let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
-        let passt_runs = read("passt.pid")
-            .trim()
-            .parse::<u32>()
-            .ok()
-            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/cmdline")).ok())
-            .map(|cmdline| cmdline.replace('\0', " "));
+        let passt = read("passt.pid").trim().parse::<u32>().ok().map(|pid| {
+            let proc =
+                |f: &str| std::fs::read_to_string(format!("/proc/{pid}/{f}")).unwrap_or_default();
+            let fds = std::fs::read_dir(format!("/proc/{pid}/fd"))
+                .map(|d| {
+                    d.flatten()
+                        .filter_map(|e| std::fs::read_link(e.path()).ok())
+                        .map(|l| l.display().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            format!(
+                "{}\n{}\nfds: {fds:?}",
+                proc("cmdline").replace('\0', " "),
+                proc("status")
+                    .lines()
+                    .filter(|l| l.starts_with("State"))
+                    .collect::<String>()
+            )
+        });
+        // Its capture, where the test asked for one (debug_passt).
+        let frames = std::env::var_os("FCTL_TEST_FIRECRACKER_PASST_DEBUG")
+            .and_then(|pcap| std::fs::read(pcap).ok())
+            .map(|pcap| pcap_summary(&pcap));
         let vm = d
             .exec(
                 sb,
-                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' && echo 'TCP to 1.1.1.1:80 works'",
+                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev /sys/class/net/eth0/address 2>&1; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1 && echo 'TCP to 1.1.1.1:80 works'; true",
             )
             .await;
         format!(
-            "passt runs: {passt_runs:?}\npasst said:\n{}\nthe VM's console:\n{}\nthe VM's network: {vm:?}",
+            "passt: {passt:?}\npasst said:\n{}\npasst's capture: {frames:?}\nthe VM's console:\n{}\nthe VM's network:\n{}",
             read("passt.log").trim(),
-            read("console.log").trim()
+            read("console.log").trim(),
+            vm.unwrap_or_else(|e| format!("{e:#}"))
         )
+    }
+
+    /// The frames in a pcap file, each as its length and first bytes.
+    fn pcap_summary(pcap: &[u8]) -> Vec<String> {
+        let mut frames = Vec::new();
+        let mut at = 24;
+        while let Some(header) = pcap.get(at..at + 16) {
+            let len = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+            let frame = pcap.get(at + 16..at + 16 + len).unwrap_or_default();
+            frames.push(format!(
+                "{len}: {}",
+                hex::encode(&frame[..frame.len().min(42)])
+            ));
+            at += 16 + len;
+        }
+        frames
+    }
+
+    /// passt with its debug log and a capture of its frames, in place of the
+    /// host's: a script that runs it so, which
+    /// `FCTL_TEST_FIRECRACKER_PASST_DEBUG` asks for, naming the capture's
+    /// file (in /tmp, where Ubuntu's AppArmor profile lets passt write).
+    fn debug_passt(dir: &Path) -> Result<PathBuf> {
+        let passt = find_program("passt").context("passt is not installed")?;
+        let script = dir.join("passt-debug");
+        crate::driver::fake::write_script(
+            &script,
+            &format!(
+                "#!/bin/sh\n# As the host runs it, with its debug log and a capture of its frames.\nfor a; do shift; [ \"$a\" = --quiet ] || set -- \"$@\" \"$a\"; done\nexec {} --debug --pcap \"$FCTL_TEST_FIRECRACKER_PASST_DEBUG\" \"$@\"\n",
+                passt.display()
+            ),
+        )?;
+        Ok(script)
     }
 
     /// Boots a sandbox from an image of Docker Hub (or
@@ -1219,6 +1271,9 @@ mod tests {
         };
         cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
         cfg.firecracker.disk_gb = 4;
+        if std::env::var_os("FCTL_TEST_FIRECRACKER_PASST_DEBUG").is_some() {
+            cfg.firecracker.passt = Some(debug_passt(temp.path())?);
+        }
         let d = Driver::select("firecracker", &cfg).await?;
         let probed = d.probe().await;
         assert!(probed.available, "{probed:?}");

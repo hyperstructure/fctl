@@ -137,6 +137,7 @@ jobs:
       - name: Boot sandboxes
         env:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
+          FCTL_TEST_FIRECRACKER_PASST_DEBUG: /tmp/passt.pcap
         run: |
           cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
       - name: What AppArmor and the kernel said
