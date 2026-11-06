@@ -30,7 +30,8 @@ use fctl_domain::image::ImageWant;
 use fctl_domain::size::{self, Want};
 use fctl_domain::updates::Version;
 use fctl_proto::runner::{
-    FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec, StopReason,
+    DriverInfo, FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec,
+    StopReason,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
@@ -101,6 +102,9 @@ pub struct Daemon {
     waiting_for_approval: bool,
     /// What keeps a Mac from sleeping while the host runs (`caffeinate`).
     awake: Option<std::process::Child>,
+    /// The drivers as the control plane last heard of them, in the hello
+    /// or a heartbeat since: a heartbeat says them again once they change.
+    drivers_said: Vec<DriverInfo>,
 }
 
 /// A host that updates itself: where its fctl is, and the newer version
@@ -172,6 +176,8 @@ const FACTS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often the host measures its free disk elsewhere.
 const DISK_EVERY: Duration = Duration::from_secs(30);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
+/// How often the host probes its drivers while the one it uses isn't ready.
+const NOT_READY_EVERY: Duration = Duration::from_secs(30);
 /// How often an update that waits for a quiet moment looks again.
 const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
@@ -191,6 +197,12 @@ impl Daemon {
             ctx.cfg.capacity,
             size::limits(&ctx.sandbox_limits())
         );
+        if let Some(why) = ctx.driver_problem() {
+            tracing::warn!(
+                "the {} driver isn't ready: {why}; sessions here fail until it is",
+                ctx.driver.name()
+            );
+        }
         if let Some(floor) = ctx.cfg.min_free_disk_mb() {
             tracing::info!(
                 "keeping {} of disk free at {} (min_free_disk_gb)",
@@ -265,6 +277,7 @@ impl Daemon {
             said_behind: None,
             waiting_for_approval: false,
             awake: None,
+            drivers_said: Vec::new(),
         })
     }
 
@@ -1006,7 +1019,13 @@ impl Daemon {
         }
     }
 
-    fn heartbeat(&self) -> HostHeartbeat {
+    fn heartbeat(&mut self) -> HostHeartbeat {
+        // Its driver may have become ready since, or stopped being.
+        let drivers = self.ctx.drivers();
+        let changed = drivers != self.drivers_said;
+        if changed {
+            self.drivers_said = drivers.clone();
+        }
         HostHeartbeat {
             sessions: self.reports(),
             load1: sysinfo::load1(),
@@ -1014,6 +1033,7 @@ impl Daemon {
             disk_available_mb: self.disk_free_mb,
             // Its owner may have saved or removed it since.
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
+            drivers: changed.then_some(drivers),
         }
     }
 
@@ -1090,7 +1110,9 @@ impl Daemon {
         shutdown: &mut oneshot::Receiver<()>,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
-        ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(self.hello()))).await?;
+        let hello = self.hello();
+        self.drivers_said = hello.drivers.clone();
+        ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(hello))).await?;
         let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
         heartbeat.tick().await;
         loop {
@@ -1438,14 +1460,29 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
 }
 
 /// Probes the drivers and measures what sandboxes run on every `period`, in
-/// the background.
+/// the background, and every [`NOT_READY_EVERY`] while the driver it uses
+/// isn't ready: once someone starts Docker, say, the control plane hears it
+/// soon.
 fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration) {
     tokio::spawn(async move {
-        let mut every = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            every.tick().await;
+            let wait = match ctx.driver_problem() {
+                None => period,
+                Some(_) => NOT_READY_EVERY.min(period),
+            };
+            tokio::time::sleep(wait).await;
+            let before = ctx.driver_problem();
             ctx.refresh_facts().await;
+            let after = ctx.driver_problem();
+            if after != before {
+                match after {
+                    Some(why) => tracing::warn!(
+                        "the {} driver isn't ready: {why}; sessions here fail until it is",
+                        ctx.driver.name()
+                    ),
+                    None => tracing::info!("the {} driver is ready again", ctx.driver.name()),
+                }
+            }
         }
     });
 }
@@ -1667,6 +1704,44 @@ mod tests {
             "scopes": ["user:inference"], "on_runners": true
         }))?;
         Ok(spec)
+    }
+
+    #[tokio::test]
+    async fn heartbeats_say_the_drivers_again_once_they_change() -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        let hello = d.hello();
+        d.drivers_said = hello.drivers.clone();
+        assert_eq!(d.heartbeat().drivers, None);
+        assert_eq!(d.ctx.driver_problem(), None);
+        // Its driver stops being ready: the next heartbeat says so, once.
+        let broken = {
+            let mut drivers = d
+                .ctx
+                .drivers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for info in drivers.iter_mut().filter(|i| i.name == "process") {
+                info.available = false;
+                info.detail = Some("the Docker daemon isn't running".into());
+            }
+            drivers.clone()
+        };
+        assert_eq!(d.heartbeat().drivers, Some(broken));
+        assert_eq!(d.heartbeat().drivers, None);
+        assert_eq!(
+            d.ctx.driver_problem().as_deref(),
+            Some("the Docker daemon isn't running")
+        );
+        // A new connection's hello says them all.
+        assert_eq!(
+            d.hello()
+                .drivers
+                .iter()
+                .find(|i| i.name == "process")
+                .map(|i| i.available),
+            Some(false)
+        );
+        Ok(())
     }
 
     #[tokio::test]

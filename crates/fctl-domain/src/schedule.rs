@@ -2,7 +2,7 @@
 
 use crate::image::{HostImages, ImageWant};
 use crate::size::{self, Want};
-use fctl_proto::runner::{SandboxLimits, SandboxSize};
+use fctl_proto::runner::{DriverInfo, SandboxLimits, SandboxSize};
 
 /// A runner as the scheduler sees it.
 #[derive(Clone, Debug)]
@@ -271,6 +271,16 @@ pub fn runs_for(
 ) -> bool {
     let theirs = person.is_some() && owner == person;
     theirs || !(personal || own_runners)
+}
+
+/// Whether the driver a runner's host uses (`driver`) is ready, as the host
+/// last said of its `drivers`: Docker answers it, say. Hosts that don't
+/// list it count as ready.
+pub fn driver_ready(driver: &str, drivers: &[DriverInfo]) -> bool {
+    drivers
+        .iter()
+        .find(|d| d.name == driver)
+        .is_none_or(|d| d.available)
 }
 
 /// Whether a session runs only on its person's runners: they keep their
@@ -1069,5 +1079,26 @@ mod tests {
         let wait = pick(&slots[..1], &[], any, &ImageWant::Default, None, true).map(|s| s.id);
         assert_eq!(wait, Err(Wait::Reviews));
         assert!(Wait::Reviews.reason().contains("fctl self update"));
+    }
+
+    #[test]
+    fn a_runner_is_ready_unless_its_driver_says_otherwise() {
+        let info = |name: &str, available: bool| DriverInfo {
+            name: name.into(),
+            available,
+            isolation: "container".into(),
+            version: None,
+            detail: (!available).then(|| "the Docker daemon isn't running".into()),
+        };
+        let drivers = [
+            info("apple", false),
+            info("docker", true),
+            info("lima", false),
+        ];
+        assert!(driver_ready("docker", &drivers));
+        assert!(!driver_ready("lima", &drivers));
+        // Hosts that list nothing, or not the driver they use.
+        assert!(driver_ready("docker", &[]));
+        assert!(driver_ready("process", &drivers));
     }
 }

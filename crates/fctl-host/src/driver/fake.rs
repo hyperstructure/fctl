@@ -28,6 +28,7 @@ use std::sync::{Mutex, PoisonError};
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
+[ ! -e "$d/refuse" ] || { cat "$d/refuse" >&2; exit 1; }
 key() { printf '%s' "$1" | tr '/:' '__'; }
 for last in "$@"; do :; done
 file() { printf '%s/have/%s' "$d" "$(key "$1")"; }
@@ -242,6 +243,13 @@ impl FakeCli {
     /// Makes every `run` fail as if for some other reason than the image.
     pub fn fail_runs(&self) -> Result<()> {
         std::fs::write(self.dir.path().join("fail_run"), "")?;
+        Ok(())
+    }
+
+    /// Makes every command fail with `error`, as the docker CLI fails when
+    /// the daemon's socket refuses it or nothing answers there.
+    pub fn refuse(&self, error: &str) -> Result<()> {
+        std::fs::write(self.dir.path().join("refuse"), format!("{error}\n"))?;
         Ok(())
     }
 

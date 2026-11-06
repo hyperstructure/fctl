@@ -19,8 +19,8 @@ use fctl_domain::schedule::{Home, Slot, TokenWait, Wait};
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
-    ClaudeLoginUpdate, CredentialKind, FEATURE_REVIEWS, FleetToHost, HostHello, HostSessionReport,
-    HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
+    ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_REVIEWS, FleetToHost, HostHello,
+    HostSessionReport, HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
 };
 use fctl_proto::session::{RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -984,10 +984,13 @@ impl FleetObject {
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
+                let drivers_changed = self.note_drivers(&rs.id, hb.drivers).await;
                 // The runners list says when a runner takes no new sessions
-                // for its disk, and when it takes them again, and its
-                // owner sees whether it keeps their Claude token.
+                // for its disk, and when it takes them again, why its driver
+                // isn't ready, and its owner sees whether it keeps their
+                // Claude token.
                 if token_changed
+                    || drivers_changed
                     || fctl_domain::disk::low(hb.disk_available_mb, min_free) != was_low
                 {
                     self.feed_runner(&rs.id).await;
@@ -1208,29 +1211,45 @@ impl FleetObject {
     /// old to keep one say nothing, which changes nothing. Returns whether
     /// it changed.
     async fn note_claude_token(&self, runner_id: &str, token: Option<RunnerClaudeToken>) -> bool {
-        #[derive(Deserialize)]
-        struct R {
-            hello: Option<String>,
-        }
         let Some(token) = token else { return false };
-        let Some(mut hello) = self
-            .sql
-            .exec(
-                "SELECT hello FROM runners WHERE id = ?",
-                Some(vec![sv(runner_id)]),
-            )
-            .and_then(|c| c.to_array::<R>())
-            .ok()
-            .and_then(|r| r.into_iter().next())
-            .and_then(|r| r.hello)
-            .and_then(|h| serde_json::from_str::<HostHello>(&h).ok())
-        else {
+        self.change_hello(runner_id, |hello| {
+            if hello.claude_token == Some(token) {
+                return false;
+            }
+            hello.claude_token = Some(token);
+            true
+        })
+        .await
+    }
+
+    /// Notes a runner's drivers from a heartbeat that says them: the one it
+    /// uses may have become ready, or stopped being, since its hello.
+    /// Whether they changed.
+    async fn note_drivers(&self, runner_id: &str, drivers: Option<Vec<DriverInfo>>) -> bool {
+        let Some(drivers) = drivers else { return false };
+        self.change_hello(runner_id, |hello| {
+            if hello.drivers == drivers {
+                return false;
+            }
+            hello.drivers = drivers;
+            true
+        })
+        .await
+    }
+
+    /// Changes the hello its host said last as `change` does, where that
+    /// changes anything, here and in D1. Whether it did.
+    async fn change_hello(
+        &self,
+        runner_id: &str,
+        change: impl FnOnce(&mut HostHello) -> bool,
+    ) -> bool {
+        let Some(mut hello) = self.hello_of(runner_id) else {
             return false;
         };
-        if hello.claude_token == Some(token) {
+        if !change(&mut hello) {
             return false;
         }
-        hello.claude_token = Some(token);
         let Ok(info) = serde_json::to_string(&hello) else {
             return false;
         };
@@ -1248,6 +1267,25 @@ impl FleetObject {
             let _ = q.run().await;
         }
         true
+    }
+
+    /// What a runner's host said last in its hello, and its heartbeats since.
+    fn hello_of(&self, runner_id: &str) -> Option<HostHello> {
+        #[derive(Deserialize)]
+        struct R {
+            hello: Option<String>,
+        }
+        self.sql
+            .exec(
+                "SELECT hello FROM runners WHERE id = ?",
+                Some(vec![sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<R>())
+            .ok()?
+            .into_iter()
+            .next()?
+            .hello
+            .and_then(|h| serde_json::from_str::<HostHello>(&h).ok())
     }
 
     /// Matches what the host reports with what we assigned to it.
@@ -2480,12 +2518,19 @@ impl FleetObject {
         let online = self.live_runners().online;
         // The first online of the runners that may run it, in their order
         // (the person's own first): a login passes its tokens through the
-        // host.
-        let picked = match &b.runners {
-            Some(allowed) => allowed.iter().find(|r| online.contains(r)),
-            None => online.first(),
+        // host. Of those, the first whose driver is ready, as an offline
+        // one would be passed over: a host that can't start a sandbox
+        // fails the sign-in. When none is, the first, which says why.
+        let candidates: Vec<&String> = match &b.runners {
+            Some(allowed) => allowed.iter().filter(|r| online.contains(r)).collect(),
+            None => online.iter().collect(),
         };
-        let Some(runner_id) = picked.cloned() else {
+        let ready = |r: &&String| {
+            self.hello_of(r)
+                .is_none_or(|h| fctl_domain::schedule::driver_ready(&h.driver, &h.drivers))
+        };
+        let picked = candidates.iter().find(|r| ready(r)).or(candidates.first());
+        let Some(runner_id) = picked.map(|r| (*r).clone()) else {
             return Ok(serde_json::json!({ "ok": false }));
         };
         let _ = self.sql.exec(

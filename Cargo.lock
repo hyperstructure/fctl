@@ -634,6 +634,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "nix",
  "regex",
  "serde",
  "serde_json",
