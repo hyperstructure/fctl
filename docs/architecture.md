@@ -2399,7 +2399,7 @@ fctl; the control plane stores a text that says what the defaults say as
 unset. The setting is always sent, as `null` for the defaults, and an
 update that leaves it out keeps what was stored. The section appears
 whether or not the project asks agents to open a pull request when they
-finish; agents that may only comment or read open none and don't get it,
+finish; agents that may only comment, triage or read open none and don't get it,
 nor do review agents, and agents from before the setting are told none of
 it
 ([ADR 0060](adr/0060-agents-follow-rules-for-pull-requests-and-issues-that-projects-can-change.md)).

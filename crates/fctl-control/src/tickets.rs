@@ -1437,7 +1437,8 @@ async fn triage_issue(
 }
 
 /// Checks that `repo` has the label `name` before an agent that triages
-/// puts it on an issue: GitHub would make a label it doesn't have.
+/// puts it on an issue: GitHub would make a label it doesn't have. The
+/// answer must be that label, should the path have led elsewhere.
 async fn triage_label(
     gh: &github::Github<'_>,
     token: &GithubCredential,
@@ -1458,9 +1459,13 @@ async fn triage_label(
             None,
         )
         .await?;
+    let same = v
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|n| n.eq_ignore_ascii_case(name));
     match status {
-        200 => Ok(()),
-        404 => Err(validation(
+        200 if same => Ok(()),
+        200 | 404 => Err(validation(
             "add_labels",
             &format!(
                 "{} has no label \"{name}\": an agent that triages uses the labels it has, which `fctl ticket labels` lists",

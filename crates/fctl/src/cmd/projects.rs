@@ -164,7 +164,8 @@ pub enum ProjectsCmd {
         retrospectives: Option<bool>,
         /// The most its sessions' agents may do on GitHub, and what a
         /// session gets unless it asks for less: push, comment (review,
-        /// comment and resolve review threads; push nothing) or read.
+        /// comment and resolve review threads; push nothing), triage
+        /// (label tickets and comment on them, nothing else) or read.
         /// Running sessions get no more from their next GitHub token on.
         #[arg(long, value_enum)]
         github: Option<super::tokens::Github>,

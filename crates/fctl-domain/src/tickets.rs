@@ -81,7 +81,9 @@ pub const MAX_LABELS_PER_CALL: usize = 20;
 /// Checks the labels a call names before anything reaches the tracker:
 /// GitHub takes each label a call removes in a request of its own, so that
 /// one call, which counts once, can't send the tracker's API any number of
-/// them, nor names no tracker keeps.
+/// them, nor names no tracker keeps. Nor `.` or `..`, which go in GitHub's
+/// paths as they are and which URLs take as steps up the path: removing
+/// `.` would ask GitHub to remove all of an issue's labels.
 pub fn check_labels(request: &fctl_proto::tickets::TicketRequest) -> Result<()> {
     use fctl_proto::tickets::TicketRequest as R;
     let lists: Vec<(&str, &[String])> = match request {
@@ -108,6 +110,9 @@ pub fn check_labels(request: &fctl_proto::tickets::TicketRequest) -> Result<()> 
                 field,
                 format!("A label has at most {MAX_LABEL} characters, and no control characters"),
             ));
+        }
+        if labels.iter().any(|l| matches!(l.trim(), "." | "..")) {
+            return Err(ApiError::validation(field, "A label isn't `.` or `..`"));
         }
     }
     Ok(())
@@ -1473,6 +1478,12 @@ mod tests {
         let long = "x".repeat(MAX_LABEL + 1);
         assert!(check_labels(&update(vec![], vec![long])).is_err());
         assert!(check_labels(&update(vec!["a\nb".into()], vec![])).is_err());
+        // Names a URL takes as steps up its path, to add or to remove.
+        for dots in [".", "..", " .. "] {
+            assert!(check_labels(&update(vec![dots.into()], vec![])).is_err());
+            assert!(check_labels(&update(vec![], vec![dots.into()])).is_err());
+        }
+        assert!(check_labels(&update(vec!["v1.0".into(), "...".into()], vec![])).is_ok());
         assert!(check_labels(&R::States).is_ok());
     }
 
