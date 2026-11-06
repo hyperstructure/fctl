@@ -944,8 +944,9 @@ counted from its last build. With Firecracker a session's sandbox also
 keeps its VM's state, the memory the VM used, so that a message resumes
 the session with Claude running where it was rather than starting it
 again; the host lets those states go first when the disk runs low, and
-`snapshots = false` keeps none (nor does a host that runs its VMs through
-the jailer, yet). With Apple's
+`snapshots = false` keeps none: turned off, it lets those kept before go
+at its next sweep or the sandbox's next start, rather than resume them. A
+host that runs its VMs through the jailer keeps none yet. With Apple's
 `container`, a sandbox's disk image keeps the space of the files its
 session deleted (a build of fctl leaves about 5.5 GB) until the host
 stops the sandbox: then the host gives that space back to the Mac with
