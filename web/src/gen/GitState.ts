@@ -22,7 +22,12 @@ behind: number,
  * base), uncommitted and untracked work included. Older agents
  * compared the work with the base's tip.
  */
-files: Array<FileChange>, uncommitted: number, last_commit?: CommitInfo, 
+files: Array<FileChange>, 
+/**
+ * What `git status` lists as not committed: changed files, and
+ * untracked ones, a directory git tracks nothing in counting once.
+ */
+uncommitted: number, last_commit?: CommitInfo, 
 /**
  * Whether the branch's latest commit is on the remote.
  */

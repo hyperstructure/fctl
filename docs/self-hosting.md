@@ -5,10 +5,11 @@ fctl is open source, so you can host all of it yourself.
 sets up your own, on your machines or on Cloudflare.
 
 An fctl instance is a control plane (the API and the web app, with the
-Durable Objects and the D1 database that hold its state) and the hosts on
-your machines that connect to it. Nothing in the code is tied to fctl.sh:
-everything instance-specific is configuration. The control plane runs in one
-of two ways, with the same features, settings, hosts and apps:
+Durable Objects and the D1 database that hold its state) and the runners
+that connect to it: your machines, each with the `fctl host` service on it.
+Nothing in the code is tied to fctl.sh: everything instance-specific is
+configuration. The control plane runs in one of two ways, with the same
+features, settings, runners and apps:
 
 | | On your own machine or cluster | On Cloudflare |
 |---|---|---|
@@ -33,7 +34,7 @@ same for both, in the order to follow:
    teams delegate Linear issues to fctl.
 5. Optionally, [Google sign-in](#google-sign-in-optional) and
    [email](#email-optional).
-6. [Hosts](#bring-hosts-online), the machines agents run on.
+6. [Runners](#bring-runners-online), the machines agents run on.
 
 Each app takes a few minutes in GitHub's or Linear's settings, then its
 IDs and secrets go to the control plane: as environment variables on your
@@ -195,13 +196,13 @@ choose its own address.
   safe as the key.
 - **Logs.** `docker logs fctl`, or `kubectl -n fctl logs
   statefulset/fctl-control`: what the control plane logs, and its errors.
-  `fctl host logs` shows a host's.
+  `fctl host logs`, on a runner, shows its host service's.
 - **Housekeeping.** The server runs the hourly job of
   [Deletion](architecture.md#data) at 17 minutes past each hour, while it
   runs.
 - **What it takes.** About 500 MB of memory and little CPU at rest. The
   data grows with sessions' transcripts and attached files.
-- **Removing it.** `fctl host uninstall` on each host first, while the
+- **Removing it.** `fctl host uninstall` on each runner first, while the
   control plane can still stop their sessions (`--force` stops the ones
   that run), then remove the container and its volume.
 
@@ -297,11 +298,12 @@ Other secrets go in with `--set`, the GitHub App's key with
   workspace's search index, which the sessions can build again: after
   `UPDATE sessions SET search_indexed = 0` the hourly job has them do it.
 - **Logs.** `npx wrangler tail fctl` streams the Worker's logs; observability
-  is enabled in the rendered config. `fctl host logs` shows a host's.
+  is enabled in the rendered config. `fctl host logs`, on a runner, shows
+  its host service's.
 - **Costs.** The control plane is request- and storage-priced on Cloudflare;
   the work happens on your hardware and your Claude subscriptions. fctl never
   makes Anthropic API calls.
-- **Removing it.** `fctl host uninstall` on each host first, while the
+- **Removing it.** `fctl host uninstall` on each runner first, while the
   control plane can still stop their sessions (`--force` stops the ones
   that run), then `npx wrangler delete fctl` and
   `npx wrangler d1 delete fctl`.
@@ -856,10 +858,11 @@ and `/apple-touch-icon.png`, and names `/sitemap.xml`, which lists the
 pages, for Google Search Console and the like.
 Everything else stays disallowed, and needs signing in anyway.
 
-## Bring hosts online
+## Bring runners online
 
-On each machine that runs agents (the one that runs the control plane can
-be one of them), follow
+A runner is a machine that runs sessions, with the `fctl host` service on
+it. On each machine that runs agents (the one that runs the control plane
+can be one of them), follow
 [Getting started → Bring a machine online](getting-started.md#5-bring-a-machine-online):
 
 ```sh
@@ -885,7 +888,7 @@ Hosts download their release from `https://fctl.sh/releases` by default; set
 `download_base` in `host.toml` to mirror them elsewhere (`fctl host image
 build` installs fctl in the default image from there too). They pull the
 sandbox image from `ghcr.io/hyperstructure/sandbox`; set `image` to use a
-copy in your own registry ([Sandbox images](sandbox-images.md)). A host runs
+copy in your own registry ([Sandbox images](sandbox-images.md)). A runner runs
 any image a project chooses until its owner lists the ones it allows
 (`allowed_images`), and builds images from no repository until they list
 some (`allowed_builds`): set both on machines that run other people's

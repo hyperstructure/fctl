@@ -95,7 +95,7 @@ credential, and pauses a session before it would draw on paid extra usage.
 There are three ways to connect, all under **Settings → Claude** in the app:
 
 - **Sign in with Claude** (recommended). The official Claude Code sign-in runs
-  in a sandbox on one of your hosts; fctl shows you the link and relays the
+  in a sandbox on one of your runners; fctl shows you the link and relays the
   code. This kind of login lets sessions join **Remote Control**, so they show
   up in the Claude apps.
 - **A long-lived token.** Run `claude setup-token` on any machine with Claude
@@ -120,7 +120,7 @@ There are three ways to connect, all under **Settings → Claude** in the app:
 From the terminal:
 
 ```sh
-fctl claude connect --login      # sign in with Claude through a host
+fctl claude connect --login      # sign in with Claude, on one of your runners
 fctl claude connect              # or paste a long-lived token
 fctl claude connect --on-runners # or use the token your runners keep
 fctl claude status
@@ -147,7 +147,16 @@ wait in the queue, and the app says so under the task box. Its **Runners**
 tab shows how to add a runner, under the ones it has. A runner its admins
 add runs everyone's sessions; one a member adds runs only theirs.
 
-Any Mac with Apple silicon (or a Linux box) can be a host. On the Mac:
+A runner is a machine with the `fctl host` service on it: `fctl host
+install` registers the machine and starts the service, which connects out
+to fctl, takes the runner's sessions, makes a sandbox for each and starts
+its agent there. One machine is one runner: it runs several sessions at
+once (4 unless `--capacity` says otherwise), all in sandboxes from the same
+driver, and can run sessions for several workspaces. You look after it on
+the machine itself with `fctl host` (`status`, `drain`, `uninstall`), and
+from anywhere on the Runners tab or with `fctl runners`.
+
+Any Mac with Apple silicon (or a Linux box) can be a runner. On the Mac:
 
 1. Install Apple's container runtime from
    [github.com/apple/container/releases](https://github.com/apple/container/releases)
@@ -198,18 +207,18 @@ workspaces from their Runners tab, or with `fctl workspaces add-runner -w
 side-project` on the machine, and it takes the sessions of all of them.
 Elsewhere, that command takes the runner's name or the id `fctl host
 status` shows. For a Mac that runs around the clock, keep it plugged in
-and turn on automatic login, so the host starts again after a reboot or a
-power cut.
+and turn on automatic login, so the host service starts again after a
+reboot or a power cut.
 
 A runner sees the code, secrets and Claude token of each session it runs.
 To keep yours on machines you control, turn on **Only on my runners** in
 the workspace's **Settings** (`fctl workspaces own-runners on -w acme`):
 your sessions there then run only on runners you registered, and wait
-while none of those is online. A Claude sign-in through a host runs on one
-of your runners when one is online. To keep your Claude token away from
-fctl too, keep it on your runners ([step 4](#4-connect-your-claude-subscription)):
-your sessions on it then run only on your runners that keep it, in every
-workspace.
+while none of those is online. A Claude sign-in (`fctl claude connect
+--login`) runs on one of your runners when one is online. To keep your
+Claude token away from fctl too, keep it on your runners
+([step 4](#4-connect-your-claude-subscription)): your sessions on it then
+run only on your runners that keep it, in every workspace.
 
 The host keeps itself on the version of fctl the app runs: when the app
 runs a newer one, the host downloads it, checks it, and restarts on it once

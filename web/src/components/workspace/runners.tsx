@@ -398,7 +398,9 @@ export function ManageRunner({ w, runner: r }: { w: G.Workspace; runner: G.Runne
       >
         {token ? (
           <div className="flex flex-col gap-3">
-            <div className="text-[12.5px] text-ink-3">On the machine, as the user the host runs as:</div>
+            <div className="text-[12.5px] text-ink-3">
+              On the machine, as the user its host service runs as:
+            </div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${token.token}`} />
             <div className="flex justify-end">
               <Button variant="primary" onClick={close}>
@@ -836,7 +838,7 @@ function TokenForm({
         {expires
           ? `It expires on ${new Date(Date.now() + expires * 3_600_000).toLocaleDateString(undefined, { dateStyle: "long" })}${expires < 24 ? ` at ${new Date(Date.now() + expires * 3_600_000).toLocaleTimeString(undefined, { timeStyle: "short" })}` : ""}.`
           : "It never expires: revoke it when you no longer need it."}
-        {offline === undefined && " A runner it enrolls also goes when its host uninstalls."}
+        {offline === undefined && " A runner it enrolls also goes when its host service is uninstalled."}
       </div>
       {create.error && !field && <Banner tone="error">{create.error.message}</Banner>}
       <div className="flex justify-end">
@@ -885,7 +887,7 @@ function Created({
         </li>
         <li>
           <span className="text-ink-2">
-            2. Enroll it and start its host service, as the user the host runs as
+            2. Enroll it as a runner and start its host service, as the user that service runs as
           </span>
           <CodeBox value={enrollCommand(location.origin, token.secret)} className="mt-1.5" />
         </li>
@@ -907,8 +909,8 @@ function Created({
         nobody logs in, run <code className="font-mono text-[11.5px] text-ink-3">loginctl enable-linger</code>{" "}
         for that user first. Run again, the install keeps the runner the machine enrolled.{" "}
         {t.remove_offline_after_minutes
-          ? `A runner goes when its host uninstalls, or once it has been offline for ${minutesText(t.remove_offline_after_minutes)}.`
-          : "A runner goes when its host uninstalls (fctl host uninstall)."}
+          ? `A runner goes when its host service is uninstalled (fctl host uninstall), or once it has been offline for ${minutesText(t.remove_offline_after_minutes)}.`
+          : "A runner goes when its host service is uninstalled (fctl host uninstall)."}
       </p>
       <div className="flex justify-end">
         <Button variant="primary" onClick={onDone}>

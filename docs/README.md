@@ -18,11 +18,12 @@ Three pieces make up a factory:
 
 - **The control plane** — a Worker with Durable Objects and D1
   that serves the web app and the API, keeps every session's event log, and
-  hands work to hosts. One per team (yours might be `app.fctl.sh`). It runs
-  on Cloudflare, or in one container on any machine or Kubernetes cluster.
-- **Hosts** — your machines (a spare Mac is ideal). `fctl host` runs as a
-  service, connects out to the control plane, and runs each session in its
-  own Linux VM.
+  hands work to runners. One per team (yours might be `app.fctl.sh`). It
+  runs on Cloudflare, or in one container on any machine or Kubernetes
+  cluster.
+- **Runners** — your machines (a spare Mac is ideal). On each, the
+  `fctl host` service connects out to the control plane and runs each
+  session in its own Linux VM.
 - **Clients** — the web app, the `fctl` CLI, and the Claude apps on your
   phone and desktop through Remote Control.
 
@@ -65,6 +66,16 @@ them are in https://fctl.sh/llms-full.txt.
   work: how it ended, what it worked on, the approach it took, what got in
   the way and what a future agent should know. One for each piece of work:
   the agent updates it as later turns carry on with that work.
-- **Runner** — a host registered with the control plane.
+- **Runner** — a machine that runs sessions: a Mac or Linux machine with
+  the `fctl host` service on it, registered with the control plane. It
+  runs several sessions at once, each in a sandbox of its own, for every
+  workspace it's added to. A workspace's **Runners** tab, and `fctl
+  runners` from any machine, list and manage them.
+- **Host** — the `fctl host` service, the software that makes a machine a
+  runner: it connects to the control plane, makes a sandbox for each of
+  the runner's sessions and starts its agent there. `fctl host` commands
+  (`install`, `status`, `drain`) act on the machine you run them on. One
+  machine runs one host and is one runner: "host" names the software on
+  the machine, "runner" the machine as fctl and your workspaces see it.
 - **Agent Floor** — the web app's home page, where it opens: the box for
   your next task, and every active session as a thread of light.

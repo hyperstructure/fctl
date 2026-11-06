@@ -10,7 +10,8 @@ export type FileChange = { path: string,
  */
 status: string, 
 /**
- * Absent for binary files.
+ * Absent for binary files, and for untracked files past what
+ * fctl-agent reads of them to count their lines.
  */
 additions?: number, deletions?: number, 
 /**

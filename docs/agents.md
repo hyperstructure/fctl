@@ -315,7 +315,7 @@ wrote.
   after every turn until the merge, then no more. Message the agent, or
   start a new session.
 - Deleting projects, workspaces or accounts, or uninstalling and draining
-  hosts, unless a person asked for exactly that.
+  runners, unless a person asked for exactly that.
 - Polling faster than every 20 seconds, or reading whole transcripts in a
   tight loop.
 
@@ -527,10 +527,11 @@ archive SESSION` takes it out of the lists.
 
 ### Bring a machine online
 
-On the machine, by its owner: install a driver (Apple's `container` on
-macOS 26 with Apple silicon, then `container system start`; Lima; Docker;
-or on Linux with KVM, `passt` and `e2fsprogs` for `fctl host install
---driver firecracker`), then:
+A machine becomes a runner, one that runs sessions, once the `fctl host`
+service is on it. On the machine, by its owner: install a driver (Apple's
+`container` on macOS 26 with Apple silicon, then `container system start`;
+Lima; Docker; or on Linux with KVM, `passt` and `e2fsprogs` for `fctl host
+install --driver firecracker`), then:
 
 ```sh
 curl -fsSL https://fctl.sh/install | sh
