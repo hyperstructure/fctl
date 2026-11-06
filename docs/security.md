@@ -227,12 +227,18 @@ its VM, and nothing outside it except through these channels:
   server walks one name at a time without following symlinks, refuses `.`,
   `..` and names with `/`, opens only files and directories, and makes
   neither devices nor setuid files, so the VM reaches nothing of the
-  host's but that directory, which its sandbox mounts anyway. Firecracker runs
-  as the host's user, with its seccomp filters but without its jailer,
-  which needs root: a VM escape would run as that user, who can read the
-  runner's token, as a container escape can with Docker. Their images
-  unpack in a VM of their own, so a crafted layer can't reach the host's
-  filesystem.
+  host's but that directory, which its sandbox mounts anyway. Firecracker
+  runs with its seccomp filters, as the host's user: a VM escape would run
+  as that user, who can read the runner's token, as a container escape can
+  with Docker. A host that runs as root runs each VM through Firecracker's
+  jailer instead (unless `host.toml` sets `jailer = false`): as a user of
+  its own, which no other running VM and nothing else on the machine runs
+  as, in a chroot that holds only that VM's kernel, disks and sockets, and
+  in a cgroup of its own, so that an escape reaches neither the host's
+  files nor another VM's. The host reaches the VM's sockets through links
+  of its own, so a jail can't send it to another VM's, and takes the VM's
+  disk back from the jail's user when it stops. Their images unpack in a
+  VM of their own, so a crafted layer can't reach the host's filesystem.
 
 - **fctl-agent** runs as root in the sandbox, and Claude and everything
   it runs as the image's user, so that the agent's commands can't stop

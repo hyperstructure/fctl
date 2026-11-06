@@ -40,14 +40,20 @@ pub fn pinned_firecracker(bin: &Path) -> PathBuf {
     bin.join(format!("firecracker-v{FIRECRACKER_VERSION}"))
 }
 
-/// Downloads the pinned Firecracker into `bin`, checked against its
-/// archive's SHA-256, unless it is there.
+/// The jailer of the same release, which comes with it.
+pub fn pinned_jailer(bin: &Path) -> PathBuf {
+    bin.join(format!("jailer-v{FIRECRACKER_VERSION}"))
+}
+
+/// Downloads the pinned Firecracker and its jailer into `bin`, checked
+/// against their archive's SHA-256, unless they are there.
 pub async fn download_firecracker(
     bin: &Path,
     log: &(dyn Fn(String) + Send + Sync),
 ) -> Result<PathBuf> {
     let path = pinned_firecracker(bin);
-    if path.is_file() {
+    let jailer = pinned_jailer(bin);
+    if path.is_file() && jailer.is_file() {
         return Ok(path);
     }
     let arch = std::env::consts::ARCH;
@@ -74,24 +80,35 @@ pub async fn download_firecracker(
         if digest != format!("sha256:{sum}") {
             bail!("{url} doesn't match the checksum fctl expects");
         }
-        let inside = format!(
-            "release-v{FIRECRACKER_VERSION}-{arch}/firecracker-v{FIRECRACKER_VERSION}-{arch}"
-        );
+        let wanted = [("firecracker", &path), ("jailer", &jailer)].map(|(name, to)| {
+            (
+                format!(
+                    "release-v{FIRECRACKER_VERSION}-{arch}/{name}-v{FIRECRACKER_VERSION}-{arch}"
+                ),
+                to.clone(),
+            )
+        });
         let file = std::fs::File::open(&archive)?;
         let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+        let mut found = 0;
         for entry in tar.entries()? {
             let mut entry = entry?;
-            if entry.path()?.to_string_lossy() == inside {
-                let tmp = path.with_extension("tmp");
-                let mut out = std::fs::File::create(&tmp)?;
-                std::io::copy(&mut entry, &mut out)?;
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-                std::fs::rename(&tmp, &path)?;
-                return Ok(());
-            }
+            let name = entry.path()?.to_string_lossy().into_owned();
+            let Some((_, to)) = wanted.iter().find(|(inside, _)| *inside == name) else {
+                continue;
+            };
+            let tmp = to.with_extension("tmp");
+            let mut out = std::fs::File::create(&tmp)?;
+            std::io::copy(&mut entry, &mut out)?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::rename(&tmp, to)?;
+            found += 1;
         }
-        bail!("{url} has no {inside}")
+        if found < wanted.len() {
+            bail!("{url} has no Firecracker or no jailer");
+        }
+        Ok(())
     })();
     let _ = std::fs::remove_file(&archive);
     result.map(|()| path)
