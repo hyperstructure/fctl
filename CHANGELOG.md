@@ -2,6 +2,29 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.30.0 (2026-11-06)
+
+### Features
+
+- **web:** Drag the phone sidebar open from the screen's edge and closed ([#404](https://github.com/hyperstructure/fctl/pull/404))
+- Let agents triage, labeling and commenting on tickets alone ([#412](https://github.com/hyperstructure/fctl/pull/412))
+- **host:** Let hosts run fctl-agent as the sandbox's user, not root ([#414](https://github.com/hyperstructure/fctl/pull/414))
+
+### Fixes
+
+- **xtask:** Make the diff video's frames the same on every machine ([#402](https://github.com/hyperstructure/fctl/pull/402))
+- **agent:** Show untracked files in new directories as changes ([#407](https://github.com/hyperstructure/fctl/pull/407))
+- Keep review findings until a session lists the pull request ([#408](https://github.com/hyperstructure/fctl/pull/408))
+- Run fctl-agent as root, out of reach of the agent's commands ([#409](https://github.com/hyperstructure/fctl/pull/409))
+- **host:** Set up Docker on Linux hosts and say why it refuses them ([#411](https://github.com/hyperstructure/fctl/pull/411))
+- **host:** Release the image store's lock even while a command starts ([#416](https://github.com/hyperstructure/fctl/pull/416))
+- **agent:** Let go of the supervisor's lock even while a command starts ([#417](https://github.com/hyperstructure/fctl/pull/417))
+
+### Documentation
+
+- Label issues by the new areas and track every repository's here ([#405](https://github.com/hyperstructure/fctl/pull/405))
+- Tell runners from hosts in the docs, the web app and the CLI ([#406](https://github.com/hyperstructure/fctl/pull/406))
+
 ## 0.29.2 (2026-11-06)
 
 ### Features
