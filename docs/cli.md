@@ -737,7 +737,7 @@ fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's id and sessions, and whether it drains
-fctl host doctor                 # check the driver, image, agent binary, connection
+fctl host doctor                 # check the configuration, tokens, connection, driver, images, disk and service
 fctl host logs -n 200            # the last 200 lines of its log (on Linux, from the journal)
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
 fctl host image build            # build it here instead (with Lima: the base VM)

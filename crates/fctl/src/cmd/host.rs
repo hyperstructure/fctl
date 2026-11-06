@@ -107,7 +107,8 @@ pub enum HostCmd {
     /// what the control plane says of it (its id, sessions, whether it drains).
     Status,
     /// Check that everything this machine needs to run sessions as a
-    /// runner is in place: the driver, the image, the agent, the connection.
+    /// runner is in place: its configuration and tokens, the connection,
+    /// the driver, the images, the disk and the service.
     Doctor,
     /// Print the host service's log.
     Logs {
@@ -889,7 +890,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                         return Ok(());
                     }
                     bail!(
-                        "{sessions} on this host. `fctl host uninstall --wait` lets {them} finish first; `--force` stops {them} now."
+                        "{sessions} on this runner. `fctl host uninstall --wait` lets {them} finish first; `--force` stops {them} now."
                     );
                 }
                 let d = api.drain_this_runner(true, true).await?;
