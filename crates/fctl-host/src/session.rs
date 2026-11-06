@@ -120,6 +120,26 @@ impl HostCtx {
             .clone()
     }
 
+    /// Probes the driver this host uses again, now, and notes what it found
+    /// for the next heartbeat: why it isn't ready, or `None` when it is. A
+    /// sandbox it failed to make may have failed for that: Docker stopped
+    /// since the last probe, say.
+    pub async fn recheck_driver(&self) -> Option<String> {
+        let info = self.driver.probe().await;
+        let why = (!info.available).then(|| {
+            info.detail
+                .clone()
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| "not available".into())
+        });
+        let mut drivers = self.drivers.lock().unwrap_or_else(PoisonError::into_inner);
+        match drivers.iter_mut().find(|d| d.name == info.name) {
+            Some(d) => *d = info,
+            None => drivers.push(info),
+        }
+        why
+    }
+
     /// Probes the drivers and measures what sandboxes run on again (Docker's
     /// VM may have been resized), and finds where their disk is. The
     /// runner's hello reports what this found last, so the control

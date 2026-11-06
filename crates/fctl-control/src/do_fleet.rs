@@ -266,6 +266,21 @@ impl Candidate {
 struct LoginRow {
     runner_id: Option<String>,
     user_id: String,
+    /// The runners that may run it, in the order to try them (JSON), and
+    /// whom it is for (JSON `UserRef`): it goes on to the next of them
+    /// when its runner's driver turns out not to be ready. Absent from
+    /// sign-ins started before they were kept.
+    #[serde(default)]
+    runners: Option<String>,
+    #[serde(default)]
+    user: Option<String>,
+    /// The runners it went to whose driver turned out not to be ready
+    /// (JSON), and why the first of them couldn't run it, which it fails
+    /// with when no other can.
+    #[serde(default)]
+    tried: Option<String>,
+    #[serde(default)]
+    first_error: Option<String>,
 }
 
 fn sv(s: &str) -> SqlStorageValue {
@@ -332,6 +347,11 @@ impl DurableObject for FleetObject {
         // Set for a runner whose enrollment token removes it once offline
         // this long (milliseconds), as it said when it connected.
         add_column(&sql, "runners", "remove_after_ms", "INTEGER");
+        // What a sign-in needs to go on to another runner (`LoginRow`).
+        add_column(&sql, "logins", "runners", "TEXT");
+        add_column(&sql, "logins", "user", "TEXT");
+        add_column(&sql, "logins", "tried", "TEXT");
+        add_column(&sql, "logins", "first_error", "TEXT");
         Self {
             state,
             env,
@@ -2531,27 +2551,25 @@ impl FleetObject {
     // ───────────────────────────── Claude sign-in ─────────────────────────────
 
     fn login_start(&self, b: LoginStart) -> std::result::Result<serde_json::Value, ApiError> {
-        let online = self.live_runners().online;
-        // The first online of the runners that may run it, in their order
-        // (the person's own first): a login passes its tokens through the
-        // host. Of those, the first whose driver is ready, as an offline
-        // one would be passed over: a host that can't start a sandbox
-        // fails the sign-in. When none is, the first, which says why.
-        let candidates: Vec<&String> = match &b.runners {
-            Some(allowed) => allowed.iter().filter(|r| online.contains(r)).collect(),
-            None => online.iter().collect(),
+        // The runners that may run it, in their order (the person's own
+        // first): a login passes its tokens through the host.
+        let runners = match b.runners {
+            Some(allowed) => allowed,
+            None => self.live_runners().online,
         };
-        let ready = |r: &&String| {
-            self.hello_of(r)
-                .is_none_or(|h| fctl_domain::schedule::driver_ready(&h.driver, &h.drivers))
-        };
-        let picked = candidates.iter().find(|r| ready(r)).or(candidates.first());
-        let Some(runner_id) = picked.map(|r| (*r).clone()) else {
+        let Some(runner_id) = self.login_runner(&runners, &[]) else {
             return Ok(serde_json::json!({ "ok": false }));
         };
         let _ = self.sql.exec(
-            "INSERT OR REPLACE INTO logins (job_id, runner_id, user_id, created_at) VALUES (?, ?, ?, ?)",
-            Some(vec![sv(b.job_id.as_str()), sv(&runner_id), sv(b.user.id.as_str()), iv(now_ms())]),
+            "INSERT OR REPLACE INTO logins (job_id, runner_id, user_id, created_at, runners, user) VALUES (?, ?, ?, ?, ?, ?)",
+            Some(vec![
+                sv(b.job_id.as_str()),
+                sv(&runner_id),
+                sv(b.user.id.as_str()),
+                iv(now_ms()),
+                sv(&serde_json::to_string(&runners).unwrap_or_default()),
+                sv(&serde_json::to_string(&b.user).unwrap_or_default()),
+            ]),
         );
         let sent = self.send_runner(
             &runner_id,
@@ -2563,10 +2581,76 @@ impl FleetObject {
         Ok(serde_json::json!({ "ok": sent }))
     }
 
+    /// Of `runners`, in the order to try them, the one a sign-in goes to,
+    /// passing over those it went to whose driver wasn't ready (`tried`):
+    /// the first online one whose driver is ready, as its host last said,
+    /// as an offline one would be passed over. When none is, at first the
+    /// first online one, whose host fails it saying why; after that, none
+    /// (`fctl_domain::schedule::login_runner`).
+    fn login_runner(&self, runners: &[String], tried: &[&str]) -> Option<String> {
+        let online = self.live_runners().online;
+        let runners: Vec<fctl_domain::schedule::LoginRunner<'_>> = runners
+            .iter()
+            .map(|r| fctl_domain::schedule::LoginRunner {
+                id: r,
+                online: online.contains(r),
+                ready: self
+                    .hello_of(r)
+                    .is_none_or(|h| fctl_domain::schedule::driver_ready(&h.driver, &h.drivers)),
+            })
+            .collect();
+        fctl_domain::schedule::login_runner(&runners, tried).map(str::to_owned)
+    }
+
+    /// Sends a sign-in whose runner, `from`, found its driver not ready
+    /// (`error`) on to the next of its runners that can run it: the runner
+    /// it went to, or `None` when none can.
+    fn pass_login_on(
+        &self,
+        job_id: &LoginJobId,
+        from: &str,
+        row: &LoginRow,
+        error: &str,
+    ) -> Option<String> {
+        let runners: Vec<String> = serde_json::from_str(row.runners.as_deref()?).ok()?;
+        let user: fctl_proto::session::UserRef = serde_json::from_str(row.user.as_deref()?).ok()?;
+        let mut tried: Vec<String> = row
+            .tried
+            .as_deref()
+            .and_then(|t| serde_json::from_str(t).ok())
+            .unwrap_or_default();
+        tried.push(from.to_owned());
+        let first_error = row.first_error.as_deref().unwrap_or(error);
+        loop {
+            let ids: Vec<&str> = tried.iter().map(String::as_str).collect();
+            let next = self.login_runner(&runners, &ids)?;
+            let _ = self.sql.exec(
+                "UPDATE logins SET runner_id = ?, tried = ?, first_error = ? WHERE job_id = ?",
+                Some(vec![
+                    sv(&next),
+                    sv(&serde_json::to_string(&tried).unwrap_or_default()),
+                    sv(first_error),
+                    sv(job_id.as_str()),
+                ]),
+            );
+            if self.send_runner(
+                &next,
+                &FleetToHost::ClaudeLoginStart {
+                    job_id: job_id.clone(),
+                    user: user.clone(),
+                },
+            ) {
+                return Some(next);
+            }
+            // Gone since: the one after it.
+            tried.push(next);
+        }
+    }
+
     fn login_row(&self, job_id: &str) -> Option<LoginRow> {
         self.sql
             .exec(
-                "SELECT job_id, runner_id, user_id FROM logins WHERE job_id = ?",
+                "SELECT job_id, runner_id, user_id, runners, user, tried, first_error FROM logins WHERE job_id = ?",
                 Some(vec![sv(job_id)]),
             )
             .and_then(|c| c.to_array::<LoginRow>())
@@ -2615,6 +2699,8 @@ impl FleetObject {
             return;
         };
         let Ok(db) = self.env.d1("DB") else { return };
+        // The runner the job is on, as people see it.
+        let mut on = row.runner_id.clone();
         let state = match update {
             ClaudeLoginUpdate::Starting => ClaudeLoginState::Starting,
             // The host may be another member's: only Claude's own page is
@@ -2628,7 +2714,24 @@ impl FleetObject {
                 error: "The runner sent a sign-in link that isn't on claude.ai. Start the sign-in again, or connect a long-lived token instead.".into(),
             },
             ClaudeLoginUpdate::Verifying => ClaudeLoginState::Verifying,
-            ClaudeLoginUpdate::Failed { error } => ClaudeLoginState::Failed { error },
+            // Its runner's driver isn't ready (Docker stopped since its host
+            // last said, say): it goes on to the next of its runners that
+            // can run it, and stays starting meanwhile. When none can, it
+            // fails with the first such runner's reason. Hosts that don't
+            // say why fail it as before.
+            ClaudeLoginUpdate::Failed {
+                error,
+                unready: Some(true),
+            } => match self.pass_login_on(job_id, runner_id, &row, &error) {
+                Some(next) => {
+                    on = Some(next);
+                    ClaudeLoginState::Starting
+                }
+                None => ClaudeLoginState::Failed {
+                    error: row.first_error.clone().unwrap_or(error),
+                },
+            },
+            ClaudeLoginUpdate::Failed { error, .. } => ClaudeLoginState::Failed { error },
             ClaudeLoginUpdate::Succeeded { bundle } => {
                 match self.store_login(&db, &row.user_id, *bundle, now).await {
                     Ok(credential_id) => ClaudeLoginState::Succeeded { credential_id },
@@ -2651,7 +2754,7 @@ impl FleetObject {
             "UPDATE claude_login_jobs SET state = ?, runner_id = ?, updated_at = ? WHERE id = ?",
             &[
                 crate::db::s(&text),
-                crate::db::os(row.runner_id.as_deref()),
+                crate::db::os(on.as_deref()),
                 crate::db::n(now),
                 crate::db::s(job_id.as_str()),
             ],

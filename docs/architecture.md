@@ -773,7 +773,15 @@ removing the connection (`api::claude::remove`). Disabling a runner or
 replacing its token closes its control connection and its sessions'
 uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
-workspaces.
+workspaces: the first of those whose driver is ready, as its host last
+said (`fctl_domain::schedule::login_runner`). When the host can't make the
+sign-in's sandbox, it probes its driver again (Docker may have stopped
+since it last did), and when that isn't ready it sends a heartbeat that
+says so at once, then fails the sign-in saying why it was
+(`ClaudeLoginUpdate::Failed`'s `unready`). FleetDO then sends the sign-in
+on to the next of those runners whose driver is ready, and the job stays
+`starting` meanwhile; when there is none, it fails with the first such
+runner's reason.
 
 Hosts update themselves to the version the control plane runs
 ([Host updates](#host-updates)). The Agent Floor tells the person who
@@ -3251,7 +3259,9 @@ carries on with it, also across another supervisor that dies first.
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
 connection never waits on one: the hello reports what the drivers said
-when the host last probed them (at start and every five minutes), and
+when the host last probed them (at start, every five minutes, and every
+30 seconds while the driver it uses isn't ready, as a Claude sign-in may
+find it between two probes), and
 sweeps and cleanups of sandboxes run in tasks of their own, so heartbeats
 keep flowing. A host that starts while its driver doesn't answer waits to
 connect until it can list its sandboxes, rather than report sessions as
