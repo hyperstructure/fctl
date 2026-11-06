@@ -26,6 +26,8 @@ pub struct ModelName {
     starting: Option<String>,
     /// A name, and the ID of the model Claude took it for.
     known: Option<(String, String)>,
+    /// The ID of the model Claude last said it works on, in this run.
+    working: Option<String>,
 }
 
 impl ModelName {
@@ -33,6 +35,7 @@ impl ModelName {
     pub fn started(&mut self, name: Option<&str>) {
         self.starting = name.map(str::to_owned);
         self.known = None;
+        self.working = None;
     }
 
     /// Claude was asked to switch to `name` and didn't say in time whether
@@ -46,15 +49,18 @@ impl ModelName {
     pub fn switched(&mut self, name: &str, id: &str) {
         self.starting = None;
         self.known = Some((name.to_owned(), id.to_owned()));
+        self.working = Some(id.to_owned());
     }
 
     /// Claude's `system/init` says it works on the model `id`: the name to
     /// show for it.
     pub fn init(&mut self, id: &str) -> String {
-        let other = self.known.as_ref().is_none_or(|(_, known)| known != id);
-        if other && let Some(name) = self.starting.take() {
+        if self.working.as_deref() != Some(id)
+            && let Some(name) = self.starting.take()
+        {
             self.known = Some((name, id.to_owned()));
         }
+        self.working = Some(id.to_owned());
         match &self.known {
             Some((name, known)) if known == id => name.clone(),
             _ => id.to_owned(),
@@ -107,6 +113,7 @@ mod tests {
         m.switched("sonnet", "claude-sonnet-5-5");
         assert_eq!(m.init("claude-sonnet-5-5"), "sonnet");
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
+        assert_eq!(m.init("claude-sonnet-5-5"), "sonnet");
 
         // A switch Claude didn't answer in time: its turns go on on Sonnet
         // until it switches, late, to Haiku.
@@ -118,6 +125,11 @@ mod tests {
         // Started again on Claude's default: nobody named it.
         m.started(None);
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
+        // A switch it didn't answer in time: still Opus, by its ID, until
+        // it switches.
+        m.switching("sonnet");
+        assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
+        assert_eq!(m.init("claude-sonnet-5-5"), "sonnet");
         // Started on a model's ID: the ID.
         m.started(Some("claude-opus-5-5"));
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
