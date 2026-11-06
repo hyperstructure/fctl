@@ -1110,14 +1110,27 @@ async fn service_without_docker() -> Option<String> {
 }
 
 /// Asks a yes-or-no question on the terminal, whose answer is yes unless
-/// it says no.
+/// it says no. Ending the input (Ctrl-D) says no.
 fn confirm_yes(question: &str) -> Result<bool> {
-    use std::io::{BufRead, Write};
+    use std::io::Write;
     print!("{question}");
     std::io::stdout().flush()?;
+    let answer = yes_unless_no(&mut std::io::stdin().lock())?;
+    if answer.is_none() {
+        // What follows goes on a line of its own.
+        println!();
+    }
+    Ok(answer == Some(true))
+}
+
+/// The answer to a question whose answer is yes unless it says no, from
+/// the line `input` gives; `None` when it ends before a line.
+fn yes_unless_no(input: &mut impl std::io::BufRead) -> Result<Option<bool>> {
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
-    Ok(!matches!(line.trim(), "n" | "N" | "no" | "No"))
+    if input.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(!matches!(line.trim(), "n" | "N" | "no" | "No")))
 }
 
 /// Asks a yes-or-no question on the terminal.
@@ -1764,5 +1777,22 @@ async fn doctor() -> Result<()> {
         Ok(())
     } else {
         bail!("{problems} problem(s) found")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_line_that_says_no_says_no() -> Result<()> {
+        let answer = |input: &str| yes_unless_no(&mut input.as_bytes());
+        assert_eq!(answer("\n")?, Some(true));
+        assert_eq!(answer("y\n")?, Some(true));
+        assert_eq!(answer("n\n")?, Some(false));
+        assert_eq!(answer(" No \n")?, Some(false));
+        // Ctrl-D, or no input at all, runs nothing.
+        assert_eq!(answer("")?, None);
+        Ok(())
     }
 }
