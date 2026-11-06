@@ -3501,8 +3501,9 @@ chroot holds hard links of its disks (the images' filesystems readable by
 all), of its kernel and initramfs (copies where they're private or on
 another filesystem), and the sockets Firecracker makes. The jail's user
 owns the chroot, so the host never goes through it: it links the sockets
-themselves into the VM's socket directory, each opened without following
-a link and checked to be a socket. Its writable disk is lent to the
+themselves into a directory of root's beside the chroot, which the VM's
+socket directory leads to, each opened without following a link and
+checked to be a socket. Its writable disk is lent to the
 jail's user while it runs, noted in `jail.json` beside the chroot, and
 given back to root as the VM stops, so that a later jail with the same
 uid owns nothing; jails of VMs that don't run, which a host that stopped

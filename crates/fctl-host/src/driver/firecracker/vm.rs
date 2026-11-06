@@ -249,8 +249,9 @@ impl Vm {
     /// VM's kernel, initramfs and disks ([`make_jail`](Self::make_jail)),
     /// its configuration and its sockets. The jail's user owns the chroot,
     /// so the host never goes through it to reach the sockets: it links
-    /// them into `run`, its own directory, checked to be the sockets
-    /// Firecracker made ([`link_sockets`](Self::link_sockets)).
+    /// them into a directory of its own beside it, checked to be the
+    /// sockets Firecracker made ([`link_sockets`](Self::link_sockets)), and
+    /// `run` leads there.
     async fn start_jailed(&self, spec: &Spec, firecracker: &Path, jail: &Jail) -> Result<()> {
         let jails = self
             .jails
@@ -270,9 +271,15 @@ impl Vm {
             root.join("firecracker.json"),
             serde_json::to_vec_pretty(&config)?,
         )?;
+        // The host's links to the sockets, beside the chroot (on its
+        // filesystem, as links must be), where only root may change them;
+        // `run`, short as sockets' paths must be, leads there.
+        let sockets = root.with_file_name("run");
+        std::fs::create_dir(&sockets)?;
         let _ = std::fs::remove_file(&self.run);
         let _ = std::fs::remove_dir_all(&self.run);
-        std::fs::create_dir_all(&self.run)?;
+        std::os::unix::fs::symlink(&sockets, &self.run)
+            .with_context(|| format!("linking {} to the VM's sockets", self.run.display()))?;
         std::fs::create_dir_all(&self.dir)?;
         let console = std::fs::File::create(self.console())?;
         let mut cmd = std::process::Command::new(&jail.jailer);
@@ -282,7 +289,8 @@ impl Vm {
             .stderr(console);
         spawn_detached(&mut cmd, &self.pid_file("firecracker"))
             .with_context(|| format!("starting {}", jail.jailer.display()))?;
-        self.link_sockets(&root, Duration::from_secs(10)).await
+        self.link_sockets(&root, &sockets, Duration::from_secs(10))
+            .await
     }
 
     /// Makes this VM's jail under `jails` for Firecracker `exec`: a chroot,
@@ -340,11 +348,11 @@ impl Vm {
     }
 
     /// Links the sockets Firecracker makes in the chroot `root`, its API's
-    /// and its vsock's, into `run`, within `within`: each opened without
+    /// and its vsock's, into `sockets`, within `within`: each opened without
     /// following a link and checked to be a socket, then linked by what
     /// was opened, so that the jail's user, who may change the chroot,
     /// can't send the host to another VM's sockets.
-    async fn link_sockets(&self, root: &Path, within: Duration) -> Result<()> {
+    async fn link_sockets(&self, root: &Path, sockets: &Path, within: Duration) -> Result<()> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
         let until = Instant::now() + within;
@@ -359,7 +367,7 @@ impl Vm {
                         if !file.metadata()?.file_type().is_socket() {
                             bail!("{name} in the VM's jail isn't a socket");
                         }
-                        let to = self.run.join(name);
+                        let to = sockets.join(name);
                         let _ = std::fs::remove_file(&to);
                         nix::unistd::linkat(
                             nix::fcntl::AT_FDCWD,
@@ -1286,14 +1294,21 @@ mod tests {
     async fn the_host_links_only_a_jails_own_sockets() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let vm = Vm::new(dir.path().join("fctl-ses-jailed"))?;
-        std::fs::create_dir_all(&vm.run)?;
         let root = dir.path().join("root");
         std::fs::create_dir(&root)?;
+        // As `start_jailed` makes them: `run` leads to the host's links.
+        let sockets = dir.path().join("run");
+        std::fs::create_dir(&sockets)?;
+        std::fs::create_dir_all(vm.run.parent().context("no parent")?)?;
+        let _ = std::fs::remove_file(&vm.run);
+        std::os::unix::fs::symlink(&sockets, &vm.run)?;
         let _api = std::os::unix::net::UnixListener::bind(root.join("api.sock"))?;
         // Another VM's socket, and a link to it where this one's goes.
         let other = std::os::unix::net::UnixListener::bind(dir.path().join("other.sock"))?;
         std::os::unix::fs::symlink(dir.path().join("other.sock"), root.join("v.sock"))?;
-        let e = vm.link_sockets(&root, Duration::from_millis(100)).await;
+        let e = vm
+            .link_sockets(&root, &sockets, Duration::from_millis(100))
+            .await;
         assert_eq!(
             e.map_err(|e| e.to_string()),
             Err("v.sock in the VM's jail isn't a socket".to_owned())
@@ -1303,14 +1318,15 @@ mod tests {
         // Its own: the host's links reach it, whatever the jail does after.
         std::fs::remove_file(root.join("v.sock"))?;
         let own = std::os::unix::net::UnixListener::bind(root.join("v.sock"))?;
-        vm.link_sockets(&root, Duration::from_millis(100)).await?;
+        vm.link_sockets(&root, &sockets, Duration::from_millis(100))
+            .await?;
         std::fs::remove_file(root.join("v.sock"))?;
         std::os::unix::fs::symlink(dir.path().join("other.sock"), root.join("v.sock"))?;
         let _conn = std::os::unix::net::UnixStream::connect(vm.vsock())?;
         own.set_nonblocking(true)?;
         assert!(own.accept().is_ok());
         assert!(std::fs::symlink_metadata(vm.api())?.file_type().is_socket());
-        std::fs::remove_dir_all(&vm.run)?;
+        std::fs::remove_file(&vm.run)?;
         Ok(())
     }
 

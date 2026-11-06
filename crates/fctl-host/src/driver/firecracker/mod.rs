@@ -1437,13 +1437,21 @@ mod tests {
             // A stopped sandbox keeps its disk, and starts again from it.
             d.exec(&sb, "echo kept > \"$HOME/note\"").await?;
             d.stop(&sb).await?;
-            // Its disk, which its jail had, is the host's again.
+            // Its disk, which its jail had, is the host's again, as are the
+            // images' filesystems, which their unpacking VMs' jails had.
             if nix::unistd::geteuid().is_root() {
                 use std::os::unix::fs::MetadataExt;
-                let dir = cfg.data_dir().join("firecracker/sandboxes").join(&name);
-                for entry in std::fs::read_dir(&dir)?.flatten() {
-                    let owner = entry.metadata()?.uid();
-                    assert!(owner < vm::JAIL_ID_BASE, "{:?} is {owner}'s", entry.path());
+                let firecracker = cfg.data_dir().join("firecracker");
+                let images = std::fs::read_dir(firecracker.join("images"))?
+                    .flatten()
+                    .map(|e| e.path().join("rootfs.ext4"))
+                    .filter(|p| p.is_file());
+                let disks = std::fs::read_dir(firecracker.join("sandboxes").join(&name))?
+                    .flatten()
+                    .map(|e| e.path());
+                for path in images.chain(disks) {
+                    let owner = std::fs::symlink_metadata(&path)?.uid();
+                    assert!(owner < vm::JAIL_ID_BASE, "{path:?} is {owner}'s");
                 }
             }
             let listed = d.list().await?;
