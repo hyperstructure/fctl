@@ -2,25 +2,43 @@
 // file has them when that is known, the words that changed marked, one
 // below the other (unified) or before and after side by side (split).
 // Shared by the session's changes (session/diff-dialog.tsx) and the
-// transcript's edits (session/tool.tsx).
+// transcript's edits (session/tool.tsx). The session's changes are live:
+// as the agent changes the file again, the lines that stay keep their
+// rows, and those it changed come in (components/diff-play.ts).
 
 import { CircleSlash } from "lucide-react";
 import {
   type CSSProperties,
-  Fragment,
   memo,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { cn } from "@/lib/cn";
-import { type DiffLine, type Hunk, hiddenBefore, splitRows } from "@/lib/diff";
+import type { DiffLine, Hunk } from "@/lib/diff";
+import {
+  firstLive,
+  type How,
+  type LiveDiff,
+  type LiveHunk,
+  type LiveLine,
+  nextLive,
+  settle,
+  splitLive,
+} from "@/lib/diff-motion";
 import { type Token, tokenize } from "@/lib/highlight";
+import { type LiveView, play, SETTLE_MS } from "./diff-play";
+
+export type { LiveView };
 
 /** Past this many lines a diff shows without highlighting, which would hold the page up. */
 const MOST_HIGHLIGHTED = 6000;
+
+/** How long a live diff's new version waits for its colors before it shows without them (ms). */
+const WAIT_FOR_COLORS = 450;
 
 /**
  * Each line's tokens once Shiki has them, by hunk and line: the lines before
@@ -28,21 +46,22 @@ const MOST_HIGHLIGHTED = 6000;
  * highlighted as pieces of code, so that what spans lines (a comment, a
  * string) shows as it does in the file. None until then, and for plain
  * text. Hunks made again with the same lines, as a transcript's edit's are
- * at each render, keep theirs.
+ * at each render, keep theirs. `pending`: they are on their way.
  */
-export function useTokens(hunks: Hunk[], lang: string): Token[][][] | undefined {
+export function useTokens(hunks: Hunk[], lang: string): { lines?: Token[][][]; pending: boolean } {
   const [tokens, setTokens] = useState<{ key: string; lines: Token[][][] }>();
   const key = useMemo(
     () =>
       `${lang}\u0000${hunks.map((h) => h.lines.map((l) => l.kind[0] + l.text).join("\n")).join("\u0001")}`,
     [hunks, lang],
   );
+  const total = useMemo(() => hunks.reduce((n, h) => n + h.lines.length, 0), [hunks]);
+  const highlights = lang !== "text" && total > 0 && total <= MOST_HIGHLIGHTED;
   const latest = useRef(hunks);
   latest.current = hunks;
   useEffect(() => {
     const hunks = latest.current;
-    const total = hunks.reduce((n, h) => n + h.lines.length, 0);
-    if (lang === "text" || !total || total > MOST_HIGHLIGHTED) return;
+    if (!highlights) return;
     let alive = true;
     (async () => {
       const found: Token[][][] = [];
@@ -51,7 +70,12 @@ export function useTokens(hunks: Hunk[], lang: string): Token[][][] | undefined 
         const after = h.lines.flatMap((l, i) => (l.kind !== "del" ? [i] : []));
         const text = (at: number[]) => at.map((i) => h.lines[i]?.text ?? "");
         const [old, now] = await Promise.all([tokenize(text(before), lang), tokenize(text(after), lang)]);
-        if (!alive || !old || !now) return;
+        if (!alive) return;
+        // A language Shiki doesn't know: plain text, as it will stay.
+        if (!old || !now) {
+          setTokens({ key, lines: [] });
+          return;
+        }
         const lines: Token[][] = [];
         for (const [k, i] of before.entries()) lines[i] = old[k] ?? [];
         // Context lines take their colors from the file as it is now.
@@ -61,12 +85,67 @@ export function useTokens(hunks: Hunk[], lang: string): Token[][][] | undefined 
         await new Promise((r) => setTimeout(r));
       }
       if (alive) setTokens({ key, lines: found });
-    })().catch(() => {});
+    })().catch(() => {
+      if (alive) setTokens({ key, lines: [] });
+    });
     return () => {
       alive = false;
     };
-  }, [key, lang]);
-  return tokens?.key === key ? tokens.lines : undefined;
+  }, [key, lang, highlights]);
+  const lines = tokens?.key === key ? tokens.lines : undefined;
+  return { lines: lines?.length ? lines : undefined, pending: highlights && !lines };
+}
+
+/** No hunks: what a diff whose lines come in shows before they do. */
+const NONE: Hunk[] = [];
+
+/**
+ * The version a live diff shows: the newest once its colors came (or after
+ * a moment without them), so that its new lines come in colored; until
+ * then the one before, with its own (none, for lines that come in). Not
+ * live: always the newest.
+ */
+function useShown(hunks: Hunk[], lang: string, live: boolean, entering: boolean) {
+  const { lines, pending } = useTokens(hunks, lang);
+  const [late, setLate] = useState<Hunk[]>();
+  const before = useRef<{ hunks: Hunk[]; tokens?: Token[][][] } | undefined>(
+    live && entering ? { hunks: NONE } : undefined,
+  );
+  const ready = !live || !pending || late === hunks || !before.current;
+  const shown = ready
+    ? { hunks, tokens: lines }
+    : (before.current as { hunks: Hunk[]; tokens?: Token[][][] });
+  useLayoutEffect(() => {
+    before.current = shown;
+  });
+  useEffect(() => {
+    if (ready) return;
+    const t = setTimeout(() => setLate(hunks), WAIT_FOR_COLORS);
+    return () => clearTimeout(t);
+  }, [ready, hunks]);
+  return shown;
+}
+
+/**
+ * The rows a diff shows. Live, each version's rows are matched to those of
+ * the version before (lib/diff-motion.ts), which settle once they came and
+ * went; `entering`, its first version comes in as new lines do. Not live,
+ * each version shows as it is.
+ */
+function useView(hunks: Hunk[], live: boolean, entering: boolean): LiveDiff {
+  const [view, setView] = useState<LiveDiff>(() => firstLive(live && entering ? NONE : hunks));
+  const fixed = useMemo(() => (live ? undefined : firstLive(hunks)), [live, hunks]);
+  let current = view;
+  if (!fixed && view.hunks !== hunks) {
+    current = nextLive(view, hunks);
+    setView(current);
+  }
+  useEffect(() => {
+    if (fixed || current.items.every((i) => i.how === "kept")) return;
+    const t = setTimeout(() => setView((v) => (v === current ? settle(v) : v)), SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [fixed, current]);
+  return fixed ?? current;
 }
 
 /** A piece of a line: its text, its colors, and whether it changed. */
@@ -151,7 +230,9 @@ export type DiffLayout = "unified" | "split";
 /**
  * A diff's hunks. `numbers`: the file's line numbers, unknown for an edit's
  * strings. `wrap`: long lines wrap rather than scroll; side by side they
- * always wrap.
+ * always wrap. `live`: the diff changes as it shows, and what shows it
+ * keeps the reader's place (session/diff-dialog.tsx); `entering`: its
+ * lines come in as the first ones.
  */
 export function DiffLines({
   hunks,
@@ -161,6 +242,8 @@ export function DiffLines({
   numbers = true,
   headers = true,
   className,
+  live,
+  entering = false,
 }: {
   hunks: Hunk[];
   /** Shiki's id of the file's language (`langOf`). */
@@ -171,49 +254,53 @@ export function DiffLines({
   /** Each hunk's `@@` line: the lines it covers, and what it is in. */
   headers?: boolean;
   className?: string;
+  live?: LiveView;
+  entering?: boolean;
 }) {
-  const highlighted = useTokens(hunks, lang);
-  // Each line's tokens, for the rows side by side as below each other.
+  const shown = useShown(hunks, lang, !!live, entering);
+  const view = useView(shown.hunks, !!live, entering);
+  // Each line's tokens: those of the version it is in, and of the one before for a line that
+  // goes. Read in the render after the one that showed them.
+  const tokensOf = useRef(new Map<string, Token[]>());
   const tokens = useMemo(() => {
-    if (!highlighted) return undefined;
-    const byLine = new Map<DiffLine, Token[]>();
-    for (const [i, h] of hunks.entries()) {
-      for (const [j, l] of h.lines.entries()) {
-        const t = highlighted[i]?.[j];
-        if (t) byLine.set(l, t);
-      }
+    const byId = new Map<string, Token[]>();
+    for (const it of view.items) {
+      if (it.type !== "line") continue;
+      const t = it.how === "gone" ? tokensOf.current.get(it.id) : shown.tokens?.[it.h]?.[it.j];
+      if (t) byId.set(it.id, t);
     }
-    return byLine;
-  }, [highlighted, hunks]);
+    return byId;
+  }, [view.items, shown.tokens]);
+  useLayoutEffect(() => {
+    tokensOf.current = tokens;
+  }, [tokens]);
   // The gutters are as wide as the longest number.
   const digits = useMemo(() => {
     let most = 0;
-    for (const h of hunks) most = Math.max(most, h.oldStart + h.oldLines, h.newStart + h.newLines);
+    for (const h of view.hunks) most = Math.max(most, h.oldStart + h.oldLines, h.newStart + h.newLines);
     return Math.max(2, String(most).length);
-  }, [hunks]);
+  }, [view.hunks]);
   const split = layout === "split";
-  // Side by side, each hunk's rows, with where their lines are in it (`h:j`).
-  const sides = useMemo(
-    () =>
-      split
-        ? hunks.map((h, i) => {
-            const at = new Map(h.lines.map((l, j) => [l, `${i}:${j}`]));
-            return splitRows(h.lines).map((r) => ({
-              ...r,
-              leftAt: r.left && at.get(r.left),
-              rightAt: r.right && at.get(r.right),
-            }));
-          })
-        : undefined,
-    [hunks, split],
-  );
+  const pairs = useMemo(() => (split ? splitLive(view.items) : undefined), [split, view.items]);
   // One hunk from the file's top, as a new or deleted file's: its `@@` line says nothing the numbers don't.
-  const first = hunks[0];
+  const first = view.hunks[0];
   const wholeFile =
-    hunks.length === 1 && !!first && first.oldStart <= 1 && first.newStart <= 1 && !first.section;
+    view.hunks.length === 1 && !!first && first.oldStart <= 1 && first.newStart <= 1 && !first.section;
+  const showHeaders = headers && !wholeFile;
+
+  // The rows of each new version come in and go where the reader sees them.
+  const box = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once for each version
+  useLayoutEffect(() => {
+    if (live && box.current && view.items.some((i) => i.how !== "kept")) play(box.current, live);
+  }, [view.version]);
+
   const style = { "--diff-digits": `${digits}ch` } as CSSProperties;
+  const header = (it: LiveHunk) =>
+    showHeaders && <HunkHeader key={it.id} item={it} hidden={it.hidden} numbers={numbers} split={split} />;
   return (
     <div
+      ref={box}
       className={cn(
         "diff font-mono text-[12.5px] leading-5",
         split || wrap ? "diff-wrap" : "diff-scroll",
@@ -222,56 +309,86 @@ export function DiffLines({
       style={style}
     >
       <div className={cn(!split && !wrap && "w-max min-w-full")}>
-        {hunks.map((h, i) => (
-          <Fragment key={`${h.oldStart}:${h.newStart}:${i}`}>
-            {headers && !wholeFile && (
-              <HunkHeader hunk={h} hidden={hiddenBefore(hunks, i)} numbers={numbers} split={split} />
+        {pairs
+          ? pairs.map((row) =>
+              row.type === "hunk" ? (
+                header(row)
+              ) : (
+                <div key={row.id} className="grid grid-cols-2" data-open={pairOpen(row.left, row.right)}>
+                  <Side
+                    item={row.left}
+                    side="old"
+                    tokens={row.left && tokens.get(row.left.id)}
+                    numbers={numbers}
+                  />
+                  <Side
+                    item={row.right}
+                    side="new"
+                    tokens={row.right && tokens.get(row.right.id)}
+                    numbers={numbers}
+                    divided
+                  />
+                </div>
+              ),
+            )
+          : view.items.map((it) =>
+              it.type === "hunk" ? (
+                header(it)
+              ) : (
+                <Row key={it.id} item={it} tokens={tokens.get(it.id)} numbers={numbers} />
+              ),
             )}
-            {sides
-              ? sides[i]?.map((row, j) => (
-                  <div key={j} className="grid grid-cols-2">
-                    <Side
-                      line={row.left}
-                      at={row.leftAt}
-                      side="old"
-                      tokens={row.left && tokens?.get(row.left)}
-                      numbers={numbers}
-                    />
-                    <Side
-                      line={row.right}
-                      at={row.rightAt}
-                      side="new"
-                      tokens={row.right && tokens?.get(row.right)}
-                      numbers={numbers}
-                      divided
-                    />
-                  </div>
-                ))
-              : h.lines.map((l, j) => (
-                  <Row key={j} line={l} at={`${i}:${j}`} tokens={tokens?.get(l)} numbers={numbers} />
-                ))}
-          </Fragment>
-        ))}
       </div>
     </div>
   );
 }
 
+/** Whether a row opens as it comes or closes as it goes: one that comes is new, one that goes is gone. */
+function opens(how: How): "in" | "out" | undefined {
+  return how === "entered" || how === "moved" ? "in" : how === "gone" ? "out" : undefined;
+}
+
+/** A row side by side opens or closes when each line in it does. */
+function pairOpen(left?: LiveLine, right?: LiveLine) {
+  const l = left && opens(left.how);
+  const r = right && opens(right.how);
+  return left && right ? (l === r ? l : undefined) : (l ?? r);
+}
+
+/**
+ * How a line's code comes, for what plays it: the agent's changes, not the
+ * unchanged lines around them. Code it added is written in; a line it took
+ * out, which showed or not, turns red.
+ */
+function written(item: LiveLine): string | undefined {
+  const { how, line } = item;
+  if (how === "entered") return line.kind === "add" ? "entered" : line.kind === "del" ? "marked" : undefined;
+  if (how === "rewritten" || how === "marked" || how === "unmarked") return how;
+  return undefined;
+}
+
 /** A hunk's `@@` line, which says where its lines are, how many lie hidden before it, and what they are in. */
 function HunkHeader({
-  hunk,
+  item,
   hidden,
   numbers,
   split,
 }: {
-  hunk: Hunk;
+  item: LiveHunk;
   hidden: number;
   numbers: boolean;
   split: boolean;
 }) {
+  const { hunk } = item;
   const range = (start: number, count: number) => (count === 1 ? `${start}` : `${start},${count}`);
+  const gone = item.how === "gone";
   return (
-    <div className="diff-hunk flex min-h-7 items-center" data-hunk="">
+    <div
+      className="diff-hunk flex min-h-7 items-center"
+      data-hunk={gone ? undefined : ""}
+      data-open={opens(item.how)}
+      aria-hidden={gone || undefined}
+    >
       {numbers && !split && (
         <span className="diff-gutter diff-gutter-two flex shrink-0 items-center justify-center select-none">
           <span className="text-[11px] tracking-[0.2em]" aria-hidden="true">
@@ -294,21 +411,31 @@ function HunkHeader({
   );
 }
 
-/** A line below the others: its numbers before and after, its mark, its code. */
-function Row({
-  line,
-  at,
-  tokens,
-  numbers,
-}: {
-  line: DiffLine;
-  /** Its hunk and its place in it, `h:j`, which finding in the diff goes by (`data-l`). */
-  at: string;
-  tokens?: Token[];
-  numbers: boolean;
-}) {
+/** A line's code, in a box that a line written over shows what it said before in, as it changes. */
+function CodeBox({ item, tokens, pad }: { item: LiveLine; tokens?: Token[]; pad: string }) {
   return (
-    <div className="diff-line flex" data-kind={line.kind} data-l={at}>
+    <span className={cn("diff-code min-w-0 flex-1", pad)} data-was={item.was?.text}>
+      <span className="diff-text">
+        <Code line={item.line} tokens={tokens} />
+      </span>
+    </span>
+  );
+}
+
+/** A line below the others: its numbers before and after, its mark, its code. */
+function Row({ item, tokens, numbers }: { item: LiveLine; tokens?: Token[]; numbers: boolean }) {
+  const { line } = item;
+  const gone = item.how === "gone";
+  return (
+    <div
+      className="diff-line flex"
+      data-kind={line.kind}
+      // Its hunk and its place in it, `h:j`, which finding in the diff goes by.
+      data-l={gone ? undefined : `${item.h}:${item.j}`}
+      data-open={opens(item.how)}
+      data-how={written(item)}
+      aria-hidden={gone || undefined}
+    >
       {numbers && (
         <span className="diff-gutter diff-gutter-two flex shrink-0 select-none">
           <LineNumber n={line.old} />
@@ -316,35 +443,35 @@ function Row({
         </span>
       )}
       <Mark kind={line.kind} />
-      <span className="diff-code min-w-0 flex-1 pr-4">
-        <Code line={line} tokens={tokens} />
-      </span>
+      <CodeBox item={item} tokens={tokens} pad="pr-4" />
     </div>
   );
 }
 
 /** One side of a line side by side: before (`old`) or after (`new`), empty where that side has none. */
 function Side({
-  line,
-  at,
+  item,
   side,
   tokens,
   numbers,
   divided,
 }: {
-  line?: DiffLine;
-  at?: string;
+  item?: LiveLine;
   side: "old" | "new";
   tokens?: Token[];
   numbers: boolean;
   divided?: boolean;
 }) {
-  if (!line) return <div className={cn("diff-line diff-empty", divided && "diff-divided")} />;
+  if (!item) return <div className={cn("diff-line diff-empty", divided && "diff-divided")} />;
+  const { line } = item;
+  const gone = item.how === "gone";
   return (
     <div
       className={cn("diff-line flex min-w-0", divided && "diff-divided")}
       data-kind={line.kind}
-      data-l={at}
+      data-l={gone ? undefined : `${item.h}:${item.j}`}
+      data-how={written(item)}
+      aria-hidden={gone || undefined}
     >
       {numbers && (
         <span className="diff-gutter flex shrink-0 select-none">
@@ -352,9 +479,7 @@ function Side({
         </span>
       )}
       <Mark kind={line.kind} />
-      <span className="diff-code min-w-0 flex-1 pr-3">
-        <Code line={line} tokens={tokens} />
-      </span>
+      <CodeBox item={item} tokens={tokens} pad="pr-3" />
     </div>
   );
 }

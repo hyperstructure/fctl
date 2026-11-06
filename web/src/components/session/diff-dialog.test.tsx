@@ -359,6 +359,76 @@ describe("the session's changes over the page", () => {
     expect(scrolls).not.toHaveBeenCalled();
   });
 
+  it("follows the agent: a file it changes again changes where it shows, its lines that stay on their rows", async () => {
+    const { dialog, section, client, render } = open({ path: "src/a.rs" });
+    await settle();
+    const rows = () => [...(section("src/a.rs")?.querySelectorAll<HTMLElement>(".diff-line") ?? [])];
+    const before = rows();
+    expect(before.map((r) => r.querySelector(".diff-code")?.textContent)).toEqual([
+      "fn a() {",
+      "    1",
+      "    2",
+    ]);
+    const changed = { ...file("src/a.rs", "modified", 2, 1), digest: "d-src/a.rs-2" };
+    client.setQueryData(
+      keys.fileDiff("ses_1", "", "src/a.rs", "d-src/a.rs-2"),
+      diff("src/a.rs", {
+        digest: "d-src/a.rs-2",
+        patch: "@@ -1,2 +1,3 @@\n fn a() {\n-    1\n+    2\n+    3",
+      }),
+    );
+    render(groups.map((g) => ({ ...g, files: g.files.map((f) => (f.path === "src/a.rs" ? changed : f)) })));
+    await settle();
+    await settle();
+    const after = rows();
+    expect(after.map((r) => r.querySelector(".diff-code")?.textContent)).toEqual([
+      "fn a() {",
+      "    1",
+      "    2",
+      "    3",
+    ]);
+    // The same rows, and a new one for the line the agent added.
+    expect(after.slice(0, 3)).toEqual(before);
+    expect(after[3]?.dataset.how).toBe("entered");
+    expect(section("src/a.rs")?.querySelector("h3")?.parentElement?.textContent).toContain("Updated");
+    // Its counts roll to the new ones (the one before, for the eyes only, rolls away).
+    const heard = (el?: Element | null) => {
+      const copy = el?.cloneNode(true) as Element | undefined;
+      for (const h of copy?.querySelectorAll('[aria-hidden="true"]') ?? []) h.remove();
+      return copy?.textContent ?? "";
+    };
+    expect(heard(section("src/a.rs")?.querySelector("h3")?.parentElement)).toContain("+2 −1");
+    // In the list, the file says it just changed.
+    expect(dialog.querySelector('aside button[title="src/a.rs"]')?.textContent).toContain("Just changed");
+  });
+
+  it("brings in a file the agent changes first while it shows, its lines coming in", async () => {
+    const { dialog, section, client, render } = open({ path: "README.md" });
+    await settle();
+    const added = file("src/c.rs", "untracked", 2, 0);
+    client.setQueryData(
+      keys.fileDiff("ses_1", "", "src/c.rs", "d-src/c.rs"),
+      diff("src/c.rs", { status: "untracked", patch: "@@ -0,0 +1,2 @@\n+fn c() {}\n+fn d() {}" }),
+    );
+    render(groups.map((g, i) => (i === 0 ? { ...g, files: [...g.files, added] } : g)));
+    await settle();
+    await settle();
+    const c = section("src/c.rs");
+    expect(c?.textContent).toContain("New");
+    expect([...(c?.querySelectorAll<HTMLElement>(".diff-line") ?? [])].map((r) => r.dataset.how)).toEqual([
+      "entered",
+      "entered",
+    ]);
+    // The list takes it in too.
+    expect(dialog.querySelector('aside button[title="src/c.rs"]')?.closest("li")?.className).toContain(
+      "step-in",
+    );
+    // A file that was there as the dialog opened comes in no more than it did.
+    expect(dialog.querySelector('aside button[title="src/a.rs"]')?.closest("li")?.className).not.toContain(
+      "step-in",
+    );
+  });
+
   it("shows the file opened in the list once the dialog shows", async () => {
     const seen: boolean[] = [];
     vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {

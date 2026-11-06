@@ -2,7 +2,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parsePatch } from "@/lib/diff";
-import { DiffLines } from "./diff";
+import { DiffLines, type LiveView } from "./diff";
+import { SETTLE_MS } from "./diff-play";
 
 // No Shiki in tests: lines show as plain text, unless a test colors them.
 const highlight = vi.hoisted(() => ({
@@ -140,5 +141,163 @@ describe("a diff's lines", () => {
     const c = render(<DiffLines hunks={parsePatch(PATCH)} lang="rust" numbers={false} headers={false} />);
     expect(c.querySelector(".diff-number")).toBeNull();
     expect(c.querySelector("[data-hunk]")).toBeNull();
+  });
+});
+
+/** What shows a live diff: here, all of it in view, unless `band` says otherwise. */
+const shower = (band: { top: number; bottom: number } = { top: -1, bottom: 10_000 }) => ({
+  hold: vi.fn(),
+  moving: vi.fn(),
+  band: () => band,
+  unseen: vi.fn(),
+});
+
+/** A live diff, drawn again with each version. */
+function live(view: LiveView, { entering = false }: { entering?: boolean } = {}) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const draw = (...lines: string[]) =>
+    act(() =>
+      root.render(
+        <DiffLines hunks={parsePatch(lines.join("\n"))} lang="text" live={view} entering={entering} />,
+      ),
+    );
+  roots.push(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  const row = (text: string) =>
+    [...container.querySelectorAll<HTMLElement>(".diff-line")].find(
+      (r) => r.querySelector(".diff-code")?.textContent === text,
+    );
+  return { container, draw, row };
+}
+
+describe("a live diff's lines", () => {
+  const V1 = ["@@ -1,3 +1,4 @@", " fn a() {", "+    one();", "+    two();", " }"];
+
+  it("keep their rows as the file changes, and those that come play in", () => {
+    const view = shower();
+    const { draw, row } = live(view);
+    draw(...V1);
+    const kept = ["fn a() {", "    one();", "    two();", "}"].map(row);
+    expect(kept.every(Boolean)).toBe(true);
+    // Nothing plays as the diff first shows.
+    expect(view.moving).not.toHaveBeenCalled();
+    draw("@@ -1,3 +1,5 @@", " fn a() {", "+    one();", "+    between();", "+    two();", " }");
+    expect(["fn a() {", "    one();", "    two();", "}"].map(row)).toEqual(kept);
+    const added = row("    between();");
+    expect(added?.dataset.open).toBe("in");
+    expect(added?.dataset.how).toBe("entered");
+    // Written in where it shows, behind a caret as wide as its code.
+    expect(added?.dataset.play).toBe("entered");
+    expect(added?.style.getPropertyValue("--diff-chars")).toBe("14");
+    expect(kept.every((r) => !r?.dataset.play)).toBe(true);
+    expect(view.hold).toHaveBeenCalled();
+    expect(view.moving).toHaveBeenCalled();
+    expect(view.unseen).not.toHaveBeenCalled();
+    expect(added?.dataset.l).toBe("0:2");
+  });
+
+  it("close the rows of lines that went, then take them out", async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, draw, row } = live(shower());
+      draw(...V1);
+      draw("@@ -1,3 +1,3 @@", " fn a() {", "+    one();", " }");
+      const gone = row("    two();");
+      // Still there as it closes, for the eyes only: no place to find in, nothing to read out.
+      expect(gone?.dataset.open).toBe("out");
+      expect(gone?.getAttribute("aria-hidden")).toBe("true");
+      expect(gone?.dataset.l).toBeUndefined();
+      act(() => vi.advanceTimersByTime(SETTLE_MS + 10));
+      expect(row("    two();")).toBeUndefined();
+      expect(container.querySelector("[data-open], [data-how]")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rewrite a line added before on its row, over what it said", () => {
+    const { draw, row } = live(shower());
+    draw("@@ -1,2 +1,2 @@", " let a = 1;", "-let b = 2;", "+let b = 3;");
+    const before = row("let b = 3;");
+    draw("@@ -1,2 +1,2 @@", " let a = 1;", "-let b = 2;", "+let b = a + 3;");
+    const after = row("let b = a + 3;");
+    expect(after).toBe(before);
+    expect(after?.dataset.play).toBe("rewritten");
+    expect(after?.querySelector<HTMLElement>(".diff-code")?.dataset.was).toBe("let b = 3;");
+    // What it said before shows from its pseudo-element: not in its text, which finding reads.
+    expect(after?.querySelector(".diff-code")?.textContent).toBe("let b = a + 3;");
+  });
+
+  it("turn a line red that the agent took out", () => {
+    const { draw, row } = live(shower());
+    draw("@@ -1,3 +1,3 @@", " a", " b", "-c", "+C");
+    draw("@@ -1,3 +1,2 @@", " a", "-b", "-c", "+C");
+    expect(row("b")?.dataset.play).toBe("marked");
+    expect(row("b")?.dataset.kind).toBe("del");
+  });
+
+  it("say which changes came out of sight, each a run of rows, instead of playing them", () => {
+    const view = shower({ top: -10, bottom: -5 });
+    const { draw, row } = live(view);
+    draw(...V1);
+    draw("@@ -1,3 +1,6 @@", " fn a() {", "+    zero();", "+    one();", "+    two();", " }", "+// end");
+    expect(view.unseen).toHaveBeenCalledTimes(1);
+    const changes = view.unseen.mock.calls[0]?.[0] as HTMLElement[][];
+    expect(changes.map((c) => c.map((r) => r.querySelector(".diff-code")?.textContent))).toEqual([
+      ["    zero();"],
+      ["// end"],
+    ]);
+    expect(row("    zero();")?.dataset.play).toBeUndefined();
+  });
+
+  it("come in from nothing, as a file's lines do when the agent changed it first", () => {
+    const { container, draw } = live(shower(), { entering: true });
+    draw("@@ -0,0 +1,2 @@", "+# Notes", "+Hi");
+    expect([...container.querySelectorAll(".diff-line")].map((r) => (r as HTMLElement).dataset.how)).toEqual([
+      "entered",
+      "entered",
+    ]);
+  });
+
+  it("wait for the colors of a new version before it shows", async () => {
+    let color: (t: unknown) => void = () => {};
+    highlight.tokenize.mockImplementation(
+      (lines: string[]) =>
+        new Promise((r) => {
+          if (lines.some((l) => l.includes("between"))) color = r;
+          else r(lines.map((l) => [{ content: l, style: { "--shiki-dark": "#abcdef" } }]));
+        }),
+    );
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const view = shower();
+    const draw = (...lines: string[]) =>
+      act(() => root.render(<DiffLines hunks={parsePatch(lines.join("\n"))} lang="rust" live={view} />));
+    roots.push(() => {
+      act(() => root.unmount());
+      container.remove();
+    });
+    draw(...V1);
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    draw("@@ -1,3 +1,5 @@", " fn a() {", "+    one();", "+    between();", "+    two();", " }");
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    const codes = () => [...container.querySelectorAll(".diff-code")].map((c) => c.textContent);
+    // The version before, colored, until the new one's colors come.
+    expect(codes()).not.toContain("    between();");
+    await act(async () => {
+      color(
+        ["fn a() {", "    one();", "    between();", "    two();", "}"].map((l) => [
+          { content: l, style: { "--shiki-dark": "#abcdef" } },
+        ]),
+      );
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(codes()).toContain("    between();");
+    expect(container.querySelector('[data-how="entered"] .diff-code span[style]')).not.toBeNull();
   });
 });
