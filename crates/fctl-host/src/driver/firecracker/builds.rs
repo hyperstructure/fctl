@@ -99,17 +99,15 @@ impl FirecrackerDriver {
             .ensure(&spec, log)
             .await
             .context("starting the image builder")?;
-        let built = tokio::time::timeout(job.limit, self.build_in(&sb.name, job, log)).await;
+        // A build that is dropped halfway (its session stopped) leaves no
+        // builder running.
+        let mut running = Running(Some(self.vm(&name)?));
+        let built = self.build_in(&sb.name, job, log).await;
         if let Err(e) = self.stop(&sb).await {
             tracing::warn!("stopping the image builder {name}: {e:#}");
         }
-        match built {
-            Ok(result) => result,
-            Err(_) => bail!(
-                "The image build took longer than {} minutes, so the host stopped it (build_timeout_minutes in host.toml)",
-                job.limit.as_secs() / 60
-            ),
-        }
+        running.0 = None;
+        built
     }
 
     /// A program for the builder VM `name`, as root.
@@ -172,30 +170,37 @@ impl FirecrackerDriver {
         self.send_archive(name, &dockerfile_tar, &format!("{WORK}/dockerfile"))
             .await
             .context("sending the Dockerfile to the image builder")?;
-        self.run_buildctl(name, job, log).await?;
+        // The build itself takes at most `build_timeout_minutes`, as
+        // `docker build` does.
+        tokio::time::timeout(job.limit, self.run_buildctl(name, job, log))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "The image build took longer than {} minutes, so the host stopped it (build_timeout_minutes in host.toml)",
+                    job.limit.as_secs() / 60
+                )
+            })??;
         // The image, back as an OCI archive, kept as a pull would keep it:
-        // beside the images, on their filesystem.
-        let downloads = self.root.join("downloads").join(format!(
+        // beside the images, on their filesystem, which a build dropped
+        // halfway leaves too.
+        let downloads = Scratch(self.root.join("downloads").join(format!(
             "build-{}",
             hex::encode(fctl_domain::random_bytes::<6>())
-        ));
-        std::fs::create_dir_all(&downloads)?;
-        let kept = async {
-            let image_tar = downloads.join("image.tar");
-            self.receive_file(name, &format!("{WORK}/image.tar"), &image_tar)
-                .await
-                .context("getting the image from the image builder")?;
-            let _ = self.builder_sh(name, &format!("rm -rf {WORK}")).await;
-            let blobs = downloads.join("blobs");
-            let image = tokio::task::spawn_blocking(move || {
-                oci::read(&image_tar, &blobs, std::env::consts::ARCH)
-            })
-            .await??;
-            self.keep_built(job.tag, image, &downloads, log).await
-        }
-        .await;
-        let _ = std::fs::remove_dir_all(&downloads);
-        kept
+        )));
+        std::fs::create_dir_all(&downloads.0)?;
+        let image_tar = downloads.0.join("image.tar");
+        let most = u64::from(self.host.max_build_mb) * 1024 * 1024;
+        self.receive_file(name, &format!("{WORK}/image.tar"), &image_tar, most)
+            .await
+            .context("getting the image from the image builder")?;
+        let _ = self.builder_sh(name, &format!("rm -rf {WORK}")).await;
+        let blobs = downloads.0.join("blobs");
+        let tar = image_tar.clone();
+        let image =
+            tokio::task::spawn_blocking(move || oci::read(&tar, &blobs, std::env::consts::ARCH))
+                .await??;
+        let _ = std::fs::remove_file(&image_tar);
+        self.keep_built(job.tag, image, &downloads.0, log).await
     }
 
     /// Starts buildkitd in the builder VM `name` as root, unless it runs,
@@ -258,14 +263,28 @@ impl FirecrackerDriver {
         }
     }
 
-    /// Copies `from` in the builder VM `name` to `to` on the host.
-    async fn receive_file(&self, name: &str, from: &str, to: &Path) -> Result<()> {
+    /// Copies `from` in the builder VM `name` to `to` on the host, up to
+    /// `most` bytes: an image larger than the host keeps (`max_build_mb`)
+    /// stops there.
+    async fn receive_file(&self, name: &str, from: &str, to: &Path, most: u64) -> Result<()> {
         let vm = self.vm(name)?;
         let exec = self.as_root(name, vec!["cat".into(), from.into()]);
         let mut started = vsock::start(&vm.vsock(), exec).await?;
         started.stdin.shutdown().await?;
         let mut file = tokio::fs::File::create(to).await?;
-        tokio::io::copy(&mut started.stdout, &mut file).await?;
+        let copied = tokio::io::copy(
+            &mut tokio::io::AsyncReadExt::take(&mut started.stdout, most.saturating_add(1)),
+            &mut file,
+        )
+        .await?;
+        if copied > most {
+            drop(file);
+            let _ = std::fs::remove_file(to);
+            bail!(
+                "The image is larger than the {} this host keeps (max_build_mb in host.toml)",
+                fctl_domain::size::memory(most / 1024 / 1024)
+            );
+        }
         file.flush().await?;
         match started.exit.await.ok().flatten() {
             Some(0) => Ok(()),
@@ -319,6 +338,11 @@ impl FirecrackerDriver {
         log: Log<'_>,
     ) -> Result<()> {
         let key = images::canonical(tag).with_context(|| format!("{tag} isn't an image name"))?;
+        // An id of its own, which no pulled image has: the builder's VM
+        // wrote its config, and a config copied from another image (the
+        // default one, say) mustn't take that image's place.
+        let mut image = image;
+        image.resolved.id = built_id(&image.resolved);
         if self.store.image(&image.resolved.id).is_some() {
             let _images = self.lock_images().await?;
             return self.store.tag(tag, &image.resolved.id);
@@ -339,6 +363,41 @@ impl FirecrackerDriver {
         self.keep(tag, key, &image.resolved, &rootfs, files, bytes)
             .await
     }
+}
+
+/// What stops a builder VM whose build was dropped halfway: the VM, until
+/// the build is done.
+struct Running(Option<super::Vm>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(vm) = self.0.take() {
+            vm.kill_now();
+        }
+    }
+}
+
+/// A directory that goes with this.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The id a built image keeps: its config's digest and its layers', which
+/// a pulled image's (its config's digest alone) never is.
+fn built_id(resolved: &super::registry::Resolved) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"fctl built image\n");
+    hasher.update(resolved.id.as_bytes());
+    for layer in &resolved.layers {
+        hasher.update(b"\n");
+        hasher.update(layer.digest.as_bytes());
+    }
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 /// Writes the directory tree `dir` as a tar archive to `to`, its symlinks
@@ -379,6 +438,29 @@ mod tests {
             builder_name("fctl-build-prj_a:1"),
             builder_name("fctl-build-prj_b:1")
         );
+    }
+
+    /// A built image's id is never its config's digest, which a pulled
+    /// image's is, and changes with its layers.
+    #[test]
+    fn built_images_have_ids_no_pull_has() {
+        let resolved = |layers: &[&str]| super::super::registry::Resolved {
+            id: format!("sha256:{}", "c".repeat(64)),
+            config: Default::default(),
+            layers: layers
+                .iter()
+                .map(|d| super::super::registry::Descriptor {
+                    media_type: String::new(),
+                    digest: (*d).into(),
+                    size: 1,
+                })
+                .collect(),
+        };
+        let one = built_id(&resolved(&["sha256:1"]));
+        assert_ne!(one, resolved(&[]).id);
+        assert!(one.starts_with("sha256:") && one.len() == 71);
+        assert_eq!(one, built_id(&resolved(&["sha256:1"])));
+        assert_ne!(one, built_id(&resolved(&["sha256:2"])));
     }
 
     #[test]

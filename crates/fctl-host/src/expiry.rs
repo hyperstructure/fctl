@@ -9,7 +9,7 @@
 //! longest first, until there is room again. Resuming that session later
 //! creates a new sandbox on its branch, and Claude starts a new conversation.
 
-use crate::driver::{SandboxInfo, session_of};
+use crate::driver::{SandboxInfo, is_builder, session_of};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -94,7 +94,8 @@ pub fn plan(
     let mut plan = Plan::default();
     let mut others = Vec::new();
     for sb in sandboxes {
-        if session_of(&sb.name).is_none() || sb.running || in_use.contains(&sb.name) {
+        let ours = session_of(&sb.name).is_some() || is_builder(&sb.name);
+        if !ours || sb.running || in_use.contains(&sb.name) {
             continue;
         }
         let since = stopped.get(&sb.name).copied().unwrap_or(now);
@@ -126,6 +127,26 @@ mod tests {
             name: name.into(),
             running,
         }
+    }
+
+    /// A project's image builder keeps its build cache while stopped, until
+    /// it has been stopped as long as a session's sandbox may be, or the
+    /// disk runs low; never while it builds.
+    #[test]
+    fn image_builders_expire_as_sessions_sandboxes_do() {
+        let stopped = Stopped::from([
+            ("fctl-builder-prj-01old".into(), 0),
+            ("fctl-builder-prj-01busy".into(), 0),
+        ]);
+        let list = [
+            sb("fctl-builder-prj-01old", false),
+            sb("fctl-builder-prj-01busy", true),
+            sb("fctl-login-01x", false),
+        ];
+        let plan = plan(&stopped, &list, &HashSet::new(), 80 * HOUR, Some(72 * HOUR));
+        assert_eq!(plan.expired, ["fctl-builder-prj-01old"]);
+        assert!(plan.oldest_first.is_empty());
+        assert!(!plan.stopped.contains_key("fctl-login-01x"));
     }
 
     #[test]

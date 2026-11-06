@@ -323,6 +323,20 @@ impl Daemon {
         match listed {
             Ok(list) => {
                 for sb in list.into_iter().filter(|s| s.running) {
+                    // A builder that ran when the host stopped builds nothing
+                    // now: it stops, keeping its cache.
+                    if crate::driver::is_builder(&sb.name) {
+                        tracing::info!("stopping {}, which built for no one", sb.name);
+                        if let Err(e) = self
+                            .ctx
+                            .driver
+                            .stop(&self.ctx.driver.handle(&sb.name))
+                            .await
+                        {
+                            tracing::warn!("stopping {}: {e:#}", sb.name);
+                        }
+                        continue;
+                    }
                     if let Some(id) = session_of(&sb.name).map(SessionId) {
                         tracing::info!("recovering {id} from {}", sb.name);
                         let h = session::spawn(
