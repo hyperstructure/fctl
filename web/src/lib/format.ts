@@ -77,6 +77,11 @@ export function lowOnDisk(r: Pick<G.Runner, "disk_available_mb" | "min_free_disk
   );
 }
 
+/** Whether a runner is nearly out of disk: what its sessions write is about to fail. */
+export function outOfDisk(r: Pick<G.Runner, "disk_room">): boolean {
+  return r.disk_room === "out";
+}
+
 /** "12.3 GiB of disk free, below the 20 GiB it keeps free", as the CLI says it. */
 export function diskBelow(freeMb: number, minFreeMb: number): string {
   return `${memory(freeMb)} of disk free, below the ${memory(minFreeMb)} it keeps free`;

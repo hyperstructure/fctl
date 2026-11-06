@@ -8,6 +8,8 @@ import { SessionPage } from "./session";
 
 /** The session the address names. */
 const route = vi.hoisted(() => ({ id: "ses_a" }));
+/** The live sessions the page made, by id, to say what their server would. */
+const stores = vi.hoisted(() => new Map<string, { onMessage(m: unknown): void }>());
 
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({ id: route.id }),
@@ -23,7 +25,10 @@ vi.mock("@/lib/live", async (original) => {
   return {
     ...live,
     useLiveSession: (id: string, initial?: G.Session) => {
-      const store = useMemo(() => new live.LiveSession(id, initial), [id, initial]);
+      // One for each session, as the real one keeps it while the cached session changes.
+      // biome-ignore lint/correctness/useExhaustiveDependencies: initial seeds the store only
+      const store = useMemo(() => new live.LiveSession(id, initial), [id]);
+      stores.set(id, store as unknown as { onMessage(m: unknown): void });
       return [store.getSnapshot(), store];
     },
   };
@@ -42,6 +47,7 @@ afterEach(() => {
   queryClient.clear();
   vi.unstubAllGlobals();
   route.id = "ses_a";
+  stores.clear();
 });
 
 function session(id: string, number: number, title: string): G.Session {
@@ -97,6 +103,15 @@ function page() {
       route.id = id;
       render();
     },
+    /** The session's server says this, and the page shows it. */
+    hear(m: G.ViewerServer) {
+      act(() => stores.get(route.id)?.onMessage(m));
+      render();
+    },
+    text: () => container.textContent ?? "",
+    /** Whether the transcript shows the agent at work. */
+    working: () =>
+      [...container.querySelectorAll(".text-shimmer")].some((e) => e.textContent?.startsWith("Working")),
     click(selector: string) {
       const button = container.querySelector<HTMLButtonElement>(selector);
       expect(button).not.toBeNull();
@@ -133,6 +148,48 @@ describe("SessionPage", () => {
 
     p.go("ses_b");
     expect(open()).toEqual([]);
+  });
+
+  it("says when the session's runner is short of disk, and when its sandbox is paused for it", () => {
+    const p = page();
+    const running: G.Session = {
+      ...session("ses_a", 12, "Fix the flaky login test"),
+      status: "running",
+      runner: { id: "rnr_1", name: "now" },
+    };
+    const since = new Date(2026, 10, 6, 14, 40).getTime();
+    p.hear({
+      type: "snapshot",
+      session: running,
+      role: "owner",
+      events: [],
+      has_more_before: false,
+      next_seq: 1,
+      live: [],
+      viewers: [],
+      runner_connected: true,
+      runner_disk: { room: "low", free_mb: 12_595, min_free_mb: 20_480, since },
+    });
+    expect(p.text()).toContain("Runner low on disk: 12.3 GiB free");
+    expect(p.text()).toContain("Runner now has been low on disk since");
+    expect(p.text()).toContain("below the 20 GiB its host keeps free");
+    // The agent's work still comes through.
+    expect(p.working()).toBe(true);
+
+    p.hear({
+      type: "runner_connected",
+      connected: true,
+      disk: { room: "out", free_mb: 800, min_free_mb: 20_480, since },
+      sandbox_paused: { since, reason: "runner now is nearly out of disk: 800 MiB free" },
+    });
+    expect(p.text()).toContain("Runner now paused this session's sandbox since");
+    expect(p.text()).toContain("The sandbox keeps what the agent wrote.");
+    expect(p.working()).toBe(false);
+
+    // Room again.
+    p.hear({ type: "runner_connected", connected: true });
+    expect(p.text()).not.toContain("disk");
+    expect(p.working()).toBe(true);
   });
 
   it("keeps the details sheet open while the page shows the same session", () => {

@@ -78,6 +78,19 @@ pub struct ControlState {
     /// runs it on the resumer's. Its Remote Control links are theirs.
     #[serde(default)]
     pub claude_user: Option<UserRef>,
+    /// How short of disk the session's runner is now, from FleetObject
+    /// (`fctl_domain::disk::heard`). A new runner clears what the last one
+    /// said.
+    #[serde(default)]
+    pub disk: Option<DiskNews>,
+}
+
+/// What the session's page shows of its runner's disk from now on.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DiskNews {
+    /// Nothing while it has room.
+    #[serde(default)]
+    pub disk: Option<fctl_proto::runner::RunnerDisk>,
 }
 
 /// fctl's review agent posted findings on a pull request the session's

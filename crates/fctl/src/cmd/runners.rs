@@ -600,7 +600,7 @@ fn print_runner(r: &Runner) {
         println!("  {}", style::dim(&d));
     }
     if let Some(d) = low_disk_line(r) {
-        println!("  {}", style::amber(&d));
+        println!("  {d}");
     }
     if let Some(h) = r.remove_offline_after_minutes {
         println!(

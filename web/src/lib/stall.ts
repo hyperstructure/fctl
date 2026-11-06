@@ -1,11 +1,16 @@
 // When the agent's work isn't reaching the session page: its runner is away,
-// or the runner can't reach the agent in its sandbox. The agent may well be
-// working; its events wait in the sandbox until they get through. The page
-// says so, and shows nothing as in progress meanwhile.
+// the runner can't reach the agent in its sandbox, or it paused the sandbox
+// for want of disk. The agent may well be working, or holds its place; its
+// events wait in the sandbox until they get through. The page says so, and
+// shows nothing as in progress meanwhile.
+//
+// Apart from those, the page says when the session's runner is short of
+// room on its disk: the agent's work still comes through, but its writes
+// fail if the disk fills up.
 
 import { useEffect, useState } from "react";
 import type * as G from "@/gen";
-import { clock, stamp } from "./format";
+import { clock, memory, stamp } from "./format";
 import type { LiveState } from "./live";
 
 /**
@@ -34,9 +39,12 @@ export type Stall = {
   since: number;
   /** When the page may say so. */
   showFrom: number;
-} & ({ kind: "away" } | { kind: "unreachable"; reason: string });
+} & ({ kind: "away" } | { kind: "unreachable"; reason: string } | { kind: "paused"; reason: string });
 
-type RunnerState = Pick<LiveState, "connection" | "runnerConnected" | "runnerAway" | "agentUnreachable">;
+type RunnerState = Pick<
+  LiveState,
+  "connection" | "runnerConnected" | "runnerAway" | "agentUnreachable" | "sandboxPaused"
+>;
 
 /** Why the agent's work isn't coming through right now, if it isn't. */
 export function stallOf(session: G.Session | undefined, s: RunnerState): Stall | undefined {
@@ -49,6 +57,10 @@ export function stallOf(session: G.Session | undefined, s: RunnerState): Stall |
     const showFrom = Math.min(away.noticedAt + AWAY_GRACE_MS, away.lastSeenAt + LONG_GONE_MS);
     return { kind: "away", runner, status: session.status, since: away.lastSeenAt, showFrom };
   }
+  // Its host paused the sandbox until it has room on its disk.
+  const p = s.sandboxPaused;
+  if (p)
+    return { kind: "paused", runner, status: session.status, since: p.since, reason: p.reason, showFrom: 0 };
   const a = s.agentUnreachable;
   // The runner waited a few seconds before it said so.
   return (
@@ -100,6 +112,12 @@ export function stallText(st: Stall, now = Date.now()): { title: string; detail:
     };
   }
   const reason = st.reason.replace(/[.\s]+$/, "");
+  if (st.kind === "paused") {
+    return {
+      title: `${who} paused this session's sandbox ${since(st.since, now)}: ${reason}.`,
+      detail: `The sandbox keeps what the agent wrote. The agent carries on where it was once there is room${messages}.`,
+    };
+  }
   return {
     title: `${who} hasn't been able to reach the agent in its sandbox ${since(st.since, now)}: ${reason}.`,
     detail: `It keeps trying. The agent's work shows up here when it gets through${messages}.`,
@@ -108,7 +126,49 @@ export function stallText(st: Stall, now = Date.now()): { title: string; detail:
 
 /** A few words for the session's header: "Runner not heard from since 02:26". */
 export function stallLabel(st: Stall, now = Date.now()): string {
-  return st.kind === "away"
-    ? `Runner not heard from ${since(st.since, now)}`
-    : `Agent unreachable ${since(st.since, now)}`;
+  if (st.kind === "away") return `Runner not heard from ${since(st.since, now)}`;
+  if (st.kind === "paused") return `Sandbox paused ${since(st.since, now)}`;
+  return `Agent unreachable ${since(st.since, now)}`;
+}
+
+/** The session's runner is short of room on its disk. */
+export type DiskShort = G.RunnerDisk & {
+  /** The runner's name. */
+  runner?: string;
+};
+
+/**
+ * How short of disk the session's runner is, while the session runs there. A sandbox the runner paused for it
+ * says so in its stall.
+ */
+export function diskOf(
+  session: G.Session | undefined,
+  s: Pick<LiveState, "connection" | "runnerDisk">,
+  stall?: Stall,
+): DiskShort | undefined {
+  if (!session || !ACTIVE.has(session.status) || s.connection !== "live" || !s.runnerDisk) return undefined;
+  if (stall?.kind === "paused") return undefined;
+  return { ...s.runnerDisk, runner: session.runner?.name };
+}
+
+/** What the page says about a runner short of disk, and what follows. */
+export function diskText(d: DiskShort, now = Date.now()): { title: string; detail: string } {
+  const who = d.runner ? `Runner ${d.runner}` : "The runner";
+  if (d.room === "out") {
+    return {
+      title: `${who} has been nearly out of disk ${since(d.since, now)}: ${memory(d.free_mb)} free.`,
+      detail:
+        "The agent's writes are about to fail, until its host has removed stopped sandboxes or space is freed on it.",
+    };
+  }
+  return {
+    title: `${who} has been low on disk ${since(d.since, now)}: ${memory(d.free_mb)} free, below the ${memory(d.min_free_mb)} its host keeps free.`,
+    detail:
+      "No new sessions start on it until there is room, and its host removes stopped sandboxes to make some. If its disk fills up, the agent's writes fail.",
+  };
+}
+
+/** A few words for the session's header: "Runner low on disk: 12.3 GiB free". */
+export function diskLabel(d: DiskShort): string {
+  return `Runner ${d.room === "out" ? "nearly out of" : "low on"} disk: ${memory(d.free_mb)} free`;
 }

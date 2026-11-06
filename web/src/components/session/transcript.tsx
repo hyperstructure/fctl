@@ -7,8 +7,10 @@ import {
   BookMarked,
   Box,
   CircleAlert,
+  CirclePause,
   CircleStop,
   GitBranch,
+  HardDrive,
   Hourglass,
   ImageUp,
   Info,
@@ -49,7 +51,7 @@ import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
 import { callsIn, lastRun, parts } from "@/lib/runs";
 import { splitRunNote } from "@/lib/schedules";
-import { type Stall, stallText } from "@/lib/stall";
+import { type DiskShort, diskText, type Stall, stallText } from "@/lib/stall";
 import { findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
 import { useRevealed } from "./find";
@@ -631,10 +633,27 @@ function StallNotice({ stall }: { stall: Stall }) {
   return (
     <div role="status" className="flex animate-fade gap-2.5 py-2 text-[13px] leading-relaxed">
       <RailIcon className="h-[21px] text-amber">
-        <Unplug />
+        {stall.kind === "paused" ? <CirclePause /> : <Unplug />}
       </RailIcon>
       <div className="min-w-0">
         <p className="text-amber">{title}</p>
+        <p className="text-ink-3">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+/** The session's runner is short of room on its disk: says how short, and what follows. */
+function DiskNotice({ disk }: { disk: DiskShort }) {
+  const { title, detail } = diskText(disk);
+  const tone = disk.room === "out" ? "text-danger" : "text-amber";
+  return (
+    <div role="status" className="flex animate-fade gap-2.5 py-2 text-[13px] leading-relaxed">
+      <RailIcon className={cn("h-[21px]", tone)}>
+        <HardDrive />
+      </RailIcon>
+      <div className="min-w-0">
+        <p className={tone}>{title}</p>
         <p className="text-ink-3">{detail}</p>
       </div>
     </div>
@@ -646,12 +665,15 @@ export function LiveTurnView({
   status,
   since,
   stall,
+  disk,
   inRun,
 }: {
   live: LiveTurn;
   status?: G.SessionStatus;
   since?: number;
   stall?: Stall;
+  /** How short of disk the session's runner is. */
+  disk?: DiskShort;
   /** The run the agent works on shows its thoughts and calls as they come, in place of these lines. */
   inRun?: boolean;
 }) {
@@ -680,6 +702,7 @@ export function LiveTurnView({
         ),
       )}
       {stall && <StallNotice stall={stall} />}
+      {disk && <DiskNotice disk={disk} />}
       {working && !blocks.some((b) => !b.done) && (
         <div className="flex items-center gap-2.5 py-2 text-[12.5px] text-ink-3">
           <RailIcon>
@@ -733,6 +756,7 @@ export const Transcript = memo(function Transcript({
   live,
   status,
   stall,
+  disk,
   canManage,
   startedBy,
   me,
@@ -748,6 +772,8 @@ export const Transcript = memo(function Transcript({
   status?: G.SessionStatus;
   /** Why the agent's work isn't coming through right now. */
   stall?: Stall;
+  /** How short of disk the session's runner is. */
+  disk?: DiskShort;
   canManage?: boolean;
   /** Who started the session, and who is signed in: a Remote Control link is only for its person. */
   startedBy: G.UserRef;
@@ -853,7 +879,7 @@ export const Transcript = memo(function Transcript({
               ))}
             </SessionImages>
           </WorkDir>
-          <LiveTurnView live={live} status={status} stall={stall} inRun={folded} />
+          <LiveTurnView live={live} status={status} stall={stall} disk={disk} inRun={folded} />
         </div>
       </Gallery>
     </ImageSizes>

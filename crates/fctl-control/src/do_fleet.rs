@@ -8,9 +8,9 @@
 use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, Activity, ClaudeUsage, ControlState, Drain, DrainStop, DrainStopped, FeedIdentity,
-    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, RunnerIdent, RunnerRemoved,
-    Schedule, Stop, WorkspacesChanged,
+    self, Activity, ClaudeUsage, ControlState, DiskNews, Drain, DrainStop, DrainStopped,
+    FeedIdentity, LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, RunnerIdent,
+    RunnerRemoved, Schedule, Stop, WorkspacesChanged,
 };
 use crate::spec;
 use fctl_domain::image::HostImages;
@@ -175,6 +175,16 @@ impl LiveRow {
     }
 }
 
+/// A runner's disk, as FleetObject has it.
+#[derive(Default)]
+struct DiskState {
+    /// Free MiB, as its last heartbeat said.
+    free_mb: Option<u64>,
+    /// What its host keeps free (MiB), as its hello said.
+    min_free_mb: Option<u64>,
+    told: fctl_domain::disk::Told,
+}
+
 /// A connected runner, as scheduling sees it.
 struct Candidate {
     id: String,
@@ -332,6 +342,9 @@ impl DurableObject for FleetObject {
         // Set for a runner whose enrollment token removes it once offline
         // this long (milliseconds), as it said when it connected.
         add_column(&sql, "runners", "remove_after_ms", "INTEGER");
+        // What its sessions were told about its disk (JSON,
+        // `fctl_domain::disk::Told`).
+        add_column(&sql, "runners", "disk_told", "TEXT");
         Self {
             state,
             env,
@@ -958,7 +971,7 @@ impl FleetObject {
         match msg {
             HostToFleet::Hello(hello) => self.on_hello(ws, rs, *hello, now).await,
             HostToFleet::Heartbeat(hb) => {
-                let (was_low, min_free) = self.low_on_disk(&rs.id);
+                let disk = self.disk_state(&rs.id);
                 let sessions = serde_json::to_string(&hb.sessions).unwrap_or_else(|_| "[]".into());
                 let mib =
                     |v: Option<u64>| SqlStorageValue::from(v.and_then(|v| i64::try_from(v).ok()));
@@ -984,12 +997,29 @@ impl FleetObject {
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
+                let (told, tell) = fctl_domain::disk::heard(
+                    &disk.told,
+                    &rs.name,
+                    hb.disk_available_mb,
+                    disk.min_free_mb,
+                    now,
+                );
+                if told != disk.told {
+                    let _ = self.sql.exec(
+                        "UPDATE runners SET disk_told = ? WHERE id = ?",
+                        Some(vec![
+                            sv(&serde_json::to_string(&told).unwrap_or_default()),
+                            sv(&rs.id),
+                        ]),
+                    );
+                }
+                self.tell_disk(&rs.id, tell).await;
                 // The runners list says when a runner takes no new sessions
-                // for its disk, and when it takes them again, and its
-                // owner sees whether it keeps their Claude token.
-                if token_changed
-                    || fctl_domain::disk::low(hb.disk_available_mb, min_free) != was_low
-                {
+                // for its disk, when it is nearly out, and when it takes them
+                // again, and its owner sees whether it keeps their Claude
+                // token.
+                let room = |free| fctl_domain::disk::room(free, disk.min_free_mb);
+                if token_changed || room(hb.disk_available_mb) != room(disk.free_mb) {
                     self.feed_runner(&rs.id).await;
                 }
                 self.dispatch().await;
@@ -1393,23 +1423,16 @@ impl FleetObject {
         {
             worker::console_error!("carrying {id} on: {}", e.0.message);
         }
-        let notice = Notice {
-            ticket: None,
-            level: NoticeLevel::Info,
-            code: "runner_back".into(),
-            message: format!(
+        let notice = Notice::new(
+            NoticeLevel::Info,
+            "runner_back",
+            format!(
                 "Runner {} is back with the agent still running, so the session carries on there.",
                 rs.name
             ),
-            until: None,
-            published: None,
-            memory: None,
-            retrospective: None,
-            review: None,
-            summarized: None,
-            follow_up: None,
-        };
+        );
         if let Ok(stub) = internal::session_stub(&self.env, id) {
+            let (disk, _) = self.disk_for(&rs.id, &rs.name);
             let done: std::result::Result<serde_json::Value, _> = internal::post(
                 &stub,
                 "/control",
@@ -1420,6 +1443,7 @@ impl FleetObject {
                         name: rs.name.clone(),
                     }),
                     notice: Some(notice),
+                    disk,
                     ..Default::default()
                 },
             )
@@ -1756,14 +1780,16 @@ impl FleetObject {
         }
     }
 
-    /// Whether a runner's free disk was below what its host keeps at its
-    /// last heartbeat, and what its host keeps (MiB).
-    fn low_on_disk(&self, runner_id: &str) -> (bool, Option<u64>) {
+    /// A runner's disk as its last heartbeat said, the free disk its host
+    /// keeps, and what its sessions were told about it.
+    fn disk_state(&self, runner_id: &str) -> DiskState {
         #[derive(Deserialize)]
         struct R {
             hello: Option<String>,
             #[serde(default)]
             disk_available_mb: Option<f64>,
+            #[serde(default)]
+            disk_told: Option<String>,
         }
         #[derive(Deserialize)]
         struct Floor {
@@ -1773,22 +1799,71 @@ impl FleetObject {
         let Some(r) = self
             .sql
             .exec(
-                "SELECT hello, disk_available_mb FROM runners WHERE id = ?",
+                "SELECT hello, disk_available_mb, disk_told FROM runners WHERE id = ?",
                 Some(vec![sv(runner_id)]),
             )
             .and_then(|c| c.to_array::<R>())
             .ok()
             .and_then(|r| r.into_iter().next())
         else {
-            return (false, None);
+            return DiskState::default();
         };
-        let min_free = r
-            .hello
-            .as_deref()
-            .and_then(|h| serde_json::from_str::<Floor>(h).ok())
-            .and_then(|f| f.min_free_disk_mb);
-        let free = r.disk_available_mb.map(|d| d as u64);
-        (fctl_domain::disk::low(free, min_free), min_free)
+        DiskState {
+            free_mb: r.disk_available_mb.map(|d| d as u64),
+            min_free_mb: r
+                .hello
+                .as_deref()
+                .and_then(|h| serde_json::from_str::<Floor>(h).ok())
+                .and_then(|f| f.min_free_disk_mb),
+            told: r
+                .disk_told
+                .as_deref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// What a session that starts on a runner, or carries on there, hears
+    /// of its disk: how short of room it is, if it is, and, for one that
+    /// starts, the notice that says so.
+    fn disk_for(&self, runner_id: &str, name: &str) -> (Option<DiskNews>, Option<Notice>) {
+        let d = self.disk_state(runner_id);
+        let shown = fctl_domain::disk::shown(&d.told, d.free_mb, d.min_free_mb);
+        let notice = fctl_domain::disk::joined(&d.told, name, d.free_mb, d.min_free_mb);
+        (shown.map(|disk| DiskNews { disk: Some(disk) }), notice)
+    }
+
+    /// Tells the sessions on a runner what a heartbeat said of its disk:
+    /// their transcripts, and what their pages show.
+    async fn tell_disk(&self, runner_id: &str, tell: fctl_domain::disk::Tell) {
+        if tell.notice.is_none() && !tell.changed {
+            return;
+        }
+        let disk = tell.changed.then(|| DiskNews {
+            disk: tell.disk.clone(),
+        });
+        for a in self.assigned_to_runner(runner_id) {
+            let Ok(stub) = internal::session_stub(&self.env, &a.session_id) else {
+                continue;
+            };
+            let r: std::result::Result<serde_json::Value, _> = internal::post(
+                &stub,
+                "/control",
+                &ControlState {
+                    notice: tell.notice.clone(),
+                    disk: disk.clone(),
+                    ..Default::default()
+                },
+            )
+            .await;
+            if let Err(e) = r {
+                worker::console_error!(
+                    "telling {} about its runner's disk: {}",
+                    a.session_id,
+                    e.0.message
+                );
+            }
+        }
     }
 
     /// The sessions a runner reported last.
@@ -2071,6 +2146,9 @@ impl FleetObject {
             if sent {
                 let stub = internal::session_stub(&self.env, &item.session_id);
                 if let Ok(stub) = stub {
+                    // A runner short of disk takes the sessions whose
+                    // sandboxes it has: they hear how short.
+                    let (disk, notice) = self.disk_for(&runner_id, &runner_name);
                     let _: std::result::Result<serde_json::Value, _> = internal::post(
                         &stub,
                         "/control",
@@ -2081,6 +2159,8 @@ impl FleetObject {
                                 id: RunnerId(runner_id.clone()),
                                 name: runner_name.clone(),
                             }),
+                            notice,
+                            disk,
                             ..Default::default()
                         },
                     )
