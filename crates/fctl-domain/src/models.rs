@@ -46,9 +46,14 @@ impl ModelName {
     /// it did. Its next `system/init` decides: a model other than the one it
     /// worked on is the one it switched to; the same one, that it didn't
     /// (yet), and a model it switches to later shows by its ID. Before
-    /// Claude has named any model, nothing tells, so it shows by its ID.
+    /// Claude has named any model, nothing tells which name its first
+    /// `system/init` is for, the one it started on or this one, so that
+    /// shows by its ID.
     pub fn switching(&mut self, name: &str) {
         self.switching = self.working.clone().map(|from| (name.to_owned(), from));
+        if self.working.is_none() {
+            self.starting = None;
+        }
     }
 
     /// Claude switched to `name`, and named the model it works on now `id`.
@@ -138,11 +143,14 @@ mod tests {
         m.switching("sonnet");
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
         assert_eq!(m.init("claude-haiku-4-5"), "claude-haiku-4-5");
-        // Asked to switch before Claude named a model: nothing tells.
+        // Asked to switch before Claude named a model: nothing tells which
+        // name its first model is for.
         m.started(Some("opus"));
         m.switching("sonnet");
-        assert_eq!(m.init("claude-opus-5-5"), "opus");
         assert_eq!(m.init("claude-sonnet-5-5"), "claude-sonnet-5-5");
+        m.started(Some("opus"));
+        m.switching("sonnet");
+        assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
         // Started on a model's ID: the ID.
         m.started(Some("claude-opus-5-5"));
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
