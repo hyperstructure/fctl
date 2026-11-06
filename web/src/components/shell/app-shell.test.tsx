@@ -300,8 +300,15 @@ describe("the sidebar's sessions", () => {
   });
 });
 
-/** The shell at a phone's width, where the sidebar is a drawer. */
-function phone() {
+/** The shell at a phone's width, where the sidebar is a drawer (or `wide`, from 768 px, beside the page). */
+function phone({ wide = false } = {}) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: wide && query.includes("min-width"),
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  cleanups.push(() => vi.unstubAllGlobals());
   const client = new QueryClient();
   client.setQueryData(keys.me, {
     user: { id: "usr_ada", name: "Ada Lovelace", role: "member" },
@@ -322,6 +329,8 @@ function phone() {
     container.remove();
   });
   const drawer = () => container.querySelector("aside") as HTMLElement;
+  // happy-dom lays nothing out: a drawer 244 px wide.
+  Object.defineProperty(drawer(), "offsetWidth", { value: 244 });
   const click = (el: Element | null | undefined) => act(() => (el as HTMLElement).click());
   const closeButtons = () => [...container.querySelectorAll('button[aria-label="Close menu"]')];
   return {
@@ -348,6 +357,50 @@ function phone() {
           ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       }),
     palette: () => !!document.querySelector('input[placeholder^="Search"]'),
+    drawer,
+    /** The shade over the page while it is open. */
+    overlay: () => closeButtons().find((b) => !drawer().contains(b)) as HTMLElement | undefined,
+    /** Something on the page, beside the drawer. */
+    page: () => container.querySelector("main") as HTMLElement,
+    /**
+     * A finger on `el` at (`x0`, `y0`) that moves to each of `to`, 50 ms apart, then lets go
+     * 10 ms later (or is `cancel`led), and what `during` sees after each move. Which moves
+     * kept the page from scrolling, and whether the touch clicks as it ends.
+     */
+    drag(
+      el: Element,
+      [x0, y0]: [number, number],
+      to: [number, number][],
+      { end = "touchend", during }: { end?: "touchend" | "touchcancel"; during?: () => void } = {},
+    ) {
+      const touch = (x: number, y: number) =>
+        new Touch({ identifier: 1, target: el, clientX: x, clientY: y });
+      const at = <E extends Event>(e: E, ms: number) => Object.defineProperty(e, "timeStamp", { value: ms });
+      const kept: boolean[] = [];
+      act(() => {
+        el.dispatchEvent(at(new TouchEvent("touchstart", { bubbles: true, touches: [touch(x0, y0)] }), 0));
+      });
+      to.forEach(([x, y], i) => {
+        act(() => {
+          const move = new TouchEvent("touchmove", {
+            bubbles: true,
+            cancelable: true,
+            touches: [touch(x, y)],
+          });
+          el.dispatchEvent(at(move, (i + 1) * 50));
+          kept.push(move.defaultPrevented);
+        });
+        during?.();
+      });
+      const last = at(
+        new TouchEvent(end, { bubbles: true, cancelable: true, touches: [] }),
+        to.length * 50 + 10,
+      );
+      act(() => {
+        el.dispatchEvent(last);
+      });
+      return { kept, clicks: !last.defaultPrevented };
+    },
   };
 }
 
@@ -395,5 +448,178 @@ describe("the drawer", () => {
     shell.pick("Toggle theme");
     expect(shell.palette()).toBe(false);
     expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+  });
+});
+
+describe("the drawer under a finger", () => {
+  it("comes in from the left edge of the screen as far as the finger drags it, and stays open past halfway", () => {
+    const shell = phone();
+    const seen: { open: boolean; shade: boolean; at: string; shown: number }[] = [];
+    const { kept, clicks } = shell.drag(
+      shell.page(),
+      [10, 300],
+      [
+        [14, 301],
+        [30, 302],
+        [200, 305],
+      ],
+      {
+        during: () =>
+          seen.push({
+            open: shell.state().open,
+            shade: shell.state().shade,
+            at: shell.drawer().style.translate,
+            shown: Number(shell.overlay()?.style.opacity ?? 0),
+          }),
+      },
+    );
+    expect(seen).toEqual([
+      // Not yet a drag: it could be a tap.
+      { open: false, shade: false, at: "", shown: 0 },
+      { open: true, shade: true, at: "-224px 0", shown: expect.closeTo(20 / 244) },
+      { open: true, shade: true, at: "-54px 0", shown: expect.closeTo(190 / 244) },
+    ]);
+    expect(kept).toEqual([false, true, true]);
+    // It slides the rest of the way, at its own pace, and the touch clicks nothing.
+    expect(clicks).toBe(false);
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+    expect(shell.drawer().style.translate).toBe("");
+    expect(shell.drawer().style.transition).toBe("");
+    expect(shell.overlay()?.style.opacity).toBe("");
+  });
+
+  it("goes back out when the finger turns back before letting go", () => {
+    const shell = phone();
+    shell.drag(
+      shell.page(),
+      [10, 300],
+      [
+        [60, 300],
+        [150, 300],
+        [90, 300],
+      ],
+    );
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+    expect(shell.drawer().style.translate).toBe("");
+  });
+
+  it("goes back to where it was when the browser takes the touch", () => {
+    const shell = phone();
+    shell.drag(
+      shell.page(),
+      [10, 300],
+      [
+        [60, 300],
+        [200, 300],
+      ],
+      { end: "touchcancel" },
+    );
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+    shell.open();
+    shell.drag(
+      shell.drawer(),
+      [200, 300],
+      [
+        [150, 300],
+        [20, 300],
+      ],
+      { end: "touchcancel" },
+    );
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+  });
+
+  it("goes out as a finger drags it by itself or the shade to the left", () => {
+    const shell = phone();
+    shell.open();
+    const { kept, clicks } = shell.drag(
+      shell.drawer(),
+      [200, 300],
+      [
+        [190, 300],
+        [120, 302],
+        [20, 305],
+      ],
+    );
+    expect(kept).toEqual([true, true, true]);
+    expect(clicks).toBe(false);
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+    shell.open();
+    shell.drag(
+      shell.overlay() as HTMLElement,
+      [300, 300],
+      [
+        [280, 300],
+        [100, 300],
+      ],
+    );
+    expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
+  });
+
+  it("leaves to the page a finger that scrolls, or moves away from where the drawer goes", () => {
+    const shell = phone();
+    expect(
+      shell.drag(
+        shell.page(),
+        [10, 300],
+        [
+          [14, 320],
+          [16, 400],
+        ],
+      ).kept,
+    ).toEqual([false, false]);
+    expect(shell.state().open).toBe(false);
+    shell.open();
+    // Up and down its list, or to the right.
+    expect(
+      shell.drag(
+        shell.drawer(),
+        [100, 300],
+        [
+          [104, 320],
+          [90, 400],
+        ],
+      ).kept,
+    ).toEqual([false, false]);
+    expect(
+      shell.drag(
+        shell.drawer(),
+        [100, 300],
+        [
+          [130, 300],
+          [20, 300],
+        ],
+      ).kept,
+    ).toEqual([false, false]);
+    expect(shell.state().open).toBe(true);
+  });
+
+  it("comes in only from the edge of the screen", () => {
+    const shell = phone();
+    const { kept, clicks } = shell.drag(
+      shell.page(),
+      [80, 300],
+      [
+        [120, 300],
+        [300, 300],
+      ],
+    );
+    expect(kept).toEqual([false, false]);
+    expect(clicks).toBe(true);
+    expect(shell.state().open).toBe(false);
+  });
+
+  it("stays beside the page from 768 px up", () => {
+    const shell = phone({ wide: true });
+    expect(
+      shell.drag(
+        shell.page(),
+        [10, 300],
+        [
+          [60, 300],
+          [200, 300],
+        ],
+      ).kept,
+    ).toEqual([false, false]);
+    expect(shell.state().open).toBe(false);
   });
 });
