@@ -172,7 +172,7 @@ impl FirecrackerDriver {
     /// The image store's lock ([`Store::lock`]), held while names move
     /// between images, images go, and a new sandbox records the image it is
     /// made from, so that none goes from under it.
-    async fn lock_images(&self) -> Result<std::fs::File> {
+    async fn lock_images(&self) -> Result<images::Lock> {
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || store.lock()).await?
     }
