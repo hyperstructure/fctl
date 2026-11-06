@@ -259,6 +259,11 @@ pub fn state_of(merged: bool, closed: bool, queued: bool, draft: bool) -> &'stat
     }
 }
 
+/// Whether a pull request merged or closed, as it was last looked up.
+pub fn done(pr: &PullRequestRef) -> bool {
+    matches!(pr.state.as_deref(), Some("merged" | "closed"))
+}
+
 /// Whether a pull request is in a merge queue: the webhook's `action` is
 /// `enqueued` (or `queued`), GitHub has its entry in the queue
 /// (`merge_queue_entry`), or its merge state (`merge_state_status`, else
@@ -394,6 +399,19 @@ mod tests {
 
     fn repo(full: &str) -> Option<RepoRef> {
         RepoRef::parse(full)
+    }
+
+    #[test]
+    fn merged_and_closed_pull_requests_are_done() {
+        let pr = |state: Option<&str>| PullRequestRef {
+            state: state.map(str::to_owned),
+            ..Default::default()
+        };
+        assert!(done(&pr(Some("merged"))));
+        assert!(done(&pr(Some("closed"))));
+        for state in [Some("open"), Some("draft"), Some("queued"), None] {
+            assert!(!done(&pr(state)));
+        }
     }
 
     #[test]

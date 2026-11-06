@@ -79,7 +79,10 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   `org.opencontainers.image.revision` label; `fctl host image pull` does.
 - **Lima** sessions clone the `fctl-base` VM instead, which `fctl host
   image build` prepares with the image's provisioning script, on Lima's
-  Debian 13 (Debian 12 with Lima older than 2.0, which lacks it). The
+  Debian 13 (Debian 12 with Lima older than 2.0, which lacks it).
+  fctl-agent runs as root there through `sudo`, which Lima lets the VM's
+  user run without a password; where `sudo` asks for one, it runs as that
+  user, and the host's log says the agent's commands can stop it. The
   process driver uses no image.
 - **Firecracker** hosts pull the same images without Docker, and unpack
   each in a short-lived microVM into a filesystem that the sandboxes made
@@ -107,7 +110,9 @@ checks every build for it:
 
 - **The user** is `agent`, uid 1000, with the home directory `/home/agent`
   and sudo without a password: the sandbox is the boundary. Sessions run as
-  `agent`, in `~/workspace`.
+  `agent`, in `~/workspace`: Claude and everything it runs, the setup
+  script, git and `gh`. fctl-agent, which supervises them, runs as root
+  ([What fctl writes into a sandbox](#what-fctl-writes-into-a-sandbox)).
 - **The PATH** starts with `~/.local/bin`, where Claude Code (the native
   build) and uv's tools are, `~/.cargo/bin` and `~/.bun/bin`, then
   `/opt/fctl/bin`, where fctl copies its supervisor, fctl-agent, at session
@@ -362,8 +367,8 @@ show each runner's image and lists.
 
 An image that doesn't start from the default one needs:
 
-- **`sh`, `tail` and git** on the PATH. The sandbox's main process is `tail
-  -f /dev/null`.
+- **`sh`, `tail`, `id` and git** on the PATH. The sandbox's main process
+  is `tail -f /dev/null`, and `id -u` tells fctl who the image's user is.
 - **Claude Code 2.1.101 or later**, as `claude` on the PATH. fctl relies on
   requests that Claude Code sends and answers in its stream-json mode: it
   asks fctl for a fresh OAuth access token (`oauth_token_refresh`, from
@@ -380,17 +385,34 @@ An image that doesn't start from the default one needs:
   record one for each follow-up where it doesn't). Without it, sessions
   keep the title they start with, and their agents keep no memory.
 - **A non-root user with a writable home.** fctl copies its supervisor into
-  `/opt/fctl/bin` as root at session start, and runs it as the image's
-  user (its `USER`), in `~/workspace`.
+  `/opt/fctl/bin` as root at session start, gives the directory to root,
+  and runs the supervisor as root, and Claude and its commands as the
+  image's user (its `USER`), in `~/workspace`. An image that runs as root
+  runs Claude as root, whose commands can stop fctl-agent.
 - **arm64** builds for Apple silicon runners, and amd64 for most others.
 
 ## What fctl writes into a sandbox
 
-At session start, fctl copies fctl-agent into `/opt/fctl/bin` and starts
-it as the image's user, which writes:
+At session start, fctl copies fctl-agent into `/opt/fctl/bin`, which it
+gives to root, and starts it as root (`docker exec -u 0`, `sudo` in Lima,
+root in a Firecracker VM). It keeps root as its real user, so that the
+image's user, whom Claude and its commands run as, can't signal it: a
+`kill` or `pkill` that matches it by accident fails with "Operation not
+permitted". Otherwise it works as that user, so what it writes in the
+user's home is the user's. Where the sandbox gives root the capability
+(`CAP_SYS_RESOURCE`: Lima's and Firecracker's VMs do, Docker's containers
+don't), it keeps itself from the OOM killer, so that a build that fills
+the sandbox's memory takes the build rather than fctl-agent. Root can
+still stop it, and `agent` has sudo: this guards against accidents, not
+against an agent set on it. It writes:
 
-- **`~/.fctl/`**: fctl-agent's sockets, log and state, the session's GitHub
-  tokens (mode 0600) and the git credential helper that hands them out.
+- **`/var/lib/fctl-agent/`**, which only root may enter: fctl-agent's
+  socket for the host, its log, and the session's journal and state. A
+  sandbox from before fctl-agent ran as root has them in `~/.fctl`, which
+  fctl-agent moves here once the one that ran there has stopped.
+- **`~/.fctl/`**: the session socket the sandbox's fctl reaches fctl-agent
+  on, the session's GitHub tokens (mode 0600) and the git credential
+  helper that hands them out.
 - **git's global configuration**: the GitHub App's bot as the author, the
   credential helper for github.com, `push.autoSetupRemote`,
   `init.defaultBranch` and a few quiet defaults. `~/.config/gh/hosts.yml`

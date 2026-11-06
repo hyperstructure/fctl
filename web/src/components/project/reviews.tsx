@@ -20,7 +20,7 @@ import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "re
 import { BotMark, ReviewBots } from "@/components/project/review-bots";
 import { ReviewDrafts } from "@/components/project/review-drafts";
 import { ReviewRepos } from "@/components/project/review-repos";
-import { ReviewStateIcon, RISK_TONE, SummaryAlert } from "@/components/review";
+import { ReviewStateIcon, RISK_TONE, SummaryAlert, UNSENT } from "@/components/review";
 import {
   Avatar,
   Banner,
@@ -1091,6 +1091,7 @@ function ReviewRow({ r }: { r: G.Review }) {
             {r.check_error}
           </p>
         )}
+        {r.unsent && <p className="mt-1 text-[12.5px] leading-relaxed text-amber">{UNSENT}</p>}
       </div>
       <span className="mt-0.5 max-sm:hidden" title={`On ${r.operator.name}'s Claude subscription`}>
         <Avatar user={r.operator} size={20} />

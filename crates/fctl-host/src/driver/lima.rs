@@ -3,8 +3,9 @@
 //! Heavier than containers, but a full VM on any Mac (Intel too) or Linux host.
 
 use super::{
-    AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec,
-    attach_script, run_cmd_within, serve_script,
+    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT,
+    Sandbox, SandboxInfo, SandboxSpec, attach_as_root, attach_script, run_cmd_within,
+    serve_as_root, serve_script, shell_words,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::DriverInfo;
@@ -167,21 +168,33 @@ impl LimaDriver {
         ])
         .await
         .context("copying fctl-agent into the VM")?;
-        self.exec(sb, &format!("sudo mkdir -p /opt/fctl/bin && sudo install -m 755 {tmp} {AGENT_PATH} && rm -f {tmp}")).await?;
+        self.exec(
+            sb,
+            &format!(
+                "sudo sh -c '{AGENT_DIR_SCRIPT}' && sudo install -m 755 {tmp} {AGENT_PATH} && rm -f {tmp}"
+            ),
+        )
+        .await?;
         Ok(())
     }
 
+    /// Starts fctl-agent as root with `sudo`, and Claude and its commands
+    /// as the VM's user, who can't stop it then; as that user where `sudo`
+    /// asks for a password.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
-        let script = format!(
-            "setsid sh -c '{}' >/dev/null 2>&1 < /dev/null &",
-            serve_script(AGENT_PATH).replace('\'', "'\\''")
-        );
-        self.exec(sb, &script).await?;
+        let root = self.exec(sb, "sudo -n true").await.is_ok();
+        if !root {
+            tracing::warn!(
+                "fctl-agent runs as {}'s user, so the agent's commands can stop it: sudo asks for a password there",
+                sb.name
+            );
+        }
+        self.exec(sb, &serve_script_for_lima(root)).await?;
         Ok(())
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
-        let mut child = self.spawn(sb, &attach_script(AGENT_PATH)).await?;
+        let mut child = self.spawn(sb, &attach_script_for_lima()).await?;
         let stdout = child.stdout.take().context("shell stdout")?;
         let stdin = child.stdin.take().context("shell stdin")?;
         Ok(AgentIo {
@@ -248,6 +261,32 @@ impl LimaDriver {
     }
 }
 
+/// Starts fctl-agent in the background: as root with `sudo` (`root`), or
+/// as the VM's user.
+fn serve_script_for_lima(root: bool) -> String {
+    if root {
+        // sudo resets the PATH, which Claude and its commands need.
+        let serve = shell_words(&serve_as_root("USER_ID")).replace("'USER_ID'", "\"$(id -u)\"");
+        format!("setsid sudo -n env \"PATH=$PATH\" {serve} >/dev/null 2>&1 < /dev/null &")
+    } else {
+        format!(
+            "setsid sh -c '{}' >/dev/null 2>&1 < /dev/null &",
+            serve_script(AGENT_PATH).replace('\'', "'\\''")
+        )
+    }
+}
+
+/// Attaches to fctl-agent as root where it runs so, as the VM's user where
+/// `sudo` asks for a password and fctl-agent runs as the user.
+fn attach_script_for_lima() -> String {
+    let socket = format!("{AGENT_DIR}/agent.sock");
+    format!(
+        "if sudo -n test -S {socket} 2>/dev/null; then exec sudo -n {}; fi; {}",
+        shell_words(&attach_as_root()),
+        attach_script(AGENT_PATH)
+    )
+}
+
 impl Default for LimaDriver {
     fn default() -> Self {
         Self::new()
@@ -257,6 +296,21 @@ impl Default for LimaDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fctl_agent_runs_as_root_where_sudo_lets_it() {
+        assert_eq!(
+            serve_script_for_lima(true),
+            "setsid sudo -n env \"PATH=$PATH\" '/opt/fctl/bin/fctl-agent' 'serve' '--user' \"$(id -u)\" '--socket' '/var/lib/fctl-agent/agent.sock' '--state' '/var/lib/fctl-agent/state' '--log' '/var/lib/fctl-agent/agent.log' >/dev/null 2>&1 < /dev/null &"
+        );
+        assert!(serve_script_for_lima(false).starts_with(
+            "setsid sh -c 'mkdir -p \"$HOME/.fctl\" && exec /opt/fctl/bin/fctl-agent serve --socket \"$HOME/.fctl/agent.sock\""
+        ));
+        assert_eq!(
+            attach_script_for_lima(),
+            "if sudo -n test -S /var/lib/fctl-agent/agent.sock 2>/dev/null; then exec sudo -n '/opt/fctl/bin/fctl-agent' 'attach' '--socket' '/var/lib/fctl-agent/agent.sock'; fi; exec /opt/fctl/bin/fctl-agent attach --socket \"$HOME/.fctl/agent.sock\""
+        );
+    }
 
     #[test]
     fn session_vms_get_their_size_and_no_mounts_in_one_expression() {

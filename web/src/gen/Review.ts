@@ -73,6 +73,17 @@ busy_ms: number,
  */
 opened_by?: SessionRef, 
 /**
+ * Its findings went to no session: one of fctl's agents opened the
+ * pull request, but no session of the review's workspace that lists
+ * it took them when the review posted. fctl passes them on to the
+ * session that opened it as soon as one lists the pull request, while
+ * it is open and no newer review posted; a person can pass them on
+ * from a session that lists it (`POST
+ * /api/v1/sessions/{id}/reviews/{review}/pass-on`). Absent otherwise,
+ * and from control planes before it.
+ */
+unsent?: boolean, 
+/**
  * What its agent said of the pull request at first sight, which fctl
  * put at the end of its description
  * ([`ReviewAgents::description_summary`]); absent where it summed

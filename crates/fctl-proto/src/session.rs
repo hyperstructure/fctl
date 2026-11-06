@@ -1162,6 +1162,14 @@ pub struct ReviewCheck {
     /// findings on (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`).
     /// Absent otherwise, and from control planes before it.
     pub held_after: Option<u32>,
+    /// Its findings went to no session: one of the instance's agents
+    /// opened the pull request, but no session that lists it took them
+    /// when the review posted, nor since. A person passes them on to this
+    /// session's agent (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`).
+    /// Absent otherwise, and from control planes before it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub unsent: bool,
 }
 
 #[skip_serializing_none]

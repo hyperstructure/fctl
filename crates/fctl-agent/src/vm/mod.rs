@@ -21,13 +21,10 @@
 mod boot;
 mod net;
 mod netlink;
-mod run_as;
 mod serve;
 mod unpack;
-mod users;
 
 pub use boot::init;
-pub use run_as::run_as;
 pub use serve::serve;
 
 /// What the init reports to the host's `hello`.

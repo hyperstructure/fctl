@@ -54,11 +54,12 @@ pub enum ReviewCmd {
     },
     /// Pass on to a session's agent the findings fctl held back from it,
     /// once it got those of five reviews in a row with no message from a
-    /// person: it gets them now, and those of the reviews after them, up to
-    /// five in a row with these, before fctl holds them back again (people
-    /// who may message the agent).
+    /// person, and those of reviews of its pull requests that went to no
+    /// session: it gets them now, and those of the reviews after them, up
+    /// to five in a row with these, before fctl holds them back again
+    /// (people who may message the agent).
     #[command(
-        after_help = "A message to the agent ends the reviews in a row too, without passing the held findings on.\n\nExamples:\n  fctl review pass-on my-app#12\n  fctl show my-app#12        # says which findings fctl holds back"
+        after_help = "A message to the agent ends the reviews in a row too, without passing the held findings on. A review's findings go to no session when one of fctl's agents opened its pull request but no session listed it yet as the review posted; fctl passes them on by itself as the session that opened it lists it.\n\nExamples:\n  fctl review pass-on my-app#12\n  fctl show my-app#12        # says which findings fctl holds back, or sent to no session"
     )]
     PassOn {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -311,54 +312,78 @@ struct PassedOnReview {
 }
 
 /// `fctl review pass-on SESSION`: the findings of each review that fctl
-/// holds back from the session's agent, as its pull requests say
-/// (`ReviewCheck::held_after`), go to the agent.
+/// holds back from the session's agent, or that went to no session, as its
+/// pull requests say (`ReviewCheck::held_after`, `ReviewCheck::unsent`),
+/// go to the agent.
 async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
     let api = config::api(server)?;
     let s = super::sessions::resolve(&api, reference).await?;
     let name = format!("{}#{}", s.project_slug, s.number);
+    // Each with the reviews in a row it starts again from: those held
+    // back count from the ones the agent got before them.
     let held: Vec<_> = s
         .pull_requests
         .iter()
         .filter_map(|pr| {
             let checks = pr.checks.as_ref()?;
             let review = checks.review.as_ref()?;
-            let after = review.held_after?;
-            Some((pr, checks.sha.as_deref(), review.session_id.clone()?, after))
+            // Findings that went to no session go on only while their
+            // pull request is open.
+            let after = match review.held_after {
+                Some(after) => after,
+                None if review.unsent && !fctl_domain::pulls::done(pr) => {
+                    fctl_domain::reviews::MAX_PASSED_ON
+                }
+                None => return None,
+            };
+            let unsent = review.held_after.is_none();
+            Some((
+                pr,
+                checks.sha.as_deref(),
+                review.session_id.clone()?,
+                after,
+                unsent,
+            ))
         })
         .collect();
     if held.is_empty() {
-        bail!("fctl holds back no review's findings from the agent of {name}");
+        bail!(
+            "fctl holds back no review's findings from the agent of {name}, and sent none of its pull requests' reviews to no session"
+        );
     }
+    // Each review's on its own: one that the control plane refuses (a newer
+    // review came meanwhile, say) keeps none of the others back.
     let mut passed = Vec::new();
-    for (pr, sha, review, after) in held {
-        let sent = api.pass_on_review(s.id.as_str(), review.as_str()).await?;
-        passed.push((pr, sha, after, review, sent.delivery_id));
+    let mut refused = Vec::new();
+    for (pr, sha, review, after, unsent) in held {
+        match api.pass_on_review(s.id.as_str(), review.as_str()).await {
+            Ok(sent) => passed.push((pr, sha, after, unsent, review, sent.delivery_id)),
+            Err(e) => refused.push((pr, e)),
+        }
     }
     if json {
-        return style::print_json(&PassedOn {
+        style::print_json(&PassedOn {
             passed_on: passed
                 .into_iter()
-                .map(|(pr, _, _, review, delivery_id)| PassedOnReview {
+                .map(|(pr, _, _, _, review, delivery_id)| PassedOnReview {
                     review,
                     pull_request: pr.url.clone(),
                     delivery_id,
                 })
                 .collect(),
-        });
+        })?;
+        return refusals(&refused);
     }
-    for (pr, sha, after, _, _) in passed {
-        let what = match pr
-            .repo
-            .clone()
-            .or_else(|| fctl_domain::pulls::repo_of(&pr.url))
-        {
-            Some(repo) => format!("{}#{}", repo.full_name(), pr.number),
-            None => format!("#{}", pr.number),
-        };
+    for (pr, sha, after, unsent, _, _) in passed {
+        let what = pull_request_name(pr);
         let at = sha.map(|s| format!(" at {}", short(s))).unwrap_or_default();
+        let nowhere = if unsent {
+            ", which went to no session,"
+        } else {
+            ""
+        };
         println!(
-            "{} Passed on the findings of fctl's review of {}{at} to the agent of {name}",
+            "{} Passed on the findings of fctl's review of {}{at}{nowhere} to the agent of {name}",
             style::accent("✓"),
             style::terminal_safe(&what)
         );
@@ -369,7 +394,38 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
             ))
         );
     }
-    Ok(())
+    refusals(&refused)
+}
+
+/// `acme/web#12`, or `#12` where neither the pull request nor its URL
+/// names its repository.
+fn pull_request_name(pr: &fctl_proto::session::PullRequestRef) -> String {
+    match pr
+        .repo
+        .clone()
+        .or_else(|| fctl_domain::pulls::repo_of(&pr.url))
+    {
+        Some(repo) => format!("{}#{}", repo.full_name(), pr.number),
+        None => format!("#{}", pr.number),
+    }
+}
+
+/// Says why the findings of the pull requests in `refused` didn't go on,
+/// and fails where any didn't.
+fn refusals(refused: &[(&fctl_proto::session::PullRequestRef, fctl_client::Error)]) -> Result<()> {
+    for (pr, e) in refused {
+        eprintln!(
+            "{} Didn't pass on the findings of fctl's review of {}: {}",
+            style::red("✗"),
+            style::terminal_safe(&pull_request_name(pr)),
+            style::terminal_safe(&format!("{e:#}"))
+        );
+    }
+    match refused.len() {
+        0 => Ok(()),
+        1 => bail!("the findings of 1 review didn't go on"),
+        n => bail!("the findings of {n} reviews didn't go on"),
+    }
 }
 
 /// `fctl review bots [NAME]`.
@@ -714,7 +770,13 @@ fn print_review(r: &Review) {
     if let Some(reason) = r.reason.as_deref().filter(|_| r.state.is_done()) {
         println!("  {}", style::dim(&style::terminal_safe(reason)));
     }
+    if r.unsent {
+        println!("  {}", style::amber(UNSENT));
+    }
 }
+
+/// What `fctl review` says of a review whose findings went to no session.
+const UNSENT: &str = "Its findings went to no session. fctl passes them on to the session that opened the pull request once one lists it; `fctl review pass-on SESSION` sends them to one that lists it.";
 
 // ───────────────────────────── in a review agent's sandbox ─────────────────────────────
 

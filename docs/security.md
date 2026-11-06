@@ -227,6 +227,12 @@ its VM, and nothing outside it except through these channels:
   unpack in a VM of their own, so a crafted layer can't reach the host's
   filesystem.
 
+- **fctl-agent** runs as root in the sandbox, and Claude and everything
+  it runs as the image's user, so that the agent's commands can't stop
+  the supervisor that passes on what it does, nor change its journal. The
+  default image's user has `sudo`, so this keeps accidents from cutting a
+  session short; it is no boundary against the agent.
+
 - **Lima VMs** get none of the mounts of Lima's templates, which give
   each VM the home directory of whoever runs the host (read only) and a
   `/tmp/lima` every VM writes to, and none of their port forwards, which

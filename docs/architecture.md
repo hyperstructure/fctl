@@ -1242,7 +1242,12 @@ agent posts a notice; a primary repository out of reach fails the session.
   them all in the `git` event's `pull_requests`, and looks each up again
   when a turn ends until it is merged, so the session lists them with their
   state (`fctl_domain::pulls`), and GitHub keeps that current
-  ([Pull request state and checks](#pull-request-state-and-checks)). The
+  ([Pull request state and checks](#pull-request-state-and-checks)). As
+  the session stops, it looks up only the pull request of a pushed branch
+  it follows none of (`Moment::Stopping`), so that a session whose turn
+  was cut short before fctl-agent saw `gh pr create` still lists the pull
+  request it opened; GitHub has 20 seconds from the start of that refresh
+  to answer for them all. The
   system prompt tells agents to make another pull request's branch where
   the repository is checked out, not in a worktree, since Changes shows
   the checked-out branches.
@@ -1694,6 +1699,34 @@ posts what it found on GitHub
    GitHub, ends the pause too, and drops what was held. The review's `PostedReview.sent_to` names the session,
    and its transcript links it
    ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).
+   Findings that go to no session aren't dropped: no session may list
+   the pull request yet when the review posts, if the agent's turn was
+   cut short before it reported the pull request, say, or a person opened
+   it from the agent's branch. `reviews` keeps the message
+   (`unsent_findings`, `fctl_domain::reviews::Unsent`), written before the
+   control plane looks for the session, so that a session that lists the
+   pull request meanwhile finds it, and whoever sends it claims it first,
+   so that it goes once, and keeps it again if that session takes none.
+   When a session of the review's workspace first lists a pull request
+   (SessionObject, as it applies a `git` event, `crate::reviews::listed`),
+   before the pull request is looked up, the findings of its newest review
+   that posted go to the session that opened it, as above, if they went
+   to no session and the pull request isn't merged or closed
+   (`fctl_domain::reviews::owed`). A newer review that posted takes the
+   place of an older one, and drops what the older ones of its workspace
+   kept, as a `pull_request` delivery that says the pull request merged or
+   closed drops what all of its reviews kept (`drop_unsent`); a review
+   that posts after that, having run on as it merged or closed, keeps
+   nothing (GitHub's answer as it posts says, `open_in`). Until then,
+   the review's `Review.unsent` says
+   its findings went to no session, in the Reviews tab, its session's
+   rail and `fctl review`, and so does its check on the pull requests of
+   sessions that list it (`ReviewCheck::unsent`), whose page offers to
+   pass them on to that session's agent, as `fctl review pass-on` does
+   (`crate::reviews::pass_on_unsent`, through SessionObject's `/pass-on`):
+   for one that lists the pull request in the review's workspace, while it
+   is open and owes that review's findings, and whose agent writes on
+   GitHub.
 8. **A review that ends otherwise** (superseded, stopped, failed) ends
    its check as cancelled, saying why (`crate::reviews::ended`, from
    SessionObject; the hourly job catches what it missed).
@@ -3163,11 +3196,49 @@ agent can't be reached, and since when ([Viewers](#viewers)); a host that
 wakes from sleep to silent links attaches again within them.
 
 A host that restarts starts fctl-agent again too, before it attaches, in
-case the sandbox restarted with it. A supervisor holds a lock on
-`~/.fctl/agent.lock` while it runs, so a second one sees the first and
-exits without connecting to its socket: the supervisor takes every
-connection for a host link, and the newest replaces the host's. Agents from
-before the lock are found on the socket instead.
+case the sandbox restarted with it, and puts its own fctl-agent in the
+sandbox first, beside the one that may run and then in its place. A
+supervisor holds a lock on `agent.lock`, beside its socket, while it runs,
+so a second one sees the first and exits without connecting to its socket:
+the supervisor takes every connection for a host link, and the newest
+replaces the host's. Agents from before the lock are found on the socket
+instead.
+
+In container and VM sandboxes fctl-agent runs as root, out of reach of the
+user Claude runs as (`crates/fctl-agent/src/user`): the host starts
+`fctl-agent serve --user <uid>` with `docker exec -u 0`, `sudo` in Lima
+(as the VM's user where `sudo` asks for a password) or as root over the
+vsock, and attaches as root. It keeps root as its real and saved user, so
+that a `kill` or `pkill` from the agent's commands fails with `EPERM`, and
+works as the user otherwise, so what it writes in the user's home stays
+the user's. Its socket, log, journal and state are in
+`/var/lib/fctl-agent`, which only root may enter and which it reaches as
+root (Linux keeps a filesystem user per thread); the session socket and
+the GitHub tokens stay in the user's `~/.fctl`. Claude, git, `gh` and the
+setup script run as the user, with the user's groups, through `fctl-agent
+run-as`, which also puts back the OOM score fctl-agent lowered for itself
+where root may (`CAP_SYS_RESOURCE`, which Docker's containers lack). A
+supervisor that finds one from before running as the user in `~/.fctl`
+leaves the session to it, with a link to its socket in place of its own,
+and moves its journal and state once it has stopped: regular files only,
+since the user owns them. Once a supervisor has served a sandbox as root,
+`~/.fctl` has no say in who serves it. A sandbox's user has
+`sudo`, so this guards against accidents (an agent stopping its own dev
+stack by a pattern that matches fctl-agent too), not against an agent set
+on stopping it. The process driver runs fctl-agent as the host's user.
+
+Claude leads a process group of its own, which the supervisor records with
+its pid and start time in its state. Claude's output goes to the
+supervisor that started it, so a Claude whose supervisor died anyway (the
+OOM killer, `sudo kill`) works on unseen: the supervisor that takes the
+session over stops that group, or what is left of it once Claude has
+ended, before it starts Claude again on the conversation, so that two
+never share it. When the session was running, it
+says in the transcript that Claude's turn was cut off (a `turn_cut_off`
+notice) and has Claude carry on with it, from a message that tells Claude
+what happened; a second turn cut off within ten minutes of that waits for
+a person's message instead. The state keeps a cut-off turn until Claude
+carries on with it, also across another supervisor that dies first.
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control

@@ -49,7 +49,7 @@ pub async fn claim(path: &Path) -> Result<Claim> {
 }
 
 /// An exclusive lock on `path`, or `None` while another process holds it.
-fn lock(path: &Path) -> Result<Option<File>> {
+pub fn lock(path: &Path) -> Result<Option<File>> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

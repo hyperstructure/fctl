@@ -1,7 +1,9 @@
 //! The event journal: every agent event, in order, on disk, until the
 //! control plane acknowledges it. Survives host disconnects and supervisor
-//! restarts; replayed after every attach.
+//! restarts; replayed after every attach. Where fctl-agent runs as root, it
+//! is in a directory only root may enter ([`crate::user::as_root`]).
 
+use crate::user::as_root;
 use anyhow::{Context, Result};
 use fctl_proto::uplink::AgentEvent;
 use std::fs::{File, OpenOptions};
@@ -22,6 +24,10 @@ pub struct Journal {
 
 impl Journal {
     pub fn open(dir: &Path) -> Result<Self> {
+        as_root(|| Self::open_here(dir))
+    }
+
+    fn open_here(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         let path = dir.join("journal.jsonl");
         let ack_path = dir.join("journal.ack");
@@ -82,7 +88,7 @@ impl Journal {
 
     /// Events with `agent_seq > after`, in order.
     pub fn read_after(&self, after: u64) -> Result<Vec<AgentEvent>> {
-        let f = File::open(&self.path)?;
+        let f = as_root(|| File::open(&self.path))?;
         let mut out = Vec::new();
         for line in BufReader::new(f).lines() {
             let line = line?;
@@ -104,7 +110,7 @@ impl Journal {
         }
         self.last_seq = seq;
         self.acked = seq;
-        std::fs::write(&self.ack_path, seq.to_string())?;
+        as_root(|| std::fs::write(&self.ack_path, seq.to_string()))?;
         Ok(())
     }
 
@@ -114,9 +120,9 @@ impl Journal {
             return Ok(());
         }
         self.acked = seq.min(self.last_seq);
-        std::fs::write(&self.ack_path, self.acked.to_string())?;
+        as_root(|| std::fs::write(&self.ack_path, self.acked.to_string()))?;
         if self.bytes > COMPACT_BYTES {
-            self.compact()?;
+            as_root(|| self.compact())?;
         }
         Ok(())
     }
