@@ -1160,20 +1160,21 @@ mod tests {
 
     /// Boots a sandbox from an image of Docker Hub (or
     /// `FCTL_TEST_FIRECRACKER_IMAGE`), on a host with KVM, Firecracker's
-    /// needs and a static fctl-agent:
+    /// needs and a static fctl-agent, with the kernel hosts pull (or the
+    /// file `FCTL_TEST_FIRECRACKER_KERNEL`). CI runs it on GitHub's x86_64
+    /// runners, which have KVM (the `firecracker` job of ci.yml):
     ///
     /// ```sh
     /// cargo build --release -p fctl-agent --target "$(uname -m)-unknown-linux-musl"
     /// FCTL_TEST_FIRECRACKER_AGENT=$PWD/target/$(uname -m)-unknown-linux-musl/release/fctl-agent \
-    ///   FCTL_TEST_FIRECRACKER_KERNEL=/path/to/vmlinux \
     ///   cargo test -p fctl-host boots_a_sandbox -- --ignored --nocapture
     /// ```
     ///
-    /// `FCTL_TEST_FIRECRACKER_DATA` keeps the host's files (the image, and
-    /// Firecracker) between runs, and `FCTL_TEST_FIRECRACKER_RUN` is a
-    /// command whose output it shows (`claude --version`, say).
+    /// `FCTL_TEST_FIRECRACKER_DATA` keeps the host's files (the image, the
+    /// kernel and Firecracker) between runs, and `FCTL_TEST_FIRECRACKER_RUN`
+    /// is a command whose output it shows (`claude --version`, say).
     #[tokio::test]
-    #[ignore = "needs KVM, passt, a kernel and a static fctl-agent"]
+    #[ignore = "needs KVM, passt and a static fctl-agent"]
     async fn boots_a_sandbox() -> Result<()> {
         use super::super::Driver;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1187,7 +1188,7 @@ mod tests {
             agent_bin: Some(var("FCTL_TEST_FIRECRACKER_AGENT")?.into()),
             ..HostConfig::default()
         };
-        cfg.firecracker.kernel = Some(var("FCTL_TEST_FIRECRACKER_KERNEL")?);
+        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
         cfg.firecracker.disk_gb = 4;
         let d = Driver::select("firecracker", &cfg).await?;
         let probed = d.probe().await;

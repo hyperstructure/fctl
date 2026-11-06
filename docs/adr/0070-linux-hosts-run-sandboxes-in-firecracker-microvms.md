@@ -87,6 +87,9 @@ microVM of its own.
   reports free.
 - The VM's clock follows the host's at boot and at each request of the
   host, not between them, after the host sleeps.
-- CI has no KVM: the driver's test that boots a VM runs only by hand, with
-  `--ignored`. Session #536 ran it, and sessions end to end, on Firecracker
-  in a VM under QEMU's emulation of a CPU with virtualization.
+- The driver's tests that boot VMs need KVM, so they are `--ignored` in
+  `cargo test`. Session #536 ran them, and sessions end to end, on
+  Firecracker in a VM under QEMU's emulation of a CPU with virtualization
+  (aarch64); CI runs them on GitHub's x86_64 runners, which have KVM, with
+  Ubuntu's passt and its AppArmor profile (the `firecracker` job of
+  `ci.yml`).
