@@ -1229,7 +1229,11 @@ agent posts a notice; a primary repository out of reach fails the session.
   them all in the `git` event's `pull_requests`, and looks each up again
   when a turn ends until it is merged, so the session lists them with their
   state (`fctl_domain::pulls`), and GitHub keeps that current
-  ([Pull request state and checks](#pull-request-state-and-checks)). The
+  ([Pull request state and checks](#pull-request-state-and-checks)). As
+  the session stops, it looks up only the pull request of a pushed branch
+  it follows none of (`Moment::Stopping`), so that a session whose turn
+  was cut short before fctl-agent saw `gh pr create` still lists the pull
+  request it opened; GitHub has 20 seconds to answer. The
   system prompt tells agents to make another pull request's branch where
   the repository is checked out, not in a worktree, since Changes shows
   the checked-out branches.
@@ -1659,6 +1663,28 @@ posts what it found on GitHub
    GitHub, ends the pause too, and drops what was held. The review's `PostedReview.sent_to` names the session,
    and its transcript links it
    ([ADR 0041](adr/0041-review-agents-findings-go-to-the-agent-that-opened-the-pull-request.md)).
+   Findings that go to no session aren't dropped: no session may list
+   the pull request yet when the review posts, if the agent's turn was
+   cut short before it reported the pull request, say, or a person opened
+   it from the agent's branch. `reviews` keeps the message
+   (`unsent_findings`, `fctl_domain::reviews::Unsent`), written before the
+   control plane looks for the session, so that a session that lists the
+   pull request meanwhile finds it, and whoever sends it claims it first,
+   so that it goes once, and keeps it again if that session takes none.
+   When a session of the review's workspace first lists a pull request
+   (SessionObject, as it applies a `git` event, `crate::reviews::listed`),
+   before the pull request is looked up, the findings of its newest review
+   that posted go to the session that opened it, as above, if they went
+   to no session and the pull request isn't merged or closed
+   (`fctl_domain::reviews::owed`): a newer review that posted takes the
+   place of an older one. Until then, the review's `Review.unsent` says
+   its findings went to no session, in the Reviews tab, its session's
+   rail and `fctl review`, and so does its check on the pull requests of
+   sessions that list it (`ReviewCheck::unsent`), whose page offers to
+   pass them on to that session's agent, as `fctl review pass-on` does
+   (`crate::reviews::pass_on_unsent`, through SessionObject's `/pass-on`):
+   for one that lists the pull request in the review's workspace, while it
+   is open, and whose agent writes on GitHub.
 8. **A review that ends otherwise** (superseded, stopped, failed) ends
    its check as cancelled, saying why (`crate::reviews::ended`, from
    SessionObject; the hourly job catches what it missed).

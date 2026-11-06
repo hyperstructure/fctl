@@ -2113,6 +2113,8 @@ pub struct Kept {
     pub still_open: u32,
     /// Its summary on GitHub.
     pub review_url: Option<String>,
+    /// Its findings went to no session ([`Unsent`]).
+    pub unsent: bool,
 }
 
 /// The review that the checks of pull request `number` of `repo` at
@@ -2149,6 +2151,7 @@ pub fn checked(
         findings: kept.findings,
         still_open: kept.still_open,
         url: kept.review_url.clone(),
+        unsent: kept.unsent,
         ..check
     }
 }
@@ -3089,6 +3092,82 @@ pub fn passed_on_by(name: &str) -> String {
         "{} passed on the findings fctl held back, for up to {MAX_PASSED_ON} more rounds of review.",
         name.trim()
     )
+}
+
+/// What the transcript says when `name` passes on the findings of a review
+/// that went to no session ([`Unsent`]): the agent gets them now, and
+/// those of the reviews after them, up to [`MAX_PASSED_ON`] in a row with
+/// these.
+pub fn unsent_passed_on_by(name: &str) -> String {
+    format!(
+        "{} passed on the findings of fctl's review, which went to no session when it posted, for up to {MAX_PASSED_ON} rounds of review.",
+        name.trim()
+    )
+}
+
+/// What the control plane keeps of a review whose findings went to no
+/// session (`reviews.unsent_findings`): one of the instance's agents
+/// opened the pull request, but no session that lists it took them when
+/// the review posted, since none listed it yet, say, as an agent whose
+/// turn was cut short never reported the pull request it opened. They go
+/// to the session that opened it once one lists it ([`owed`]), or to the
+/// one a person passes them on to, in the message the agent would have
+/// got.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unsent {
+    /// The message for the agent ([`passed_on`]).
+    pub text: String,
+    /// What its transcript says if fctl holds them back from it
+    /// ([`held_back`]).
+    pub held: String,
+    /// What its transcript shows of the message ([`passed_on_review`]).
+    #[serde(default)]
+    pub shown: Option<PassedOnReview>,
+}
+
+impl Unsent {
+    /// What the agent of the session that opened the pull request gets of
+    /// the review `f` describes.
+    pub fn of(f: &Found<'_>) -> Self {
+        Self {
+            text: passed_on(f),
+            held: held_back(f),
+            shown: Some(passed_on_review(f)),
+        }
+    }
+}
+
+/// One of a pull request's reviews, as fctl weighs whether a session that
+/// lists the pull request late is owed its findings ([`owed`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Late {
+    pub state: ReviewState,
+    pub created_at: i64,
+    /// Its findings went to no session ([`Unsent`]).
+    pub unsent: bool,
+}
+
+/// Which of a pull request's reviews `reviews` owes its findings to a
+/// session that has just listed the pull request, given what was last said
+/// of the pull request's state (`open`, `draft`, `queued`, `merged` or
+/// `closed`; `None`: not looked up yet, as it was open when reviewed):
+/// the newest that posted, where its findings went to no session, while
+/// the pull request is open. A newer review that posted takes the place of
+/// an older one, whose findings it says the new commits fixed or still
+/// open; a review under way, or one that ended without posting, changes
+/// nothing until it posts. The rest of what passing them on asks (fctl's
+/// agent opened the pull request, the session that opened it writes on
+/// GitHub, the reviews in a row) holds as when the review posted.
+pub fn owed(reviews: &[Late], state: Option<&str>) -> Option<usize> {
+    if matches!(state, Some("merged" | "closed")) {
+        return None;
+    }
+    let (i, newest) = reviews
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.state, ReviewState::Passed | ReviewState::Commented))
+        .max_by_key(|(i, r)| (r.created_at, *i))?;
+    newest.unsent.then_some(i)
 }
 
 #[cfg(test)]
@@ -4116,6 +4195,7 @@ mod tests {
             url: None,
             project_id: None,
             held_after: None,
+            unsent: false,
         };
         let project = ProjectId::parse("prj_1");
         let kept = |state| Kept {
@@ -4127,6 +4207,7 @@ mod tests {
             findings: 3,
             still_open: 1,
             review_url: Some("https://github.com/acme/web/pull/12#issuecomment-1".into()),
+            unsent: false,
         };
         let at = |c: ReviewCheck, k: Option<&Kept>| checked(c, &repo, 12, Some(SHA), k);
         // Its findings and its summary on GitHub, once it posted.
@@ -4180,6 +4261,14 @@ mod tests {
         // Checks that don't say their commit take the record's.
         let unsure = checked(neutral, &repo, 12, None, Some(&kept(ReviewState::Passed)));
         assert_eq!(unsure.state, ReviewState::Passed);
+        // Findings that went to no session say so, once it posted.
+        assert!(!posted.unsent);
+        let unsent = Kept {
+            unsent: true,
+            ..kept(ReviewState::Commented)
+        };
+        let check_running = check(ReviewState::Running, false);
+        assert!(at(check_running, Some(&unsent)).unsent);
     }
 
     #[test]
@@ -4194,6 +4283,7 @@ mod tests {
                 url: None,
                 project_id: None,
                 held_after: None,
+                unsent: false,
             })
         };
         use ReviewState::*;
@@ -4873,6 +4963,72 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_lists_a_pull_request_late_gets_its_newest_reviews_unsent_findings() {
+        use ReviewState::*;
+        let r = |state, created_at, unsent| Late {
+            state,
+            created_at,
+            unsent,
+        };
+        // The newest review that posted went to no session: its findings.
+        let one = [r(Commented, 1, true)];
+        assert_eq!(owed(&one, Some("open")), Some(0));
+        assert_eq!(owed(&one, Some("draft")), Some(0));
+        assert_eq!(owed(&one, Some("queued")), Some(0));
+        // Not looked up yet: it was open when reviewed.
+        assert_eq!(owed(&one, None), Some(0));
+        // Not once the pull request merged or closed.
+        assert_eq!(owed(&one, Some("merged")), None);
+        assert_eq!(owed(&one, Some("closed")), None);
+        // Nothing went to no session, or nothing was reviewed.
+        assert_eq!(owed(&[r(Commented, 1, false)], None), None);
+        assert_eq!(owed(&[], None), None);
+        // A newer review that posted takes its place, in whatever order D1
+        // lists them, and its own findings go if they went nowhere.
+        let newer = [r(Commented, 1, true), r(Passed, 2, false)];
+        assert_eq!(owed(&newer, None), None);
+        let both = [r(Commented, 3, true), r(Commented, 1, true)];
+        assert_eq!(owed(&both, None), Some(0));
+        // Reviews under way, or that ended without posting, change nothing.
+        let since = [
+            r(Running, 5, false),
+            r(Superseded, 4, false),
+            r(Stopped, 3, false),
+            r(Failed, 2, false),
+            r(Commented, 1, true),
+        ];
+        assert_eq!(owed(&since, Some("open")), Some(4));
+    }
+
+    #[test]
+    fn unsent_findings_keep_the_message_the_opener_would_have_got() {
+        let repo = pr().repo;
+        let findings = [finding("src/main.rs", 13)];
+        let spots = [Spot::Lines];
+        let found = Found {
+            repo: &repo,
+            number: 12,
+            url: "https://github.com/acme/web/pull/12",
+            title: "Fix the login redirect",
+            sha: SHA,
+            session: "ses_review",
+            summary_url: None,
+            review_id: None,
+            findings: &findings,
+            spots: &spots,
+        };
+        let unsent = Unsent::of(&found);
+        assert_eq!(unsent.text, passed_on(&found));
+        assert_eq!(unsent.held, held_back(&found));
+        assert_eq!(unsent.shown, Some(passed_on_review(&found)));
+        // As D1 keeps it, and as kept from before `shown`.
+        let json = serde_json::to_string(&unsent).unwrap_or_default();
+        assert_eq!(serde_json::from_str::<Unsent>(&json).ok(), Some(unsent));
+        let bare: Option<Unsent> = serde_json::from_str(r#"{"text":"t","held":"h"}"#).ok();
+        assert_eq!(bare.and_then(|u| u.shown), None);
+    }
+
+    #[test]
     fn spots_find_each_findings_comment() {
         let mut second = finding("src/main.rs", 20);
         second.title = "Another problem".into();
@@ -5073,6 +5229,7 @@ mod tests {
             url: None,
             project_id: None,
             held_after: None,
+            unsent: false,
         };
         let listed = |url: &str, review: Option<ReviewCheck>| PullRequestRef {
             number: 12,
@@ -5117,6 +5274,12 @@ mod tests {
             passed_on_by(" Ada Lovelace "),
             format!(
                 "Ada Lovelace passed on the findings fctl held back, for up to {MAX_PASSED_ON} more rounds of review."
+            )
+        );
+        assert_eq!(
+            unsent_passed_on_by(" Ada Lovelace "),
+            format!(
+                "Ada Lovelace passed on the findings of fctl's review, which went to no session when it posted, for up to {MAX_PASSED_ON} rounds of review."
             )
         );
     }

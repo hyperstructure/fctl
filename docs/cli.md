@@ -581,7 +581,10 @@ their threads: those of up to five reviews in a row while nobody messages
 the agent. fctl holds the next ones back, and the session's page says so
 under the pull request, with a button that continues for five more
 rounds: the agent gets the held findings, then those of up to four more
-reviews in a row. A message to the agent ends the pause too. Where the
+reviews in a row. A message to the agent ends the pause too. Findings
+that went to no session, since none listed the pull request yet when the
+review posted, wait for one: the session that opened it gets them once it
+lists it, and `fctl review` says so meanwhile. Where the
 owners turn it on, the review agent first sums the pull request up at the
 end of its description (how risky it looks, what it does and what
 deserves a closer look), in place of an earlier review's summary, and
@@ -606,7 +609,7 @@ fctl review settings -p my-app --off           # reviews under way finish
 fctl review -p my-app                          # the reviews, newest first, with what came of each
 fctl review start -p my-app 12                 # review a pull request's head now (or acme/api#7, or its link)
 fctl review list -p my-app --limit 50          # more of them (20 unless --limit says)
-fctl review pass-on my-app#12                  # pass on the findings fctl held back from a session's agent
+fctl review pass-on my-app#12                  # pass on the findings fctl held back from a session's agent, or sent to no session
 ```
 
 Review sessions take no messages: `fctl show my-app#12` says which pull

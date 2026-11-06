@@ -93,6 +93,16 @@ describe("ReviewFacts", () => {
     // Nor while its review loads.
     expect(render(<ReviewFacts session={session} />).textContent).not.toContain("Opened by");
   });
+
+  it("says when its findings went to no session", () => {
+    const c = render(<ReviewFacts session={session} review={review({ unsent: true })} />);
+    expect(c.textContent).toContain(
+      "Its findings went to no session. fctl passes them on to the session that opened the pull request once one lists it.",
+    );
+    expect(render(<ReviewFacts session={session} review={review()} />).textContent).not.toContain(
+      "no session",
+    );
+  });
 });
 
 const summary: G.PullRequestSummary = {

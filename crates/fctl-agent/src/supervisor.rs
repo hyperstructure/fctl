@@ -2357,8 +2357,9 @@ impl Supervisor {
         }
         if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) {
             let (push, last) = (config.push_on_commit, self.last_git.as_ref());
-            // No lookups while stopping: the pull requests found before
-            // still stand.
+            // The pull requests found before still stand: only a pushed
+            // branch's that it follows none of is looked up, which a turn
+            // cut short may not have reported.
             let mut pulls = self.persisted.pulls.clone();
             let stopping = Moment::Stopping;
             let diffs = config.diffs;
@@ -2373,6 +2374,10 @@ impl Supervisor {
             )
             .await
             {
+                if pulls != self.persisted.pulls {
+                    self.persisted.pulls = pulls;
+                    self.persist();
+                }
                 for (level, text) in synced.logs {
                     self.log(LogSource::Agent, level, &text);
                 }

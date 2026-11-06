@@ -99,15 +99,21 @@ pub struct ReviewFindings {
 }
 
 /// Someone passes on the findings of a review that fctl held back from the
-/// session's agent (`/pass-on`, from `api::sessions::pass_on`): its agent
-/// gets them in the message from fctl it would have got, and the reviews in
-/// a row count from this one, as after a person's message.
+/// session's agent, or that went to no session (`/pass-on`, from
+/// `api::sessions::pass_on`): its agent gets them in the message from fctl
+/// it would have got, and the reviews in a row count from this one, as
+/// after a person's message.
 #[derive(Serialize, Deserialize)]
 pub struct PassOn {
     /// The review's session.
     pub review: SessionId,
     /// Who passes them on, whom the transcript names.
     pub by: UserRef,
+    /// The findings, where they went to no session
+    /// (`crate::reviews::pass_on_unsent`); `None`: those the session held
+    /// back.
+    #[serde(default)]
+    pub unsent: Option<fctl_domain::reviews::Unsent>,
 }
 
 /// What came of [`ReviewFindings`].
@@ -119,6 +125,10 @@ pub struct FindingsTold {
     /// Why the agent doesn't get them.
     #[serde(default)]
     pub not_sent: Option<String>,
+    /// The session keeps them back from its agent for a person to pass on,
+    /// after the findings of `MAX_PASSED_ON` reviews in a row.
+    #[serde(default)]
+    pub held: bool,
 }
 
 /// What GitHub says of pull requests a session lists (`/pull-requests`,

@@ -251,9 +251,13 @@ export function ReviewFooter({ session, review }: { session: G.Session; review?:
   );
 }
 
+/** What the app says of a review whose findings went to no session (`Review.unsent`). */
+export const UNSENT =
+  "Its findings went to no session. fctl passes them on to the session that opened the pull request once one lists it.";
+
 /**
  * The review in the session's rail: how it went, the commit, the session whose agent opened the pull
- * request, and the project's other reviews.
+ * request, whether its findings went to no session, and the project's other reviews.
  */
 export function ReviewFacts({ session, review }: { session: G.Session; review?: G.Review }) {
   const pr = session.review;
@@ -319,6 +323,7 @@ export function ReviewFacts({ session, review }: { session: G.Session; review?: 
         </a>
       )}
       {review?.check_error && <p className="leading-relaxed text-amber">{review.check_error}</p>}
+      {review?.unsent && <p className="leading-relaxed text-amber">{UNSENT}</p>}
       <Link
         to="/p/$slug"
         params={{ slug: session.project_slug }}

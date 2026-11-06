@@ -189,6 +189,9 @@ pub struct ReviewRow {
     /// The summary it put in the pull request's description, as JSON.
     #[serde(default)]
     pub pull_request_summary: Option<String>,
+    /// Its findings went to no session (`unsent_findings`).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub unsent: bool,
 }
 
 /// SELECT for [`ReviewRow`]; `WHERE` and `ORDER BY` follow.
@@ -196,7 +199,7 @@ const REVIEW_SELECT: &str = "SELECT rv.session_id, rv.project_id, rv.repo, rv.nu
     rv.title, rv.author, rv.draft, rv.fork, rv.trusted, rv.previous_sha, rv.installation_id, rv.review_installation_id, \
     rv.check_run_id, rv.check_error, rv.state, \
     rv.reason, rv.findings, rv.resolved, rv.still_open, rv.review_url, rv.created_at, rv.finished_at, \
-    rv.pull_request_summary, \
+    rv.pull_request_summary, rv.unsent_findings IS NOT NULL AS unsent, \
     s.number AS session_number, s.status AS status, s.stats AS stats, s.created_by AS operator_id, \
     u.name AS operator_name, u.avatar_url AS operator_avatar, s.branch AS head_ref \
     FROM reviews rv JOIN sessions s ON s.id = rv.session_id LEFT JOIN users u ON u.id = s.created_by";
@@ -262,6 +265,7 @@ impl ReviewRow {
             busy_ms: stats.busy_ms,
             opened_by: None,
             pull_request_summary: self.summary(),
+            unsent: self.unsent,
         })
     }
 }
@@ -300,14 +304,16 @@ pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, r
         #[serde(deserialize_with = "int", default)]
         still_open: i64,
         review_url: Option<String>,
+        #[serde(deserialize_with = "int_bool", default)]
+        unsent: bool,
     }
     if ids.is_empty() {
         return Ok(BTreeMap::new());
     }
     let rows: Vec<Row> = q(
         db,
-        "SELECT session_id, project_id, repo, number, head_sha, state, findings, still_open, review_url \
-         FROM reviews WHERE session_id IN (SELECT value FROM json_each(?1))",
+        "SELECT session_id, project_id, repo, number, head_sha, state, findings, still_open, review_url, \
+         unsent_findings IS NOT NULL AS unsent FROM reviews WHERE session_id IN (SELECT value FROM json_each(?1))",
         &[s(&json!(ids).to_string())],
     )?
     .all()
@@ -329,6 +335,7 @@ pub async fn kept(db: &D1Database, ids: &[&str]) -> AppResult<BTreeMap<String, r
                 findings: count(r.findings),
                 still_open: count(r.still_open),
                 review_url: r.review_url.as_deref().and_then(rv::posted_link),
+                unsent: r.unsent,
             };
             Some((r.session_id, kept))
         })
@@ -2121,7 +2128,9 @@ struct Posting {
 /// subscription it ran on. Its agent decides what to do about each
 /// finding, and answers in its thread. Not for pull requests that merged
 /// or closed meanwhile, nor sessions whose agent only reads on GitHub now.
-/// Returns the session, once it has the message.
+/// The review keeps the message until a session takes it
+/// (`reviews.unsent_findings`): one that lists the pull request later gets
+/// it then ([`owed`]). Returns the session, once it has the message.
 async fn pass_on(
     ctx: &Ctx,
     row: &ReviewRow,
@@ -2131,47 +2140,6 @@ async fn pass_on(
 ) -> AppResult<Option<SessionId>> {
     if sub.findings.is_empty() || !rv::by_app(row.author.as_deref(), app_login(&ctx.cfg).as_deref())
     {
-        return Ok(None);
-    }
-    let pr = format!("{}#{}", repo.full_name(), row.number);
-    // Only to sessions of the review's own workspace, connected to the
-    // account it connected, by GitHub's id: not to one whose connection is
-    // to a login that has changed hands since, nor to another workspace's
-    // session, which could list the pull request on a branch of the same
-    // name, earlier, and so take the findings, and its agent their text.
-    let Some(project) = crate::spec::project_row(&ctx.db, &row.project_id).await? else {
-        return Ok(None);
-    };
-    let answered = answered_for(&ctx.db, row, repo).await?;
-    let listing = crate::pull_requests::listed_by(
-        &ctx.db,
-        project.workspace_id(),
-        repo,
-        row.number(),
-        answered,
-    )
-    .await?;
-    let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
-    let Some(opener) = rv::opener(&branches, row.head_ref.as_deref()).and_then(|i| listing.get(i))
-    else {
-        worker::console_log!(
-            "no session lists {pr}, whose review found {} issues",
-            sub.findings.len()
-        );
-        return Ok(None);
-    };
-    let id = opener.session_id.as_str();
-    if let Some(state @ ("merged" | "closed")) = opener.state.as_deref() {
-        worker::console_log!("not passing {pr}'s review on to session {id}: it is {state}");
-        return Ok(None);
-    }
-    let Some(session) = crate::spec::session_row(&ctx.db, id).await? else {
-        return Ok(None);
-    };
-    if session.github_access() == GithubAccess::Read {
-        worker::console_log!(
-            "not passing {pr}'s review on to session {id}: its agent only reads on GitHub"
-        );
         return Ok(None);
     }
     let found = rv::Found {
@@ -2186,34 +2154,388 @@ async fn pass_on(
         findings: &sub.findings,
         spots: &posting.spots,
     };
-    let stub = internal::session_stub(&ctx.env, id)?;
-    let told: internal::FindingsTold = internal::post(
-        &stub,
-        "/review-findings",
-        &internal::ReviewFindings {
-            review: SessionId(row.session_id.clone()),
-            text: rv::passed_on(&found),
-            held: rv::held_back(&found),
-            shown: Some(rv::passed_on_review(&found)),
-        },
-    )
+    // Kept before fctl looks for the session, so that one that lists the
+    // pull request meanwhile finds them.
+    q(
+        &ctx.db,
+        "UPDATE reviews SET unsent_findings = ? WHERE session_id = ?",
+        &[
+            s(&serde_json::to_string(&rv::Unsent::of(&found))?),
+            s(&row.session_id),
+        ],
+    )?
+    .run()
     .await?;
+    Ok(match send(&ctx.env, &ctx.db, row, repo).await? {
+        Sent::To(id) => Some(id),
+        Sent::Held | Sent::Nowhere => None,
+    })
+}
+
+/// Where [`send`] sent a review's findings.
+enum Sent {
+    /// To the agent of this session, which has them in a message, or will
+    /// once the session resumes.
+    To(SessionId),
+    /// To the session, which holds them back from its agent, after the
+    /// findings of `rv::MAX_PASSED_ON` reviews in a row, for a person to
+    /// pass on.
+    Held,
+    /// To no session: none that lists the pull request takes them, or
+    /// another call sent them already.
+    Nowhere,
+}
+
+/// Sends review `row`'s findings that went to no session yet
+/// (`reviews.unsent_findings`) to the session whose agent opened its pull
+/// request, if one lists it now: of the review's own workspace, connected
+/// to the account it connected, by GitHub's id, not to one whose
+/// connection is to a login that has changed hands since, nor to another
+/// workspace's session, which could list the pull request on a branch of
+/// the same name, earlier, and so take the findings, and its agent their
+/// text. Not while the pull request is merged or closed, nor to a session
+/// whose agent only reads on GitHub, or that takes none (archived,
+/// failed). It claims them first, so that they go once, and keeps them
+/// again when that session takes none.
+async fn send(env: &Env, db: &D1Database, row: &ReviewRow, repo: &RepoRef) -> AppResult<Sent> {
+    let pr = format!("{}#{}", repo.full_name(), row.number);
+    let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
+        return Ok(Sent::Nowhere);
+    };
+    let answered = answered_for(db, row, repo).await?;
+    let listing =
+        crate::pull_requests::listed_by(db, project.workspace_id(), repo, row.number(), answered)
+            .await?;
+    let branches: Vec<Option<&str>> = listing.iter().map(|l| l.branch.as_deref()).collect();
+    let Some(opener) = rv::opener(&branches, row.head_ref.as_deref()).and_then(|i| listing.get(i))
+    else {
+        worker::console_log!(
+            "no session lists {pr}: review {}'s findings wait for one",
+            row.session_id
+        );
+        return Ok(Sent::Nowhere);
+    };
+    let id = opener.session_id.as_str();
+    if let Some(state @ ("merged" | "closed")) = opener.state.as_deref() {
+        worker::console_log!("not passing {pr}'s review on to session {id}: it is {state}");
+        return Ok(Sent::Nowhere);
+    }
+    let Some(session) = crate::spec::session_row(db, id).await? else {
+        return Ok(Sent::Nowhere);
+    };
+    if session.github_access() == GithubAccess::Read {
+        worker::console_log!(
+            "not passing {pr}'s review on to session {id}: its agent only reads on GitHub"
+        );
+        return Ok(Sent::Nowhere);
+    }
+    let Some(unsent) = claim(db, &row.session_id).await? else {
+        return Ok(Sent::Nowhere);
+    };
+    let told: AppResult<internal::FindingsTold> = async {
+        let stub = internal::session_stub(env, id)?;
+        internal::post(
+            &stub,
+            "/review-findings",
+            &internal::ReviewFindings {
+                review: SessionId(row.session_id.clone()),
+                text: unsent.text.clone(),
+                held: unsent.held.clone(),
+                shown: unsent.shown.clone(),
+            },
+        )
+        .await
+    }
+    .await;
+    let told = match told {
+        Ok(told) => told,
+        Err(e) => {
+            unclaim(db, &row.session_id, &unsent).await;
+            return Err(e);
+        }
+    };
     if let Some(why) = told.not_sent {
         worker::console_log!("not passing {pr}'s review on to session {id}: {why}");
-        return Ok(None);
+        if told.held {
+            return Ok(Sent::Held);
+        }
+        unclaim(db, &row.session_id, &unsent).await;
+        return Ok(Sent::Nowhere);
     }
-    ctx.audit_in(
+    audit(
+        db,
         session.workspace.workspace_id.as_deref(),
         "review.passed_on",
-        Some(id),
-        Some(json!({
+        id,
+        json!({
             "review": row.session_id,
             "pull_request": pr,
             "commit": row.head_sha,
-            "findings": sub.findings.len(),
-        })),
-    );
-    Ok(Some(SessionId(id.to_owned())))
+            "findings": unsent.shown.as_ref().map(|s| s.findings.len()),
+        }),
+    )
+    .await;
+    Ok(Sent::To(SessionId(id.to_owned())))
+}
+
+/// Takes review `review`'s findings that went to no session, for one
+/// session alone: `None` where none wait, or another call took them.
+async fn claim(db: &D1Database, review: &str) -> AppResult<Option<rv::Unsent>> {
+    #[derive(Deserialize)]
+    struct Row {
+        unsent_findings: Option<String>,
+    }
+    let kept: Option<Row> = q(
+        db,
+        "SELECT unsent_findings FROM reviews WHERE session_id = ?",
+        &[s(review)],
+    )?
+    .first()
+    .await?;
+    let Some(json) = kept.and_then(|r| r.unsent_findings) else {
+        return Ok(None);
+    };
+    let taken = q(
+        db,
+        "UPDATE reviews SET unsent_findings = NULL WHERE session_id = ? AND unsent_findings IS NOT NULL",
+        &[s(review)],
+    )?
+    .run()
+    .await?;
+    if taken == 0 {
+        return Ok(None);
+    }
+    match serde_json::from_str(&json) {
+        Ok(unsent) => Ok(Some(unsent)),
+        Err(e) => {
+            worker::console_error!("reading review {review}'s unsent findings: {e}");
+            Ok(None)
+        }
+    }
+}
+
+/// Keeps the findings [`claim`] took again, for the next session that
+/// lists the pull request: the one it took them for took none.
+async fn unclaim(db: &D1Database, review: &str, unsent: &rv::Unsent) {
+    let kept: AppResult<usize> = async {
+        q(
+            db,
+            "UPDATE reviews SET unsent_findings = ? WHERE session_id = ? AND unsent_findings IS NULL",
+            &[s(&serde_json::to_string(unsent)?), s(review)],
+        )?
+        .run()
+        .await
+    }
+    .await;
+    if let Err(e) = kept {
+        worker::console_error!("keeping review {review}'s unsent findings: {}", e.0.message);
+    }
+}
+
+/// An entry in a workspace's audit log for what fctl did of itself, with
+/// no request to answer: a review's findings that went to a session.
+async fn audit(
+    db: &D1Database,
+    workspace_id: Option<&str>,
+    action: &str,
+    target: &str,
+    data: Value,
+) {
+    let now = now_ms();
+    let id = fctl_domain::ids::new_id("aud", now);
+    let written: AppResult<usize> = async {
+        q(
+            db,
+            "INSERT INTO audit_log (id, ts, actor_id, action, target, data, ip, workspace_id) VALUES (?, ?, NULL, ?, ?, ?, NULL, ?)",
+            &[
+                s(&id),
+                n(now),
+                s(action),
+                s(target),
+                s(&data.to_string()),
+                os(workspace_id.filter(|w| !w.is_empty())),
+            ],
+        )?
+        .run()
+        .await
+    }
+    .await;
+    if let Err(e) = written {
+        worker::console_error!("audit for a review's findings: {}", e.0.message);
+    }
+}
+
+/// Session `session_id` lists pull requests `prs` from now on
+/// (`crate::pull_requests::track`, from SessionObject as its agent reports
+/// them): the findings that their reviews kept since they went to no
+/// session go to the session that opened each, where `rv::owed` says the
+/// pull request still owes them, as when the review posted ([`send`]). A
+/// session whose turn was cut short before its agent reported the pull
+/// request it opened gets them once it does. Returns how many reviews'
+/// findings went to a session.
+pub async fn listed(
+    env: &Env,
+    db: &D1Database,
+    session_id: &str,
+    prs: &[(RepoRef, u64)],
+) -> AppResult<usize> {
+    #[derive(Deserialize)]
+    struct Of {
+        session_id: String,
+        state: String,
+        #[serde(deserialize_with = "int")]
+        created_at: i64,
+        #[serde(deserialize_with = "int_bool", default)]
+        unsent: bool,
+        /// What was last said of the pull request's state, as the session
+        /// lists it.
+        pr_state: Option<String>,
+    }
+    if prs.is_empty() {
+        return Ok(0);
+    }
+    let Some(session) = crate::spec::session_row(db, session_id).await? else {
+        return Ok(0);
+    };
+    let Some(workspace) = session.workspace.workspace_id.as_deref() else {
+        return Ok(0);
+    };
+    let mut sent = 0;
+    for (repo, number) in prs {
+        let key = crate::pull_requests::key(repo);
+        let reviews: Vec<Of> = q(
+            db,
+            "SELECT rv.session_id, rv.state, rv.created_at, rv.unsent_findings IS NOT NULL AS unsent, \
+             (SELECT l.state FROM pull_request_sessions l WHERE l.repo = ?1 AND l.number = ?2 \
+              AND l.session_id = ?4) AS pr_state \
+             FROM reviews rv JOIN projects p ON p.id = rv.project_id \
+             WHERE rv.repo_key = ?1 AND rv.number = ?2 AND p.workspace_id = ?3 \
+             AND rv.state IN ('passed', 'commented') ORDER BY rv.created_at DESC LIMIT 5",
+            &[s(&key), n(*number as i64), s(workspace), s(session_id)],
+        )?
+        .all()
+        .await?;
+        let late: Vec<rv::Late> = reviews
+            .iter()
+            .map(|r| rv::Late {
+                state: ReviewState::parse(&r.state),
+                created_at: r.created_at,
+                unsent: r.unsent,
+            })
+            .collect();
+        let state = reviews.first().and_then(|r| r.pr_state.as_deref());
+        let Some(owed) = rv::owed(&late, state).and_then(|i| reviews.get(i)) else {
+            continue;
+        };
+        let Some(row) = of_session(db, &owed.session_id).await? else {
+            continue;
+        };
+        match send(env, db, &row, repo).await {
+            Ok(Sent::To(to)) => {
+                worker::console_log!(
+                    "passed review {}'s unsent findings on to session {to}, as {session_id} listed {}#{number}",
+                    row.session_id,
+                    repo.full_name()
+                );
+                sent += 1;
+            }
+            Ok(Sent::Held | Sent::Nowhere) => {}
+            Err(e) => worker::console_error!(
+                "passing review {}'s unsent findings on: {}",
+                row.session_id,
+                e.0.message
+            ),
+        }
+    }
+    Ok(sent)
+}
+
+/// Someone passes on review `review`'s findings, which went to no session
+/// (`api::sessions::pass_on`), to the agent of session `to`, which lists
+/// its pull request in the review's workspace: the agent gets the message
+/// it would have got, as from the findings it held back (SessionObject's
+/// `/pass-on`). `None` where the review's findings didn't go to no session,
+/// for the session's own held ones.
+pub async fn pass_on_unsent(
+    ctx: &Ctx,
+    to: &crate::model::SessionRow,
+    review: &SessionId,
+    by: &UserRef,
+) -> AppResult<Option<internal::Delivered>> {
+    let Some(row) = of_session(&ctx.db, review.as_str()).await? else {
+        return Ok(None);
+    };
+    if !row.unsent {
+        return Ok(None);
+    }
+    let Some(repo) = row.repo() else {
+        return Ok(None);
+    };
+    let in_workspace = crate::spec::project_row(&ctx.db, &row.project_id)
+        .await?
+        .is_some_and(|p| Some(p.workspace_id()) == to.workspace.workspace_id.as_deref());
+    #[derive(Deserialize)]
+    struct Listed {
+        state: Option<String>,
+    }
+    let listed: Option<Listed> = q(
+        &ctx.db,
+        "SELECT state FROM pull_request_sessions WHERE repo = ? AND number = ? AND session_id = ?",
+        &[
+            s(&crate::pull_requests::key(&repo)),
+            n(row.number),
+            s(to.session_id().as_str()),
+        ],
+    )?
+    .first()
+    .await?;
+    let Some(listed) = listed.filter(|_| in_workspace) else {
+        return Err(conflict(
+            "This session doesn't list the review's pull request: pass its findings on from one that does.",
+        ));
+    };
+    if let Some(state @ ("merged" | "closed")) = listed.state.as_deref() {
+        return Err(conflict(&format!(
+            "The pull request is {state}: its findings stay on GitHub."
+        )));
+    }
+    if to.github_access() == GithubAccess::Read {
+        return Err(conflict(
+            "This session's agent only reads on GitHub, so it can't answer the findings there.",
+        ));
+    }
+    let Some(unsent) = claim(&ctx.db, review.as_str()).await? else {
+        return Ok(None);
+    };
+    let delivered: AppResult<internal::Delivered> = async {
+        let stub = internal::session_stub(&ctx.env, to.session_id().as_str())?;
+        internal::post(
+            &stub,
+            "/pass-on",
+            &internal::PassOn {
+                review: review.clone(),
+                by: by.clone(),
+                unsent: Some(unsent.clone()),
+            },
+        )
+        .await
+    }
+    .await;
+    let delivered = match delivered {
+        Ok(d) => d,
+        Err(e) => {
+            unclaim(&ctx.db, review.as_str(), &unsent).await;
+            return Err(e);
+        }
+    };
+    // So that the sessions that list it no longer show them unsent.
+    let (env, cfg, number) = (ctx.env.clone(), ctx.cfg.clone(), row.number());
+    ctx.defer(async move {
+        let db = env.d1("DB")?;
+        look_again(&env, &cfg, &db, &repo, number).await;
+        Ok(())
+    });
+    Ok(Some(delivered))
 }
 
 /// GitHub's ids of the account a review's pull request is in, as the
