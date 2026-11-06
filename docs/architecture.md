@@ -1228,7 +1228,12 @@ agent posts a notice; a primary repository out of reach fails the session.
   and untracked work included, so the base's later commits never show as
   the session's. Once the branch's pull request merged, from the base as it
   was just before (the pull request's `baseRefOid`), so that the work it
-  merged still shows, however it merged.
+  merged still shows, however it merged. Each untracked file is a change of
+  its own, also in a directory git tracks nothing in (which `git status`
+  lists whole, and `uncommitted` counts once). A repository lists its first
+  500 changed files by path, and fctl-agent reads at most 16 MB of their
+  untracked files to count those files' lines: the others have no count,
+  as a binary file has none.
 - **Pull requests.** fctl-agent follows every pull request of its session
   (`crates/fctl-agent/src/followed.rs`): those of the branches it looks
   up, those whose URL `gh pr create` printed, whichever branch, worktree or
