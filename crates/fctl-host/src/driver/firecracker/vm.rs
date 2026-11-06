@@ -1353,15 +1353,23 @@ mod tests {
         let stale = jail("aaaaaaaaaaaaaaaa", hour)?;
         let running = jail("bbbbbbbbbbbbbbbb", hour)?;
         let starting = jail("cccccccccccccccc", Duration::ZERO)?;
+        // Lent to the jail's user, which only root can (CI runs this as root).
+        let root = nix::unistd::geteuid().is_root();
+        if root {
+            std::os::unix::fs::chown(&disk, Some(JAIL_ID_BASE), Some(JAIL_ID_BASE))?;
+        }
         let keys = std::collections::HashSet::from(["bbbbbbbbbbbbbbbb".to_owned()]);
         remove_stale_jails(&jails, &keys, Duration::from_secs(600));
         assert!(!stale.exists() && running.exists() && starting.exists());
-        // The disk it lent is the host's user's, and still there.
+        // The disk it lent is the host's user's again, and still there.
         use std::os::unix::fs::MetadataExt;
         assert_eq!(
             std::fs::metadata(&disk)?.uid(),
             nix::unistd::geteuid().as_raw()
         );
+        if !root {
+            eprintln!("only root lends disks: this checked that the jail went");
+        }
         Ok(())
     }
 

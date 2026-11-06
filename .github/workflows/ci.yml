@@ -147,6 +147,8 @@ jobs:
           test -x "$bin"
           sudo env "FCTL_TEST_FIRECRACKER_AGENT=$FCTL_TEST_FIRECRACKER_AGENT" "FCTL_TEST_FIRECRACKER_DATA=$RUNNER_TEMP/root" \
             "$bin" driver::firecracker::tests::boots_a_sandbox --ignored --nocapture
+          # Jails lend disks to their users, which only root can.
+          sudo "$bin" driver::firecracker::vm::tests::stale_jails_go --exact --nocapture
 
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that
