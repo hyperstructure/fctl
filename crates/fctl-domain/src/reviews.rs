@@ -2229,11 +2229,23 @@ pub fn threads_query(repo: &RepoRef, number: u64) -> Value {
 }
 
 /// What posting a review reads first, and `fctl review threads` lists: the
-/// pull request's review threads, as [`threads_query`] has them, and its
-/// newest comments, among them fctl's summaries of earlier reviews
-/// ([`summaries`]), which hold the findings on lines the diff didn't show.
+/// pull request's state ([`open_in`]), its review threads, as
+/// [`threads_query`] has them, and its newest comments, among them fctl's
+/// summaries of earlier reviews ([`summaries`]), which hold the findings on
+/// lines the diff didn't show.
 pub fn posting_query(repo: &RepoRef, number: u64) -> Value {
-    pull_request_query(repo, number, &format!("{THREADS} {COMMENTS}"))
+    pull_request_query(repo, number, &format!("state {THREADS} {COMMENTS}"))
+}
+
+/// Whether GitHub's answer to [`posting_query`] says the pull request is
+/// open: not merged or closed. An answer that doesn't say counts as open.
+pub fn open_in(answer: &Value) -> bool {
+    !matches!(
+        answer
+            .pointer("/data/repository/pullRequest/state")
+            .and_then(Value::as_str),
+        Some("MERGED" | "CLOSED")
+    )
 }
 
 /// A review thread of a pull request, as [`threads_query`] found it.
@@ -4458,6 +4470,20 @@ mod tests {
         assert!(posting["query"].as_str().unwrap_or_default().ends_with(
             "comments(last: 100) { nodes { id url body isMinimized author { __typename login } } } } } }"
         ));
+        // Whether it is still open, which a review under way as it merged
+        // or closed finds out as it posts.
+        assert!(
+            posting["query"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("pullRequest(number: $number) { state reviewThreads")
+        );
+        let state =
+            |s: &str| json!({ "data": { "repository": { "pullRequest": { "state": s } } } });
+        assert!(open_in(&state("OPEN")));
+        assert!(!open_in(&state("MERGED")));
+        assert!(!open_in(&state("CLOSED")));
+        assert!(open_in(&Value::Null));
 
         let ours = summary_of(2).body;
         let fctl = json!({ "__typename": "Bot", "login": "fctl" });

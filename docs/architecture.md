@@ -1693,7 +1693,9 @@ posts what it found on GitHub
    (`fctl_domain::reviews::owed`). A newer review that posted takes the
    place of an older one, and drops what the older ones of its workspace
    kept, as a `pull_request` delivery that says the pull request merged or
-   closed drops what all of its reviews kept (`drop_unsent`). Until then,
+   closed drops what all of its reviews kept (`drop_unsent`); a review
+   that posts after that, having run on as it merged or closed, keeps
+   nothing (GitHub's answer as it posts says, `open_in`). Until then,
    the review's `Review.unsent` says
    its findings went to no session, in the Reviews tab, its session's
    rail and `fctl review`, and so does its check on the pull requests of

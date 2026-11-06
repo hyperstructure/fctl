@@ -2123,6 +2123,8 @@ async fn keep_summary(ctx: &Ctx, writer: &Writer<'_>, row: &ReviewRow, repo: &Re
 /// finding went on GitHub, for the agent that opened the pull request.
 struct Posting {
     review: PostedReview,
+    /// The pull request was open as fctl posted: not merged or closed.
+    open: bool,
     /// The review on GitHub, by its id.
     review_id: Option<u64>,
     /// Each finding's place ([`rv::spots`]), when it goes to that agent.
@@ -2148,6 +2150,11 @@ async fn pass_on(
 ) -> AppResult<Option<SessionId>> {
     if sub.findings.is_empty() || !rv::by_app(row.author.as_deref(), app_login(&ctx.cfg).as_deref())
     {
+        return Ok(None);
+    }
+    // A review under way as its pull request merged or closed keeps
+    // nothing for a session, which the delivery that said so couldn't drop.
+    if !posting.open {
         return Ok(None);
     }
     let found = rv::Found {
@@ -2947,6 +2954,7 @@ async fn post(
         }
     }
     Ok(Posting {
+        open: rv::open_in(&answer),
         review: PostedReview {
             state,
             url,
