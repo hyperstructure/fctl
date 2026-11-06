@@ -26,8 +26,9 @@ pub mod vm;
 pub mod vsock;
 
 use super::{
-    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, Running, Sandbox, SandboxInfo,
-    SandboxSpec, attach_as_root, attach_script, serve_as_root, serve_script,
+    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, RAN_AS_ROOT_SCRIPT, Running, Sandbox,
+    SandboxInfo, SandboxSpec, attach_as_root, attach_script, ran_as_root, serve_as_root,
+    serve_script,
 };
 use crate::config::{FirecrackerConfig, HostConfig};
 use crate::driver::ImageInfo;
@@ -876,7 +877,7 @@ impl FirecrackerDriver {
     /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
         let vm = self.vm(&sb.name)?;
-        let exec = if self.agent_root(sb).await {
+        let exec = if self.agent_root(sb).await? {
             self.serve(&sb.name)
         } else {
             tracing::info!(
@@ -891,8 +892,16 @@ impl FirecrackerDriver {
     /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
     /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
     /// so, rather than start another beside one that may run.
-    async fn agent_root(&self, sb: &Sandbox) -> bool {
-        self.host.agent_as_root || self.exec(sb, &format!("test -d {AGENT_DIR}")).await.is_ok()
+    /// An error when the VM doesn't say.
+    async fn agent_root(&self, sb: &Sandbox) -> Result<bool> {
+        if self.host.agent_as_root {
+            return Ok(true);
+        }
+        let said = self
+            .exec(sb, RAN_AS_ROOT_SCRIPT)
+            .await
+            .context("asking whether fctl-agent ran as root in the sandbox")?;
+        ran_as_root(&said)
     }
 
     /// `fctl-agent serve` as root, for the image's user.
@@ -909,7 +918,7 @@ impl FirecrackerDriver {
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
         let vm = self.vm(&sb.name)?;
-        let exec = if self.agent_root(sb).await {
+        let exec = if self.agent_root(sb).await? {
             Exec {
                 argv: attach_as_root(),
                 user: Some("root".into()),

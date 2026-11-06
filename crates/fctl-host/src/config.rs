@@ -543,7 +543,6 @@ pub fn write_private(path: &Path, contents: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn fctl_agent_runs_as_root_unless_the_host_says_not() -> Result<()> {
         assert!(HostConfig::default().agent_as_root);
@@ -552,6 +551,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
     #[test]
     fn private_files_are_never_readable_by_others() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;

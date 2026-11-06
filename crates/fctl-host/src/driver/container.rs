@@ -8,10 +8,10 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot,
-    NotStarted, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
-    attach_as_user_script, install_as_user_script, run_cmd_within, serve_as_root,
-    serve_as_user_script, timed_out, unanswered,
+    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
+    RAN_AS_ROOT_SCRIPT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut,
+    attach_as_root, attach_as_user_script, install_as_user_script, ran_as_root, run_cmd_within,
+    serve_as_root, serve_as_user_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use anyhow::{Context, Result};
@@ -864,7 +864,7 @@ impl ContainerDriver {
     /// place, so that one that runs keeps running: the host puts its own in
     /// whenever it starts fctl-agent.
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
-        if !self.agent_root(sb).await {
+        if !self.agent_root(sb).await? {
             // As the user, into its home: no root.
             let bytes = tokio::fs::read(binary)
                 .await
@@ -894,19 +894,23 @@ impl ContainerDriver {
     /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
     /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
     /// so, rather than start another beside one that may run.
-    async fn agent_root(&self, sb: &Sandbox) -> bool {
-        self.agent_as_root
-            || self
-                .run(&["exec", &sb.name, "test", "-d", AGENT_DIR])
-                .await
-                .is_ok()
+    /// An error when the sandbox doesn't say.
+    async fn agent_root(&self, sb: &Sandbox) -> Result<bool> {
+        if self.agent_as_root {
+            return Ok(true);
+        }
+        let said = self
+            .run(&["exec", &sb.name, "sh", "-c", RAN_AS_ROOT_SCRIPT])
+            .await
+            .context("asking whether fctl-agent ran as root in the sandbox")?;
+        ran_as_root(&said)
     }
 
     /// Starts fctl-agent as root, and Claude and its commands as the
     /// image's user, who can't stop it then; as the image's user too where
     /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
-        if !self.agent_root(sb).await {
+        if !self.agent_root(sb).await? {
             tracing::info!(
                 "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
                 sb.name
@@ -937,7 +941,7 @@ impl ContainerDriver {
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
-        if !self.agent_root(sb).await {
+        if !self.agent_root(sb).await? {
             let mut child = self.spawn(sb, &attach_as_user_script()).await?;
             let stdout = child.stdout.take().context("exec stdout")?;
             let stdin = child.stdin.take().context("exec stdin")?;
@@ -2163,14 +2167,20 @@ esac
         assert_eq!(
             cli.calls(),
             [
-                "exec fctl-ses-1 test -d /var/lib/fctl-agent",
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
                 r#"exec -i fctl-ses-1 sh -c mkdir -p "$HOME/.fctl/bin" && cat > "$HOME/.fctl/bin/fctl-agent.new" && chmod 755 "$HOME/.fctl/bin/fctl-agent.new" && mv -f "$HOME/.fctl/bin/fctl-agent.new" "$HOME/.fctl/bin/fctl-agent""#,
-                "exec fctl-ses-1 test -d /var/lib/fctl-agent",
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
                 r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec "$HOME/.fctl/bin/fctl-agent" serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
-                "exec fctl-ses-1 test -d /var/lib/fctl-agent",
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
                 r#"exec -i fctl-ses-1 sh -c a="$HOME/.fctl/bin/fctl-agent"; [ -x "$a" ] || a=/opt/fctl/bin/fctl-agent; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#,
             ]
         );
+        // A sandbox that doesn't say gets no supervisor beside one that may
+        // run as root: the host tries again.
+        let silent = ContainerDriver::with_bin(Flavor::Docker, "fctl-test-missing".into())
+            .agent_as_root(false);
+        assert!(silent.start_agent(&sb).await.is_err());
+        assert!(silent.attach(&sb).await.is_err());
         // One that ran it as root keeps doing so, rather than start another.
         let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
         cli.ran_agent_as_root()?;

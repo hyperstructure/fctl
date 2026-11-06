@@ -235,7 +235,10 @@ its VM, and nothing outside it except through these channels:
   wants no long-lived root process in sandboxes turns it off
   (`agent_as_root = false`), and fctl-agent runs as the image's user,
   which the host then runs everything as in Docker, Apple container and
-  Lima sandboxes.
+  Lima sandboxes. That gives this up: the agent's commands can stop
+  fctl-agent, read and change its journal, state and socket in `~/.fctl`,
+  and read its memory, which holds the session's credentials (as Claude's
+  environment does anyway).
 
 - **Lima VMs** get none of the mounts of Lima's templates, which give
   each VM the home directory of whoever runs the host (read only) and a

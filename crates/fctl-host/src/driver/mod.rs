@@ -203,6 +203,25 @@ pub const AGENT_DIR_SCRIPT: &str = "mkdir -p /opt/fctl/bin && chown 0:0 /opt/fct
 /// of reach of the user Claude runs as.
 pub const AGENT_DIR: &str = "/var/lib/fctl-agent";
 
+/// Says `root` in a sandbox where fctl-agent ran as root ([`AGENT_DIR`] is
+/// there), `user` elsewhere, as any user: an answer either way, so that a
+/// command that failed isn't taken for one ([`ran_as_root`]).
+pub const RAN_AS_ROOT_SCRIPT: &str =
+    "if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi";
+
+/// What [`RAN_AS_ROOT_SCRIPT`] said: whether fctl-agent ran as root in the
+/// sandbox, which keeps it so rather than start a second supervisor beside
+/// one that may run.
+pub fn ran_as_root(said: &str) -> Result<bool> {
+    match said.trim() {
+        "root" => Ok(true),
+        "user" => Ok(false),
+        other => {
+            anyhow::bail!("asked whether fctl-agent ran as root in the sandbox, it said {other:?}")
+        }
+    }
+}
+
 /// `fctl-agent serve` as root, with Claude and its commands as `user` (a
 /// name or a uid), who can't stop it then.
 pub fn serve_as_root(user: &str) -> Vec<String> {
@@ -965,6 +984,14 @@ mod tests {
             e.to_string(),
             "`docker pull x` did not finish within 30 minutes, so the host stopped it"
         );
+    }
+
+    #[test]
+    fn only_a_clear_answer_says_where_fctl_agent_ran() {
+        assert!(ran_as_root("root\n").is_ok_and(|r| r));
+        assert!(ran_as_root("user\n").is_ok_and(|r| !r));
+        assert!(ran_as_root("").is_err());
+        assert!(ran_as_root("1000:1000").is_err());
     }
 
     #[test]

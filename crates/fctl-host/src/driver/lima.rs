@@ -3,9 +3,10 @@
 //! Heavier than containers, but a full VM on any Mac (Intel too) or Linux host.
 
 use super::{
-    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT,
-    Sandbox, SandboxInfo, SandboxSpec, USER_AGENT, attach_as_root, attach_as_user_script,
-    run_cmd_within, serve_as_root, serve_as_user_script, shell_words,
+    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, COMMAND_TIMEOUT, RAN_AS_ROOT_SCRIPT,
+    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, USER_AGENT, attach_as_root,
+    attach_as_user_script, ran_as_root, run_cmd_within, serve_as_root, serve_as_user_script,
+    shell_words,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::DriverInfo;
@@ -180,7 +181,7 @@ impl LimaDriver {
         ])
         .await
         .context("copying fctl-agent into the VM")?;
-        let script = if self.agent_root(sb).await {
+        let script = if self.agent_root(sb).await? {
             format!(
                 "sudo sh -c '{AGENT_DIR_SCRIPT}' && sudo install -m 755 {tmp} {AGENT_PATH} && rm -f {tmp}"
             )
@@ -200,17 +201,25 @@ impl LimaDriver {
     /// Whether fctl-agent runs as root in `sb`: where the host runs it so
     /// (or it ran so before, which keeps it so, rather than start another
     /// beside one that may run), and `sudo` asks no password.
-    async fn agent_root(&self, sb: &Sandbox) -> bool {
-        self.wants_root(sb).await && self.exec(sb, "sudo -n true").await.is_ok()
+    async fn agent_root(&self, sb: &Sandbox) -> Result<bool> {
+        Ok(self.wants_root(sb).await? && self.exec(sb, "sudo -n true").await.is_ok())
     }
 
-    async fn wants_root(&self, sb: &Sandbox) -> bool {
-        self.agent_as_root || self.exec(sb, &format!("test -d {AGENT_DIR}")).await.is_ok()
+    /// An error when the VM doesn't say.
+    async fn wants_root(&self, sb: &Sandbox) -> Result<bool> {
+        if self.agent_as_root {
+            return Ok(true);
+        }
+        let said = self
+            .exec(sb, RAN_AS_ROOT_SCRIPT)
+            .await
+            .context("asking whether fctl-agent ran as root in the VM")?;
+        ran_as_root(&said)
     }
 
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
-        let wanted = self.wants_root(sb).await;
-        let root = wanted && self.agent_root(sb).await;
+        let wanted = self.wants_root(sb).await?;
+        let root = wanted && self.agent_root(sb).await?;
         if !wanted {
             tracing::info!(
                 "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
