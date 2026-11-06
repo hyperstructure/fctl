@@ -142,17 +142,39 @@ pub fn serve(dir: &Path, socket: &Path) -> Result<()> {
                 continue;
             }
         };
-        let serving = serving.clone();
-        serving.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::thread::spawn(move || {
-            let mut session = Session::new(root);
-            if let Err(e) = session.run(conn) {
-                tracing::debug!("a connection ended: {e}");
-            }
-            serving.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        });
+        let slot = Slot::take(&serving);
+        let spawned = std::thread::Builder::new()
+            .name("share".into())
+            .spawn(move || {
+                // Given back however the session ends, a panic too.
+                let _slot = slot;
+                let mut session = Session::new(root);
+                if let Err(e) = session.run(conn) {
+                    tracing::debug!("a connection ended: {e}");
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("refused a connection: {e}");
+            pause();
+        }
     }
     Ok(())
+}
+
+/// One of the connections [`serve`] serves at once, given back as it goes.
+struct Slot(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Slot {
+    fn take(serving: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        serving.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(serving.clone())
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The client may hold a fid for each file it has in use, each an open

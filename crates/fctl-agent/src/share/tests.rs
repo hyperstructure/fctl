@@ -451,3 +451,24 @@ fn serves_on_a_unix_socket() -> anyhow::Result<()> {
     assert_eq!(conn.read_to_end(&mut rest)?, 0);
     Ok(())
 }
+
+/// A connection that ends, a session that panics too, takes up no more of
+/// the connections the server serves at once.
+#[test]
+fn a_connection_gives_its_slot_back_however_it_ends() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let serving = Arc::new(AtomicUsize::new(0));
+    let slot = Slot::take(&serving);
+    let other = Slot::take(&serving);
+    assert_eq!(serving.load(Ordering::Relaxed), 2);
+    let panicked = std::thread::spawn(move || {
+        let _slot = slot;
+        panic!("a session that panics");
+    })
+    .join();
+    assert!(panicked.is_err());
+    assert_eq!(serving.load(Ordering::Relaxed), 1);
+    drop(other);
+    assert_eq!(serving.load(Ordering::Relaxed), 0);
+}

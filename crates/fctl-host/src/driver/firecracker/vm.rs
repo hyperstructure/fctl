@@ -266,11 +266,17 @@ impl Vm {
         while !self.share().exists() {
             if Instant::now() > until || self.pid("share").is_none() {
                 let said = std::fs::read_to_string(self.dir.join("share.log")).unwrap_or_default();
+                self.stop_share().await;
                 bail!("fctl-agent share did not start: {}", said.trim());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok(())
+    }
+
+    /// Stops `fctl-agent share`, if it serves the VM.
+    pub async fn stop_share(&self) {
+        self.kill_one("share").await;
     }
 
     /// A connection to `port` in the VM, through Firecracker's vsock

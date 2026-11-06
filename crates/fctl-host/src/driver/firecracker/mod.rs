@@ -722,13 +722,19 @@ impl FirecrackerDriver {
                         .context("passt is not installed: it gives the VMs their network")?;
                     vm.link_network(&passt).await?;
                 }
-                // Its server of the package caches is gone: another, which
-                // the VM mounts in place of the mount the old one left.
-                if let Some(share) = self.share_of(spec).await?
-                    && !vm.sharing()
-                {
+                // Its server of the package caches is gone, or never got
+                // going: another, which the VM mounts in place of the mount
+                // the old one left.
+                if matches!(spec.cache, Some(Spot::Dir(_))) && !vm.sharing() {
                     log(format!("Serving the package caches of {} again", spec.name));
-                    self.share_caches(&vm, &spec.name, &share, log).await;
+                    match self.share_of(spec).await {
+                        Ok(Some(share)) => self.share_caches(&vm, &spec.name, &share, log).await,
+                        Ok(None) => {}
+                        Err(e) => log(format!(
+                            "The package caches couldn't be served to {} ({e:#}), so this session's package managers keep their own downloads",
+                            spec.name
+                        )),
+                    }
                 }
                 return Ok(sb);
             }
@@ -821,7 +827,8 @@ impl FirecrackerDriver {
     }
 
     /// Serves `share` to the VM, which is up, and mounts it there. Without
-    /// it, the session runs on without package caches, and its log says so.
+    /// it, the session runs on without package caches, and its log says so;
+    /// no server stays, so that the VM's next start serves them again.
     async fn share_caches(&self, vm: &Vm, name: &str, share: &vm::Share, log: Log<'_>) {
         let shared = async {
             vm.serve_share(share).await?;
@@ -829,6 +836,7 @@ impl FirecrackerDriver {
         }
         .await;
         if let Err(e) = shared {
+            vm.stop_share().await;
             log(format!(
                 "The package caches couldn't be mounted in {name} ({e:#}), so this session's package managers keep their own downloads"
             ));
