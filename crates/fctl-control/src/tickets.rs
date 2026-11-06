@@ -1422,9 +1422,12 @@ async fn triage_issue(
 ) -> AppResult<()> {
     github_issue(gh, token, repo, number).await.map_err(|e| {
         if e.0.code == ErrorCode::NotFound {
-            not_found(&format!(
-                "Issue {} (this session's agent triages issues, not pull requests)",
-                tk::github_issue_key(repo, number)
+            AppError(ApiError::new(
+                ErrorCode::NotFound,
+                format!(
+                    "There is no issue {}. An agent that triages writes on issues alone, not on pull requests.",
+                    tk::github_issue_key(repo, number)
+                ),
             ))
         } else {
             e
