@@ -809,9 +809,11 @@ impl Supervisor {
                     "This project keeps no memory: its maintainers can turn it on in the project's settings.",
                 ));
             }
-            AgentCall::ResolveThread { .. } if spec.github_access == Some(GithubAccess::Read) => {
+            AgentCall::ResolveThread { .. }
+                if spec.github_access.is_some_and(|g| !g.tokens_write()) =>
+            {
                 return Err(ApiError::forbidden(
-                    "This session's agent only reads on GitHub, so it can't resolve review threads.",
+                    "This session's agent doesn't comment on pull requests, so it can't resolve review threads.",
                 ));
             }
             AgentCall::ReviewThreads
@@ -1063,7 +1065,11 @@ impl Supervisor {
                 &prompt::repos_line(repos, &paths.repos.display().to_string(), github),
             );
         }
-        if let Some(line) = prompt::github_line(github)
+        let tracker = spec
+            .tickets
+            .as_ref()
+            .is_some_and(|t| t.via != fctl_proto::tickets::TicketsVia::Nothing);
+        if let Some(line) = prompt::github_line(github, tracker)
             && (spec.project.repo.is_some() || !repos.is_empty())
         {
             self.log(LogSource::Agent, LogLevel::Info, line);

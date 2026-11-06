@@ -29,7 +29,8 @@ effort?: string,
  */
 base_branch?: string, 
 /**
- * `push`, `comment` or `read`; `""` for as much as the project allows.
+ * `push`, `comment`, `triage` or `read`; `""` for as much as the
+ * project allows.
  */
 github_access?: string, 
 /**

@@ -2,9 +2,10 @@
 
 /**
  * What a session's agent may do on GitHub in the repositories it may write
- * to (`Read` < `Comment` < `Push`): it only reads the others. A session
- * asks for it as it starts; its project's settings and the access token
- * that starts it can hold it lower. The tokens the session gets carry its
- * permissions, so GitHub enforces it.
+ * to (`Read` < `Triage` < `Comment` < `Push`): it only reads the others. A
+ * session asks for it as it starts; its project's settings and the access
+ * token that starts it can hold it lower. The tokens the session gets
+ * carry its permissions, so GitHub enforces it; an agent that triages
+ * writes through the control plane, which holds it to labels and comments.
  */
-export type GithubAccess = "read" | "comment" | "push";
+export type GithubAccess = "read" | "triage" | "comment" | "push";

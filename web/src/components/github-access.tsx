@@ -1,12 +1,13 @@
 // What a session's agent may do on GitHub, by a symbol: an arrow up for an agent that pushes, a
-// speech bubble for one that reviews and comments, an eye for one that only reads.
+// speech bubble for one that reviews and comments, a tag for one that triages (labels and comments
+// on tickets alone), an eye for one that only reads.
 
-import { ArrowUpFromLine, Eye, MessageSquareText } from "lucide-react";
+import { ArrowUpFromLine, Eye, MessageSquareText, Tag } from "lucide-react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { githubLevel } from "@/lib/github-access";
 
-const ICONS = { push: ArrowUpFromLine, comment: MessageSquareText, read: Eye } as const;
+const ICONS = { push: ArrowUpFromLine, comment: MessageSquareText, triage: Tag, read: Eye } as const;
 
 export function GithubAccessIcon({ access, className }: { access: G.GithubAccess; className?: string }) {
   const Icon = ICONS[access];

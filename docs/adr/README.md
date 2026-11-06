@@ -80,3 +80,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0072](0072-members-enroll-runners-for-their-own-sessions.md) | Members enroll runners for their own sessions |
 | [0073](0073-changing-review-agents-runs-them-on-the-changers-subscription.md) | Changing review agents runs them on the subscription of whoever changes them |
 | [0074](0074-sessions-keep-their-changes-diffs-for-their-viewers.md) | Sessions keep their changes' diffs for their viewers |
+| [0075](0075-agents-that-triage-write-labels-and-comments-through-fctl-alone.md) | Agents that triage write labels and comments through fctl alone |

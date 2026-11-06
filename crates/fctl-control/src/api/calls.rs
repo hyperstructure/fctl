@@ -291,9 +291,9 @@ async fn resolve_thread(
     unresolve: bool,
 ) -> AppResult<ReviewThread> {
     let thread = fctl_domain::threads::check_id(thread)?;
-    if session.github_access < GithubAccess::Comment {
+    if !session.github_access.tokens_write() {
         return Err(forbidden(
-            "This session's agent only reads on GitHub, so it can't resolve review threads.",
+            "This session's agent doesn't comment on pull requests, so it can't resolve review threads.",
         ));
     }
     let grants = crate::spec::grants(&ctx.db, &session.project_id).await?;

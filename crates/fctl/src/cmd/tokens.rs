@@ -15,6 +15,9 @@ pub enum Github {
     Push,
     /// Review and comment on pull requests and issues; push nothing.
     Comment,
+    /// Label the project's tickets and comment on them, through fctl;
+    /// write nothing else.
+    Triage,
     /// Read the code, pull requests and issues; write nothing.
     Read,
 }
@@ -24,6 +27,7 @@ impl From<Github> for GithubAccess {
         match g {
             Github::Push => Self::Push,
             Github::Comment => Self::Comment,
+            Github::Triage => Self::Triage,
             Github::Read => Self::Read,
         }
     }
@@ -67,7 +71,7 @@ pub struct TokenArgs {
     /// What it does: read; run (also start and steer sessions); full
     /// (everything you can). A token with any limit reaches only projects
     /// and sessions, never your account or other tokens. Default: full, or
-    /// run with --github comment or read.
+    /// run with --github comment, triage or read.
     #[arg(long, value_enum)]
     pub access: Option<Access>,
     /// Only this project, by slug or id (repeat for more).
@@ -79,7 +83,8 @@ pub struct TokenArgs {
     pub workspaces: Vec<String>,
     /// The most the agents of the sessions it starts may do on GitHub:
     /// push, comment (review, comment and resolve review threads; push
-    /// nothing) or read. Only for a token that runs sessions: one that does
+    /// nothing), triage (label tickets and comment on them, nothing else)
+    /// or read. Only for a token that runs sessions: one that does
     /// everything could change what its projects' agents do.
     #[arg(long, value_enum)]
     pub github: Option<Github>,
@@ -99,14 +104,19 @@ pub enum TokensCmd {
     },
 }
 
+/// What a new token does when `--access` doesn't say: holding its agents to
+/// less than pushing takes a token that runs sessions, not one that could
+/// change what they do; otherwise everything (`None`).
+fn default_access(access: Option<Access>, github: Option<Github>) -> Option<Access> {
+    match (access, github) {
+        (None, Some(g)) if g != Github::Push => Some(Access::Run),
+        (access, _) => access,
+    }
+}
+
 pub async fn create(server: Option<&str>, args: TokenArgs, json: bool) -> Result<()> {
     let api = config::api(server)?;
-    // Holding its agents to less than pushing takes a token that runs
-    // sessions, not one that could change what they do.
-    let access = match (args.access, args.github) {
-        (None, Some(Github::Comment | Github::Read)) => Some(Access::Run),
-        (access, _) => access,
-    };
+    let access = default_access(args.access, args.github);
     let req = CreateTokenRequest {
         name: args.name,
         expires_in_days: args.days,
@@ -267,6 +277,7 @@ pub fn describe(scope: &TokenScope) -> String {
         (_, Some(GithubAccess::Comment)) => {
             "; their agents review and comment on GitHub, and push nothing"
         }
+        (_, Some(GithubAccess::Triage)) => "; their agents only label tickets and comment on them",
         (_, Some(GithubAccess::Read)) => "; their agents only read on GitHub",
         _ => "",
     };
@@ -294,6 +305,20 @@ mod tests {
             name: Some(name.into()),
             workspace: None,
         }
+    }
+
+    #[test]
+    fn holding_agents_lower_makes_a_token_that_runs_sessions() {
+        for g in [Github::Comment, Github::Triage, Github::Read] {
+            assert_eq!(default_access(None, Some(g)), Some(Access::Run), "{g:?}");
+            assert_eq!(
+                default_access(Some(Access::Read), Some(g)),
+                Some(Access::Read)
+            );
+        }
+        assert_eq!(default_access(None, Some(Github::Push)), None);
+        assert_eq!(default_access(None, None), None);
+        assert_eq!(default_access(Some(Access::Full), None), Some(Access::Full));
     }
 
     #[test]
@@ -325,6 +350,10 @@ mod tests {
             github_access: Some(GithubAccess::Read),
         };
         assert_eq!(describe(&read), "Reads all your projects.");
+        scope.github_access = Some(GithubAccess::Triage);
+        assert!(
+            describe(&scope).ends_with("; their agents only label tickets and comment on them.")
+        );
         let gone = TokenScope {
             access: TokenAccess::Full,
             places: Some(TokenPlaces {

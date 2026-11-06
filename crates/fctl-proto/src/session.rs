@@ -420,10 +420,11 @@ impl RepoAccess {
 }
 
 /// What a session's agent may do on GitHub in the repositories it may write
-/// to (`Read` < `Comment` < `Push`): it only reads the others. A session
-/// asks for it as it starts; its project's settings and the access token
-/// that starts it can hold it lower. The tokens the session gets carry its
-/// permissions, so GitHub enforces it.
+/// to (`Read` < `Triage` < `Comment` < `Push`): it only reads the others. A
+/// session asks for it as it starts; its project's settings and the access
+/// token that starts it can hold it lower. The tokens the session gets
+/// carry its permissions, so GitHub enforces it; an agent that triages
+/// writes through the control plane, which holds it to labels and comments.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
 )]
@@ -432,6 +433,12 @@ impl RepoAccess {
 pub enum GithubAccess {
     /// Read the code, pull requests, issues and CI results; write nothing.
     Read,
+    /// Also label the project's tickets and comment on them, through fctl
+    /// (`fctl ticket`), and write nothing else: its GitHub tokens only
+    /// read, and the control plane refuses every other change, so that
+    /// what an issue says can't steer it into other work
+    /// (`fctl_domain::tickets::check_write`).
+    Triage,
     /// Also review and comment on pull requests and issues, label them and
     /// resolve review threads; push nothing, merge nothing.
     Comment,
@@ -442,28 +449,31 @@ pub enum GithubAccess {
 }
 
 impl GithubAccess {
-    pub const ALL: [Self; 3] = [Self::Push, Self::Comment, Self::Read];
+    pub const ALL: [Self; 4] = [Self::Push, Self::Comment, Self::Triage, Self::Read];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Read => "read",
+            Self::Triage => "triage",
             Self::Comment => "comment",
             Self::Push => "push",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "read" => Some(Self::Read),
-            "comment" => Some(Self::Comment),
-            "push" => Some(Self::Push),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|v| v.as_str() == s)
     }
 
     /// Whether its agent pushes, as every agent did before.
     pub fn pushes(self) -> bool {
         self == Self::Push
+    }
+
+    /// Whether its session's own GitHub tokens write anything: an agent
+    /// that triages writes through the control plane alone, and one that
+    /// reads writes nothing, so both get one token that only reads.
+    pub fn tokens_write(self) -> bool {
+        self >= Self::Comment
     }
 }
 
@@ -942,10 +952,11 @@ fn default_if_unknown<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Verbosit
     Ok(v.and_then(|v| Verbosity::parse(&v)).unwrap_or_default())
 }
 
-/// A [`GithubAccess`] that a newer version may have stored, which reads as
-/// the least an agent may do when this version doesn't know it, rather than
-/// failing the whole of the settings it is in.
-fn least_if_unknown<'de, D: serde::Deserializer<'de>>(
+/// A [`GithubAccess`] that a newer version may have stored or sent, which
+/// reads as the least an agent may do when this version doesn't know it,
+/// rather than failing the whole of what it is in (settings, a session, a
+/// schedule, a spec).
+pub(crate) fn least_if_unknown<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<GithubAccess>, D::Error> {
     let v: Option<String> = Option::deserialize(d)?;
@@ -1286,7 +1297,8 @@ pub struct Session {
     pub effort: Option<String>,
     /// What its agent may do on GitHub, within its project's
     /// `github_access` as it is now. Absent: push, as from control planes
-    /// before it.
+    /// before it; one this version doesn't know reads as `read`.
+    #[serde(default, deserialize_with = "least_if_unknown")]
     pub github_access: Option<GithubAccess>,
     /// Its agent reaches the GitHub issues of the repositories it writes
     /// to, whatever its project's ticket tracker says, as the maintainer
@@ -1450,7 +1462,7 @@ mod tests {
     fn a_github_access_this_version_does_not_know_reads_as_the_least()
     -> Result<(), serde_json::Error> {
         let newer: ProjectSettings =
-            serde_json::from_str(r#"{"github_access":"triage","auto_pull_request":false}"#)?;
+            serde_json::from_str(r#"{"github_access":"merge","auto_pull_request":false}"#)?;
         assert_eq!(newer.github_access, Some(GithubAccess::Read));
         // The other settings stay as they are.
         assert!(!newer.auto_pull_request);
@@ -1464,7 +1476,23 @@ mod tests {
             serde_json::to_value(&known)?["github_access"],
             serde_json::json!("comment")
         );
+        let triage: ProjectSettings = serde_json::from_str(r#"{"github_access":"triage"}"#)?;
+        assert_eq!(triage.github_access, Some(GithubAccess::Triage));
         Ok(())
+    }
+
+    #[test]
+    fn github_access_levels_go_from_reading_to_pushing() {
+        use GithubAccess::{Comment, Push, Read, Triage};
+        assert!(Read < Triage && Triage < Comment && Comment < Push);
+        for level in GithubAccess::ALL {
+            assert_eq!(GithubAccess::parse(level.as_str()), Some(level));
+        }
+        assert_eq!(GithubAccess::parse("approve"), None);
+        // Only agents that comment or push get a token that writes.
+        assert!(!Read.tokens_write() && !Triage.tokens_write());
+        assert!(Comment.tokens_write() && Push.tokens_write());
+        assert!(Push.pushes() && !Comment.pushes());
     }
 
     #[test]

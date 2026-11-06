@@ -23,6 +23,9 @@ describe("access tokens", () => {
         },
       }),
     ).toBe("Does everything you can in Web, API and every project of Acme.");
+    expect(describeScope({ access: "run", github_access: "triage" })).toBe(
+      "Runs sessions in all your projects; their agents only label tickets and comment on them.",
+    );
     // A token that reads starts no session, so what agents may do doesn't come into it.
     expect(describeScope({ access: "read", github_access: "read" })).toBe("Reads all your projects.");
     expect(describeScope({ access: "run", places: { workspaces: [], projects: [place("prj_9")] } })).toBe(
@@ -100,6 +103,9 @@ describe("access tokens", () => {
     };
     expect(example(reviews, "fctl_pat_x")).toBe(
       'FCTL_TOKEN=fctl_pat_x fctl run -p web --github comment -d "Review pull request #12"',
+    );
+    expect(example({ ...reviews, github_access: "triage" }, "fctl_pat_x")).toBe(
+      'FCTL_TOKEN=fctl_pat_x fctl run -p web --github triage -d "Triage issue #12"',
     );
     expect(example({ access: "read" }, "fctl_pat_x")).toBe("FCTL_TOKEN=fctl_pat_x fctl sessions --json");
     expect(example(undefined, "fctl_pat_x")).toBe(

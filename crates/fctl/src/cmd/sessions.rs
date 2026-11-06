@@ -49,7 +49,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub effort: Option<String>,
     /// What its agent may do on GitHub: push, comment (review, comment and
-    /// resolve review threads; push nothing) or read. Default: the most the
+    /// resolve review threads; push nothing), triage (label tickets and
+    /// comment on them, nothing else) or read. Default: the most the
     /// project and your token allow.
     #[arg(long, value_enum)]
     pub github: Option<super::tokens::Github>,
@@ -560,6 +561,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     match s.github_access {
         Some(GithubAccess::Comment) => {
             println!("github:   reviews and comments, pushes nothing")
+        }
+        Some(GithubAccess::Triage) => {
+            println!("github:   triages: labels tickets and comments on them, nothing else")
         }
         Some(GithubAccess::Read) => println!("github:   reads only"),
         _ => {}

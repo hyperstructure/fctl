@@ -6,7 +6,10 @@
 //! (`crate::linear`), or a token of the GitHub App's for one repository's
 //! issues alone, which never leaves it and which it revokes at once. Every
 //! call stays within what the project chose: its Linear team (and
-//! project), or its repositories.
+//! project), or its repositories, and within what the session's agent may
+//! write: an agent that triages labels tickets and comments on them alone
+//! (`tk::check_write`), on GitHub only on issues, with labels the
+//! repository has.
 
 use crate::api::calls::RunnerSession;
 use crate::config::Config;
@@ -541,11 +544,7 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             }
         },
     };
-    if !request.reads() && !tk::writes(session.github_access) {
-        return Err(forbidden(
-            "This session's agent only reads: it can't write tickets.",
-        ));
-    }
+    tk::check_write(session.github_access, &request)?;
     tk::check_labels(&request)?;
     // The call's place within its limit, taken in one statement, so that
     // calls at once can't go past it together; a write also needs room
@@ -1060,6 +1059,8 @@ async fn linear_call(
                     body: ticket.description.clone(),
                     url: None,
                     state: ticket.state.clone(),
+                    labeled: Vec::new(),
+                    unlabeled: Vec::new(),
                 },
             )
             .await;
@@ -1123,6 +1124,8 @@ async fn linear_call(
                     body: Some(body),
                     url: comment.url.clone(),
                     state: None,
+                    labeled: Vec::new(),
+                    unlabeled: Vec::new(),
                 },
             )
             .await;
@@ -1141,6 +1144,11 @@ async fn linear_call(
             parent,
             priority,
         } => {
+            let only_labels = title.is_none()
+                && description.is_none()
+                && state.is_none()
+                && parent.is_none()
+                && priority.is_none();
             let (issue, current) = linear_issue(client, l, &key).await?;
             // Its own team's states and labels.
             let team = team_of(l, &issue);
@@ -1209,13 +1217,26 @@ async fn linear_call(
                 ctx,
                 session,
                 "ticket_updated",
-                format!("Changed {} in Linear", ticket.key),
+                tk::changed(
+                    &ticket.key,
+                    "in Linear",
+                    &add_labels,
+                    &remove_labels,
+                    only_labels,
+                ),
                 TicketNotice {
                     tracker: Tracker::Linear,
                     ticket: ticket.link(),
                     body: None,
                     url: None,
-                    state: ticket.state.clone(),
+                    // A change of labels alone leaves its state as it was.
+                    state: if only_labels {
+                        None
+                    } else {
+                        ticket.state.clone()
+                    },
+                    labeled: add_labels,
+                    unlabeled: remove_labels,
                 },
             )
             .await;
@@ -1384,6 +1405,77 @@ async fn github_issue(
         .ok_or_else(|| not_found(&format!("Issue {}", tk::github_issue_key(repo, number))))
 }
 
+/// Whether the session's agent triages: it labels and comments, on GitHub
+/// only on issues, with the labels the repository has.
+fn triages(session: &RunnerSession) -> bool {
+    session.github_access == GithubAccess::Triage
+}
+
+/// Checks that `number` is an issue of `repo`, not a pull request, before
+/// an agent that triages writes on it: its token reaches issues alone, and
+/// what it triages is issues.
+async fn triage_issue(
+    gh: &github::Github<'_>,
+    token: &GithubCredential,
+    repo: &RepoRef,
+    number: u64,
+) -> AppResult<()> {
+    github_issue(gh, token, repo, number).await.map_err(|e| {
+        if e.0.code == ErrorCode::NotFound {
+            AppError(ApiError::new(
+                ErrorCode::NotFound,
+                format!(
+                    "There is no issue {}. An agent that triages writes on issues alone, not on pull requests.",
+                    tk::github_issue_key(repo, number)
+                ),
+            ))
+        } else {
+            e
+        }
+    })?;
+    Ok(())
+}
+
+/// Checks that `repo` has the label `name` before an agent that triages
+/// puts it on an issue: GitHub would make a label it doesn't have. The
+/// answer must be that label, should the path have led elsewhere.
+async fn triage_label(
+    gh: &github::Github<'_>,
+    token: &GithubCredential,
+    repo: &RepoRef,
+    name: &str,
+) -> AppResult<()> {
+    let enc: String = url::form_urlencoded::byte_serialize(name.as_bytes()).collect();
+    let (status, v) = gh
+        .with_token(
+            token,
+            Method::Get,
+            &format!(
+                "/repos/{}/{}/labels/{}",
+                repo.owner,
+                repo.name,
+                enc.replace('+', "%20")
+            ),
+            None,
+        )
+        .await?;
+    let same = v
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|n| n.eq_ignore_ascii_case(name));
+    match status {
+        200 if same => Ok(()),
+        200 | 404 => Err(validation(
+            "add_labels",
+            &format!(
+                "{} has no label \"{name}\": an agent that triages uses the labels it has, which `fctl ticket labels` lists",
+                repo.full_name()
+            ),
+        )),
+        _ => Err(github_failed(status, &v)),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn github_with(
     ctx: &Ctx,
@@ -1523,6 +1615,8 @@ async fn github_with(
                     body: ticket.description.clone(),
                     url: None,
                     state: ticket.state.clone(),
+                    labeled: Vec::new(),
+                    unlabeled: Vec::new(),
                 },
             )
             .await;
@@ -1540,6 +1634,9 @@ async fn github_with(
                 return Err(validation("body", "Write the comment first"));
             }
             let num = number()?;
+            if triages(session) {
+                triage_issue(gh, token, repo, num).await?;
+            }
             let (status, v) = gh
                 .with_token(
                     token,
@@ -1573,6 +1670,8 @@ async fn github_with(
                     body: Some(body),
                     url: comment.url.clone(),
                     state: None,
+                    labeled: Vec::new(),
+                    unlabeled: Vec::new(),
                 },
             )
             .await;
@@ -1601,6 +1700,13 @@ async fn github_with(
                 ));
             }
             let num = number()?;
+            let only_labels = title.is_none() && description.is_none() && state.is_none();
+            if triages(session) {
+                triage_issue(gh, token, repo, num).await?;
+                for label in &add_labels {
+                    triage_label(gh, token, repo, label).await?;
+                }
+            }
             let description = description
                 .as_deref()
                 .map(|d| check_body("description", d))
@@ -1656,13 +1762,26 @@ async fn github_with(
                 ctx,
                 session,
                 "ticket_updated",
-                format!("Changed {} on GitHub", ticket.key),
+                tk::changed(
+                    &ticket.key,
+                    "on GitHub",
+                    &add_labels,
+                    &remove_labels,
+                    only_labels,
+                ),
                 TicketNotice {
                     tracker: Tracker::Github,
                     ticket: ticket.link(),
                     body: None,
                     url: None,
-                    state: ticket.state.clone(),
+                    // A change of labels alone leaves its state as it was.
+                    state: if only_labels {
+                        None
+                    } else {
+                        ticket.state.clone()
+                    },
+                    labeled: add_labels,
+                    unlabeled: remove_labels,
                 },
             )
             .await;

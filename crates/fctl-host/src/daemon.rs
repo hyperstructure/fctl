@@ -1012,8 +1012,12 @@ impl Daemon {
             allowed_images: images.allowed,
             allowed_builds: images.builds,
             min_free_disk_mb: self.ctx.cfg.min_free_disk_mb(),
-            // Its agents, of its own version, run review agents' sessions.
-            features: vec![fctl_proto::runner::FEATURE_REVIEWS.to_owned()],
+            // Its agents, of its own version, run review agents' sessions
+            // and know agents that triage.
+            features: vec![
+                fctl_proto::runner::FEATURE_REVIEWS.to_owned(),
+                fctl_proto::runner::FEATURE_TRIAGE.to_owned(),
+            ],
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
             auto_update: Some(self.updates.is_some()),
         }

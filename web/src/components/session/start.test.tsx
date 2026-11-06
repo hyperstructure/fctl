@@ -358,12 +358,15 @@ describe("StartChoices", () => {
         "On GitHub",
         "Can push ✓",
         "Comments only",
+        "Triage only",
         "Read only",
         "Issues",
         "As the project says ✓",
         "GitHub issues too",
       ]);
       expect(option(container, "GitHub issues too").textContent).toContain("to move them into Linear, say.");
+      // An agent that triages labels and comments on the tracker's tickets, Linear's here.
+      expect(option(container, "Triage only").textContent).toContain("Labels the project's Linear issues");
       // Not to an editor, who may not change the tracker either.
       rerender(<Form p={{ ...project(linear), ...repo, role: "editor" }} />);
       expect(listed(container)).not.toContain("Issues");

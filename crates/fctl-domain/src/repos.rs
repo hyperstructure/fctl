@@ -197,7 +197,10 @@ pub fn token_plan(primary: Option<&RepoRef>, grants: &[RepoGrant]) -> Option<Tok
 /// merge (both `contents`) or change workflows. Without `issues`, as the
 /// project's ticket tracker decides (`crate::tickets::issue_tokens`), it
 /// reaches no issues: pull requests' comments and labels are theirs to
-/// write with `pull_requests` alone.
+/// write with `pull_requests` alone. An agent that triages, or reads, gets
+/// one read-only token for every repository instead
+/// (`GithubAccess::tokens_write`), so these are its permissions only should
+/// it get one: it labels and comments through the control plane.
 pub fn permissions(access: GithubAccess, issues: bool) -> Value {
     let mut p = match access {
         GithubAccess::Push => json!({
@@ -219,7 +222,7 @@ pub fn permissions(access: GithubAccess, issues: bool) -> Value {
             "statuses": "read",
             "metadata": "read"
         }),
-        GithubAccess::Read => read_permissions(issues),
+        GithubAccess::Triage | GithubAccess::Read => read_permissions(issues),
     };
     if !issues && let Some(m) = p.as_object_mut() {
         m.remove("issues");
@@ -609,11 +612,17 @@ mod tests {
         for k in ["pull_requests", "issues"] {
             assert_eq!(comment[k], "write", "{k}");
         }
-        let read = permissions(GithubAccess::Read, true);
-        assert!(
-            read.as_object()
-                .is_some_and(|o| o.values().all(|v| v == "read"))
-        );
+        // An agent that triages writes nothing with its own token: it labels
+        // and comments through the control plane.
+        for access in [GithubAccess::Read, GithubAccess::Triage] {
+            let read = permissions(access, true);
+            assert!(
+                read.as_object()
+                    .is_some_and(|o| o.values().all(|v| v == "read")),
+                "{access:?}"
+            );
+            assert_eq!(read, read_permissions(true));
+        }
         assert_eq!(resolve_permissions()["contents"], "write");
     }
 

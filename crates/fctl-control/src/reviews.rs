@@ -35,9 +35,7 @@ use fctl_proto::api::{
 };
 use fctl_proto::event::{MessageSource, UserMessage};
 use fctl_proto::runner::{GithubCredential, StopReason};
-use fctl_proto::session::{
-    GithubAccess, PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef,
-};
+use fctl_proto::session::{PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef};
 use fctl_proto::{ApiError, ErrorCode, ProjectId, SessionId, UserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -2137,8 +2135,9 @@ struct Posting {
 /// which resumes the session if it stopped, as a person's would, on the
 /// subscription it ran on. Its agent decides what to do about each
 /// finding, and answers in its thread. Not for pull requests that merged
-/// or closed meanwhile, nor sessions whose agent only reads on GitHub now.
-/// The review keeps the message until a session takes it
+/// or closed meanwhile, nor sessions whose agent writes nothing to pull
+/// requests now (it only reads on GitHub, or triages). The review keeps
+/// the message until a session takes it
 /// (`reviews.unsent_findings`): one that lists the pull request later gets
 /// it then ([`listed`]). Returns the session, once it has the message.
 async fn pass_on(
@@ -2209,8 +2208,8 @@ enum Sent {
 /// workspace's session, which could list the pull request on a branch of
 /// the same name, earlier, and so take the findings, and its agent their
 /// text. Not while the pull request is merged or closed, nor to a session
-/// whose agent only reads on GitHub, or that takes none (archived,
-/// failed). It claims them first, so that they go once, and keeps them
+/// whose agent writes nothing to pull requests (it only reads on GitHub,
+/// or triages), or that takes none (archived, failed). It claims them first, so that they go once, and keeps them
 /// again when that session takes none.
 async fn send(env: &Env, db: &D1Database, row: &ReviewRow, repo: &RepoRef) -> AppResult<Sent> {
     let pr = format!("{}#{}", repo.full_name(), row.number);
@@ -2238,9 +2237,9 @@ async fn send(env: &Env, db: &D1Database, row: &ReviewRow, repo: &RepoRef) -> Ap
     let Some(session) = crate::spec::session_row(db, id).await? else {
         return Ok(Sent::Nowhere);
     };
-    if session.github_access() == GithubAccess::Read {
+    if !session.github_access().tokens_write() {
         worker::console_log!(
-            "not passing {pr}'s review on to session {id}: its agent only reads on GitHub"
+            "not passing {pr}'s review on to session {id}: its agent writes nothing to pull requests"
         );
         return Ok(Sent::Nowhere);
     }
@@ -2587,9 +2586,9 @@ pub async fn pass_on_unsent(
             "The pull request is {state}: its findings stay on GitHub."
         )));
     }
-    if to.github_access() == GithubAccess::Read {
+    if !to.github_access().tokens_write() {
         return Err(conflict(
-            "This session's agent only reads on GitHub, so it can't answer the findings there.",
+            "This session's agent writes nothing to pull requests, so it can't answer the findings there.",
         ));
     }
     // Not those of a review that a newer one took the place of.

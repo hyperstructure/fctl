@@ -87,6 +87,7 @@ function where(places: G.TokenPlaces | undefined): string {
 
 const AGENTS: Partial<Record<G.GithubAccess, string>> = {
   comment: "their agents review and comment on GitHub, and push nothing",
+  triage: "their agents only label tickets and comment on them",
   read: "their agents only read on GitHub",
 };
 
@@ -134,6 +135,11 @@ export function example(scope: G.TokenScope | undefined, secret: string): string
   if (scope?.access === "read") return `${env} fctl sessions --json`;
   const project = scope?.places?.projects.find((p) => p.slug)?.slug;
   const github = scope?.github_access ? ` --github ${scope.github_access}` : "";
-  const task = scope?.github_access === "comment" ? "Review pull request #12" : "Fix the flaky login test";
+  const task =
+    scope?.github_access === "comment"
+      ? "Review pull request #12"
+      : scope?.github_access === "triage"
+        ? "Triage issue #12"
+        : "Fix the flaky login test";
   return `${env} fctl run${project ? ` -p ${project}` : ""}${github} -d "${task}"`;
 }

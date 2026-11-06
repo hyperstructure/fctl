@@ -115,7 +115,8 @@ retrospectives?: boolean,
  * may do less than push: its agent then pushes nothing, and tells
  * Claude what it may do. Absent: push, as from older control planes.
  * Older hosts leave it out of the agent's configuration, and their
- * agents' pushes fail.
+ * agents' pushes fail. `triage` goes only to hosts that announce
+ * [`FEATURE_TRIAGE`]; one this version doesn't know reads as `read`.
  */
 github_access?: GithubAccess, 
 /**
