@@ -838,13 +838,13 @@ function Runners({ w }: { w: G.Workspace }) {
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        Runners are the machines that run sessions: on each, the host service (
-        <code className="rounded bg-raised px-1 font-mono text-[12.5px]">fctl host</code>) runs every session
-        in a sandbox of its own. Sessions in {w.name} start only on these, which see their code, secrets and
-        Claude tokens while they work. A runner belongs to the person who registered it, who can let it work
-        for several workspaces, or to {w.name} itself when it enrolled with one of its enrollment tokens for
-        everyone's sessions. Its own and the ones its admins add run everyone's sessions; one a member adds,
-        or enrolls with a token of their own, runs only theirs.
+        Runners are the machines that run sessions: on each, the{" "}
+        <code className="rounded bg-raised px-1 font-mono text-[12.5px]">fctl host</code> service runs every
+        session in a sandbox of its own. Sessions in {w.name} start only on these, which see their code,
+        secrets and Claude tokens while they work. A runner belongs to the person who registered it, who can
+        let it work for several workspaces, or to {w.name} itself when it enrolled with one of its enrollment
+        tokens for everyone's sessions. Its own and the ones its admins add run everyone's sessions; one a
+        member adds, or enrolls with a token of their own, runs only theirs.
         {onRunners ? (
           <>
             {" "}
