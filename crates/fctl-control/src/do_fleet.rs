@@ -15,12 +15,13 @@ use crate::internal::{
 use crate::spec;
 use fctl_domain::image::HostImages;
 use fctl_domain::reconcile::{self, Known, Unassigned};
-use fctl_domain::schedule::{Home, Slot, TokenWait, Wait};
+use fctl_domain::schedule::{Home, Slot, TokenWait, Unready, Wait};
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
-    ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_REVIEWS, FEATURE_TRIAGE, FleetToHost,
-    HostHello, HostSessionReport, HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
+    ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_DRIVERS, FEATURE_REVIEWS,
+    FEATURE_TRIAGE, FleetToHost, HostHello, HostSessionReport, HostToFleet, RunnerClaudeToken,
+    SandboxLimits, StopReason,
 };
 use fctl_proto::session::{GithubAccess, RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -139,6 +140,23 @@ struct QueueRow {
     reason: Option<String>,
     #[serde(default)]
     enqueued_at: f64,
+    /// Its last runner declined it, or handed it back, because its driver
+    /// isn't ready: unlike after other declines, a resume goes back there.
+    #[serde(default)]
+    driver_declined: Option<f64>,
+}
+
+impl QueueRow {
+    /// Whether its last runner declined it for its driver.
+    fn declined_for_driver(&self) -> bool {
+        self.driver_declined.is_some_and(|d| d > 0.0)
+    }
+
+    /// [`declined_for_driver`](Self::declined_for_driver) for the row that
+    /// queues it again, which keeps it.
+    fn driver_declined(&self) -> SqlStorageValue {
+        iv(i64::from(self.declined_for_driver()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -201,6 +219,10 @@ struct Candidate {
     allowed_builds: Option<Vec<String>>,
     /// Its host runs review agents' sessions.
     reviews: bool,
+    /// The driver its host uses and why it can't start sandboxes now, as
+    /// its host last said; `None` while it can, and from hosts that don't
+    /// keep saying ([`FEATURE_DRIVERS`]), whose word may be old.
+    unready: Option<(String, String)>,
     /// The Claude token its host keeps for its owner, as it last said:
     /// `None` from hosts too old to keep one.
     claude_token: Option<RunnerClaudeToken>,
@@ -253,6 +275,7 @@ impl Candidate {
     fn slot(&self, want: &spec::SessionWants) -> Slot<'_> {
         Slot {
             id: &self.id,
+            name: &self.name,
             online: true,
             enabled: true,
             serves: self.serves.takes(want) && (!want.on_runners || self.keeps_token()),
@@ -268,6 +291,10 @@ impl Candidate {
                 builds: self.allowed_builds.as_deref(),
             },
             reviews: self.reviews,
+            unready: self
+                .unready
+                .as_ref()
+                .map(|(driver, why)| Unready { driver, why }),
         }
     }
 }
@@ -346,8 +373,18 @@ impl DurableObject for FleetObject {
         // Columns added after the first release. A failing statement throws past
         // Rust (workers-rs does not catch every SQL error), so check first.
         add_column(&sql, "assignments", "run_id", "TEXT");
+        // Set once FleetDO asked its runner to stop the session: a decline
+        // that crosses that ask doesn't queue it again.
+        add_column(&sql, "assignments", "stopping", "INTEGER");
+        // The session's attempts when it was assigned, which a decline adds
+        // to, and the runner that had its sandbox then, which a runner that
+        // hands it back for its driver gives the home back to.
+        add_column(&sql, "assignments", "attempts", "INTEGER");
+        add_column(&sql, "assignments", "home_before", "TEXT");
         // Why a queued session waits, as it last said.
         add_column(&sql, "queue", "reason", "TEXT");
+        // Set when its runner declined it for its driver (`driver_declined`).
+        add_column(&sql, "queue", "driver_declined", "INTEGER");
         add_column(&sql, "runners", "memory_available_mb", "INTEGER");
         add_column(&sql, "runners", "disk_available_mb", "INTEGER");
         // Set while the runner drains: since when, and the admin who drained
@@ -1052,8 +1089,10 @@ impl FleetObject {
                 session_id,
                 accepted,
                 error,
+                unready,
             } => {
-                self.on_start_result(&rs.id, &session_id, accepted, error, now)
+                let unready = unready == Some(true);
+                self.on_start_result(&rs.id, &session_id, accepted, error, unready, now)
                     .await;
             }
             HostToFleet::SessionEnded {
@@ -1605,12 +1644,15 @@ impl FleetObject {
         }
     }
 
+    /// `unready`: the runner declined it, or handed it back, because its
+    /// driver isn't ready, so a resume still goes back to it once it is.
     async fn on_start_result(
         &self,
         runner_id: &str,
         session_id: &SessionId,
         accepted: bool,
         error: Option<String>,
+        unready: bool,
         now: i64,
     ) {
         // Only the runner the session was given answers for it: another
@@ -1632,15 +1674,72 @@ impl FleetObject {
             );
             return;
         }
+        // The run it declines, as dispatch recorded it: the queue's row went
+        // as it was assigned.
+        #[derive(Deserialize, Default)]
+        struct Run {
+            #[serde(default)]
+            accepted: f64,
+            #[serde(default)]
+            stopping: Option<f64>,
+            #[serde(default)]
+            attempts: Option<f64>,
+            #[serde(default)]
+            home_before: Option<String>,
+        }
+        let run = self
+            .sql
+            .exec(
+                "SELECT accepted, stopping, attempts, home_before FROM assignments WHERE session_id = ? AND runner_id = ?",
+                Some(vec![sv(session_id.as_str()), sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<Run>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .unwrap_or_default();
         let _ = self.sql.exec(
             "DELETE FROM assignments WHERE session_id = ?",
             Some(vec![sv(session_id.as_str())]),
         );
+        // Handed back once its driver stopped being ready: it accepted the
+        // session, which made it the session's home, but a session that had
+        // no sandbox there has none now either, so its home is the one it
+        // had before.
+        if unready && run.accepted > 0.0 {
+            match run.home_before.as_deref() {
+                Some(home) if home == runner_id => {}
+                Some(home) => self.set_home(session_id.as_str(), home, now),
+                None => {
+                    let _ = self.sql.exec(
+                        "DELETE FROM sandboxes WHERE session_id = ? AND runner_id = ?",
+                        Some(vec![sv(session_id.as_str()), sv(runner_id)]),
+                    );
+                }
+            }
+        }
+        // Declined, or handed back once its driver stopped being ready
+        // (`FEATURE_DRIVERS`), after someone stopped it: it stays stopped,
+        // unless a message or a resume queued it again since.
+        if run.stopping.is_some_and(|s| s > 0.0) {
+            if !self.queued(session_id.as_str()) {
+                self.session_control(
+                    session_id,
+                    Some(SessionStatus::Stopped),
+                    Some("Stopped before it started".into()),
+                    true,
+                )
+                .await;
+            }
+            self.dispatch().await;
+            return;
+        }
+        // Its earlier declines count: the run's, or the queue's when it was
+        // queued again meanwhile.
         #[derive(Deserialize)]
         struct A {
             attempts: f64,
         }
-        let attempts = self
+        let queued_attempts = self
             .sql
             .exec(
                 "SELECT attempts FROM queue WHERE session_id = ?",
@@ -1650,6 +1749,7 @@ impl FleetObject {
             .ok()
             .and_then(|r| r.first().map(|a| a.attempts as i64))
             .unwrap_or(0);
+        let attempts = queued_attempts.max(run.attempts.unwrap_or(0.0) as i64);
         let reason = error.unwrap_or_else(|| "The runner declined the session".into());
         if attempts + 1 >= MAX_ATTEMPTS {
             let _ = self.sql.exec(
@@ -1661,9 +1761,15 @@ impl FleetObject {
         } else {
             let backoff = 5_000 * (1 << attempts.min(5));
             let _ = self.sql.exec(
-                "INSERT INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?) \
-                 ON CONFLICT (session_id) DO UPDATE SET attempts = excluded.attempts, not_before = excluded.not_before",
-                Some(vec![sv(session_id.as_str()), iv(now), iv(attempts + 1), iv(now + backoff)]),
+                "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?) \
+                 ON CONFLICT (session_id) DO UPDATE SET attempts = excluded.attempts, not_before = excluded.not_before, driver_declined = excluded.driver_declined",
+                Some(vec![
+                    sv(session_id.as_str()),
+                    iv(now),
+                    iv(attempts + 1),
+                    iv(now + backoff),
+                    iv(i64::from(unready)),
+                ]),
             );
             self.session_control(
                 session_id,
@@ -2072,7 +2178,7 @@ impl FleetObject {
         let now = now_ms();
         let queued: Vec<QueueRow> = self
             .sql
-            .exec("SELECT session_id, attempts, reason, enqueued_at FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
+            .exec("SELECT session_id, attempts, reason, enqueued_at, driver_declined FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
             .and_then(|c| c.to_array::<QueueRow>())
             .unwrap_or_default();
         if queued.is_empty() {
@@ -2118,8 +2224,9 @@ impl FleetObject {
             let want = wants.get(&item.session_id).cloned().unwrap_or_default();
             // A resume goes back to the runner that has its sandbox, where
             // Claude continues the same conversation, and waits a while for
-            // it when it is busy. Not after it declined the session.
-            let home = if item.attempts > 0.0 {
+            // it when it is busy. Not after it declined the session, unless
+            // for its driver, which takes no session until it is ready.
+            let home = if item.attempts > 0.0 && !item.declined_for_driver() {
                 None
             } else {
                 self.home_of(&item.session_id)
@@ -2160,8 +2267,8 @@ impl FleetObject {
                         e.0.code == ErrorCode::Unavailable && (item.attempts as i64) < MAX_ATTEMPTS;
                     if retryable {
                         let _ = self.sql.exec(
-                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?)",
-                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000)]),
+                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
+                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000), item.driver_declined()]),
                         );
                         self.session_control(
                             &session_id,
@@ -2199,9 +2306,19 @@ impl FleetObject {
                 Some(vec![sv(&item.session_id)]),
             );
             let run_id = spec.run_id.clone().unwrap_or_default();
+            // With the attempts so far, for a decline to count on, and the
+            // runner that has its sandbox, for a hand-back to keep.
+            let home_before = self.home_of(&item.session_id);
             let _ = self.sql.exec(
-                "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted, run_id) VALUES (?, ?, ?, 0, ?)",
-                Some(vec![sv(&item.session_id), sv(&runner_id), iv(now), sv(&run_id)]),
+                "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted, run_id, attempts, home_before) VALUES (?, ?, ?, 0, ?, ?, ?)",
+                Some(vec![
+                    sv(&item.session_id),
+                    sv(&runner_id),
+                    iv(now),
+                    sv(&run_id),
+                    iv(item.attempts as i64),
+                    SqlStorageValue::from(home_before),
+                ]),
             );
             let sent = self.send_runner(
                 &runner_id,
@@ -2238,8 +2355,8 @@ impl FleetObject {
                     Some(vec![sv(&item.session_id)]),
                 );
                 let _ = self.sql.exec(
-                    "INSERT OR REPLACE INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?)",
-                    Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 5_000)]),
+                    "INSERT OR REPLACE INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
+                    Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 5_000), item.driver_declined()]),
                 );
             }
         }
@@ -2276,6 +2393,13 @@ impl FleetObject {
                     .get(&r.id)
                     .cloned()
                     .unwrap_or_default();
+                let unready = hello
+                    .features
+                    .iter()
+                    .any(|f| f == FEATURE_DRIVERS)
+                    .then(|| fctl_domain::schedule::driver_problem(&hello.driver, &hello.drivers))
+                    .flatten()
+                    .map(|why| (hello.driver.clone(), why.to_owned()));
                 Some(Candidate {
                     id: r.id,
                     name: r.name,
@@ -2292,6 +2416,7 @@ impl FleetObject {
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,
                     reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
+                    unready,
                     claude_token: hello.claude_token,
                     serves,
                 })
@@ -2428,6 +2553,10 @@ impl FleetObject {
             .unwrap_or_default();
         match assigned.first() {
             Some(a) if self.runner_socket(&a.runner_id).is_some() => {
+                let _ = self.sql.exec(
+                    "UPDATE assignments SET stopping = 1 WHERE session_id = ?",
+                    Some(vec![sv(b.session_id.as_str())]),
+                );
                 // Stopping first: from then on the session keeps messages for
                 // its next run instead of handing them to an agent that stops.
                 self.session_control(

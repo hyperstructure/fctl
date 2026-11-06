@@ -1082,6 +1082,11 @@ impl RunnerRow {
                 .and_then(|h| h.claude_token)
                 .filter(|_| yours),
             auto_update: hello.as_ref().and_then(|h| h.auto_update),
+            waits_for_driver: hello.as_ref().map(|h| {
+                h.features
+                    .iter()
+                    .any(|f| f == fctl_proto::runner::FEATURE_DRIVERS)
+            }),
             workspace: self.owner_workspace(),
             // Where it enrolled from is for those who decide whether it
             // runs sessions.

@@ -277,6 +277,12 @@ impl FakeCli {
         Ok(())
     }
 
+    /// Lets every command through again, after [`refuse`](Self::refuse).
+    pub fn answer(&self) -> Result<()> {
+        std::fs::remove_file(self.dir.path().join("refuse"))?;
+        Ok(())
+    }
+
     /// Takes away the CLI's execute permission, so that it can't be started.
     pub fn wont_start(&self) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;

@@ -441,6 +441,15 @@ pub struct SessionSpec {
 /// ([`HostHello::features`]).
 pub const FEATURE_REVIEWS: &str = "reviews";
 
+/// What hosts announce whose heartbeats say their drivers again once they
+/// change ([`HostHeartbeat::drivers`]), and that decline, or hand back, a
+/// session while the driver they use isn't ready: FleetDO then starts no
+/// session on them, and a session that has nowhere else to go waits and
+/// says why. Older hosts don't decline sessions for their driver, and
+/// before 0.30.0 said their drivers only in their hello, so sessions still
+/// start on them, and fail while their driver isn't ready.
+pub const FEATURE_DRIVERS: &str = "drivers";
+
 /// What hosts whose agents know [`GithubAccess::Triage`] announce in their
 /// hello. Older hosts can't read a spec that has it, so FleetDO tells
 /// their agents they only read (`fctl_domain::limits::for_host`): their
@@ -545,13 +554,23 @@ pub enum ClaudeLoginUpdate {
 pub enum HostToFleet {
     Hello(Box<HostHello>),
     Heartbeat(HostHeartbeat),
-    /// Answer to `StartSession`.
+    /// Answer to `StartSession`. A host that announces [`FEATURE_DRIVERS`]
+    /// may send it again, declining, for a session it accepted but whose
+    /// sandbox its driver couldn't make because the driver stopped being
+    /// ready: FleetDO queues the session again, and sends no
+    /// `SessionEnded` for that run.
     StartResult {
         session_id: SessionId,
         accepted: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,
+        /// Declined because the driver the host uses isn't ready: once it
+        /// is, a resume goes back to the sandbox the session has there.
+        /// Absent otherwise, and from older hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        unready: Option<bool>,
     },
     /// The sandbox of a session is gone (stopped, removed or crashed).
     SessionEnded {
