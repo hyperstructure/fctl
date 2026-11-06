@@ -1063,14 +1063,12 @@ async fn run(
                 }
                 Err(destroy) => {
                     let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
-                    // One that goes stops as it goes: stopping it first would save
-                    // what nothing resumes (Firecracker's VMs).
-                    if destroy {
-                        if let Err(e) = ctx.driver.remove(&sb).await {
-                            tracing::warn!("removing {}: {e:#}", sb.name);
-                        }
-                    } else if let Err(e) = ctx.driver.stop(&sb).await {
+                    let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
+                    if let Err(e) = stopped {
                         tracing::warn!("stopping {}: {e:#}", sb.name);
+                    }
+                    if let Err(e) = removed {
+                        tracing::warn!("removing {}: {e:#}", sb.name);
                     }
                     let msg = "Stopped before it started".to_owned();
                     uplink.state(state(SessionStatus::Stopped, &msg));
@@ -1582,14 +1580,12 @@ async fn run(
     // Give the uplink a moment to deliver the agent's last events.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let destroy = stop.map(|(d, _)| d).unwrap_or(false);
-    // One that goes stops as it goes: stopping it first would save
-    // what nothing resumes (Firecracker's VMs).
-    if destroy {
-        if let Err(e) = ctx.driver.remove(&sb).await {
-            tracing::warn!("removing {}: {e:#}", sb.name);
-        }
-    } else if let Err(e) = ctx.driver.stop(&sb).await {
+    let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
+    if let Err(e) = stopped {
         tracing::warn!("stopping {}: {e:#}", sb.name);
+    }
+    if let Err(e) = removed {
+        tracing::warn!("removing {}: {e:#}", sb.name);
     }
     let (status, reason) = outcome;
     // Drain a late Superseded so the next run's status is not overwritten.

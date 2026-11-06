@@ -141,8 +141,9 @@ enum CacheDone {
 /// What background work on sandboxes that no session runs in reports.
 enum Chore {
     /// The sweep listed this host's sandboxes, and the projects whose
-    /// package caches are here.
-    Listed(Result<Vec<SandboxInfo>>, Vec<String>),
+    /// package caches are here; and the disk's free MiB, when it measured
+    /// it again after letting saved states go.
+    Listed(Result<Vec<SandboxInfo>>, Vec<String>, Option<u64>),
     /// The sweep removed a sandbox, or failed to, and measured the disk
     /// again.
     Removed {
@@ -361,12 +362,15 @@ impl Daemon {
             .map(|id| sandbox_name(id.as_str()))
             .collect();
         tokio::spawn(async move {
+            // What that freed counts before any sandbox goes for room.
+            let mut measured = None;
             if low {
                 let freed = ctx.driver.drop_saved_states(&in_use).await;
                 if freed > 0 {
                     tracing::info!(
                         "let go of the saved states of stopped sandboxes for room on the disk: {freed} MiB"
                     );
+                    measured = ctx.disk_free_mb().await;
                 }
             }
             let listed = ctx.driver.list().await;
@@ -381,7 +385,7 @@ impl Daemon {
                     }),
                 Err(_) => Vec::new(),
             };
-            let _ = chores.send(Chore::Listed(listed, caches));
+            let _ = chores.send(Chore::Listed(listed, caches, measured));
         });
     }
 
@@ -656,8 +660,13 @@ impl Daemon {
 
     fn on_chore(&mut self, chore: Chore) {
         match chore {
-            Chore::Listed(Ok(list), caches) => self.sweep_listed(list, caches),
-            Chore::Listed(Err(e), _) => {
+            Chore::Listed(Ok(list), caches, measured) => {
+                if measured.is_some() {
+                    self.note_disk(measured);
+                }
+                self.sweep_listed(list, caches);
+            }
+            Chore::Listed(Err(e), _, _) => {
                 tracing::warn!("listing sandboxes: {e:#}");
                 self.sweeping = false;
             }
@@ -1527,14 +1536,12 @@ impl Daemon {
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
         tokio::spawn(async move {
             let sb = ctx.driver.handle(&name);
-            // One that goes stops as it goes: stopping it first would save
-            // what nothing resumes (Firecracker's VMs).
-            if destroy {
-                if let Err(e) = ctx.driver.remove(&sb).await {
-                    tracing::warn!("removing {name}: {e:#}");
-                }
-            } else if let Err(e) = ctx.driver.stop(&sb).await {
+            let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
+            if let Err(e) = stopped {
                 tracing::warn!("stopping {name}: {e:#}");
+            }
+            if let Err(e) = removed {
+                tracing::warn!("removing {name}: {e:#}");
             }
             let ended = HostToFleet::SessionEnded {
                 session_id,

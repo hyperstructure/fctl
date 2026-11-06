@@ -3458,8 +3458,10 @@ in `firecracker/` in the host's data directory.
   (`PUT /snapshot/create`), then gives back the disk the memory's zero
   pages take. Starting the sandbox again loads that into a new Firecracker
   (`PUT /snapshot/load`), so that its programs, Claude among them, run on
-  where they were, and links its network again; the state goes once
-  loaded, the disk being past it. A state takes the disk the VM's memory
+  where they were, and links its network again, unless the session asks
+  for another size than the VM had, which boots it from its disk; the
+  state goes once loaded, the disk being past it. One state saves at a
+  time. A state takes the disk the VM's memory
   uses; the host saves none where the disk lacks room for the memory over
   `min_free_disk_gb`, nor for a VM paused for the disk or a sandbox that
   goes, and lets the states of stopped sandboxes go first while the disk

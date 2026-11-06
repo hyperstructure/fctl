@@ -278,8 +278,8 @@ impl Vm {
             },
             "drives": drives,
             "machine-config": {
-                "vcpu_count": spec.cpus.clamp(1, 32),
-                "mem_size_mib": spec.memory_mb.max(256),
+                "vcpu_count": size(spec.cpus, spec.memory_mb).0,
+                "mem_size_mib": size(spec.cpus, spec.memory_mb).1,
                 "smt": false,
             },
             "vsock": { "guest_cid": 3, "uds_path": self.vsock() },
@@ -291,9 +291,18 @@ impl Vm {
 
     /// The memory the VM booted with, in MiB, from its configuration.
     pub fn memory_mb(&self) -> Option<u64> {
+        self.machine("mem_size_mib")
+    }
+
+    /// The CPUs the VM booted with, from its configuration.
+    pub fn cpus(&self) -> Option<u64> {
+        self.machine("vcpu_count")
+    }
+
+    fn machine(&self, field: &str) -> Option<u64> {
         let config = std::fs::read(self.dir.join("firecracker.json")).ok()?;
         let config: Value = serde_json::from_slice(&config).ok()?;
-        config["machine-config"]["mem_size_mib"].as_u64()
+        config["machine-config"][field].as_u64()
     }
 
     /// What the VM's console said last, for an error.
@@ -492,6 +501,12 @@ impl Vm {
             _ => Ok(()),
         }
     }
+}
+
+/// The CPUs and MiB of memory a VM gets when asked for `cpus` and
+/// `memory_mb`: Firecracker's bounds, and enough memory to boot.
+pub fn size(cpus: u32, memory_mb: u32) -> (u32, u32) {
+    (cpus.clamp(1, 32), memory_mb.max(256))
 }
 
 /// A request to Firecracker's API on `socket`: its answer's body.

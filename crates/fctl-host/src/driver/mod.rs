@@ -757,6 +757,23 @@ impl Driver {
         }
     }
 
+    /// Stops the sandbox, and with `destroy` removes it; what each came to.
+    /// A Firecracker VM that goes isn't stopped first, which would save the
+    /// state of a VM nothing resumes; others are, as Apple's `container`
+    /// sometimes needs its stop's second try.
+    pub async fn finish(&self, sb: &Sandbox, destroy: bool) -> (Result<()>, Result<()>) {
+        if destroy && matches!(self, Self::Firecracker(_)) {
+            return (Ok(()), self.remove(sb).await);
+        }
+        let stopped = self.stop(sb).await;
+        let removed = if destroy {
+            self.remove(sb).await
+        } else {
+            Ok(())
+        };
+        (stopped, removed)
+    }
+
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
         match self {
             Self::Process(d) => d.remove(sb).await,

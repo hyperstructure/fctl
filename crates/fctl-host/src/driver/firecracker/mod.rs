@@ -806,7 +806,9 @@ impl FirecrackerDriver {
             ));
             vm.kill().await;
         }
-        if let Some(saved) = self.record(&spec.name).and_then(|r| r.saved) {
+        if let Some(saved) = self.record(&spec.name).and_then(|r| r.saved)
+            && !self.resized(&vm, spec, log)
+        {
             match self.resume_saved(&vm, &spec.name, &saved, log).await {
                 Ok(()) => return Ok(sb),
                 Err(e) => log(format!(
@@ -1140,6 +1142,10 @@ impl FirecrackerDriver {
     /// write goes to its disk first, so that one whose state doesn't come
     /// back boots from a disk as whole as a clean stop leaves it.
     async fn save(&self, vm: &Vm, name: &str) -> Result<bool> {
+        // One at a time: sandboxes that stop together (a host that drains)
+        // would each find room for their memory, and all write it at once.
+        let lock = self.lock("saving");
+        let _held = lock.lock().await;
         let memory_mb = vm.memory_mb().unwrap_or(u64::MAX / 2);
         let floor = self
             .host
@@ -1169,25 +1175,30 @@ impl FirecrackerDriver {
         let (dir, new) = (vm.dir.join("saved"), vm.dir.join("saved.new"));
         let _ = std::fs::remove_dir_all(&new);
         let _ = std::fs::remove_dir_all(&dir);
-        if let Err(e) = vm.snapshot(&new).await {
+        let saved = async {
+            vm.snapshot(&new).await?;
+            // The memory the VM never touched, or gave back, takes no disk.
+            let memory = new.join("memory");
+            if let Err(e) = tokio::task::spawn_blocking(move || punch_zeros(&memory)).await? {
+                tracing::warn!("giving back the disk {name}'s memory doesn't use: {e:#}");
+            }
+            std::fs::rename(&new, &dir)?;
+            let Some(mut record) = self.record(name) else {
+                bail!("{name} has no record to keep its saved state in");
+            };
+            record.saved = Some(Saved {
+                firecracker,
+                at_ms: vsock::now_ms(),
+            });
+            self.save_record(name, &record)
+        }
+        .await;
+        // What a save that failed left takes as much disk as the VM's memory.
+        if saved.is_err() {
             let _ = std::fs::remove_dir_all(&new);
-            return Err(e);
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        // The memory the VM never touched, or gave back, takes no disk.
-        let memory = new.join("memory");
-        if let Err(e) = tokio::task::spawn_blocking(move || punch_zeros(&memory)).await? {
-            tracing::warn!("giving back the disk {name}'s memory doesn't use: {e:#}");
-        }
-        std::fs::rename(&new, &dir)?;
-        let Some(mut record) = self.record(name) else {
-            bail!("{name} has no record to keep its saved state in");
-        };
-        record.saved = Some(Saved {
-            firecracker,
-            at_ms: vsock::now_ms(),
-        });
-        self.save_record(name, &record)?;
-        Ok(true)
+        saved.map(|()| true)
     }
 
     /// Starts the VM of the sandbox `name` from the state it saved as it
@@ -1227,11 +1238,29 @@ impl FirecrackerDriver {
         Ok(())
     }
 
+    /// Whether the session asks `vm`, stopped, for another size than it
+    /// had: its saved state, which has the old one, then won't do.
+    fn resized(&self, vm: &Vm, spec: &SandboxSpec, log: Log<'_>) -> bool {
+        let (cpus, memory_mb) = vm::size(spec.cpus, spec.memory_mb);
+        let had = (vm.cpus(), vm.memory_mb());
+        if had == (Some(u64::from(cpus)), Some(u64::from(memory_mb))) {
+            return false;
+        }
+        log(format!(
+            "{} asks for {cpus} CPUs and {memory_mb} MiB now, so it starts again from its disk rather than where it stopped",
+            spec.name
+        ));
+        true
+    }
+
     /// Lets the state `name` saved go, files and record.
     fn drop_saved(&self, vm: &Vm, name: &str) -> Result<()> {
-        let dir = vm.dir.join("saved");
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+        // Saved, or half saved as a save failed or the host stopped.
+        for dir in [vm.dir.join("saved"), vm.dir.join("saved.new")] {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)
+                    .with_context(|| format!("removing {}", dir.display()))?;
+            }
         }
         if let Some(mut record) = self.record(name)
             && record.saved.take().is_some()
@@ -1252,7 +1281,8 @@ impl FirecrackerDriver {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let saved = entry.path().join("saved");
-            if keep.contains(&name) || !saved.is_dir() {
+            let half = entry.path().join("saved.new");
+            if keep.contains(&name) || !(saved.is_dir() || half.is_dir()) {
                 continue;
             }
             let lock = self.lock(&format!("sandbox {name}"));
@@ -1261,7 +1291,8 @@ impl FirecrackerDriver {
             if vm.running() {
                 continue;
             }
-            let size = crate::caches::dir_size_mb(&saved).unwrap_or(0);
+            let size = crate::caches::dir_size_mb(&saved).unwrap_or(0)
+                + crate::caches::dir_size_mb(&half).unwrap_or(0);
             match self.drop_saved(&vm, &name) {
                 Ok(()) => freed += size,
                 Err(e) => tracing::warn!("letting {name}'s saved state go: {e:#}"),
@@ -1512,6 +1543,43 @@ mod tests {
         let e = d.resume_saved(&vm, "fctl-ses-01half", &saved, &log).await;
         assert!(e.is_err_and(|e| e.to_string() == "its saved state is incomplete"));
         assert!(!vm.dir.join("saved").exists());
+        Ok(())
+    }
+
+    /// A VM asked for another size boots from its disk rather than resume
+    /// as it was; what a save that stopped halfway left goes with the rest.
+    #[tokio::test]
+    async fn saved_states_go_when_the_size_changes_or_they_were_never_done() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let vm = with_saved(&d, "fctl-ses-01size", "1.17.0")?;
+        let spec = |cpus, memory_mb| SandboxSpec {
+            name: "fctl-ses-01size".into(),
+            image: "x".into(),
+            fallback_image: None,
+            cpus,
+            memory_mb,
+            cache: None,
+        };
+        let boot = vm::unpack_spec("/k".into(), "/i".into(), "fctl-ses-01size", Path::new("/r"));
+        std::fs::write(
+            vm.dir.join("firecracker.json"),
+            serde_json::to_vec(&vm.config(&vm::Spec {
+                cpus: 2,
+                memory_mb: 4096,
+                ..boot
+            }))?,
+        )?;
+        let log = |_: String| {};
+        assert!(!d.resized(&vm, &spec(2, 4096), &log));
+        assert!(d.resized(&vm, &spec(4, 4096), &log));
+        assert!(d.resized(&vm, &spec(2, 8192), &log));
+        // Half saved, as the host stopped.
+        std::fs::create_dir_all(vm.dir.join("saved.new"))?;
+        std::fs::write(vm.dir.join("saved.new/memory"), vec![1u8; 4096])?;
+        d.drop_saved(&vm, "fctl-ses-01size")?;
+        assert!(!vm.dir.join("saved").exists() && !vm.dir.join("saved.new").exists());
+        assert_eq!(d.record("fctl-ses-01size").and_then(|r| r.saved), None);
         Ok(())
     }
 
