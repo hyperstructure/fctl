@@ -2,6 +2,21 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.30.1 (2026-11-06)
+
+### Features
+
+- Tell sessions when their runner runs short of disk, and pause VMs ([#418](https://github.com/hyperstructure/fctl/pull/418))
+- Keep sessions queued until a runner's driver is ready ([#419](https://github.com/hyperstructure/fctl/pull/419))
+- Let schedules keep their sessions off session lists ([#425](https://github.com/hyperstructure/fctl/pull/425))
+
+### Fixes
+
+- Pass a Claude sign-in on when its runner's driver isn't ready ([#423](https://github.com/hyperstructure/fctl/pull/423))
+- **cli:** Say what Firecracker lacks when no driver is ready ([#426](https://github.com/hyperstructure/fctl/pull/426))
+- **host:** Probe the driver in use every minute while it is ready ([#422](https://github.com/hyperstructure/fctl/pull/422))
+- **host:** Don't take a VM's just-started process for another ([#428](https://github.com/hyperstructure/fctl/pull/428))
+
 ## 0.30.0 (2026-11-06)
 
 ### Features
