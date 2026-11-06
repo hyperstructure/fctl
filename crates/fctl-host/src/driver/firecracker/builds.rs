@@ -95,15 +95,16 @@ impl FirecrackerDriver {
         log(format!(
             "Starting the image builder, BuildKit in a VM ({name})"
         ));
-        let sb = self
-            .ensure(&spec, log)
-            .await
-            .context("starting the image builder")?;
+        // Made first: a build dropped while its builder starts stops it too.
         let mut running = Running {
             vm: Some(self.vm(&name)?),
             name: name.clone(),
             stopped: crate::expiry::path(&self.host.data_dir()),
         };
+        let sb = self
+            .ensure(&spec, log)
+            .await
+            .context("starting the image builder")?;
         let built = self.build_in(&sb.name, job, log).await;
         match self.stop(&sb).await {
             Ok(()) => running.vm = None,
@@ -368,8 +369,6 @@ impl FirecrackerDriver {
     }
 }
 
-/// What stops a builder VM whose build was dropped halfway: the VM, until
-/// the build is done.
 /// A builder that runs for a build. As the build ends, or is dropped
 /// halfway (its session stopped), the builder stops, and the host notes
 /// when: it goes, with its cache, once it has been stopped for
@@ -445,20 +444,39 @@ fn archive_dockerfile(dockerfile: &Path, to: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// A build notes when its builder stopped, whether it ended or was
-    /// dropped halfway: the sweep counts `keep_stopped_hours` from there.
-    #[test]
-    fn a_builder_notes_when_it_stopped() -> Result<()> {
+    /// A build dropped halfway, while its builder starts or builds, stops
+    /// the builder; either way the build notes when its builder stopped:
+    /// the sweep counts `keep_stopped_hours` from there.
+    #[tokio::test]
+    async fn a_builder_stops_with_its_build_and_notes_when() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let stopped = crate::expiry::path(dir.path());
         let name = "fctl-builder-prj-01abc";
         crate::expiry::note_stopped(&stopped, name, 1)?;
+        let vm = super::super::Vm::new(dir.path().join(name))?;
+        std::fs::create_dir_all(dir.path().join(name))?;
+        // A process whose command line has the VM's socket directory.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30; true", &vm.api().display().to_string()])
+            .spawn()?;
+        std::fs::write(
+            dir.path().join(name).join("firecracker.pid"),
+            child.id().to_string(),
+        )?;
+        // Until its exec, other tests' threads may show it as this process.
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !vm.running() && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(vm.running());
         let before = crate::expiry::now_ms();
         drop(Running {
             vm: Some(super::super::Vm::new(dir.path().join(name))?),
             name: name.into(),
             stopped: stopped.clone(),
         });
+        let status = child.wait()?;
+        assert!(!status.success(), "{status:?}");
         let noted = crate::expiry::load(&stopped).get(name).copied();
         assert!(noted.is_some_and(|ms| ms >= before), "{noted:?}");
         Ok(())
