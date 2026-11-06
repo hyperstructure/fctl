@@ -532,13 +532,16 @@ impl Session {
                 let f = self.fid(r.u32()?)?;
                 let _mask = r.u64()?;
                 let st = stat_of(&f.fd)?;
+                // `st_nlink` is a u32 on aarch64 and a u64 on x86_64.
+                #[allow(clippy::useless_conversion)]
+                let nlink = u64::from(st.st_nlink);
                 let mut w = reply(t);
                 w.u64(GETATTR_BASIC)
                     .qid(qid(&st))
                     .u32(st.st_mode)
                     .u32(self.owner.0)
                     .u32(self.owner.1)
-                    .u64(u64::from(st.st_nlink))
+                    .u64(nlink)
                     .u64(st.st_rdev)
                     .u64(u64::try_from(st.st_size).unwrap_or(0))
                     .u64(u64::try_from(st.st_blksize).unwrap_or(4096))
