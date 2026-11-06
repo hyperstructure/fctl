@@ -1163,6 +1163,30 @@ mod tests {
         }
     }
 
+    /// What passt, the VM's console and the VM's network say, for a test
+    /// whose sandbox can't reach the network.
+    async fn network_report(d: &super::super::Driver, sb: &Sandbox, data: &Path) -> String {
+        let dir = data.join("firecracker/sandboxes").join(&sb.name);
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+        let passt_runs = read("passt.pid")
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/cmdline")).ok())
+            .map(|cmdline| cmdline.replace('\0', " "));
+        let vm = d
+            .exec(
+                sb,
+                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' && echo 'TCP to 1.1.1.1:80 works'",
+            )
+            .await;
+        format!(
+            "passt runs: {passt_runs:?}\npasst said:\n{}\nthe VM's console:\n{}\nthe VM's network: {vm:?}",
+            read("passt.log").trim(),
+            read("console.log").trim()
+        )
+    }
+
     /// Boots a sandbox from an image of Docker Hub (or
     /// `FCTL_TEST_FIRECRACKER_IMAGE`), on a host with KVM, Firecracker's
     /// needs and a static fctl-agent, with the kernel hosts pull (or the
@@ -1233,21 +1257,8 @@ mod tests {
             if resolved.as_ref().is_ok_and(|r| !r.trim().is_empty()) {
                 eprintln!("example.com is {}", resolved.unwrap_or_default().trim());
             } else {
-                let passt = std::fs::read_to_string(
-                    cfg.data_dir()
-                        .join("firecracker/sandboxes")
-                        .join(&name)
-                        .join("passt.log"),
-                );
-                let net = d
-                    .exec(
-                        &sb,
-                        "cat /etc/resolv.conf /proc/net/route /sys/class/net/eth0/operstate; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' && echo 'TCP to 1.1.1.1:80 works'",
-                    )
-                    .await;
-                bail!(
-                    "no address for example.com in the sandbox ({resolved:?}); passt said {passt:?}; the VM's network: {net:?}"
-                );
+                let report = network_report(&d, &sb, &cfg.data_dir()).await;
+                bail!("no address for example.com in the sandbox ({resolved:?})\n{report}");
             }
             let fetched = d
                 .exec(
