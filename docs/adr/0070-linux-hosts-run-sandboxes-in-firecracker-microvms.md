@@ -45,7 +45,9 @@ microVM of its own.
   otherwise) that the VM lays over it with overlayfs. It takes what the
   session writes, and gives back what it deletes (discard, which
   Firecracker has from 1.17). A stopped sandbox keeps its disk, and
-  resuming the session boots from it, with Claude's conversation.
+  resuming the session boots from it, with Claude's conversation. (Since
+  session #802, stopping it also saves its VM's state, which a resume
+  loads, its programs running on.)
 - **fctl-agent is the VM's init.** The host boots each VM with an
   initramfs whose init is its own static fctl-agent. It mounts the root,
   copies itself to `/opt/fctl/bin`, sets up what an image doesn't bring

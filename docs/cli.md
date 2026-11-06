@@ -829,6 +829,7 @@ agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's r
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads
 # kernel = "/var/lib/fctl/vmlinux"             # a file, or an image whose /vmlinux it is (unset: the published one)
 disk_gb = 64             # each sandbox's own disk, which takes only what its session writes
+snapshots = true         # a stopped sandbox keeps its VM's memory, and resumes as it was
 ```
 
 With Docker on Linux, the daemon's socket lets in only root and the
@@ -931,7 +932,11 @@ Agents are told their sandbox's size in their instructions and in
 `container`, `nproc` counts one CPU more than the sandbox may use.
 
 A stopped session's sandbox takes disk on the host until it has been
-stopped for `keep_stopped_hours`, or until the disk runs low. With Apple's
+stopped for `keep_stopped_hours`, or until the disk runs low. With
+Firecracker it also keeps its VM's state, the memory the VM used, so that
+a message resumes the session with Claude running where it was rather
+than starting it again; the host lets those states go first when the disk
+runs low, and `snapshots = false` keeps none. With Apple's
 `container`, a sandbox's disk image keeps the space of the files its
 session deleted (a build of fctl leaves about 5.5 GB) until the host
 stops the sandbox: then the host gives that space back to the Mac with

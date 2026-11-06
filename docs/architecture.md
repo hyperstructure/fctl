@@ -3451,6 +3451,20 @@ in `firecracker/` in the host's data directory.
   which keeps what it has yet to write in its memory, and resumes it once
   there is room; a VM paused when its sandbox stops or starts again is
   resumed first ([ADR 0076](adr/0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md)).
+- **Saved states.** Stopping a sandbox saves its VM's state first
+  (`snapshots`, on unless `host.toml` turns it off): the host writes out
+  what the VM has yet to write to its disk, pauses it, and has
+  Firecracker save its state and its memory in the sandbox's `saved/`
+  (`PUT /snapshot/create`), then gives back the disk the memory's zero
+  pages take. Starting the sandbox again loads that into a new Firecracker
+  (`PUT /snapshot/load`), so that its programs, Claude among them, run on
+  where they were, and links its network again; the state goes once
+  loaded, the disk being past it. A state takes the disk the VM's memory
+  uses; the host saves none where the disk lacks room for the memory over
+  `min_free_disk_gb`, nor for a VM paused for the disk or a sandbox that
+  goes, and lets the states of stopped sandboxes go first while the disk
+  is low. One another Firecracker release saved, or one that doesn't load,
+  goes too, and the sandbox boots from its disk.
 - **The VM's init** is fctl-agent, from an initramfs the host makes of its
   own static fctl-agent (`crates/fctl-agent/src/vm`). It mounts the root,
   copies itself to `/opt/fctl/bin/fctl-agent`, sets up what images don't

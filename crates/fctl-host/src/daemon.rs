@@ -1527,11 +1527,14 @@ impl Daemon {
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
         tokio::spawn(async move {
             let sb = ctx.driver.handle(&name);
-            if let Err(e) = ctx.driver.stop(&sb).await {
+            // One that goes stops as it goes: stopping it first would save
+            // what nothing resumes (Firecracker's VMs).
+            if destroy {
+                if let Err(e) = ctx.driver.remove(&sb).await {
+                    tracing::warn!("removing {name}: {e:#}");
+                }
+            } else if let Err(e) = ctx.driver.stop(&sb).await {
                 tracing::warn!("stopping {name}: {e:#}");
-            }
-            if destroy && let Err(e) = ctx.driver.remove(&sb).await {
-                tracing::warn!("removing {name}: {e:#}");
             }
             let ended = HostToFleet::SessionEnded {
                 session_id,
