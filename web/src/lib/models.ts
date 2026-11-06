@@ -155,8 +155,9 @@ export interface Switch {
 }
 
 /**
- * The models a session's owner can switch it to: the one it works on (by its ID once Claude has
- * named it, "" for Claude's default before then), then Claude Code's aliases.
+ * The models a session's owner can switch it to: the one it works on (by the alias it was asked
+ * for, by its ID on Claude's default once Claude has named it, "" before then), then Claude
+ * Code's aliases.
  */
 export function switchModels(current: string): Switch[] {
   const aliases: string[] = ALIASES.map((a) => a.value);

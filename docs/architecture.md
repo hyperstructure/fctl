@@ -2345,8 +2345,18 @@ projects return the caller's as `last_model` and `last_effort`. A person's
 rows go when they leave the project's workspace or delete their account.
 
 The session page and `fctl show` show the model and the effort level
-Claude works at. The model comes in Claude's `system/init` message, which
-in `-p` mode has no effort level, so fctl-agent asks Claude for it with
+Claude works at. Claude names the model by its ID in its `system/init`
+message, an alias's too (`opus` is `claude-opus-5-5`). A session shows it
+by the name it was started on or switched to (`opus`, or an ID) for as
+long as Claude works on the model that name took it to: fctl-agent keeps
+the ID Claude gave for that name (`fctl_domain::models::ModelName`) and
+reports the name in the session state, and Claude's ID only once Claude
+works on another model (after `/model` in a message). So `opus` stays the
+choice that is checked in the session's list, and D1's `model` keeps it,
+which the session's next run starts on. SessionDO takes the ID from
+`system/init` itself only for a session that names no model (Claude's
+default); agents from before this report the ID. `system/init` in `-p`
+mode has no effort level, so fctl-agent asks Claude for it with
 the `get_settings` control request once Claude has started, and again
 after each turn, since it can change during a session: Claude Code's
 `/effort high`, in a message from the person who started the session, sets
@@ -2372,7 +2382,8 @@ what Claude works on, says in the transcript who changed what (a
 fctl-agent sends Claude the `set_model` and `apply_flag_settings`
 (`effortLevel`) control requests, which Claude applies from its next
 request, keeps them in the spec it would start Claude again with, and
-reports the model Claude names in its answer and the effort level
+reports the model by the name it was switched to (Claude's answer names
+it by ID, which fctl-agent keeps for that name) and the effort level
 `get_settings` gives. A refusal fails the delivery with Claude's reason,
 which the transcript shows, and the session goes back to what Claude works
 on. Hosts and agents from before this can't read the delivery, not even in

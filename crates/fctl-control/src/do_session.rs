@@ -2675,9 +2675,13 @@ impl SessionObject {
         ev::apply_stats(&mut s.stats, counted, v, ts, running);
         let mut changed = before != s.stats;
         match kind {
+            // A session that runs on Claude's default shows the model by
+            // the ID Claude gives it. One that names its model (`opus`)
+            // keeps the name: its agent's state says when Claude works on
+            // another model (older agents say the ID there too).
             ClaudeKind::Init => {
                 if let Some(m) = v.get("model").and_then(serde_json::Value::as_str)
-                    && s.model.as_deref() != Some(m)
+                    && s.model.is_none()
                 {
                     s.model = Some(m.to_owned());
                     changed = true;

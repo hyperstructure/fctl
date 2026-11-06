@@ -678,7 +678,8 @@ fn finish(id: &str, token: &str, children: &mut Children) -> Result<String> {
             session.effort
         );
     }
-    // fake-claude says it runs the model it was given.
+    // fake-claude names it claude-haiku-5-5, as Claude Code does: the
+    // session keeps the alias it asked for.
     if session.model.as_deref() != Some("haiku") {
         bail!(
             "the session says Claude worked with {:?}, not the haiku it asked for",

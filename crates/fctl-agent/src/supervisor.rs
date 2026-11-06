@@ -19,6 +19,7 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
+use fctl_domain::models::ModelName;
 use fctl_domain::{files, published, validate};
 use fctl_proto::agent::{
     AgentConfig, AgentHello, AgentToHost, HostToAgent, SESSION_SOCKET_ENV, SessionReply,
@@ -220,6 +221,9 @@ pub struct Supervisor {
     /// Changes Claude refused, newest last, with why: one that comes again
     /// (the host lost the answer with its link) gets the same answer.
     settings_refused: VecDeque<(String, String)>,
+    /// The name the session knows Claude's model by: the alias it was
+    /// started on or switched to, say, rather than the ID Claude gives it.
+    model_name: ModelName,
 }
 
 impl Supervisor {
@@ -298,6 +302,7 @@ impl Supervisor {
                 cache: None,
                 settings_waiting: HashSet::new(),
                 settings_refused: VecDeque::new(),
+                model_name: ModelName::default(),
             },
             claude_rx,
             work_rx,
@@ -1170,14 +1175,12 @@ impl Supervisor {
         let mut refused = Vec::new();
         if let Some((asked, answer)) = model {
             match answer {
-                // As `system/init` names it: an alias becomes the model's ID.
+                // By the name it was asked for (an alias, say), which
+                // Claude answers with the model's ID.
                 Ok(v) => {
-                    self.state.model = Some(
-                        v.get("model")
-                            .and_then(Value::as_str)
-                            .unwrap_or(&asked)
-                            .to_owned(),
-                    );
+                    let id = v.get("model").and_then(Value::as_str).unwrap_or(&asked);
+                    self.model_name.switched(&asked, id);
+                    self.state.model = Some(asked);
                 }
                 Err(AskError::Refused(e)) => {
                     refused.push(format!("Claude didn't switch to {asked}: {e}"));
@@ -1189,10 +1192,13 @@ impl Supervisor {
                 // It started again on the new one, as its `system/init` says.
                 Err(AskError::Exited) => {}
                 // It may switch yet, and starts on the new one if it starts
-                // again.
-                Err(AskError::TimedOut) => refused.push(format!(
+                // again: by the name asked for either way.
+                Err(AskError::TimedOut) => {
+                    self.model_name.switching(&asked);
+                    refused.push(format!(
                     "Claude didn't say in time whether it switched to {asked}; it works on it if it starts again in this run."
-                )),
+                    ));
+                }
             }
         }
         if let Some((asked, answer)) = effort {
@@ -1494,6 +1500,7 @@ impl Supervisor {
             extra_args: &config.claude_args,
             env,
         };
+        self.model_name.started(launch.model);
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
         self.log(
             LogSource::Agent,
@@ -1829,7 +1836,15 @@ impl Supervisor {
         if kind == ClaudeKind::Init
             && let Some(m) = v.get("model").and_then(Value::as_str)
         {
-            self.state.model = Some(m.to_owned());
+            // The control plane takes a model from `system/init` only for
+            // a session that names none: the state says which this is.
+            let shown = self.model_name.init(m);
+            if self.state.model.as_ref() != Some(&shown) {
+                self.state.model = Some(shown);
+                self.send(&AgentToHost::State {
+                    state: self.state.clone(),
+                });
+            }
         }
         let is_result = kind == ClaudeKind::Result;
         let more_queued = v
@@ -3815,7 +3830,7 @@ done
             panic!("expected Claude's answers");
         };
         sup.on_work(answered).await;
-        // The session says what Claude works on now, as Claude names it.
+        // The session says what Claude works on now, by the name asked for.
         let mut frames = vec![];
         while let Ok(text) = host.try_recv() {
             frames.push(text);
@@ -3827,7 +3842,7 @@ done
                 _ => None,
             })
             .ok_or_else(|| anyhow::anyhow!("no state sent"))?;
-        assert_eq!(state.model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(state.model.as_deref(), Some("sonnet"));
         assert_eq!(state.effort.as_deref(), Some("medium"));
         assert!(frames.iter().any(|t| matches!(
             serde_json::from_str(t),
@@ -3845,6 +3860,24 @@ done
             .spec;
         assert_eq!(spec.model.as_deref(), Some("sonnet"));
         assert_eq!(spec.effort.as_deref(), Some("medium"));
+        // The next turn's `system/init` names Sonnet by its ID: the session
+        // keeps the name asked for, and says nothing new.
+        let mut sonnet = init();
+        sonnet["model"] = json!("claude-sonnet-5-5");
+        sup.on_claude_message(sonnet).await;
+        assert_eq!(sup.state.model.as_deref(), Some("sonnet"));
+        assert!(
+            !std::iter::from_fn(|| host.try_recv().ok())
+                .any(|t| matches!(serde_json::from_str(&t), Ok(AgentToHost::State { .. })))
+        );
+        // `/model` in a message moved it to another model: by its ID.
+        sup.on_claude_message(init()).await;
+        assert_eq!(sup.state.model.as_deref(), Some("claude-opus-5-5"));
+        let mut sonnet = init();
+        sonnet["model"] = json!("claude-sonnet-5-5");
+        sup.on_claude_message(sonnet).await;
+        assert_eq!(sup.state.model.as_deref(), Some("sonnet"));
+        while host.try_recv().is_ok() {}
         // Delivered again over a new link: taken once.
         sup.on_delivery(settings("dlv_1", Some("sonnet"), Some("medium")))
             .await;
@@ -3866,7 +3899,7 @@ done
         }
         assert!(frames.iter().any(|t| matches!(
             serde_json::from_str(t),
-            Ok(AgentToHost::State { state }) if state.model.as_deref() == Some("claude-sonnet-5-5")
+            Ok(AgentToHost::State { state }) if state.model.as_deref() == Some("sonnet")
         )));
         let refused = frames.iter().find_map(|t| match serde_json::from_str(t) {
             Ok(AgentToHost::Delivered {
@@ -3911,6 +3944,26 @@ done
                 .iter()
                 .any(|(id, ok, _)| id.0 == "dlv_3" && !ok)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_session_started_on_an_alias_keeps_it() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        while host.try_recv().is_ok() {}
+        // `claude --model opus`, whose `system/init` names Opus by its ID.
+        sup.model_name.started(Some("opus"));
+        sup.on_claude_message(init()).await;
+        let models: Vec<Option<String>> = states_sent(&mut host)
+            .into_iter()
+            .map(|s| s.model)
+            .collect();
+        assert_eq!(models, [Some("opus".to_owned())]);
+        // Started on Claude's default: by the ID Claude gives it.
+        sup.model_name.started(None);
+        sup.on_claude_message(init()).await;
+        assert_eq!(sup.state.model.as_deref(), Some("claude-opus-5-5"));
         Ok(())
     }
 
@@ -4206,6 +4259,8 @@ done
         // `idle` once both have reported and the last turn has ended.
         let dir = tempfile::tempdir()?;
         let (mut sup, mut host) = in_a_turn(dir.path())?;
+        // As an earlier turn's `system/init` named it.
+        sup.state.model = Some("claude-opus-5-5".into());
         sup.on_claude_message(turn_state("running")).await;
         sup.on_claude_message(init()).await;
         for (call, task, part) in [("toolu_a", "a1", "A"), ("toolu_b", "b1", "B")] {

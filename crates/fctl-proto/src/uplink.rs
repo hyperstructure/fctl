@@ -110,6 +110,10 @@ pub struct SessionState {
     pub reason: Option<String>,
     pub resume_at: Option<Millis>,
     pub branch: Option<String>,
+    /// The model Claude works on: by the name it was started on or switched
+    /// to (an alias such as `opus`, or an ID) while it works on the model
+    /// Claude took that name for, else by the ID Claude's `system/init`
+    /// gives it. Older agents always give the ID.
     pub model: Option<String>,
     /// The effort level Claude works at, as it says (`get_settings`):
     /// `low` … `max`, or empty when its model takes none. Absent until

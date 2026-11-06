@@ -77,14 +77,23 @@
 //! connector (`claude.ai Fake Docs`), as Claude Code does on a full login,
 //! unless `ENABLE_CLAUDEAI_MCP_SERVERS` is `false`, `0`, `no` or `off`.
 //! `get_settings` answers with the model and the effort level it works at
-//! (`applied`): `--effort`, else `medium`. `set_model` switches to the model
-//! it names (but `unknown`, which it says isn't there) and answers with it,
-//! by that name; `apply_flag_settings` takes an `effortLevel`. It answers
+//! (`applied`): `--effort`, else `medium`. It names models by their IDs, as
+//! Claude Code does, the aliases too (`opus` is `claude-opus-5-5`).
+//! `set_model` switches to the model it names (but `unknown`, which it says
+//! isn't there) and answers with its ID; `apply_flag_settings` takes an `effortLevel`. It answers
 //! control requests between turns, so a change during a turn waits for its
 //! end. Its `system/init` says that effort changes keep the prompt cache
 //! (`per_turn_effort_active`), as Claude Code 2.1.318 does on Opus 5.5.
 
 mod replay;
+
+/// A model by its ID, as Claude Code names the model an alias stands for.
+fn model_id(model: &str) -> String {
+    match model {
+        "opus" | "sonnet" | "haiku" | "fable" => format!("claude-{model}-5-5"),
+        other => other.to_owned(),
+    }
+}
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -1844,7 +1853,7 @@ fn main() {
         id: arg("--session-id")
             .or_else(|| arg("--resume"))
             .unwrap_or_else(uuid),
-        model: arg("--model").unwrap_or_else(|| "claude-fake-1".into()),
+        model: arg("--model").map_or_else(|| "claude-fake-1".into(), |m| model_id(&m)),
         effort: Some(arg("--effort").unwrap_or_else(|| "medium".into())),
         turns: 0,
         input_tokens: 0,
@@ -1938,11 +1947,11 @@ fn main() {
                         json!({"subtype": "success", "request_id": id, "response": {"effective": {}, "sources": [], "applied": {"model": session.model, "effort": session.effort}}})
                     }
                     // A change from the session's page (`fctl edit --model`):
-                    // the model from its next request, by the name it was given.
+                    // the model from its next request, by its ID.
                     "set_model" => match v.pointer("/request/model").and_then(Value::as_str) {
                         Some(m) if m != "unknown" => {
-                            session.model = m.to_owned();
-                            json!({"subtype": "success", "request_id": id, "response": {"model": m}})
+                            session.model = model_id(m);
+                            json!({"subtype": "success", "request_id": id, "response": {"model": session.model}})
                         }
                         _ => {
                             json!({"subtype": "error", "request_id": id, "error": "not_found: there is no such model"})

@@ -161,8 +161,10 @@ its pull request on GitHub (`On GitHub, …`: a comment, failed checks,
 conflicts, a merge), with a line for each part (the dev instance has no
 GitHub App, so none comes there by itself),
 and `crash` exits mid-turn. Anything
-else gets a short answer with a tool call. It answers `get_settings` with
-its model and effort level (`--effort`, else `medium`), which the session
+else gets a short answer with a tool call. Like Claude Code, it names its
+model by ID, an alias's too (`opus` is `claude-opus-5-5`). It answers
+`get_settings` with its model and effort level (`--effort`, else
+`medium`), which the session
 page and `fctl show` show, and takes a change of them from the session
 page or `fctl edit --model … --effort …` (`set_model`, which refuses the
 model `unknown`, and `apply_flag_settings`) once its turn ends. Its context grows with each call, from the 18K
