@@ -754,9 +754,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
 - Hosts keep a stopped session's sandbox so it can resume, and remove it
   once it has been stopped for `keep_stopped_hours` (72 by default; 0 keeps
   them), or sooner when their disk has less free than `min_free_disk_gb`
-  (20 GiB by default). Resuming after that starts a new sandbox on the
-  session's branch, with everything that was pushed, and a new Claude
-  conversation.
+  (20 GiB by default), which the sessions running there are told. Resuming
+  after that starts a new sandbox on the session's branch, with everything
+  that was pushed, and a new Claude conversation. With less than 2 GiB
+  free, Firecracker hosts pause their running sandboxes, which keep what
+  their sessions wrote in memory until there is room.
 - Hosts keep the package caches of projects that share them, with what
   their sessions downloaded, until no session of the project has started
   there for `keep_caches_days` (14 by default; 0 keeps them). They empty

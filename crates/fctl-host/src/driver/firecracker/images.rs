@@ -52,15 +52,28 @@ pub struct Store {
     pub dir: PathBuf,
 }
 
+/// The store's lock ([`Store::lock`]), held until this goes.
+#[derive(Debug)]
+pub struct Lock(std::fs::File);
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // The lock belongs to the open file, which a process forked meanwhile
+        // to run a command shares until it execs: closing this copy alone
+        // would leave the lock held until then.
+        let _ = self.0.unlock();
+    }
+}
+
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
 
-    /// Waits for the store's lock, which the returned file holds until it
-    /// goes: between the host and `fctl host image pull` too, which run in
-    /// processes of their own.
-    pub fn lock(&self) -> Result<std::fs::File> {
+    /// Waits for the store's lock, which the returned [`Lock`] holds until
+    /// it goes: between the host and `fctl host image pull` too, which run
+    /// in processes of their own.
+    pub fn lock(&self) -> Result<Lock> {
         std::fs::create_dir_all(&self.dir)?;
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -69,7 +82,7 @@ impl Store {
             .open(self.dir.join(".lock"))?;
         file.lock()
             .with_context(|| format!("locking {}", self.dir.display()))?;
-        Ok(file)
+        Ok(Lock(file))
     }
 
     fn refs_path(&self) -> PathBuf {
@@ -284,9 +297,16 @@ mod tests {
         let other = std::fs::OpenOptions::new()
             .write(true)
             .open(store.dir.join(".lock"))?;
-        assert!(other.try_lock().is_err());
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        // A process forked meanwhile to run a command, as other tests and the
+        // host start them, holds a copy of the holder's file until it execs.
+        let forked = held.0.try_clone()?;
         drop(held);
         assert!(other.try_lock().is_ok());
+        drop(forked);
         Ok(())
     }
 }

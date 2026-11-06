@@ -22,7 +22,7 @@ pub enum LinkEvent {
 pub enum Claim {
     /// The socket is this supervisor's, with the lock that tells the next
     /// `serve` so for as long as it is held.
-    Serving(UnixListener, Option<File>),
+    Serving(UnixListener, Option<Lock>),
     /// Another supervisor serves it.
     Taken,
 }
@@ -48,8 +48,30 @@ pub async fn claim(path: &Path) -> Result<Claim> {
     }
 }
 
+/// A lock [`lock`] took, held until this goes.
+#[derive(Debug)]
+pub struct Lock(File);
+
+impl Lock {
+    /// Another copy of the open file that holds the lock, as a process
+    /// forked meanwhile has until it execs.
+    #[cfg(test)]
+    pub fn copy(&self) -> std::io::Result<File> {
+        self.0.try_clone()
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // The lock belongs to the open file, which a process forked meanwhile
+        // to run a command shares until it execs: closing this copy alone
+        // would leave the lock held until then.
+        let _ = self.0.unlock();
+    }
+}
+
 /// An exclusive lock on `path`, or `None` while another process holds it.
-pub fn lock(path: &Path) -> Result<Option<File>> {
+pub fn lock(path: &Path) -> Result<Option<Lock>> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -60,7 +82,7 @@ pub fn lock(path: &Path) -> Result<Option<File>> {
         .open(path)
         .with_context(|| format!("opening {}", path.display()))?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
+        Ok(()) => Ok(Some(Lock(file))),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => {
             Err(e).with_context(|| format!("locking {}", path.display()))
@@ -217,8 +239,8 @@ mod tests {
         // Once the first is gone, the next one serves, over its stale socket.
         drop((listener, lock));
         assert!(socket.exists());
-        // Processes that other tests start hold copies of the first's lock and
-        // socket until they exec, so it can look taken a moment longer.
+        // Processes that other tests start hold copies of the first's socket
+        // until they exec, so it can look served a moment longer.
         for _ in 0..100 {
             match claim(&socket).await? {
                 Claim::Serving(_, Some(_)) => return Ok(()),

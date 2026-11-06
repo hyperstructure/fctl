@@ -157,6 +157,34 @@ pub struct HostHeartbeat {
     pub drivers: Option<Vec<DriverInfo>>,
 }
 
+/// How short of room a runner is on the disk where its sandboxes are
+/// (`fctl_domain::disk::room`), when it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DiskRoom {
+    /// Below the floor its host keeps ([`HostHello::min_free_disk_mb`]):
+    /// it takes no new sessions, and removes stopped sandboxes early.
+    Low,
+    /// Nearly out of disk (`fctl_domain::disk::OUT_MB`): what its sandboxes
+    /// write is about to fail.
+    Out,
+}
+
+/// The disk of a session's runner, while it is short of room, as its
+/// heartbeats last said.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RunnerDisk {
+    pub room: DiskRoom,
+    /// Free MiB where its sandboxes are.
+    pub free_mb: u64,
+    /// The free disk (MiB) its host keeps.
+    pub min_free_mb: u64,
+    /// Since when it has been this short of room.
+    pub since: Millis,
+}
+
 /// Which credential a session needs refreshed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -417,8 +445,9 @@ pub const FEATURE_REVIEWS: &str = "reviews";
 /// change ([`HostHeartbeat::drivers`]), and that decline, or hand back, a
 /// session while the driver they use isn't ready: FleetDO then starts no
 /// session on them, and a session that has nowhere else to go waits and
-/// says why. Older hosts' drivers are only as fresh as their hello, so
-/// sessions still start on them, and fail while their driver isn't ready.
+/// says why. Older hosts don't decline sessions for their driver, and
+/// before 0.30.0 said their drivers only in their hello, so sessions still
+/// start on them, and fail while their driver isn't ready.
 pub const FEATURE_DRIVERS: &str = "drivers";
 
 /// What hosts whose agents know [`GithubAccess::Triage`] announce in their

@@ -1,4 +1,4 @@
-# 0076: Sessions wait for a runner whose driver is ready
+# 0077: Sessions wait for a runner whose driver is ready
 
 2026-11-06 · accepted
 
@@ -54,9 +54,10 @@ driver isn't ready, as they do while its disk is low
   marks an assignment it asked to stop, and a decline doesn't queue it
   again.
 - **Only hosts that say they keep the control plane told.** Hosts
-  announce `drivers` in their hello's features. Older hosts say their
-  drivers only as they connect, so what FleetDO knows of them can be old:
-  it places sessions on them as before, and their runners' lines say
+  announce `drivers` in their hello's features. Older hosts don't decline
+  or hand back sessions for their driver, and before 0.30.0 said their
+  drivers only as they connected, so what FleetDO knows of them can be
+  old: it places sessions on them as before, and their runners' lines say
   sessions that start there fail.
 
 ## Consequences

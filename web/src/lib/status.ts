@@ -2,7 +2,7 @@
 
 import type * as G from "@/gen";
 import { until } from "./format";
-import { type Stall, stallLabel } from "./stall";
+import { type DiskShort, diskLabel, type Stall, stallLabel } from "./stall";
 
 type Status = Pick<G.Session, "status" | "status_reason">;
 
@@ -24,26 +24,28 @@ export function statusReason(s: Status): string | undefined {
   return s.status_reason;
 }
 
-/** A few words beside a session's status pill; a warning shows in amber. */
+/** A few words beside a session's status pill; a warning shows in amber, danger in red. */
 export interface StatusNote {
   text: string;
   warn?: boolean;
+  danger?: boolean;
 }
 
 /**
  * What a session's header says beside its status pill, the most pressing
- * first: the page reconnecting, the agent's work not coming through, when a
- * paused session resumes, then the status's reason. A phone has room for the
- * first.
+ * first: the page reconnecting, the agent's work not coming through, its
+ * runner short of disk, when a paused session resumes, then the status's
+ * reason. A phone has room for the first.
  */
 export function statusNotes(
   s: Status & Pick<G.Session, "resume_at">,
-  live: { reconnecting: boolean; stall?: Stall },
+  live: { reconnecting: boolean; stall?: Stall; disk?: DiskShort },
   now = Date.now(),
 ): StatusNote[] {
   const notes: StatusNote[] = [];
   if (live.reconnecting) notes.push({ text: "Reconnecting…", warn: true });
   if (live.stall) notes.push({ text: stallLabel(live.stall, now), warn: true });
+  if (live.disk) notes.push({ text: diskLabel(live.disk), warn: true, danger: live.disk.room === "out" });
   if (s.resume_at) notes.push({ text: `resumes in ${until(s.resume_at, now)}`, warn: true });
   const reason = statusReason(s);
   if (reason) notes.push({ text: reason });

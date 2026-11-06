@@ -44,6 +44,7 @@ use fctl_proto::uplink::{
 use fctl_proto::{ApiError, DeliveryId, PROTOCOL_VERSION, SessionId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -124,6 +125,10 @@ enum CutOff {
 /// cut-off turn waits for a message instead: a sandbox that keeps losing
 /// fctl-agent doesn't keep Claude going.
 const CARRY_ON_AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Less free disk than this (MiB) where the agent works is a full disk:
+/// writes of any size fail soon.
+const FULL_MB: u64 = 64;
 
 /// How long a review agent that ended without posting waits before
 /// fctl-agent reminds it ([`Supervisor::remind_reviewer`]).
@@ -251,6 +256,12 @@ pub struct Supervisor {
     told_old_fctl: bool,
     /// Logged once: the sandbox's fctl has no `fctl ticket`.
     told_old_fctl_tickets: bool,
+    /// When the sandbox's disk last turned out full: a write of the journal
+    /// or the state failed for want of room, or Claude said so.
+    disk_full_at: Cell<Option<Instant>>,
+    /// The host heard that the journal can't be written for want of room,
+    /// since it last could be.
+    told_disk_full: Cell<bool>,
     /// The project's package caches, once readied for the session.
     cache: Option<caches::Ready>,
     /// Changes of model or effort level that Claude hasn't answered yet:
@@ -339,6 +350,8 @@ impl Supervisor {
                 late_calls: VecDeque::new(),
                 told_old_fctl: false,
                 told_old_fctl_tickets: false,
+                disk_full_at: Cell::new(None),
+                told_disk_full: Cell::new(false),
                 cache: None,
                 settings_waiting: HashSet::new(),
                 settings_refused: VecDeque::new(),
@@ -537,8 +550,54 @@ impl Supervisor {
 
     fn emit(&mut self, body: EventBody) {
         match self.journal.append(now_ms(), body) {
-            Ok(ev) => self.outbox.push(ev),
-            Err(e) => tracing::error!("journal write failed: {e:#}"),
+            Ok(ev) => {
+                self.told_disk_full.set(false);
+                self.outbox.push(ev);
+            }
+            Err(e) => self.write_failed("the journal", &e),
+        }
+    }
+
+    /// Writing a file of fctl-agent's own failed. For want of room, the
+    /// host hears so, once, beside the journal, which can't hold it either.
+    fn write_failed(&self, what: &str, e: &anyhow::Error) {
+        tracing::error!("writing {what} failed: {e:#}");
+        if !fctl_domain::disk::out_of_space(e.as_ref()) {
+            return;
+        }
+        self.disk_full_at.set(Some(Instant::now()));
+        if self.told_disk_full.replace(true) {
+            return;
+        }
+        self.send(&AgentToHost::Log {
+            line: LogLine {
+                source: LogSource::Agent,
+                level: LogLevel::Error,
+                text: "The sandbox's disk is full, so fctl-agent can't save the session's events: what the agent does doesn't show here until there is room.".into(),
+            },
+        });
+    }
+
+    /// Whether the sandbox's disk was full lately, or is (less than
+    /// [`FULL_MB`] free where the agent works).
+    async fn disk_was_full(&self) -> bool {
+        if self
+            .disk_full_at
+            .get()
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(120))
+        {
+            return true;
+        }
+        let Some(dir) = self.config.as_ref().map(|c| c.workdir.clone()) else {
+            return false;
+        };
+        let df = tokio::process::Command::new("df")
+            .args(["-Pk", &dir])
+            .output();
+        match tokio::time::timeout(Duration::from_secs(5), df).await {
+            Ok(Ok(out)) => fctl_domain::disk::df_free_mb(&String::from_utf8_lossy(&out.stdout))
+                .is_some_and(|free| free < FULL_MB),
+            _ => false,
         }
     }
 
@@ -621,7 +680,9 @@ impl Supervisor {
     fn persist(&self) {
         if let Ok(text) = serde_json::to_string(&self.persisted) {
             let path = self.state_dir.join("state.json");
-            let _ = user::as_root(|| std::fs::write(path, text));
+            if let Err(e) = user::as_root(|| std::fs::write(path, text)) {
+                self.write_failed("the state", &e.into());
+            }
         }
     }
 
@@ -1840,6 +1901,9 @@ impl Supervisor {
                 request,
             } => self.on_claude_request(request_id, request),
             ClaudeOut::Stderr(line) => {
+                if fctl_domain::disk::says_out_of_space(&line) {
+                    self.disk_full_at.set(Some(Instant::now()));
+                }
                 // At most 60 stderr lines a minute reach the transcript.
                 let (since, n) = self.stderr_budget;
                 if since.elapsed() > Duration::from_secs(60) {
@@ -2310,28 +2374,29 @@ impl Supervisor {
             return;
         }
         let now = Instant::now();
+        let code = code.map_or("?".into(), |c| c.to_string());
+        // A full disk is the likeliest reason, when it is.
+        let full = if self.disk_was_full().await {
+            ": the sandbox's disk is full"
+        } else {
+            ""
+        };
         self.restarts
             .retain(|t| now.duration_since(*t) < Duration::from_secs(600));
         if self.restarts.len() >= 3 {
-            let msg = format!(
-                "Claude exited (code {}) three times in ten minutes",
-                code.map_or("?".into(), |c| c.to_string())
-            );
+            let msg = format!("Claude exited (code {code}) three times in ten minutes{full}");
             self.notice(NoticeLevel::Error, "claude_crashed", &msg, None);
             self.set_status(SessionStatus::Failed, Some(msg));
             self.finish().await;
             return;
         }
         self.restarts.push_back(now);
-        self.notice(
-            NoticeLevel::Warn,
-            "claude_restarted",
-            &format!(
-                "Claude exited unexpectedly (code {}); resuming the conversation",
-                code.map_or("?".into(), |c| c.to_string())
-            ),
-            None,
-        );
+        let msg = if full.is_empty() {
+            format!("Claude exited unexpectedly (code {code}); resuming the conversation")
+        } else {
+            format!("Claude exited unexpectedly (code {code}){full}; resuming the conversation")
+        };
+        self.notice(NoticeLevel::Warn, "claude_restarted", &msg, None);
         if let Err(e) = self.start_claude().await {
             let msg = format!("Claude could not restart: {e:#}");
             self.set_status(SessionStatus::Failed, Some(msg));
@@ -4638,6 +4703,56 @@ done
         assert_eq!(text(1).as_deref(), Some("And then this"));
         let (later, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         assert!(later.persisted.unfinished.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_full_disk_is_told_to_the_host_once_beside_the_journal() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        let logs = |host: &mut mpsc::UnboundedReceiver<String>| -> Vec<String> {
+            std::iter::from_fn(|| host.try_recv().ok())
+                .filter_map(|f| match serde_json::from_str::<AgentToHost>(&f) {
+                    Ok(AgentToHost::Log { line }) => Some(line.text),
+                    _ => None,
+                })
+                .collect()
+        };
+        logs(&mut host);
+        // Something else that went wrong stays in fctl-agent's log.
+        sup.write_failed("the state", &anyhow::anyhow!("permission denied"));
+        assert!(logs(&mut host).is_empty());
+        assert!(sup.disk_full_at.get().is_none());
+        let full = anyhow::Error::from(std::io::Error::from_raw_os_error(28))
+            .context("appending to journal.jsonl");
+        sup.write_failed("the journal", &full);
+        sup.write_failed("the state", &full);
+        assert_eq!(
+            logs(&mut host),
+            [
+                "The sandbox's disk is full, so fctl-agent can't save the session's events: what the agent does doesn't show here until there is room."
+            ]
+        );
+        assert!(sup.disk_was_full().await);
+        // Once the journal takes events again, a full disk is news again.
+        sup.log(LogSource::Agent, LogLevel::Info, "room again");
+        sup.write_failed("the journal", &full);
+        assert_eq!(logs(&mut host).len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claude_saying_its_disk_is_full_is_remembered() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join("workspace"))?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        // A disk with room, where the agent works.
+        assert!(!sup.disk_was_full().await);
+        sup.on_claude(ClaudeOut::Stderr(
+            "Error: ENOSPC: no space left on device, write".into(),
+        ))
+        .await;
+        assert!(sup.disk_was_full().await);
         Ok(())
     }
 

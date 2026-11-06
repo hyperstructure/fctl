@@ -93,7 +93,11 @@ pub async fn follow_after(
                             }
                             watch.session(&snap.session);
                             let agent = snap.agent_unreachable.as_ref();
-                            if let Some(l) = watch.runner(snap.runner_connected, snap.runner_last_seen_at, agent, Instant::now(), style::now_ms()) {
+                            let paused = snap.sandbox_paused.as_ref();
+                            if let Some(l) = watch.runner(snap.runner_connected, snap.runner_last_seen_at, agent, paused, Instant::now(), style::now_ms()) {
+                                r.note(&l);
+                            }
+                            if let Some(l) = watch.disk(snap.runner_disk.as_ref()) {
                                 r.note(&l);
                             }
                         }
@@ -105,8 +109,11 @@ pub async fn follow_after(
                         }
                         ViewerServer::Stream { event } => r.stream(&event),
                         ViewerServer::Session { session } => watch.session(&session),
-                        ViewerServer::RunnerConnected { connected, last_seen_at, agent_unreachable } => {
-                            if let Some(l) = watch.runner(connected, last_seen_at, agent_unreachable.as_ref(), Instant::now(), style::now_ms()) {
+                        ViewerServer::RunnerConnected { connected, last_seen_at, agent_unreachable, disk, sandbox_paused } => {
+                            if let Some(l) = watch.runner(connected, last_seen_at, agent_unreachable.as_ref(), sandbox_paused.as_ref(), Instant::now(), style::now_ms()) {
+                                r.note(&l);
+                            }
+                            if let Some(l) = watch.disk(disk.as_ref()) {
                                 r.note(&l);
                             }
                         }
