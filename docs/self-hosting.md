@@ -606,12 +606,13 @@ that it revokes once used. A session a maintainer starts to reach
 GitHub's issues (`fctl run --github-issues`) gets them as above, whatever
 the tracker says.
 
-What a session's agent may do on GitHub, push, comment or read, is its
-own choice within its project's setting
+What a session's agent may do on GitHub, push, comment, triage or read,
+is its own choice within its project's setting
 ([Architecture](architecture.md#github-access)). The app needs no more
 permissions for it: to resolve review threads for agents that comment,
 the control plane mints a token that can write the thread's repository's
-contents and keeps it.
+contents and keeps it, and for agents that triage, one that writes the
+issues of the repository they label and comment in.
 
 A review agent's session gets one token, which only reads, for the
 reviewed repository and the project's others. The control plane posts

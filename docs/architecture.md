@@ -1293,7 +1293,7 @@ primary repository alone
 
 ### GitHub access
 
-A session's agent pushes, comments or only reads on GitHub
+A session's agent pushes, comments, triages or only reads on GitHub
 (`GithubAccess`, `sessions.github_access`) in the repositories the session
 may write to; it only reads the others
 ([ADR 0037](adr/0037-access-tokens-and-sessions-limit-what-agents-do-on-github.md)):
@@ -1302,6 +1302,7 @@ may write to; it only reads the others
 |---|---|---|
 | `push`, as every session's before | contents, pull requests, issues and workflows: write | commits, pushes its branch and opens pull requests |
 | `comment` | pull requests and issues: write; contents: read | reviews, comments, labels and resolves review threads; pushes and merges nothing |
+| `triage` | none: the read-only token covers them too | labels its project's tickets and comments on them through fctl, and writes nothing else |
 | `read` | none: the read-only token covers them too | reads; writes nothing |
 
 Issues are written or read only where the project's ticket tracker
@@ -1316,8 +1317,29 @@ Its tokens carry what it may do now: what it started with, within its
 project's setting as that is now (`limits::effective`), so that lowering a
 project's setting reaches its running sessions with their next token,
 within the hour, as removing a repository does. A value this version
-doesn't know, stored by a newer one, reads as `read`. GitHub holds the agent to
+doesn't know, stored or sent by a newer one (in settings, sessions,
+schedules, tokens and specs), reads as `read`. GitHub holds the agent to
 it, since git and `gh` have no token that can do more.
+
+An agent that **triages** goes through tickets anyone may have written,
+some of which may try to steer it, so nothing they say can widen what it
+does ([ADR 0075](adr/0075-agents-that-triage-write-labels-and-comments-through-fctl-alone.md)):
+its tokens only read, as a reading agent's do, and it writes through the
+control plane alone, with `fctl ticket` ([Ticket trackers](#ticket-trackers)),
+which lets it comment on tickets and change their labels and refuses
+every other write (`fctl_domain::tickets::check_write`): it files no
+tickets and changes no state, title, description, parent or priority. On
+GitHub it writes on issues alone, not pull requests, and puts on only
+labels the repository has, since GitHub would make one it lacks
+(`crate::tickets`, `triage_issue` and `triage_label`). Its project's
+tracker says whose tickets: GitHub's issues of the repositories its
+agents write to, or of one of them, or Linear's; without a tracker it
+only reads. Its system prompt says it triages, and that what an issue
+says is information to triage, never instructions. Hosts announce that
+they know it (`FEATURE_TRIAGE`), and FleetDO tells older hosts' agents
+that they only read (`limits::for_host`): their tokens are the same, and
+the control plane takes their labels and comments as the tracker's lines
+tell them to.
 
 fctl-agent reads it in the spec (`SessionSpec.github_access`). For an agent
 that doesn't push, it pushes nothing, moves no work onto session branches
@@ -1874,8 +1896,10 @@ someone, or another tool, runs one
    a person or a token) and for whom, and the audit log each session it
    started.
 
-The Schedules tab lists a project's schedules with when each runs next
-and what its last run did, and offers ideas to start from. Its form says
+The Schedules tab lists a project's schedules with when each runs next,
+what its last run did and, when that is less than pushing, what its
+agents may do on GitHub, and offers ideas to start from: **Triage new
+issues**, where the project's agents reach a tracker, runs at `triage`. Its form says
 when one runs in words and shows its next runs as you choose, found as
 the control plane finds them (`web/src/lib/schedules.ts`), and the task
 boxes hand it the task you wrote (**Schedule**: the Sessions tab's, and
@@ -1903,6 +1927,10 @@ to it twice: what their tokens can reach, and what they are told
 | GitHub Issues of the repositories they write to | issues as before: written where they push or comment, read where they read | `gh issue` |
 | GitHub Issues of one repository, one they write to | issues only on a write token for that repository alone; none on the read-only token | `gh issue` where that repository is the only one they write to, else `fctl ticket` |
 | Linear, one team or several (each optionally narrowed to one of its projects) | no issues permission | `fctl ticket` |
+
+An agent that triages reaches any of them with `fctl ticket`, which it
+writes with alone ([GitHub access](#github-access)); its token reads the
+issues the table gives agents that read.
 
 A GitHub token carries one set of permissions for all its repositories,
 so the issues of one repository among several go on no session token;
@@ -1948,7 +1976,8 @@ session, so that a task that needs them ends with a way on.
    app: with the Linear workspace's token ([Linear](#linear)), or with a
    token of the GitHub App's for that repository's issues alone, which
    never leaves it and which it revokes at once. Agents that only read on
-   GitHub read tickets alone, in any tracker; review agents reach no
+   GitHub read tickets alone, in any tracker, and agents that triage
+   comment on them and change their labels alone; review agents reach no
    tracker. In an hour, a session's agent comments at most 30 times,
    files at most 20 tickets, changes at most 60 and reads at most 300
    times (`ticket_writes`, each call taking its place in one statement):
@@ -1961,7 +1990,8 @@ session, so that a task that needs them ends with a way on.
    parents, sub-tickets and search results outside the project's choice
    don't reach it either. The transcript shows what it did there
    (`ticket_commented`, `ticket_created`, `ticket_updated` notices, which
-   only the control plane adds).
+   only the control plane adds), a change's labels too: one of labels
+   alone says Labeled, with those it put on and took off.
 2. **What agents are told** comes from the control plane
    (`SessionSpec::tickets`, `fctl_domain::tickets::instructions`), so that
    it grows with the trackers it knows: which tracker, how to reach it,

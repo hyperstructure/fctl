@@ -78,6 +78,7 @@ echo "Fix the flaky test" | fctl run -p my-app
 fctl run --title "Fix the login loop" "…"     # its title (default: the task's first line)
 fctl run --model opus --effort high "…"       # override the project's agent settings
 fctl run --github comment "Review pull request #12"   # its agent reviews and comments, and pushes nothing
+fctl run --github triage "Triage issue #41"          # its agent labels and comments on tickets, nothing else
 fctl run --github read "Plan the move to Postgres"    # its agent only reads on GitHub
 fctl run --github-issues "Move the open GitHub issues to Linear"   # its agent reaches GitHub's issues, whatever the tracker
 fctl run --branch fix/login --base develop "…"
@@ -142,12 +143,15 @@ up to three snippets of where (`--json` for scripts). A session is
 searchable a few seconds after its messages come; ones from before search
 existed, once the control plane's hourly job got to them.
 
-A session's agent pushes, comments or only reads on GitHub (`--github`):
-one that pushes commits and pushes its branch, as agents always did; one
-that comments reviews, comments and labels, with a token that can't push;
-one that reads writes nothing. It gets as much as its project's settings
-and the token that starts it allow unless it asks for less, and `fctl
-show` says what it got. GitHub lets only tokens that can push resolve
+A session's agent pushes, comments, triages or only reads on GitHub
+(`--github`): one that pushes commits and pushes its branch, as agents
+always did; one that comments reviews, comments and labels, with a token
+that can't push; one that triages labels the project's tickets and
+comments on them with `fctl ticket`, whatever they say, and writes
+nothing else, with a token that only reads; one that reads writes
+nothing. It gets as much as its project's settings and the token that
+starts it allow unless it asks for less, and `fctl show` says what it
+got. GitHub lets only tokens that can push resolve
 review threads, so an agent that comments resolves them through fctl, in
 its sandbox:
 
@@ -316,6 +320,7 @@ fctl projects set -p my-app --env NODE_ENV=test --unset-env DEBUG
 fctl projects set -p my-app --cpus 8 --memory 16g     # "default" for the runner's
 fctl projects set -p my-app --project-memory off --retrospectives off   # agents keep neither
 fctl projects set -p my-app --github comment      # its agents review and comment at most, and push nothing
+fctl projects set -p my-app --github triage       # its agents label tickets and comment on them at most
 fctl projects set -p my-app --pr-descriptions brief   # pull requests described in a few sentences (balanced by default, or full)
 fctl projects show my-app --pr-instructions > prs.md   # what agents are told about pull requests and issues: fctl's rules unless the project has its own
 fctl projects set -p my-app --pr-instructions-file prs.md   # the project's own instead (--pr-instructions default for fctl's, "" for none)
@@ -636,7 +641,7 @@ and delete it, and a change by anyone else runs it on theirs from then on:
 fctl schedules -p my-app                       # its schedules, when each runs next and what its last run did
 fctl schedules add "Weekly dependencies" -p my-app --cron "0 9 * * 1" --tz Europe/Stockholm \
   -m "Update the dependencies that have new patch or minor releases, and open a pull request."
-fctl schedules add -p my-app --cron "0 8 * * 1-5" --task-file triage.md --github comment
+fctl schedules add -p my-app --cron "0 8 * * 1-5" --task-file triage.md --github triage   # labels and comments, nothing else
 fctl schedules add -p my-app --at 2h -m "Check whether the deploy went out, and say so."
 fctl schedules add -p my-app --at 2026-10-30T16:00+01:00 -m "Draft the release notes."
 fctl schedules add "Triage an issue" -p my-app --when-asked -m "Triage the issue that comes with this."

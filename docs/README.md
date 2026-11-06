@@ -53,7 +53,8 @@ them are in https://fctl.sh/llms-full.txt.
   (setup script, instructions, model, secrets). Projects have members.
 - **Session** — one agent working on one task: one Claude conversation in
   one sandbox, on its own branch. Sessions are numbered per project
-  (`my-app#12`). Its agent pushes, comments or only reads on GitHub.
+  (`my-app#12`). Its agent pushes, comments, triages or only reads on
+  GitHub.
 - **Access token** — a token for scripts, CI and bots, which can be limited
   to reading or running sessions, to some projects, and in what its
   sessions' agents may do on GitHub.

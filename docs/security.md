@@ -382,9 +382,11 @@ its VM, and nothing outside it except through these channels:
   images at public links (`fctl publish`); and in projects that keep a
   memory or ask for retrospectives, read the project's notes, add notes,
   mark them stale or duplicates of other notes, and record, list and
-  update retrospectives of its session (`fctl memory`, `fctl retro`); and
-  where the agent may
-  comment on GitHub, resolve review threads of its repositories' pull
+  update retrospectives of its session (`fctl memory`, `fctl retro`); in
+  projects with a ticket tracker, read its tickets and, unless the agent
+  only reads on GitHub, write them, where an agent that triages only
+  labels them and comments on them (`fctl ticket`); and where the agent
+  may comment on GitHub, resolve review threads of its repositories' pull
   requests (`fctl resolve`); and nothing else. The control plane checks
   the values and the settings again. Turn publishing
   on only where anything the agents see may be shown to anyone with a
@@ -408,7 +410,12 @@ its VM, and nothing outside it except through these channels:
   information and not instructions, which makes it harder, not impossible,
   for that text to steer it. Give such a schedule the least GitHub access
   its task needs and a token that runs sessions in its project alone, and
-  pause it to stop what tools start at once.
+  pause it to stop what tools start at once. For one that goes through
+  issues, that is triage: its agent labels tickets and comments on them
+  through fctl and can write nothing else, whatever an issue tells it,
+  though it keeps the project's secrets, setup script and network, as
+  other sessions do
+  ([ADR 0075](adr/0075-agents-that-triage-write-labels-and-comments-through-fctl-alone.md)).
 - **Review agents** run on their operator's Claude subscription, with
   their Claude access token in the sandbox like any session's (another
   owner who changes how they review takes them over, so nobody changes

@@ -82,7 +82,7 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" -H "Content-Type: application/js
 | `title` | default: the task's first line; the agent renames the session once it understands the work |
 | `branch`, `base_branch` | default: `fctl/<number>-<title>`, from the project's default branch |
 | `model`, `effort` | default: the project's; `opus`, `sonnet`, `haiku`, `fable` or a model's id, and `low`, `medium`, `high`, `xhigh`, `max` |
-| `github_access` | `push`, `comment` or `read`: at most what the project and the token allow, which it gets when absent |
+| `github_access` | `push`, `comment`, `triage` or `read`: at most what the project and the token allow, which it gets when absent |
 | `github_issues` | `true` to reach GitHub's issues whatever the project's tracker (project maintainers) |
 | `attachments` | ids of files uploaded to `POST /api/v1/projects/{project}/attachments` |
 
