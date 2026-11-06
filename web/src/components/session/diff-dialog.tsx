@@ -3,7 +3,8 @@
 // scroll, at the file opened. The list of files beside them marks the one
 // in view and goes to another; keys step from file to file and change to
 // change; ⌘F finds in all of them. It follows the agent: when a file
-// changes again, its diff does too.
+// changes again, its diff does too, where the reader looks, while the line
+// they read holds its place (session/diff-live.tsx).
 
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -38,7 +39,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { type DiffLayout, DiffLines } from "@/components/diff";
+import { type DiffLayout, DiffLines, type LiveView } from "@/components/diff";
 import { Button, CodeBox, IconButton, Skeleton } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure } from "@/lib/api";
@@ -61,6 +62,7 @@ import {
   splitPath,
 } from "./diff-files";
 import { DiffFindBar, matchRanges, modKey, sectionOf, TOGGLES, useDiffFind } from "./diff-find";
+import { Rolling, UnseenChanges, useChanged, useLive } from "./diff-live";
 
 export { byDirectory, changeOf, type DiffGroup, type DiffTarget };
 
@@ -313,6 +315,21 @@ export function DiffDialog({
   const [forced, setForced] = useState<ReadonlySet<string>>(() => new Set([active]));
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const watch = useNear(body);
+  // The reader's place, which holds as the agent changes the files, and what it changed out of sight;
+  // the file the reader went to stays at the top as files above it show their lines.
+  const pinnedSection = useCallback(() => {
+    const i = pinned.current === undefined ? undefined : indexOf.get(pinned.current);
+    return i === undefined || !body.current ? undefined : sectionOf(body.current, i);
+  }, [indexOf]);
+  const {
+    view: live,
+    pick,
+    counts: unseen,
+    nearest,
+    look,
+  } = useLive(body, column, FILE_HEADER, pinnedSection);
+  // Files the agent changed for the first time while the dialog shows: their lines come in.
+  const [atOpen] = useState(() => new Set(all.map((e) => e.key)));
   // The change the reader stepped to, and where the diffs were then.
   const changeAt = useRef<{ index: number; top: number } | undefined>(undefined);
 
@@ -359,8 +376,9 @@ export function DiffDialog({
       setActive(key);
       const s = sectionOf(b, i);
       if (s) b.scrollTo({ top: s.offsetTop });
+      pick();
     },
-    [indexOf, letGo],
+    [indexOf, letGo, pick],
   );
 
   // It opens at the file opened.
@@ -368,20 +386,6 @@ export function DiffDialog({
   useLayoutEffect(() => {
     if (pinned.current) jumpTo(pinned.current);
   }, []);
-
-  // The file the reader went to stays at the top as files above it show their lines.
-  useEffect(() => {
-    const c = column.current;
-    const b = body.current;
-    if (!c || !b || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => {
-      const i = pinned.current === undefined ? undefined : indexOf.get(pinned.current);
-      const s = i === undefined ? undefined : sectionOf(b, i);
-      if (s && Math.abs(b.scrollTop - s.offsetTop) > 1) b.scrollTop = s.offsetTop;
-    });
-    ro.observe(c);
-    return () => ro.disconnect();
-  }, [indexOf]);
 
   // The file in view: the one under the top of the view, or the one the reader went to.
   useEffect(() => {
@@ -517,10 +521,11 @@ export function DiffDialog({
         b.scrollTop += row.getBoundingClientRect().top - v.top - FILE_HEADER - CHANGE_MARGIN;
         if (changeAt.current) changeAt.current.top = b.scrollTop;
       }
+      pick();
     };
     attempt();
     return () => cancelAnimationFrame(raf);
-  }, [want]);
+  }, [want, pick]);
 
   /** To the next change, or back: from the one the reader stepped to while they stay there, else from the view. */
   const stepChange = useCallback(
@@ -553,6 +558,20 @@ export function DiffDialog({
       return next;
     });
   }, []);
+
+  /** To the nearest change the agent made out of sight, above or below. */
+  const goUnseen = (dir: "above" | "below") => {
+    const b = body.current;
+    const el = nearest(dir);
+    if (!b || !el) return;
+    letGo();
+    if (el.tagName === "SECTION") {
+      const e = all[Number(el.dataset.file)];
+      if (e) jumpTo(e.key);
+    } else bringIntoView(b, el);
+    pick();
+    look();
+  };
 
   const showList = () => (wide ? setListShown("shown") : setListOpen(true));
   const onKeyDown = (e: KeyboardEvent) => {
@@ -665,9 +684,17 @@ export function DiffDialog({
               {all.length} {all.length === 1 ? "file" : "files"}
               {(totals.a > 0 || totals.d > 0) && (
                 <span className="ml-2 font-mono text-[11.5px] tabular-nums">
-                  {totals.a > 0 && <span className="text-added">+{totals.a}</span>}
+                  {totals.a > 0 && (
+                    <span className="text-added">
+                      +<Rolling value={totals.a} />
+                    </span>
+                  )}
                   {totals.a > 0 && totals.d > 0 && " "}
-                  {totals.d > 0 && <span className="text-danger">−{totals.d}</span>}
+                  {totals.d > 0 && (
+                    <span className="text-danger">
+                      −<Rolling value={totals.d} />
+                    </span>
+                  )}
                 </span>
               )}
             </span>
@@ -763,41 +790,48 @@ export function DiffDialog({
           )}
           <div className="flex min-w-0 flex-1 flex-col">
             {find.open && <DiffFindBar find={find} options={options} onToggle={toggle} loading={waiting} />}
-            <div
-              ref={body}
-              // The diffs scroll; the keys move them once they have the focus.
-              // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region takes focus to scroll
-              tabIndex={0}
-              className="min-h-0 flex-1 overflow-auto overscroll-contain bg-canvas/40 outline-none"
-            >
-              <div ref={column} className="relative">
-                {all.map((e, i) => (
-                  <FileSection
-                    key={e.key}
-                    entry={e}
-                    index={i}
-                    session={session}
-                    cliRef={cliRef}
-                    layout={shownLayout}
-                    wrap={wrap === "wrap"}
-                    lines={lines[i]}
-                    folded={folded.has(e.key)}
-                    forced={forced.has(e.key)}
-                    waiting={waiting}
-                    several={several}
-                    watch={watch}
-                    onFold={onFold}
-                    onDiff={onDiff}
-                  />
-                ))}
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <div
+                ref={body}
+                // The diffs scroll; the keys move them once they have the focus. They keep the
+                // reader's place themselves as the agent changes them (diff-live.tsx), not the browser.
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region takes focus to scroll
+                tabIndex={0}
+                className="min-h-0 flex-1 overflow-auto overscroll-contain bg-canvas/40 outline-none [overflow-anchor:none]"
+              >
+                <div ref={column} className="relative">
+                  {all.map((e, i) => (
+                    <FileSection
+                      key={e.key}
+                      entry={e}
+                      index={i}
+                      session={session}
+                      cliRef={cliRef}
+                      layout={shownLayout}
+                      wrap={wrap === "wrap"}
+                      lines={lines[i]}
+                      folded={folded.has(e.key)}
+                      forced={forced.has(e.key)}
+                      waiting={waiting}
+                      several={several}
+                      entering={!atOpen.has(e.key)}
+                      live={live}
+                      watch={watch}
+                      onFold={onFold}
+                      onDiff={onDiff}
+                    />
+                  ))}
+                </div>
+                {all.length === 0 ? (
+                  <Note icon={<FileQuestion />} title="No changes any more">
+                    The agent's work no longer changes any file.
+                  </Note>
+                ) : (
+                  <p className="px-4 pt-8 pb-12 text-center text-[12px] text-ink-4">End of the changes</p>
+                )}
               </div>
-              {all.length === 0 ? (
-                <Note icon={<FileQuestion />} title="No changes any more">
-                  The agent's work no longer changes any file.
-                </Note>
-              ) : (
-                <p className="px-4 pt-8 pb-12 text-center text-[12px] text-ink-4">End of the changes</p>
-              )}
+              <UnseenChanges dir="above" count={unseen.above} onGo={() => goUnseen("above")} />
+              <UnseenChanges dir="below" count={unseen.below} onGo={() => goUnseen("below")} />
             </div>
           </div>
         </div>
@@ -867,6 +901,8 @@ const FileSection = memo(function FileSection({
   forced,
   waiting,
   several,
+  entering,
+  live,
   watch,
   onFold,
   onDiff,
@@ -885,6 +921,9 @@ const FileSection = memo(function FileSection({
   /** All the diffs are coming at once: not one by one yet. */
   waiting: boolean;
   several: boolean;
+  /** The agent changed it first while the dialog shows: its lines come in as it shows them. */
+  entering: boolean;
+  live: LiveView;
   watch: (el: Element, near: () => void) => () => void;
   onFold: (key: string) => void;
   onDiff: (key: string, d: G.FileDiff | undefined) => void;
@@ -895,27 +934,60 @@ const FileSection = memo(function FileSection({
   useEffect(() => onDiff(key, diff), [key, diff, onDiff]);
   useEffect(() => () => onDiff(key, undefined), [key, onDiff]);
   const el = useRef<HTMLElement>(null);
-  const [near, setNear] = useState(forced);
+  // A file the agent changed first while the dialog shows draws its lines at once, as they come.
+  const [near, setNear] = useState(forced || entering);
   if (forced && !near) setNear(true);
   useEffect(() => {
     if (near || !el.current) return;
     return watch(el.current, () => setNear(true));
   }, [near, watch]);
+  // Its lines come in once, as it first shows them; drawn again (folded and opened), they are there.
+  const [comes, setComes] = useState(entering);
+  useEffect(() => {
+    if (diff && near && !folded) setComes(false);
+  }, [diff, near, folded]);
+  // Changed where its lines don't show yet: the reader can go there. Where they show, they say
+  // themselves what changed.
+  const digest = entry.file.digest;
+  const seen = useRef(entering ? undefined : digest);
+  useEffect(() => {
+    if (digest === seen.current) return;
+    seen.current = digest;
+    const b = live.band();
+    const r = el.current?.getBoundingClientRect();
+    if (near || folded || !r || (b && r.bottom > b.top && r.top < b.bottom)) return;
+    setComes(false);
+    if (el.current) live.unseen([[el.current]]);
+  }, [digest, near, folded, live]);
   const room = roomFor(entry.file, diff, lines);
   const headingId = useId();
   return (
-    <section ref={el} data-file={index} aria-labelledby={headingId} className="border-b border-line">
+    <section
+      ref={el}
+      data-file={index}
+      aria-labelledby={headingId}
+      className={cn("border-b border-line", entering && "animate-fade")}
+    >
       <FileHeader
         entry={entry}
         diff={diff}
         headingId={headingId}
         folded={folded}
         several={several}
+        isNew={entering}
         onFold={() => onFold(key)}
       />
       {!folded &&
         (near ? (
-          <FileBody entry={entry} q={q} cliRef={cliRef} layout={layout} wrap={wrap} />
+          <FileBody
+            entry={entry}
+            q={q}
+            cliRef={cliRef}
+            layout={layout}
+            wrap={wrap}
+            live={live}
+            entering={comes}
+          />
         ) : (
           <div style={{ height: room }} aria-hidden="true" />
         ))}
@@ -930,6 +1002,7 @@ function FileHeader({
   headingId,
   folded,
   several,
+  isNew,
   onFold,
 }: {
   entry: Entry;
@@ -937,6 +1010,8 @@ function FileHeader({
   headingId: string;
   folded: boolean;
   several: boolean;
+  /** The agent changed it first while the dialog shows. */
+  isNew: boolean;
   onFold: () => void;
 }) {
   const { file } = entry;
@@ -945,11 +1020,21 @@ function FileHeader({
   const a = file.additions ?? 0;
   const d = file.deletions ?? 0;
   const { blob } = entry;
+  const changed = useChanged(diff?.digest);
   return (
     <div
       className="sticky top-0 z-[3] flex items-center gap-2 border-b border-line bg-surface pr-2 pl-1.5"
       style={{ height: FILE_HEADER }}
     >
+      {/* A light runs along its edge as the agent changes the file. */}
+      {changed.times > 0 && (
+        <span
+          className="pointer-events-none absolute inset-x-0 -bottom-px h-px overflow-hidden"
+          aria-hidden="true"
+        >
+          <span key={changed.times} className="diff-header-scan" />
+        </span>
+      )}
       <button
         type="button"
         onClick={onFold}
@@ -979,12 +1064,20 @@ function FileHeader({
         </span>
       )}
       <span className="flex-1" />
-      <Updated digest={diff?.digest} />
+      <Updated fresh={changed.fresh} isNew={isNew} />
       {(a > 0 || d > 0) && (
         <span className="shrink-0 font-mono text-[11.5px] tabular-nums">
-          {a > 0 && <span className="text-added">+{a}</span>}
+          {a > 0 && (
+            <span className="text-added">
+              +<Rolling value={a} />
+            </span>
+          )}
           {a > 0 && d > 0 && " "}
-          {d > 0 && <span className="text-danger">−{d}</span>}
+          {d > 0 && (
+            <span className="text-danger">
+              −<Rolling value={d} />
+            </span>
+          )}
         </span>
       )}
       {blob && (
@@ -1026,24 +1119,23 @@ function CopyPath({ path }: { path: string }) {
   );
 }
 
-/** Says, for a moment, that a file's diff changed while it shows: the agent is at work on it. */
-function Updated({ digest }: { digest?: string }) {
-  const seen = useRef<string | undefined>(undefined);
-  const [shown, setShown] = useState(false);
+/**
+ * Says, for a moment, that a file's diff changed while it shows (the agent
+ * is at work on it), or that the agent changed it first while the dialog
+ * shows.
+ */
+function Updated({ fresh, isNew }: { fresh: boolean; isNew: boolean }) {
+  const [arrived, setArrived] = useState(isNew);
   useEffect(() => {
-    if (!digest) return;
-    const before = seen.current;
-    seen.current = digest;
-    if (!before || before === digest) return;
-    setShown(true);
-    const t = setTimeout(() => setShown(false), 2600);
+    if (!arrived) return;
+    const t = setTimeout(() => setArrived(false), 2600);
     return () => clearTimeout(t);
-  }, [digest]);
-  if (!shown) return null;
+  }, [arrived]);
+  if (!fresh && !arrived) return null;
   return (
     <span className="inline-flex shrink-0 animate-fade items-center gap-1 rounded-full bg-accent-soft px-1.5 py-px text-[11px] text-accent">
       <span className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
-      Updated
+      {fresh ? "Updated" : "New"}
     </span>
   );
 }
@@ -1055,12 +1147,16 @@ function FileBody({
   cliRef,
   layout,
   wrap,
+  live,
+  entering,
 }: {
   entry: Entry;
   q: ReturnType<typeof useFileDiff>;
   cliRef: string;
   layout: DiffLayout;
   wrap: boolean;
+  live: LiveView;
+  entering: boolean;
 }) {
   const diff = q.data;
   const path = entry.file.path;
@@ -1090,6 +1186,8 @@ function FileBody({
         </Note>
       );
     }
+    // A file whose lines come in shows them as they come, from nothing.
+    if (entering) return null;
     return <Loading lines={(entry.file.additions ?? 0) + (entry.file.deletions ?? 0)} />;
   }
   const command = diffCommand(cliRef, path, entry.repo);
@@ -1139,7 +1237,9 @@ function FileBody({
         lang={lang}
         layout={layout}
         wrap={wrap}
-        className={cn("diff-on-surface pb-2", (q.isFetching || q.isPlaceholderData) && "opacity-90")}
+        live={live}
+        entering={entering}
+        className="diff-on-surface pb-2"
       />
     );
   }

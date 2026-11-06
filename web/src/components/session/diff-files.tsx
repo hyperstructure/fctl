@@ -1,7 +1,9 @@
 // The diff dialog's list of the session's changed files, beside the diffs:
 // grouped by repository and directory, the file in view marked, a filter
 // for long lists, and what finding found in each file while it finds. The
-// arrow keys go from file to file, as in a code editor's file tree.
+// arrow keys go from file to file, as in a code editor's file tree. As the
+// agent works, a file it changes lights up for a moment and its counts
+// roll, and a file it changes first comes into the list.
 
 import { Folder, Search } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
@@ -9,6 +11,7 @@ import { Kbd } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { modKey } from "./diff-find";
+import { Rolling, useChanged } from "./diff-live";
 
 /** A repository's changed files, as the dialog lists them. */
 export interface DiffGroup {
@@ -88,6 +91,10 @@ export function FileList({
 }) {
   const [filter, setFilter] = useState("");
   const list = useRef<HTMLDivElement>(null);
+  // The files the list had as it opened: those after come in.
+  const [first] = useState(
+    () => new Set(groups.flatMap((g) => g.files.map((f) => entryKey(g.repo, f.path)))),
+  );
   const total = groups.reduce((n, g) => n + g.files.length, 0);
   const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = groups
@@ -216,7 +223,7 @@ export function FileList({
                     {files.map((f) => {
                       const key = entryKey(g.repo, f.path);
                       return (
-                        <li key={f.path}>
+                        <li key={f.path} className={cn(!first.has(key) && "step-in")}>
                           <FileRow
                             file={f}
                             row={order.indexOf(key)}
@@ -287,6 +294,7 @@ function FileRow({
   const change = changeOf(file.status);
   const a = file.additions ?? 0;
   const d = file.deletions ?? 0;
+  const changed = useChanged(file.digest);
   return (
     <button
       type="button"
@@ -312,6 +320,12 @@ function FileRow({
         {change.letter}
       </span>
       <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{name}</span>
+      {changed.fresh && (
+        <span className="flex size-3 shrink-0 animate-fade items-center justify-center" title="Just changed">
+          <span className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
+          <span className="sr-only">Just changed</span>
+        </span>
+      )}
       {found !== undefined
         ? found > 0 && (
             <span className="shrink-0 rounded-full bg-accent-soft px-1.5 font-mono text-[10.5px] text-ink tabular-nums">
@@ -321,9 +335,17 @@ function FileRow({
           )
         : (a > 0 || d > 0) && (
             <span className="shrink-0 font-mono text-[10.5px] text-ink-4 tabular-nums">
-              {a > 0 && <span className="text-added/80">+{a}</span>}
+              {a > 0 && (
+                <span className="text-added/80">
+                  +<Rolling value={a} />
+                </span>
+              )}
               {a > 0 && d > 0 && " "}
-              {d > 0 && <span className="text-danger/80">−{d}</span>}
+              {d > 0 && (
+                <span className="text-danger/80">
+                  −<Rolling value={d} />
+                </span>
+              )}
             </span>
           )}
     </button>

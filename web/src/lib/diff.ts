@@ -289,33 +289,10 @@ function joined(ranges: [number, number][], text: string): [number, number][] {
   return out.filter(([a, b]) => b > a);
 }
 
-/** A row of a side-by-side diff: the line before on the left, after on the right. */
+/** A row of a side-by-side diff: the line before on the left, after on the right (lib/diff-motion.ts lays them out). */
 export interface SplitRow {
   left?: DiffLine;
   right?: DiffLine;
-}
-
-/**
- * A hunk's lines side by side: context on both sides, and lines taken out
- * beside those added in their place.
- */
-export function splitRows(lines: DiffLine[]): SplitRow[] {
-  const rows: SplitRow[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i] as DiffLine;
-    if (line.kind === "context") {
-      rows.push({ left: line, right: line });
-      i++;
-      continue;
-    }
-    const dels: DiffLine[] = [];
-    while (lines[i]?.kind === "del") dels.push(lines[i++] as DiffLine);
-    const adds: DiffLine[] = [];
-    while (lines[i]?.kind === "add") adds.push(lines[i++] as DiffLine);
-    for (const { left, right } of align(dels, adds)) rows.push({ left, right });
-  }
-  return rows;
 }
 
 /** How many unchanged lines lie between a hunk and the one before it (or the file's start). */

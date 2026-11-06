@@ -299,6 +299,239 @@
   color: var(--shiki-light);
 }
 
+/* A diff that changes as it shows (components/diff-play.ts): the session's,
+   while its agent works. Where the reader sees it, the code the agent wrote
+   comes in from the left behind a caret in the accent, over what a line
+   said before when it rewrote one; a line it took out turns red from the
+   left, one it put back fades to plain. What it changed stays lit for a
+   moment: a wash of the accent from the left, and a bar at the gutter's
+   edge, which is all that plays where motion is reduced. Rows open and
+   close with the Web Animations API, which knows their heights. */
+@property --diff-x {
+  syntax: "<length>";
+  inherits: true;
+  /* At rest the code shows whole. */
+  initial-value: 100000px;
+}
+/* The caret is the accent (yellow; ink on light backgrounds), the wash
+   and the bar the highlight's yellow, lime on light backgrounds, where the
+   bar takes some ink to show on white. */
+:root,
+:root[data-theme="dark"] {
+  --diff-caret: var(--c-accent);
+  --diff-caret-glow: color-mix(in srgb, var(--c-accent) 55%, transparent);
+  --diff-lit: color-mix(in srgb, var(--c-highlight) 15%, transparent);
+  --diff-lit-bar: var(--c-highlight);
+}
+:root[data-theme="light"] {
+  --diff-caret-glow: color-mix(in srgb, var(--c-accent) 25%, transparent);
+  --diff-lit: color-mix(in srgb, var(--c-highlight) 60%, transparent);
+  --diff-lit-bar: color-mix(in srgb, var(--c-highlight), var(--c-ink) 32%);
+}
+[data-play] {
+  /* Behind its code, above its own background: the washes below. */
+  position: relative;
+  isolation: isolate;
+  --diff-ease: cubic-bezier(0.32, 0.08, 0.24, 1);
+  /* The code's width, and the soft edge that writes it in. */
+  --diff-w: calc(var(--diff-chars, 0) * 1ch);
+  --diff-edge: 2.5ch;
+}
+[data-play] .diff-code {
+  position: relative;
+  overflow: clip;
+  overflow-clip-margin: 3px;
+}
+[data-play="entered"],
+[data-play="rewritten"] {
+  animation: diff-write var(--diff-write-ms, 360ms) var(--diff-ease) var(--diff-delay, 0ms) backwards;
+}
+@keyframes diff-write {
+  from {
+    --diff-x: 0px;
+  }
+  to {
+    --diff-x: calc(var(--diff-w) + var(--diff-edge));
+  }
+}
+[data-play="entered"] .diff-text,
+[data-play="rewritten"] .diff-text {
+  mask-image: linear-gradient(90deg, #000 calc(var(--diff-x) - var(--diff-edge)), transparent var(--diff-x));
+}
+/* What a rewritten line said before, ahead of the caret. */
+[data-play="rewritten"] .diff-code::before {
+  content: attr(data-was);
+  position: absolute;
+  inset: 0;
+  padding-right: inherit;
+  color: var(--c-ink-3);
+  pointer-events: none;
+  mask-image: linear-gradient(90deg, transparent calc(var(--diff-x) - var(--diff-edge)), #000 var(--diff-x));
+}
+/* The caret, at the edge the code comes in at (moved by the same frames as
+   the edge, not on a layer of its own that could run ahead of it), which
+   fades as it reaches the end. */
+[data-play="entered"] .diff-code::after,
+[data-play="rewritten"] .diff-code::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: calc(var(--diff-x) - var(--diff-edge) * 0.5);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--diff-caret);
+  box-shadow: 0 0 7px 1px var(--diff-caret-glow);
+  pointer-events: none;
+  animation: diff-caret var(--diff-write-ms, 360ms) linear var(--diff-delay, 0ms) both;
+}
+[data-wraps] .diff-code::after {
+  display: none;
+}
+@keyframes diff-caret {
+  from,
+  80% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* A line taken out turns red from the left; one put back fades to plain. */
+.diff-line[data-play="marked"],
+.diff-line[data-play="unmarked"] {
+  background: none;
+}
+[data-play="marked"]::after,
+[data-play="unmarked"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--diff-del);
+  transform-origin: left;
+  pointer-events: none;
+}
+[data-play="marked"]::after {
+  animation: diff-tint 520ms var(--ease-out) var(--diff-delay, 0ms) backwards;
+}
+[data-play="unmarked"]::after {
+  animation: diff-untint 700ms var(--ease-out) var(--diff-delay, 0ms) forwards;
+}
+@keyframes diff-tint {
+  from {
+    transform: scaleX(0);
+  }
+}
+@keyframes diff-untint {
+  to {
+    opacity: 0;
+  }
+}
+/* What the agent changed stays lit for a moment. */
+[data-play="entered"]::before,
+[data-play="rewritten"]::before,
+[data-play="marked"]::before,
+[data-play="seen"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(90deg, var(--diff-lit), transparent min(70%, 56rem));
+  pointer-events: none;
+  animation: diff-lit 2600ms linear var(--diff-delay, 0ms) both;
+}
+[data-play="entered"] .diff-gutter::before,
+[data-play="rewritten"] .diff-gutter::before,
+[data-play="marked"] .diff-gutter::before,
+[data-play="seen"] .diff-gutter::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--diff-lit-bar);
+  pointer-events: none;
+  animation: diff-lit 2600ms linear var(--diff-delay, 0ms) both;
+}
+@keyframes diff-lit {
+  from {
+    opacity: 0;
+  }
+  4%,
+  45% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-play]::before,
+  [data-play] .diff-gutter::before {
+    /* Lit, and gone at once once its moment has passed (no fade: durations are cut short). */
+    animation: diff-lit-still 1ms linear 2200ms both;
+  }
+}
+@keyframes diff-lit-still {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* A light runs along a file's header as the agent changes the file
+   (session/diff-dialog.tsx), and the button that goes to changes out of
+   sight slides in from the edge they are past (session/diff-live.tsx). */
+.diff-header-scan {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 32%;
+  background: linear-gradient(90deg, transparent, var(--diff-lit-bar), transparent);
+  pointer-events: none;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .diff-header-scan {
+    animation: diff-header-scan 1100ms var(--ease-in-out) both;
+  }
+}
+@keyframes diff-header-scan {
+  from {
+    transform: translateX(-100%);
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(320%);
+    opacity: 0;
+  }
+}
+.diff-unseen {
+  --diff-unseen-y: -8px;
+  animation: diff-unseen-in 260ms var(--ease-spring) both;
+}
+.diff-unseen[data-dir="below"] {
+  --diff-unseen-y: 8px;
+}
+.diff-unseen[data-leaving] {
+  animation: diff-unseen-out 180ms var(--ease-in-out) both;
+}
+@keyframes diff-unseen-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--diff-unseen-y)) scale(0.96);
+  }
+}
+@keyframes diff-unseen-out {
+  to {
+    opacity: 0;
+    transform: translateY(var(--diff-unseen-y)) scale(0.98);
+  }
+}
+
 /* Words of a headline in the brand's yellow, as on fctl.sh, with a pink full
    stop (routes/early-access.tsx). On light backgrounds the yellow becomes a
    highlighter stroke under the words, on each line they wrap to. */
