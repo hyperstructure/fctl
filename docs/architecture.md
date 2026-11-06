@@ -715,6 +715,14 @@ on update), which changes nothing and brings the browser back to the tab.
 
 ### Runners and workspaces
 
+A runner (`runners`, `rnr_…`) is a machine as the control plane sees it:
+what FleetDO hands sessions to, what workspaces add and people list. The
+host (`crates/fctl-host`, `fctl host run`) is the daemon on that machine:
+it holds the runner's token, keeps its control connection and makes its
+sandboxes, all with one driver. One host is one runner, never several:
+this document says "host" for the daemon and what it does on the machine,
+and "runner" for the machine in the control plane, its API and its UI.
+
 A runner belongs to the person who registered it (`runners.created_by`) and
 runs the sessions of the workspaces it is added to (`runner_workspaces`):
 everyone's there, or only its owner's (`personal`). A workspace trusts a
@@ -1220,7 +1228,12 @@ agent posts a notice; a primary repository out of reach fails the session.
   and untracked work included, so the base's later commits never show as
   the session's. Once the branch's pull request merged, from the base as it
   was just before (the pull request's `baseRefOid`), so that the work it
-  merged still shows, however it merged.
+  merged still shows, however it merged. Each untracked file is a change of
+  its own, also in a directory git tracks nothing in (which `git status`
+  lists whole, and `uncommitted` counts once). A repository lists its first
+  500 changed files by path, and fctl-agent reads at most 16 MB of their
+  untracked files to count those files' lines: the others have no count,
+  as a binary file has none.
 - **Pull requests.** fctl-agent follows every pull request of its session
   (`crates/fctl-agent/src/followed.rs`): those of the branches it looks
   up, those whose URL `gh pr create` printed, whichever branch, worktree or

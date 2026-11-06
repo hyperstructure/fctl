@@ -502,8 +502,9 @@ fctl is built so agents only ever use Claude **subscriptions**:
 
 ## Hosts
 
-Hosts connect outbound to the control plane over TLS (rustls with the Mozilla
-root store); they open no ports. A host authenticates with a runner token
+A runner's host is the `fctl host` service on it, which runs its sessions.
+Hosts connect outbound to the control plane over TLS (rustls with the
+Mozilla root store); they open no ports. A host authenticates with a runner token
 that its owner can replace, and that its owner and instance admins revoke by
 disabling or removing the runner: whoever holds a runner's token runs the
 sessions of the workspaces it serves, so only its owner gets a new one, not
