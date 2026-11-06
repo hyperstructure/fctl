@@ -74,7 +74,7 @@ fn image(
     small: &dyn Fn(&str) -> Result<Vec<u8>>,
     blob: &dyn Fn(&str) -> Result<PathBuf>,
 ) -> Result<Image> {
-    let read = registry::read_config(&small(&config.digest)?)?;
+    let (read, diff_ids) = registry::read_config(&small(&config.digest)?)?;
     let files = layers
         .iter()
         .map(|l| blob(&l.digest))
@@ -84,6 +84,7 @@ fn image(
             id: config.digest,
             config: read,
             layers,
+            diff_ids,
         },
         layers: files,
     })

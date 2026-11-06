@@ -552,6 +552,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vsock",
+ "xattr",
 ]
 
 [[package]]

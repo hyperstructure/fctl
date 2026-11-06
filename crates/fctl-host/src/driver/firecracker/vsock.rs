@@ -339,16 +339,20 @@ pub async fn start(socket: &Path, mut exec: Exec) -> Result<Started> {
 
 /// Asks a VM booted to unpack an image to unpack `layers`, whose bytes are
 /// the files `blobs`, and sends them, within `within`; what it wrote: files
-/// and bytes. A VM that fails stops reading and says why, which is the
-/// error rather than the write that failed after it.
+/// and bytes. With `overlay`, the layers' whiteouts stay as overlayfs reads
+/// them, for an image that lies over another's. A VM that fails stops
+/// reading and says why, which is the error rather than the write that
+/// failed after it.
 pub async fn unpack(
     socket: &Path,
     layers: &[fctl_proto::vm::Layer],
     blobs: &[std::path::PathBuf],
+    overlay: bool,
     within: Duration,
 ) -> Result<(u64, u64)> {
     let unpacking = Request::Unpack {
         layers: layers.to_vec(),
+        overlay,
     };
     let (mut r, mut w) = request(socket, &unpacking).await?;
     let work = async {
@@ -535,7 +539,7 @@ mod tests {
         let ok_dir = dir.path().join("ok");
         std::fs::create_dir_all(&ok_dir)?;
         let ok = fake_vm(&ok_dir, |request, mut r, mut w| async move {
-            let Request::Unpack { layers } = request else {
+            let Request::Unpack { layers, .. } = request else {
                 return;
             };
             reply(&mut w, &Reply::default()).await;
@@ -552,7 +556,7 @@ mod tests {
         .await?;
         let blobs = [blob.clone()];
         assert_eq!(
-            unpack(&ok, &layers, &blobs, Duration::from_secs(30)).await?,
+            unpack(&ok, &layers, &blobs, false, Duration::from_secs(30)).await?,
             (3, 10)
         );
         let failing_dir = dir.path().join("failing");
@@ -568,7 +572,7 @@ mod tests {
             .await;
         })
         .await?;
-        let e = unpack(&failing, &layers, &blobs, Duration::from_secs(30)).await;
+        let e = unpack(&failing, &layers, &blobs, false, Duration::from_secs(30)).await;
         assert_eq!(
             e.err().map(|e| e.to_string()).as_deref(),
             Some("unpacking layer 1 of 1: No space left on device")

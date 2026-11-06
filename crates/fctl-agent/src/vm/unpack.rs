@@ -47,9 +47,14 @@ pub fn serve(root: &Path) -> Result<()> {
                     ..Reply::default()
                 },
             )?,
-            Ok(Request::Unpack { layers }) => {
+            Ok(Request::Unpack { layers, overlay }) => {
                 reply(&mut writer, &Reply::default())?;
-                let result = layers_onto(root, &layers, &mut reader);
+                let whiteouts = if overlay {
+                    Whiteouts::Overlay
+                } else {
+                    Whiteouts::Apply
+                };
+                let result = layers_onto(root, &layers, &mut reader, whiteouts);
                 let answer = match &result {
                     Ok(u) => Reply {
                         files: Some(u.files),
@@ -71,8 +76,26 @@ pub fn serve(root: &Path) -> Result<()> {
     }
 }
 
+/// How a layer's whiteouts land.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Whiteouts {
+    /// Applied: what they hide goes, as the layers stack into one tree.
+    Apply,
+    /// Kept as overlayfs reads them, for an image whose filesystem lies
+    /// over another image's: `.wh.<name>` as a character device 0/0 named
+    /// `<name>`, `.wh..wh..opq` as its directory's `trusted.overlay.opaque`,
+    /// which hide what the image below has there. A directory in place of
+    /// something else is opaque too: what the image below has there went.
+    Overlay,
+}
+
 /// Reads each of `layers` from `from` and applies it onto `root`.
-fn layers_onto(root: &Path, layers: &[Layer], from: &mut impl Read) -> Result<Unpacked> {
+fn layers_onto(
+    root: &Path,
+    layers: &[Layer],
+    from: &mut impl Read,
+    whiteouts: Whiteouts,
+) -> Result<Unpacked> {
     let mut done = Unpacked::default();
     for (i, layer) in layers.iter().enumerate() {
         let mut bytes = from.take(layer.size);
@@ -82,8 +105,9 @@ fn layers_onto(root: &Path, layers: &[Layer], from: &mut impl Read) -> Result<Un
                 root,
                 flate2::read::MultiGzDecoder::new(&mut bytes),
                 &mut done,
+                whiteouts,
             ),
-            Compression::None => apply(root, &mut bytes, &mut done),
+            Compression::None => apply(root, &mut bytes, &mut done, whiteouts),
         }
         .with_context(|| format!("unpacking layer {n} of {}", layers.len()))?;
         // What the decompressor left, padding say.
@@ -152,10 +176,16 @@ fn within(root: &Path, path: &Path) -> Option<PathBuf> {
 /// Applies one layer, a tar stream, onto `root`: `.wh.<name>` removes
 /// `<name>` from the layers below, `.wh..wh..opq` everything they have in
 /// its directory, and an entry replaces what was at its path unless both
-/// are directories. Owners, modes, times and extended attributes stay as
-/// the layer has them (the VM's init runs as root). Nothing it does
+/// are directories; with [`Whiteouts::Overlay`], they also stay as
+/// overlayfs reads them. Owners, modes, times and extended attributes stay
+/// as the layer has them (the VM's init runs as root). Nothing it does
 /// reaches out of `root`, whatever links the layers make.
-pub fn apply(root: &Path, layer: impl Read, done: &mut Unpacked) -> Result<()> {
+pub fn apply(
+    root: &Path,
+    layer: impl Read,
+    done: &mut Unpacked,
+    whiteouts: Whiteouts,
+) -> Result<()> {
     let root = root.canonicalize()?;
     let root = root.as_path();
     let mut archive = tar::Archive::new(layer);
@@ -192,31 +222,70 @@ pub fn apply(root: &Path, layer: impl Read, done: &mut Unpacked) -> Result<()> {
                     }
                 }
             }
+            if whiteouts == Whiteouts::Overlay {
+                opaque(&dir)?;
+            }
             continue;
         }
         if let Some(hidden) = name.strip_prefix(".wh.") {
-            if let Some(target) = within(root, &path.with_file_name(hidden)) {
+            let hidden = path.with_file_name(hidden);
+            if whiteouts == Whiteouts::Overlay
+                && let Some(dir) = hidden.parent()
+            {
+                std::fs::create_dir_all(root.join(dir))?;
+            }
+            if let Some(target) = within(root, &hidden) {
                 remove(&target)?;
+                if whiteouts == Whiteouts::Overlay {
+                    whiteout(&target)?;
+                }
             }
             continue;
         }
         let kind = entry.header().entry_type();
+        // In place of something else, a directory hides what the image
+        // below has there.
+        let mut replaced = false;
         if let Some(target) = within(root, &path)
             && let Ok(meta) = std::fs::symlink_metadata(&target)
             && !(meta.is_dir() && kind.is_dir())
         {
             remove(&target)?;
+            replaced = true;
         }
         if kind.is_character_special() || kind.is_block_special() || kind.is_fifo() {
             special(root, &path, entry.header())?;
         } else {
             entry.unpack_in(root)?;
         }
+        if replaced
+            && kind.is_dir()
+            && whiteouts == Whiteouts::Overlay
+            && let Some(target) = within(root, &path)
+        {
+            opaque(&target)?;
+        }
         done.files += 1;
         done.bytes += entry.header().size().unwrap_or(0);
         ours.insert(path);
     }
     Ok(())
+}
+
+/// Hides what the image below has at `path`, as overlayfs reads it: a
+/// character device 0/0, root's.
+fn whiteout(path: &Path) -> Result<()> {
+    use nix::sys::stat::{Mode, SFlag, makedev, mknod};
+    mknod(path, SFlag::S_IFCHR, Mode::empty(), makedev(0, 0))
+        .with_context(|| format!("making the whiteout {}", path.display()))
+}
+
+/// Hides what the image below has in the directory `dir`, as overlayfs
+/// reads it.
+fn opaque(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    xattr::set(dir, "trusted.overlay.opaque", b"y")
+        .with_context(|| format!("making {} opaque", dir.display()))
 }
 
 /// A device node or a FIFO, which the tar crate would make a plain file.
@@ -306,6 +375,7 @@ mod tests {
                 ("var/thing", "a file"),
             ])[..],
             &mut done,
+            Whiteouts::Apply,
         )?;
         assert_eq!(done.files, 9);
         apply(
@@ -323,6 +393,7 @@ mod tests {
                 ("var/thing/inside", "x"),
             ])[..],
             &mut done,
+            Whiteouts::Apply,
         )?;
         assert_eq!(read(root, "etc/hostname").as_deref(), Some("top"));
         assert!(!root.join("etc/motd").exists());
@@ -358,7 +429,7 @@ mod tests {
         h.set_mode(0o644);
         b.append_data(&mut h, "escape/outside", &b"x"[..])?;
         let bytes = b.into_inner()?;
-        let r = apply(&root, &bytes[..], &mut done);
+        let r = apply(&root, &bytes[..], &mut done, Whiteouts::Apply);
         assert!(r.is_err(), "{r:?}");
         assert!(!dir.path().join("outside").exists());
         // Whiteouts and replaced entries reach nothing through the link.
@@ -367,12 +438,14 @@ mod tests {
             &root,
             &layer(&[("escape/.wh.precious", ""), ("escape/.wh..wh..opq", "")])[..],
             &mut done,
+            Whiteouts::Apply,
         )?;
         assert!(dir.path().join("precious").exists());
         let r = apply(
             &root,
             &layer(&[("escape/precious", "replaced")])[..],
             &mut done,
+            Whiteouts::Apply,
         );
         assert!(r.is_err(), "{r:?}");
         assert_eq!(read(dir.path(), "precious").as_deref(), Some("x"));

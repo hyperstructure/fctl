@@ -3439,8 +3439,15 @@ in `firecracker/` in the host's data directory.
   digest, as Docker's image ID; names refer to images as Docker's tags do
   (`images.rs`). A pull whose image is here already reads only its
   manifest, so refreshing the default image works as with Docker. Removing
-  a name keeps the last one of an image that a sandbox uses. Images share
-  no layers.
+  a name keeps the last one of an image that a sandbox uses. An image whose
+  layers start with all of another's here (by their uncompressed digests,
+  its config's `rootfs.diff_ids`), as a project's image `FROM` the default
+  one does, keeps only what its other layers make, over that image's
+  filesystem: a pull or a build downloads and unpacks only those, with
+  their whiteouts kept as overlayfs reads them (a character device 0/0,
+  `trusted.overlay.opaque`), and its sandboxes stack the images' disks,
+  four at most, under their own. An image stays while another here lies
+  over it, its last name gone or not.
 - **Builds.** A project's image builds with BuildKit
   (`docker.io/moby/buildkit`, pinned by digest) in a VM of the project's
   own, `fctl-builder-<project>`, booted from BuildKit's image like a

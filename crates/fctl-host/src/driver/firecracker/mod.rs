@@ -402,11 +402,15 @@ impl FirecrackerDriver {
         }))
     }
 
+    /// What `image` takes on the disk, the images it lies over included.
     pub async fn image_size(&self, image: &str) -> Option<u64> {
         let image = self.store.lookup(image)?;
         use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(self.store.rootfs(&image.id)).ok()?;
-        Some(meta.blocks() * 512)
+        let mut size = 0;
+        for i in self.store.chain(&image.id)? {
+            size += std::fs::metadata(self.store.rootfs(&i.id)).ok()?.blocks() * 512;
+        }
+        Some(size)
     }
 
     pub async fn tag_image(&self, image: &str, name: &str) -> Result<()> {
@@ -420,6 +424,22 @@ impl FirecrackerDriver {
 
     pub async fn images(&self, repository: &str) -> Result<Vec<String>> {
         Ok(self.store.names(repository))
+    }
+
+    /// The images that stay: those a name refers to, those a sandbox here
+    /// was made from, and those any of them lies over.
+    fn needed(&self) -> std::collections::HashSet<String> {
+        let mut needed = std::collections::HashSet::new();
+        let roots = self.store.refs().into_values().chain(self.images_in_use());
+        for id in roots {
+            match self.store.chain(&id) {
+                Some(chain) => needed.extend(chain.into_iter().map(|i| i.id)),
+                None => {
+                    needed.insert(id);
+                }
+            }
+        }
+        needed
     }
 
     /// The IDs of the images the sandboxes here were made from.
@@ -453,19 +473,21 @@ impl FirecrackerDriver {
             bail!("a sandbox uses {image}");
         }
         self.store.untag(image)?;
-        if !self.store.named(&here.id) {
+        // Its filesystem stays while an image here lies over it, and those
+        // it lay over go when nothing else needs them.
+        if !self.needed().contains(&here.id) {
             self.store.remove(&here.id)?;
         }
+        self.remove_unused();
         Ok(())
     }
 
-    /// Removes the images no name refers to and no sandbox uses: what a
-    /// newer pull of their name left.
+    /// Removes the images no name refers to, no sandbox uses and no other
+    /// image that stays lies over: what a newer pull of their name left.
     fn remove_unused(&self) {
-        let used = self.images_in_use();
+        let needed = self.needed();
         for id in self.store.ids() {
-            if !self.store.named(&id)
-                && !used.contains(&id)
+            if !needed.contains(&id)
                 && let Err(e) = self.store.remove(&id)
             {
                 tracing::warn!("removing the image {id}: {e:#}");
@@ -525,18 +547,35 @@ impl FirecrackerDriver {
         let _held = lock.lock().await;
         let registry = registry::Registry::new();
         let resolved = registry.resolve(image, std::env::consts::ARCH).await?;
-        if self.store.image(&resolved.id).is_some() {
+        if let Some(mut here) = self.store.image(&resolved.id) {
             let _images = self.lock_images().await?;
+            // One an earlier fctl pulled, without its layers' digests,
+            // which images that lie over it need.
+            if here.diff_ids.is_empty() && !resolved.diff_ids.is_empty() {
+                here.diff_ids = resolved.diff_ids.clone();
+                self.store.save(&here)?;
+            }
             self.store.tag(image, &resolved.id)?;
             self.remove_unused();
             return Ok(());
         }
-        let total: u64 = resolved.layers.iter().map(|l| l.size).sum();
-        log(format!(
-            "Pulling {image}: {} layers, {} MB",
-            resolved.layers.len(),
-            total.div_ceil(1_000_000)
-        ));
+        // An image here whose layers it starts with: only the others come.
+        let base = self.base_for(&resolved);
+        let skip = base.as_ref().map_or(0, |b| b.diff_ids.len());
+        let total: u64 = resolved.layers[skip..].iter().map(|l| l.size).sum();
+        match &base {
+            Some(b) => log(format!(
+                "Pulling {image}: {} layers over {}'s {skip}, {} MB",
+                resolved.layers.len() - skip,
+                b.reference,
+                total.div_ceil(1_000_000)
+            )),
+            None => log(format!(
+                "Pulling {image}: {} layers, {} MB",
+                resolved.layers.len(),
+                total.div_ceil(1_000_000)
+            )),
+        }
         // A directory of this pull's own: another pull of the same image, by
         // another name or in another process, has another.
         remove_stale(&self.root.join("downloads"));
@@ -547,9 +586,10 @@ impl FirecrackerDriver {
         ));
         let result = async {
             let (rootfs, files, bytes) = self
-                .download_and_unpack(image, &registry, &resolved, &downloads, log)
+                .download_and_unpack(image, &registry, &resolved, skip, &downloads, log)
                 .await?;
-            self.keep(image, key, &resolved, &rootfs, files, bytes)
+            let base = base.map(|b| b.id);
+            self.keep(image, key, &resolved, base, &rootfs, files, bytes)
                 .await?;
             Ok::<_, anyhow::Error>((files, bytes))
         }
@@ -563,13 +603,25 @@ impl FirecrackerDriver {
         Ok(())
     }
 
+    /// The image here that `resolved` can lie over ([`Store::base_for`]),
+    /// when its config says its layers' digests.
+    fn base_for(&self, resolved: &registry::Resolved) -> Option<Image> {
+        if resolved.diff_ids.len() != resolved.layers.len() {
+            return None;
+        }
+        self.store.base_for(&resolved.diff_ids)
+    }
+
     /// Keeps the image `resolved`, whose layers unpacked to `rootfs`
-    /// (`files` and `bytes`), named `name` (`key` as the store keeps it).
+    /// (`files` and `bytes`; over `base`'s, those `base` doesn't have),
+    /// named `name` (`key` as the store keeps it).
+    #[allow(clippy::too_many_arguments)]
     async fn keep(
         &self,
         name: &str,
         key: String,
         resolved: &registry::Resolved,
+        base: Option<String>,
         rootfs: &Path,
         files: u64,
         bytes: u64,
@@ -585,8 +637,16 @@ impl FirecrackerDriver {
             files,
             bytes,
             pulled_ms: vsock::now_ms(),
+            diff_ids: resolved.diff_ids.clone(),
+            base,
         };
         let _images = self.lock_images().await?;
+        // The image it lies over went meanwhile.
+        if let Some(base) = &image.base
+            && self.store.image(base).is_none()
+        {
+            bail!("the image {name} was pulled over went as it was pulled");
+        }
         // Another pull may have brought the same image meanwhile, which
         // sandboxes may use already.
         if self.store.image(&image.id).is_some() {
@@ -598,17 +658,21 @@ impl FirecrackerDriver {
         Ok(())
     }
 
+    /// Downloads `resolved`'s layers but the first `skip`, which an image
+    /// here has, and unpacks them in a VM: as overlayfs reads them, to lie
+    /// over that image's, when it skips any.
     async fn download_and_unpack(
         &self,
         image: &str,
         registry: &registry::Registry,
         resolved: &registry::Resolved,
+        skip: usize,
         downloads: &Path,
         log: Log<'_>,
     ) -> Result<(PathBuf, u64, u64)> {
         std::fs::create_dir_all(downloads)?;
         let mut files = Vec::new();
-        for (i, layer) in resolved.layers.iter().enumerate() {
+        for (i, layer) in resolved.layers.iter().enumerate().skip(skip) {
             let path = downloads.join(format!("layer-{i}"));
             registry.blob(image, layer, &path).await?;
             files.push(path);
@@ -618,15 +682,14 @@ impl FirecrackerDriver {
         // What a pull that stopped halfway left.
         let _ = std::fs::remove_file(&rootfs);
         make_fs(&rootfs, IMAGE_FS_GB, "fctl-image", false).await?;
-        let layers: Vec<fctl_proto::vm::Layer> = resolved
-            .layers
+        let layers: Vec<fctl_proto::vm::Layer> = resolved.layers[skip..]
             .iter()
             .map(|l| fctl_proto::vm::Layer {
                 media_type: l.media_type.clone(),
                 size: l.size,
             })
             .collect();
-        let (files_n, bytes) = self.unpack(&rootfs, &layers, &files, log).await?;
+        let (files_n, bytes) = self.unpack(&rootfs, &layers, &files, skip > 0, log).await?;
         Ok((rootfs, files_n, bytes))
     }
 
@@ -637,6 +700,7 @@ impl FirecrackerDriver {
         rootfs: &Path,
         layers: &[fctl_proto::vm::Layer],
         blobs: &[PathBuf],
+        overlay: bool,
         log: Log<'_>,
     ) -> Result<(u64, u64)> {
         let firecracker = self.firecracker(log).await?;
@@ -654,7 +718,7 @@ impl FirecrackerDriver {
             vm.wait_ready().await?;
             let within =
                 registry::LAYER_TIME * u32::try_from(blobs.len().max(1)).unwrap_or(u32::MAX);
-            vsock::unpack(&vm.vsock(), layers, blobs, within).await
+            vsock::unpack(&vm.vsock(), layers, blobs, overlay, within).await
         }
         .await;
         let result = result.map_err(|e| {
@@ -765,6 +829,12 @@ impl FirecrackerDriver {
                 record.reference, spec.name
             )
         })?;
+        let chain = self.store.chain(&image.id).with_context(|| {
+            format!(
+                "an image that {}, which {} was made from, lies over is gone",
+                record.reference, spec.name
+            )
+        })?;
         let firecracker = self.firecracker(log).await?;
         let kernel = self.kernel(log).await?;
         let (initrd, agent) = self.initrd().await?;
@@ -779,17 +849,21 @@ impl FirecrackerDriver {
                 name: spec.name.clone(),
                 time_ms: Some(vsock::now_ms()),
                 dns: vm::vm_dns(),
+                lowers: u32::try_from(chain.len()).unwrap_or(1),
             },
-            drives: vec![
-                Drive {
-                    path: self.store.rootfs(&image.id),
+            // The images' filesystems, the one at the bottom first, then
+            // the sandbox's own disk.
+            drives: chain
+                .iter()
+                .map(|i| Drive {
+                    path: self.store.rootfs(&i.id),
                     writable: false,
-                },
-                Drive {
+                })
+                .chain(std::iter::once(Drive {
                     path: vm.dir.join("disk.ext4"),
                     writable: true,
-                },
-            ],
+                }))
+                .collect(),
             cpus: spec.cpus,
             memory_mb: spec.memory_mb,
             network: true,
@@ -1179,6 +1253,38 @@ mod tests {
         Ok(())
     }
 
+    /// An image that another lies over stays when its last name goes,
+    /// until nothing lies over it.
+    #[tokio::test]
+    async fn an_image_others_lie_over_stays_without_a_name() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let add = |id: char, reference: &str, base: Option<&str>| -> Result<Image> {
+            let image = Image {
+                id: format!("sha256:{}", id.to_string().repeat(64)),
+                reference: reference.into(),
+                diff_ids: vec![format!("sha256:{}", id.to_string().repeat(64))],
+                base: base.map(str::to_owned),
+                ..Image::default()
+            };
+            let rootfs = dir.path().join(format!("{id}.ext4"));
+            std::fs::write(&rootfs, b"ext4")?;
+            d.store.add(&image, &rootfs)?;
+            Ok(image)
+        };
+        let debian = add('a', "docker.io/library/debian:trixie-slim", None)?;
+        let project = add('b', "fctl-build-prj_1:abc", Some(&debian.id))?;
+        d.remove_image("docker.io/library/debian:trixie-slim")
+            .await?;
+        assert!(!d.has_image("docker.io/library/debian:trixie-slim").await);
+        assert!(d.store.image(&debian.id).is_some());
+        assert!(d.image_size("fctl-build-prj_1:abc").await.is_some());
+        d.remove_image("fctl-build-prj_1:abc").await?;
+        assert!(d.store.image(&project.id).is_none());
+        assert!(d.store.image(&debian.id).is_none());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn probes_what_the_host_lacks() {
         let dir = tempfile::tempdir().ok();
@@ -1364,10 +1470,14 @@ mod tests {
         let build = temp.path().join("build");
         std::fs::create_dir_all(build.join("src"))?;
         std::fs::write(build.join("src/hello.txt"), b"hello\n")?;
+        // What a whiteout and an opaque directory hide in the image it lies
+        // over, Debian's, which the host has.
         std::fs::write(
             build.join("Dockerfile"),
-            "FROM docker.io/library/debian:trixie-slim\nCOPY hello.txt /hello.txt\nARG GREETING\nRUN echo \"$GREETING\" > /greeting && cp /bin/true /built && chmod 4755 /built\nENV BUILT=yes\nWORKDIR /tmp\nUSER nobody\n",
+            "FROM docker.io/library/debian:trixie-slim\nCOPY hello.txt /hello.txt\nARG GREETING\nRUN echo \"$GREETING\" > /greeting && cp /bin/true /built && chmod 4755 /built\nRUN rm /etc/issue.net && rm -rf /usr/share/doc && mkdir /usr/share/doc && echo only > /usr/share/doc/only\nENV BUILT=yes\nWORKDIR /tmp\nUSER nobody\n",
         )?;
+        d.pull("docker.io/library/debian:trixie-slim", false)
+            .await?;
         let project = hex::encode(fctl_domain::random_bytes::<4>());
         let tag = format!("fctl-build-prj_{project}:abc");
         let args = std::collections::BTreeMap::from([("GREETING".to_owned(), "hi".to_owned())]);
@@ -1383,6 +1493,16 @@ mod tests {
         d.build(&job, &log).await?;
         eprintln!("built in {:?}", started.elapsed());
         assert!(d.has_image(&tag).await);
+        // It keeps only its own layers, over Debian's.
+        let Driver::Firecracker(fd) = &d else {
+            bail!("not the firecracker driver");
+        };
+        let built = fd.store.lookup(&tag).context("the image built")?;
+        let debian = fd
+            .store
+            .lookup("docker.io/library/debian:trixie-slim")
+            .context("Debian's image")?;
+        assert_eq!(built.base.as_deref(), Some(debian.id.as_str()));
         let name = format!("fctl-test-{project}");
         let spec = SandboxSpec {
             name: name.clone(),
@@ -1397,10 +1517,13 @@ mod tests {
             let out = d
                 .exec(
                     &sb,
-                    "cat /hello.txt /greeting; id -un; pwd; echo $BUILT; stat -c %a /built",
+                    "cat /hello.txt /greeting; id -un; pwd; echo $BUILT; stat -c %a /built; ls /usr/share/doc; test -e /etc/issue.net && echo kept; cat /etc/debian_version >/dev/null && echo debian",
                 )
                 .await?;
-            assert_eq!(out, "hello\nhi\nnobody\n/tmp\nyes\n4755\n");
+            assert_eq!(
+                out,
+                "hello\nhi\nnobody\n/tmp\nyes\n4755\nonly\ndebian\n"
+            );
             Ok::<_, anyhow::Error>(())
         }
         .await;

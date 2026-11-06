@@ -84,6 +84,9 @@ microVM of its own.
   package caches, as Lima's don't.
 - An image's first pull takes longer than Docker's (it unpacks in a VM),
   and each image takes all its size on disk: images share no layers.
+  (Since session #802, an image whose layers start with another's keeps
+  only its other layers, over that image's filesystem, and pulls and
+  unpacks only those.)
 - A VM holds the memory its guest has touched, but for what its balloon
   reports free.
 - The VM's clock follows the host's at boot and at each request of the

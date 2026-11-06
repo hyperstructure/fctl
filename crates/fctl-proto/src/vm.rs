@@ -53,8 +53,9 @@ pub enum Mode {
 
 /// What the init reads from the kernel's command line: `fctl.mode=`,
 /// `fctl.name=` (the VM's hostname), `fctl.time=` (the host's clock at
-/// boot, in milliseconds since the Unix epoch) and `fctl.dns=` (the
-/// nameservers the VM asks, separated by commas).
+/// boot, in milliseconds since the Unix epoch), `fctl.dns=` (the
+/// nameservers the VM asks, separated by commas) and `fctl.lowers=` (how
+/// many images' filesystems a sandbox stacks).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Boot {
     pub mode: Mode,
@@ -64,6 +65,11 @@ pub struct Boot {
     /// the host does. Empty: [`DNS`], which `passt` forwards to the host's
     /// resolver.
     pub dns: Vec<std::net::Ipv4Addr>,
+    /// How many images' filesystems a sandbox stacks, on its first disks
+    /// (`/dev/vda` the one at the bottom), its own disk after them: an
+    /// image whose filesystem lies over another's, over that one's. One
+    /// when the command line says none.
+    pub lowers: u32,
 }
 
 impl Boot {
@@ -81,6 +87,9 @@ impl Boot {
             let dns: Vec<String> = self.dns.iter().map(ToString::to_string).collect();
             p.push_str(&format!(" fctl.dns={}", dns.join(",")));
         }
+        if self.lowers > 1 {
+            p.push_str(&format!(" fctl.lowers={}", self.lowers));
+        }
         p
     }
 
@@ -90,6 +99,7 @@ impl Boot {
         let mut name = String::from("fctl");
         let mut time_ms = None;
         let mut dns = Vec::new();
+        let mut lowers = 1;
         for word in cmdline.split_whitespace() {
             match word.split_once('=') {
                 Some(("fctl.mode", "sandbox")) => mode = Some(Mode::Sandbox),
@@ -99,6 +109,7 @@ impl Boot {
                 Some(("fctl.dns", list)) => {
                     dns = list.split(',').filter_map(|a| a.parse().ok()).collect();
                 }
+                Some(("fctl.lowers", n)) => lowers = n.parse().unwrap_or(1).clamp(1, 16),
                 _ => {}
             }
         }
@@ -107,6 +118,7 @@ impl Boot {
             name,
             time_ms,
             dns,
+            lowers,
         })
     }
 }
@@ -125,7 +137,14 @@ pub enum Request {
     Exec(Exec),
     /// Unpacks an image's layers, which follow, onto the VM's disk (only in
     /// a VM booted to [`Mode::Unpack`]).
-    Unpack { layers: Vec<Layer> },
+    Unpack {
+        layers: Vec<Layer>,
+        /// Keeps their whiteouts as overlayfs reads them, for an image
+        /// whose filesystem lies over another image's, rather than apply
+        /// them.
+        #[serde(default)]
+        overlay: bool,
+    },
     /// Stops every program, flushes the disks and powers the VM off.
     Shutdown,
 }
@@ -240,12 +259,13 @@ mod tests {
             name: "fctl-ses-01abc".into(),
             time_ms: Some(1_761_700_000_000),
             dns: vec![[168, 63, 129, 16].into(), [10, 1, 0, 2].into()],
+            lowers: 3,
         };
         let cmdline = format!(
             "console=ttyS0 reboot=k panic=1 {} rdinit=/init",
             boot.params()
         );
-        assert!(cmdline.contains(" fctl.dns=168.63.129.16,10.1.0.2 "));
+        assert!(cmdline.contains(" fctl.dns=168.63.129.16,10.1.0.2 fctl.lowers=3 "));
         assert_eq!(Boot::parse(&cmdline), Some(boot));
         let unpack = Boot::parse("fctl.mode=unpack quiet");
         assert_eq!(

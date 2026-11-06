@@ -326,17 +326,28 @@ impl FirecrackerDriver {
         let rootfs = dir.join("rootfs.ext4");
         let _ = std::fs::remove_file(&rootfs);
         super::make_fs(&rootfs, super::IMAGE_FS_GB, "fctl-image", false).await?;
-        let layers: Vec<fctl_proto::vm::Layer> = image
-            .resolved
-            .layers
+        // Built `FROM` an image here: only the layers it adds unpack, over
+        // that image's filesystem.
+        let base = self.base_for(&image.resolved);
+        let skip = base.as_ref().map_or(0, |b| b.diff_ids.len());
+        if let Some(b) = &base {
+            log(format!(
+                "Keeping {tag} over {}, which has {skip} of its layers",
+                b.reference
+            ));
+        }
+        let layers: Vec<fctl_proto::vm::Layer> = image.resolved.layers[skip..]
             .iter()
             .map(|l| fctl_proto::vm::Layer {
                 media_type: l.media_type.clone(),
                 size: l.size,
             })
             .collect();
-        let (files, bytes) = self.unpack(&rootfs, &layers, &image.layers, log).await?;
-        self.keep(tag, key, &image.resolved, &rootfs, files, bytes)
+        let (files, bytes) = self
+            .unpack(&rootfs, &layers, &image.layers[skip..], skip > 0, log)
+            .await?;
+        let base = base.map(|b| b.id);
+        self.keep(tag, key, &image.resolved, base, &rootfs, files, bytes)
             .await
     }
 }

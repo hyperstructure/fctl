@@ -41,6 +41,8 @@ pub struct Resolved {
     pub id: String,
     pub config: Config,
     pub layers: Vec<Descriptor>,
+    /// The layers' digests, uncompressed (the config's `rootfs.diff_ids`).
+    pub diff_ids: Vec<String>,
 }
 
 /// What an image's config says about running it.
@@ -60,12 +62,21 @@ pub struct Config {
 struct ConfigFile {
     #[serde(default)]
     config: Config,
+    #[serde(default)]
+    rootfs: RootFs,
 }
 
-/// What an image's config file says about running it.
-pub fn read_config(bytes: &[u8]) -> Result<Config> {
+#[derive(Default, Deserialize)]
+struct RootFs {
+    #[serde(default)]
+    diff_ids: Vec<String>,
+}
+
+/// What an image's config file says about running it, and its layers'
+/// digests, uncompressed.
+pub fn read_config(bytes: &[u8]) -> Result<(Config, Vec<String>)> {
     let file: ConfigFile = serde_json::from_slice(bytes).context("reading an image's config")?;
-    Ok(file.config)
+    Ok((file.config, file.rootfs.diff_ids))
 }
 
 /// What an index or an image's manifest lists, as registries and OCI image
@@ -433,6 +444,7 @@ impl Registry {
                 id: config.digest,
                 config: file.config,
                 layers,
+                diff_ids: file.rootfs.diff_ids,
             });
         }
         bail!("{reference}'s index points at another index")

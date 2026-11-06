@@ -1,7 +1,10 @@
 //! The images a Firecracker host keeps: for each, the root filesystem its
 //! layers make (read only, shared by the sandboxes made from it) and what
 //! its config says about running it; and the names that refer to them, as
-//! Docker's tags do.
+//! Docker's tags do. An image whose layers start with all of another's
+//! (a project's image `FROM` the default one, say) keeps only what its
+//! other layers make, as overlayfs reads it, over that image's filesystem:
+//! the sandboxes made from it stack the two.
 
 use anyhow::{Context, Result};
 use fctl_domain::image::ImageRef;
@@ -30,7 +33,18 @@ pub struct Image {
     #[serde(default)]
     pub bytes: u64,
     pub pulled_ms: i64,
+    /// Its layers' digests, uncompressed (its config's `rootfs.diff_ids`),
+    /// which tell the images it lies over.
+    #[serde(default)]
+    pub diff_ids: Vec<String>,
+    /// The image whose filesystem its own lies over, which holds what its
+    /// first layers make.
+    #[serde(default)]
+    pub base: Option<String>,
 }
+
+/// The most images one stacks, its own included: each is a disk of the VM.
+pub const MAX_CHAIN: usize = 4;
 
 /// A reference as the store keeps it: `ubuntu` is
 /// `docker.io/library/ubuntu:latest`.
@@ -148,6 +162,16 @@ impl Store {
         self.tag(&image.reference, &image.id)
     }
 
+    /// Writes what the store says of `image`, which is here, anew (with
+    /// the lock held).
+    pub fn save(&self, image: &Image) -> Result<()> {
+        let path = self.image_dir(&image.id).join("image.json");
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_vec_pretty(image)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
     /// Names the image `id` `reference`, in place of what that named (with
     /// the lock held).
     pub fn tag(&self, reference: &str, id: &str) -> Result<()> {
@@ -201,6 +225,36 @@ impl Store {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The images `id` stacks, the one at the bottom first and `id` last;
+    /// `None` when one is missing.
+    pub fn chain(&self, id: &str) -> Option<Vec<Image>> {
+        let mut chain = vec![self.image(id)?];
+        while let Some(base) = chain.last().and_then(|i| i.base.clone()) {
+            if chain.len() >= MAX_CHAIN || chain.iter().any(|i| i.id == base) {
+                return None;
+            }
+            chain.push(self.image(&base)?);
+        }
+        chain.reverse();
+        Some(chain)
+    }
+
+    /// The image here that an image of the layers `diff_ids` can lie over:
+    /// the one whose layers are most of its first ones, and that stacks few
+    /// enough images for it to stack one more.
+    pub fn base_for(&self, diff_ids: &[String]) -> Option<Image> {
+        self.ids()
+            .into_iter()
+            .filter_map(|id| self.image(&id))
+            .filter(|i| {
+                !i.diff_ids.is_empty()
+                    && i.diff_ids.len() < diff_ids.len()
+                    && diff_ids.starts_with(&i.diff_ids)
+            })
+            .filter(|i| self.chain(&i.id).is_some_and(|c| c.len() < MAX_CHAIN))
+            .max_by_key(|i| i.diff_ids.len())
     }
 
     /// The IDs of the images here.
@@ -285,6 +339,67 @@ mod tests {
         store.remove(&image.id)?;
         assert_eq!(store.image(&image.id), None);
         assert!(store.ids().is_empty());
+        Ok(())
+    }
+
+    /// An image keeps what its own layers make over the image whose layers
+    /// it starts with, the one that has most of them.
+    #[test]
+    fn images_lie_over_the_images_their_layers_start_with() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path().join("images"));
+        let ids = |n: usize| -> Vec<String> { (0..n).map(|i| format!("sha256:{i:064}")).collect() };
+        let add = |id: char, diff_ids: Vec<String>, base: Option<&str>| -> Result<Image> {
+            let image = Image {
+                id: format!("sha256:{}", id.to_string().repeat(64)),
+                reference: format!("ghcr.io/acme/{id}:1"),
+                diff_ids,
+                base: base.map(str::to_owned),
+                ..Image::default()
+            };
+            let rootfs = dir.path().join(format!("{id}.ext4"));
+            std::fs::write(&rootfs, b"ext4")?;
+            store.add(&image, &rootfs)?;
+            Ok(image)
+        };
+        let debian = add('a', ids(1), None)?;
+        let sandbox = add('b', ids(4), Some(&debian.id))?;
+        // Nothing of the layers, or all of them, is nothing to lie over.
+        assert_eq!(store.base_for(&ids(1)), None);
+        assert_eq!(
+            store.base_for(&[format!("sha256:{}", "9".repeat(64))]),
+            None
+        );
+        // The image with most of them.
+        assert_eq!(
+            store.base_for(&ids(6)).map(|i| i.id),
+            Some(sandbox.id.clone())
+        );
+        assert_eq!(
+            store.base_for(&ids(3)).map(|i| i.id),
+            Some(debian.id.clone())
+        );
+        let project = add('c', ids(6), Some(&sandbox.id))?;
+        assert_eq!(
+            store
+                .chain(&project.id)
+                .map(|c| c.into_iter().map(|i| i.id).collect::<Vec<_>>()),
+            Some(vec![
+                debian.id.clone(),
+                sandbox.id.clone(),
+                project.id.clone()
+            ])
+        );
+        // No deeper than the VM's disks allow.
+        let deeper = add('d', ids(7), Some(&project.id))?;
+        assert_eq!(store.chain(&deeper.id).map(|c| c.len()), Some(MAX_CHAIN));
+        assert_eq!(
+            store.base_for(&ids(8)).map(|i| i.id),
+            Some(project.id.clone())
+        );
+        // A chain with an image missing is none.
+        store.remove(&sandbox.id)?;
+        assert_eq!(store.chain(&project.id), None);
         Ok(())
     }
 

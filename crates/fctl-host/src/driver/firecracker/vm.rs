@@ -616,6 +616,7 @@ pub fn unpack_spec(kernel: PathBuf, initrd: PathBuf, name: &str, rootfs: &Path) 
             name: name.into(),
             time_ms: Some(vsock::now_ms()),
             dns: Vec::new(),
+            lowers: 1,
         },
         drives: vec![Drive {
             path: rootfs.to_owned(),
@@ -645,6 +646,7 @@ mod tests {
                 name: "fctl-ses-1".into(),
                 time_ms: Some(5),
                 dns: vec![[168, 63, 129, 16].into()],
+                lowers: 1,
             },
             drives: vec![
                 Drive {
