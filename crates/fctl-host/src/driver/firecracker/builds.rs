@@ -99,14 +99,17 @@ impl FirecrackerDriver {
             .ensure(&spec, log)
             .await
             .context("starting the image builder")?;
-        // A build that is dropped halfway (its session stopped) leaves no
-        // builder running.
-        let mut running = Running(Some(self.vm(&name)?));
+        let mut running = Running {
+            vm: Some(self.vm(&name)?),
+            name: name.clone(),
+            stopped: crate::expiry::path(&self.host.data_dir()),
+        };
         let built = self.build_in(&sb.name, job, log).await;
-        if let Err(e) = self.stop(&sb).await {
-            tracing::warn!("stopping the image builder {name}: {e:#}");
+        match self.stop(&sb).await {
+            Ok(()) => running.vm = None,
+            Err(e) => tracing::warn!("stopping the image builder {name}: {e:#}"),
         }
-        running.0 = None;
+        drop(running);
         built
     }
 
@@ -367,12 +370,26 @@ impl FirecrackerDriver {
 
 /// What stops a builder VM whose build was dropped halfway: the VM, until
 /// the build is done.
-struct Running(Option<super::Vm>);
+/// A builder that runs for a build. As the build ends, or is dropped
+/// halfway (its session stopped), the builder stops, and the host notes
+/// when: it goes, with its cache, once it has been stopped for
+/// `keep_stopped_hours` since its last build, as a session's sandbox does.
+struct Running {
+    /// The builder's VM, until it has stopped.
+    vm: Option<super::Vm>,
+    name: String,
+    /// The host's list of stopped sandboxes ([`crate::expiry`]).
+    stopped: std::path::PathBuf,
+}
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if let Some(vm) = self.0.take() {
+        if let Some(vm) = self.vm.take() {
             vm.kill_now();
+        }
+        let now = crate::expiry::now_ms();
+        if let Err(e) = crate::expiry::note_stopped(&self.stopped, &self.name, now) {
+            tracing::warn!("saving {}: {e:#}", self.stopped.display());
         }
     }
 }
@@ -427,6 +444,25 @@ fn archive_dockerfile(dockerfile: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build notes when its builder stopped, whether it ended or was
+    /// dropped halfway: the sweep counts `keep_stopped_hours` from there.
+    #[test]
+    fn a_builder_notes_when_it_stopped() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let stopped = crate::expiry::path(dir.path());
+        let name = "fctl-builder-prj-01abc";
+        crate::expiry::note_stopped(&stopped, name, 1)?;
+        let before = crate::expiry::now_ms();
+        drop(Running {
+            vm: Some(super::super::Vm::new(dir.path().join(name))?),
+            name: name.into(),
+            stopped: stopped.clone(),
+        });
+        let noted = crate::expiry::load(&stopped).get(name).copied();
+        assert!(noted.is_some_and(|ms| ms >= before), "{noted:?}");
+        Ok(())
+    }
 
     #[test]
     fn each_project_builds_in_a_vm_of_its_own() {

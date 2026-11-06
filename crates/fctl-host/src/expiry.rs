@@ -13,6 +13,7 @@ use crate::driver::{SandboxInfo, is_builder, session_of};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Sandbox name → when it stopped (milliseconds since the epoch).
 pub type Stopped = BTreeMap<String, i64>;
@@ -35,8 +36,16 @@ pub fn save(path: &Path, stopped: &Stopped) -> Result<()> {
     Ok(())
 }
 
+/// Held while the list is read and written again: by the daemon, and by an
+/// image build as its builder stops.
+pub fn writing() -> MutexGuard<'static, ()> {
+    static WRITING: Mutex<()> = Mutex::new(());
+    WRITING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Records that `sandbox` stopped at `now`.
 pub fn note_stopped(path: &Path, sandbox: &str, now: i64) -> Result<()> {
+    let _writing = writing();
     let mut stopped = load(path);
     stopped.insert(sandbox.to_owned(), now);
     save(path, &stopped)
@@ -44,6 +53,7 @@ pub fn note_stopped(path: &Path, sandbox: &str, now: i64) -> Result<()> {
 
 /// Forgets `sandbox`, once it is removed.
 pub fn forget(path: &Path, sandbox: &str) -> Result<()> {
+    let _writing = writing();
     let mut stopped = load(path);
     if stopped.remove(sandbox).is_some() {
         save(path, &stopped)?;

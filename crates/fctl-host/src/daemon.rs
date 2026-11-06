@@ -398,10 +398,14 @@ impl Daemon {
         let path = expiry::path(&data);
         let now = expiry::now_ms();
         let keep_ms = (hours > 0).then(|| i64::from(hours) * 3_600_000);
-        let plan = expiry::plan(&expiry::load(&path), &list, &in_use, now, keep_ms);
-        if let Err(e) = expiry::save(&path, &plan.stopped) {
-            tracing::warn!("saving {}: {e:#}", path.display());
-        }
+        let plan = {
+            let _writing = expiry::writing();
+            let plan = expiry::plan(&expiry::load(&path), &list, &in_use, now, keep_ms);
+            if let Err(e) = expiry::save(&path, &plan.stopped) {
+                tracing::warn!("saving {}: {e:#}", path.display());
+            }
+            plan
+        };
         // A host that keeps no caches now removes those it kept.
         let keep_caches_ms = match self.ctx.cfg.max_cache_mb() {
             Some(_) => self.ctx.cfg.keep_caches_ms(),
