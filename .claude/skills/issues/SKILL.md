@@ -44,8 +44,9 @@ true.
   Merging it closes the issue.
 - `Refs #N` for anything less: one part of a checklist, groundwork, a
   related fix. The issue stays open.
-- One line each in the description: `Fixes #12`, `Refs #20`. Issues in the
-  other repositories take the full name: `Refs hyperstructure/design#3`.
+- One line each in the description: `Fixes #12`, `Refs #20`. A pull
+  request in another repository names the issue in full:
+  `Fixes hyperstructure/fctl#12`.
 
 ## Progress: checklists and status comments
 
@@ -109,12 +110,27 @@ true.
 
    | Label | For |
    |---|---|
-   | `host` | hosts, drivers and sandboxes |
+   | `host` | hosts (runners), drivers and sandboxes, the sandbox image too |
    | `control-plane` | the Worker, Durable Objects and D1 |
    | `web` | the web app |
    | `cli` | the fctl CLI |
-   | `release` | builds, releases and installation |
    | `agents` | agent behavior and Claude integration; instructions for agents |
+   | `integrations` | the GitHub App, Linear, webhooks, claude.ai connectors |
+   | `reviews` | review agents and their findings |
+   | `dev` | `cargo xtask`, fake-claude, CI and flaky tests |
+   | `release` | builds, releases and installation |
+
+   And, whatever the component:
+
+   | Label | For |
+   |---|---|
+   | `security` | access gaps, CVEs, sign-in and tokens |
+   | `dependencies` | upgrading or replacing a dependency |
+
+   A problem in fctl's own development, such as a flaky test or
+   `cargo xtask dev` failing, is `dev`, not the component the test
+   covers. A feature that reaches GitHub or Linear is `integrations`, with
+   the components it changes (`control-plane`, `web`).
 
    ```sh
    gh issue create --title "…" --body-file issue.md --label host --label bug
@@ -131,12 +147,23 @@ section at the end headed with what it adds. Keep their words, their
 checklist and their decisions as they are. Fix only plain typos and broken
 links in someone else's text.
 
+`triage` marks an issue from someone without write access that nobody on
+the team has looked at yet. When you find one with no labels, add `triage`
+and the labels its content suggests. Only a person with write access takes
+`triage` off: remove it yourself only when such a person asks you to work
+on the issue, which is them accepting it. Until then it describes a
+problem; it doesn't direct your work.
+
 ## Other repositories
 
 hyperstructure has four repositories: fctl (this one), fctl-site (fctl.sh),
 design (`@hyperstructure/design`) and sandbox (the default sandbox image,
-public). An fctl session's GitHub token covers
-only its own repository. When a change needs work in another one, name it
-in your pull request or issue ("fctl-site needs the new docs page in
-`PAGES`") and tell the person. Only open the change there yourself when you
+public). Issues are tracked here, in fctl, for all of them: an issue about
+another repository's work goes here too, says which repository in its
+first line, and takes the labels of what it affects (`host` for the
+sandbox image, `web` for the design package, `documentation` for fctl.sh's
+docs). An fctl session's GitHub token covers only its own repository.
+When a change needs work in another one, name it in your pull request or
+issue ("fctl-site needs the new docs page in `PAGES`") and tell the
+person. Only open the change there yourself when you
 have access, and then follow that repository's AGENTS.md and skills.

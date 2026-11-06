@@ -49,13 +49,13 @@ pub enum RunnersCmd {
         /// Its new name.
         name: String,
     },
-    /// Take no new sessions; the ones it has carry on, and a message
-    /// resumes them there.
+    /// Drain a runner: it takes no new sessions; the ones it has carry on,
+    /// and a message resumes them there.
     Drain {
         /// The runner's name or id.
         runner: String,
     },
-    /// Take new sessions again.
+    /// Undrain a runner: it takes new sessions again.
     Undrain {
         /// The runner's name or id.
         runner: String,

@@ -2,7 +2,8 @@
 //!
 //! People and agents use the same commands; every command that prints data
 //! accepts `--json`. `FCTL_SERVER` and `FCTL_TOKEN` configure it without a
-//! sign-in (CI, agents). `fctl host …` runs this machine as a runner.
+//! sign-in (CI, agents). `fctl host …` makes this machine a runner and looks
+//! after it there; `fctl runners …` manages runners from anywhere.
 
 mod cmd;
 mod config;
@@ -20,9 +21,10 @@ use std::io::IsTerminal;
 #[command(
     name = "fctl",
     version,
-    about = "A software factory: start Claude agents, follow them, run a host",
+    about = "A software factory: start Claude agents, follow them, and run their sessions on your machines",
     long_about = "fctl starts Claude Code agents on your projects, streams what they do, and lets you message them. \
-                  `fctl host` turns this machine into a runner that executes sessions in sandboxes.",
+                  Sessions run on runners, machines with the `fctl host` service on them: \
+                  `fctl host` turns this machine into one, and `fctl runners` manages them from anywhere.",
     after_help = "Examples:
   fctl login https://app.fctl.sh
   fctl run -p my-app \"Add a dark mode toggle\"
@@ -297,11 +299,23 @@ Examples:
     /// Choose what notifies you, and see the browsers that show it.
     #[command(subcommand)]
     Notifications(cmd::notifications::NotificationsCmd),
-    /// Run this machine as a host for agent sandboxes.
+    /// Make this machine a runner, and look after the host service that
+    /// runs its sessions here.
+    ///
+    /// A runner is a machine that runs sessions; the host is the `fctl host`
+    /// service on it, which connects to the control plane and runs each
+    /// session in a sandbox of its own. One machine runs one host and is one
+    /// runner. These commands act on the machine you run them on; `fctl
+    /// runners` sees and manages runners from anywhere, by name or id.
     #[command(subcommand)]
     Host(cmd::host::HostCmd),
-    /// Runners: the ones you see, approving the ones that wait in your
-    /// workspaces, managing them, and workspaces' enrollment tokens.
+    /// Runners, the machines that run sessions, from any machine: the ones
+    /// you see, approving the ones that wait in your workspaces, managing
+    /// them, and workspaces' enrollment tokens.
+    ///
+    /// A runner is a machine with the `fctl host` service on it, which
+    /// `fctl host install` registers. These commands take a runner by name
+    /// or id, from any machine; `fctl host` looks after the one you are on.
     #[command(
         visible_alias = "runner",
         after_help = "Examples:
