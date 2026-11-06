@@ -1508,12 +1508,16 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
 /// driver becomes ready or stops being, so that it says so now.
 fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration, chores: mpsc::UnboundedSender<Chore>) {
     tokio::spawn(async move {
+        let mut last = tokio::time::Instant::now();
         loop {
-            let wait = match ctx.driver_problem() {
-                None => period,
-                Some(_) => NOT_READY_EVERY.min(period),
-            };
-            tokio::time::sleep(wait).await;
+            // It looks every NOT_READY_EVERY, since a session that couldn't
+            // make its sandbox may have found the driver not ready since the
+            // last probe (`HostCtx::recheck_driver`).
+            tokio::time::sleep(NOT_READY_EVERY.min(period)).await;
+            if !probe_now(ctx.driver_problem().is_none(), last.elapsed(), period) {
+                continue;
+            }
+            last = tokio::time::Instant::now();
             let before = ctx.driver_problem();
             ctx.refresh_facts().await;
             let after = ctx.driver_problem();
@@ -1534,6 +1538,18 @@ fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration, chores: mpsc::Unboun
             }
         }
     });
+}
+
+/// Whether the host probes its drivers again now, `since` it last did:
+/// every `period` while the driver it uses is `ready`, else every
+/// [`NOT_READY_EVERY`].
+fn probe_now(ready: bool, since: Duration, period: Duration) -> bool {
+    since
+        >= if ready {
+            period
+        } else {
+            NOT_READY_EVERY.min(period)
+        }
 }
 
 fn jitter(d: Duration) -> Duration {
@@ -1798,6 +1814,19 @@ mod tests {
             Some(false)
         );
         Ok(())
+    }
+
+    #[test]
+    fn hosts_probe_a_driver_that_isnt_ready_every_30_seconds() {
+        let s = Duration::from_secs;
+        // Ready: every five minutes.
+        assert!(!probe_now(true, s(30), FACTS_EVERY));
+        assert!(probe_now(true, s(300), FACTS_EVERY));
+        // Not ready, also when a session found that out between two probes.
+        assert!(probe_now(false, s(30), FACTS_EVERY));
+        assert!(!probe_now(false, s(29), FACTS_EVERY));
+        // Never less often than asked.
+        assert!(probe_now(false, s(10), s(10)));
     }
 
     #[tokio::test]
