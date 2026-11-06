@@ -48,6 +48,8 @@ Develop
                                 The demo cast (.claude/skills/demo) in a stack of its own, with
                                 its state in .fctl-demo/: people, workspaces, runners, projects
                                 and sessions lived in, for screenshots and videos
+  demo steps <transcript>       What a cast session's transcript does to its repository's files,
+                                in order, as JSON (xtask/demo/diff-video.mjs reads it)
 
 Self-host without Cloudflare (deploy/standalone)
   serve [--public-url <url>] [--port <n>] [--listen <addr>] [--data <dir>] [--skip-build]
@@ -132,6 +134,16 @@ fn main() -> Result<()> {
                 no_vite: a.flag("--no-vite"),
                 cast: a.value("--cast")?.map(PathBuf::from),
             };
+            if let Some(what) = a.optional() {
+                if what != "steps" {
+                    bail!(
+                        "cargo xtask demo takes steps <transcript>, or nothing (cargo xtask help)"
+                    );
+                }
+                let name = a.positional("a transcript's name, like platform-437")?;
+                a.done()?;
+                return demo::steps(&root, &name);
+            }
             a.done()?;
             demo::demo(&root, opts)
         }

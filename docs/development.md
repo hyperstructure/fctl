@@ -345,6 +345,12 @@ record in. Any other browser shows the times as they are where it is. With
 instead, as WebP, into hyperstructure/fctl-site's `src/features/shots`
 ([the demo skill](../.claude/skills/demo/SKILL.md) says what they need).
 
+`xtask/demo/diff-video.mjs` makes the video of a session's diffs following
+its agent that fctl.sh's Sessions page shows, without a stack: the
+session's diffs from its transcript's edits (`cargo xtask demo steps
+platform-437`), shown by the app's diff dialog on `web/demo/diffs.html`,
+a page Vite serves in development only. The demo skill says how to run it.
+
 fake-claude plays the transcripts with `--replays <dir>`: each `*.toml`
 there is one session's turns, which it streams as Claude Code would, its
 tool calls with their outputs, and makes their edits, writes, commits and

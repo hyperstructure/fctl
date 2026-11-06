@@ -452,6 +452,82 @@ fn stop_leftovers(state: &Path) {
     }
 }
 
+/// `cargo xtask demo steps <transcript>`: what a session's transcript does
+/// to its repository's files, in order, as JSON, for the scripts that show
+/// its changes as they came (`xtask/demo/diff-video.mjs`): the repository
+/// (`owner/name`, its stand-in in `xtask/demo/repos`), and each edit
+/// (`edit`, `old`, `new`, `replace_all`) and write (`write`, `content`),
+/// those made at once and by subagents among them.
+pub fn steps(root: &Path, name: &str) -> Result<()> {
+    let data = root.join("xtask/demo");
+    let cast = Cast::load(&data.join("cast.toml"))?;
+    let session = cast
+        .sessions
+        .iter()
+        .find(|s| world::transcript_of(s) == name)
+        .with_context(|| format!("no session of the cast has the transcript {name}"))?;
+    let (project, _) = cast::session_ref(&session.id)?;
+    let repo = cast
+        .project(project)?
+        .repo
+        .clone()
+        .with_context(|| format!("{project} has no repository"))?;
+    let path = data.join("transcripts").join(format!("{name}.toml"));
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let v: toml::Value =
+        toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+    let out = serde_json::json!({ "session": session.id, "repo": repo, "steps": file_steps(&v) });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+/// A transcript's edits and writes of files in its repository, in order.
+fn file_steps(transcript: &toml::Value) -> Vec<serde_json::Value> {
+    fn walk(step: &toml::Value, out: &mut Vec<serde_json::Value>) {
+        let text = |k: &str| step.get(k).and_then(toml::Value::as_str);
+        for key in ["tools", "steps"] {
+            for call in step
+                .get(key)
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                walk(call, out);
+            }
+        }
+        let inside = |p: &str| !p.starts_with('/') && !p.starts_with('~');
+        if let Some(path) = text("write").filter(|p| inside(p)) {
+            out.push(serde_json::json!({ "write": path.trim_start_matches("./"), "content": text("content").unwrap_or_default() }));
+        }
+        if let Some(path) = text("edit").filter(|p| inside(p)) {
+            out.push(serde_json::json!({
+                "edit": path.trim_start_matches("./"),
+                "old": text("old").unwrap_or_default(),
+                "new": text("new").unwrap_or_default(),
+                "replace_all": step.get("replace_all").and_then(toml::Value::as_bool).unwrap_or(false),
+            }));
+        }
+    }
+    let mut out = Vec::new();
+    for turn in transcript
+        .get("turn")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for step in turn
+            .get("step")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk(step, &mut out);
+        }
+    }
+    out
+}
+
 pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     let state = root.join(".fctl-demo");
     let seeded = seed(root, opts, &state);
@@ -602,8 +678,41 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cast, check_changes, check_transcripts, civil, iso, world};
+    use super::{Cast, check_changes, check_transcripts, civil, file_steps, iso, world};
     use std::path::Path;
+
+    /// A transcript's edits and writes come in order, those of calls made at
+    /// once and of subagents among them, and only of files in its repository.
+    #[test]
+    fn a_transcript_s_file_steps_come_in_order() -> anyhow::Result<()> {
+        let t: toml::Value = toml::from_str(
+            r#"
+[[turn]]
+[[turn.step]]
+write = "a.txt"
+content = "one"
+[[turn.step]]
+tools = [{ read = "a.txt" }, { edit = "./a.txt", old = "one", new = "two" }]
+[[turn.step]]
+write = "/tmp/elsewhere"
+content = "x"
+[[turn]]
+[[turn.step]]
+agent = "Look around"
+steps = [{ edit = "b.txt", old = "x", new = "y", replace_all = true }]
+"#,
+        )?;
+        let steps = file_steps(&t);
+        assert_eq!(
+            serde_json::Value::Array(steps),
+            serde_json::json!([
+                { "write": "a.txt", "content": "one" },
+                { "edit": "a.txt", "old": "one", "new": "two", "replace_all": false },
+                { "edit": "b.txt", "old": "x", "new": "y", "replace_all": true },
+            ])
+        );
+        Ok(())
+    }
 
     /// The cast says what it can, every session has its transcript, and
     /// the transcripts change only what their repositories have.
