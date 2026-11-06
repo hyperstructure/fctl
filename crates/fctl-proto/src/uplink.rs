@@ -307,7 +307,7 @@ mod tests {
             unreachable: None,
             paused: Some(SandboxPaused {
                 since: 2_000,
-                reason: "runner now is nearly out of disk: 800 MiB free".into(),
+                reason: "it is nearly out of disk, with 800 MiB free".into(),
             }),
         };
         let json = serde_json::to_value(&paused)?;

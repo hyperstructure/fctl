@@ -180,7 +180,7 @@ describe("SessionPage", () => {
       type: "runner_connected",
       connected: true,
       disk: { room: "out", free_mb: 800, min_free_mb: 20_480, since },
-      sandbox_paused: { since, reason: "runner now is nearly out of disk: 800 MiB free" },
+      sandbox_paused: { since, reason: "it is nearly out of disk, with 800 MiB free" },
     });
     expect(p.text()).toContain("Runner now paused this session's sandbox since");
     expect(p.text()).toContain("The sandbox keeps what the agent wrote.");

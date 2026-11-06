@@ -501,7 +501,10 @@ mod tests {
         let spaces = "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
                       map auto_home 0 0 0 100% /System/Volumes/Data/home\n";
         assert_eq!(df_free_mb(spaces), Some(0));
-        assert_eq!(df_free_mb("df: /nowhere: No such file or directory\n"), None);
+        assert_eq!(
+            df_free_mb("df: /nowhere: No such file or directory\n"),
+            None
+        );
         assert_eq!(df_free_mb(""), None);
     }
 

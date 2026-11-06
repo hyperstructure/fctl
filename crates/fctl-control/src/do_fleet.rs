@@ -1834,7 +1834,8 @@ impl FleetObject {
     }
 
     /// Tells the sessions on a runner what a heartbeat said of its disk:
-    /// their transcripts, and what their pages show.
+    /// their transcripts, and what their pages show, which alone changes
+    /// nothing else of theirs.
     async fn tell_disk(&self, runner_id: &str, tell: fctl_domain::disk::Tell) {
         if tell.notice.is_none() && !tell.changed {
             return;
@@ -1846,16 +1847,22 @@ impl FleetObject {
             let Ok(stub) = internal::session_stub(&self.env, &a.session_id) else {
                 continue;
             };
-            let r: std::result::Result<serde_json::Value, _> = internal::post(
-                &stub,
-                "/control",
-                &ControlState {
-                    notice: tell.notice.clone(),
-                    disk: disk.clone(),
-                    ..Default::default()
-                },
-            )
-            .await;
+            let r: std::result::Result<serde_json::Value, _> = match (&tell.notice, &disk) {
+                (Some(notice), _) => {
+                    internal::post(
+                        &stub,
+                        "/control",
+                        &ControlState {
+                            notice: Some(notice.clone()),
+                            disk: disk.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                }
+                (None, Some(disk)) => internal::post(&stub, "/runner-disk", disk).await,
+                (None, None) => continue,
+            };
             if let Err(e) = r {
                 worker::console_error!(
                     "telling {} about its runner's disk: {}",

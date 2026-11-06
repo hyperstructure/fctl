@@ -98,13 +98,13 @@ describe("stalls", () => {
   it("say when the runner paused the sandbox for want of disk, and what follows", () => {
     const st = stallOf(session("running"), {
       ...connected,
-      sandboxPaused: { since: now - 3 * minute, reason: "runner now is nearly out of disk: 800 MiB free" },
+      sandboxPaused: { since: now - 3 * minute, reason: "it is nearly out of disk, with 800 MiB free" },
       // A paused sandbox doesn't answer: that is no news.
       agentUnreachable: { since: now, reason: "nothing came from fctl-agent for a minute" },
     });
     expect(st).toMatchObject({ kind: "paused", showFrom: 0, since: now - 3 * minute });
     expect(stallText(must(st), now)).toEqual({
-      title: `Runner now paused this session's sandbox since ${clock(now - 3 * minute)}: runner now is nearly out of disk: 800 MiB free.`,
+      title: `Runner now paused this session's sandbox since ${clock(now - 3 * minute)}: it is nearly out of disk, with 800 MiB free.`,
       detail:
         "The sandbox keeps what the agent wrote. The agent carries on where it was once there is room, and messages you send reach the agent then.",
     });

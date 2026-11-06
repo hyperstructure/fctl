@@ -210,7 +210,7 @@ mod tests {
             "type": "runner_connected",
             "connected": true,
             "disk": { "room": "out", "free_mb": 800, "min_free_mb": 20480, "since": 7 },
-            "sandbox_paused": { "since": 8, "reason": "runner now is nearly out of disk" }
+            "sandbox_paused": { "since": 8, "reason": "it is nearly out of disk" }
         }))?;
         let ViewerServer::RunnerConnected {
             disk,

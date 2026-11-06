@@ -333,6 +333,16 @@ impl DurableObject for SessionObject {
                 Ok(b) => self.control(b).await,
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            (worker::Method::Post, "/runner-disk") => {
+                match req.json::<internal::DiskNews>().await {
+                    Ok(b) => {
+                        self.runner_disk(b);
+                        self.broadcast_runner(None);
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Post, "/drain-stop") => match req.json::<DrainStop>().await {
                 Ok(b) => self.drain_stop(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
@@ -1839,14 +1849,8 @@ impl SessionObject {
             self.delete_meta("runner_disk");
         }
         let disk_changed = b.disk.is_some();
-        match b.disk.and_then(|news| news.disk) {
-            Some(disk) => {
-                if let Ok(json) = serde_json::to_string(&disk) {
-                    self.set_meta("runner_disk", &json);
-                }
-            }
-            None if disk_changed => self.delete_meta("runner_disk"),
-            None => {}
+        if let Some(news) = b.disk {
+            self.runner_disk(news);
         }
         let mut status_changed = false;
         if let Some(st) = b.status
@@ -1881,6 +1885,15 @@ impl SessionObject {
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
         Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Keeps how short of disk the session's runner is, for its pages
+    /// (`runner_disk`).
+    fn runner_disk(&self, news: internal::DiskNews) {
+        match news.disk.and_then(|d| serde_json::to_string(&d).ok()) {
+            Some(json) => self.set_meta("runner_disk", &json),
+            None => self.delete_meta("runner_disk"),
+        }
     }
 
     fn set_status(

@@ -263,13 +263,13 @@ mod tests {
         w.session(&session(SessionStatus::Running));
         let p = SandboxPaused {
             since: ms - 60_000,
-            reason: "runner now is nearly out of disk: 800 MiB free".into(),
+            reason: "it is nearly out of disk, with 800 MiB free".into(),
         };
         let a = unreachable("nothing came from fctl-agent for a minute");
         let line = w
             .runner(true, None, Some(&a), Some(&p), t0, ms)
             .unwrap_or_default();
-        assert!(line.contains("runner now paused the sandbox (1m ago): runner now is nearly out of disk: 800 MiB free; the agent carries on once there is room"), "{line}");
+        assert!(line.contains("runner now paused the sandbox (1m ago): it is nearly out of disk, with 800 MiB free; the agent carries on once there is room"), "{line}");
         assert_eq!(w.runner(true, None, None, Some(&p), t0, ms), None);
         let back = w.runner(true, None, None, None, t0, ms).unwrap_or_default();
         assert!(back.contains("runner now resumed the sandbox"), "{back}");

@@ -685,8 +685,9 @@ fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     });
 }
 
-/// Tells the session's viewers whether the host reaches the agent.
-fn report_reach(uplink: &Uplink, reached: Reached) {
+/// Tells the session's viewers whether the host reaches the agent, and
+/// whether it holds the sandbox paused, which each such message says.
+fn report_reach(uplink: &Uplink, reached: Reached, paused: Option<&SandboxPaused>) {
     let unreachable = match reached {
         Reached::Not { since, reason } => Some(AgentUnreachable {
             since: wall_ms(since),
@@ -696,7 +697,7 @@ fn report_reach(uplink: &Uplink, reached: Reached) {
     };
     uplink.send(UplinkUp::AgentLink {
         unreachable,
-        paused: None,
+        paused: paused.cloned(),
     });
 }
 
@@ -1160,7 +1161,7 @@ async fn run(
                         retry.reset();
                         told_restart = false;
                         if let Some(r) = reach.up() {
-                            report_reach(&uplink, r);
+                            report_reach(&uplink, r, held.as_ref());
                         }
                         tracing::info!(
                             "attached to fctl-agent {} in {} (journal at agent_seq {})",
@@ -1361,7 +1362,7 @@ async fn run(
                                 uplink.send(UplinkUp::AgentLink { unreachable: None, paused: Some(p.clone()) });
                                 uplink.send(UplinkUp::Notice { notice: paused_notice(&ctx.cfg.name, free) });
                                 held = Some(p);
-                                // The viewers heard that it doesn't stand still for want of a link.
+                                // The viewers hear of the pause now, not of the link.
                                 reach.told_nothing(Instant::now());
                                 // An attach under way waits for the sandbox.
                                 if let Some(a) = attaching.take() {
@@ -1453,7 +1454,7 @@ async fn run(
                     }
                 }
                 if let Some(r) = reach.check(Instant::now()) {
-                    report_reach(&uplink, r);
+                    report_reach(&uplink, r, held.as_ref());
                 }
             }
         }
