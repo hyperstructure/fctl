@@ -105,12 +105,13 @@ It answers with the session, `queued`. A session is:
 ### Read them
 
 - `GET /api/v1/sessions`: the sessions the caller sees, newest first,
-  without review agents' and archived ones. `?project=`, `?workspace=`,
+  without review agents', archived ones and those of schedules that hide
+  theirs (`hide_sessions`). `?project=`, `?workspace=`,
   `?status=active` (queued to stopping), `?status=ended` (stopped or
   failed) or one status, `?active_since=` (a time in milliseconds: those
   that haven't ended, and those that ended since, as the app's sidebar
   lists the last hour's), `?mine=1` (started by the caller), `?reviews=1`,
-  `?archived=1`, `?limit=` (50 unless set, at most 200), `?before=` (a
+  `?archived=1`, `?hidden=1`, `?limit=` (50 unless set, at most 200), `?before=` (a
   `created_at`). Answers `{"sessions": […], "next_before": …}`.
 - `GET /api/v1/sessions/{id}`: one session.
 - `GET /api/v1/search?q=…`: the sessions whose title, description,
@@ -237,8 +238,8 @@ closes it with 4403 once the caller may no longer see the session.
 
 | Request | What it does |
 |---|---|
-| `GET /api/v1/projects/{project}/schedules` | `{"schedules": […]}`: each with `id`, `name`, `prompt`, `cron` or `at` (or neither: runs when asked), `timezone`, `model`, `effort`, `base_branch`, `github_access`, `enabled`, `state` (`active`, `paused`, `done`), `paused_reason`, `problem`, `next_run_at`, `last_run`, `owner` |
-| `POST /api/v1/projects/{project}/schedules` | `{"name", "prompt", "cron" or "at", "timezone", "model", "effort", "base_branch", "github_access", "enabled": false}`: set one up, on the caller's subscription (people who start sessions in the project; tokens with `full` access) |
+| `GET /api/v1/projects/{project}/schedules` | `{"schedules": […]}`: each with `id`, `name`, `prompt`, `cron` or `at` (or neither: runs when asked), `timezone`, `model`, `effort`, `base_branch`, `github_access`, `hide_sessions` (its sessions stay off session lists), `enabled`, `state` (`active`, `paused`, `done`), `paused_reason`, `problem`, `next_run_at`, `last_run`, `owner` |
+| `POST /api/v1/projects/{project}/schedules` | `{"name", "prompt", "cron" or "at", "timezone", "model", "effort", "base_branch", "github_access", "hide_sessions": true, "enabled": false}`: set one up, on the caller's subscription (people who start sessions in the project; tokens with `full` access) |
 | `GET`, `PATCH`, `DELETE /api/v1/schedules/{id}` | read, change (absent fields stay; `""` for the project's defaults; `"enabled": false` pauses it; `"run_as_me": true` takes it over, as a change or a resume by anyone but its owner does), delete |
 | `GET /api/v1/schedules/{id}/runs` | `{"runs": […], "next_before": …}`, newest first |
 | `POST /api/v1/schedules/{id}/runs` | `{"context": "…"}` (at most 20,000 characters): run it now, on the caller's subscription |

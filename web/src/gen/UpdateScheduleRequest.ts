@@ -34,6 +34,11 @@ base_branch?: string,
  */
 github_access?: string, 
 /**
+ * `true`: its sessions, those it started already too, stay off session
+ * lists (`Schedule::hide_sessions`); `false`: they show again.
+ */
+hide_sessions?: boolean, 
+/**
  * `false` pauses it; `true` resumes it.
  */
 enabled?: boolean, 

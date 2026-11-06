@@ -1895,6 +1895,12 @@ someone, or another tool, runs one
    token is gone (`limits::allows`). A token's cap on GitHub stays with
    what it sets up, changes, resumes or takes over
    (`fctl_domain::schedules::github_within`). A project keeps at most 50.
+   One that runs often can keep its sessions off session lists
+   (`hide_sessions`): `GET /api/v1/sessions` leaves out the sessions of
+   such schedules, by joining `schedules`, unless asked (`?hidden=1`), and
+   projects' session counts and last activity leave them out too, so
+   that turning it on or off moves those it started already too; its runs
+   and search still find them, and they come back once it is deleted.
 2. **When.** Cron expressions have Vixie cron's five fields
    (`fctl_domain::cron`) and run at most every 15 minutes; their times are
    wall-clock times in the schedule's IANA time zone. The control plane

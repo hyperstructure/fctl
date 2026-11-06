@@ -101,6 +101,10 @@ pub enum SchedulesCmd {
         /// Set it up paused: it runs only once resumed.
         #[arg(long)]
         paused: bool,
+        /// Keep its sessions off session lists (the web app's and fctl
+        /// ls): its runs list them.
+        #[arg(long)]
+        hide_sessions: bool,
     },
     /// A schedule, its task and its latest runs.
     Show {
@@ -132,6 +136,13 @@ pub enum SchedulesCmd {
         /// Run it on your Claude subscription from now on.
         #[arg(long)]
         mine: bool,
+        /// Keep its sessions, those it started already too, off session
+        /// lists (the web app's and fctl ls): its runs list them.
+        #[arg(long, conflicts_with = "show_sessions")]
+        hide_sessions: bool,
+        /// List its sessions again.
+        #[arg(long)]
+        show_sessions: bool,
     },
     /// Pause a schedule: it starts nothing until it is resumed.
     Pause {
@@ -213,6 +224,7 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
             when,
             session,
             paused,
+            hide_sessions,
         } => {
             let project = project()?;
             let prompt = match (task, task_file) {
@@ -242,6 +254,7 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                     Some(g) => Some(access(&g)?),
                     None => None,
                 },
+                hide_sessions: hide_sessions.then_some(true),
                 enabled: paused.then_some(false),
             };
             let s = api.create_schedule(&project, &req).await?;
@@ -296,6 +309,14 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                     .unwrap_or_else(|| "as much as the project allows".into()),
             );
             row(
+                "Sessions",
+                if s.hide_sessions {
+                    "kept off session lists".into()
+                } else {
+                    "listed".into()
+                },
+            );
+            row(
                 "From branch",
                 s.base_branch
                     .clone()
@@ -318,6 +339,8 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
             when,
             session,
             mine,
+            hide_sessions,
+            show_sessions,
         } => {
             let s = find(&api, args.project.clone(), &schedule).await?;
             let prompt = match (task, task_file) {
@@ -344,6 +367,11 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                     Some(g) if g.is_empty() => Some(g),
                     Some(g) => Some(access(&g)?.as_str().to_owned()),
                     None => None,
+                },
+                hide_sessions: if hide_sessions {
+                    Some(true)
+                } else {
+                    show_sessions.then_some(false)
                 },
                 enabled: None,
                 run_as_me: mine.then_some(true),
@@ -670,6 +698,9 @@ fn print_schedule(s: &Schedule) {
     );
     let mut facts = vec![when_line(s)];
     facts.extend(held_to(s.github_access).map(str::to_owned));
+    if s.hide_sessions {
+        facts.push("sessions kept off lists".into());
+    }
     match &s.owner {
         // Each run is on the subscription of whoever runs it.
         Some(owner) if s.cron.is_none() && s.at.is_none() => {

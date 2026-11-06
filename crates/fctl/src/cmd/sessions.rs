@@ -129,6 +129,10 @@ pub struct ListArgs {
     /// The archived sessions too, which lists leave out.
     #[arg(long)]
     pub archived: bool,
+    /// The sessions of schedules that keep theirs off lists too
+    /// (fctl schedules edit --hide-sessions).
+    #[arg(long)]
+    pub hidden: bool,
     /// How many to show.
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
@@ -348,6 +352,7 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             status,
             since,
             args.archived,
+            args.hidden,
             args.limit,
         )
         .await?;

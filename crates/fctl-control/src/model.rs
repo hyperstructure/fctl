@@ -533,16 +533,21 @@ impl RepoRow {
 
 /// SELECT for projects with their workspace, the caller's roles and what
 /// they last started a session with, session counts and their other
-/// repositories. Bind: `?1` = caller user id.
+/// repositories. Bind: `?1` = caller user id. The counts leave out the
+/// sessions the lists do: review agents', and those of schedules that hide
+/// theirs.
 pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping') \
-      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)) AS active_sessions, \
+      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
+      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1)) AS active_sessions, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id \
-      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)) AS total_sessions, \
+      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
+      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1)) AS total_sessions, \
     (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id \
-      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)) AS last_activity_at, \
+      AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
+      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1)) AS last_activity_at, \
     (SELECT COUNT(*) FROM project_repos r WHERE r.project_id = p.id AND r.name != '*') AS other_repos, \
     (SELECT r.owner FROM project_repos r WHERE r.project_id = p.id AND r.name = '*' LIMIT 1) AS all_repos_of, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \

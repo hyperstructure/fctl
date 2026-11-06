@@ -577,13 +577,16 @@ impl Api {
         status: Option<&str>,
         limit: u32,
     ) -> Result<SessionList> {
-        self.sessions_in(None, project, status, None, false, limit)
+        self.sessions_in(None, project, status, None, false, false, limit)
             .await
     }
 
     /// Sessions, of one workspace when it is given, without those that
     /// ended before `active_since` (ms) when it is given, with the archived
-    /// ones among them when `archived` says so.
+    /// ones among them when `archived` says so, and the sessions of
+    /// schedules that hide theirs (`Schedule::hide_sessions`) when `hidden`
+    /// does.
+    #[allow(clippy::too_many_arguments)]
     pub async fn sessions_in(
         &self,
         workspace: Option<&str>,
@@ -591,6 +594,7 @@ impl Api {
         status: Option<&str>,
         active_since: Option<i64>,
         archived: bool,
+        hidden: bool,
         limit: u32,
     ) -> Result<SessionList> {
         let mut q = format!("/sessions?limit={limit}");
@@ -609,15 +613,18 @@ impl Api {
         if archived {
             q.push_str("&archived=1");
         }
+        if hidden {
+            q.push_str("&hidden=1");
+        }
         self.get(&q).await
     }
 
-    /// A project's sessions with its review agents' and its archived ones
-    /// among them, which the other lists leave out: to find one by its
-    /// number.
+    /// A project's sessions with its review agents', its archived ones and
+    /// those its schedules hide among them, which the other lists leave
+    /// out: to find one by its number.
     pub async fn sessions_with_reviews(&self, project: &str, limit: u32) -> Result<SessionList> {
         self.get(&format!(
-            "/sessions?limit={limit}&project={}&reviews=1&archived=1",
+            "/sessions?limit={limit}&project={}&reviews=1&archived=1&hidden=1",
             enc(project)
         ))
         .await
