@@ -944,7 +944,8 @@ pub struct TokenScope {
     pub places: Option<TokenPlaces>,
     /// The most the agents of the sessions it starts, messages or resumes
     /// may do on GitHub (`CreateSessionRequest::github_access`). Absent:
-    /// push.
+    /// push; one this version doesn't know reads as `read`.
+    #[serde(default, deserialize_with = "crate::session::least_if_unknown")]
     pub github_access: Option<GithubAccess>,
 }
 
@@ -3284,7 +3285,8 @@ pub struct Schedule {
     pub effort: Option<String>,
     pub base_branch: Option<String>,
     /// What its sessions' agents may do on GitHub; absent: as much as the
-    /// project allows.
+    /// project allows. One this version doesn't know reads as `read`.
+    #[serde(default, deserialize_with = "crate::session::least_if_unknown")]
     pub github_access: Option<GithubAccess>,
     /// `false` while it is paused: it starts nothing until it is resumed,
     /// not even when asked.
@@ -3478,7 +3480,8 @@ pub struct UpdateScheduleRequest {
     pub effort: Option<String>,
     /// `""` for the project's default branch.
     pub base_branch: Option<String>,
-    /// `push`, `comment` or `read`; `""` for as much as the project allows.
+    /// `push`, `comment`, `triage` or `read`; `""` for as much as the
+    /// project allows.
     pub github_access: Option<String>,
     /// `false` pauses it; `true` resumes it.
     pub enabled: Option<bool>,

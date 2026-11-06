@@ -558,6 +558,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
         Some(GithubAccess::Comment) => {
             println!("github:   reviews and comments, pushes nothing")
         }
+        Some(GithubAccess::Triage) => {
+            println!("github:   triages: labels tickets and comments on them, nothing else")
+        }
         Some(GithubAccess::Read) => println!("github:   reads only"),
         _ => {}
     }

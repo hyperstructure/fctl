@@ -15,6 +15,9 @@ pub enum Github {
     Push,
     /// Review and comment on pull requests and issues; push nothing.
     Comment,
+    /// Label the project's tickets and comment on them, through fctl;
+    /// write nothing else.
+    Triage,
     /// Read the code, pull requests and issues; write nothing.
     Read,
 }
@@ -24,6 +27,7 @@ impl From<Github> for GithubAccess {
         match g {
             Github::Push => Self::Push,
             Github::Comment => Self::Comment,
+            Github::Triage => Self::Triage,
             Github::Read => Self::Read,
         }
     }
@@ -267,6 +271,7 @@ pub fn describe(scope: &TokenScope) -> String {
         (_, Some(GithubAccess::Comment)) => {
             "; their agents review and comment on GitHub, and push nothing"
         }
+        (_, Some(GithubAccess::Triage)) => "; their agents only label tickets and comment on them",
         (_, Some(GithubAccess::Read)) => "; their agents only read on GitHub",
         _ => "",
     };
@@ -325,6 +330,10 @@ mod tests {
             github_access: Some(GithubAccess::Read),
         };
         assert_eq!(describe(&read), "Reads all your projects.");
+        scope.github_access = Some(GithubAccess::Triage);
+        assert!(
+            describe(&scope).ends_with("; their agents only label tickets and comment on them.")
+        );
         let gone = TokenScope {
             access: TokenAccess::Full,
             places: Some(TokenPlaces {

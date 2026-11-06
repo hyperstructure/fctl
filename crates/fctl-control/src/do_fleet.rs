@@ -19,8 +19,8 @@ use fctl_domain::schedule::{Home, Slot, TokenWait, Wait};
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
-    ClaudeLoginUpdate, CredentialKind, FEATURE_REVIEWS, FleetToHost, HostHello, HostSessionReport,
-    HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
+    ClaudeLoginUpdate, CredentialKind, FEATURE_REVIEWS, FEATURE_TRIAGE, FleetToHost, HostHello,
+    HostSessionReport, HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
 };
 use fctl_proto::session::{RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -2001,6 +2001,9 @@ impl FleetObject {
             let spec = match built {
                 Ok(mut s) => {
                     s.run_id = Some(fctl_domain::ids::new_id("run", now));
+                    s.github_access = s.github_access.map(|g| {
+                        fctl_domain::limits::for_host(g, self.host_has(&runner_id, FEATURE_TRIAGE))
+                    });
                     s
                 }
                 Err(e) => {
@@ -2144,6 +2147,15 @@ impl FleetObject {
                 })
             })
             .collect()
+    }
+
+    /// Whether the host of `runner_id` announced `feature` in its hello.
+    fn host_has(&self, runner_id: &str, feature: &str) -> bool {
+        self.live_rows()
+            .into_iter()
+            .find(|r| r.id == runner_id)
+            .and_then(|r| serde_json::from_str::<HostHello>(r.hello.as_deref()?).ok())
+            .is_some_and(|h| h.features.iter().any(|f| f == feature))
     }
 
     /// The runner that last took the session, which keeps its sandbox.

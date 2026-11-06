@@ -68,7 +68,7 @@ effort?: string,
 /**
  * What its agent may do on GitHub, within its project's
  * `github_access` as it is now. Absent: push, as from control planes
- * before it.
+ * before it; one this version doesn't know reads as `read`.
  */
 github_access?: GithubAccess, 
 /**

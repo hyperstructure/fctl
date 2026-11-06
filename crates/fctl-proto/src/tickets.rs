@@ -462,8 +462,17 @@ pub struct TicketNotice {
     /// The comment or reply it posted, and its link.
     pub body: Option<String>,
     pub url: Option<String>,
-    /// For a ticket it moved or changed: its state now.
+    /// For a ticket it moved or changed: its state now. Absent for a
+    /// change of labels alone.
     pub state: Option<TicketState>,
+    /// For a ticket it changed: the labels it put on, and those it took
+    /// off. Absent from control planes before them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub labeled: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub unlabeled: Vec<String>,
 }
 
 // ───────────────────────────── Linear ─────────────────────────────

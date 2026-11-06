@@ -61,8 +61,8 @@ pub struct SessionArgs {
     /// the project's.
     #[arg(long)]
     pub effort: Option<String>,
-    /// What their agents may do on GitHub (push, comment, read); `default`
-    /// for as much as the project allows.
+    /// What their agents may do on GitHub (push, comment, triage, read);
+    /// `default` for as much as the project allows.
     #[arg(long)]
     pub github: Option<String>,
     /// The branch they start from; `default` for the project's.
@@ -82,7 +82,9 @@ pub enum SchedulesCmd {
   fctl schedules add --cron \"0 8 * * 1-5\" --task-file triage.md
   fctl schedules add \"Release notes\" --at 2026-10-30T16:00+01:00 -m \"Draft the release notes for v1.0.\"
   fctl schedules add --at 2h -m \"Check whether the deploy went out, and tell me.\"
-  fctl schedules add \"Triage an issue\" --when-asked --github comment -m \"Triage the issue below.\"")]
+  fctl schedules add \"Triage new issues\" --cron \"0 8 * * 1-5\" --github triage \\
+    -m \"Label the issues opened since the last run, and ask for what is missing to act on them.\"
+  fctl schedules add \"Triage an issue\" --when-asked --github triage -m \"Triage the issue below.\"")]
     Add {
         /// Its name; default: the task's first line.
         name: Option<String>,
@@ -596,7 +598,8 @@ fn blank(v: Option<String>) -> Option<String> {
 }
 
 fn access(v: &str) -> Result<GithubAccess> {
-    GithubAccess::parse(v.trim()).context("Use push, comment or read, or default for the project's")
+    GithubAccess::parse(v.trim())
+        .context("Use push, comment, triage or read, or default for the project's")
 }
 
 /// A file's text, or stdin's for `-`.

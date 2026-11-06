@@ -764,8 +764,9 @@ pub async fn github_tokens(
     let connections = crate::workspaces::connections(db, workspace_id).await?;
     let scope = crate::workspaces::scope(&connections, &plan.owner);
     let (plan, refused) = fctl_domain::repos::narrow(plan, scope.as_ref());
-    // An agent that only reads gets one read-only token for everything.
-    let plan = if access == GithubAccess::Read {
+    // An agent that only reads, or triages, gets one read-only token for
+    // everything: one that triages writes through the control plane alone.
+    let plan = if !access.tokens_write() {
         plan.reading_only()
     } else {
         plan

@@ -18,6 +18,6 @@ places?: TokenPlaces,
 /**
  * The most the agents of the sessions it starts, messages or resumes
  * may do on GitHub (`CreateSessionRequest::github_access`). Absent:
- * push.
+ * push; one this version doesn't know reads as `read`.
  */
 github_access?: GithubAccess, };

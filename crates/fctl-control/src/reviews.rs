@@ -35,9 +35,7 @@ use fctl_proto::api::{
 };
 use fctl_proto::event::{MessageSource, UserMessage};
 use fctl_proto::runner::{GithubCredential, StopReason};
-use fctl_proto::session::{
-    GithubAccess, PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef,
-};
+use fctl_proto::session::{PullRequestRef, RepoAccess, RepoRef, SessionRef, SessionStats, UserRef};
 use fctl_proto::{ApiError, ErrorCode, ProjectId, SessionId, UserId};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -2120,7 +2118,8 @@ struct Posting {
 /// which resumes the session if it stopped, as a person's would, on the
 /// subscription it ran on. Its agent decides what to do about each
 /// finding, and answers in its thread. Not for pull requests that merged
-/// or closed meanwhile, nor sessions whose agent only reads on GitHub now.
+/// or closed meanwhile, nor sessions whose agent writes nothing to pull
+/// requests now (it only reads on GitHub, or triages).
 /// Returns the session, once it has the message.
 async fn pass_on(
     ctx: &Ctx,
@@ -2168,9 +2167,9 @@ async fn pass_on(
     let Some(session) = crate::spec::session_row(&ctx.db, id).await? else {
         return Ok(None);
     };
-    if session.github_access() == GithubAccess::Read {
+    if !session.github_access().tokens_write() {
         worker::console_log!(
-            "not passing {pr}'s review on to session {id}: its agent only reads on GitHub"
+            "not passing {pr}'s review on to session {id}: its agent writes nothing to pull requests"
         );
         return Ok(None);
     }
