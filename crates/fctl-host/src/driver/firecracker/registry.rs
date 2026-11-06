@@ -41,6 +41,8 @@ pub struct Resolved {
     pub id: String,
     pub config: Config,
     pub layers: Vec<Descriptor>,
+    /// The layers' digests, uncompressed (the config's `rootfs.diff_ids`).
+    pub diff_ids: Vec<String>,
 }
 
 /// What an image's config says about running it.
@@ -60,6 +62,54 @@ pub struct Config {
 struct ConfigFile {
     #[serde(default)]
     config: Config,
+    #[serde(default)]
+    rootfs: RootFs,
+}
+
+#[derive(Default, Deserialize)]
+struct RootFs {
+    #[serde(default)]
+    diff_ids: Vec<String>,
+}
+
+/// What an image's config file says about running it, and its layers'
+/// digests, uncompressed.
+pub fn read_config(bytes: &[u8]) -> Result<(Config, Vec<String>)> {
+    let file: ConfigFile = serde_json::from_slice(bytes).context("reading an image's config")?;
+    Ok((file.config, file.rootfs.diff_ids))
+}
+
+/// What an index or an image's manifest lists, as registries and OCI image
+/// layouts keep them.
+pub enum Listed {
+    /// An index: its manifests' digests, and their platforms (os and
+    /// architecture) where it says.
+    Index(Vec<(String, Option<(String, String)>)>),
+    /// An image's manifest: its config and layers.
+    Image {
+        config: Descriptor,
+        layers: Vec<Descriptor>,
+    },
+}
+
+/// What the index or manifest `bytes` lists.
+pub fn read_manifest(bytes: &[u8]) -> Result<Listed> {
+    let m: Manifest = serde_json::from_slice(bytes).context("reading a manifest")?;
+    if let Some(index) = m.manifests {
+        return Ok(Listed::Index(
+            index
+                .into_iter()
+                .map(|p| (p.digest, p.platform.map(|p| (p.os, p.architecture))))
+                .collect(),
+        ));
+    }
+    match (m.config, m.layers) {
+        (Some(config), Some(layers)) => Ok(Listed::Image { config, layers }),
+        _ => bail!(
+            "a manifest ({}) that isn't one fctl reads",
+            m.media_type.unwrap_or_default()
+        ),
+    }
 }
 
 #[derive(Deserialize)]
@@ -394,6 +444,7 @@ impl Registry {
                 id: config.digest,
                 config: file.config,
                 layers,
+                diff_ids: file.rootfs.diff_ids,
             });
         }
         bail!("{reference}'s index points at another index")

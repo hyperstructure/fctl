@@ -886,7 +886,8 @@ chroot, unless `jailer = false` in `host.toml`'s `[firecracker]`; that
 needs cgroup v2 and a data directory on a filesystem that allows device
 files, and `fctl host doctor` says when either is missing. Its sandboxes
 mount their project's package caches from the host over their vsock, and
-it builds no images; projects' own images run as with Docker.
+it builds projects' images with BuildKit in a VM of each project's own;
+projects' own images run as with Docker.
 [Architecture](architecture.md#firecracker) has the details.
 
 Sessions start from their project's image or, without one, the host's:
@@ -937,7 +938,9 @@ Agents are told their sandbox's size in their instructions and in
 `container`, `nproc` counts one CPU more than the sandbox may use.
 
 A stopped session's sandbox takes disk on the host until it has been
-stopped for `keep_stopped_hours`, or until the disk runs low. With Apple's
+stopped for `keep_stopped_hours`, or until the disk runs low, and so does
+a Firecracker host's image builder, with its project's build cache,
+counted from its last build. With Apple's
 `container`, a sandbox's disk image keeps the space of the files its
 session deleted (a build of fctl leaves about 5.5 GB) until the host
 stops the sandbox: then the host gives that space back to the Mac with

@@ -88,7 +88,10 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   each in a short-lived microVM into a filesystem that the sandboxes made
   from it share, read only; they boot a kernel that hyperstructure/sandbox
   publishes too, `ghcr.io/hyperstructure/sandbox-kernel:<version>`. They
-  build no images ([Architecture](architecture.md#firecracker)).
+  build projects' images with BuildKit in a VM of each project's own,
+  from BuildKit's image, which they pull from Docker Hub
+  (`docker.io/moby/buildkit`) for a project's first build
+  ([Architecture](architecture.md#firecracker)).
 - **Disk.** The host removes the default images that sessions no longer
   start from: builds that a newer one replaced, other versions' images, and
   `latest` once the version's image is there. It does that when it starts,
@@ -238,8 +241,7 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
    credential helper), so `docker login` there needs Docker's CLI only.
 
 Lima runners don't use images: their sessions run in a clone of the VM
-`fctl host image build` prepared. The process driver uses none either, and
-Firecracker runners build none.
+`fctl host image build` prepared. The process driver uses none either.
 
 ## Building it from the repository
 
@@ -258,7 +260,7 @@ fctl projects set -p my-app --build ""     # stop building
 The project needs a repository, and its build replaces any image it chose.
 Only hosts whose owners allow builds from the repository take its sessions
 (`allowed_builds`, [below](#which-images-a-host-runs)), and only those with
-the Apple container or Docker driver.
+the Apple container, Docker or Firecracker driver.
 
 When a session starts in a new sandbox, the host:
 
@@ -274,8 +276,11 @@ When a session starts in a new sandbox, the host:
    default); the builder's cache keeps the builds that follow short
    anyway.
 3. Otherwise downloads the repository at that commit (up to 2 GiB), keeps
-   only the directory, and builds the image with `docker build` or
-   `container build`, from the Dockerfile's text as GitHub sent it. The
+   only the directory, and builds the image with `docker build`,
+   `container build` or, with Firecracker, BuildKit in a VM of the
+   project's own (whose image, `docker.io/moby/buildkit`, the host pulls
+   from Docker Hub for the first), from the Dockerfile's text as GitHub
+   sent it. The
    session's log shows each step. Sessions that need the same build wait
    for the one that builds it. Builds pass no secrets: a Dockerfile that
    needs a token should leave that step to the setup script.
@@ -292,11 +297,12 @@ fails the session with the reason. A dev container configuration's
 configuration larger than 1 MiB. A build that takes longer
 than `build_timeout_minutes` (60) is stopped, and an image larger than
 `max_build_mb` (20 GiB) is removed, where the runtime reports image sizes
-(Docker does); the session fails and says why. A build runs in the
-runtime's builder, not in a sandbox, so the project's CPU and memory
+(Docker and Firecracker do); the session fails and says why. A build runs
+in the runtime's builder, not in a sandbox, so the project's CPU and memory
 settings don't apply: with Docker it gets what the Docker daemon has (on
-macOS, its VM), and with Apple container what its builder VM has
-(`container builder start --cpus 8 --memory 16g` sizes it).
+macOS, its VM), with Apple container what its builder VM has (`container
+builder start --cpus 8 --memory 16g` sizes it), and with Firecracker the
+host's default sandbox size (`cpus` and `memory_mb` in `host.toml`).
 
 **What fctl reads from a dev container configuration.** `image`, or
 `build.dockerfile`, `build.context`, `build.args` and `build.target`

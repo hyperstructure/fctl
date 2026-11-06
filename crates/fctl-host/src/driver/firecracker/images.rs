@@ -1,7 +1,10 @@
 //! The images a Firecracker host keeps: for each, the root filesystem its
 //! layers make (read only, shared by the sandboxes made from it) and what
 //! its config says about running it; and the names that refer to them, as
-//! Docker's tags do.
+//! Docker's tags do. An image whose layers start with all of another's
+//! (a project's image `FROM` the default one, say) keeps only what its
+//! other layers make, as overlayfs reads it, over that image's filesystem:
+//! the sandboxes made from it stack the two.
 
 use anyhow::{Context, Result};
 use fctl_domain::image::ImageRef;
@@ -30,7 +33,18 @@ pub struct Image {
     #[serde(default)]
     pub bytes: u64,
     pub pulled_ms: i64,
+    /// Its layers' digests, uncompressed (its config's `rootfs.diff_ids`),
+    /// which tell the images it lies over.
+    #[serde(default)]
+    pub diff_ids: Vec<String>,
+    /// The image whose filesystem its own lies over, which holds what its
+    /// first layers make.
+    #[serde(default)]
+    pub base: Option<String>,
 }
+
+/// The most images one stacks, its own included: each is a disk of the VM.
+pub const MAX_CHAIN: usize = 4;
 
 /// A reference as the store keeps it: `ubuntu` is
 /// `docker.io/library/ubuntu:latest`.
@@ -44,9 +58,11 @@ pub fn canonical(reference: &str) -> Option<String> {
     })
 }
 
-/// The images under `dir`: `refs.json`, and a directory for each image
-/// named after its ID's hex digits, with `image.json` and `rootfs.ext4`.
-/// What changes names or removes images holds [`Store::lock`].
+/// The images under `dir`: `refs.json`, a directory for each image named
+/// after its ID's hex digits, with `image.json` and `rootfs.ext4`, and
+/// `held`, with a file for each image that a pull or a build lies a new
+/// image over ([`Store::hold`]). What changes names or removes images holds
+/// [`Store::lock`].
 #[derive(Clone, Debug)]
 pub struct Store {
     pub dir: PathBuf,
@@ -65,9 +81,82 @@ impl Drop for Lock {
     }
 }
 
+/// An image that a pull or a build lies a new image over, kept until this
+/// goes ([`Store::hold`]).
+#[derive(Debug)]
+pub struct Held {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        // As `Lock` does: a process forked meanwhile shares the file.
+        let _ = self.file.unlock();
+    }
+}
+
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
+    }
+
+    fn held_dir(&self) -> PathBuf {
+        self.dir.join("held")
+    }
+
+    /// Keeps the image `id` until the returned [`Held`] goes, though no
+    /// name or sandbox needs it, for a pull or a build that lies a new image
+    /// over it: a file that names it, locked while this process holds it,
+    /// so that a host or `fctl host image pull` that stopped halfway keeps
+    /// it no longer. Under [`Store::lock`], so that nothing removes `id`
+    /// between choosing it and holding it.
+    pub fn hold(&self, id: &str) -> Result<Held> {
+        std::fs::create_dir_all(self.held_dir())?;
+        let path = self
+            .held_dir()
+            .join(hex::encode(fctl_domain::random_bytes::<8>()));
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        file.lock()?;
+        std::fs::write(&path, id)?;
+        Ok(Held { file, path })
+    }
+
+    /// The images that pulls and builds hold ([`Store::hold`]); files of
+    /// holds that ended without removing them go.
+    pub fn held(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.held_dir()) else {
+            return Vec::new();
+        };
+        let mut held = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(file) = std::fs::File::open(entry.path()) else {
+                continue;
+            };
+            match file.try_lock_shared() {
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if let Ok(id) = std::fs::read_to_string(entry.path())
+                        && !id.trim().is_empty()
+                    {
+                        held.push(id.trim().to_owned());
+                    }
+                }
+                Ok(()) => {
+                    // No one holds it; one being made isn't locked yet, for
+                    // a moment, but is still empty.
+                    if std::fs::metadata(entry.path()).is_ok_and(|m| m.len() > 0) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                    let _ = file.unlock();
+                }
+                Err(_) => {}
+            }
+        }
+        held
     }
 
     /// Waits for the store's lock, which the returned [`Lock`] holds until
@@ -148,6 +237,16 @@ impl Store {
         self.tag(&image.reference, &image.id)
     }
 
+    /// Writes what the store says of `image`, which is here, anew (with
+    /// the lock held).
+    pub fn save(&self, image: &Image) -> Result<()> {
+        let path = self.image_dir(&image.id).join("image.json");
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_vec_pretty(image)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
     /// Names the image `id` `reference`, in place of what that named (with
     /// the lock held).
     pub fn tag(&self, reference: &str, id: &str) -> Result<()> {
@@ -201,6 +300,41 @@ impl Store {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The images `id` stacks, the one at the bottom first and `id` last;
+    /// `None` when one is missing.
+    pub fn chain(&self, id: &str) -> Option<Vec<Image>> {
+        let mut chain = vec![self.image(id)?];
+        while let Some(base) = chain.last().and_then(|i| i.base.clone()) {
+            if chain.len() >= MAX_CHAIN || chain.iter().any(|i| i.id == base) {
+                return None;
+            }
+            chain.push(self.image(&base)?);
+        }
+        chain.reverse();
+        Some(chain)
+    }
+
+    /// The image here that an image of the layers `diff_ids` can lie over:
+    /// the one whose layers are most of its first ones (all of them, for an
+    /// image that only sets its config), of those that stack few enough
+    /// images for it to stack one more, the one that stacks fewest.
+    pub fn base_for(&self, diff_ids: &[String]) -> Option<Image> {
+        self.ids()
+            .into_iter()
+            .filter_map(|id| self.image(&id))
+            .filter(|i| {
+                !i.diff_ids.is_empty()
+                    && i.diff_ids.len() <= diff_ids.len()
+                    && diff_ids.starts_with(&i.diff_ids)
+            })
+            .filter_map(|i| {
+                let stacks = self.chain(&i.id)?.len();
+                (stacks < MAX_CHAIN).then_some((i, stacks))
+            })
+            .max_by_key(|(i, stacks)| (i.diff_ids.len(), std::cmp::Reverse(*stacks)))
+            .map(|(i, _)| i)
     }
 
     /// The IDs of the images here.
@@ -285,6 +419,104 @@ mod tests {
         store.remove(&image.id)?;
         assert_eq!(store.image(&image.id), None);
         assert!(store.ids().is_empty());
+        Ok(())
+    }
+
+    /// An image keeps what its own layers make over the image whose layers
+    /// it starts with, the one that has most of them.
+    #[test]
+    fn images_lie_over_the_images_their_layers_start_with() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path().join("images"));
+        let ids = |n: usize| -> Vec<String> { (0..n).map(|i| format!("sha256:{i:064}")).collect() };
+        let add = |id: char, diff_ids: Vec<String>, base: Option<&str>| -> Result<Image> {
+            let image = Image {
+                id: format!("sha256:{}", id.to_string().repeat(64)),
+                reference: format!("ghcr.io/acme/{id}:1"),
+                diff_ids,
+                base: base.map(str::to_owned),
+                ..Image::default()
+            };
+            let rootfs = dir.path().join(format!("{id}.ext4"));
+            std::fs::write(&rootfs, b"ext4")?;
+            store.add(&image, &rootfs)?;
+            Ok(image)
+        };
+        let debian = add('a', ids(1), None)?;
+        let sandbox = add('b', ids(4), Some(&debian.id))?;
+        // Nothing of the layers is nothing to lie over.
+        assert_eq!(
+            store.base_for(&[format!("sha256:{}", "9".repeat(64))]),
+            None
+        );
+        // All of them is, for an image that only sets its config.
+        assert_eq!(
+            store.base_for(&ids(1)).map(|i| i.id),
+            Some(debian.id.clone())
+        );
+        // Of images with as many of them, the one that stacks fewest.
+        let configured = add('e', ids(4), Some(&sandbox.id))?;
+        assert_eq!(
+            store.base_for(&ids(5)).map(|i| i.id),
+            Some(sandbox.id.clone())
+        );
+        store.remove(&configured.id)?;
+        // The image with most of them.
+        assert_eq!(
+            store.base_for(&ids(6)).map(|i| i.id),
+            Some(sandbox.id.clone())
+        );
+        assert_eq!(
+            store.base_for(&ids(3)).map(|i| i.id),
+            Some(debian.id.clone())
+        );
+        let project = add('c', ids(6), Some(&sandbox.id))?;
+        assert_eq!(
+            store
+                .chain(&project.id)
+                .map(|c| c.into_iter().map(|i| i.id).collect::<Vec<_>>()),
+            Some(vec![
+                debian.id.clone(),
+                sandbox.id.clone(),
+                project.id.clone()
+            ])
+        );
+        // No deeper than the VM's disks allow.
+        let deeper = add('d', ids(7), Some(&project.id))?;
+        assert_eq!(store.chain(&deeper.id).map(|c| c.len()), Some(MAX_CHAIN));
+        assert_eq!(
+            store.base_for(&ids(8)).map(|i| i.id),
+            Some(project.id.clone())
+        );
+        // A chain with an image missing is none.
+        store.remove(&sandbox.id)?;
+        assert_eq!(store.chain(&project.id), None);
+        Ok(())
+    }
+
+    /// A pull or a build holds the image it lies a new one over until it
+    /// is done, and only while its process runs.
+    #[test]
+    fn pulls_hold_the_images_they_lie_over() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path().join("images"));
+        let id = format!("sha256:{}", "a".repeat(64));
+        let held = store.hold(&id)?;
+        assert_eq!(store.held(), std::slice::from_ref(&id));
+        drop(held);
+        assert!(store.held().is_empty());
+        assert_eq!(std::fs::read_dir(store.held_dir())?.count(), 0);
+        // One whose process stopped without removing its file: its lock
+        // went with the process, and the file goes.
+        let stale = store.held_dir().join("0123456789abcdef");
+        std::fs::write(&stale, &id)?;
+        assert!(store.held().is_empty());
+        assert!(!stale.exists());
+        // One being made, not yet locked or written, stays.
+        let making = store.held_dir().join("fedcba9876543210");
+        std::fs::write(&making, "")?;
+        assert!(store.held().is_empty());
+        assert!(making.exists());
         Ok(())
     }
 

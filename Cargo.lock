@@ -541,10 +541,12 @@ dependencies = [
  "fctl-domain",
  "fctl-proto",
  "flate2",
+ "hex",
  "libc",
  "nix",
  "serde",
  "serde_json",
+ "sha2",
  "tar",
  "tempfile",
  "tokio",
@@ -553,6 +555,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vsock",
+ "xattr",
 ]
 
 [[package]]

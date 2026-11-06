@@ -3145,8 +3145,8 @@ repository to build one from (`image_build`: a Dockerfile and its context,
 or a dev container configuration). Hosts send the images they run besides
 their own (`HostHello.allowed_images`: references, `/*` prefixes, digest
 pins; absent: any) and the repositories they build images from
-(`allowed_builds`; absent: none, and always absent with Firecracker, Lima or
-the process driver). FleetDO reads each queued session's image with its size
+(`allowed_builds`; absent: none, and always absent with Lima or the
+process driver). FleetDO reads each queued session's image with its size
 (`fctl_domain::image::ImageWant`) and only assigns it to a runner whose
 lists take it (`fctl_domain::schedule::pick`); a session that none online
 takes stays queued with the reason. The host checks its lists again before
@@ -3439,8 +3439,36 @@ in `firecracker/` in the host's data directory.
   digest, as Docker's image ID; names refer to images as Docker's tags do
   (`images.rs`). A pull whose image is here already reads only its
   manifest, so refreshing the default image works as with Docker. Removing
-  a name keeps the last one of an image that a sandbox uses. Images share
-  no layers, and the driver builds none.
+  a name keeps the last one of an image that a sandbox uses. The VM that
+  unpacks a layer hashes it, uncompressed, and an image whose layers
+  aren't what its config says (`rootfs.diff_ids`) isn't kept, as Docker
+  keeps none. An image whose layers start with all of another's here, as a
+  project's image `FROM` the default one does, keeps only what its other
+  layers make (nothing, for one that only sets its config), over that
+  image's filesystem: a pull or a build downloads and unpacks only those,
+  with their whiteouts kept as overlayfs reads them (a character device
+  0/0, `trusted.overlay.opaque`; a directory a layer doesn't list is
+  root's, 0755, as Docker makes it), and its sandboxes stack the images'
+  disks, four at most, under their own. An image stays while another here
+  lies over it, its last name gone or not, and while a pull or a build
+  lies a new one over it (a locked file in the store's `held`). Images an
+  earlier fctl pulled lie under none: pulling one again finds it here and
+  only names it.
+- **Builds.** A project's image builds with BuildKit
+  (`docker.io/moby/buildkit`, pinned by digest, which the host pulls from
+  Docker Hub for a project's first build) in a VM of the project's own,
+  `fctl-builder-<project>`, booted from BuildKit's image like a sandbox,
+  which keeps BuildKit's state, and so its cache, on its disk between
+  builds and stops after each (`builds.rs`). The sweep removes a builder
+  as it does a session's stopped sandbox, `keep_stopped_hours` after its
+  last build or sooner for a low disk, but never while it builds. The host starts
+  `buildkitd` there as root (its state on the VM's own ext4 disk, where
+  its overlay snapshots go; its builds' `RUN` steps use the VM's network),
+  sends the context and the Dockerfile in as tar archives over the vsock,
+  runs `buildctl build` with the job's target and build arguments, whose
+  plain progress goes to the session's log, and takes the image back as
+  an OCI archive, whose layers a VM unpacks as a pull's (`oci.rs`).
+  Nothing of the repository or the image runs or unpacks on the host.
 - **Sandboxes.** A sandbox is a directory with its own disk, a sparse ext4
   file of `disk_gb` (64 GiB by default) that takes what the session
   writes. Its VM's init lays it over the image's filesystem with overlayfs,
