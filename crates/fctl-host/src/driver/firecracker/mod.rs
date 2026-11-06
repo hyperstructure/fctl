@@ -697,6 +697,12 @@ impl FirecrackerDriver {
         let lock = self.lock(&format!("sandbox {}", spec.name));
         let _held = lock.lock().await;
         let vm = self.vm(&spec.name)?;
+        // Paused while the disk was nearly full: the session that starts
+        // in it now wants it to run.
+        if vm.running() && vm.paused().await {
+            log(format!("Resuming the paused sandbox {}", spec.name));
+            vm.resume().await?;
+        }
         if vm.running() {
             let socket = vm.vsock();
             let answers = tokio::time::timeout(Duration::from_secs(10), vsock::hello(&socket));
@@ -939,6 +945,28 @@ impl FirecrackerDriver {
         let vm = self.vm(&sb.name)?;
         let started = vsock::start(&vm.vsock(), self.sh(&sb.name, script)).await?;
         Ok(Running::vm(started))
+    }
+
+    /// Pauses the sandbox's VM, which holds what it has yet to write in its
+    /// memory until it resumes.
+    pub async fn pause(&self, sb: &Sandbox) -> Result<()> {
+        let vm = self.vm(&sb.name)?;
+        if !vm.running() {
+            bail!("the VM of {} doesn't run", sb.name);
+        }
+        vm.pause().await
+    }
+
+    pub async fn resume(&self, sb: &Sandbox) -> Result<()> {
+        self.vm(&sb.name)?.resume().await
+    }
+
+    /// Whether the sandbox's VM is paused.
+    pub async fn paused(&self, sb: &Sandbox) -> bool {
+        match self.vm(&sb.name) {
+            Ok(vm) => vm.running() && vm.paused().await,
+            Err(_) => false,
+        }
     }
 
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {

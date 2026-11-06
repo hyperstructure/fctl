@@ -185,6 +185,16 @@ impl Reach {
         }
     }
 
+    /// The viewers were told nothing about reaching the agent, as the host
+    /// paused or resumed the sandbox: what is wrong, if anything, is
+    /// reported again once it has lasted [`REPORT_AFTER`] from `now`.
+    pub fn told_nothing(&mut self, now: Instant) {
+        self.reported = None;
+        if let Some(d) = &mut self.down {
+            d.noticed = now;
+        }
+    }
+
     /// What to report now, if anything.
     pub fn check(&mut self, now: Instant) -> Option<Reached> {
         let d = self.down.as_ref()?;

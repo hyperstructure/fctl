@@ -29,6 +29,23 @@ pub const OUT_MB: u64 = 2 * 1024;
 /// falls below it again as its sessions write, tells them once.
 pub const BETTER_AFTER_MS: i64 = 10 * 60_000;
 
+/// Whether a host that keeps `min_free_mb` free holds the sandboxes it
+/// pauses (`paused`) paused now, with `free_mb` free: it pauses them once it
+/// is nearly out of disk, and resumes them once twice as much is free as
+/// that, so that what they write as they resume doesn't pause them again at
+/// once. A disk it couldn't measure changes nothing.
+pub fn holds(paused: bool, free_mb: Option<u64>, min_free_mb: Option<u64>) -> bool {
+    let Some(free) = free_mb else {
+        return paused;
+    };
+    match min_free_mb {
+        _ if !paused => room(free_mb, min_free_mb) == Some(DiskRoom::Out),
+        Some(min) => free < 2 * OUT_MB.min(min),
+        // No floor any more: no sandbox waits for one.
+        None => false,
+    }
+}
+
 /// How short of room a host with `free_mb` of disk free is, against the
 /// floor it keeps, `min_free_mb`. Unknown free space, or no floor, is never
 /// short.
@@ -267,6 +284,25 @@ mod tests {
         // No floor, no measurement: never short.
         assert_eq!(room(Some(0), None), None);
         assert_eq!(room(None, FLOOR), None);
+    }
+
+    #[test]
+    fn sandboxes_pause_nearly_out_and_resume_with_twice_that_free() {
+        // Running: paused below 2 GiB.
+        assert!(!holds(false, Some(3 * GIB), FLOOR));
+        assert!(holds(false, Some(2 * GIB - 1), FLOOR));
+        // Paused: resumed from 4 GiB.
+        assert!(holds(true, Some(3 * GIB), FLOOR));
+        assert!(!holds(true, Some(4 * GIB), FLOOR));
+        // A host that keeps 1 GiB: paused below it, resumed from 2 GiB.
+        assert!(holds(false, Some(900), Some(GIB)));
+        assert!(holds(true, Some(1500), Some(GIB)));
+        assert!(!holds(true, Some(2 * GIB), Some(GIB)));
+        // Unmeasured: as it was. No floor: never paused.
+        assert!(holds(true, None, FLOOR));
+        assert!(!holds(false, None, FLOOR));
+        assert!(!holds(true, Some(0), None));
+        assert!(!holds(false, Some(0), None));
     }
 
     #[test]
