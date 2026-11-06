@@ -476,7 +476,8 @@ fn host_dns() -> Vec<IpAddr> {
 }
 
 /// [`host_dns`], from the files' text: the IPv4 servers first, and IPv6
-/// ones only without any, at most three.
+/// ones only without any, at most three. Link-local IPv6 servers are left
+/// out: `--dns` can't say which interface reaches them (`fe80::1%eth0`).
 fn dns_for_vms(resolv_conf: &str, resolved_upstream: &str) -> Vec<IpAddr> {
     let servers = |text: &str| -> Vec<IpAddr> {
         text.lines()
@@ -492,7 +493,10 @@ fn dns_for_vms(resolv_conf: &str, resolved_upstream: &str) -> Vec<IpAddr> {
     }
     let upstream: Vec<IpAddr> = servers(resolved_upstream)
         .into_iter()
-        .filter(|a| !a.is_loopback())
+        .filter(|a| match a {
+            IpAddr::V4(a) => !a.is_loopback(),
+            IpAddr::V6(a) => !a.is_loopback() && !a.is_unicast_link_local(),
+        })
         .collect();
     let v4: Vec<IpAddr> = upstream.iter().copied().filter(IpAddr::is_ipv4).collect();
     let pick = if v4.is_empty() { upstream } else { v4 };
@@ -630,12 +634,14 @@ mod tests {
             dns_for_vms(stub, upstream),
             [v4([168, 63, 129, 16]), v4([10, 0, 0, 2]), v4([1, 1, 1, 1])]
         );
-        // IPv6 servers only where there is no IPv4 one.
-        let only_v6 = "nameserver 2001:4860:4860::8888\nnameserver ::1\n";
+        // IPv6 servers only where there is no IPv4 one, and no link-local
+        // one, which passt can't reach without its interface.
+        let only_v6 = "nameserver fe80::1%eth0\nnameserver 2001:4860:4860::8888\nnameserver ::1\n";
         assert_eq!(
             dns_for_vms(stub, only_v6),
             [IpAddr::from([0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888])]
         );
+        assert!(dns_for_vms(stub, "nameserver fe80::1%eth0\nnameserver fe80::2\n").is_empty());
         // A resolver passt can reach, or nothing to go past to.
         assert!(dns_for_vms("nameserver 10.0.2.3\n", upstream).is_empty());
         assert!(
