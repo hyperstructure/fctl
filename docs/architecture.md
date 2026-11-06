@@ -2587,9 +2587,10 @@ come through:
   agent holds its place until there is room, and the host doesn't try to
   reach it meanwhile.
 
-The session page and `fctl attach` say which, and since when, once it has
-lasted 10 seconds (a host that restarts reconnects within them), and show
-nothing in progress meanwhile.
+The session page and `fctl attach` say which, and since when, and show
+nothing in progress meanwhile: a runner that went away once it has been
+gone for 10 seconds (a host that restarts reconnects within them), an
+agent it can't reach as its host says so, and a paused sandbox at once.
 
 They also say how short of disk the session's runner is, while it is
 (`runner_disk` in the snapshot, `disk` in `runner_connected`), which

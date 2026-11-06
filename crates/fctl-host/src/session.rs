@@ -1362,7 +1362,8 @@ async fn run(
                     continue;
                 }
                 let free = *free_disk.borrow_and_update();
-                let hold = disk::holds(held.is_some(), free, ctx.cfg.min_free_disk_mb());
+                // A session that stops wants its sandbox to run, room or not.
+                let hold = stop.is_none() && disk::holds(held.is_some(), free, ctx.cfg.min_free_disk_mb());
                 if !hold {
                     pause_failed = false;
                 }
@@ -1406,7 +1407,8 @@ async fn run(
                         }
                     }
                     (Some(_), false) => {
-                        if resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, free, false)).await {
+                        let notice = resumed_notice(&ctx.cfg.name, free, stop.is_some());
+                        if resume(&ctx, &sb, &uplink, notice).await {
                             held = None;
                             reach.told_nothing(Instant::now());
                             if let Some(l) = link.as_mut() {
@@ -1422,14 +1424,19 @@ async fn run(
             c = cmds.recv() => match c {
                 Some(SessionCmd::Stop { reason, destroy }) => {
                     // The agent stops what it does, and the sandbox writes
-                    // out its disk, only once it runs. One that stays paused
-                    // stops at the deadline, which resumes it first.
-                    if held.take().is_some() {
-                        resume_again_at = None;
-                        resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, None, true)).await;
-                        reach.told_nothing(Instant::now());
-                        if let Some(l) = link.as_mut() {
-                            l.health.heard(Instant::now());
+                    // out its disk, only once it runs: one that stays paused
+                    // is resumed again until it does, or until the deadline
+                    // stops it, which resumes it first.
+                    if held.is_some() {
+                        if resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, None, true)).await {
+                            held = None;
+                            resume_again_at = None;
+                            reach.told_nothing(Instant::now());
+                            if let Some(l) = link.as_mut() {
+                                l.health.heard(Instant::now());
+                            }
+                        } else {
+                            resume_again_at = Some(Instant::now() + RESUME_AGAIN_AFTER);
                         }
                     }
                     if stop.is_none() {
