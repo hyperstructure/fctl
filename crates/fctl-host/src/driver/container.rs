@@ -794,12 +794,11 @@ impl ContainerDriver {
         let Some(fallback) = fallback else {
             return Err(error);
         };
-        // A CLI that couldn't start or reach the daemon won't pull the
-        // fallback either. A pull that showed its progress kept no error to
-        // tell, but the runtime still says why when asked about the image.
-        if unanswered(&error) {
+        if !may_fall_back(&error) {
             return Err(error);
         }
+        // A pull that showed its progress kept no error to tell, but the
+        // runtime still says why when asked about the image.
         if self.find_image(image).await? {
             return Err(error);
         }
@@ -1178,6 +1177,14 @@ fn installed(bin: &str) -> bool {
     }
 }
 
+/// Whether a pull that failed with `e` may try the fallback image: not
+/// when the CLI couldn't start or reach the daemon, as it couldn't for the
+/// fallback either. One that ran out of time may, as after any other
+/// failure.
+fn may_fall_back(e: &anyhow::Error) -> bool {
+    !(e.is::<super::NotStarted>() || e.is::<Unreachable>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,6 +1554,25 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn pulls_that_ran_out_of_time_still_fall_back() {
+        let timed_out = anyhow::Error::new(TimedOut {
+            command: format!("docker pull {VERSION_IMAGE}"),
+            after: SLOW_COMMAND_TIMEOUT,
+        });
+        assert!(may_fall_back(&timed_out));
+        assert!(may_fall_back(&anyhow::anyhow!("manifest unknown")));
+        // Neither would the fallback's pull get an answer.
+        let not_started = anyhow::Error::new(NotStarted {
+            program: "docker".into(),
+            error: std::io::ErrorKind::PermissionDenied.into(),
+        });
+        assert!(!may_fall_back(&not_started));
+        let refused = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+        let unreachable = Unreachable::from_output(refused).map(anyhow::Error::new);
+        assert!(unreachable.is_some_and(|e| !may_fall_back(&e)));
     }
 
     #[tokio::test]

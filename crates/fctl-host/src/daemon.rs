@@ -1709,23 +1709,27 @@ mod tests {
     #[tokio::test]
     async fn heartbeats_say_the_drivers_again_once_they_change() -> Result<()> {
         let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
-        let hello = d.hello();
-        d.drivers_said = hello.drivers.clone();
-        assert_eq!(d.heartbeat().drivers, None);
-        assert_eq!(d.ctx.driver_problem(), None);
-        // Its driver stops being ready: the next heartbeat says so, once.
-        let broken = {
+        // Whether the process driver is ready depends on where fctl-agent
+        // is, so the test sets it: ready, then not.
+        let set_process = |d: &Daemon, detail: Option<&str>| {
             let mut drivers = d
                 .ctx
                 .drivers
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for info in drivers.iter_mut().filter(|i| i.name == "process") {
-                info.available = false;
-                info.detail = Some("the Docker daemon isn't running".into());
+                info.available = detail.is_none();
+                info.detail = detail.map(Into::into);
             }
             drivers.clone()
         };
+        set_process(&d, None);
+        let hello = d.hello();
+        d.drivers_said = hello.drivers.clone();
+        assert_eq!(d.heartbeat().drivers, None);
+        assert_eq!(d.ctx.driver_problem(), None);
+        // Its driver stops being ready: the next heartbeat says so, once.
+        let broken = set_process(&d, Some("the Docker daemon isn't running"));
         assert_eq!(d.heartbeat().drivers, Some(broken));
         assert_eq!(d.heartbeat().drivers, None);
         assert_eq!(
