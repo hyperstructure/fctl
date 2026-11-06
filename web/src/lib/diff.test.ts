@@ -5,11 +5,18 @@ import {
   firstLine,
   fromStrings,
   fromStructured,
+  type Hunk,
   hiddenBefore,
   markChanges,
   parsePatch,
-  splitRows,
 } from "./diff";
+import { firstLive, splitLive } from "./diff-motion";
+
+/** A diff's rows side by side, each the text of its line before and after. */
+const sides = (hunks: Hunk[]) =>
+  splitLive(firstLive(hunks).items).flatMap((r) =>
+    r.type === "pair" ? [[r.left?.line.text ?? null, r.right?.line.text ?? null]] : [],
+  );
 
 const PATCH = [
   "@@ -3,4 +3,5 @@ fn main() {",
@@ -115,6 +122,7 @@ describe("lines taken out and those added in their place", () => {
       ].join("\n"),
     );
     const lines = h?.lines ?? [];
+    const trimmed = (rows: (string | null)[][]) => rows.map((r) => r.map((t) => t?.trim() ?? null));
     const marked = (l?: DiffLine) => l?.changed?.map(([a, b]) => l.text.slice(a, b));
     // Nothing of the old lines went; what came in around it is marked.
     expect(marked(lines[0])).toBeUndefined();
@@ -123,7 +131,7 @@ describe("lines taken out and those added in their place", () => {
     expect(marked(lines[4])).toEqual(["Some(", ")"]);
     expect(lines[2]?.changed).toBeUndefined();
     // Side by side too: the comment on its own, each line beside its new self.
-    expect(splitRows(lines).map((r) => [r.left?.text.trim() ?? null, r.right?.text.trim() ?? null])).toEqual([
+    expect(trimmed(sides(h ? [h] : []))).toEqual([
       [null, "/// Where it is: a break has no place of its own."],
       ["pub fn location(&self) -> Location {", "pub fn location(&self) -> Option<Location> {"],
       ["Stop::Depot(l) => *l,", "Stop::Depot(l) => Some(*l),"],
@@ -131,10 +139,7 @@ describe("lines taken out and those added in their place", () => {
   });
 
   it("go side by side as they come when nothing pairs them", () => {
-    const lines = parsePatch("@@ -1,2 +1,2 @@\n-alpha one\n-beta two\n+gamma\n+delta").flatMap(
-      (h) => h.lines,
-    );
-    expect(splitRows(lines).map((r) => [r.left?.text ?? null, r.right?.text ?? null])).toEqual([
+    expect(sides(parsePatch("@@ -1,2 +1,2 @@\n-alpha one\n-beta two\n+gamma\n+delta"))).toEqual([
       ["alpha one", "gamma"],
       ["beta two", "delta"],
     ]);
@@ -144,8 +149,7 @@ describe("lines taken out and those added in their place", () => {
 describe("side by side", () => {
   it("puts lines taken out beside those added in their place", () => {
     const [h] = parsePatch(PATCH);
-    const rows = splitRows(h?.lines ?? []);
-    expect(rows.map((r) => [r.left?.text ?? null, r.right?.text ?? null])).toEqual([
+    expect(sides(h ? [h] : [])).toEqual([
       ["    let a = 1;", "    let a = 1;"],
       ["    let b = foo(a, 2);", "    let b = foo(a, 3);"],
       [null, "    let c = b;"],

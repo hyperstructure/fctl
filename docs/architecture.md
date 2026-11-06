@@ -1280,7 +1280,9 @@ agent posts a notice; a primary repository out of reach fails the session.
   agent sends, since what runs in the sandbox can pose as its agent.
   Anyone who can see the session reads them (`GET
   /api/v1/sessions/{id}/diff`, `fctl diff`): the session page opens a
-  file's from Changes, and asks again when its digest changes. Agents ask
+  file's from Changes, and asks again when its digest changes, matching
+  the new version's lines to those it shows (`web/src/lib/diff-motion.ts`)
+  so that it changes in place. Agents ask
   for diffs only of hosts that pass them on (`AgentConfig.diffs`); older
   hosts' agents send none, and the page says so
   ([ADR 0074](adr/0074-sessions-keep-their-changes-diffs-for-their-viewers.md)).

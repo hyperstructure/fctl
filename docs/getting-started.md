@@ -369,7 +369,10 @@ session opens, with its repository (`fctl#120`, `design#14`), as does
 changed since it left the base, the first ten files of each repository and
 the rest a click away. A file opens the diffs of all of them, one after the
 other, at that file: `j` and `k` go from file to file, `n` and `p` from
-change to change, and ⌘F (Ctrl+F) finds in all of them. Once its pull request is merged, Changes
+change to change, and ⌘F (Ctrl+F) finds in all of them. They follow the
+agent as it works: where you look, the lines it adds open and are written
+in, and the lines you read stay where they are; a button at the top or the
+bottom counts the changes it made out of sight and goes to them. Once its pull request is merged, Changes
 says so, and fctl no longer pushes the branch. Once it understands the task it renames the session to what it
 is working on and describes it in a sentence or two, so the Agent Floor shows
 the work rather than the first line of your task.

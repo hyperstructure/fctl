@@ -1016,7 +1016,14 @@ function FileHeader({
       style={{ height: FILE_HEADER }}
     >
       {/* A light runs along its edge as the agent changes the file. */}
-      {changed.times > 0 && <span key={changed.times} className="diff-header-scan" aria-hidden="true" />}
+      {changed.times > 0 && (
+        <span
+          className="pointer-events-none absolute inset-x-0 -bottom-px h-px overflow-hidden"
+          aria-hidden="true"
+        >
+          <span key={changed.times} className="diff-header-scan" />
+        </span>
+      )}
       <button
         type="button"
         onClick={onFold}

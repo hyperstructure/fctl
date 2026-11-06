@@ -2,10 +2,10 @@
 // the files again, their diffs change where the reader looks
 // (components/diff-play.ts), and the reader stays where they are. The line
 // at the top of the view, under its file's header, holds its place while
-// rows come and go above it and files above it take their room; what
-// changes below it pushes the rest down. What the agent changed out of
-// sight waits, counted on a button at the edge it is past, until the reader
-// comes to it, when it lights up.
+// rows come and go above it and files above it take their room, at the
+// very top of the diffs too; what changes below it pushes the rest down.
+// What the agent changed out of sight waits, counted on a button at the
+// edge it is past, until the reader comes to it, when it lights up.
 
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { type CSSProperties, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,8 +20,6 @@ interface Anchor {
   l?: string;
   /** Its top, from the top of the diffs (px). */
   top: number;
-  /** The diffs were at their very top: they stay there, and what comes above shows. */
-  atTop: boolean;
 }
 
 /** A change out of sight: its rows, or its file's section when the file doesn't show its rows. */
@@ -68,7 +66,6 @@ export function useLive(
       file: Number(s.dataset.file),
       l: (el as HTMLElement).dataset.l,
       top: el.getBoundingClientRect().top - v.top + b.scrollTop,
-      atTop: b.scrollTop < 1,
     };
   }, [body, header]);
 
@@ -76,7 +73,6 @@ export function useLive(
     const b = body.current;
     const a = anchor.current;
     if (!b || !a) return;
-    if (a.atTop) return;
     if (!a.el.isConnected) {
       // Drawn anew (laid out another way): the same line, if it still shows.
       const again =
@@ -128,6 +124,18 @@ export function useLive(
   const waiting = useRef(new Set<Change>());
   const [counts, setCounts] = useState({ above: 0, below: 0 });
   const looking = useRef(0);
+  /** The rows of a change that show, or nearly: a long one (a new file's) lights up no further. */
+  const near = useCallback(
+    (rows: HTMLElement[]) => {
+      const v = band();
+      if (!v || rows.length < 60) return rows;
+      return rows.filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.bottom > v.top - 200 && r.top < v.bottom + 600;
+      });
+    },
+    [band],
+  );
   // Rows that move (open or close) are no sign that the reader saw what they move past.
   const frame = useRef(0);
   const look = useCallback(() => {
@@ -144,12 +152,12 @@ export function useLive(
       if (w === "in") {
         if (frame.current) continue;
         waiting.current.delete(change);
-        if (first.tagName !== "SECTION") light(change);
+        if (first.tagName !== "SECTION") light(near(change));
       } else if (w === "above") above++;
       else below++;
     }
     setCounts((c) => (c.above === above && c.below === below ? c : { above, below }));
-  }, [where]);
+  }, [where, near]);
   const lookSoon = useCallback(() => {
     if (!looking.current) looking.current = requestAnimationFrame(look);
   }, [look]);

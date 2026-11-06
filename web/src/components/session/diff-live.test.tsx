@@ -98,12 +98,14 @@ describe("the reader's place in the diffs", () => {
     expect(top(25)).toBe(140);
   });
 
-  it("lets what comes above push the diffs down at their very top", () => {
-    const { body, fake, scroll, live } = setup();
+  it("holds it at the very top of the diffs too, what comes above out of sight", () => {
+    const { body, fake, scroll, top, live } = setup();
     scroll(0);
+    expect(top(0)).toBe(140);
     fake.insert(0, 3);
     live().view.hold();
-    expect(body.scrollTop).toBe(0);
+    expect(body.scrollTop).toBe(60);
+    expect(top(0)).toBe(140);
   });
 
   it("finds the line again once its row is drawn anew", () => {

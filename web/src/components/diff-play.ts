@@ -108,6 +108,7 @@ export function play(box: HTMLElement, live: LiveView) {
     return !!band && !!r && seen.has(el) && r.bottom > band.top && r.top < band.bottom;
   };
   const unseen: HTMLElement[][] = [];
+  const lit: HTMLElement[] = [];
   let run: HTMLElement[] | undefined;
   let lastLit = 0;
   for (const el of writing) {
@@ -116,7 +117,7 @@ export function play(box: HTMLElement, live: LiveView) {
     if (shows(el)) {
       run = undefined;
       if (still) {
-        if (!quiet) light([el]);
+        if (!quiet) lit.push(el);
         continue;
       }
       const delay = wave(el) + (el.closest("[data-open='in']") ? WRITE_AFTER_MS : 0);
@@ -143,6 +144,7 @@ export function play(box: HTMLElement, live: LiveView) {
       unseen.push(run);
     }
   }
+  if (lit.length) light(lit);
   if (lastLit) setTimeout(() => done(box), lastLit + 200);
   if (longest) live.moving(longest + 32);
   if (unseen.length) live.unseen(unseen);
@@ -162,11 +164,15 @@ function adjacent(a: HTMLElement, b: HTMLElement): boolean {
   return ra === rb || ra.nextElementSibling === rb;
 }
 
-/** Lights rows the agent changed up, for a moment: as the reader comes to them. */
+/**
+ * Lights rows the agent changed up, for a moment: as the reader comes to
+ * them. A row that plays already (the agent changed it again) plays on.
+ */
 export function light(rows: HTMLElement[]) {
-  const until = String(Math.round(performance.now() + LIT_MS));
+  const now = performance.now();
+  const until = String(Math.round(now + LIT_MS));
   for (const el of rows) {
-    if (!el.isConnected) continue;
+    if (!el.isConnected || Number(el.dataset.playUntil ?? 0) > now) continue;
     el.style.setProperty("--diff-delay", "0ms");
     el.dataset.play = "seen";
     el.dataset.playUntil = until;

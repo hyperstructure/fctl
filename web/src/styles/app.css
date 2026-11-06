@@ -323,7 +323,7 @@
 :root[data-theme="light"] {
   --diff-caret: #171717;
   --diff-caret-glow: rgb(23 23 23 / 0.25);
-  --diff-lit: rgb(212 245 60 / 0.32);
+  --diff-lit: rgb(212 245 60 / 0.24);
   --diff-lit-bar: #9bc400;
 }
 [data-play] {
@@ -483,10 +483,8 @@
    sight slides in from the edge they are past (session/diff-live.tsx). */
 .diff-header-scan {
   position: absolute;
-  bottom: -1px;
-  left: 0;
+  inset: 0 auto 0 0;
   width: 32%;
-  height: 1px;
   background: linear-gradient(90deg, transparent, var(--diff-lit-bar), transparent);
   pointer-events: none;
   opacity: 0;
