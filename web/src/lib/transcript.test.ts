@@ -299,13 +299,20 @@ describe("TranscriptBuilder", () => {
     expect(subagentReport(t)).toBe("It has one export.");
   });
 
-  it("ends subagents in the background when Claude Code restarts or the session stops", () => {
+  it("ends subagents in the background when Claude Code restarts, its turn is cut off or the session stops", () => {
     const restarted = new TranscriptBuilder();
     restarted.add([
       ...delegate("agent", true),
       ev("notice", { level: "warn", code: "claude_restarted", message: "Claude exited unexpectedly" }),
     ]);
     expect(call(restarted.items).agent?.ended).toBe("stopped");
+    // fctl-agent restarted, and stopped the Claude Code it found.
+    const cutOff = new TranscriptBuilder();
+    cutOff.add([
+      ...delegate("agent", true),
+      ev("notice", { level: "warn", code: "turn_cut_off", message: "Claude's turn was cut off" }),
+    ]);
+    expect(call(cutOff.items).agent?.ended).toBe("stopped");
     const failed = new TranscriptBuilder();
     failed.add([
       ...delegate("agent", true),

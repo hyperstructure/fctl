@@ -340,8 +340,9 @@ export class TranscriptBuilder {
         return;
       }
       case "notice":
-        // A restarted Claude Code doesn't follow the last one's subagents.
-        if (ev.data.code === "claude_restarted") this.stopSubagents(items);
+        // A restarted Claude Code doesn't follow the last one's subagents,
+        // nor one that a restarted fctl-agent started in place of the last.
+        if (ev.data.code === "claude_restarted" || ev.data.code === "turn_cut_off") this.stopSubagents(items);
         items.push({ ...base, kind: "notice", key: `n-${ev.seq}`, notice: ev.data });
         return;
       case "git": {
