@@ -140,6 +140,10 @@ struct QueueRow {
     reason: Option<String>,
     #[serde(default)]
     enqueued_at: f64,
+    /// Its last runner declined it, or handed it back, because its driver
+    /// isn't ready: unlike after other declines, a resume goes back there.
+    #[serde(default)]
+    driver_declined: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +340,8 @@ impl DurableObject for FleetObject {
         add_column(&sql, "assignments", "stopping", "INTEGER");
         // Why a queued session waits, as it last said.
         add_column(&sql, "queue", "reason", "TEXT");
+        // Set when its runner declined it for its driver (`driver_declined`).
+        add_column(&sql, "queue", "driver_declined", "INTEGER");
         add_column(&sql, "runners", "memory_available_mb", "INTEGER");
         add_column(&sql, "runners", "disk_available_mb", "INTEGER");
         // Set while the runner drains: since when, and the admin who drained
@@ -1014,8 +1020,10 @@ impl FleetObject {
                 session_id,
                 accepted,
                 error,
+                unready,
             } => {
-                self.on_start_result(&rs.id, &session_id, accepted, error, now)
+                let unready = unready == Some(true);
+                self.on_start_result(&rs.id, &session_id, accepted, error, unready, now)
                     .await;
             }
             HostToFleet::SessionEnded {
@@ -1573,12 +1581,15 @@ impl FleetObject {
         }
     }
 
+    /// `unready`: the runner declined it, or handed it back, because its
+    /// driver isn't ready, so a resume still goes back to it once it is.
     async fn on_start_result(
         &self,
         runner_id: &str,
         session_id: &SessionId,
         accepted: bool,
         error: Option<String>,
+        unready: bool,
         now: i64,
     ) {
         // Only the runner the session was given answers for it: another
@@ -1653,9 +1664,15 @@ impl FleetObject {
         } else {
             let backoff = 5_000 * (1 << attempts.min(5));
             let _ = self.sql.exec(
-                "INSERT INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?) \
-                 ON CONFLICT (session_id) DO UPDATE SET attempts = excluded.attempts, not_before = excluded.not_before",
-                Some(vec![sv(session_id.as_str()), iv(now), iv(attempts + 1), iv(now + backoff)]),
+                "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?) \
+                 ON CONFLICT (session_id) DO UPDATE SET attempts = excluded.attempts, not_before = excluded.not_before, driver_declined = excluded.driver_declined",
+                Some(vec![
+                    sv(session_id.as_str()),
+                    iv(now),
+                    iv(attempts + 1),
+                    iv(now + backoff),
+                    iv(i64::from(unready)),
+                ]),
             );
             self.session_control(
                 session_id,
@@ -2006,7 +2023,7 @@ impl FleetObject {
         let now = now_ms();
         let queued: Vec<QueueRow> = self
             .sql
-            .exec("SELECT session_id, attempts, reason, enqueued_at FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
+            .exec("SELECT session_id, attempts, reason, enqueued_at, driver_declined FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
             .and_then(|c| c.to_array::<QueueRow>())
             .unwrap_or_default();
         if queued.is_empty() {
@@ -2052,8 +2069,9 @@ impl FleetObject {
             let want = wants.get(&item.session_id).cloned().unwrap_or_default();
             // A resume goes back to the runner that has its sandbox, where
             // Claude continues the same conversation, and waits a while for
-            // it when it is busy. Not after it declined the session.
-            let home = if item.attempts > 0.0 {
+            // it when it is busy. Not after it declined the session, unless
+            // for its driver, which takes no session until it is ready.
+            let home = if item.attempts > 0.0 && item.driver_declined.unwrap_or(0.0) == 0.0 {
                 None
             } else {
                 self.home_of(&item.session_id)

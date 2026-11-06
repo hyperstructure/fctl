@@ -48,7 +48,9 @@ driver isn't ready, as they do while its disk is low
   made, it probes the driver again: if that is why, it hands the session
   back (a second `StartResult`, declining) instead of failing it, with a
   heartbeat that says why, and FleetDO queues it again, as for any
-  decline. A session someone stopped meanwhile stays stopped: FleetDO
+  decline. Such declines say they are for the driver, so that a resume
+  still goes back to its sandbox there once the driver is ready, where
+  after other declines it goes to any runner. A session someone stopped meanwhile stays stopped: FleetDO
   marks an assignment it asked to stop, and a decline doesn't queue it
   again.
 - **Only hosts that say they keep the control plane told.** Hosts

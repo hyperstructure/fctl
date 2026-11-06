@@ -3284,7 +3284,9 @@ session until it is
   stopped since the last probe: if that is why, it hands the session back,
   declining it in a second `StartResult` with no `SessionEnded`, and
   FleetDO queues it again rather than fail it. Each decline counts towards
-  the five attempts a session gets. A session that someone stopped
+  the five attempts a session gets. Declines for the driver say so
+  (`StartResult.unready`), and unlike after other declines, a resume
+  still goes back to the sandbox it has there once the driver is ready. A session that someone stopped
   meanwhile stays stopped: FleetDO marks the assignment it asked to stop
   (`assignments.stopping`), and a decline for it doesn't queue it again.
 - Hosts announce this with `drivers` in their hello's features

@@ -529,6 +529,12 @@ pub enum HostToFleet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         error: Option<String>,
+        /// Declined because the driver the host uses isn't ready: once it
+        /// is, a resume goes back to the sandbox the session has there.
+        /// Absent otherwise, and from older hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        unready: Option<bool>,
     },
     /// The sandbox of a session is gone (stopped, removed or crashed).
     SessionEnded {

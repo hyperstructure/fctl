@@ -1206,6 +1206,7 @@ impl Daemon {
                     session_id,
                     accepted: false,
                     error: reason,
+                    unready: Some(true),
                 });
             }
             SessionEvent::Ended {
@@ -1289,10 +1290,18 @@ impl Daemon {
             FleetToHost::StartSession { spec } => {
                 let id = spec.session_id.clone();
                 let error = self.start_session(spec).err();
+                // Declined for its driver, which the session comes back to.
+                let unready = error.is_some()
+                    && error
+                        == self
+                            .ctx
+                            .driver_problem()
+                            .map(|why| session::not_ready(&self.ctx, &why));
                 self.outbox.push_back(HostToFleet::StartResult {
                     session_id: id,
                     accepted: error.is_none(),
                     error,
+                    unready: unready.then_some(true),
                 });
             }
             FleetToHost::StopSession {
@@ -1832,7 +1841,14 @@ mod tests {
     #[tokio::test]
     async fn a_host_whose_driver_isnt_ready_takes_no_session_and_hands_back_those_it_couldnt_start()
     -> Result<()> {
-        let (_dir, mut d) = daemon_where(&[], |cfg| cfg.name = "studio".into()).await?;
+        // It keeps no Claude token, which declines one kind of session.
+        let tokens = tempfile::tempdir()?;
+        let none = tokens.path().join("claude-token");
+        let (_dir, mut d) = daemon_where(&[], move |cfg| {
+            cfg.name = "studio".into();
+            cfg.claude_token_file = Some(none);
+        })
+        .await?;
         assert!(
             d.hello()
                 .features
@@ -1859,16 +1875,34 @@ mod tests {
         let why = "fctl-agent was not found next to fctl or on PATH";
         set_process(&d, Some(why));
         assert!(d.ctx.drivers_differ(&d.drivers_said));
-        // …and until it has, the host declines what it sends.
-        let refused = d
-            .start_session(spec("ses_01NEW")?)
-            .err()
-            .unwrap_or_default();
+        // …and until it has, the host declines what it sends, saying it is
+        // for its driver.
+        d.on_fleet(FleetToHost::StartSession {
+            spec: spec("ses_01NEW")?,
+        });
+        let refused = format!("studio's process driver isn't ready: {why}");
         assert_eq!(
-            refused,
-            format!("studio's process driver isn't ready: {why}")
+            d.outbox.drain(..).collect::<Vec<_>>(),
+            [HostToFleet::StartResult {
+                session_id: SessionId("ses_01NEW".into()),
+                accepted: false,
+                error: Some(refused.clone()),
+                unready: Some(true),
+            }]
         );
         assert!(d.sessions.is_empty() && d.pending_starts.is_empty());
+        // Declined for something else, it doesn't say so.
+        d.on_fleet(FleetToHost::StartSession {
+            spec: spec_on_runners("ses_01KEPT")?,
+        });
+        assert!(matches!(
+            d.outbox.pop_front(),
+            Some(HostToFleet::StartResult {
+                accepted: false,
+                unready: None,
+                ..
+            })
+        ));
         // A run that couldn't make its sandbox for that goes back to the
         // queue: declined, with no end of a run to report.
         running(&mut d, "ses_01BACK");
@@ -1885,6 +1919,7 @@ mod tests {
                 session_id: SessionId("ses_01BACK".into()),
                 accepted: false,
                 error: Some(refused),
+                unready: Some(true),
             }]
         );
         // Ready again: it takes sessions.
