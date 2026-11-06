@@ -1192,10 +1192,13 @@ impl Supervisor {
                 // It started again on the new one, as its `system/init` says.
                 Err(AskError::Exited) => {}
                 // It may switch yet, and starts on the new one if it starts
-                // again.
-                Err(AskError::TimedOut) => refused.push(format!(
+                // again: by the name asked for either way.
+                Err(AskError::TimedOut) => {
+                    self.model_name.switching(&asked);
+                    refused.push(format!(
                     "Claude didn't say in time whether it switched to {asked}; it works on it if it starts again in this run."
-                )),
+                    ));
+                }
             }
         }
         if let Some((asked, answer)) = effort {
