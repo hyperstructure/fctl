@@ -3,6 +3,7 @@ import { type MouseEvent, useEffect, useLayoutEffect, useRef, useState } from "r
 import { createPortal, flushSync } from "react-dom";
 import { playable } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { own } from "@/lib/dialog";
 import { bytes } from "@/lib/format";
 import { useHoldPage } from "@/lib/hold-page";
 import { FITS, type Point, Trail, type View, Zoom, zoomedIn } from "@/lib/zoom";
@@ -540,7 +541,7 @@ export function Lightbox({
       ref={ref}
       tabIndex={-1}
       aria-label={current.file.name}
-      onClose={onClose}
+      onClose={own(onClose)}
       onPointerDown={(e) => {
         pressedOutside.current = outside(e.target);
       }}

@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
+import { own } from "@/lib/dialog";
 
 /** A modal dialog on the native <dialog> element (focus trap and Escape for free). */
 export function Dialog({
@@ -30,7 +31,7 @@ export function Dialog({
     // biome-ignore lint/a11y/useKeyWithClickEvents: the click closes on the backdrop only; Escape is native to <dialog>.
     <dialog
       ref={ref}
-      onClose={onClose}
+      onClose={own(onClose)}
       onClick={(e) => {
         if (e.target === ref.current) onClose();
       }}
