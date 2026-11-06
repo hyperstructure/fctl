@@ -281,7 +281,7 @@ platform-437` prints the edits), and the app's own dialog shows them on a
 page of their own (`web/demo/diffs.html`), each frame taken at a set moment
 of a clock that stands still between frames. It writes `diff-live-<theme>`
 `.mp4` and `.webm` and their posters, `diff-<theme>.webp` (which `shoot.mjs`
-overwrites with a still of the same file), in about fifteen minutes; it
+overwrites with a still of the same file), in about twenty minutes; it
 needs ffmpeg with libx264, libvpx-vp9 and libwebp, and says so before it
 records. Its story is the transcript's edits with some as the smaller
 steps an agent takes, at the seconds `LANDS` gives, and it checks that the

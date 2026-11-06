@@ -403,8 +403,11 @@ async function record(browser, url, demo, theme, dir) {
         a.currentTime = at;
       }
     }, s * 1000);
+    // A frame --quick doesn't keep is still drawn, as small as can be: some of what the dialog
+    // does waits for the browser to draw (scroll events), and it would come at other frames.
     if (!quick || f % 15 === 0)
       await page.screenshot({ path: path.join(dir, `f${String(f).padStart(5, "0")}.png`) });
+    else await page.screenshot({ clip: { x: 0, y: 0, width: 1, height: 1 } });
     if (f % (FPS * 5) === 0) console.log(`${theme}: ${s.toFixed(0)} s of ${END}`);
   }
   await context.close();
@@ -548,7 +551,7 @@ try {
           console.log(`${theme}: ${out}/diff-live-${theme}.mp4, .webm and diff-${theme}.webp`);
         }
       } finally {
-        // A theme's frames take gigabytes: only --frames keeps them.
+        // A theme's frames take over half a gigabyte: only --frames keeps them.
         if (!kept) rmSync(frames, { recursive: true, force: true });
       }
     }
