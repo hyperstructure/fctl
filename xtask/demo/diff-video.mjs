@@ -9,8 +9,8 @@
 //   node <repo>/xtask/demo/diff-video.mjs --out ~/repos/hyperstructure/fctl-site/src/features/shots/sessions
 //   node <repo>/xtask/demo/diff-video.mjs --theme dark --quick   # frames 4 a second, small: to check the story
 //
-// It needs ffmpeg (with libx264 and libvpx-vp9) and the web app's packages
-// (npm ci). No stack runs: the session's diffs are what git makes of its
+// It needs ffmpeg (with libx264, libvpx-vp9 and libwebp, but not for --quick)
+// and the web app's packages (npm ci). No stack runs: the session's diffs are what git makes of its
 // transcript's edits (`cargo xtask demo steps platform-437`) on its
 // repository's stand-in (xtask/demo/repos), version after version, and the
 // app's own dialog shows them on a page of their own (web/demo/diffs.html),
@@ -25,6 +25,7 @@
 // where the transcript does, line for line.
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   mkdirSync,
@@ -35,7 +36,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -214,19 +214,22 @@ function versions(repo, steps) {
     return files;
   };
   const all = [];
-  for (const s of steps) {
-    const file = path.join(dir, s.edit ?? s.write);
-    if (s.write !== undefined) {
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, s.content);
-    } else {
-      const text = readFileSync(file, "utf8");
-      if (!text.includes(s.old)) throw new Error(`${s.edit} has no ${JSON.stringify(s.old.slice(0, 60))}`);
-      writeFileSync(file, s.replace_all ? text.replaceAll(s.old, s.new) : text.replace(s.old, s.new));
+  try {
+    for (const s of steps) {
+      const file = path.join(dir, s.edit ?? s.write);
+      if (s.write !== undefined) {
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, s.content);
+      } else {
+        const text = readFileSync(file, "utf8");
+        if (!text.includes(s.old)) throw new Error(`${s.edit} has no ${JSON.stringify(s.old.slice(0, 60))}`);
+        writeFileSync(file, s.replace_all ? text.replaceAll(s.old, s.new) : text.replace(s.old, s.new));
+      }
+      all.push(snap());
     }
-    all.push(snap());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  rmSync(dir, { recursive: true, force: true });
   return all;
 }
 
@@ -407,6 +410,19 @@ async function record(browser, url, demo, theme, dir) {
   await context.close();
 }
 
+/** What encode() needs of ffmpeg, checked before minutes of recording rather than after. */
+function encoders() {
+  const need = ["libx264", "libvpx-vp9", "libwebp"];
+  const r = spawnSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8" });
+  if (r.error || r.status !== 0)
+    throw new Error(`the video needs ffmpeg, with ${need.join(", ")} (--quick takes frames without it)`);
+  const lacks = need.filter((e) => !new RegExp(`^\\s*V\\S*\\s+${e}\\s`, "m").test(r.stdout));
+  if (lacks.length)
+    throw new Error(
+      `ffmpeg lacks ${lacks.join(", ")}, which the video needs (--quick takes frames without it)`,
+    );
+}
+
 /** One theme's frames as the site's video, looping: its last 0.6 s fade into its first, which hold still. */
 function encode(frames, theme) {
   const ff = (...a) => execFileSync("ffmpeg", ["-v", "error", "-y", ...a], { stdio: "inherit" });
@@ -492,6 +508,9 @@ if (
 if (LANDS.at(-1)[1] !== shown.length - 1)
   throw new Error(`LANDS shows ${LANDS.at(-1)[1] + 1} versions of ${shown.length}`);
 
+if (!quick) encoders();
+mkdirSync(out, { recursive: true });
+
 const { createServer } = await import("vite");
 const web = path.join(root, "web");
 const vite = await createServer({
@@ -500,29 +519,42 @@ const vite = await createServer({
   server: { port: 5190, strictPort: false, host: "127.0.0.1" },
   logLevel: "warn",
 });
-await vite.listen();
-const url = new URL("demo/diffs.html", vite.resolvedUrls?.local[0] ?? "http://127.0.0.1:5190/").href;
-mkdirSync(out, { recursive: true });
-const browser = await chromium.launch();
+// Its watchers would keep the script running after an error: it closes whatever happens.
 try {
-  const demo = { versions: shown, cliRef: told.session, repo: told.repo, branch: BRANCH, initial: OPENS_AT };
-  for (const theme of themes) {
-    const frames = kept
-      ? path.join(kept, theme)
-      : mkdtempSync(path.join(tmpdir(), `fctl-diff-video-${theme}-`));
-    rmSync(frames, { recursive: true, force: true });
-    mkdirSync(frames, { recursive: true });
-    await record(browser, url, demo, theme, frames);
-    if (quick) {
-      for (const f of readdirSync(frames)) cpSync(path.join(frames, f), path.join(out, `${theme}-${f}`));
-      console.log(`${theme}: frames 4 a second in ${out}`);
-    } else {
-      encode(frames, theme);
-      console.log(`${theme}: ${out}/diff-live-${theme}.mp4, .webm and diff-${theme}.webp`);
+  await vite.listen();
+  const url = new URL("demo/diffs.html", vite.resolvedUrls?.local[0] ?? "http://127.0.0.1:5190/").href;
+  const browser = await chromium.launch();
+  try {
+    const demo = {
+      versions: shown,
+      cliRef: told.session,
+      repo: told.repo,
+      branch: BRANCH,
+      initial: OPENS_AT,
+    };
+    for (const theme of themes) {
+      const frames = kept
+        ? path.join(kept, theme)
+        : mkdtempSync(path.join(tmpdir(), `fctl-diff-video-${theme}-`));
+      try {
+        rmSync(frames, { recursive: true, force: true });
+        mkdirSync(frames, { recursive: true });
+        await record(browser, url, demo, theme, frames);
+        if (quick) {
+          for (const f of readdirSync(frames)) cpSync(path.join(frames, f), path.join(out, `${theme}-${f}`));
+          console.log(`${theme}: frames 4 a second in ${out}`);
+        } else {
+          encode(frames, theme);
+          console.log(`${theme}: ${out}/diff-live-${theme}.mp4, .webm and diff-${theme}.webp`);
+        }
+      } finally {
+        // A theme's frames take gigabytes: only --frames keeps them.
+        if (!kept) rmSync(frames, { recursive: true, force: true });
+      }
     }
-    if (!kept) rmSync(frames, { recursive: true, force: true });
+  } finally {
+    await browser.close();
   }
 } finally {
-  await browser.close();
   await vite.close();
 }

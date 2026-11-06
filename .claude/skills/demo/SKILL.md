@@ -282,7 +282,8 @@ page of their own (`web/demo/diffs.html`), each frame taken at a set moment
 of a clock that stands still between frames. It writes `diff-live-<theme>`
 `.mp4` and `.webm` and their posters, `diff-<theme>.webp` (which `shoot.mjs`
 overwrites with a still of the same file), in about fifteen minutes; it
-needs ffmpeg. Its story is the transcript's edits with some as the smaller
+needs ffmpeg with libx264, libvpx-vp9 and libwebp, and says so before it
+records. Its story is the transcript's edits with some as the smaller
 steps an agent takes, at the seconds `LANDS` gives, and it checks that the
 story ends where the transcript does. Run it again when the dialog or the
 transcript changes:

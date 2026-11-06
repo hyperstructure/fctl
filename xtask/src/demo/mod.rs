@@ -29,7 +29,7 @@ use anyhow::{Context, Result, bail};
 use cast::Cast;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -455,12 +455,13 @@ fn stop_leftovers(state: &Path) {
 /// `cargo xtask demo steps <transcript>`: what a session's transcript does
 /// to its repository's files, in order, as JSON, for the scripts that show
 /// its changes as they came (`xtask/demo/diff-video.mjs`): the repository
-/// (`owner/name`, its stand-in in `xtask/demo/repos`), and each edit
+/// (`owner/name`, its stand-in in `repos` beside the cast), and each edit
 /// (`edit`, `old`, `new`, `replace_all`) and write (`write`, `content`),
-/// those made at once and by subagents among them.
-pub fn steps(root: &Path, name: &str) -> Result<()> {
-    let data = root.join("xtask/demo");
-    let cast = Cast::load(&data.join("cast.toml"))?;
+/// those made at once and by subagents among them. `cast` is another cast
+/// than `xtask/demo/cast.toml`, as for `cargo xtask demo --cast`.
+pub fn steps(root: &Path, cast: Option<&Path>, name: &str) -> Result<()> {
+    let (file, data) = cast_files(root, cast);
+    let cast = Cast::load(&file)?;
     let session = cast
         .sessions
         .iter()
@@ -538,14 +539,18 @@ pub fn demo(root: &Path, opts: DemoOpts) -> Result<()> {
     seeded
 }
 
-fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
-    let file = opts
-        .cast
-        .clone()
-        .unwrap_or_else(|| root.join("xtask/demo/cast.toml"));
+/// The cast's file (`xtask/demo/cast.toml`, or `cast`), and the directory
+/// beside it with its transcripts, repositories and avatars.
+fn cast_files(root: &Path, cast: Option<&Path>) -> (PathBuf, PathBuf) {
+    let file = cast.map_or_else(|| root.join("xtask/demo/cast.toml"), Path::to_path_buf);
     let data = file
         .parent()
         .map_or_else(|| root.join("xtask/demo"), Path::to_path_buf);
+    (file, data)
+}
+
+fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
+    let (file, data) = cast_files(root, opts.cast.as_deref());
     let cast = Cast::load(&file)?;
     let transcripts = world::Transcripts::load(&data.join("transcripts"))?;
     check_transcripts(&cast, &transcripts)?;

@@ -48,7 +48,8 @@ Develop
                                 The demo cast (.claude/skills/demo) in a stack of its own, with
                                 its state in .fctl-demo/: people, workspaces, runners, projects
                                 and sessions lived in, for screenshots and videos
-  demo steps <transcript>       What a cast session's transcript does to its repository's files,
+  demo steps <transcript> [--cast <file>]
+                                What a cast session's transcript does to its repository's files,
                                 in order, as JSON (xtask/demo/diff-video.mjs reads it)
 
 Self-host without Cloudflare (deploy/standalone)
@@ -130,22 +131,24 @@ fn main() -> Result<()> {
             linear::command(&action, target, text, who, description)
         }
         "demo" => {
-            let opts = demo::DemoOpts {
-                no_vite: a.flag("--no-vite"),
-                cast: a.value("--cast")?.map(PathBuf::from),
-            };
+            // The flags first: --cast's value would pass for a positional.
+            let no_vite = a.flag("--no-vite");
+            let cast = a.value("--cast")?.map(PathBuf::from);
             if let Some(what) = a.optional() {
                 if what != "steps" {
                     bail!(
                         "cargo xtask demo takes steps <transcript>, or nothing (cargo xtask help)"
                     );
                 }
+                if no_vite {
+                    bail!("--no-vite is for the demo's stack, not demo steps (cargo xtask help)");
+                }
                 let name = a.positional("a transcript's name, like platform-437")?;
                 a.done()?;
-                return demo::steps(&root, &name);
+                return demo::steps(&root, cast.as_deref(), &name);
             }
             a.done()?;
-            demo::demo(&root, opts)
+            demo::demo(&root, demo::DemoOpts { no_vite, cast })
         }
         "serve" => {
             let opts = serve::ServeOpts {
