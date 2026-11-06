@@ -736,6 +736,16 @@ impl Driver {
         }
     }
 
+    /// Lets the states that stopped sandboxes saved go, but those of
+    /// `keep`, to make room on the disk (Firecracker saves its VMs' as they
+    /// stop); what that freed, in MiB.
+    pub async fn drop_saved_states(&self, keep: &std::collections::HashSet<String>) -> u64 {
+        match self {
+            Self::Firecracker(d) => d.drop_saved_states(keep).await,
+            _ => 0,
+        }
+    }
+
     /// Stops the sandbox, which keeps its files. An Apple `container`
     /// sandbox first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {

@@ -351,7 +351,24 @@ impl Daemon {
         }
         self.sweeping = true;
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+        // While the disk is low, the VMs' saved states go first: their
+        // sandboxes boot again from their disks, and lose no more.
+        let low = self.low_on_disk();
+        let in_use: HashSet<String> = self
+            .sessions
+            .keys()
+            .chain(self.pending_starts.keys())
+            .map(|id| sandbox_name(id.as_str()))
+            .collect();
         tokio::spawn(async move {
+            if low {
+                let freed = ctx.driver.drop_saved_states(&in_use).await;
+                if freed > 0 {
+                    tracing::info!(
+                        "let go of the saved states of stopped sandboxes for room on the disk: {freed} MiB"
+                    );
+                }
+            }
             let listed = ctx.driver.list().await;
             let caches = match &listed {
                 Ok(_) => ctx

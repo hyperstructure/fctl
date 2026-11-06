@@ -22,6 +22,10 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long Firecracker has to answer a request on its API socket.
 const API_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long Firecracker may take to save a VM's state or load it: its
+/// memory goes to or comes from a file, gigabytes of it.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// The kernel's command line, before what fctl-agent reads: the console, a
 /// reset that ends Firecracker, and no modules to look for. On x86_64 also
 /// what Firecracker suggests to boot faster: no PS/2 probing, and no PCI
@@ -285,6 +289,13 @@ impl Vm {
         })
     }
 
+    /// The memory the VM booted with, in MiB, from its configuration.
+    pub fn memory_mb(&self) -> Option<u64> {
+        let config = std::fs::read(self.dir.join("firecracker.json")).ok()?;
+        let config: Value = serde_json::from_slice(&config).ok()?;
+        config["machine-config"]["mem_size_mib"].as_u64()
+    }
+
     /// What the VM's console said last, for an error.
     pub fn console_tail(&self) -> String {
         let text = std::fs::read_to_string(self.console()).unwrap_or_default();
@@ -314,6 +325,87 @@ impl Vm {
             .as_str()
             .map(str::to_owned)
             .context("Firecracker didn't say what its VM does")
+    }
+
+    /// The Firecracker release that runs the VM (`1.17.0`).
+    pub async fn firecracker_version(&self) -> Result<String> {
+        let body = api(&self.api(), "GET", "/", None).await?;
+        let info: Value = serde_json::from_slice(&body).context("reading Firecracker's answer")?;
+        info["vmm_version"]
+            .as_str()
+            .map(str::to_owned)
+            .context("Firecracker didn't say its version")
+    }
+
+    /// Pauses the VM and saves its state in `dir`: Firecracker's
+    /// (`vmstate`) and the VM's memory (`memory`), with its programs as
+    /// they are. The VM stays paused.
+    pub async fn snapshot(&self, dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(dir)?;
+        if !self.paused().await {
+            self.pause().await?;
+        }
+        let body = json!({
+            "snapshot_type": "Full",
+            "snapshot_path": dir.join("vmstate"),
+            "mem_file_path": dir.join("memory"),
+        });
+        api_within(
+            &self.api(),
+            "PUT",
+            "/snapshot/create",
+            Some(&body),
+            SNAPSHOT_TIMEOUT,
+        )
+        .await
+        .map(drop)
+    }
+
+    /// Starts Firecracker on the state saved in `dir` ([`snapshot`](Self::snapshot)),
+    /// the VM running on where it was, after stopping what an earlier boot
+    /// left. The VM's disks must be where they were. What it started goes
+    /// again when it fails.
+    pub async fn restore(&self, dir: &Path, firecracker: &Path, name: &str) -> Result<()> {
+        self.kill().await;
+        let restored = async {
+            std::fs::create_dir_all(&self.run)?;
+            let console = std::fs::File::create(self.console())?;
+            let mut cmd = std::process::Command::new(firecracker);
+            cmd.arg("--api-sock")
+                .arg(self.api())
+                .args(["--id", name, "--level", "Warning"])
+                .stdin(Stdio::null())
+                .stdout(console.try_clone()?)
+                .stderr(console);
+            spawn_detached(&mut cmd, &self.pid_file("firecracker"))
+                .with_context(|| format!("starting {}", firecracker.display()))?;
+            let until = Instant::now() + Duration::from_secs(10);
+            while self.state().await.is_err() {
+                if Instant::now() > until || !self.running() {
+                    bail!("Firecracker did not start: {}", self.console_tail());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let body = json!({
+                "snapshot_path": dir.join("vmstate"),
+                "mem_backend": { "backend_type": "File", "backend_path": dir.join("memory") },
+                "resume_vm": true,
+            });
+            api_within(
+                &self.api(),
+                "PUT",
+                "/snapshot/load",
+                Some(&body),
+                SNAPSHOT_TIMEOUT,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if restored.is_err() {
+            self.kill().await;
+        }
+        restored
     }
 
     /// Whether the VM is paused. One that doesn't run, or whose Firecracker
@@ -404,9 +496,25 @@ impl Vm {
 
 /// A request to Firecracker's API on `socket`: its answer's body.
 async fn api(socket: &Path, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>> {
-    tokio::time::timeout(API_TIMEOUT, request(socket, method, path, body))
+    api_within(socket, method, path, body, API_TIMEOUT).await
+}
+
+/// [`api`], with a time limit of its own.
+async fn api_within(
+    socket: &Path,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    within: Duration,
+) -> Result<Vec<u8>> {
+    tokio::time::timeout(within, request(socket, method, path, body))
         .await
-        .map_err(|_| anyhow!("Firecracker didn't answer {method} {path} within 10 seconds"))?
+        .map_err(|_| {
+            anyhow!(
+                "Firecracker didn't answer {method} {path} within {} seconds",
+                within.as_secs()
+            )
+        })?
 }
 
 async fn request(socket: &Path, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>> {
@@ -852,6 +960,8 @@ mod tests {
                 } else if request.contains(r#""state":"Resumed""#) && state == "Paused" {
                     state = "Running";
                     "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+                } else if request.starts_with("PUT /snapshot/create ") && state == "Paused" {
+                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
                 } else {
                     let body = r#"{"fault_message":"The requested operation is not supported in the current VM state."}"#;
                     format!(
@@ -891,6 +1001,46 @@ mod tests {
             r#"PATCH /vm HTTP/1.1 {"state":"Resumed"}"#,
         );
         assert_eq!(requests, [get, pause, get, resume, get, resume]);
+        api.abort();
+        let _ = std::fs::remove_dir_all(&vm.run);
+        Ok(())
+    }
+
+    /// Saving a VM's state pauses it first, as Firecracker asks, and says
+    /// where its files go; a running VM's Firecracker says its version.
+    #[tokio::test]
+    async fn saves_the_vms_state_through_firecrackers_api() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
+        let (api, requests) = firecracker_api(&vm.api())?;
+        assert_eq!(vm.firecracker_version().await?, "1.17.0");
+        let saved = dir.path().join("saved");
+        vm.snapshot(&saved).await?;
+        assert!(vm.paused().await);
+        let requests = requests.lock().map(|r| r.clone()).unwrap_or_default();
+        let created = format!(
+            r#"PUT /snapshot/create HTTP/1.1 {{"mem_file_path":"{0}/memory","snapshot_path":"{0}/vmstate","snapshot_type":"Full"}}"#,
+            saved.display()
+        );
+        assert_eq!(
+            requests,
+            [
+                "GET / HTTP/1.1 ",
+                "GET / HTTP/1.1 ",
+                r#"PATCH /vm HTTP/1.1 {"state":"Paused"}"#,
+                &created,
+                "GET / HTTP/1.1 ",
+            ]
+        );
+        // The memory the VM booted with, from its configuration.
+        assert_eq!(vm.memory_mb(), None);
+        std::fs::create_dir_all(&vm.dir)?;
+        let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
+        std::fs::write(
+            vm.dir.join("firecracker.json"),
+            serde_json::to_vec(&vm.config(&spec))?,
+        )?;
+        assert_eq!(vm.memory_mb(), Some(1024));
         api.abort();
         let _ = std::fs::remove_dir_all(&vm.run);
         Ok(())
