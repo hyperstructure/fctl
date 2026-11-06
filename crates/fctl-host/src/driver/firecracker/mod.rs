@@ -1690,4 +1690,88 @@ mod tests {
         assert!(!d.list().await?.iter().any(|s| s.name == name));
         result
     }
+
+    /// A sandbox stopped with its state saved resumes with its programs
+    /// running and its network linked again; without it, it boots from its
+    /// disk. As [`boots_a_sandbox`] says.
+    #[tokio::test]
+    #[ignore = "needs KVM, passt and a static fctl-agent"]
+    async fn stopped_sandboxes_resume_where_they_were() -> Result<()> {
+        use super::super::Driver;
+        let temp = tempfile::tempdir()?;
+        let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| temp.path().to_owned());
+        let mut cfg = HostConfig {
+            data_dir: Some(data.clone()),
+            agent_bin: Some(
+                std::env::var("FCTL_TEST_FIRECRACKER_AGENT")
+                    .context("FCTL_TEST_FIRECRACKER_AGENT isn't set")?
+                    .into(),
+            ),
+            ..HostConfig::default()
+        };
+        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
+        cfg.firecracker.disk_gb = 4;
+        let d = Driver::select("firecracker", &cfg).await?;
+        let log = |line: String| eprintln!("{line}");
+        let name = format!(
+            "fctl-test-{}",
+            hex::encode(fctl_domain::random_bytes::<4>())
+        );
+        let spec = SandboxSpec {
+            name: name.clone(),
+            image: std::env::var("FCTL_TEST_FIRECRACKER_IMAGE")
+                .unwrap_or_else(|_| "docker.io/library/debian:trixie-slim".into()),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: None,
+        };
+        let sb = d.ensure(&spec, &log).await?;
+        let dir = data.join("firecracker/sandboxes").join(&name);
+        let result = async {
+            // A program of its own, and a file in memory (/run is a tmpfs).
+            d.exec(
+                &sb,
+                "setsid sh -c 'while :; do sleep 1; done' </dev/null >/dev/null 2>&1 & echo $! > /run/held",
+            )
+            .await?;
+            let held = d.exec(&sb, "cat /run/held").await?;
+            let started = std::time::Instant::now();
+            d.stop(&sb).await?;
+            eprintln!(
+                "saved in {:?}: {} MiB of memory on disk",
+                started.elapsed(),
+                crate::caches::dir_size_mb(&dir.join("saved"))?
+            );
+            assert!(dir.join("saved/memory").is_file());
+            assert!(!d.list().await?.iter().any(|s| s.name == name && s.running));
+            let started = std::time::Instant::now();
+            d.ensure(&spec, &log).await?;
+            eprintln!("resumed in {:?}", started.elapsed());
+            assert!(!dir.join("saved").exists());
+            assert_eq!(d.exec(&sb, "cat /run/held").await?, held);
+            let alive = d
+                .exec(&sb, "kill -0 \"$(cat /run/held)\" && echo alive")
+                .await?;
+            assert_eq!(alive.trim(), "alive");
+            let resolved = d.exec(&sb, "getent hosts example.com").await?;
+            assert!(!resolved.trim().is_empty());
+            // Without saving its state, it boots again from its disk.
+            d.exec(&sb, "echo kept > /root/note").await?;
+            let mut cold = cfg.clone();
+            cold.firecracker.snapshots = false;
+            let d = Driver::select("firecracker", &cold).await?;
+            d.stop(&sb).await?;
+            assert!(!dir.join("saved").exists());
+            d.ensure(&spec, &log).await?;
+            assert_eq!(d.exec(&sb, "cat /root/note").await?, "kept\n");
+            assert!(d.exec(&sb, "cat /run/held").await.is_err());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        d.remove(&sb).await?;
+        result
+    }
 }
