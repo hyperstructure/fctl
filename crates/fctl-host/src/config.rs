@@ -29,6 +29,7 @@
 //! firecracker = "/usr/local/bin/firecracker"  # unset: the release fctl pins, downloaded
 //! kernel = "/var/lib/fctl/vmlinux"            # a file, or an image with /vmlinux (unset: the published one)
 //! disk_gb = 64             # each sandbox's own disk, which takes only what it holds
+//! jailer = true            # as root: each VM as a user of its own, in a chroot and a cgroup
 //! ```
 //!
 //! The runner token lives next to it in `host-token`, and the Claude token
@@ -157,6 +158,10 @@ pub struct FirecrackerConfig {
     /// The disk each sandbox gets, in GiB: a sparse file, which takes only
     /// what the session writes.
     pub disk_gb: u32,
+    /// Whether a host that runs as root runs each VM through Firecracker's
+    /// jailer: as a user of its own, in a chroot with only its files, and
+    /// in a cgroup of its own. A host that doesn't run as root can't.
+    pub jailer: bool,
 }
 
 impl Default for FirecrackerConfig {
@@ -166,6 +171,7 @@ impl Default for FirecrackerConfig {
             kernel: None,
             passt: None,
             disk_gb: 64,
+            jailer: true,
         }
     }
 }
