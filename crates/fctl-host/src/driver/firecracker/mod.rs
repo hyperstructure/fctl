@@ -121,9 +121,6 @@ fn remove_stale(dir: &Path) {
     }
 }
 
-/// Makes an ext4 filesystem in a new sparse file of `gb` GiB at `path`,
-/// whose root is root's, labelled `label`, with a journal or not. It never
-/// writes over a file there, a sandbox's disk say.
 /// The layers' digests to keep for the image `resolved`: its config's
 /// (`rootfs.diff_ids`), once those of the layers after the first `skip`
 /// (which an image here has) are what the VM that unpacked them found,
@@ -157,6 +154,9 @@ fn checked_diff_ids(
     Ok(resolved.diff_ids.clone())
 }
 
+/// Makes an ext4 filesystem in a new sparse file of `gb` GiB at `path`,
+/// whose root is root's, labelled `label`, with a journal or not. It never
+/// writes over a file there, a sandbox's disk say.
 async fn make_fs(path: &Path, gb: u64, label: &str, journal: bool) -> Result<()> {
     let mkfs = find_program("mkfs.ext4").context("mkfs.ext4 is not installed (e2fsprogs)")?;
     let file = std::fs::OpenOptions::new()
@@ -586,9 +586,9 @@ impl FirecrackerDriver {
         let registry = registry::Registry::new();
         let resolved = registry.resolve(image, std::env::consts::ARCH).await?;
         if self.store.image(&resolved.id).is_some() {
-            // One an earlier fctl pulled has no layers' digests: no image
-            // lies over it until it is pulled again (the config's, which no
-            // VM checked, won't do).
+            // One an earlier fctl pulled has no layers' digests, so no
+            // image lies over it: the config's, which no VM checked, won't
+            // do, and this only names it.
             let _images = self.lock_images().await?;
             self.store.tag(image, &resolved.id)?;
             self.remove_unused();

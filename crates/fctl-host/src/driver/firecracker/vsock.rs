@@ -337,12 +337,6 @@ pub async fn start(socket: &Path, mut exec: Exec) -> Result<Started> {
     })
 }
 
-/// Asks a VM booted to unpack an image to unpack `layers`, whose bytes are
-/// the files `blobs`, and sends them, within `within`; what it wrote: files
-/// and bytes. With `overlay`, the layers' whiteouts stay as overlayfs reads
-/// them, for an image that lies over another's. A VM that fails stops
-/// reading and says why, which is the error rather than the write that
-/// failed after it.
 /// What a VM unpacked of an image's layers.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Unpacked {
@@ -353,6 +347,12 @@ pub struct Unpacked {
     pub diff_ids: Option<Vec<String>>,
 }
 
+/// Asks a VM booted to unpack an image to unpack `layers`, whose bytes are
+/// the files `blobs`, and sends them, within `within`; what it unpacked.
+/// With `overlay`, the layers' whiteouts stay as overlayfs reads
+/// them, for an image that lies over another's. A VM that fails stops
+/// reading and says why, which is the error rather than the write that
+/// failed after it.
 pub async fn unpack(
     socket: &Path,
     layers: &[fctl_proto::vm::Layer],

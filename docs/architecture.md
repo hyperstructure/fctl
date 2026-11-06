@@ -3452,7 +3452,8 @@ in `firecracker/` in the host's data directory.
   disks, four at most, under their own. An image stays while another here
   lies over it, its last name gone or not, and while a pull or a build
   lies a new one over it (a locked file in the store's `held`). Images an
-  earlier fctl pulled lie under none until they are pulled again.
+  earlier fctl pulled lie under none: pulling one again finds it here and
+  only names it.
 - **Builds.** A project's image builds with BuildKit
   (`docker.io/moby/buildkit`, pinned by digest, which the host pulls from
   Docker Hub for a project's first build) in a VM of the project's own,

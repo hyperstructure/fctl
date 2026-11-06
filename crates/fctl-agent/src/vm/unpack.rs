@@ -213,9 +213,9 @@ fn within(root: &Path, path: &Path) -> Option<PathBuf> {
 /// Makes the directories of `dir` (relative to `root`, which is canonical)
 /// that aren't there, each only once the one it goes in resolves inside
 /// `root`, as the tar crate does for an entry's: none through a link that
-/// leads out of it. Each is root's, 0755, as Docker makes those a layer
-/// doesn't list.
-fn make_dirs(root: &Path, dir: &Path) -> Result<()> {
+/// leads out of it, which is `Ok(false)`. Each is root's, 0755, as Docker
+/// makes those a layer doesn't list.
+fn make_dirs(root: &Path, dir: &Path) -> Result<bool> {
     let mut missing = Vec::new();
     let mut at = dir;
     while std::fs::symlink_metadata(root.join(at)).is_err() {
@@ -227,7 +227,7 @@ fn make_dirs(root: &Path, dir: &Path) -> Result<()> {
     }
     for dir in missing.into_iter().rev() {
         let Some(made) = within(root, dir) else {
-            bail!("{} would be outside the image", dir.display());
+            return Ok(false);
         };
         match std::fs::create_dir(&made) {
             Ok(()) => {}
@@ -235,7 +235,7 @@ fn make_dirs(root: &Path, dir: &Path) -> Result<()> {
             Err(e) => return Err(e).with_context(|| format!("making {}", dir.display())),
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Applies one layer, a tar stream, onto `root`: `.wh.<name>` removes
@@ -275,7 +275,7 @@ pub fn apply(
             if whiteouts == Whiteouts::Overlay
                 && let Some(dir) = path.parent()
                 && !dir.as_os_str().is_empty()
-                && make_dirs(root, dir).is_err()
+                && !make_dirs(root, dir)?
             {
                 continue;
             }
@@ -307,7 +307,7 @@ pub fn apply(
             if whiteouts == Whiteouts::Overlay
                 && let Some(dir) = hidden.parent()
                 && !dir.as_os_str().is_empty()
-                && make_dirs(root, dir).is_err()
+                && !make_dirs(root, dir)?
             {
                 continue;
             }
@@ -369,8 +369,9 @@ fn special(root: &Path, path: &Path, header: &tar::Header) -> Result<()> {
     use nix::sys::stat::{Mode, SFlag, makedev, mknod};
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
+        && !make_dirs(root, dir)?
     {
-        make_dirs(root, dir)?;
+        bail!("{} would be outside the image", path.display());
     }
     let Some(target) = within(root, path) else {
         bail!("{} would be outside the image", path.display());
@@ -610,9 +611,21 @@ mod tests {
         let r = apply(&root, &bytes[..], &mut done, Whiteouts::Apply);
         assert!(r.is_err(), "{r:?}");
         assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
-        assert!(make_dirs(&root.canonicalize()?, Path::new("escape/x")).is_err());
-        make_dirs(&root.canonicalize()?, Path::new("a/b/c"))?;
+        let canonical = root.canonicalize()?;
+        assert!(!make_dirs(&canonical, Path::new("escape/x"))?);
+        assert!(make_dirs(&canonical, Path::new("a/b/c"))?);
         assert!(root.join("a/b/c").is_dir());
+        // Anything else that keeps a directory from being made fails the
+        // layer, rather than lose what it hides.
+        std::fs::write(root.join("file"), "x")?;
+        assert!(make_dirs(&canonical, Path::new("file/sub")).is_err());
+        let r = apply(
+            &root,
+            &layer(&[("file/sub/.wh.y", "")])[..],
+            &mut done,
+            Whiteouts::Overlay,
+        );
+        assert!(r.is_err(), "{r:?}");
         Ok(())
     }
 
