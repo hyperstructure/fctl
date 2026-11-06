@@ -3489,7 +3489,29 @@ in `firecracker/` in the host's data directory.
 
 The VMs share no files with the host, so they get no
 [package caches](#package-caches). Firecracker runs as the host's user,
-without its jailer, which needs root: a VM escape would run as that user.
+so a VM escape would run as that user. A host that runs as root runs
+each VM through Firecracker's jailer instead (`[firecracker] jailer`,
+true unless set otherwise; the jailer comes with the pinned release, or
+sits beside the Firecracker `host.toml` names, as `jailer` or as the
+release names it): as a uid and gid of its own from 1,900,000,000 up,
+picked under a lock so that no other running VM's jail has it, in a
+chroot under `firecracker/jail/<Firecracker's file name>/<VM key>/root`,
+and in a cgroup of its own (`fctl/<VM key>`, at most 256 processes). The
+chroot holds hard links of its disks (the images' filesystems readable by
+all), of its kernel and initramfs (copies where they're private or on
+another filesystem), and the sockets Firecracker makes. The jail's user
+owns the chroot, so the host never goes through it: it links the sockets
+themselves into a directory of root's beside the chroot, which the VM's
+socket directory leads to, each opened without following a link and
+checked to be a socket. Its writable disk is lent to the
+jail's user while it runs, noted in `jail.json` beside the chroot, and
+given back to root as the VM stops, so that a later jail with the same
+uid owns nothing; jails of VMs that don't run, which a host that stopped
+or crashed left, go before the next VM starts. The jailer needs cgroup v2
+and a filesystem that allows device files (it makes `/dev/kvm` in the
+chroot): without either, the driver isn't ready and says what to change.
+`passt` runs outside the jail and drops to `nobody` itself; its pid's
+file goes in `/tmp` under a name with a random part.
 
 ### Package caches
 

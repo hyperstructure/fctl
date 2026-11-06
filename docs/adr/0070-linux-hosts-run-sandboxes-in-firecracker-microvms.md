@@ -78,7 +78,10 @@ microVM of its own.
 - A VM escape would run as the host's user, who can read the runner's
   token and any Claude token kept on the host, as a container escape can
   with Docker. Running Firecracker through its jailer, as another user in
-  a chroot, needs a host that runs as root, and is for later.
+  a chroot, needs a host that runs as root, and is for later. (Since
+  session #802, a host that runs as root does, unless `host.toml` sets
+  `jailer = false`: each VM as a user of its own, in a chroot and a cgroup
+  of its own.)
 - Firecracker's VMs share no filesystem with the host, so they get no
   package caches, as Lima's don't.
 - An image's first pull takes longer than Docker's (it unpacks in a VM),
