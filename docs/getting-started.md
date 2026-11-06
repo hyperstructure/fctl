@@ -169,10 +169,22 @@ Any Mac with Apple silicon (or a Linux box) can be a runner. On the Mac:
    It stops when the Mac restarts; the host service starts it again.
 
    On older macOS, install [Lima](https://lima-vm.io) (`brew install lima`)
-   instead; on Linux, Docker, or for a microVM of its own for each session,
-   KVM and `passt` ([Firecracker](cli.md#hosts): `sudo usermod -aG kvm
-   $USER`, `sudo apt install passt e2fsprogs`, and `--driver firecracker`
-   below).
+   instead.
+
+   On Linux, install Docker Engine with
+   [Docker's guide for your distribution](https://docs.docker.com/engine/install/),
+   and start it, now and whenever the machine starts:
+
+   ```sh
+   sudo systemctl enable --now docker
+   ```
+
+   Docker lets in only root and the members of its `docker` group.
+   `fctl host install` offers to add you (`sudo usermod -aG docker
+   $USER`), and fctl takes the group by itself, so you don't log out and
+   back in. For a microVM of its own for each session instead, use KVM and
+   `passt` ([Firecracker](cli.md#hosts): `sudo usermod -aG kvm $USER`,
+   `sudo apt install passt e2fsprogs`, and `--driver firecracker` below).
 
 2. Register the machine for a workspace you are in, and start the host
    service (or pass `--token` with a runner token from the workspace's
@@ -186,7 +198,7 @@ Any Mac with Apple silicon (or a Linux box) can be a runner. On the Mac:
    This writes `~/.config/fctl/host.toml` and installs a launchd agent
    (`sh.fctl.host`) that starts at login, restarts if it stops, and keeps
    the Mac from sleeping while it is plugged in, so it can start work at any
-   hour. The host then pulls the [sandbox image](sandbox-images.md) (Debian
+   hour; on Linux, a systemd user unit, `fctl-host.service`. The host then pulls the [sandbox image](sandbox-images.md) (Debian
    with git, gh, Python, uv, Rust, Node, TypeScript, Bun and Claude Code) in
    the background. With Lima, add `--build-image`: it prepares the VM that
    sessions are cloned from, which takes a few minutes. A host runs any

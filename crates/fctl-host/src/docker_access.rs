@@ -221,6 +221,16 @@ pub fn facts() -> Facts {
     }
 }
 
+/// The command that restarts this user's systemd manager, which then
+/// starts the host service again with the groups the user has now.
+pub fn restart_manager() -> String {
+    #[cfg(unix)]
+    let uid = nix::unistd::getuid().as_raw().to_string();
+    #[cfg(not(unix))]
+    let uid = "$(id -u)";
+    format!("sudo systemctl restart user@{uid}.service")
+}
+
 /// Where Docker Engine's install guide for this Linux distribution is, from
 /// `/etc/os-release` (its `ID`, then its `ID_LIKE`).
 pub fn install_guide(os_release: &str) -> String {
@@ -296,20 +306,60 @@ pub fn regroup() {
     linux::regroup();
 }
 
-/// Whether this process may use the Docker socket now, or there is no
-/// socket here that refuses it.
-pub fn reachable() -> bool {
+/// What stands between this process and Docker, as the socket answers it
+/// now: `None` when it lets this process in, or when it isn't a socket on
+/// this machine.
+pub fn problem() -> Option<Problem> {
     #[cfg(unix)]
     {
-        match socket(std::env::var("DOCKER_HOST").ok().as_deref()) {
-            Some(path) => !denied(&path),
-            None => true,
-        }
+        use std::io::ErrorKind;
+        let path = socket(std::env::var("DOCKER_HOST").ok().as_deref())?;
+        let refusal = match std::os::unix::net::UnixStream::connect(&path) {
+            Ok(_) => return None,
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => Refusal::Denied,
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+                Refusal::NotRunning
+            }
+            Err(_) => return None,
+        };
+        Some(Problem::of(refusal, &facts()))
     }
     #[cfg(not(unix))]
     {
-        true
+        None
     }
+}
+
+/// Whether the process `pid` has the Docker socket's group: the host
+/// service's, which takes it as it starts. `None` where that can't be
+/// told: the socket isn't of a group other than root's, or there is no
+/// such process.
+pub fn process_has_group(pid: u32) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::process_has_group(pid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The groups a process has, from its `/proc/<pid>/status`: its effective
+/// group and its supplementary groups.
+pub fn status_groups(status: &str) -> Vec<u32> {
+    let field = |key: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .map(|v| v.split_whitespace().filter_map(|g| g.parse::<u32>().ok()))
+    };
+    let effective = field("Gid:").and_then(|mut ids| ids.nth(1));
+    effective
+        .into_iter()
+        .chain(field("Groups:").into_iter().flatten())
+        .collect()
 }
 
 /// Whether the socket at `path` refuses this process.
@@ -365,7 +415,7 @@ mod linux {
         let group = gid.and_then(|g| Group::from_gid(g).ok().flatten());
         let user = User::from_uid(getuid()).ok().flatten();
         let member = match (&group, &user) {
-            (Some(g), Some(u)) => u.gid == g.gid || g.mem.iter().any(|m| *m == u.name),
+            (Some(g), Some(u)) => u.gid == g.gid || g.mem.contains(&u.name),
             _ => false,
         };
         let has_group = gid
@@ -384,6 +434,16 @@ mod linux {
                 "`sudo systemctl enable --now docker` starts it, now and whenever the machine starts",
             ),
         }
+    }
+
+    pub fn process_has_group(pid: u32) -> Option<bool> {
+        let socket = super::socket(std::env::var("DOCKER_HOST").ok().as_deref())?;
+        let gid = std::fs::metadata(socket).ok()?.gid();
+        if gid == 0 {
+            return None;
+        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        Some(super::status_groups(&status).contains(&gid))
     }
 
     pub fn regroup() {
@@ -581,6 +641,18 @@ mod tests {
         ] {
             assert_eq!(no.group_to_take(), None, "{no:?}");
         }
+    }
+
+    #[test]
+    fn reads_the_groups_of_a_process() {
+        let status = "Name:\tfctl\nUmask:\t0022\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t999\t1000\t1000\nFDSize:\t64\nGroups:\t4 24 27 \nNStgid:\t4242\n";
+        assert_eq!(status_groups(status), [999, 4, 24, 27]);
+        // No supplementary groups.
+        assert_eq!(
+            status_groups("Gid:\t1000\t1000\t1000\t1000\nGroups:\t\n"),
+            [1000]
+        );
+        assert!(status_groups("").is_empty());
     }
 
     #[test]

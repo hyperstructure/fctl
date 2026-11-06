@@ -141,7 +141,7 @@ impl ContainerDriver {
                 version: None,
                 detail: Some(match self.flavor {
                     Flavor::Apple => "Apple's `container` is not installed (get it from https://github.com/apple/container/releases, then run `container system start`)".into(),
-                    Flavor::Docker => "the docker CLI is not installed".into(),
+                    Flavor::Docker => docker_missing(),
                 }),
             };
         }
@@ -1154,6 +1154,19 @@ fn docker_resources(out: &str) -> Option<SandboxSize> {
     let bytes: u64 = words.next()?.parse().ok()?;
     let memory_mb = u32::try_from(bytes / 1024 / 1024).unwrap_or(u32::MAX);
     (cpus > 0 && memory_mb > 0).then_some(SandboxSize { cpus, memory_mb })
+}
+
+/// What a probe says on a machine without the docker CLI: on Linux, with
+/// where Docker Engine's install guide for its distribution is.
+fn docker_missing() -> String {
+    if !cfg!(target_os = "linux") {
+        return "the docker CLI is not installed".into();
+    }
+    let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    format!(
+        "the docker CLI is not installed ({} says how to install Docker Engine)",
+        crate::docker_access::install_guide(&os)
+    )
 }
 
 /// Whether `bin` can be started: a path to a file, or a program on the PATH.

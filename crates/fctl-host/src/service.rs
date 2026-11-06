@@ -288,7 +288,13 @@ pub fn restart() -> Result<()> {
 /// Whether this process is the one the host service runs, which launchd
 /// (`KeepAlive`) or systemd (`Restart=always`) start again when it exits.
 pub fn runs_this_process() -> bool {
-    let main = if cfg!(target_os = "macos") {
+    main_pid() == Some(std::process::id())
+}
+
+/// The process the host service runs, while it runs: launchd's or
+/// systemd's main process for it.
+pub fn main_pid() -> Option<u32> {
+    if cfg!(target_os = "macos") {
         sh("launchctl", &["print", &format!("gui/{}/{LABEL}", uid())])
             .ok()
             .and_then(|o| launchd_pid(&o))
@@ -296,8 +302,8 @@ pub fn runs_this_process() -> bool {
         systemctl_user(&["show", "--property=MainPID", "--value", "fctl-host.service"])
             .ok()
             .and_then(|o| o.trim().parse().ok())
-    };
-    main == Some(std::process::id())
+            .filter(|&pid| pid != 0)
+    }
 }
 
 /// The process of a running launchd job, as `launchctl print` says it.
