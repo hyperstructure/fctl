@@ -824,7 +824,7 @@ async fn untracked_in(
         return Vec::new();
     }
     let mut args = vec!["ls-files", "-z", "--others", "--exclude-standard", "--"];
-    let specs: Vec<String> = new_dirs.iter().map(|d| format!(":(literal){d}")).collect();
+    let specs = pathspecs(new_dirs);
     args.extend(specs.iter().map(String::as_str));
     // Enough for that many of the longest paths: a directory a build
     // filled holds far more.
@@ -850,6 +850,27 @@ async fn untracked_in(
         .map(str::to_owned)
         .collect()
 }
+
+/// The pathspecs that have `git ls-files` list the files of `new_dirs`, as
+/// `git status` sorted them: the first [`MAX_FILES`] of them, which hold at
+/// least as many files as a repository's state lists unless some are other
+/// repositories, and only as many as [`MOST_PATHSPEC_BYTES`] take.
+fn pathspecs(new_dirs: &[&str]) -> Vec<String> {
+    let mut bytes = 0;
+    new_dirs
+        .iter()
+        .take(MAX_FILES)
+        .map(|d| format!(":(literal){d}"))
+        .take_while(|spec| {
+            bytes += spec.len() + 1;
+            bytes <= MOST_PATHSPEC_BYTES
+        })
+        .collect()
+}
+
+/// The most bytes of pathspecs fctl-agent passes to `git ls-files`: well
+/// within what an argument list takes (`ARG_MAX`, 2 MB on Linux).
+const MOST_PATHSPEC_BYTES: usize = 256 * 1024;
 
 /// The lines an untracked file in `dir` adds, read whole if it is within
 /// what is `left` to read, which it takes them from: none past that, nor
@@ -2839,7 +2860,37 @@ cat "$answer"
         );
         assert!(st.files.iter().all(|f| f.additions == Some(1)));
         assert_eq!(st.uncommitted, 2);
+
+        // As many new directories, each with a file: those of the first.
+        std::fs::remove_dir_all(&out)?;
+        for i in 0..MAX_FILES + 20 {
+            let new = p.workdir.join(format!("d{i:04}"));
+            std::fs::create_dir(&new)?;
+            std::fs::write(new.join("f.js"), "x\n")?;
+        }
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        assert_eq!(st.files.len(), MAX_FILES);
+        assert_eq!(
+            st.files[MAX_FILES - 1].path,
+            format!("d{:04}/f.js", MAX_FILES - 1)
+        );
+        assert_eq!(st.uncommitted, u32::try_from(MAX_FILES + 21)?);
         Ok(())
+    }
+
+    #[test]
+    fn git_ls_files_gets_as_many_new_directories_as_an_argument_list_takes() {
+        let many: Vec<String> = (0..MAX_FILES + 20).map(|i| format!("d{i}/")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let specs = pathspecs(&many);
+        assert_eq!(specs.len(), MAX_FILES);
+        assert_eq!(specs[0], ":(literal)d0/");
+        // Paths as long as they come.
+        let long = format!("{}/", "x".repeat(diffs::MAX_PATH_BYTES - 1));
+        let specs = pathspecs(&vec![long.as_str(); MAX_FILES]);
+        let bytes: usize = specs.iter().map(|s| s.len() + 1).sum();
+        assert!(!specs.is_empty() && specs.len() < MAX_FILES);
+        assert!(bytes <= MOST_PATHSPEC_BYTES);
     }
 
     #[test]
