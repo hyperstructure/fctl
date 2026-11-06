@@ -143,7 +143,8 @@ jobs:
         env:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
         run: |
-          bin=$(cargo test --locked -p fctl-host --lib --no-run 2>&1 | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p')
+          bin=$(CARGO_TERM_COLOR=never cargo test --locked -p fctl-host --lib --no-run 2>&1 | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p')
+          test -x "$bin"
           sudo env "FCTL_TEST_FIRECRACKER_AGENT=$FCTL_TEST_FIRECRACKER_AGENT" "FCTL_TEST_FIRECRACKER_DATA=$RUNNER_TEMP/root" \
             "$bin" driver::firecracker::tests::boots_a_sandbox --ignored --nocapture
 

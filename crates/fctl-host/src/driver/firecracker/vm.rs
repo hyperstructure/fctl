@@ -403,6 +403,9 @@ impl Vm {
             }
         }
         let _ = std::fs::remove_file(self.pid_file(what));
+        if what == "passt" {
+            let _ = std::fs::remove_file(self.passt_pid());
+        }
     }
 
     /// Stops the VM and removes its files.
@@ -1012,7 +1015,7 @@ mod tests {
             e.as_deref(),
             Some("passt did not start: No routable interface")
         );
-        assert!(!vm.linked());
+        assert!(!vm.linked() && !vm.passt_pid().exists());
         vm.link_network(&passt).await?;
         let first = vm.pid("passt");
         assert!(vm.linked());
