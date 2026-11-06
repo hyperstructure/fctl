@@ -666,7 +666,11 @@ impl Daemon {
                 }
                 self.sweep_listed(list, caches);
             }
-            Chore::Listed(Err(e), _, _) => {
+            Chore::Listed(Err(e), _, measured) => {
+                // What letting saved states go freed counts all the same.
+                if measured.is_some() {
+                    self.note_disk(measured);
+                }
                 tracing::warn!("listing sandboxes: {e:#}");
                 self.sweeping = false;
             }
