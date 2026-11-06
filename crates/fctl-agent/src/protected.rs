@@ -8,9 +8,12 @@
 //! 2. takes its lock, or leaves the sandbox to the supervisor that holds it;
 //! 3. leaves it to a supervisor from before, which runs as the user from
 //!    the user's `~/.fctl` (one that ran as the host was updated): the host
-//!    reaches that one through a link in place of its own socket;
+//!    reaches that one through a link in place of its own socket. Only
+//!    until a supervisor has served the sandbox as root: from then on the
+//!    user's `~/.fctl` has nothing to say about who serves it;
 //! 4. moves the journal and state of such a supervisor, once it has gone,
-//!    to its own directory;
+//!    to its own directory: regular files only, which it doesn't follow
+//!    out of the user's reach;
 //! 5. binds the host's socket;
 //! 6. keeps itself from the OOM killer, where it may.
 
@@ -74,7 +77,10 @@ pub fn start(spec: &str, socket: &Path, state: &Path, log: Option<&Path>) -> Res
     };
     let before = Path::new(&user.home).join(USER_DIR);
     let old_socket = before.join("agent.sock");
-    if held(&old_socket.with_extension("lock")) {
+    // A supervisor that served as root has its journal here; one from
+    // before can't come after it.
+    let served = state.join(OWN_STATE[0]).exists();
+    if !served && held(&old_socket.with_extension("lock")) {
         point_at(socket, &old_socket)?;
         tracing::info!(
             "an fctl-agent from before serves this sandbox, as its user, at {}: it keeps the session, which the host reaches through {}",
@@ -120,12 +126,30 @@ fn private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether another process holds the lock at `path`.
+/// Whether another process holds the lock at `path`, a regular file the
+/// user owns: not a link, and nothing that would keep root waiting.
 fn held(path: &Path) -> bool {
-    let Ok(file) = File::options().write(true).open(path) else {
+    let Ok(file) = open_plain(path) else {
         return false;
     };
     matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+}
+
+/// Opens the regular file at `path` for reading and writing, where the
+/// user may have put anything: a link isn't followed, and a FIFO or a
+/// device is opened without waiting and then refused.
+fn open_plain(path: &Path) -> std::io::Result<File> {
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    Ok(file)
 }
 
 /// Puts a link to `target` where the host's socket goes, in place of
@@ -158,22 +182,21 @@ fn bind(socket: &Path) -> Result<UnixListener> {
 
 /// Moves the journal and state a supervisor that ran as the user kept in
 /// `from` (`~/.fctl/state`) to `to`, for a session it ran before this
-/// sandbox's host was updated. The GitHub tokens stay.
+/// sandbox's host was updated. The GitHub tokens stay. The user owns
+/// `from`, so only regular files of its own come along, as they are (a
+/// link to another file would have root write there).
 fn migrate(from: &Path, to: &Path) {
     let journal = OWN_STATE[0];
-    if to.join(journal).exists() || !from.join(journal).exists() {
+    if to.join(journal).exists() || !from.join(journal).is_file() {
         return;
     }
     for name in OWN_STATE {
         let (old, new) = (from.join(name), to.join(name));
-        if !old.exists() {
+        if std::fs::symlink_metadata(&old).is_err() {
             continue;
         }
-        let moved = std::fs::rename(&old, &new)
-            .or_else(|_| std::fs::copy(&old, &new).and_then(|_| std::fs::remove_file(&old)));
-        match moved.and_then(|()| std::os::unix::fs::chown(&new, Some(0), Some(0))) {
-            Ok(()) => {}
-            Err(e) => tracing::warn!("moving {} to {}: {e}", old.display(), new.display()),
+        if let Err(e) = move_plain(&old, &new) {
+            tracing::warn!("not moving {} to {}: {e}", old.display(), new.display());
         }
     }
     tracing::info!(
@@ -181,6 +204,26 @@ fn migrate(from: &Path, to: &Path) {
         from.display(),
         to.display()
     );
+}
+
+/// Moves the regular file `old` to `new`, root's then.
+fn move_plain(old: &Path, new: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    // A rename moves what is at `old`, link or not; once in root's
+    // directory, nothing the user does changes it, so it is checked there.
+    if std::fs::rename(old, new).is_err() {
+        // Another filesystem: the file's bytes, read without following.
+        let mut from = open_plain(old)?;
+        let mut to = File::options().write(true).create_new(true).open(new)?;
+        std::io::copy(&mut from, &mut to)?;
+        std::fs::remove_file(old)?;
+    }
+    let meta = std::fs::symlink_metadata(new)?;
+    if !meta.is_file() || meta.nlink() > 1 {
+        std::fs::remove_file(new)?;
+        return Err(std::io::Error::other("not a regular file of its own"));
+    }
+    std::os::unix::fs::lchown(new, Some(0), Some(0))
 }
 
 #[cfg(test)]
@@ -213,7 +256,27 @@ mod tests {
         assert!(from.join("github-token").is_file());
         assert!(!to.join("github-token").exists());
 
+        // Links and FIFOs the user put there stay out, as do hard links.
+        let (from, to) = (dir.path().join("planted"), dir.path().join("root2"));
+        std::fs::create_dir_all(&from)?;
+        std::fs::create_dir_all(&to)?;
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::write(&elsewhere, "someone else's")?;
+        std::fs::write(from.join("journal.jsonl"), "{}\n")?;
+        std::os::unix::fs::symlink(&elsewhere, from.join("journal.ack"))?;
+        std::fs::hard_link(&elsewhere, from.join("state.json"))?;
+        migrate(&from, &to);
+        assert!(to.join("journal.jsonl").is_file());
+        assert!(std::fs::symlink_metadata(to.join("journal.ack")).is_err());
+        assert!(std::fs::symlink_metadata(to.join("state.json")).is_err());
+        assert_eq!(std::fs::read_to_string(&elsewhere)?, "someone else's");
+        let fifo = dir.path().join("fifo");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU)?;
+        assert!(open_plain(&fifo).is_err());
+        assert!(!held(&fifo));
+
         // A supervisor with a journal of its own keeps it.
+        let (from, to) = (dir.path().join("home/.fctl/state"), dir.path().join("root"));
         std::fs::write(from.join("journal.jsonl"), "older\n")?;
         migrate(&from, &to);
         assert_eq!(std::fs::read_to_string(to.join("journal.jsonl"))?, "{}\n");

@@ -34,24 +34,39 @@ impl Process {
         Stat::read(self.pid).is_some_and(|s| s.started == self.started && !s.ended())
     }
 
-    /// Stops it with everything in its process group, if it still runs,
-    /// and waits up to `within` for it to end. Whether it ran.
+    /// Stops it with everything in its process group, if any of it still
+    /// runs: what Claude started (shells, builds, MCP servers) can outlive
+    /// it, as Claude ends once its input closes with its supervisor. Waits
+    /// up to `within` for them to end. Whether any of it ran.
     pub async fn stop(&self, within: std::time::Duration) -> bool {
-        if !self.running() {
+        let leads = self.running();
+        if !leads && !self.group_left() {
             return false;
         }
-        kill_group(self.pid);
+        kill_group(self.pid, leads);
         let until = tokio::time::Instant::now() + within;
-        while self.running() && tokio::time::Instant::now() < until {
+        while (self.running() || self.group_left()) && tokio::time::Instant::now() < until {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         true
+    }
+
+    /// Whether processes of its group run on without it. A group outlives
+    /// its leader with its number, which no new process takes while the
+    /// group lasts; a process that has the number now means the group went,
+    /// and the number is another's.
+    fn group_left(&self) -> bool {
+        if Stat::read(self.pid).is_some_and(|s| s.started != self.started) {
+            return false;
+        }
+        in_group(self.pid)
     }
 }
 
 /// What `/proc/<pid>/stat` says of a process.
 struct Stat {
     state: char,
+    group: u32,
     started: u64,
 }
 
@@ -74,34 +89,58 @@ impl Stat {
 }
 
 /// `/proc/<pid>/stat`: the state is the field after the command, which is
-/// in parentheses and may hold anything; the start time is the 22nd field.
+/// in parentheses and may hold anything, then the parent and the process
+/// group; the start time is the 22nd field.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse(stat: &str) -> Option<Stat> {
     let rest = &stat[stat.rfind(')')? + 1..];
     let mut fields = rest.split_whitespace();
     let state = fields.next()?.chars().next()?;
-    // State is the 3rd field, start time the 22nd.
-    let started = fields.nth(22 - 4)?.parse().ok()?;
-    Some(Stat { state, started })
+    let group = fields.nth(1)?.parse().ok()?;
+    // State is the 3rd field, the group the 5th, start time the 22nd.
+    let started = fields.nth(22 - 6)?.parse().ok()?;
+    Some(Stat {
+        state,
+        group,
+        started,
+    })
 }
 
-/// Kills the process group `pid` leads, or `pid` alone where it leads none.
+/// Whether a process that hasn't ended is in the process group `group`.
 #[cfg(target_os = "linux")]
-fn kill_group(pid: u32) {
+fn in_group(group: u32) -> bool {
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    procs
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(Stat::read)
+        .any(|s| s.group == group && !s.ended())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn in_group(_: u32) -> bool {
+    false
+}
+
+/// Kills the process group `pid` led, or `pid` alone where it runs
+/// (`leads`) in another group.
+#[cfg(target_os = "linux")]
+fn kill_group(pid: u32, leads: bool) {
     use nix::sys::signal::{Signal, kill, killpg};
     use nix::unistd::{Pid, getpgid};
     let Ok(raw) = i32::try_from(pid) else { return };
     let pid = Pid::from_raw(raw);
-    let leads = getpgid(Some(pid)).is_ok_and(|g| g == pid);
-    let _ = if leads {
-        killpg(pid, Signal::SIGKILL)
-    } else {
+    let _ = if leads && !getpgid(Some(pid)).is_ok_and(|g| g == pid) {
         kill(pid, Signal::SIGKILL)
+    } else {
+        killpg(pid, Signal::SIGKILL)
     };
 }
 
 #[cfg(not(target_os = "linux"))]
-fn kill_group(_: u32) {}
+fn kill_group(_: u32, _: bool) {}
 
 #[cfg(test)]
 mod tests {
@@ -112,8 +151,8 @@ mod tests {
         let stat = "4242 (a (weird) cmd) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 18446744073709551615";
         let s = parse(stat);
         assert_eq!(
-            s.as_ref().map(|s| (s.state, s.started)),
-            Some(('S', 987654))
+            s.as_ref().map(|s| (s.state, s.group, s.started)),
+            Some(('S', 4242, 987654))
         );
         assert!(
             parse("4242 (zombie) Z 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 55 0 0")
@@ -157,6 +196,34 @@ mod tests {
             ..claude
         };
         assert!(!later.running());
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn stops_what_a_claude_that_ended_left_running() -> anyhow::Result<()> {
+        use anyhow::Context;
+        use std::io::Write;
+        use std::os::unix::process::CommandExt;
+        // A "Claude" that starts a child in its group, then ends once its
+        // input closes, as Claude does when its supervisor dies.
+        let mut leader = std::process::Command::new("sh")
+            .args(["-c", "sleep 60 & echo $! ; read x"])
+            .process_group(0)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        let mut out = std::io::BufReader::new(leader.stdout.take().context("stdout")?);
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut out, &mut line)?;
+        let sleeper = Process::of(line.trim().parse()?).context("its child")?;
+        let claude = Process::of(leader.id()).context("claude")?;
+        leader.stdin.take().context("stdin")?.write_all(b"\n")?;
+        leader.wait()?;
+        assert!(!claude.running() && sleeper.running());
+        assert!(claude.stop(std::time::Duration::from_secs(5)).await);
+        assert!(!sleeper.running(), "what Claude started still runs");
+        assert!(!claude.stop(std::time::Duration::from_secs(1)).await);
         Ok(())
     }
 }

@@ -3157,7 +3157,9 @@ run-as`, which also puts back the OOM score fctl-agent lowered for itself
 where root may (`CAP_SYS_RESOURCE`, which Docker's containers lack). A
 supervisor that finds one from before running as the user in `~/.fctl`
 leaves the session to it, with a link to its socket in place of its own,
-and moves its journal and state once it has stopped. A sandbox's user has
+and moves its journal and state once it has stopped: regular files only,
+since the user owns them. Once a supervisor has served a sandbox as root,
+`~/.fctl` has no say in who serves it. A sandbox's user has
 `sudo`, so this guards against accidents (an agent stopping its own dev
 stack by a pattern that matches fctl-agent too), not against an agent set
 on stopping it. The process driver runs fctl-agent as the host's user.
@@ -3166,12 +3168,14 @@ Claude leads a process group of its own, which the supervisor records with
 its pid and start time in its state. Claude's output goes to the
 supervisor that started it, so a Claude whose supervisor died anyway (the
 OOM killer, `sudo kill`) works on unseen: the supervisor that takes the
-session over stops that group before it starts Claude again on the
-conversation, so that two never share it. When the session was running, it
+session over stops that group, or what is left of it once Claude has
+ended, before it starts Claude again on the conversation, so that two
+never share it. When the session was running, it
 says in the transcript that Claude's turn was cut off (a `turn_cut_off`
 notice) and has Claude carry on with it, from a message that tells Claude
 what happened; a second turn cut off within ten minutes of that waits for
-a person's message instead.
+a person's message instead. The state keeps a cut-off turn until Claude
+carries on with it, also across another supervisor that dies first.
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control

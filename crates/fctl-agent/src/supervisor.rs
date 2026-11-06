@@ -102,11 +102,17 @@ struct Persisted {
     /// off ([`Supervisor::take_over`]).
     #[serde(default)]
     carried_on_at: Option<i64>,
+    /// A turn of Claude's that a supervisor before this one didn't see to
+    /// its end: the transcript says so once Claude runs again, also when
+    /// this supervisor dies before it does.
+    #[serde(default)]
+    cut_off: Option<CutOff>,
 }
 
 /// A turn of Claude's that a supervisor before this one didn't see to its
 /// end ([`Supervisor::take_over`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum CutOff {
     /// Claude ran on without it, unseen, until this one stopped it.
     Unseen,
@@ -170,9 +176,6 @@ pub struct Supervisor {
     /// session's user reads: `state_dir`, or the user's `~/.fctl/state`
     /// where fctl-agent runs as root.
     user_state: PathBuf,
-    /// A turn of Claude's that the supervisor before this one didn't see
-    /// to its end: the transcript says so once Claude runs again.
-    cut_off: Option<CutOff>,
     /// Where programs in the sandbox reach us (`fctl edit`), told to Claude.
     session_socket: Option<PathBuf>,
     journal: Journal,
@@ -281,7 +284,6 @@ impl Supervisor {
         Ok((
             Self {
                 user_state: state_dir.clone(),
-                cut_off: None,
                 state_dir,
                 session_socket,
                 journal,
@@ -1629,7 +1631,7 @@ impl Supervisor {
         } else if !resume && let Some(p) = spec.prompt.clone() {
             self.send_turn(&p, None, None, &spec.task_attachments).await;
         }
-        if let Some(cut_off) = self.cut_off.take() {
+        if let Some(cut_off) = self.persisted.cut_off.take() {
             self.carry_on(cut_off).await;
         }
         if self.turn_active {
@@ -2218,19 +2220,26 @@ impl Supervisor {
         };
         if unseen {
             tracing::warn!(
-                "stopped Claude (pid {}), which the supervisor before this one left running",
+                "stopped Claude (pid {}), or what it started, which the supervisor before this one left running",
                 left.map_or(0, |c| c.pid)
             );
         }
-        if self.persisted.working || unseen {
-            self.cut_off = Some(if unseen {
-                CutOff::Unseen
-            } else {
-                CutOff::Stopped
-            });
-        }
-        if left.is_some() || self.persisted.working {
+        let now = if unseen {
+            Some(CutOff::Unseen)
+        } else if self.persisted.working {
+            Some(CutOff::Stopped)
+        } else {
+            None
+        };
+        // One that a supervisor before took over, and died before Claude
+        // ran again, still counts.
+        let cut_off = match (self.persisted.cut_off, now) {
+            (Some(CutOff::Unseen), _) | (_, Some(CutOff::Unseen)) => Some(CutOff::Unseen),
+            (before, now) => before.or(now),
+        };
+        if left.is_some() || self.persisted.working || cut_off != self.persisted.cut_off {
             self.persisted.working = false;
+            self.persisted.cut_off = cut_off;
             self.persist();
         }
     }
@@ -2239,6 +2248,8 @@ impl Supervisor {
     /// Claude carry on with it, unless it did so for another one shortly
     /// before: then Claude waits for a message.
     async fn carry_on(&mut self, cut_off: CutOff) {
+        // Said once: it was taken from the saved state.
+        self.persist();
         let now = now_ms();
         let again = self
             .persisted
@@ -2473,7 +2484,10 @@ impl Supervisor {
         if let Some(mut c) = self.claude.take() {
             c.kill().await;
         }
-        if self.persisted.claude.take().is_some() {
+        // A session stopped or failed doesn't carry on with a turn cut off
+        // before.
+        let cut_off = self.persisted.cut_off.take();
+        if self.persisted.claude.take().is_some() || cut_off.is_some() {
             self.persist();
         }
         if let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) {
@@ -4650,12 +4664,18 @@ done
         next.take_over().await;
         let ended = tokio::task::spawn_blocking(move || left.wait()).await??;
         assert!(!ended.success(), "the Claude left running wasn't stopped");
-        assert_eq!(next.cut_off, Some(CutOff::Unseen));
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Unseen));
         let (saved, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         assert_eq!(
             (saved.persisted.claude, saved.persisted.working),
             (None, false)
         );
+        // That supervisor dies too, before Claude ran again: the next one
+        // still knows the turn was cut off.
+        drop((next, saved));
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Unseen));
 
         // Once Claude runs again, the transcript says what happened, and
         // Claude carries on with the turn.
@@ -4664,6 +4684,7 @@ done
         next.host = Some((1, host_tx));
         next.claude = Some(stub_claude(dir.path(), &next)?);
         let cut_off = next
+            .persisted
             .cut_off
             .take()
             .ok_or_else(|| anyhow::anyhow!("no cut-off turn"))?;
@@ -4698,6 +4719,9 @@ done
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(sent_to_claude(dir.path(), 1).await?.len(), 1);
+        // Said once.
+        let (saved, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        assert_eq!(saved.persisted.cut_off, None);
         Ok(())
     }
 
@@ -4710,7 +4734,7 @@ done
         drop(sup);
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.take_over().await;
-        assert_eq!(next.cut_off, Some(CutOff::Stopped));
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Stopped));
 
         // A session that waited, or that a person stopped, has nothing to
         // carry on.
@@ -4721,7 +4745,7 @@ done
         drop(sup);
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.take_over().await;
-        assert_eq!(next.cut_off, None);
+        assert_eq!(next.persisted.cut_off, None);
 
         let dir = tempfile::tempdir()?;
         let (mut sup, _host) = in_a_turn(dir.path())?;
@@ -4735,7 +4759,7 @@ done
         drop(sup);
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.take_over().await;
-        assert_eq!(next.cut_off, None);
+        assert_eq!(next.persisted.cut_off, None);
         Ok(())
     }
 
