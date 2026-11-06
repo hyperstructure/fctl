@@ -404,7 +404,10 @@ user's home is the user's. Where the sandbox gives root the capability
 don't), it keeps itself from the OOM killer, so that a build that fills
 the sandbox's memory takes the build rather than fctl-agent. Root can
 still stop it, and `agent` has sudo: this guards against accidents, not
-against an agent set on it. It writes:
+against an agent set on it. A host whose owner turns this off
+(`agent_as_root = false` in `host.toml`) runs fctl-agent as the image's
+user instead, with its files in `~/.fctl`, where the agent's commands can
+stop it; a sandbox where it already ran as root keeps it so. It writes:
 
 - **`/var/lib/fctl-agent/`**, which only root may enter: fctl-agent's
   socket for the host, its log, and the session's journal and state. A

@@ -3195,7 +3195,12 @@ since the user owns them. Once a supervisor has served a sandbox as root,
 `~/.fctl` has no say in who serves it. A sandbox's user has
 `sudo`, so this guards against accidents (an agent stopping its own dev
 stack by a pattern that matches fctl-agent too), not against an agent set
-on stopping it. The process driver runs fctl-agent as the host's user.
+on stopping it. A host whose owner wants no long-lived root process in its
+sandboxes (`agent_as_root = false`) starts fctl-agent as the user, as
+hosts did before, except in a sandbox where it ran as root already (it has
+`/var/lib/fctl-agent`), which keeps it so rather than start a second
+supervisor beside one that may run. The process driver runs fctl-agent as
+the host's user.
 
 Claude leads a process group of its own, which the supervisor records with
 its pid and start time in its state. Claude's output goes to the

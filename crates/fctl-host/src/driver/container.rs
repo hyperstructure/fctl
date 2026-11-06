@@ -8,9 +8,9 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
-    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
-    run_cmd_within, serve_as_root, timed_out, unanswered,
+    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot,
+    NotStarted, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
+    attach_script, run_cmd_within, serve_as_root, serve_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use anyhow::{Context, Result};
@@ -30,6 +30,8 @@ pub enum Flavor {
 pub struct ContainerDriver {
     flavor: Flavor,
     bin: String,
+    /// Whether it starts fctl-agent as root (`agent_as_root` in host.toml).
+    agent_as_root: bool,
 }
 
 /// An image on this host, as its runtime describes it.
@@ -68,6 +70,7 @@ impl ContainerDriver {
         Self {
             flavor: Flavor::Apple,
             bin: std::env::var("FCTL_CONTAINER_BIN").unwrap_or_else(|_| "container".into()),
+            agent_as_root: true,
         }
     }
 
@@ -75,13 +78,27 @@ impl ContainerDriver {
         Self {
             flavor: Flavor::Docker,
             bin: std::env::var("FCTL_DOCKER_BIN").unwrap_or_else(|_| "docker".into()),
+            agent_as_root: true,
+        }
+    }
+
+    /// The driver, starting fctl-agent as root (`on`, the default) or as
+    /// the image's user.
+    pub fn agent_as_root(self, on: bool) -> Self {
+        Self {
+            agent_as_root: on,
+            ..self
         }
     }
 
     /// A driver whose CLI is `bin`, a stand-in.
     #[cfg(test)]
     pub(crate) fn with_bin(flavor: Flavor, bin: String) -> Self {
-        Self { flavor, bin }
+        Self {
+            flavor,
+            bin,
+            agent_as_root: true,
+        }
     }
 
     pub fn flavor_name(&self) -> &'static str {
@@ -830,9 +847,37 @@ impl ContainerDriver {
         Ok(())
     }
 
+    /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
+    /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
+    /// so, rather than start another beside one that may run.
+    async fn agent_root(&self, sb: &Sandbox) -> bool {
+        self.agent_as_root
+            || self
+                .run(&["exec", &sb.name, "test", "-d", AGENT_DIR])
+                .await
+                .is_ok()
+    }
+
     /// Starts fctl-agent as root, and Claude and its commands as the
-    /// image's user, who can't stop it then.
+    /// image's user, who can't stop it then; as the image's user too where
+    /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
+        if !self.agent_root(sb).await {
+            tracing::info!(
+                "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
+                sb.name
+            );
+            self.run(&[
+                "exec",
+                "-d",
+                &sb.name,
+                "sh",
+                "-c",
+                &serve_script(AGENT_PATH),
+            ])
+            .await?;
+            return Ok(());
+        }
         let uid = self
             .run(&["exec", &sb.name, "id", "-u"])
             .await
@@ -855,6 +900,16 @@ impl ContainerDriver {
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+        if !self.agent_root(sb).await {
+            let mut child = self.spawn(sb, &attach_script(AGENT_PATH)).await?;
+            let stdout = child.stdout.take().context("exec stdout")?;
+            let stdin = child.stdin.take().context("exec stdin")?;
+            return Ok(AgentIo {
+                reader: Box::new(stdout),
+                writer: Box::new(stdin),
+                child: Some(child),
+            });
+        }
         let mut args = vec!["exec", "-i", "-u", "0", &sb.name];
         let attach = attach_as_root();
         args.extend(attach.iter().map(String::as_str));
@@ -1947,10 +2002,7 @@ esac
                 "the docker daemon is not running",
             ),
         ] {
-            let driver = ContainerDriver {
-                flavor,
-                bin: bin.into(),
-            };
+            let driver = ContainerDriver::with_bin(flavor, bin.into());
             let info = driver.probe().await;
             assert_eq!(info.available, available, "{bin}");
             let got = info.detail.unwrap_or_default();
@@ -2051,6 +2103,42 @@ esac
         cli.user("nobody knows")?;
         assert!(cli.driver(Flavor::Docker).start_agent(&sb).await.is_err());
         assert!(!cli.calls().iter().any(|c| c.contains(" serve ")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosts_that_want_no_root_agent_run_it_as_the_images_user() -> Result<()> {
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.start_agent(&sb).await?;
+        if let Some(mut exec) = docker.attach(&sb).await?.child {
+            exec.wait().await?;
+        }
+        assert_eq!(
+            cli.calls(),
+            [
+                "exec fctl-ses-1 test -d /var/lib/fctl-agent",
+                r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec /opt/fctl/bin/fctl-agent serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
+                "exec fctl-ses-1 test -d /var/lib/fctl-agent",
+                r#"exec -i fctl-ses-1 sh -c exec /opt/fctl/bin/fctl-agent attach --socket "$HOME/.fctl/agent.sock""#,
+            ]
+        );
+        // One that ran it as root keeps doing so, rather than start another.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ran_agent_as_root()?;
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.start_agent(&sb).await?;
+        assert!(
+            cli.calls().last().is_some_and(|c| c.starts_with(
+                "exec -d -u 0 fctl-ses-1 /opt/fctl/bin/fctl-agent serve --user 1000 "
+            )),
+            "{:?}",
+            cli.calls()
+        );
         Ok(())
     }
 

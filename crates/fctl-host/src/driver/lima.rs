@@ -43,12 +43,24 @@ pub fn home() -> Option<PathBuf> {
 
 pub struct LimaDriver {
     bin: String,
+    /// Whether it starts fctl-agent as root (`agent_as_root` in host.toml).
+    agent_as_root: bool,
 }
 
 impl LimaDriver {
     pub fn new() -> Self {
         Self {
             bin: std::env::var("FCTL_LIMACTL_BIN").unwrap_or_else(|_| "limactl".into()),
+            agent_as_root: true,
+        }
+    }
+
+    /// The driver, starting fctl-agent as root (`on`, the default) or as
+    /// the VM's user.
+    pub fn agent_as_root(self, on: bool) -> Self {
+        Self {
+            agent_as_root: on,
+            ..self
         }
     }
 
@@ -182,8 +194,17 @@ impl LimaDriver {
     /// as the VM's user, who can't stop it then; as that user where `sudo`
     /// asks for a password.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
-        let root = self.exec(sb, "sudo -n true").await.is_ok();
-        if !root {
+        // One that ran as root before keeps doing so, rather than start
+        // another beside one that may run.
+        let wanted =
+            self.agent_as_root || self.exec(sb, &format!("test -d {AGENT_DIR}")).await.is_ok();
+        let root = wanted && self.exec(sb, "sudo -n true").await.is_ok();
+        if !wanted {
+            tracing::info!(
+                "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
+                sb.name
+            );
+        } else if !root {
             tracing::warn!(
                 "fctl-agent runs as {}'s user, so the agent's commands can stop it: sudo asks for a password there",
                 sb.name
@@ -277,11 +298,11 @@ fn serve_script_for_lima(root: bool) -> String {
 }
 
 /// Attaches to fctl-agent as root where it runs so, as the VM's user where
-/// `sudo` asks for a password and fctl-agent runs as the user.
+/// it runs as the user: without `sudo` in a VM where it never ran as root.
 fn attach_script_for_lima() -> String {
     let socket = format!("{AGENT_DIR}/agent.sock");
     format!(
-        "if sudo -n test -S {socket} 2>/dev/null; then exec sudo -n {}; fi; {}",
+        "if [ -d {AGENT_DIR} ] && sudo -n test -S {socket} 2>/dev/null; then exec sudo -n {}; fi; {}",
         shell_words(&attach_as_root()),
         attach_script(AGENT_PATH)
     )
@@ -308,7 +329,7 @@ mod tests {
         ));
         assert_eq!(
             attach_script_for_lima(),
-            "if sudo -n test -S /var/lib/fctl-agent/agent.sock 2>/dev/null; then exec sudo -n '/opt/fctl/bin/fctl-agent' 'attach' '--socket' '/var/lib/fctl-agent/agent.sock'; fi; exec /opt/fctl/bin/fctl-agent attach --socket \"$HOME/.fctl/agent.sock\""
+            "if [ -d /var/lib/fctl-agent ] && sudo -n test -S /var/lib/fctl-agent/agent.sock 2>/dev/null; then exec sudo -n '/opt/fctl/bin/fctl-agent' 'attach' '--socket' '/var/lib/fctl-agent/agent.sock'; fi; exec /opt/fctl/bin/fctl-agent attach --socket \"$HOME/.fctl/agent.sock\""
         );
     }
 

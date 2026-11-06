@@ -26,8 +26,8 @@ pub mod vm;
 pub mod vsock;
 
 use super::{
-    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, Running, Sandbox, SandboxInfo, SandboxSpec,
-    attach_as_root, serve_as_root,
+    AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, Running, Sandbox, SandboxInfo,
+    SandboxSpec, attach_as_root, attach_script, serve_as_root, serve_script,
 };
 use crate::config::{FirecrackerConfig, HostConfig};
 use crate::driver::ImageInfo;
@@ -872,10 +872,27 @@ impl FirecrackerDriver {
     }
 
     /// Starts fctl-agent as root, and Claude and its commands as the
-    /// image's user, who can't stop it then.
+    /// image's user, who can't stop it then; as the image's user too where
+    /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
         let vm = self.vm(&sb.name)?;
-        vsock::detach(&vm.vsock(), self.serve(&sb.name)).await
+        let exec = if self.agent_root(sb).await {
+            self.serve(&sb.name)
+        } else {
+            tracing::info!(
+                "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
+                sb.name
+            );
+            self.sh(&sb.name, &serve_script(AGENT_PATH))
+        };
+        vsock::detach(&vm.vsock(), exec).await
+    }
+
+    /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
+    /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
+    /// so, rather than start another beside one that may run.
+    async fn agent_root(&self, sb: &Sandbox) -> bool {
+        self.host.agent_as_root || self.exec(sb, &format!("test -d {AGENT_DIR}")).await.is_ok()
     }
 
     /// `fctl-agent serve` as root, for the image's user.
@@ -892,11 +909,15 @@ impl FirecrackerDriver {
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
         let vm = self.vm(&sb.name)?;
-        let exec = Exec {
-            argv: attach_as_root(),
-            user: Some("root".into()),
-            cwd: Some("/".into()),
-            ..self.exec_for(&sb.name, Vec::new())
+        let exec = if self.agent_root(sb).await {
+            Exec {
+                argv: attach_as_root(),
+                user: Some("root".into()),
+                cwd: Some("/".into()),
+                ..self.exec_for(&sb.name, Vec::new())
+            }
+        } else {
+            self.sh(&sb.name, &attach_script(AGENT_PATH))
         };
         let started = vsock::start(&vm.vsock(), exec).await?;
         // Why an attach failed, in the host's log.

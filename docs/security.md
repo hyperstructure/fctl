@@ -231,7 +231,9 @@ its VM, and nothing outside it except through these channels:
   it runs as the image's user, so that the agent's commands can't stop
   the supervisor that passes on what it does, nor change its journal. The
   default image's user has `sudo`, so this keeps accidents from cutting a
-  session short; it is no boundary against the agent.
+  session short; it is no boundary against the agent. A host's owner who
+  wants no long-lived root process in sandboxes turns it off
+  (`agent_as_root = false`), and fctl-agent runs as the image's user.
 
 - **Lima VMs** get none of the mounts of Lima's templates, which give
   each VM the home directory of whoever runs the host (read only) and a

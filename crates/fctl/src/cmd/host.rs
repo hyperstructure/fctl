@@ -100,6 +100,12 @@ pub enum HostCmd {
         /// control plane runs, by itself (new runners: on).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         auto_update: Option<bool>,
+        /// on or off: whether fctl-agent runs as root in container and VM
+        /// sandboxes, where the agent's commands can't stop it (new
+        /// runners: on). Off runs it as the sandbox's user, whose commands
+        /// can stop it by accident and cut a turn short.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        agent_as_root: Option<bool>,
     },
     /// Run the host service in the foreground (what the service runs).
     Run,
@@ -203,6 +209,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             no_service,
             build_image,
             auto_update,
+            agent_as_root,
         } => {
             const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token or --enroll";
             let server = match (&enroll, config::server(server)) {
@@ -245,6 +252,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             if let Some(on) = auto_update {
                 cfg.auto_update = on;
+            }
+            if let Some(on) = agent_as_root {
+                cfg.agent_as_root = on;
             }
             if let Some(problem) = cfg.image_problems().first() {
                 bail!("{problem}");
@@ -383,6 +393,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 );
             }
             println!("{}", style::dim(&updates_sentence(&cfg)));
+            if !cfg.agent_as_root {
+                println!("{}", style::dim(AGENT_AS_USER));
+            }
             if !no_service {
                 let exe = std::env::current_exe()?;
                 let what = service::install(&exe)?;
@@ -468,6 +481,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             println!("image:    {}", cfg.image());
             println!("updates:  {}", updates_line(&cfg));
+            println!("agent:    {}", agent_line(&cfg));
             println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
                 let images = cfg.images(d.builds_images());
@@ -1115,6 +1129,23 @@ impl Updates {
             "updates_itself": self.itself(),
             "blocked": self.blocked,
         })
+    }
+}
+
+/// What `fctl host install` says of a host whose fctl-agent runs as the
+/// sandbox's user.
+const AGENT_AS_USER: &str = "fctl-agent runs as the sandbox's user, whose commands can stop it by accident and cut the agent's turn short (`--agent-as-root on` runs it as root).";
+
+/// `fctl host status`'s line about who fctl-agent runs as.
+fn agent_line(cfg: &HostConfig) -> String {
+    if cfg.driver == "process" {
+        "fctl-agent runs as this machine's user (the process driver has no sandboxes)".into()
+    } else if cfg.agent_as_root {
+        "fctl-agent runs as root in sandboxes, out of the agent's reach".into()
+    } else {
+        style::amber(
+            "fctl-agent runs as the sandbox's user (agent_as_root = false): the agent's commands can stop it",
+        )
     }
 }
 

@@ -274,12 +274,18 @@ impl Driver {
                     data_dir,
                     agent_bin.clone(),
                 ))),
-                "apple" => Some(Driver::Container(container::ContainerDriver::apple())),
-                "docker" => Some(Driver::Container(container::ContainerDriver::docker())),
+                "apple" => Some(Driver::Container(
+                    container::ContainerDriver::apple().agent_as_root(cfg.agent_as_root),
+                )),
+                "docker" => Some(Driver::Container(
+                    container::ContainerDriver::docker().agent_as_root(cfg.agent_as_root),
+                )),
                 "firecracker" => Some(Driver::Firecracker(firecracker::FirecrackerDriver::new(
                     cfg,
                 ))),
-                "lima" => Some(Driver::Lima(lima::LimaDriver::new())),
+                "lima" => Some(Driver::Lima(
+                    lima::LimaDriver::new().agent_as_root(cfg.agent_as_root),
+                )),
                 _ => None,
             }
         };

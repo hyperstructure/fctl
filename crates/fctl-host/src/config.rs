@@ -23,6 +23,7 @@
 //! # Where `fctl host claude set-token` keeps your Claude token (unset: claude-token here).
 //! claude_token_file = "/run/secrets/claude-token"
 //! auto_update = true      # update fctl to the version the control plane runs
+//! agent_as_root = true    # fctl-agent as root in sandboxes, out of the agent's reach
 //!
 //! [firecracker]            # the firecracker driver
 //! firecracker = "/usr/local/bin/firecracker"  # unset: the release fctl pins, downloaded
@@ -125,6 +126,14 @@ pub struct HostConfig {
     /// the version the control plane runs, once it is newer than this
     /// host's ([`crate::update`]).
     pub auto_update: bool,
+    /// Run fctl-agent as root in container and VM sandboxes, where the
+    /// agent's commands, which run as the sandbox's user, can't stop it.
+    /// Off: as the sandbox's user, as hosts did before, for owners who want
+    /// no long-lived root process in their sandboxes; a `kill` that matches
+    /// it by accident then cuts the agent's turn short. Sandboxes that
+    /// already ran it as root keep doing so. The process driver runs it as
+    /// the host's user either way.
+    pub agent_as_root: bool,
     /// The `firecracker` driver's settings.
     #[serde(skip_serializing_if = "FirecrackerConfig::is_default")]
     pub firecracker: FirecrackerConfig,
@@ -195,6 +204,7 @@ impl Default for HostConfig {
             max_build_mb: 20 * 1024,
             claude_token_file: None,
             auto_update: true,
+            agent_as_root: true,
             firecracker: FirecrackerConfig::default(),
         }
     }
@@ -532,6 +542,14 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    #[test]
+    fn fctl_agent_runs_as_root_unless_the_host_says_not() -> Result<()> {
+        assert!(HostConfig::default().agent_as_root);
+        assert!(HostConfig::from_toml("capacity = 2\n")?.agent_as_root);
+        assert!(!HostConfig::from_toml("agent_as_root = false\n")?.agent_as_root);
+        Ok(())
+    }
+
     #[test]
     fn private_files_are_never_readable_by_others() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
