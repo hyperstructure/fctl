@@ -538,6 +538,13 @@ pub enum ClaudeLoginUpdate {
     },
     Failed {
         error: String,
+        /// It couldn't start its sandbox because the host's driver isn't
+        /// ready (Docker stopped, say), as the host found on probing it
+        /// again: the control plane passes the sign-in on to another of
+        /// the person's runners. Absent from older hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        unready: Option<bool>,
     },
 }
 
@@ -692,6 +699,32 @@ mod tests {
             "git_author": { "name": "bot", "email": "bot@example.com" },
             "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
         })
+    }
+
+    #[test]
+    fn a_sign_in_that_failed_says_so_as_older_hosts_and_control_planes_read_it()
+    -> serde_json::Result<()> {
+        // From an older host: no word of the driver.
+        let old: ClaudeLoginUpdate =
+            serde_json::from_str(r#"{"state":"failed","error":"No room"}"#)?;
+        assert_eq!(
+            old,
+            ClaudeLoginUpdate::Failed {
+                error: "No room".into(),
+                unready: None,
+            }
+        );
+        // To an older control plane, which ignores fields it doesn't know.
+        let unready = serde_json::to_value(ClaudeLoginUpdate::Failed {
+            error: "Docker isn't running".into(),
+            unready: Some(true),
+        })?;
+        assert_eq!(
+            unready,
+            serde_json::json!({"state": "failed", "error": "Docker isn't running", "unready": true})
+        );
+        assert_eq!(serde_json::to_value(old)?.get("unready"), None);
+        Ok(())
     }
 
     #[test]

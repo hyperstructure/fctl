@@ -4,7 +4,7 @@
 //! plane, which encrypts and stores it. fctl never talks to Claude's OAuth
 //! endpoints for this; the official CLI does.
 
-use crate::driver::{Driver, SandboxSpec};
+use crate::driver::{Driver, Running, Sandbox, SandboxSpec};
 use crate::session::HostCtx;
 use anyhow::{Context, Result, bail};
 use fctl_proto::LoginJobId;
@@ -34,25 +34,41 @@ pub async fn run(
     };
     send(ClaudeLoginUpdate::Starting);
     let name = crate::driver::login_name(job.as_str());
-    let result = login(&ctx, &name, cmds, &send).await;
+    let result = match start(&ctx, &name).await {
+        Ok(started) => login(started, &ctx, cmds, &send)
+            .await
+            .map_err(|e| (e, None)),
+        // Its sandbox couldn't be made, or `claude` started in it: the
+        // driver may have stopped being ready since the host last probed
+        // it (Docker quit, say). It probes it again, so that the next
+        // heartbeat says so (the daemon sends one at once), and the control
+        // plane passes the sign-in on to another runner.
+        Err(e) => {
+            let unready = ctx.recheck_driver().await;
+            if let Some(why) = &unready {
+                tracing::warn!(
+                    "the {} driver isn't ready: {why}; it can't run the sign-in",
+                    ctx.driver.name()
+                );
+            }
+            Err((e, unready.map(|_| true)))
+        }
+    };
     let sb = ctx.driver.handle(&name);
     let _ = ctx.driver.remove(&sb).await;
     match result {
         Ok(bundle) => send(ClaudeLoginUpdate::Succeeded {
             bundle: Box::new(bundle),
         }),
-        Err(e) => send(ClaudeLoginUpdate::Failed {
+        Err((e, unready)) => send(ClaudeLoginUpdate::Failed {
             error: format!("{e:#}"),
+            unready,
         }),
     }
 }
 
-async fn login(
-    ctx: &HostCtx,
-    name: &str,
-    mut cmds: mpsc::UnboundedReceiver<LoginCmd>,
-    send: &(dyn Fn(ClaudeLoginUpdate) + Send + Sync),
-) -> Result<ClaudeOauthBundle> {
+/// Starts `claude auth login` in a fresh sandbox named `name`.
+async fn start(ctx: &HostCtx, name: &str) -> Result<(Sandbox, Running)> {
     if matches!(ctx.driver, Driver::Process(_)) && cfg!(target_os = "macos") {
         bail!(
             "On macOS, Claude sign-in needs the apple, docker or lima driver (claude stores logins in the Keychain otherwise). Use a long-lived token from `claude setup-token` instead."
@@ -79,13 +95,23 @@ async fn login(
     } else {
         "claude".into()
     };
-    let mut child = ctx
+    let child = ctx
         .driver
         .spawn(
             &sb,
             &format!("unset BROWSER; exec {claude} auth login --claudeai"),
         )
         .await?;
+    Ok((sb, child))
+}
+
+/// Takes the sign-in from the link claude.ai shows to the login it makes.
+async fn login(
+    (sb, mut child): (Sandbox, Running),
+    ctx: &HostCtx,
+    mut cmds: mpsc::UnboundedReceiver<LoginCmd>,
+    send: &(dyn Fn(ClaudeLoginUpdate) + Send + Sync),
+) -> Result<ClaudeOauthBundle> {
     let stdout = child.stdout.take().context("login stdout")?;
     let stderr = child.stderr.take().context("login stderr")?;
     let mut stdin = child.stdin.take().context("login stdin")?;
@@ -225,6 +251,99 @@ pub fn parse_login(credentials: &str, config: &str) -> Result<ClaudeOauthBundle>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::HostConfig;
+    use crate::driver::container::Flavor;
+    use crate::driver::fake::FakeCli;
+    use std::sync::PoisonError;
+
+    /// A host named studio on the stand-in docker CLI, whose driver was
+    /// ready when it last probed it.
+    async fn studio(cli: &FakeCli, data: &std::path::Path) -> Arc<HostCtx> {
+        let cfg = HostConfig {
+            name: "studio".into(),
+            driver: "docker".into(),
+            data_dir: Some(data.to_owned()),
+            ..HostConfig::default()
+        };
+        let ctx = Arc::new(HostCtx::new(
+            cfg,
+            cli.host_driver(Flavor::Docker),
+            "fctl_rt_test".into(),
+        ));
+        *ctx.drivers.lock().unwrap_or_else(PoisonError::into_inner) =
+            vec![ctx.driver.probe().await];
+        ctx
+    }
+
+    /// Runs a sign-in to its end: what it said.
+    async fn sign_in(ctx: &Arc<HostCtx>) -> Result<Vec<ClaudeLoginUpdate>> {
+        let (_cmds, rx) = mpsc::unbounded_channel();
+        let (out, mut said) = mpsc::unbounded_channel();
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            run(ctx.clone(), LoginJobId("lgn_01".into()), rx, out),
+        )
+        .await?;
+        let mut updates = Vec::new();
+        while let Ok(msg) = said.try_recv() {
+            match msg {
+                HostToFleet::ClaudeLogin { update, .. } => updates.push(update),
+                other => bail!("not a sign-in's: {other:?}"),
+            }
+        }
+        Ok(updates)
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_that_finds_docker_stopped_probes_it_again_and_says_so() -> Result<()> {
+        let data = tempfile::tempdir()?;
+        let cli = FakeCli::new(&[], &[])?;
+        let ctx = studio(&cli, data.path()).await;
+        assert_eq!(ctx.driver_problem(), None);
+        // Docker stopped since.
+        cli.refuse(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        )?;
+        let updates = sign_in(&ctx).await?;
+        let [
+            ClaudeLoginUpdate::Starting,
+            ClaudeLoginUpdate::Failed { error, unready },
+        ] = &updates[..]
+        else {
+            bail!("{updates:?}");
+        };
+        assert!(
+            error.starts_with("Starting a sandbox on studio: ")
+                && error.contains("the Docker daemon isn't running"),
+            "{error}"
+        );
+        assert_eq!(*unready, Some(true));
+        // The next heartbeat says so.
+        let why = ctx.driver_problem().unwrap_or_default();
+        assert!(why.starts_with("the Docker daemon isn't running"), "{why}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_whose_sandbox_fails_for_another_reason_fails_as_before() -> Result<()> {
+        let data = tempfile::tempdir()?;
+        let cli = FakeCli::new(&[], &[])?;
+        let ctx = studio(&cli, data.path()).await;
+        cli.fail_runs()?;
+        let updates = sign_in(&ctx).await?;
+        assert!(
+            matches!(
+                &updates[..],
+                [
+                    ClaudeLoginUpdate::Starting,
+                    ClaudeLoginUpdate::Failed { unready: None, .. }
+                ]
+            ),
+            "{updates:?}"
+        );
+        assert_eq!(ctx.driver_problem(), None);
+        Ok(())
+    }
 
     #[test]
     fn parses_a_login() -> Result<()> {
