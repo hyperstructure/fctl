@@ -829,6 +829,7 @@ agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's r
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads
 # kernel = "/var/lib/fctl/vmlinux"             # a file, or an image whose /vmlinux it is (unset: the published one)
 disk_gb = 64             # each sandbox's own disk, which takes only what its session writes
+# jailer = true          # on a host that runs as root: each VM as a user of its own, in a chroot and a cgroup
 ```
 
 With Docker on Linux, the daemon's socket lets in only root and the
@@ -879,7 +880,10 @@ fctl host install --driver firecracker
 
 The host downloads Firecracker and the VMs' kernel itself, and pulls
 images without Docker: a short-lived VM unpacks each, so its first pull
-takes a little longer than Docker's. Its sandboxes get no package caches
+takes a little longer than Docker's. A host whose service root installed
+runs each VM through Firecracker's jailer, as a user of its own in a
+chroot, unless `jailer = false` in `host.toml`'s `[firecracker]`; its
+data directory must then be on a filesystem that allows device files. Its sandboxes get no package caches
 and it builds no images; projects' own images run as with Docker.
 [Architecture](architecture.md#firecracker) has the details.
 

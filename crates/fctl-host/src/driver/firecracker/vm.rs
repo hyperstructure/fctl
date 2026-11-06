@@ -167,11 +167,7 @@ impl Vm {
             .filter_map(|vm| std::fs::metadata(vm.path().join("root")).ok())
             .map(|m| m.uid())
             .collect();
-        let start = u32::from_str_radix(&self.key[..8], 16).unwrap_or(0) % JAIL_IDS;
-        (0..JAIL_IDS)
-            .map(|i| JAIL_ID_BASE + (start + i) % JAIL_IDS)
-            .find(|id| !taken.contains(id))
-            .unwrap_or(JAIL_ID_BASE + start)
+        pick_jail_id(&self.key, &taken)
     }
 
     pub fn api(&self) -> PathBuf {
@@ -302,30 +298,7 @@ impl Vm {
         std::fs::create_dir_all(&self.dir)?;
         let console = std::fs::File::create(self.console())?;
         let mut cmd = std::process::Command::new(&jail.jailer);
-        cmd.args(["--id", &self.key])
-            .arg("--exec-file")
-            .arg(firecracker)
-            .args([
-                "--uid",
-                &jail.uid.to_string(),
-                "--gid",
-                &jail.gid.to_string(),
-            ])
-            .arg("--chroot-base-dir")
-            .arg(jails)
-            // Its cgroup's own: Firecracker runs a thread for each vCPU and
-            // a few of its own.
-            .args(["--cgroup-version", "2", "--parent-cgroup", "fctl"])
-            .args(["--cgroup", "pids.max=256"])
-            .args([
-                "--",
-                "--api-sock",
-                "/api.sock",
-                "--config-file",
-                "/firecracker.json",
-                "--level",
-                "Warning",
-            ])
+        cmd.args(jailer_args(&self.key, firecracker, jail, jails))
             .stdin(Stdio::null())
             .stdout(console.try_clone()?)
             .stderr(console);
@@ -714,6 +687,60 @@ fn passt_args(pid: &Path) -> Vec<String> {
     ]
 }
 
+/// A uid and gid for the jail of the VM `key` that isn't `taken`: the
+/// same for the same key, unless another VM's jail took it.
+fn pick_jail_id(key: &str, taken: &std::collections::HashSet<u32>) -> u32 {
+    let start = key
+        .get(..8)
+        .and_then(|k| u32::from_str_radix(k, 16).ok())
+        .unwrap_or(0)
+        % JAIL_IDS;
+    (0..JAIL_IDS)
+        .map(|i| JAIL_ID_BASE + (start + i) % JAIL_IDS)
+        .find(|id| !taken.contains(id))
+        .unwrap_or(JAIL_ID_BASE + start)
+}
+
+/// The jailer's arguments for the VM `key`: Firecracker `firecracker` as
+/// `jail`'s user, chrooted under `jails`, in a cgroup of its own under
+/// `fctl` (Firecracker runs a thread for each vCPU and a few of its own),
+/// with its configuration and API socket at the chroot's root.
+fn jailer_args(
+    key: &str,
+    firecracker: &Path,
+    jail: &Jail,
+    jails: &Path,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["--id".into(), key.into()];
+    args.extend(["--exec-file".into(), firecracker.as_os_str().to_owned()]);
+    args.extend([
+        "--uid".into(),
+        jail.uid.to_string().into(),
+        "--gid".into(),
+        jail.gid.to_string().into(),
+    ]);
+    args.extend(["--chroot-base-dir".into(), jails.as_os_str().to_owned()]);
+    args.extend(
+        [
+            "--cgroup-version",
+            "2",
+            "--parent-cgroup",
+            "fctl",
+            "--cgroup",
+            "pids.max=256",
+            "--",
+            "--api-sock",
+            "/api.sock",
+            "--config-file",
+            "/firecracker.json",
+            "--level",
+            "Warning",
+        ]
+        .map(std::ffi::OsString::from),
+    );
+    args
+}
+
 /// Puts the file `from` in a jail's chroot `root` as `name`, a hard link,
 /// or with `copy` a copy where it is on another filesystem (a kernel that
 /// `host.toml` names, say); its path in the chroot.
@@ -958,6 +985,70 @@ mod tests {
         assert!(dns_for_vm(stub, "").is_empty());
         assert!(dns_for_vm(stub, "nameserver 2001:4860:4860::8888\n").is_empty());
         assert!(dns_for_vm("nameserver 10.0.2.3\n", "").is_empty());
+    }
+
+    /// Each VM's jail runs as a user of its own: the same for the same VM,
+    /// another when another VM's jail has it.
+    #[test]
+    fn jails_take_users_of_their_own() {
+        let none = std::collections::HashSet::new();
+        let id = pick_jail_id("00000005abcdef01", &none);
+        assert_eq!(id, JAIL_ID_BASE + 5);
+        assert_eq!(pick_jail_id("00000005abcdef01", &none), id);
+        let taken = std::collections::HashSet::from([id, id + 1]);
+        assert_eq!(pick_jail_id("00000005abcdef01", &taken), id + 2);
+        // The last one wraps around to the first.
+        let last = format!("{:08x}", JAIL_IDS - 1);
+        let taken = std::collections::HashSet::from([JAIL_ID_BASE + JAIL_IDS - 1]);
+        assert_eq!(pick_jail_id(&last, &taken), JAIL_ID_BASE);
+        assert!((JAIL_ID_BASE..JAIL_ID_BASE + JAIL_IDS).contains(&pick_jail_id("zz", &none)));
+    }
+
+    #[test]
+    fn the_jailer_runs_firecracker_as_the_jails_user() {
+        let jail = Jail {
+            jailer: "/var/lib/fctl/firecracker/bin/jailer-v1.17.0".into(),
+            uid: 1_900_000_007,
+            gid: 1_900_000_007,
+        };
+        let args = jailer_args(
+            "0123456789abcdef",
+            Path::new("/var/lib/fctl/firecracker/bin/firecracker-v1.17.0"),
+            &jail,
+            Path::new("/var/lib/fctl/firecracker/jail"),
+        );
+        let line: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            line.join(" "),
+            "--id 0123456789abcdef --exec-file /var/lib/fctl/firecracker/bin/firecracker-v1.17.0 --uid 1900000007 --gid 1900000007 --chroot-base-dir /var/lib/fctl/firecracker/jail --cgroup-version 2 --parent-cgroup fctl --cgroup pids.max=256 -- --api-sock /api.sock --config-file /firecracker.json --level Warning"
+        );
+    }
+
+    /// A jail gets the VM's files as hard links, or a copy of a file on
+    /// another filesystem where that will do, at its chroot's root.
+    #[test]
+    fn jails_get_the_vms_files() -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root)?;
+        let disk = dir.path().join("disk.ext4");
+        std::fs::write(&disk, b"ext4")?;
+        assert_eq!(
+            link_into(&root, &disk, "drive0.ext4", false)?,
+            PathBuf::from("/drive0.ext4")
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("drive0.ext4"))?.ino(),
+            std::fs::metadata(&disk)?.ino()
+        );
+        // One that isn't there fails, saying which.
+        let e = link_into(&root, &dir.path().join("gone"), "drive1.ext4", false);
+        assert!(e.is_err_and(|e| format!("{e:#}").contains("gone")));
+        Ok(())
     }
 
     #[test]

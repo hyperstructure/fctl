@@ -3489,7 +3489,21 @@ in `firecracker/` in the host's data directory.
 
 The VMs share no files with the host, so they get no
 [package caches](#package-caches). Firecracker runs as the host's user,
-without its jailer, which needs root: a VM escape would run as that user.
+so a VM escape would run as that user. A host that runs as root runs
+each VM through Firecracker's jailer instead (`[firecracker] jailer`,
+true unless set otherwise; the jailer comes with the pinned release, or
+sits beside the Firecracker `host.toml` names): as a uid and gid of its
+own from 1,900,000,000 up, which no other running VM's jail has, in a
+chroot under `firecracker/jail/<Firecracker's file name>/<VM key>/root`
+that holds hard links of its kernel, initramfs and disks (its own disk
+chowned to it, the images' filesystems readable by all) and its sockets,
+which the host reaches through the VM's socket directory, a link to the
+chroot, and in a cgroup of its own (`fctl/<VM key>`, at most 256
+processes). The jails need a filesystem that allows device files (the
+jailer makes `/dev/kvm` there), so a `data_dir` on one mounted `nodev`
+fails with what to change. `passt` runs outside the jail and drops to
+`nobody` itself; its pid's file goes in `/tmp` under a name with a random
+part.
 
 ### Package caches
 
