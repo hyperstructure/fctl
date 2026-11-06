@@ -43,6 +43,7 @@ import { Button, CodeBox, IconButton, Skeleton } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { own } from "@/lib/dialog";
 import { changeStarts, firstLine, type PatchLine, parsePatch, patchLines } from "@/lib/diff";
 import { compare, type DiffMatch, type DiffPlace, type FindOptions } from "@/lib/diff-find";
 import { useHoldPage } from "@/lib/hold-page";
@@ -629,7 +630,7 @@ export function DiffDialog({
     <dialog
       ref={ref}
       aria-labelledby={titleId}
-      onClose={onClose}
+      onClose={own(onClose)}
       onKeyDown={onKeyDown}
       onMouseDown={(e) => {
         pressedOutside.current = e.target === ref.current;

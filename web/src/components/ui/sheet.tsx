@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
+import { own } from "@/lib/dialog";
 import { useHoldPage } from "@/lib/hold-page";
 
 /** From here up (Tailwind's `md`) a sheet comes in from the right, not up from the bottom. */
@@ -183,12 +184,12 @@ export function Sheet({
     <dialog
       ref={ref}
       aria-labelledby={titleId}
-      onCancel={(e) => {
+      onCancel={own((e) => {
         // Escape: it slides away first.
         e.preventDefault();
         close();
-      }}
-      onClose={onClose}
+      })}
+      onClose={own(onClose)}
       onPointerDown={(e) => {
         pressedOutside.current = e.target === ref.current;
       }}

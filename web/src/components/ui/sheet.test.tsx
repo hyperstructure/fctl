@@ -1,6 +1,7 @@
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Lightbox } from "./lightbox";
 import { Pull, Sheet } from "./sheet";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -128,6 +129,46 @@ describe("Sheet", () => {
     // Not at once: the dialog would close without sliding.
     expect(cancel.defaultPrevented).toBe(true);
     expect(closing()).toBe(true);
+  });
+
+  it("stays when a dialog opened from it closes, and the page stays held until it goes too", () => {
+    screen(false);
+    const html = document.documentElement;
+    // As the session page has it: a picture over the sheet, each shown while its owner says so.
+    function Page() {
+      const [sheet, setSheet] = useState(true);
+      const [picture, setPicture] = useState(true);
+      return sheet ? (
+        <Sheet title="Fix the flaky login test" onClose={() => setSheet(false)}>
+          {picture && (
+            <Lightbox
+              items={[{ file: { name: "after.png", media_type: "image/png" }, src: "/files/after.png" }]}
+              onClose={() => setPicture(false)}
+            />
+          )}
+        </Sheet>
+      ) : null;
+    }
+    render(<Page />);
+    const sheet = document.querySelector<HTMLDialogElement>("dialog[aria-labelledby]");
+    const picture = document.querySelector<HTMLDialogElement>('dialog[aria-label="after.png"]');
+    expect(sheet?.open).toBe(true);
+    expect(picture?.open).toBe(true);
+    // Escape over the picture is the picture's: the sheet doesn't slide away.
+    const cancel = new Event("cancel", { cancelable: true });
+    act(() => {
+      picture?.dispatchEvent(cancel);
+    });
+    expect(cancel.defaultPrevented).toBe(false);
+    expect(sheet?.hasAttribute("data-closing")).toBe(false);
+    act(() => picture?.close());
+    expect(picture?.isConnected).toBe(false);
+    expect(sheet?.isConnected).toBe(true);
+    expect(sheet?.open).toBe(true);
+    expect(html.style.overflow).toBe("hidden");
+    act(() => sheet?.close());
+    expect(sheet?.isConnected).toBe(false);
+    expect(html.style.overflow).toBe("");
   });
 
   it("closes with a click beside it, not one that starts in it", () => {
