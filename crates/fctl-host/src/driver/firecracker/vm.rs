@@ -123,7 +123,8 @@ impl Vm {
     /// The process `what` started for this VM, while it runs: its id file
     /// names it, and its command line has this VM's sockets, which a process
     /// that took the id later wouldn't. One that is still being started has
-    /// no command line yet, for a moment, but an executable.
+    /// no command line yet, for a moment, but an executable; its id file is
+    /// written once it no longer shows this process's ([`wait_for_exec`]).
     fn pid(&self, what: &str) -> Option<u32> {
         let pid: u32 = std::fs::read_to_string(self.pid_file(what))
             .ok()?
@@ -454,17 +455,38 @@ fn passt_args(socket: &Path, name: &str) -> Vec<String> {
 }
 
 /// Starts `cmd` in a process group of its own, writes its id to
-/// `pid_file`, and reaps it when it exits while this host runs.
+/// `pid_file` once it runs its own program, and reaps it when it exits
+/// while this host runs.
 fn spawn_detached(cmd: &mut std::process::Command, pid_file: &Path) -> Result<u32> {
     use std::os::unix::process::CommandExt;
     cmd.process_group(0);
     let mut child = cmd.spawn()?;
     let pid = child.id();
+    wait_for_exec(pid);
     std::fs::write(pid_file, pid.to_string())?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });
     Ok(pid)
+}
+
+/// Waits, for at most a second, until the child `pid` no longer runs on
+/// this process's memory. `spawn` returns as soon as the child's exec lets
+/// go of it, but the child keeps it until the exec takes its memory map's
+/// lock, which waits while another thread maps or unmaps memory. Until
+/// then `/proc` shows this process's executable and command line for it,
+/// and [`Vm::pid`] would take it for another process (fctl#427). The
+/// programs started here (Firecracker, `passt`) are never this one.
+fn wait_for_exec(pid: u32) {
+    let Ok(ours) = std::fs::read_link("/proc/self/exe") else {
+        return;
+    };
+    let until = Instant::now() + Duration::from_secs(1);
+    while std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| exe == ours)
+        && Instant::now() < until
+    {
+        std::thread::sleep(Duration::from_micros(100));
+    }
 }
 
 /// What a VM to unpack an image boots.
@@ -559,6 +581,8 @@ mod tests {
         let mut child = std::process::Command::new("sh")
             .args(["-c", "sleep 30; true", &vm.api().display().to_string()])
             .spawn()?;
+        // As spawn_detached does: other tests' threads may hold its exec up.
+        wait_for_exec(child.id());
         std::fs::write(vm.pid_file("firecracker"), child.id().to_string())?;
         assert!(vm.running());
         // Another process with that id isn't the VM's.
@@ -566,6 +590,67 @@ mod tests {
         assert!(!vm.running());
         child.kill()?;
         child.wait()?;
+        Ok(())
+    }
+
+    /// A process is the VM's as soon as `spawn_detached` returns, even
+    /// while other threads map and unmap memory: that holds the child's
+    /// exec up while it still runs on this process's memory, whose command
+    /// line `/proc` then shows for it (fctl#427).
+    #[test]
+    fn a_process_is_the_vms_as_soon_as_it_starts() -> Result<()> {
+        use crate::driver::fake::write_script;
+        use nix::sys::signal::{Signal, killpg};
+        use nix::unistd::Pid;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir()?;
+        let firecracker = dir.path().join("firecracker");
+        write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
+        let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
+        std::fs::create_dir_all(&vm.dir)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        // Allocations this large are mapped and unmapped each time.
+        let churn: Vec<_> = (0..3)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let mut v: Vec<u8> = Vec::with_capacity(64 << 20);
+                        v.push(1);
+                        std::hint::black_box(&v);
+                    }
+                })
+            })
+            .collect();
+        let mut missed = 0;
+        let tries = 300;
+        let result = (|| -> Result<()> {
+            for _ in 0..tries {
+                let mut cmd = std::process::Command::new(&firecracker);
+                cmd.arg("--api-sock")
+                    .arg(vm.api())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                let pid = spawn_detached(&mut cmd, &vm.pid_file("firecracker"))?;
+                if !vm.running() {
+                    missed += 1;
+                }
+                let group = Pid::from_raw(i32::try_from(pid)?);
+                killpg(group, Signal::SIGKILL)?;
+            }
+            Ok(())
+        })();
+        stop.store(true, Ordering::Relaxed);
+        for thread in churn {
+            let _ = thread.join();
+        }
+        result?;
+        assert_eq!(
+            missed, 0,
+            "{missed} of {tries} just-started processes weren't the VM's"
+        );
         Ok(())
     }
 
