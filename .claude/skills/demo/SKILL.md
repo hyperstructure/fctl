@@ -270,6 +270,30 @@ schedule editor). Shots of a session pick it by the cast's name
 those names: add a shot to both, and keep the alt texts saying what the
 shot shows. A run of all of them takes about ten minutes.
 
+The Sessions page shows a video where its `diff` shot was: platform#437's
+diffs changing as its agent works, as the session page shows them (a new
+file comes in, single lines are written over, files arrive above and below
+while the lines in view stay put, and Noor's pointer takes the button to
+the changes below). `xtask/demo/diff-video.mjs` makes it without a stack:
+git makes the session's diffs of its transcript's edits on its
+repository's stand-in, version after version (`cargo xtask demo steps
+platform-437` prints the edits), and the app's own dialog shows them on a
+page of their own (`web/demo/diffs.html`), each frame taken at a set moment
+of a clock that stands still between frames. It writes `diff-live-<theme>`
+`.mp4` and `.webm` and their posters, `diff-<theme>.webp` (which `shoot.mjs`
+overwrites with a still of the same file), in about fifteen minutes; it
+needs ffmpeg with libx264, libvpx-vp9 and libwebp, and says so before it
+records. Its story is the transcript's edits with some as the smaller
+steps an agent takes, at the seconds `LANDS` gives, and it checks that the
+story ends where the transcript does. Run it again when the dialog or the
+transcript changes:
+
+```sh
+cd ~/screenshots
+node <repo>/xtask/demo/diff-video.mjs --out ~/repos/hyperstructure/fctl-site/src/features/shots/sessions
+node <repo>/xtask/demo/diff-video.mjs --theme dark --quick   # four small frames a second, to check the story
+```
+
 What the feature pages need from the seed, and where it comes from:
 
 - **Sign-in.** Noor has an authenticator app (set up through the API, its
