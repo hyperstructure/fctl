@@ -53,7 +53,9 @@ pull_requests?: Array<PullRequestRef>, runner?: RunnerRef,
 /**
  * The model Claude works on, as its agent last reported it, or the one
  * its owner switched it to since (`UpdateSessionRequest::model`), until
- * it does. Before Claude starts, the one the session asked for.
+ * it does. Before Claude starts, the one the session asked for. By the
+ * name it was asked for (`opus`) while Claude works on the model that
+ * name took it to; by the model's ID on Claude's default.
  */
 model?: string, 
 /**
