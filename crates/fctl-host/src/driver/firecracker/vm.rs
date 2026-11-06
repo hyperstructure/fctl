@@ -201,8 +201,7 @@ impl Vm {
     pub async fn link_network(&self, passt: &Path) -> Result<()> {
         self.kill_one("passt").await;
         let conn = self.connect_port(NET_PORT, LINK_TIMEOUT).await?;
-        let ready = self.passt_pid();
-        let _ = std::fs::remove_file(&ready);
+        let ready = self.new_passt_pid()?;
         let log = std::fs::File::create(self.dir.join("passt.log"))?;
         let mut cmd = std::process::Command::new(passt);
         cmd.args(passt_args(&ready))
@@ -381,16 +380,44 @@ impl Vm {
             self.kill_one(what).await;
         }
         let _ = std::fs::remove_dir_all(&self.run);
-        let _ = std::fs::remove_file(self.passt_pid());
     }
 
-    /// Where passt writes its pid: beside `run`, in the host's user's
-    /// directory in /tmp, where passt's AppArmor profile lets it write, and
-    /// where it can as it starts on a host that runs as root, as root but
-    /// for its capabilities, which it drops first.
-    fn passt_pid(&self) -> PathBuf {
-        self.run
-            .with_file_name(format!("vm-{}.passt.pid", self.key))
+    /// Where passt writes its pid, the path naming this VM's key, which
+    /// tells passt from other processes; recorded in the VM's directory.
+    /// Beside `run`, in the host's user's directory in /tmp, where passt's
+    /// AppArmor profile lets it write. On a host that runs as root, passt
+    /// opens it as nobody (passt of 2024) or as root without its
+    /// capabilities (later ones), which only /tmp itself lets write: there
+    /// its name has a random part no one else could make first.
+    fn new_passt_pid(&self) -> Result<PathBuf> {
+        if let Some(old) = self.passt_pid() {
+            let _ = std::fs::remove_file(old);
+        }
+        let pid = if nix::unistd::geteuid().is_root() {
+            PathBuf::from(format!(
+                "/tmp/fctl-passt-{}-{}.pid",
+                self.key,
+                hex::encode(fctl_domain::random_bytes::<8>())
+            ))
+        } else {
+            self.run
+                .with_file_name(format!("vm-{}.passt.pid", self.key))
+        };
+        std::fs::create_dir_all(&self.dir)?;
+        std::fs::write(
+            self.dir.join("passt.pid-file"),
+            pid.as_os_str().as_encoded_bytes(),
+        )?;
+        Ok(pid)
+    }
+
+    /// Where passt writes its pid ([`new_passt_pid`](Self::new_passt_pid)).
+    fn passt_pid(&self) -> Option<PathBuf> {
+        let path = std::fs::read_to_string(self.dir.join("passt.pid-file")).ok()?;
+        let path = PathBuf::from(path.trim());
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        // Only what this VM named so: nothing else of the host's goes.
+        (name.contains(&self.key) && name.ends_with(".pid")).then_some(path)
     }
 
     /// Kills the VM's process `what`, if it runs.
@@ -403,8 +430,11 @@ impl Vm {
             }
         }
         let _ = std::fs::remove_file(self.pid_file(what));
-        if what == "passt" {
-            let _ = std::fs::remove_file(self.passt_pid());
+        if what == "passt"
+            && let Some(pid) = self.passt_pid()
+        {
+            let _ = std::fs::remove_file(pid);
+            let _ = std::fs::remove_file(self.dir.join("passt.pid-file"));
         }
     }
 
@@ -1015,7 +1045,7 @@ mod tests {
             e.as_deref(),
             Some("passt did not start: No routable interface")
         );
-        assert!(!vm.linked() && !vm.passt_pid().exists());
+        assert!(!vm.linked() && vm.passt_pid().is_none_or(|p| !p.exists()));
         vm.link_network(&passt).await?;
         let first = vm.pid("passt");
         assert!(vm.linked());
