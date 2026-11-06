@@ -2009,7 +2009,7 @@ mod tests {
         let calls = cli.calls().len();
         assert!(!probe_due(&d.ctx, &mut probed, FACTS_EVERY).await);
         assert_eq!(cli.calls().len(), calls);
-        // Then Docker stops, two minutes before the next full probe: the
+        // Then Docker stops, four minutes before the next full probe: the
         // next probe of the driver alone finds it…
         cli.refuse(
             "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
