@@ -3278,9 +3278,10 @@ carries on with it, also across another supervisor that dies first.
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
 connection never waits on one: the hello reports what the drivers said
-when the host last probed them (at start, every five minutes, and every
-30 seconds while the driver it uses isn't ready, as a session or a
-Claude sign-in may find it between two probes), and
+when the host last probed them (at start, every five minutes, the
+driver it uses every minute between those, and every 30 seconds while
+that driver isn't ready, as a session or a Claude sign-in may find it
+between two probes), and
 sweeps and cleanups of sandboxes run in tasks of their own, so heartbeats
 keep flowing. A host that starts while its driver doesn't answer waits to
 connect until it can list its sandboxes, rather than report sessions as
@@ -3298,7 +3299,13 @@ session until it is
   isn't ready, and says them in a heartbeat as soon as they change
   (`HostHeartbeat.drivers`), not at the next beat. FleetDO keeps them with
   the runner's hello and dispatches at each heartbeat, so a session that
-  waits starts within about 30 seconds of the driver answering.
+  waits starts within about 30 seconds of the driver answering. While the
+  driver is ready, the host probes every driver and measures what
+  sandboxes run on every five minutes (`HostCtx::refresh_facts`), and
+  between those probes the one it uses alone every minute
+  (`HostCtx::recheck_driver`, `daemon::probe_now`), one probe at a time:
+  a Docker that stops on an idle runner shows within about a minute, and
+  FleetDO sends it no more sessions.
 - FleetDO places no session on it, not even a resume into the sandbox it
   has, as if it were offline (`fctl_domain::schedule::driver_problem`,
   `schedule::pick`): the session starts on another runner when one can

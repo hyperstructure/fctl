@@ -184,6 +184,10 @@ const DISK_LOW_EVERY: Duration = Duration::from_secs(5);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 /// How often the host probes its drivers while the one it uses isn't ready.
 const NOT_READY_EVERY: Duration = Duration::from_secs(30);
+/// How often the host probes the driver it uses alone while it is ready,
+/// between two probes of them all: a Docker that stops shows within a
+/// minute.
+const DRIVER_EVERY: Duration = Duration::from_secs(60);
 /// How often an update that waits for a quiet moment looks again.
 const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(5);
 
@@ -1559,52 +1563,105 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
 /// Probes the drivers and measures what sandboxes run on every `period`, in
 /// the background, and every [`NOT_READY_EVERY`] while the driver it uses
 /// isn't ready: once someone starts Docker, say, the control plane hears it
-/// soon, and starts the sessions that wait. It tells the daemon when that
-/// driver becomes ready or stops being, so that it says so now.
+/// soon, and starts the sessions that wait. Between those, it probes the
+/// driver it uses alone every [`DRIVER_EVERY`], so that a Docker that stops
+/// shows soon too. It tells the daemon when that driver becomes ready or
+/// stops being, so that it says so now. One probe runs at a time: a Docker
+/// that hangs holds the next one back.
 fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration, chores: mpsc::UnboundedSender<Chore>) {
     tokio::spawn(async move {
-        let mut last = tokio::time::Instant::now();
+        let mut probed = Probed::now();
         loop {
             // It looks every NOT_READY_EVERY, since a session or a sign-in
             // that couldn't make its sandbox may have found the driver not
             // ready since the last probe (`HostCtx::recheck_driver`).
             tokio::time::sleep(NOT_READY_EVERY.min(period)).await;
-            if !probe_now(ctx.driver_problem().is_none(), last.elapsed(), period) {
-                continue;
-            }
-            last = tokio::time::Instant::now();
-            let before = ctx.driver_problem();
-            ctx.refresh_facts().await;
-            let after = ctx.driver_problem();
-            if after != before {
-                match &after {
-                    Some(why) => tracing::warn!(
-                        "the {} driver isn't ready: {why}; it takes no sessions until it is",
-                        ctx.driver.name()
-                    ),
-                    None => tracing::info!(
-                        "the {} driver is ready again; it takes sessions",
-                        ctx.driver.name()
-                    ),
-                }
-                if chores.send(Chore::Drivers).is_err() {
-                    return;
-                }
+            if probe_due(&ctx, &mut probed, period).await && chores.send(Chore::Drivers).is_err() {
+                return;
             }
         }
     });
 }
 
-/// Whether the host probes its drivers again now, `since` it last did:
-/// every `period` while the driver it uses is `ready`, else every
-/// [`NOT_READY_EVERY`].
-fn probe_now(ready: bool, since: Duration, period: Duration) -> bool {
-    since
-        >= if ready {
-            period
-        } else {
-            NOT_READY_EVERY.min(period)
+/// When the host last probed its drivers: all of them, with what sandboxes
+/// run on (`HostCtx::refresh_facts`), and the one it uses.
+struct Probed {
+    all: tokio::time::Instant,
+    driver: tokio::time::Instant,
+}
+
+impl Probed {
+    fn now() -> Self {
+        let now = tokio::time::Instant::now();
+        Self {
+            all: now,
+            driver: now,
         }
+    }
+}
+
+/// What the host probes now.
+#[derive(Debug, PartialEq, Eq)]
+enum Probe {
+    /// Every driver, with what sandboxes run on.
+    All,
+    /// Only the driver it uses.
+    Driver,
+}
+
+/// Probes what is due (`probe_now`), and says whether the driver the host
+/// uses became ready or stopped being.
+async fn probe_due(ctx: &HostCtx, probed: &mut Probed, period: Duration) -> bool {
+    let ready = ctx.driver_problem().is_none();
+    let Some(probe) = probe_now(ready, probed.all.elapsed(), probed.driver.elapsed(), period)
+    else {
+        return false;
+    };
+    let before = ctx.driver_problem();
+    let now = tokio::time::Instant::now();
+    probed.driver = now;
+    match probe {
+        Probe::All => {
+            probed.all = now;
+            ctx.refresh_facts().await;
+        }
+        Probe::Driver => {
+            ctx.recheck_driver().await;
+        }
+    }
+    let after = ctx.driver_problem();
+    if after == before {
+        return false;
+    }
+    match &after {
+        Some(why) => tracing::warn!(
+            "the {} driver isn't ready: {why}; it takes no sessions until it is",
+            ctx.driver.name()
+        ),
+        None => tracing::info!(
+            "the {} driver is ready again; it takes sessions",
+            ctx.driver.name()
+        ),
+    }
+    true
+}
+
+/// What the host probes now, `all` since it last probed every driver and
+/// `driver` since it last probed the one it uses: every driver every
+/// `period` while the one it uses is `ready`, else every
+/// [`NOT_READY_EVERY`]; and between those, while it is ready, the one it
+/// uses every [`DRIVER_EVERY`].
+fn probe_now(ready: bool, all: Duration, driver: Duration, period: Duration) -> Option<Probe> {
+    if !ready {
+        return (all >= NOT_READY_EVERY.min(period)).then_some(Probe::All);
+    }
+    if all >= period {
+        Some(Probe::All)
+    } else if driver >= DRIVER_EVERY.min(period) {
+        Some(Probe::Driver)
+    } else {
+        None
+    }
 }
 
 fn jitter(d: Duration) -> Duration {
@@ -1874,15 +1931,106 @@ mod tests {
     #[test]
     fn hosts_probe_a_driver_that_isnt_ready_every_30_seconds() {
         let s = Duration::from_secs;
-        // Ready: every five minutes.
-        assert!(!probe_now(true, s(30), FACTS_EVERY));
-        assert!(probe_now(true, s(300), FACTS_EVERY));
         // Not ready, also when a session or a sign-in found that out
-        // between two probes.
-        assert!(probe_now(false, s(30), FACTS_EVERY));
-        assert!(!probe_now(false, s(29), FACTS_EVERY));
+        // between two probes: every driver, every 30 s.
+        assert_eq!(
+            probe_now(false, s(30), s(30), FACTS_EVERY),
+            Some(Probe::All)
+        );
+        assert_eq!(probe_now(false, s(29), s(29), FACTS_EVERY), None);
+        assert_eq!(probe_now(false, s(29), s(90), FACTS_EVERY), None);
         // Never less often than asked.
-        assert!(probe_now(false, s(10), s(10)));
+        assert_eq!(probe_now(false, s(10), s(10), s(10)), Some(Probe::All));
+    }
+
+    #[test]
+    fn hosts_probe_a_ready_driver_every_minute_and_every_driver_every_five() {
+        let s = Duration::from_secs;
+        // Every driver, every five minutes.
+        assert_eq!(
+            probe_now(true, s(300), s(60), FACTS_EVERY),
+            Some(Probe::All)
+        );
+        assert_eq!(probe_now(true, s(300), s(0), FACTS_EVERY), Some(Probe::All));
+        // Between those, the one it uses, every minute.
+        assert_eq!(probe_now(true, s(30), s(30), FACTS_EVERY), None);
+        assert_eq!(probe_now(true, s(59), s(59), FACTS_EVERY), None);
+        assert_eq!(
+            probe_now(true, s(60), s(60), FACTS_EVERY),
+            Some(Probe::Driver)
+        );
+        assert_eq!(
+            probe_now(true, s(240), s(60), FACTS_EVERY),
+            Some(Probe::Driver)
+        );
+        assert_eq!(probe_now(true, s(240), s(30), FACTS_EVERY), None);
+        // Never less often than asked.
+        assert_eq!(probe_now(true, s(10), s(10), s(10)), Some(Probe::All));
+    }
+
+    #[tokio::test]
+    async fn a_driver_that_stops_between_two_full_probes_reaches_the_next_heartbeat() -> Result<()>
+    {
+        use crate::driver::container::Flavor;
+        use crate::driver::fake::FakeCli;
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        // It runs sandboxes on Docker, which answers.
+        let cli = FakeCli::new(&[], &[])?;
+        let mut cfg = d.ctx.cfg.clone();
+        cfg.driver = "docker".into();
+        d.ctx = Arc::new(HostCtx::new(
+            cfg,
+            cli.host_driver(Flavor::Docker),
+            "fctl_rt_test".into(),
+        ));
+        *d.ctx
+            .drivers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![d.ctx.driver.probe().await];
+        assert_eq!(d.ctx.driver_problem(), None);
+        d.drivers_said = d.hello().drivers;
+        assert_eq!(d.heartbeat().drivers, None);
+        // It probed them all a minute ago, as it started.
+        let ago = |secs| {
+            tokio::time::Instant::now()
+                .checked_sub(Duration::from_secs(secs))
+                .context("too soon after boot")
+        };
+        let mut probed = Probed {
+            all: ago(60)?,
+            driver: ago(60)?,
+        };
+        // Docker answers its probe: nothing changes, and nothing is due for
+        // another minute.
+        let calls = cli.calls().len();
+        assert!(!probe_due(&d.ctx, &mut probed, FACTS_EVERY).await);
+        assert_eq!(d.heartbeat().drivers, None);
+        assert!(cli.calls().len() > calls);
+        let calls = cli.calls().len();
+        assert!(!probe_due(&d.ctx, &mut probed, FACTS_EVERY).await);
+        assert_eq!(cli.calls().len(), calls);
+        // Then Docker stops, four minutes before the next full probe: the
+        // next probe of the driver alone finds it…
+        cli.refuse(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        )?;
+        probed.driver = ago(60)?;
+        assert!(probe_due(&d.ctx, &mut probed, FACTS_EVERY).await);
+        // …and the next heartbeat says so (`serve` sends it at once).
+        assert!(d.ctx.drivers_differ(&d.drivers_said));
+        let drivers = d
+            .heartbeat()
+            .drivers
+            .context("no drivers in the heartbeat")?;
+        let docker = drivers
+            .iter()
+            .find(|i| i.name == "docker")
+            .context("no docker driver")?;
+        assert!(!docker.available);
+        let why = docker.detail.clone().unwrap_or_default();
+        assert!(why.starts_with("the Docker daemon isn't running"), "{why}");
+        assert_eq!(d.heartbeat().drivers, None);
+        Ok(())
     }
 
     #[tokio::test]

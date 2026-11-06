@@ -853,15 +853,17 @@ A session that another runner can take starts there; one that has
 nowhere else to go stays queued and says why ("Waiting for studio, whose
 docker driver isn't ready: …"). The host probes its driver every 30
 seconds meanwhile and tells the control plane as soon as it answers, and
-the sessions that wait start. When Docker stops between two probes, a
+the sessions that wait start. While it is ready, the host probes it every
+minute, so a runner shows a stopped Docker within about a minute, in
+`fctl runners` and the Runners tab. When Docker stops between two probes, a
 session the host can't make a sandbox for goes back to the queue instead
 of failing. Hosts of an older fctl still get sessions, which fail until
 the driver is ready; `fctl runners` says which happens on each runner.
 
 Apple's `container` service stops when the Mac restarts. A host whose
 driver is apple starts it again (`container system start`, never
-installing a kernel): when the host starts, and when its probe of the
-drivers, every five minutes, finds the service stopped. With `auto`, or
+installing a kernel): when the host starts, and within about a minute
+and a half of the service stopping. With `auto`, or
 another driver, the host leaves it, and Docker's daemon, to their owner.
 
 On Linux, `--driver firecracker` runs each session in a
