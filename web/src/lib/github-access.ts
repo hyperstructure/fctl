@@ -1,8 +1,9 @@
 // What a session's agent may do on GitHub (G.GithubAccess): push, as every agent did before;
-// comment, as review agents do (review, comment and label, push nothing); or only read, as
-// planners do. A session asks for it as it starts, within its project's settings
+// comment, as review agents do (review, comment and label, push nothing); triage, as agents that
+// go through new issues do (label tickets and comment on them, through fctl, and nothing else); or
+// only read, as planners do. A session asks for it as it starts, within its project's settings
 // (ProjectSettings.github_access) and the access token that starts it, and GitHub holds the agent
-// to it: its tokens carry those permissions.
+// to it: its tokens carry those permissions, and one that triages writes through fctl alone.
 
 import type * as G from "@/gen";
 
@@ -22,6 +23,13 @@ const PUSH: GithubLevel = {
   description: "Commits, pushes its branch and opens pull requests.",
 };
 
+const TRIAGE: GithubLevel = {
+  value: "triage",
+  label: "Triage only",
+  most: "Triage",
+  description: "Labels issues and comments on them, and nothing else: no code, no pull requests, no reviews.",
+};
+
 /** From the most to the least an agent may do. */
 export const GITHUB_ACCESS: readonly GithubLevel[] = [
   PUSH,
@@ -32,6 +40,7 @@ export const GITHUB_ACCESS: readonly GithubLevel[] = [
     description:
       "Reviews and comments on pull requests and issues, and resolves review threads. Pushes nothing.",
   },
+  TRIAGE,
   {
     value: "read",
     label: "Read only",
@@ -40,7 +49,7 @@ export const GITHUB_ACCESS: readonly GithubLevel[] = [
   },
 ];
 
-const RANK: Record<G.GithubAccess, number> = { read: 0, comment: 1, push: 2 };
+const RANK: Record<G.GithubAccess, number> = { read: 0, triage: 1, comment: 2, push: 3 };
 
 /** The lower of two levels. */
 export const lowerAccess = (a: G.GithubAccess, b: G.GithubAccess) => (RANK[a] <= RANK[b] ? a : b);
@@ -61,9 +70,36 @@ export function sessionGithub(s: Pick<G.Session, "github_access">, project?: Pic
   return project ? lowerAccess(own, projectGithub(project)) : own;
 }
 
+/**
+ * Whether a project's agents reach a ticket tracker (`ProjectSettings.tickets`), where one that
+ * triages labels tickets and comments on them: GitHub's issues, as projects that never chose one
+ * have, or Linear's.
+ */
+export const tracksTickets = (p: Pick<G.Project, "settings">) =>
+  (p.settings.tickets?.tracker ?? "github") !== "none";
+
+/** A level as `p`'s forms say it: what triage comes to depends on the project's tracker. */
+export function levelIn(l: GithubLevel, p: Pick<G.Project, "settings">): GithubLevel {
+  if (l.value !== "triage") return l;
+  const tracker = p.settings.tickets?.tracker ?? "github";
+  if (tracker === "linear")
+    return {
+      ...l,
+      description:
+        "Labels the project's Linear issues and comments on them, and nothing else. Writes nothing to GitHub.",
+    };
+  if (tracker === "none")
+    return {
+      ...l,
+      description:
+        "Labels and comments on tickets, but this project uses no ticket tracker: its agent only reads.",
+    };
+  return l;
+}
+
 /** The levels a session in `p` may ask for, the most first. */
 export const githubOffers = (p: Pick<G.Project, "settings">) =>
-  GITHUB_ACCESS.filter((l) => within(l.value, projectGithub(p)));
+  GITHUB_ACCESS.filter((l) => within(l.value, projectGithub(p))).map((l) => levelIn(l, p));
 
 /** Whether a project's agents work on GitHub at all: it has a repository. */
 export const onGithub = (p: Pick<G.Project, "repo" | "other_repos" | "all_repos_of">) =>

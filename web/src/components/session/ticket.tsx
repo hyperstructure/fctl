@@ -243,8 +243,39 @@ const NOTICE_VERB: Record<string, string> = {
 };
 
 /**
+ * The labels fctl put on a ticket for the agent, and those it took off (struck through), as the
+ * ticket card shows labels.
+ */
+function LabelChanges({ labeled, unlabeled }: { labeled: string[]; unlabeled: string[] }) {
+  return (
+    <>
+      {labeled.map((l) => (
+        <span
+          key={`+${l}`}
+          className="ml-1.5 inline-block rounded-full border border-line px-1.5 py-px align-[1px] text-[11.5px] leading-4 text-ink-2"
+        >
+          <span className="sr-only">added </span>
+          {l}
+        </span>
+      ))}
+      {unlabeled.map((l) => (
+        <span
+          key={`-${l}`}
+          title={`Took ${l} off`}
+          className="ml-1.5 inline-block rounded-full border border-dashed border-line px-1.5 py-px align-[1px] text-[11.5px] leading-4 text-ink-4 line-through decoration-ink-4"
+        >
+          <span className="sr-only">removed </span>
+          {l}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/**
  * What fctl did in the tracker for the agent: a line with the ticket, which opens into what it
- * posted (a reply, a comment, a new ticket's description).
+ * posted (a reply, a comment, a new ticket's description). A change of labels alone, as an agent
+ * that triages makes, says "Labeled" and shows them.
  */
 export const TicketNoticeView = memo(function TicketNoticeView({
   notice,
@@ -259,9 +290,14 @@ export const TicketNoticeView = memo(function TicketNoticeView({
   const body = notice.body?.trim() ?? "";
   const where = notice.tracker === "linear" ? "in Linear" : "on GitHub";
   const state = notice.state;
+  const labeled = notice.labeled ?? [];
+  const unlabeled = notice.unlabeled ?? [];
+  const labels = labeled.length + unlabeled.length > 0;
+  // Its state comes with every other change.
+  const verb = code === "ticket_updated" && labels && !state ? "Labeled" : (NOTICE_VERB[code] ?? "Worked on");
   const line = (
     <>
-      {NOTICE_VERB[code] ?? "Worked on"} <span className="font-mono text-[12px]">{t.key}</span>
+      {verb} <span className="font-mono text-[12px]">{t.key}</span>
       {code === "ticket_created" && t.title ? `: ${t.title}` : ""}
       {code === "ticket_moved" && state ? (
         <>
@@ -292,7 +328,10 @@ export const TicketNoticeView = memo(function TicketNoticeView({
           <RailIcon>
             <TrackerIcon tracker={notice.tracker} className="size-3.5" />
           </RailIcon>
-          <span className="min-w-0">{line}</span>
+          <span className="min-w-0">
+            {line}
+            {labels && <LabelChanges labeled={labeled} unlabeled={unlabeled} />}
+          </span>
           {code === "ticket_updated" && state && (
             <span className={cn("inline-flex items-center gap-1 text-[12px]", stateTone(state.kind))}>
               <StateDot kind={state.kind} />

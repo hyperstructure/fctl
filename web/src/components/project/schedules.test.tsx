@@ -157,3 +157,58 @@ describe("Schedule, beside a task box's Start", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 });
+
+describe("Triage new issues", () => {
+  const onGithub = { ...project, repo: { owner: "acme", name: "app" } };
+  const idea = (c: HTMLElement) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent?.includes("Triage new issues"));
+
+  it("is an idea whose agents only label and comment, for projects with a tracker", () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    expect(idea(tab)?.textContent).toContain("Triage only");
+    // Starting from it sets up a schedule whose agents triage.
+    press(idea(tab));
+    expect(tab.querySelector("textarea")?.value).toContain(
+      "Triage the issues opened since the previous run.",
+    );
+    expect(tab.querySelector("[aria-label='On GitHub']")?.getAttribute("title")).toBe(
+      "On GitHub: Triage only",
+    );
+  });
+
+  it("isn't offered where agents reach no tracker", () => {
+    const none = {
+      ...onGithub,
+      id: "prj_2",
+      settings: { ...onGithub.settings, tickets: { tracker: "none" } as G.Tickets },
+    };
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(none.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={none} />);
+    expect(idea(tab)).toBeUndefined();
+    expect(tab.textContent).toContain("Update dependencies");
+  });
+
+  it("says in a schedule's row what its agents may do on GitHub, when less than pushing", () => {
+    const schedule = (id: string, github_access?: G.GithubAccess): G.Schedule => ({
+      id,
+      project_id: onGithub.id,
+      name: id === "sch_1" ? "Triage new issues" : "Update dependencies",
+      prompt: "…",
+      cron: "0 8 * * 1-5",
+      timezone: "UTC",
+      github_access,
+      enabled: true,
+      state: "active",
+      created_at: 0,
+      updated_at: 0,
+    });
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), {
+      schedules: [schedule("sch_1", "triage"), schedule("sch_2")],
+    });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    const rows = [...tab.querySelectorAll("li")];
+    expect(rows[0]?.textContent).toContain("Triage only");
+    expect(rows[1]?.textContent).not.toContain("only");
+  });
+});

@@ -30,6 +30,7 @@ import {
   Webhook,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { GithubAccessIcon } from "@/components/github-access";
 import { StartChoices } from "@/components/session/start";
 import {
   Avatar,
@@ -55,7 +56,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
-import { githubLevel, lowerAccess, onGithub } from "@/lib/github-access";
+import { githubLevel, lowerAccess, onGithub, tracksTickets } from "@/lib/github-access";
 import { siteUrl } from "@/lib/install";
 import { asked, type Choice, effortLabel, modelLabel, projectChoice } from "@/lib/models";
 import { keys, queryClient, useMe } from "@/lib/queries";
@@ -102,7 +103,12 @@ interface Idea {
   repeat: RepeatChoice;
   /** What its agents may do on GitHub, when less than the project allows does. */
   github?: G.GithubAccess;
+  /** It works on the project's tickets: only for projects whose agents reach a tracker. */
+  tickets?: boolean;
 }
+
+/** The ideas for `project`: those about tickets only where its agents reach a tracker. */
+const ideasFor = (project: G.Project) => IDEAS.filter((i) => !i.tickets || tracksTickets(project));
 
 const at = (every: Every, hour: number, weekdays: number[] = [1]): RepeatChoice => ({
   ...DEFAULT_REPEAT,
@@ -128,9 +134,11 @@ const IDEAS: Idea[] = [
     line: "Labels, questions and links for each issue opened since the last run.",
     icon: <Inbox />,
     prompt:
-      "Triage the issues opened since the previous run. For each, add the labels that fit, say what is missing to act on it, link duplicates and point at the code it concerns. Change no code and close nothing.",
+      "Triage the issues opened since the previous run. For each, add the labels that fit, from those the tracker has. Where something is missing to act on it, ask for it in a comment, and say there which issues it duplicates and which code it concerns.",
     repeat: at("weekday", 8),
-    github: "comment",
+    // Labels and comments, and nothing else: an issue that asks for more can't get it.
+    github: "triage",
+    tickets: true,
   },
   {
     key: "memory",
@@ -423,7 +431,7 @@ function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) =
             </Button>
           </div>
           <ul className="border-t border-line">
-            {IDEAS.map((i) => (
+            {ideasFor(project).map((i) => (
               <li key={i.key}>
                 <button
                   type="button"
@@ -437,7 +445,12 @@ function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) =
                     {i.icon}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-[14px] text-ink">{i.name}</span>
+                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="text-[14px] text-ink">{i.name}</span>
+                      {i.github && onGithub(project) && (
+                        <IdeaAccess access={lowerAccess(i.github, projectChoice(project).github)} />
+                      )}
+                    </span>
                     <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">{i.line}</span>
                     <span className="mt-1 block text-[12px] text-ink-4 sm:hidden">
                       {sentence(describeCronText(repeatCron(i.repeat)))}
@@ -456,6 +469,18 @@ function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) =
         <p className="text-[13px] text-ink-4">People who start sessions in this project set up schedules.</p>
       )}
     </div>
+  );
+}
+
+/** What an idea's agents may do on GitHub, when it holds them to less than pushing. */
+function IdeaAccess({ access }: { access: G.GithubAccess }) {
+  if (access === "push") return null;
+  const level = githubLevel(access);
+  return (
+    <span className="inline-flex items-center gap-1 text-[12px] text-ink-4" title={level.description}>
+      <GithubAccessIcon access={access} className="size-3" />
+      {level.label}
+    </span>
   );
 }
 
@@ -547,14 +572,29 @@ function Glyph({ schedule }: { schedule: G.Schedule }) {
   );
 }
 
-/** The facts under a schedule's name: when it runs, when next, and what its last run did. */
-function Facts({ schedule: s }: { schedule: G.Schedule }) {
+/**
+ * The facts under a schedule's name: when it runs, when next, what its last run did, and what its
+ * agents may do on GitHub when that is less than pushing, as a session says beside its status.
+ */
+function Facts({ project, schedule: s }: { project: G.Project; schedule: G.Schedule }) {
   const here = useMemo(browserZone, []);
   const last = s.last_run;
+  const own = projectChoice(project).github;
+  const github = lowerAccess(s.github_access ?? own, own);
   return (
     <Meta
       parts={[
         { key: "when", node: <span className="text-ink-3">{scheduleWhen(s)}</span> },
+        onGithub(project) &&
+          github !== "push" && {
+            key: "github",
+            node: (
+              <span className="inline-flex items-center gap-1" title={githubLevel(github).description}>
+                <GithubAccessIcon access={github} className="size-3" />
+                {githubLevel(github).label}
+              </span>
+            ),
+          },
         s.timezone !== here &&
           (!!s.cron || s.at !== undefined) && {
             key: "zone",
@@ -674,7 +714,7 @@ function Item({
               )}
             />
           </span>
-          <Facts schedule={s} />
+          <Facts project={project} schedule={s} />
           {(s.paused_reason || s.problem) && (
             <span className="mt-1 block text-[12.5px] leading-relaxed text-amber [overflow-wrap:anywhere]">
               {s.paused_reason ? `fctl paused it. ${s.paused_reason}` : s.problem}
@@ -1416,7 +1456,7 @@ function Editor({
       {!schedule && (
         <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 [scrollbar-width:none] sm:-mx-5 sm:px-5">
           <span className="shrink-0 text-[12.5px] text-ink-4">Start from</span>
-          {IDEAS.map((i) => (
+          {ideasFor(project).map((i) => (
             <button
               key={i.key}
               type="button"
