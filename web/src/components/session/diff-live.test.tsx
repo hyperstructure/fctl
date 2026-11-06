@@ -28,53 +28,77 @@ const HEADER = 40;
 const ROW = 20;
 
 /**
- * A file's section of 100 rows under its 40 px header, laid out by hand
- * (the test's DOM lays nothing out): each row as far down the diffs as
- * `at` says, and on the screen as far as the box scrolled.
+ * Two files' sections of 100 rows each under their 40 px headers, laid out
+ * by hand (the test's DOM lays nothing out): each row as far down the diffs
+ * as `at` says, and on the screen as far as the box scrolled.
  */
 function layout(body: HTMLElement) {
   const at = new Map<Element, number>();
   const rect = (top: number, height: number) =>
     ({ top, bottom: top + height, height, left: 0, right: 800, width: 800, x: 0, y: top }) as DOMRect;
   body.getBoundingClientRect = () => rect(BOX.top, BOX.height);
-  const section = body.querySelector("section") as HTMLElement;
-  const rows = () => [...section.querySelectorAll<HTMLElement>(".diff-line")];
+  const sections = () => [...body.querySelectorAll<HTMLElement>("section")];
+  const rows = (s = 0) => [...(sections()[s]?.querySelectorAll<HTMLElement>(".diff-line") ?? [])];
   const place = () => {
-    for (const [i, r] of rows().entries()) {
-      if (!at.has(r)) at.set(r, HEADER + i * ROW);
-      r.getBoundingClientRect = () => rect(BOX.top + (at.get(r) ?? 0) - body.scrollTop, ROW);
+    let y = 0;
+    for (const section of sections()) {
+      const top = y;
+      if (!at.has(section)) at.set(section, top);
+      y += HEADER;
+      for (const r of section.querySelectorAll<HTMLElement>(".diff-line")) {
+        if (!at.has(r)) at.set(r, y);
+        y += ROW;
+        r.getBoundingClientRect = () => rect(BOX.top + (at.get(r) ?? 0) - body.scrollTop, ROW);
+      }
+      const height = y - top;
+      section.getBoundingClientRect = () => rect(BOX.top + (at.get(section) ?? 0) - body.scrollTop, height);
+      Object.defineProperty(section, "offsetTop", { configurable: true, get: () => at.get(section) ?? 0 });
     }
-    section.getBoundingClientRect = () => rect(BOX.top - body.scrollTop, HEADER + rows().length * ROW);
   };
   place();
-  /** `n` rows come above row `from`: those from it down move down. */
+  /** `n` rows come above row `from` of the first file: everything from it down moves down. */
   const insert = (from: number, n: number) => {
-    for (const [r, top] of at) if (top >= HEADER + from * ROW) at.set(r, top + n * ROW);
+    for (const [el, top] of at) if (top >= HEADER + from * ROW) at.set(el, top + n * ROW);
   };
-  return { place, insert, rows };
+  return { place, insert, rows, sections };
 }
 
-function Harness({ rows, onLive }: { rows: number; onLive: (l: ReturnType<typeof useLive>) => void }) {
+function Harness({
+  onLive,
+  pinned,
+}: {
+  onLive: (l: ReturnType<typeof useLive>) => void;
+  pinned?: { current: number | undefined };
+}) {
   const body = useRef<HTMLDivElement>(null);
   const column = useRef<HTMLDivElement>(null);
-  const live = useLive(body, column, HEADER);
+  const live = useLive(body, column, HEADER, () =>
+    pinned?.current === undefined
+      ? undefined
+      : body.current?.querySelector<HTMLElement>(`section[data-file="${pinned.current}"]`),
+  );
   onLive(live);
   return (
     <div ref={body} data-body="">
       <div ref={column}>
-        <section data-file="0">
-          {Array.from({ length: rows }, (_, i) => (
-            <div key={i} className="diff-line" data-l={`0:${i}`} />
-          ))}
-        </section>
+        {[0, 1].map((f) => (
+          <section key={f} data-file={f}>
+            {Array.from({ length: 100 }, (_, i) => (
+              <div key={i} className="diff-line" data-l={`0:${i}`} />
+            ))}
+          </section>
+        ))}
       </div>
     </div>
   );
 }
 
-function setup() {
+function setup(pinned?: { current: number | undefined }) {
   let live: ReturnType<typeof useLive> | undefined;
-  const { container } = render(<Harness rows={100} onLive={(l) => (live = l)} />);
+  const node = () => <Harness pinned={pinned} onLive={(l) => (live = l)} />;
+  const { container, root } = render(node());
+  // Drawn again, as the dialog is with each new list of files: with a new `pinned` each time.
+  const again = () => act(() => root.render(node()));
   const body = container.querySelector("[data-body]") as HTMLElement;
   const fake = layout(body);
   const scroll = (top: number) =>
@@ -82,8 +106,8 @@ function setup() {
       body.scrollTop = top;
       body.dispatchEvent(new Event("scroll"));
     });
-  const top = (i: number) => fake.rows()[i]?.getBoundingClientRect().top;
-  return { body, fake, scroll, top, live: () => live as ReturnType<typeof useLive> };
+  const top = (i: number, s = 0) => fake.rows(s)[i]?.getBoundingClientRect().top;
+  return { body, fake, scroll, top, again, live: () => live as ReturnType<typeof useLive> };
 }
 
 describe("the reader's place in the diffs", () => {
@@ -106,6 +130,44 @@ describe("the reader's place in the diffs", () => {
     live().view.hold();
     expect(body.scrollTop).toBe(60);
     expect(top(0)).toBe(140);
+  });
+
+  it("keeps the file the reader went to at the top until they scroll, as the dialog gets its size too", () => {
+    const pinned = { current: 1 as number | undefined };
+    const { body, fake, live, scroll } = setup(pinned);
+    // The second file starts below the first's 100 rows.
+    live().view.hold();
+    expect(body.scrollTop).toBe(HEADER + 100 * ROW);
+    fake.insert(10, 3);
+    live().view.hold();
+    expect(body.scrollTop).toBe(HEADER + 103 * ROW);
+    // Once they scroll, it is their place that holds.
+    pinned.current = undefined;
+    scroll(500);
+    fake.insert(0, 1);
+    live().view.hold();
+    expect(body.scrollTop).toBe(520);
+  });
+
+  it("doesn't take the same line of another file for the line it held, once its own file went", () => {
+    const { body, fake, scroll, live } = setup();
+    scroll(500);
+    // The file goes (the agent put it back as it was); the next one takes its place in the list.
+    const [first, second] = fake.sections();
+    first?.remove();
+    second?.setAttribute("data-file", "0");
+    live().view.hold();
+    expect(body.scrollTop).toBe(500);
+  });
+
+  it("holds its place through a render that comes before it held, with a new list of files", () => {
+    const { body, fake, scroll, top, again, live } = setup();
+    scroll(500);
+    fake.insert(10, 3);
+    again();
+    live().view.hold();
+    expect(body.scrollTop).toBe(560);
+    expect(top(25)).toBe(140);
   });
 
   it("finds the line again once its row is drawn anew", () => {

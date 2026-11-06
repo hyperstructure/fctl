@@ -15,8 +15,8 @@ import { cn } from "@/lib/cn";
 /** Where the reader's place is: a row (or a file's section, before it shows its rows), and how far down the diffs it is. */
 interface Anchor {
   el: Element;
-  /** Its file's place in the list, and its line's place in its hunks, to find it again once it was drawn anew. */
-  file: number;
+  /** Its file's section, and its line's place in its hunks, to find it again once it was drawn anew. */
+  section: Element;
   l?: string;
   /** Its top, from the top of the diffs (px). */
   top: number;
@@ -40,15 +40,22 @@ function firstPast<T extends Element>(list: ArrayLike<T>, y: number): T | undefi
 /**
  * Keeps the reader's place in `body`, which scrolls the files' sections in
  * `column` under headers `header` px tall, and follows what the agent
- * changes out of sight. `view` is for the diffs, `pick` to call after the
- * dialog scrolled them itself.
+ * changes out of sight. `pinned` is the section of the file the reader went
+ * to, which stays at the top until they scroll (as the dialog opens, too:
+ * it gets its size after it scrolled there). `view` is for the diffs, `pick`
+ * to call after the dialog scrolled them itself.
  */
 export function useLive(
   body: RefObject<HTMLElement | null>,
   column: RefObject<HTMLElement | null>,
   header: number,
+  pinned: () => HTMLElement | null | undefined,
 ) {
   const anchor = useRef<Anchor | undefined>(undefined);
+  // Read where it's called: a new list of files makes a new `pinned`, and the place must not be
+  // picked anew because of it (see the effect below).
+  const pinnedNow = useRef(pinned);
+  pinnedNow.current = pinned;
 
   const pick = useCallback(() => {
     const b = body.current;
@@ -63,7 +70,7 @@ export function useLive(
     const el = firstPast(s.querySelectorAll<HTMLElement>(".diff-line, .diff-hunk"), y) ?? s;
     anchor.current = {
       el,
-      file: Number(s.dataset.file),
+      section: s,
       l: (el as HTMLElement).dataset.l,
       top: el.getBoundingClientRect().top - v.top + b.scrollTop,
     };
@@ -71,14 +78,19 @@ export function useLive(
 
   const hold = useCallback(() => {
     const b = body.current;
+    if (!b) return;
+    const p = pinnedNow.current();
+    if (p) {
+      if (Math.abs(b.scrollTop - p.offsetTop) > 1) b.scrollTop = p.offsetTop;
+      pick();
+      return;
+    }
     const a = anchor.current;
-    if (!b || !a) return;
+    if (!a) return;
     if (!a.el.isConnected) {
-      // Drawn anew (laid out another way): the same line, if it still shows.
+      // Drawn anew (laid out another way): the same line of the same file, if it still shows.
       const again =
-        a.l === undefined
-          ? undefined
-          : b.querySelector(`section[data-file="${a.file}"]`)?.querySelector(`[data-l="${a.l}"]`);
+        a.l !== undefined && a.section.isConnected ? a.section.querySelector(`[data-l="${a.l}"]`) : undefined;
       if (!again) {
         pick();
         return;
@@ -91,7 +103,9 @@ export function useLive(
     if (Math.abs(by) >= 0.5) b.scrollTop += by;
   }, [body, pick]);
 
-  // The reader's place is where they scroll to; it holds as what is above it changes size.
+  // The reader's place is where they scroll to; it holds as what is above it changes size. Set up
+  // once: picking the place again as it starts over would take a layout that changed and wasn't
+  // held yet for where the reader was.
   useEffect(() => {
     const b = body.current;
     const c = column.current;

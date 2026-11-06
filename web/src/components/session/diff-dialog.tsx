@@ -315,8 +315,19 @@ export function DiffDialog({
   const [forced, setForced] = useState<ReadonlySet<string>>(() => new Set([active]));
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const watch = useNear(body);
-  // The reader's place, which holds as the agent changes the files, and what it changed out of sight.
-  const { view: live, pick, counts: unseen, nearest, look } = useLive(body, column, FILE_HEADER);
+  // The reader's place, which holds as the agent changes the files, and what it changed out of sight;
+  // the file the reader went to stays at the top as files above it show their lines.
+  const pinnedSection = useCallback(() => {
+    const i = pinned.current === undefined ? undefined : indexOf.get(pinned.current);
+    return i === undefined || !body.current ? undefined : sectionOf(body.current, i);
+  }, [indexOf]);
+  const {
+    view: live,
+    pick,
+    counts: unseen,
+    nearest,
+    look,
+  } = useLive(body, column, FILE_HEADER, pinnedSection);
   // Files the agent changed for the first time while the dialog shows: their lines come in.
   const [atOpen] = useState(() => new Set(all.map((e) => e.key)));
   // The change the reader stepped to, and where the diffs were then.
