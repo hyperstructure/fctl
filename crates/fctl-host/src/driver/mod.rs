@@ -821,10 +821,10 @@ impl std::fmt::Display for NotStarted {
 impl std::error::Error for NotStarted {}
 
 /// Whether `e` leaves what its command asked unanswered: the command
-/// couldn't be started, or ran out of time. Any other failure is the
-/// runtime's answer, like "No such image".
+/// couldn't be started, ran out of time, or couldn't reach the Docker
+/// daemon. Any other failure is the runtime's answer, like "No such image".
 pub fn unanswered(e: &anyhow::Error) -> bool {
-    e.is::<NotStarted>() || e.is::<TimedOut>()
+    e.is::<NotStarted>() || e.is::<TimedOut>() || e.is::<crate::docker_access::Unreachable>()
 }
 
 /// A command as the log shows it: arguments with spaces quoted, and long

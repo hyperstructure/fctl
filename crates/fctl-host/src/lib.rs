@@ -9,6 +9,7 @@ pub mod caches;
 pub mod claude_token;
 pub mod config;
 pub mod daemon;
+pub mod docker_access;
 pub mod driver;
 pub mod expiry;
 pub mod files;

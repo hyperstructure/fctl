@@ -4,6 +4,7 @@ import {
   browserName,
   cpus,
   diskBelow,
+  driverProblem,
   duration,
   initials,
   lowOnDisk,
@@ -59,6 +60,31 @@ describe("format", () => {
     expect(lowOnDisk({ min_free_disk_mb: 20_480 })).toBe(false);
     expect(lowOnDisk({ disk_available_mb: 0 })).toBe(false);
     expect(diskBelow(12_595, 20_480)).toBe("12.3 GiB of disk free, below the 20 GiB it keeps free");
+  });
+
+  it("says why a connected runner's driver isn't ready", () => {
+    const docker = (available: boolean, detail?: string) => ({
+      name: "docker",
+      available,
+      isolation: "container",
+      detail,
+    });
+    const denied = "fctl can't use Docker: can't connect (permission denied)";
+    expect(driverProblem({ status: "online", driver: "docker", drivers: [docker(false, denied)] })).toBe(
+      denied,
+    );
+    expect(driverProblem({ status: "online", driver: "docker", drivers: [docker(false)] })).toBe(
+      "not available",
+    );
+    expect(
+      driverProblem({ status: "online", driver: "docker", drivers: [docker(true, "ready")] }),
+    ).toBeNull();
+    // What an offline runner said is old, and older hosts say nothing.
+    expect(
+      driverProblem({ status: "offline", driver: "docker", drivers: [docker(false, denied)] }),
+    ).toBeNull();
+    expect(driverProblem({ status: "online", driver: "docker", drivers: [] })).toBeNull();
+    expect(driverProblem({ status: "online", drivers: [docker(false, denied)] })).toBeNull();
   });
 
   it("derives initials", () => {

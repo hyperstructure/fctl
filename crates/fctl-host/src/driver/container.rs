@@ -13,6 +13,7 @@ use super::{
     run_cmd_within, serve_as_root, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
+use crate::docker_access::Unreachable;
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
@@ -98,7 +99,21 @@ impl ContainerDriver {
             ["pull", ..] | ["image", "pull", ..] | ["run", ..] => SLOW_COMMAND_TIMEOUT,
             _ => COMMAND_TIMEOUT,
         };
-        run_cmd_within(&self.bin, args, limit).await
+        run_cmd_within(&self.bin, args, limit)
+            .await
+            .map_err(|e| self.unreachable(e))
+    }
+
+    /// `e`, or what keeps the docker CLI from the daemon when that is why
+    /// it failed ([`Unreachable`]): then nothing it asked was answered.
+    fn unreachable(&self, e: anyhow::Error) -> anyhow::Error {
+        if self.flavor != Flavor::Docker || unanswered(&e) {
+            return e;
+        }
+        match Unreachable::from_output(&format!("{e:#}")) {
+            Some(why) => why.into(),
+            None => e,
+        }
     }
 
     pub async fn probe(&self) -> DriverInfo {
@@ -126,11 +141,13 @@ impl ContainerDriver {
                 version: None,
                 detail: Some(match self.flavor {
                     Flavor::Apple => "Apple's `container` is not installed (get it from https://github.com/apple/container/releases, then run `container system start`)".into(),
-                    Flavor::Docker => "the docker CLI is not installed".into(),
+                    Flavor::Docker => docker_missing(),
                 }),
             };
         }
-        // The service must be up, not just the CLI installed.
+        // The service must be up, not just the CLI installed. What keeps the
+        // docker CLI from it, when that's why it isn't.
+        let mut refused = None;
         let (version, ready, hung) = match self.flavor {
             Flavor::Apple => {
                 let version = self.run(&["system", "version", "--format", "json"]).await;
@@ -156,6 +173,11 @@ impl ContainerDriver {
                     .run(&["version", "--format", "{{.Server.Version}}"])
                     .await;
                 let hung = timed_out(&version);
+                refused = version
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<Unreachable>())
+                    .map(|u| u.0.to_string());
                 let version = version.ok().map(|s| s.trim().to_owned());
                 (version.clone(), version.is_some(), hung)
             }
@@ -164,14 +186,17 @@ impl ContainerDriver {
             name: self.flavor_name().into(),
             available: ready,
             isolation: isolation.into(),
-            detail: Some(match (self.flavor, ready, hung) {
-                (_, true, _) => "ready".into(),
-                (Flavor::Apple, false, true) => "the `container` service is not answering".into(),
-                (Flavor::Apple, false, false) => {
+            detail: Some(match (self.flavor, ready, hung, refused) {
+                (_, true, ..) => "ready".into(),
+                (Flavor::Apple, false, true, _) => {
+                    "the `container` service is not answering".into()
+                }
+                (Flavor::Apple, false, false, _) => {
                     "the `container` service is not running (run `container system start`; a host on the apple driver starts it itself)".into()
                 }
-                (Flavor::Docker, false, true) => "the docker daemon is not answering".into(),
-                (Flavor::Docker, false, false) => "the docker daemon is not running".into(),
+                (Flavor::Docker, false, true, _) => "the Docker daemon is not answering".into(),
+                (Flavor::Docker, false, false, Some(refused)) => refused,
+                (Flavor::Docker, false, false, None) => "the Docker daemon isn't running".into(),
             }),
             version,
         }
@@ -676,6 +701,11 @@ impl ContainerDriver {
             for line in &tail {
                 log(line.clone());
             }
+            if self.flavor == Flavor::Docker
+                && let Some(why) = tail.iter().find_map(|l| Unreachable::from_output(l))
+            {
+                return Err(why.into());
+            }
             let why = tail
                 .iter()
                 .rev()
@@ -707,11 +737,21 @@ impl ContainerDriver {
     }
 
     pub async fn has_image(&self, image: &str) -> bool {
+        self.find_image(image).await.unwrap_or(false)
+    }
+
+    /// Whether `image` is here; an error only when the runtime doesn't
+    /// answer.
+    async fn find_image(&self, image: &str) -> Result<bool> {
         let inspect: &[&str] = match self.flavor {
             Flavor::Apple => &["image", "inspect", image],
             Flavor::Docker => &["image", "inspect", "--format", "{{.Id}}", image],
         };
-        self.run(inspect).await.is_ok()
+        match self.run(inspect).await {
+            Ok(_) => Ok(true),
+            Err(e) if unanswered(&e) => Err(e),
+            Err(_) => Ok(false),
+        }
     }
 
     /// Pulls `image` for the platform sandboxes run on: without one, Apple's
@@ -754,8 +794,12 @@ impl ContainerDriver {
         let Some(fallback) = fallback else {
             return Err(error);
         };
-        // A CLI that couldn't start won't pull the fallback either.
-        if error.is::<NotStarted>() || self.has_image(image).await {
+        if !may_fall_back(&error) {
+            return Err(error);
+        }
+        // A pull that showed its progress kept no error to tell, but the
+        // runtime still says why when asked about the image.
+        if self.find_image(image).await? {
             return Err(error);
         }
         log(format!(
@@ -1141,6 +1185,19 @@ fn docker_resources(out: &str) -> Option<SandboxSize> {
     (cpus > 0 && memory_mb > 0).then_some(SandboxSize { cpus, memory_mb })
 }
 
+/// What a probe says on a machine without the docker CLI: on Linux, with
+/// where Docker Engine's install guide for its distribution is.
+fn docker_missing() -> String {
+    if !cfg!(target_os = "linux") {
+        return "the docker CLI is not installed".into();
+    }
+    let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    format!(
+        "the docker CLI is not installed ({} says how to install Docker Engine)",
+        crate::docker_access::install_guide(&os)
+    )
+}
+
 /// Whether `bin` can be started: a path to a file, or a program on the PATH.
 fn installed(bin: &str) -> bool {
     if bin.contains('/') {
@@ -1148,6 +1205,14 @@ fn installed(bin: &str) -> bool {
     } else {
         super::process::which(bin).is_some()
     }
+}
+
+/// Whether a pull that failed with `e` may try the fallback image: not
+/// when the CLI couldn't start or reach the daemon, as it couldn't for the
+/// fallback either. One that ran out of time may, as after any other
+/// failure.
+fn may_fall_back(e: &anyhow::Error) -> bool {
+    !(e.is::<NotStarted>() || e.is::<Unreachable>())
 }
 
 #[cfg(test)]
@@ -1520,6 +1585,25 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn pulls_that_ran_out_of_time_still_fall_back() {
+        let timed_out = anyhow::Error::new(TimedOut {
+            command: format!("docker pull {VERSION_IMAGE}"),
+            after: SLOW_COMMAND_TIMEOUT,
+        });
+        assert!(may_fall_back(&timed_out));
+        assert!(may_fall_back(&anyhow::anyhow!("manifest unknown")));
+        // Neither would the fallback's pull get an answer.
+        let not_started = anyhow::Error::new(NotStarted {
+            program: "docker".into(),
+            error: std::io::ErrorKind::PermissionDenied.into(),
+        });
+        assert!(!may_fall_back(&not_started));
+        let refused = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+        let unreachable = Unreachable::from_output(refused).map(anyhow::Error::new);
+        assert!(unreachable.is_some_and(|e| !may_fall_back(&e)));
+    }
+
     #[tokio::test]
     async fn other_failures_are_not_about_the_image() -> Result<()> {
         let cli = FakeCli::new(&[VERSION_IMAGE], &[LATEST_IMAGE])?;
@@ -1533,6 +1617,52 @@ mod tests {
             "{:?}",
             cli.calls()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_that_refuses_the_host_is_named_rather_than_the_image() -> Result<()> {
+        for (refused, why) in [
+            (
+                "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json\": dial unix /var/run/docker.sock: connect: permission denied",
+                "can't connect",
+            ),
+            (
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+                "the Docker daemon isn't running",
+            ),
+        ] {
+            let cli = FakeCli::new(&[], &[VERSION_IMAGE, LATEST_IMAGE])?;
+            cli.refuse(refused)?;
+            let unreachable = |e: &anyhow::Error| {
+                let text = format!("{e:#}");
+                e.is::<Unreachable>()
+                    && text.starts_with(&format!("fctl can't use Docker: {why}"))
+                    && !text.contains("image build")
+            };
+            // Sessions and sign-ins say why, and pull nothing.
+            let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
+            let ensured = cli.ensure(Flavor::Docker, &default).await;
+            assert!(ensured.as_ref().is_err_and(unreachable), "{ensured:?}");
+            let pulled = cli
+                .driver(Flavor::Docker)
+                .pull_or_fallback(VERSION_IMAGE, Some(LATEST_IMAGE), true, &|_| {})
+                .await;
+            assert!(pulled.as_ref().is_err_and(unreachable), "{pulled:?}");
+            let calls = cli.calls();
+            assert!(!calls.iter().any(|c| c.starts_with("run")), "{calls:?}");
+            assert_eq!(
+                calls.iter().filter(|c| c.starts_with("pull")).count(),
+                1,
+                "{calls:?}"
+            );
+            // The driver's state says so too: the host's hello, `fctl host
+            // status` and doctor show it.
+            let info = cli.driver(Flavor::Docker).probe().await;
+            assert!(!info.available);
+            let detail = info.detail.unwrap_or_default();
+            assert!(detail.starts_with(why), "{detail}");
+        }
         Ok(())
     }
 
@@ -1944,7 +2074,7 @@ esac
                 Flavor::Docker,
                 "false",
                 false,
-                "the docker daemon is not running",
+                "the Docker daemon isn't running",
             ),
         ] {
             let driver = ContainerDriver {

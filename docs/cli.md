@@ -826,6 +826,22 @@ auto_update = true       # update fctl to the version the control plane runs (fa
 disk_gb = 64             # each sandbox's own disk, which takes only what its session writes
 ```
 
+With Docker on Linux, the daemon's socket lets in only root and the
+members of the `docker` group, and a process keeps the groups it started
+with: your shell until you log in again, and the systemd user manager that
+starts the host service until the machine restarts. So when you are in the
+group but they started before you joined it, `fctl host install`, `run`,
+`status` and `doctor` take it themselves, starting again through `sg
+docker`. When you aren't in it, `fctl host install` offers to add you
+(`sudo usermod -aG docker $USER`, once you say yes; without a terminal it
+says the command and stops), and after it starts the service it checks
+that the service has the group. A host that still can't reach Docker says
+why, with the command that fixes it, in its log, `fctl host status`,
+`fctl host doctor` and the Runners tab, and sessions that start on it fail
+with that reason until it can. Where `sg` can't give the service the
+group, `sudo systemctl restart user@$(id -u).service`, or restarting the
+machine, does.
+
 Apple's `container` service stops when the Mac restarts. A host whose
 driver is apple starts it again (`container system start`, never
 installing a kernel): when the host starts, and when its probe of the

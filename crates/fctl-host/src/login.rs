@@ -69,7 +69,8 @@ async fn login(
     let sb = ctx
         .driver
         .ensure(&spec, &|line: String| tracing::info!("{line}"))
-        .await?;
+        .await
+        .with_context(|| format!("Starting a sandbox on {}", ctx.cfg.name))?;
     let claude = if matches!(ctx.driver, Driver::Process(_)) {
         ctx.cfg
             .claude_bin

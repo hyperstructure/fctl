@@ -77,6 +77,17 @@ export function lowOnDisk(r: Pick<G.Runner, "disk_available_mb" | "min_free_disk
   );
 }
 
+/**
+ * Why the driver a connected runner's host uses can't start sandboxes, as its host last said ("fctl can't use
+ * Docker: …"). Null while it can, while the runner is offline (what it said is old), and from hosts that don't say.
+ */
+export function driverProblem(r: Pick<G.Runner, "status" | "driver" | "drivers">): string | null {
+  if (r.status !== "online" || !r.driver) return null;
+  const d = r.drivers.find((x) => x.name === r.driver);
+  if (!d || d.available) return null;
+  return d.detail || "not available";
+}
+
 /** "12.3 GiB of disk free, below the 20 GiB it keeps free", as the CLI says it. */
 export function diskBelow(freeMb: number, minFreeMb: number): string {
   return `${memory(freeMb)} of disk free, below the ${memory(minFreeMb)} it keeps free`;
