@@ -9,10 +9,12 @@
 
 use super::{
     AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
-    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
-    run_cmd_within, serve_as_root, timed_out, unanswered,
+    RAN_AS_ROOT_SCRIPT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut,
+    attach_as_root, attach_as_user_script, install_as_user_script, ran_as_root, run_cmd_within,
+    serve_as_root, serve_as_user_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
+use crate::docker_access::Unreachable;
 use anyhow::{Context, Result};
 use fctl_proto::runner::{DriverInfo, SandboxSize};
 use serde_json::Value;
@@ -30,6 +32,8 @@ pub enum Flavor {
 pub struct ContainerDriver {
     flavor: Flavor,
     bin: String,
+    /// Whether it starts fctl-agent as root (`agent_as_root` in host.toml).
+    agent_as_root: bool,
 }
 
 /// An image on this host, as its runtime describes it.
@@ -68,6 +72,7 @@ impl ContainerDriver {
         Self {
             flavor: Flavor::Apple,
             bin: std::env::var("FCTL_CONTAINER_BIN").unwrap_or_else(|_| "container".into()),
+            agent_as_root: true,
         }
     }
 
@@ -75,13 +80,27 @@ impl ContainerDriver {
         Self {
             flavor: Flavor::Docker,
             bin: std::env::var("FCTL_DOCKER_BIN").unwrap_or_else(|_| "docker".into()),
+            agent_as_root: true,
+        }
+    }
+
+    /// The driver, starting fctl-agent as root (`on`, the default) or as
+    /// the image's user.
+    pub fn agent_as_root(self, on: bool) -> Self {
+        Self {
+            agent_as_root: on,
+            ..self
         }
     }
 
     /// A driver whose CLI is `bin`, a stand-in.
     #[cfg(test)]
     pub(crate) fn with_bin(flavor: Flavor, bin: String) -> Self {
-        Self { flavor, bin }
+        Self {
+            flavor,
+            bin,
+            agent_as_root: true,
+        }
     }
 
     pub fn flavor_name(&self) -> &'static str {
@@ -91,6 +110,41 @@ impl ContainerDriver {
         }
     }
 
+    /// [`Self::run`], with `input` for the command to read.
+    async fn run_with_input(&self, args: &[&str], input: &[u8]) -> Result<String> {
+        use tokio::io::AsyncWriteExt;
+        let mut child = tokio::process::Command::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| super::spawn_error(&self.bin, e))?;
+        let mut stdin = child.stdin.take().context("exec stdin")?;
+        let input = input.to_vec();
+        // A command that stops reading says why with its exit.
+        let writer = tokio::spawn(async move {
+            let _ = stdin.write_all(&input).await;
+        });
+        let out = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| TimedOut {
+                command: super::command_line(&self.bin, args),
+                after: COMMAND_TIMEOUT,
+            })??;
+        let _ = writer.await;
+        if !out.status.success() {
+            anyhow::bail!(
+                "{} {} failed: {}",
+                self.bin,
+                args.first().copied().unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
     async fn run(&self, args: &[&str]) -> Result<String> {
         // Pulling an image takes minutes, and so may `run`, which pulls one
         // that is missing.
@@ -98,7 +152,21 @@ impl ContainerDriver {
             ["pull", ..] | ["image", "pull", ..] | ["run", ..] => SLOW_COMMAND_TIMEOUT,
             _ => COMMAND_TIMEOUT,
         };
-        run_cmd_within(&self.bin, args, limit).await
+        run_cmd_within(&self.bin, args, limit)
+            .await
+            .map_err(|e| self.unreachable(e))
+    }
+
+    /// `e`, or what keeps the docker CLI from the daemon when that is why
+    /// it failed ([`Unreachable`]): then nothing it asked was answered.
+    fn unreachable(&self, e: anyhow::Error) -> anyhow::Error {
+        if self.flavor != Flavor::Docker || unanswered(&e) {
+            return e;
+        }
+        match Unreachable::from_output(&format!("{e:#}")) {
+            Some(why) => why.into(),
+            None => e,
+        }
     }
 
     pub async fn probe(&self) -> DriverInfo {
@@ -126,11 +194,13 @@ impl ContainerDriver {
                 version: None,
                 detail: Some(match self.flavor {
                     Flavor::Apple => "Apple's `container` is not installed (get it from https://github.com/apple/container/releases, then run `container system start`)".into(),
-                    Flavor::Docker => "the docker CLI is not installed".into(),
+                    Flavor::Docker => docker_missing(),
                 }),
             };
         }
-        // The service must be up, not just the CLI installed.
+        // The service must be up, not just the CLI installed. What keeps the
+        // docker CLI from it, when that's why it isn't.
+        let mut refused = None;
         let (version, ready, hung) = match self.flavor {
             Flavor::Apple => {
                 let version = self.run(&["system", "version", "--format", "json"]).await;
@@ -156,6 +226,11 @@ impl ContainerDriver {
                     .run(&["version", "--format", "{{.Server.Version}}"])
                     .await;
                 let hung = timed_out(&version);
+                refused = version
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<Unreachable>())
+                    .map(|u| u.0.to_string());
                 let version = version.ok().map(|s| s.trim().to_owned());
                 (version.clone(), version.is_some(), hung)
             }
@@ -164,14 +239,17 @@ impl ContainerDriver {
             name: self.flavor_name().into(),
             available: ready,
             isolation: isolation.into(),
-            detail: Some(match (self.flavor, ready, hung) {
-                (_, true, _) => "ready".into(),
-                (Flavor::Apple, false, true) => "the `container` service is not answering".into(),
-                (Flavor::Apple, false, false) => {
+            detail: Some(match (self.flavor, ready, hung, refused) {
+                (_, true, ..) => "ready".into(),
+                (Flavor::Apple, false, true, _) => {
+                    "the `container` service is not answering".into()
+                }
+                (Flavor::Apple, false, false, _) => {
                     "the `container` service is not running (run `container system start`; a host on the apple driver starts it itself)".into()
                 }
-                (Flavor::Docker, false, true) => "the docker daemon is not answering".into(),
-                (Flavor::Docker, false, false) => "the docker daemon is not running".into(),
+                (Flavor::Docker, false, true, _) => "the Docker daemon is not answering".into(),
+                (Flavor::Docker, false, false, Some(refused)) => refused,
+                (Flavor::Docker, false, false, None) => "the Docker daemon isn't running".into(),
             }),
             version,
         }
@@ -482,6 +560,11 @@ impl ContainerDriver {
     /// fctl-agent finds it can't write to them, and the session's package
     /// managers keep their own.
     async fn give_cache_to_user(&self, name: &str) {
+        if !self.agent_as_root {
+            // No root: the caches are the user's where the image's
+            // /var/cache/fctl is, whose owner Docker gives a new volume.
+            return;
+        }
         let ids = self
             .run(&["exec", name, "sh", "-c", r#"echo "$(id -u):$(id -g)""#])
             .await;
@@ -577,21 +660,13 @@ impl ContainerDriver {
         let mount = format!("type=volume,source={volume},target=/cache{ro}");
         let mut failed = None;
         for image in images {
-            let mut run = vec![
-                "run",
-                "--rm",
-                "--pull",
-                "never",
-                "--network",
-                "none",
-                "--user",
-                "0",
-                "--mount",
-                &mount,
-                "--entrypoint",
-                program,
-                image,
-            ];
+            let mut run = vec!["run", "--rm", "--pull", "never", "--network", "none"];
+            // As root, which reaches every file; as the image's user on a
+            // host that runs nothing in its sandboxes as root.
+            if self.agent_as_root {
+                run.extend(["--user", "0"]);
+            }
+            run.extend(["--mount", &mount, "--entrypoint", program, image]);
             run.extend(args);
             match self.run(&run).await {
                 Ok(out) => return Ok(out),
@@ -676,6 +751,11 @@ impl ContainerDriver {
             for line in &tail {
                 log(line.clone());
             }
+            if self.flavor == Flavor::Docker
+                && let Some(why) = tail.iter().find_map(|l| Unreachable::from_output(l))
+            {
+                return Err(why.into());
+            }
             let why = tail
                 .iter()
                 .rev()
@@ -707,11 +787,21 @@ impl ContainerDriver {
     }
 
     pub async fn has_image(&self, image: &str) -> bool {
+        self.find_image(image).await.unwrap_or(false)
+    }
+
+    /// Whether `image` is here; an error only when the runtime doesn't
+    /// answer.
+    async fn find_image(&self, image: &str) -> Result<bool> {
         let inspect: &[&str] = match self.flavor {
             Flavor::Apple => &["image", "inspect", image],
             Flavor::Docker => &["image", "inspect", "--format", "{{.Id}}", image],
         };
-        self.run(inspect).await.is_ok()
+        match self.run(inspect).await {
+            Ok(_) => Ok(true),
+            Err(e) if unanswered(&e) => Err(e),
+            Err(_) => Ok(false),
+        }
     }
 
     /// Pulls `image` for the platform sandboxes run on: without one, Apple's
@@ -754,8 +844,12 @@ impl ContainerDriver {
         let Some(fallback) = fallback else {
             return Err(error);
         };
-        // A CLI that couldn't start won't pull the fallback either.
-        if error.is::<NotStarted>() || self.has_image(image).await {
+        if !may_fall_back(&error) {
+            return Err(error);
+        }
+        // A pull that showed its progress kept no error to tell, but the
+        // runtime still says why when asked about the image.
+        if self.find_image(image).await? {
             return Err(error);
         }
         log(format!(
@@ -814,6 +908,17 @@ impl ContainerDriver {
     /// place, so that one that runs keeps running: the host puts its own in
     /// whenever it starts fctl-agent.
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
+        if !self.agent_root(sb).await? {
+            // As the user, into its home: no root.
+            let bytes = tokio::fs::read(binary)
+                .await
+                .with_context(|| format!("reading {}", binary.display()))?;
+            let script = install_as_user_script();
+            self.run_with_input(&["exec", "-i", &sb.name, "sh", "-c", &script], &bytes)
+                .await
+                .context("copying fctl-agent into the sandbox")?;
+            return Ok(());
+        }
         let src = binary.display().to_string();
         let new = format!("{AGENT_PATH}.new");
         let dest = format!("{}:{new}", sb.name);
@@ -830,9 +935,34 @@ impl ContainerDriver {
         Ok(())
     }
 
+    /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
+    /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
+    /// so, rather than start another beside one that may run.
+    /// An error when the sandbox doesn't say.
+    async fn agent_root(&self, sb: &Sandbox) -> Result<bool> {
+        if self.agent_as_root {
+            return Ok(true);
+        }
+        let said = self
+            .run(&["exec", &sb.name, "sh", "-c", RAN_AS_ROOT_SCRIPT])
+            .await
+            .context("asking whether fctl-agent ran as root in the sandbox")?;
+        ran_as_root(&said)
+    }
+
     /// Starts fctl-agent as root, and Claude and its commands as the
-    /// image's user, who can't stop it then.
+    /// image's user, who can't stop it then; as the image's user too where
+    /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
+        if !self.agent_root(sb).await? {
+            tracing::info!(
+                "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
+                sb.name
+            );
+            self.run(&["exec", "-d", &sb.name, "sh", "-c", &serve_as_user_script()])
+                .await?;
+            return Ok(());
+        }
         let uid = self
             .run(&["exec", &sb.name, "id", "-u"])
             .await
@@ -855,6 +985,16 @@ impl ContainerDriver {
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+        if !self.agent_root(sb).await? {
+            let mut child = self.spawn(sb, &attach_as_user_script()).await?;
+            let stdout = child.stdout.take().context("exec stdout")?;
+            let stdin = child.stdin.take().context("exec stdin")?;
+            return Ok(AgentIo {
+                reader: Box::new(stdout),
+                writer: Box::new(stdin),
+                child: Some(child),
+            });
+        }
         let mut args = vec!["exec", "-i", "-u", "0", &sb.name];
         let attach = attach_as_root();
         args.extend(attach.iter().map(String::as_str));
@@ -1141,6 +1281,19 @@ fn docker_resources(out: &str) -> Option<SandboxSize> {
     (cpus > 0 && memory_mb > 0).then_some(SandboxSize { cpus, memory_mb })
 }
 
+/// What a probe says on a machine without the docker CLI: on Linux, with
+/// where Docker Engine's install guide for its distribution is.
+fn docker_missing() -> String {
+    if !cfg!(target_os = "linux") {
+        return "the docker CLI is not installed".into();
+    }
+    let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    format!(
+        "the docker CLI is not installed ({} says how to install Docker Engine)",
+        crate::docker_access::install_guide(&os)
+    )
+}
+
 /// Whether `bin` can be started: a path to a file, or a program on the PATH.
 fn installed(bin: &str) -> bool {
     if bin.contains('/') {
@@ -1148,6 +1301,14 @@ fn installed(bin: &str) -> bool {
     } else {
         super::process::which(bin).is_some()
     }
+}
+
+/// Whether a pull that failed with `e` may try the fallback image: not
+/// when the CLI couldn't start or reach the daemon, as it couldn't for the
+/// fallback either. One that ran out of time may, as after any other
+/// failure.
+fn may_fall_back(e: &anyhow::Error) -> bool {
+    !(e.is::<NotStarted>() || e.is::<Unreachable>())
 }
 
 #[cfg(test)]
@@ -1520,6 +1681,25 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn pulls_that_ran_out_of_time_still_fall_back() {
+        let timed_out = anyhow::Error::new(TimedOut {
+            command: format!("docker pull {VERSION_IMAGE}"),
+            after: SLOW_COMMAND_TIMEOUT,
+        });
+        assert!(may_fall_back(&timed_out));
+        assert!(may_fall_back(&anyhow::anyhow!("manifest unknown")));
+        // Neither would the fallback's pull get an answer.
+        let not_started = anyhow::Error::new(NotStarted {
+            program: "docker".into(),
+            error: std::io::ErrorKind::PermissionDenied.into(),
+        });
+        assert!(!may_fall_back(&not_started));
+        let refused = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+        let unreachable = Unreachable::from_output(refused).map(anyhow::Error::new);
+        assert!(unreachable.is_some_and(|e| !may_fall_back(&e)));
+    }
+
     #[tokio::test]
     async fn other_failures_are_not_about_the_image() -> Result<()> {
         let cli = FakeCli::new(&[VERSION_IMAGE], &[LATEST_IMAGE])?;
@@ -1533,6 +1713,52 @@ mod tests {
             "{:?}",
             cli.calls()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn docker_that_refuses_the_host_is_named_rather_than_the_image() -> Result<()> {
+        for (refused, why) in [
+            (
+                "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json\": dial unix /var/run/docker.sock: connect: permission denied",
+                "can't connect",
+            ),
+            (
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+                "the Docker daemon isn't running",
+            ),
+        ] {
+            let cli = FakeCli::new(&[], &[VERSION_IMAGE, LATEST_IMAGE])?;
+            cli.refuse(refused)?;
+            let unreachable = |e: &anyhow::Error| {
+                let text = format!("{e:#}");
+                e.is::<Unreachable>()
+                    && text.starts_with(&format!("fctl can't use Docker: {why}"))
+                    && !text.contains("image build")
+            };
+            // Sessions and sign-ins say why, and pull nothing.
+            let default = spec(VERSION_IMAGE, Some(LATEST_IMAGE));
+            let ensured = cli.ensure(Flavor::Docker, &default).await;
+            assert!(ensured.as_ref().is_err_and(unreachable), "{ensured:?}");
+            let pulled = cli
+                .driver(Flavor::Docker)
+                .pull_or_fallback(VERSION_IMAGE, Some(LATEST_IMAGE), true, &|_| {})
+                .await;
+            assert!(pulled.as_ref().is_err_and(unreachable), "{pulled:?}");
+            let calls = cli.calls();
+            assert!(!calls.iter().any(|c| c.starts_with("run")), "{calls:?}");
+            assert_eq!(
+                calls.iter().filter(|c| c.starts_with("pull")).count(),
+                1,
+                "{calls:?}"
+            );
+            // The driver's state says so too: the host's hello, `fctl host
+            // status` and doctor show it.
+            let info = cli.driver(Flavor::Docker).probe().await;
+            assert!(!info.available);
+            let detail = info.detail.unwrap_or_default();
+            assert!(detail.starts_with(why), "{detail}");
+        }
         Ok(())
     }
 
@@ -1944,13 +2170,10 @@ esac
                 Flavor::Docker,
                 "false",
                 false,
-                "the docker daemon is not running",
+                "the Docker daemon isn't running",
             ),
         ] {
-            let driver = ContainerDriver {
-                flavor,
-                bin: bin.into(),
-            };
+            let driver = ContainerDriver::with_bin(flavor, bin.into());
             let info = driver.probe().await;
             assert_eq!(info.available, available, "{bin}");
             let got = info.detail.unwrap_or_default();
@@ -2051,6 +2274,81 @@ esac
         cli.user("nobody knows")?;
         assert!(cli.driver(Flavor::Docker).start_agent(&sb).await.is_err());
         assert!(!cli.calls().iter().any(|c| c.contains(" serve ")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosts_that_want_no_root_agent_run_it_as_the_images_user() -> Result<()> {
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        let dir = tempfile::tempdir()?;
+        let binary = dir.path().join("fctl-agent");
+        std::fs::write(&binary, "a fctl-agent")?;
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.install_agent(&sb, &binary).await?;
+        docker.start_agent(&sb).await?;
+        if let Some(mut exec) = docker.attach(&sb).await?.child {
+            exec.wait().await?;
+        }
+        // Nothing as root: the user puts fctl-agent in its home itself.
+        assert_eq!(
+            cli.calls(),
+            [
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                r#"exec -i fctl-ses-1 sh -c mkdir -p "$HOME/.fctl/bin" && cat > "$HOME/.fctl/bin/fctl-agent.new" && chmod 755 "$HOME/.fctl/bin/fctl-agent.new" && mv -f "$HOME/.fctl/bin/fctl-agent.new" "$HOME/.fctl/bin/fctl-agent""#,
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec "$HOME/.fctl/bin/fctl-agent" serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                r#"exec -i fctl-ses-1 sh -c a="$HOME/.fctl/bin/fctl-agent"; [ -x "$a" ] || a=/opt/fctl/bin/fctl-agent; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#,
+            ]
+        );
+        // A sandbox that doesn't say gets no supervisor beside one that may
+        // run as root: the host tries again.
+        let silent = ContainerDriver::with_bin(Flavor::Docker, "fctl-test-missing".into())
+            .agent_as_root(false);
+        assert!(silent.start_agent(&sb).await.is_err());
+        assert!(silent.attach(&sb).await.is_err());
+        // One that ran it as root keeps doing so, rather than start another.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ran_agent_as_root()?;
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.start_agent(&sb).await?;
+        assert!(
+            cli.calls().last().is_some_and(|c| c.starts_with(
+                "exec -d -u 0 fctl-ses-1 /opt/fctl/bin/fctl-agent serve --user 1000 "
+            )),
+            "{:?}",
+            cli.calls()
+        );
+
+        // Package caches: no chown of a new volume, and no root to measure
+        // or empty them.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let cached = SandboxSpec {
+            cache: Some(Spot::Volume(caches::volume("prj_1"))),
+            ..spec(VERSION_IMAGE, None)
+        };
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.ensure(&cached, &|_| {}).await?;
+        let images = [VERSION_IMAGE.to_owned()];
+        docker
+            .volume_size_mb(&caches::volume("prj_1"), &images)
+            .await?;
+        let calls = cli.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("exec -u 0")),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("run --rm --pull never --network none --mount ")),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.contains("--user 0")), "{calls:?}");
         Ok(())
     }
 

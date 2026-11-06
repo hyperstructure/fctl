@@ -26,8 +26,9 @@ pub mod vm;
 pub mod vsock;
 
 use super::{
-    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, Running, Sandbox, SandboxInfo, SandboxSpec,
-    attach_as_root, serve_as_root,
+    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, RAN_AS_ROOT_SCRIPT, Running, Sandbox,
+    SandboxInfo, SandboxSpec, attach_as_root, attach_script, ran_as_root, serve_as_root,
+    serve_script,
 };
 use crate::config::{FirecrackerConfig, HostConfig};
 use crate::driver::ImageInfo;
@@ -171,7 +172,7 @@ impl FirecrackerDriver {
     /// The image store's lock ([`Store::lock`]), held while names move
     /// between images, images go, and a new sandbox records the image it is
     /// made from, so that none goes from under it.
-    async fn lock_images(&self) -> Result<std::fs::File> {
+    async fn lock_images(&self) -> Result<images::Lock> {
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || store.lock()).await?
     }
@@ -878,10 +879,35 @@ impl FirecrackerDriver {
     }
 
     /// Starts fctl-agent as root, and Claude and its commands as the
-    /// image's user, who can't stop it then.
+    /// image's user, who can't stop it then; as the image's user too where
+    /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
         let vm = self.vm(&sb.name)?;
-        vsock::detach(&vm.vsock(), self.serve(&sb.name)).await
+        let exec = if self.agent_root(sb).await? {
+            self.serve(&sb.name)
+        } else {
+            tracing::info!(
+                "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
+                sb.name
+            );
+            self.sh(&sb.name, &serve_script(AGENT_PATH))
+        };
+        vsock::detach(&vm.vsock(), exec).await
+    }
+
+    /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
+    /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
+    /// so, rather than start another beside one that may run.
+    /// An error when the VM doesn't say.
+    async fn agent_root(&self, sb: &Sandbox) -> Result<bool> {
+        if self.host.agent_as_root {
+            return Ok(true);
+        }
+        let said = self
+            .exec(sb, RAN_AS_ROOT_SCRIPT)
+            .await
+            .context("asking whether fctl-agent ran as root in the sandbox")?;
+        ran_as_root(&said)
     }
 
     /// `fctl-agent serve` as root, for the image's user.
@@ -898,11 +924,15 @@ impl FirecrackerDriver {
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
         let vm = self.vm(&sb.name)?;
-        let exec = Exec {
-            argv: attach_as_root(),
-            user: Some("root".into()),
-            cwd: Some("/".into()),
-            ..self.exec_for(&sb.name, Vec::new())
+        let exec = if self.agent_root(sb).await? {
+            Exec {
+                argv: attach_as_root(),
+                user: Some("root".into()),
+                cwd: Some("/".into()),
+                ..self.exec_for(&sb.name, Vec::new())
+            }
+        } else {
+            self.sh(&sb.name, &attach_script(AGENT_PATH))
         };
         let started = vsock::start(&vm.vsock(), exec).await?;
         // Why an attach failed, in the host's log.

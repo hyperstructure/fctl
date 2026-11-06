@@ -151,6 +151,10 @@ pub struct HostHeartbeat {
     /// As in its hello ([`HostHello::claude_token`]): its owner may save
     /// or remove the token while the host runs.
     pub claude_token: Option<RunnerClaudeToken>,
+    /// Its drivers, as in its hello ([`HostHello::drivers`]), when they
+    /// changed since it last said: the one it uses may have become ready,
+    /// or stopped being. Absent when they didn't, and from older hosts.
+    pub drivers: Option<Vec<DriverInfo>>,
 }
 
 /// How short of room a runner is on the disk where its sandboxes are
@@ -790,6 +794,9 @@ mod tests {
         assert_eq!(hello.claude_token, None);
         let beat: HostHeartbeat = serde_json::from_value(serde_json::json!({ "sessions": [] }))?;
         assert_eq!(beat.claude_token, None);
+        // Nor do they say their drivers again; newer ones do once they change.
+        assert_eq!(beat.drivers, None);
+        assert!(serde_json::to_value(&beat)?.get("drivers").is_none());
         let beat = HostHeartbeat {
             claude_token: Some(RunnerClaudeToken::default()),
             ..beat

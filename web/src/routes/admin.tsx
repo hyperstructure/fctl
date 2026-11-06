@@ -27,6 +27,7 @@ import {
 import { useEffect, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
+import { DriverLine } from "@/components/runner-driver";
 import {
   Avatar,
   AvatarStack,
@@ -52,7 +53,18 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { invitationMail, ordered, requestState } from "@/lib/early-access";
-import { ago, cpus, day, diskBelow, lowOnDisk, memory, outOfDisk, sandboxLimits, stamp } from "@/lib/format";
+import {
+  ago,
+  cpus,
+  day,
+  diskBelow,
+  driverProblem,
+  lowOnDisk,
+  memory,
+  outOfDisk,
+  sandboxLimits,
+  stamp,
+} from "@/lib/format";
 import { buildsImages, runsImages } from "@/lib/images";
 import { installCommand } from "@/lib/install";
 import { keys, queryClient, useInstance, useMe, useRunners, useWorkspaces } from "@/lib/queries";
@@ -1394,7 +1406,7 @@ function Runners() {
                   "mt-1.5 size-2 shrink-0 rounded-full sm:mt-0",
                   r.status === "disabled" || outOfDisk(r)
                     ? "bg-danger"
-                    : r.drain || lowOnDisk(r) || r.pending_until
+                    : r.drain || lowOnDisk(r) || r.pending_until || driverProblem(r)
                       ? "bg-amber"
                       : r.status === "online"
                         ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
@@ -1445,6 +1457,7 @@ function Runners() {
                   ) : null}
                   {r.drain && r.status !== "disabled" && <DrainLine runner={r} />}
                   {r.status !== "disabled" && <LowDiskLine runner={r} />}
+                  <DriverLine runner={r} />
                   <RunnerResources runner={r} />
                   <RunnerImages runner={r} />
                 </div>
@@ -1526,15 +1539,16 @@ function Runners() {
 
 /**
  * "online", or why it takes no new sessions: a drain ("draining" while sessions run, then "drained"), its
- * disk ("low on disk", then "out of disk" once its sessions' writes are about to fail), or its workspace's
- * admins, who haven't approved it yet.
+ * disk ("low on disk", then "out of disk" once its sessions' writes are about to fail), its workspace's
+ * admins, who haven't approved it yet, or a driver that can't start sandboxes.
  */
 function runnerState(r: G.Runner): string {
   if (r.status === "disabled") return r.status;
   if (r.pending_until) return "waiting for approval";
   if (r.drain) return r.active_sessions > 0 ? "draining" : "drained";
   if (outOfDisk(r)) return "out of disk";
-  return lowOnDisk(r) ? "low on disk" : r.status;
+  if (lowOnDisk(r)) return "low on disk";
+  return driverProblem(r) ? "driver not ready" : r.status;
 }
 
 /** Who drained a runner, when, and what still runs on it. */

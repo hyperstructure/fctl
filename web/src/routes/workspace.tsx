@@ -23,6 +23,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
+import { DriverLine } from "@/components/runner-driver";
 import { SessionRow } from "@/components/session/row";
 import {
   Avatar,
@@ -54,7 +55,7 @@ import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { approvedBy, minutesText } from "@/lib/enrollment";
-import { ago, agoShort } from "@/lib/format";
+import { ago, agoShort, driverProblem } from "@/lib/format";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
 import {
   keys,
@@ -960,7 +961,7 @@ function Runners({ w }: { w: G.Workspace }) {
                     "size-2 shrink-0 rounded-full",
                     r.status === "disabled"
                       ? "bg-danger"
-                      : r.drain
+                      : r.drain || driverProblem(r)
                         ? "bg-amber"
                         : r.status === "online"
                           ? "bg-accent shadow-[0_0_10px_var(--c-accent)]"
@@ -971,7 +972,11 @@ function Runners({ w }: { w: G.Workspace }) {
                   <div className="text-[14px] text-ink">
                     {r.name}{" "}
                     <span className="ml-1 text-[12px] text-ink-4">
-                      {r.status === "online" && r.drain ? "draining" : r.status}
+                      {r.status === "online" && r.drain
+                        ? "draining"
+                        : driverProblem(r)
+                          ? "driver not ready"
+                          : r.status}
                     </span>
                     {r.personal?.includes(w.id) && (
                       <span className="ml-2 inline-block whitespace-nowrap rounded-full border border-line px-2 py-px text-[11.5px] text-ink-3">
@@ -992,6 +997,7 @@ function Runners({ w }: { w: G.Workspace }) {
                     {r.driver ? `${r.driver} runner` : "runner"} · {r.active_sessions}/{r.capacity} sessions
                     {r.last_seen_at ? ` · seen ${ago(r.last_seen_at)}` : " · never connected"}
                   </div>
+                  <DriverLine runner={r} />
                   {enrolled && (r.enrollment?.token_name || r.remove_offline_after_minutes) && (
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-4">
                       {r.enrollment?.token_name && (

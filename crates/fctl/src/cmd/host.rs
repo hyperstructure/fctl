@@ -8,6 +8,7 @@ use clap::Subcommand;
 use clap::builder::BoolishValueParser;
 use fctl_domain::{disk, image, size};
 use fctl_host::config::{NOT_A_RUNNER, means_default_image};
+use fctl_host::docker_access::{self, Problem};
 use fctl_host::driver::{DiskSpot, Driver};
 use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
 use fctl_proto::api::{
@@ -100,6 +101,14 @@ pub enum HostCmd {
         /// control plane runs, by itself (new runners: on).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         auto_update: Option<bool>,
+        /// on or off: whether fctl-agent runs as root in container and VM
+        /// sandboxes, where the agent's commands can't stop it (new
+        /// runners: on). Off runs it, and everything the host runs in
+        /// Docker, Apple container and Lima sandboxes, as the sandbox's
+        /// user, whose commands can stop it by accident and cut a turn
+        /// short.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        agent_as_root: Option<bool>,
     },
     /// Run the host service in the foreground (what the service runs).
     Run,
@@ -183,6 +192,11 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         HostCmd::Run => {
             let cfg = HostConfig::load()?;
             let token = HostConfig::load_token()?;
+            // The service manager may have started it without the group
+            // that lets it use Docker, when its user joined that later.
+            if uses_docker(&cfg.driver) {
+                docker_access::regroup();
+            }
             fctl_host::Daemon::new(cfg, token).await?.run().await
         }
         HostCmd::Install {
@@ -203,8 +217,13 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             no_service,
             build_image,
             auto_update,
+            agent_as_root,
         } => {
             const SIGN_IN: &str = "Sign in first (`fctl login`), or pass --token or --enroll";
+            // Docker that refuses this user stops it before anything else.
+            if uses_docker(&driver) {
+                docker_group()?;
+            }
             let server = match (&enroll, config::server(server)) {
                 (_, Ok(server)) => server,
                 (Some(_), Err(_)) => bail!(
@@ -245,6 +264,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             if let Some(on) = auto_update {
                 cfg.auto_update = on;
+            }
+            if let Some(on) = agent_as_root {
+                cfg.agent_as_root = on;
             }
             if let Some(problem) = cfg.image_problems().first() {
                 bail!("{problem}");
@@ -383,10 +405,20 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 );
             }
             println!("{}", style::dim(&updates_sentence(&cfg)));
+            // The process driver has no sandboxes, and runs fctl-agent as
+            // this machine's user either way.
+            if !cfg.agent_as_root && d.needs_linux_agent() {
+                println!("{}", style::dim(AGENT_AS_USER));
+            }
             if !no_service {
                 let exe = std::env::current_exe()?;
                 let what = service::install(&exe)?;
                 println!("{} Service: {what}", style::accent("✓"));
+                if d.name() == "docker"
+                    && let Some(why) = service_without_docker().await
+                {
+                    println!("{} {why}", style::amber("!"));
+                }
                 println!(
                     "{}",
                     style::dim(&format!("Logs: {}", service::log_location()))
@@ -411,6 +443,11 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
         }
         HostCmd::Status => {
             let cfg = HostConfig::load()?;
+            // As the host service does, so that Docker answers this as it
+            // answers the service.
+            if uses_docker(&cfg.driver) {
+                docker_access::regroup();
+            }
             let (installed, running) = service::status();
             let driver = Driver::select(&cfg.driver, &cfg).await.ok();
             let (sandbox, (spot, free)) = match &driver {
@@ -426,6 +463,20 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             let runner = match runner_api() {
                 Ok(api) => api.this_runner().await.map_err(anyhow::Error::from),
                 Err(e) => Err(e),
+            };
+            // Whether its driver is ready: as the host service last said,
+            // while it is connected, else as it answers here.
+            let said = runner.as_ref().ok().and_then(|d| {
+                let r = &d.runner;
+                let name = r.driver.as_deref()?;
+                (r.status == RunnerStatus::Online)
+                    .then(|| r.drivers.iter().find(|i| i.name == name).cloned())
+                    .flatten()
+            });
+            let driver_info = match (said, &driver) {
+                (Some(info), _) => Some(info),
+                (None, Some(d)) => Some(d.probe().await),
+                (None, None) => None,
             };
             if json {
                 let disk = serde_json::json!({
@@ -448,14 +499,24 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 });
                 let updates = Updates::of(&cfg).json();
                 return style::print_json(
-                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "updates": updates, "claude_token": claude, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
+                    &serde_json::json!({ "config": cfg, "image": cfg.image(), "sandbox": sandbox, "disk": disk, "caches": caches, "updates": updates, "claude_token": claude, "driver": driver_info, "service_installed": installed, "service_running": running, "runner": runner.as_ref().ok() }),
                 );
             }
             println!("{} {}", style::bold(&cfg.name), style::dim(&cfg.server));
             if let Ok(d) = &runner {
                 println!("id:       {}", d.runner.id);
             }
-            println!("driver:   {}", cfg.driver);
+            match &driver_info {
+                Some(info) if !info.available => println!(
+                    "driver:   {}, {}",
+                    cfg.driver,
+                    style::amber(&format!(
+                        "not ready: {}",
+                        info.detail.as_deref().unwrap_or("not available")
+                    ))
+                ),
+                _ => println!("driver:   {}", cfg.driver),
+            }
             println!("capacity: {} sessions", cfg.capacity);
             if let Some(l) = &sandbox {
                 println!("sandbox:  {}", size::limits(l));
@@ -468,6 +529,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             }
             println!("image:    {}", cfg.image());
             println!("updates:  {}", updates_line(&cfg));
+            println!("agent:    {}", agent_line(&cfg));
             println!("claude:   {}", claude_line(&cfg));
             if let Some(d) = &driver {
                 let images = cfg.images(d.builds_images());
@@ -992,6 +1054,103 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether a host on `driver` would use Docker, on Linux, where its socket
+/// lets in only root and the members of its group.
+fn uses_docker(driver: &str) -> bool {
+    cfg!(target_os = "linux")
+        && match driver {
+            "docker" => true,
+            "auto" => fctl_host::driver::process::which("docker").is_some(),
+            _ => false,
+        }
+}
+
+/// Before `fctl host install` registers anything: when Docker's socket
+/// refuses this user for want of its group, offers to add them, and then
+/// starts this command again in the group, so that nobody has to log in
+/// again; the service takes the group the same way as it starts. A user in
+/// the group whose shell started before they joined it just starts again.
+fn docker_group() -> Result<()> {
+    docker_access::regroup();
+    let Some(Problem::NotInGroup { user, group }) = docker_access::problem() else {
+        return Ok(());
+    };
+    let join = format!("sudo usermod -aG {group} {user}");
+    let again = "then run this again: fctl takes the group itself, with no need to log in again. Nothing was registered.";
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        bail!(
+            "{user} isn't in the {group} group, so fctl can't use Docker. `{join}` adds them; {again}"
+        );
+    }
+    println!("{user} isn't in the {group} group, so fctl can't use Docker.");
+    if !confirm_yes(&format!("Add {user} to it now? This runs `{join}` [Y/n] "))? {
+        bail!("`{join}` adds {user} to the {group} group; {again}");
+    }
+    let joined = std::process::Command::new("sudo")
+        .args(["usermod", "-aG", &group, &user])
+        .status()
+        .context("running sudo")?;
+    if !joined.success() {
+        bail!("`{join}` failed. Nothing was registered.");
+    }
+    println!("{} Added {user} to the {group} group", style::accent("✓"));
+    // Returns only when it can't start again in the group.
+    docker_access::regroup();
+    bail!(
+        "{user} is in the {group} group now, but fctl can't take the group without `sg`: restart the machine, then run this again. Nothing was registered."
+    )
+}
+
+/// Why the host service `fctl host install` just started can't use Docker,
+/// when it can't: it takes the Docker socket's group as it starts, so this
+/// waits a few seconds for that. `None` when it has the group, or when
+/// that can't be told.
+async fn service_without_docker() -> Option<String> {
+    let mut lacks = None;
+    for _ in 0..20 {
+        let pid = tokio::task::spawn_blocking(service::main_pid)
+            .await
+            .ok()
+            .flatten();
+        lacks = match pid.map(docker_access::process_has_group) {
+            Some(Some(true)) => return None,
+            Some(None) => return None,
+            Some(Some(false)) => pid,
+            None => None,
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    lacks?;
+    Some(format!(
+        "The host service can't use Docker: it started without the docker group, and couldn't take it. `{}` (or restarting the machine) gives it the group; then check with `fctl host status`.",
+        docker_access::restart_manager()
+    ))
+}
+
+/// Asks a yes-or-no question on the terminal, whose answer is yes unless
+/// it says no. Ending the input (Ctrl-D) says no.
+fn confirm_yes(question: &str) -> Result<bool> {
+    use std::io::Write;
+    print!("{question}");
+    std::io::stdout().flush()?;
+    let answer = yes_unless_no(&mut std::io::stdin().lock())?;
+    if answer.is_none() {
+        // What follows goes on a line of its own.
+        println!();
+    }
+    Ok(answer == Some(true))
+}
+
+/// The answer to a question whose answer is yes unless it says no, from
+/// the line `input` gives; `None` when it ends before a line.
+fn yes_unless_no(input: &mut impl std::io::BufRead) -> Result<Option<bool>> {
+    let mut line = String::new();
+    if input.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(!matches!(line.trim(), "n" | "N" | "no" | "No")))
+}
+
 /// Asks a yes-or-no question on the terminal.
 fn confirm(question: &str) -> Result<bool> {
     use std::io::{BufRead, Write};
@@ -1115,6 +1274,23 @@ impl Updates {
             "updates_itself": self.itself(),
             "blocked": self.blocked,
         })
+    }
+}
+
+/// What `fctl host install` says of a host whose fctl-agent runs as the
+/// sandbox's user.
+const AGENT_AS_USER: &str = "Nothing runs as root in its sandboxes but Firecracker's VMs' init: fctl-agent runs as the sandbox's user, whose commands can stop it by accident and cut the agent's turn short (`--agent-as-root on` runs it as root).";
+
+/// `fctl host status`'s line about who fctl-agent runs as.
+fn agent_line(cfg: &HostConfig) -> String {
+    if cfg.driver == "process" {
+        "fctl-agent runs as this machine's user (the process driver has no sandboxes)".into()
+    } else if cfg.agent_as_root {
+        "fctl-agent runs as root in sandboxes, out of the agent's reach".into()
+    } else {
+        style::amber(
+            "fctl-agent runs as the sandbox's user (agent_as_root = false): the agent's commands can stop it",
+        )
     }
 }
 
@@ -1414,6 +1590,12 @@ async fn doctor() -> Result<()> {
         }
     };
     let cfg = HostConfig::load();
+    // The host service takes the group that lets it use Docker as it
+    // starts; this does too, before it says anything, to find what the
+    // service finds.
+    if cfg.as_ref().is_ok_and(|c| uses_docker(&c.driver)) {
+        docker_access::regroup();
+    }
     check(cfg.is_ok(), "host configuration", "run `fctl host install`");
     let Ok(cfg) = cfg else {
         bail!("not configured")
@@ -1493,6 +1675,7 @@ async fn doctor() -> Result<()> {
             );
         }
     }
+    let docker = uses_docker(&cfg.driver);
     for d in Driver::probe_all(&cfg).await {
         let line = format!(
             "driver {}: {}",
@@ -1504,6 +1687,19 @@ async fn doctor() -> Result<()> {
         } else {
             println!("{} {}", style::dim("·"), style::dim(&line));
         }
+    }
+    if docker
+        && let Some(pid) = service::main_pid()
+        && let Some(has) = docker_access::process_has_group(pid)
+    {
+        check(
+            has,
+            "the host service has the group that lets it use Docker",
+            &format!(
+                "it started without it and couldn't take it: `{}` (or restarting the machine) gives it",
+                docker_access::restart_manager()
+            ),
+        );
     }
     if let Ok(d) = Driver::select(&cfg.driver, &cfg).await
         && d.uses_images()
@@ -1616,5 +1812,22 @@ async fn doctor() -> Result<()> {
         Ok(())
     } else {
         bail!("{problems} problem(s) found")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_line_that_says_no_says_no() -> Result<()> {
+        let answer = |input: &str| yes_unless_no(&mut input.as_bytes());
+        assert_eq!(answer("\n")?, Some(true));
+        assert_eq!(answer("y\n")?, Some(true));
+        assert_eq!(answer("n\n")?, Some(false));
+        assert_eq!(answer(" No \n")?, Some(false));
+        // Ctrl-D, or no input at all, runs nothing.
+        assert_eq!(answer("")?, None);
+        Ok(())
     }
 }

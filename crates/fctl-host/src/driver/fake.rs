@@ -26,10 +26,12 @@ use std::sync::{Mutex, PoisonError};
 /// mounts the volume. Short-lived containers (`run --rm`) measure a volume
 /// with `du` and empty it with `find`. `exec` prints `uid` (`1000:1000`
 /// without it), as `id` would, or its user's part for `id -u`, unless it
-/// runs as root or in the background; `cp` copies nothing.
+/// runs as root or in the background; asked whether fctl-agent ran as root,
+/// it says so when `agent_dir` is there; `cp` copies nothing.
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
+[ ! -e "$d/refuse" ] || { cat "$d/refuse" >&2; exit 1; }
 key() { printf '%s' "$1" | tr '/:' '__'; }
 for last in "$@"; do :; done
 file() { printf '%s/have/%s' "$d" "$(key "$1")"; }
@@ -142,7 +144,11 @@ case "$1 $2" in
   "exec -u" | "exec -d" | "cp "*) ;;
   "exec "*)
     ids=$(cat "$d/uid" 2>/dev/null || echo 1000:1000)
-    case "$3 $4" in "id -u") echo "${ids%%:*}" ;; *) echo "$ids" ;; esac ;;
+    case "$3 $4 $5" in
+      "id -u "*) echo "${ids%%:*}" ;;
+      *"/var/lib/fctl-agent ]"*) if [ -e "$d/agent_dir" ]; then echo root; else echo user; fi ;;
+      *) echo "$ids" ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "##;
@@ -238,6 +244,12 @@ impl FakeCli {
         Ok(())
     }
 
+    /// Makes the sandbox one where fctl-agent ran as root.
+    pub fn ran_agent_as_root(&self) -> Result<()> {
+        std::fs::write(self.dir.path().join("agent_dir"), "")?;
+        Ok(())
+    }
+
     /// Makes `network create` fail, as a runtime that can't make networks.
     pub fn no_networks(&self) -> Result<()> {
         std::fs::write(self.dir.path().join("no_networks"), "")?;
@@ -253,6 +265,13 @@ impl FakeCli {
     /// Makes every `run` fail as Docker's does when its disk is full.
     pub fn full_disk(&self) -> Result<()> {
         std::fs::write(self.dir.path().join("full_disk"), "")?;
+        Ok(())
+    }
+
+    /// Makes every command fail with `error`, as the docker CLI fails when
+    /// the daemon's socket refuses it or nothing answers there.
+    pub fn refuse(&self, error: &str) -> Result<()> {
+        std::fs::write(self.dir.path().join("refuse"), format!("{error}\n"))?;
         Ok(())
     }
 

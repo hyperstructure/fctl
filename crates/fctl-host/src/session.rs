@@ -108,6 +108,18 @@ impl HostCtx {
         *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Why the driver this host uses isn't ready, as last probed; `None`
+    /// when it is, or hasn't been probed.
+    pub fn driver_problem(&self) -> Option<String> {
+        let name = self.driver.name();
+        self.drivers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|d| d.name == name && !d.available)
+            .map(|d| d.detail.clone().unwrap_or_else(|| "not available".into()))
+    }
+
     pub fn drivers(&self) -> Vec<DriverInfo> {
         self.drivers
             .lock()

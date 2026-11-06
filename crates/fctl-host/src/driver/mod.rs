@@ -203,6 +203,25 @@ pub const AGENT_DIR_SCRIPT: &str = "mkdir -p /opt/fctl/bin && chown 0:0 /opt/fct
 /// of reach of the user Claude runs as.
 pub const AGENT_DIR: &str = "/var/lib/fctl-agent";
 
+/// Says `root` in a sandbox where fctl-agent ran as root ([`AGENT_DIR`] is
+/// there), `user` elsewhere, as any user: an answer either way, so that a
+/// command that failed isn't taken for one ([`ran_as_root`]).
+pub const RAN_AS_ROOT_SCRIPT: &str =
+    "if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi";
+
+/// What [`RAN_AS_ROOT_SCRIPT`] said: whether fctl-agent ran as root in the
+/// sandbox, which keeps it so rather than start a second supervisor beside
+/// one that may run.
+pub fn ran_as_root(said: &str) -> Result<bool> {
+    match said.trim() {
+        "root" => Ok(true),
+        "user" => Ok(false),
+        other => {
+            anyhow::bail!("asked whether fctl-agent ran as root in the sandbox, it said {other:?}")
+        }
+    }
+}
+
 /// `fctl-agent serve` as root, with Claude and its commands as `user` (a
 /// name or a uid), who can't stop it then.
 pub fn serve_as_root(user: &str) -> Vec<String> {
@@ -232,6 +251,32 @@ pub fn attach_as_root() -> Vec<String> {
     ]
     .map(str::to_owned)
     .to_vec()
+}
+
+/// fctl-agent in a sandbox where it runs as the user, who puts it there
+/// itself, without root: in its `~/.fctl/bin`. A shell word inside double
+/// quotes.
+pub const USER_AGENT: &str = "$HOME/.fctl/bin/fctl-agent";
+
+/// Puts fctl-agent, read from its input, in the user's `~/.fctl/bin`,
+/// beside the one that may run and then in its place, as the user.
+pub fn install_as_user_script() -> String {
+    format!(
+        r#"mkdir -p "$HOME/.fctl/bin" && cat > "{USER_AGENT}.new" && chmod 755 "{USER_AGENT}.new" && mv -f "{USER_AGENT}.new" "{USER_AGENT}""#
+    )
+}
+
+/// Starts fctl-agent as the user, from its `~/.fctl/bin`.
+pub fn serve_as_user_script() -> String {
+    serve_script(&format!("\"{USER_AGENT}\""))
+}
+
+/// Attaches to fctl-agent as the user: with the user's own fctl-agent, or
+/// the one in `/opt/fctl/bin` of a sandbox that a host put it in before.
+pub fn attach_as_user_script() -> String {
+    format!(
+        r#"a="{USER_AGENT}"; [ -x "$a" ] || a={AGENT_PATH}; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#
+    )
 }
 
 /// The shell snippet that starts the supervisor inside a sandbox as the
@@ -274,12 +319,18 @@ impl Driver {
                     data_dir,
                     agent_bin.clone(),
                 ))),
-                "apple" => Some(Driver::Container(container::ContainerDriver::apple())),
-                "docker" => Some(Driver::Container(container::ContainerDriver::docker())),
+                "apple" => Some(Driver::Container(
+                    container::ContainerDriver::apple().agent_as_root(cfg.agent_as_root),
+                )),
+                "docker" => Some(Driver::Container(
+                    container::ContainerDriver::docker().agent_as_root(cfg.agent_as_root),
+                )),
                 "firecracker" => Some(Driver::Firecracker(firecracker::FirecrackerDriver::new(
                     cfg,
                 ))),
-                "lima" => Some(Driver::Lima(lima::LimaDriver::new())),
+                "lima" => Some(Driver::Lima(
+                    lima::LimaDriver::new().agent_as_root(cfg.agent_as_root),
+                )),
                 _ => None,
             }
         };
@@ -853,10 +904,10 @@ impl std::fmt::Display for NotStarted {
 impl std::error::Error for NotStarted {}
 
 /// Whether `e` leaves what its command asked unanswered: the command
-/// couldn't be started, or ran out of time. Any other failure is the
-/// runtime's answer, like "No such image".
+/// couldn't be started, ran out of time, or couldn't reach the Docker
+/// daemon. Any other failure is the runtime's answer, like "No such image".
 pub fn unanswered(e: &anyhow::Error) -> bool {
-    e.is::<NotStarted>() || e.is::<TimedOut>()
+    e.is::<NotStarted>() || e.is::<TimedOut>() || e.is::<crate::docker_access::Unreachable>()
 }
 
 /// A command as the log shows it: arguments with spaces quoted, and long
@@ -965,6 +1016,14 @@ mod tests {
             e.to_string(),
             "`docker pull x` did not finish within 30 minutes, so the host stopped it"
         );
+    }
+
+    #[test]
+    fn only_a_clear_answer_says_where_fctl_agent_ran() {
+        assert!(ran_as_root("root\n").is_ok_and(|r| r));
+        assert!(ran_as_root("user\n").is_ok_and(|r| !r));
+        assert!(ran_as_root("").is_err());
+        assert!(ran_as_root("1000:1000").is_err());
     }
 
     #[test]
