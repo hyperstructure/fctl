@@ -234,6 +234,32 @@ pub fn attach_as_root() -> Vec<String> {
     .to_vec()
 }
 
+/// fctl-agent in a sandbox where it runs as the user, who puts it there
+/// itself, without root: in its `~/.fctl/bin`. A shell word inside double
+/// quotes.
+pub const USER_AGENT: &str = "$HOME/.fctl/bin/fctl-agent";
+
+/// Puts fctl-agent, read from its input, in the user's `~/.fctl/bin`,
+/// beside the one that may run and then in its place, as the user.
+pub fn install_as_user_script() -> String {
+    format!(
+        r#"mkdir -p "$HOME/.fctl/bin" && cat > "{USER_AGENT}.new" && chmod 755 "{USER_AGENT}.new" && mv -f "{USER_AGENT}.new" "{USER_AGENT}""#
+    )
+}
+
+/// Starts fctl-agent as the user, from its `~/.fctl/bin`.
+pub fn serve_as_user_script() -> String {
+    serve_script(&format!("\"{USER_AGENT}\""))
+}
+
+/// Attaches to fctl-agent as the user: with the user's own fctl-agent, or
+/// the one in `/opt/fctl/bin` of a sandbox that a host put it in before.
+pub fn attach_as_user_script() -> String {
+    format!(
+        r#"a="{USER_AGENT}"; [ -x "$a" ] || a={AGENT_PATH}; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#
+    )
+}
+
 /// The shell snippet that starts the supervisor inside a sandbox as the
 /// sandbox's user, where it can't run as root.
 pub fn serve_script(agent: &str) -> String {

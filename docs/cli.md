@@ -866,10 +866,15 @@ image's user instead: `agent_as_root = false`, or `fctl host install
 --agent-as-root off`, then `fctl host restart`. The agent's commands can
 stop fctl-agent then: the host starts it again, and the agent carries on
 with the turn that was cut off, but what it did meanwhile isn't in the
-transcript. New sandboxes follow the setting; one where fctl-agent already
-ran as root keeps it so, rather than start a second one beside it. The
-host still puts fctl-agent in each sandbox as root (`docker exec -u 0`,
-`sudo` in Lima), and `fctl host status` says which it runs as.
+transcript. With it off, the host runs nothing as root in Docker, Apple
+container and Lima sandboxes: the sandbox's user puts fctl-agent in its
+own `~/.fctl/bin`, and the package caches stay the image's user's (with
+Docker, a new cache volume takes the owner of the image's
+`/var/cache/fctl`, which the default image gives `agent`). Firecracker's
+VMs boot with fctl-agent as their init, as root, either way. New
+sandboxes follow the setting; one where fctl-agent already ran as root
+keeps it so, rather than start a second one beside it. `fctl host status`
+says which it runs as.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
 host's default. Sessions only start on a runner whose maximum covers that;

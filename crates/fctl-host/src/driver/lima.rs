@@ -4,8 +4,8 @@
 
 use super::{
     AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, COMMAND_TIMEOUT, SLOW_COMMAND_TIMEOUT,
-    Sandbox, SandboxInfo, SandboxSpec, attach_as_root, attach_script, run_cmd_within,
-    serve_as_root, serve_script, shell_words,
+    Sandbox, SandboxInfo, SandboxSpec, USER_AGENT, attach_as_root, attach_as_user_script,
+    run_cmd_within, serve_as_root, serve_as_user_script, shell_words,
 };
 use anyhow::{Context, Result};
 use fctl_proto::runner::DriverInfo;
@@ -180,25 +180,37 @@ impl LimaDriver {
         ])
         .await
         .context("copying fctl-agent into the VM")?;
-        self.exec(
-            sb,
-            &format!(
+        let script = if self.agent_root(sb).await {
+            format!(
                 "sudo sh -c '{AGENT_DIR_SCRIPT}' && sudo install -m 755 {tmp} {AGENT_PATH} && rm -f {tmp}"
-            ),
-        )
-        .await?;
+            )
+        } else {
+            // As the user, into its home: no sudo.
+            format!(
+                r#"mkdir -p "$HOME/.fctl/bin" && install -m 755 {tmp} "{USER_AGENT}" && rm -f {tmp}"#
+            )
+        };
+        self.exec(sb, &script).await?;
         Ok(())
     }
 
     /// Starts fctl-agent as root with `sudo`, and Claude and its commands
     /// as the VM's user, who can't stop it then; as that user where `sudo`
     /// asks for a password.
+    /// Whether fctl-agent runs as root in `sb`: where the host runs it so
+    /// (or it ran so before, which keeps it so, rather than start another
+    /// beside one that may run), and `sudo` asks no password.
+    async fn agent_root(&self, sb: &Sandbox) -> bool {
+        self.wants_root(sb).await && self.exec(sb, "sudo -n true").await.is_ok()
+    }
+
+    async fn wants_root(&self, sb: &Sandbox) -> bool {
+        self.agent_as_root || self.exec(sb, &format!("test -d {AGENT_DIR}")).await.is_ok()
+    }
+
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
-        // One that ran as root before keeps doing so, rather than start
-        // another beside one that may run.
-        let wanted =
-            self.agent_as_root || self.exec(sb, &format!("test -d {AGENT_DIR}")).await.is_ok();
-        let root = wanted && self.exec(sb, "sudo -n true").await.is_ok();
+        let wanted = self.wants_root(sb).await;
+        let root = wanted && self.agent_root(sb).await;
         if !wanted {
             tracing::info!(
                 "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
@@ -292,7 +304,7 @@ fn serve_script_for_lima(root: bool) -> String {
     } else {
         format!(
             "setsid sh -c '{}' >/dev/null 2>&1 < /dev/null &",
-            serve_script(AGENT_PATH).replace('\'', "'\\''")
+            serve_as_user_script().replace('\'', "'\\''")
         )
     }
 }
@@ -304,7 +316,7 @@ fn attach_script_for_lima() -> String {
     format!(
         "if [ -d {AGENT_DIR} ] && sudo -n test -S {socket} 2>/dev/null; then exec sudo -n {}; fi; {}",
         shell_words(&attach_as_root()),
-        attach_script(AGENT_PATH)
+        attach_as_user_script()
     )
 }
 
@@ -324,12 +336,13 @@ mod tests {
             serve_script_for_lima(true),
             "setsid sudo -n env \"PATH=$PATH\" '/opt/fctl/bin/fctl-agent' 'serve' '--user' \"$(id -u)\" '--socket' '/var/lib/fctl-agent/agent.sock' '--state' '/var/lib/fctl-agent/state' '--log' '/var/lib/fctl-agent/agent.log' >/dev/null 2>&1 < /dev/null &"
         );
+        // As the user, from its own copy: no sudo.
         assert!(serve_script_for_lima(false).starts_with(
-            "setsid sh -c 'mkdir -p \"$HOME/.fctl\" && exec /opt/fctl/bin/fctl-agent serve --socket \"$HOME/.fctl/agent.sock\""
+            "setsid sh -c 'mkdir -p \"$HOME/.fctl\" && exec \"$HOME/.fctl/bin/fctl-agent\" serve --socket \"$HOME/.fctl/agent.sock\""
         ));
         assert_eq!(
             attach_script_for_lima(),
-            "if [ -d /var/lib/fctl-agent ] && sudo -n test -S /var/lib/fctl-agent/agent.sock 2>/dev/null; then exec sudo -n '/opt/fctl/bin/fctl-agent' 'attach' '--socket' '/var/lib/fctl-agent/agent.sock'; fi; exec /opt/fctl/bin/fctl-agent attach --socket \"$HOME/.fctl/agent.sock\""
+            "if [ -d /var/lib/fctl-agent ] && sudo -n test -S /var/lib/fctl-agent/agent.sock 2>/dev/null; then exec sudo -n '/opt/fctl/bin/fctl-agent' 'attach' '--socket' '/var/lib/fctl-agent/agent.sock'; fi; a=\"$HOME/.fctl/bin/fctl-agent\"; [ -x \"$a\" ] || a=/opt/fctl/bin/fctl-agent; exec \"$a\" attach --socket \"$HOME/.fctl/agent.sock\""
         );
     }
 

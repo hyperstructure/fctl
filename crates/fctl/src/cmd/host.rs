@@ -102,8 +102,10 @@ pub enum HostCmd {
         auto_update: Option<bool>,
         /// on or off: whether fctl-agent runs as root in container and VM
         /// sandboxes, where the agent's commands can't stop it (new
-        /// runners: on). Off runs it as the sandbox's user, whose commands
-        /// can stop it by accident and cut a turn short.
+        /// runners: on). Off runs it, and everything the host runs in
+        /// Docker, Apple container and Lima sandboxes, as the sandbox's
+        /// user, whose commands can stop it by accident and cut a turn
+        /// short.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         agent_as_root: Option<bool>,
     },
@@ -1134,7 +1136,7 @@ impl Updates {
 
 /// What `fctl host install` says of a host whose fctl-agent runs as the
 /// sandbox's user.
-const AGENT_AS_USER: &str = "fctl-agent runs as the sandbox's user, whose commands can stop it by accident and cut the agent's turn short (`--agent-as-root on` runs it as root).";
+const AGENT_AS_USER: &str = "Nothing runs as root in its sandboxes but Firecracker's VMs' init: fctl-agent runs as the sandbox's user, whose commands can stop it by accident and cut the agent's turn short (`--agent-as-root on` runs it as root).";
 
 /// `fctl host status`'s line about who fctl-agent runs as.
 fn agent_line(cfg: &HostConfig) -> String {

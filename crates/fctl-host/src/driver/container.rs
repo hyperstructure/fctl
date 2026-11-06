@@ -10,7 +10,8 @@
 use super::{
     AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot,
     NotStarted, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
-    attach_script, run_cmd_within, serve_as_root, serve_script, timed_out, unanswered,
+    attach_as_user_script, install_as_user_script, run_cmd_within, serve_as_root,
+    serve_as_user_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use anyhow::{Context, Result};
@@ -106,6 +107,41 @@ impl ContainerDriver {
             Flavor::Apple => "apple",
             Flavor::Docker => "docker",
         }
+    }
+
+    /// [`Self::run`], with `input` for the command to read.
+    async fn run_with_input(&self, args: &[&str], input: &[u8]) -> Result<String> {
+        use tokio::io::AsyncWriteExt;
+        let mut child = tokio::process::Command::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| super::spawn_error(&self.bin, e))?;
+        let mut stdin = child.stdin.take().context("exec stdin")?;
+        let input = input.to_vec();
+        // A command that stops reading says why with its exit.
+        let writer = tokio::spawn(async move {
+            let _ = stdin.write_all(&input).await;
+        });
+        let out = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| TimedOut {
+                command: super::command_line(&self.bin, args),
+                after: COMMAND_TIMEOUT,
+            })??;
+        let _ = writer.await;
+        if !out.status.success() {
+            anyhow::bail!(
+                "{} {} failed: {}",
+                self.bin,
+                args.first().copied().unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     async fn run(&self, args: &[&str]) -> Result<String> {
@@ -499,6 +535,11 @@ impl ContainerDriver {
     /// fctl-agent finds it can't write to them, and the session's package
     /// managers keep their own.
     async fn give_cache_to_user(&self, name: &str) {
+        if !self.agent_as_root {
+            // No root: the caches are the user's where the image's
+            // /var/cache/fctl is, whose owner Docker gives a new volume.
+            return;
+        }
         let ids = self
             .run(&["exec", name, "sh", "-c", r#"echo "$(id -u):$(id -g)""#])
             .await;
@@ -594,21 +635,13 @@ impl ContainerDriver {
         let mount = format!("type=volume,source={volume},target=/cache{ro}");
         let mut failed = None;
         for image in images {
-            let mut run = vec![
-                "run",
-                "--rm",
-                "--pull",
-                "never",
-                "--network",
-                "none",
-                "--user",
-                "0",
-                "--mount",
-                &mount,
-                "--entrypoint",
-                program,
-                image,
-            ];
+            let mut run = vec!["run", "--rm", "--pull", "never", "--network", "none"];
+            // As root, which reaches every file; as the image's user on a
+            // host that runs nothing in its sandboxes as root.
+            if self.agent_as_root {
+                run.extend(["--user", "0"]);
+            }
+            run.extend(["--mount", &mount, "--entrypoint", program, image]);
             run.extend(args);
             match self.run(&run).await {
                 Ok(out) => return Ok(out),
@@ -831,6 +864,17 @@ impl ContainerDriver {
     /// place, so that one that runs keeps running: the host puts its own in
     /// whenever it starts fctl-agent.
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
+        if !self.agent_root(sb).await {
+            // As the user, into its home: no root.
+            let bytes = tokio::fs::read(binary)
+                .await
+                .with_context(|| format!("reading {}", binary.display()))?;
+            let script = install_as_user_script();
+            self.run_with_input(&["exec", "-i", &sb.name, "sh", "-c", &script], &bytes)
+                .await
+                .context("copying fctl-agent into the sandbox")?;
+            return Ok(());
+        }
         let src = binary.display().to_string();
         let new = format!("{AGENT_PATH}.new");
         let dest = format!("{}:{new}", sb.name);
@@ -867,15 +911,8 @@ impl ContainerDriver {
                 "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
                 sb.name
             );
-            self.run(&[
-                "exec",
-                "-d",
-                &sb.name,
-                "sh",
-                "-c",
-                &serve_script(AGENT_PATH),
-            ])
-            .await?;
+            self.run(&["exec", "-d", &sb.name, "sh", "-c", &serve_as_user_script()])
+                .await?;
             return Ok(());
         }
         let uid = self
@@ -901,7 +938,7 @@ impl ContainerDriver {
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
         if !self.agent_root(sb).await {
-            let mut child = self.spawn(sb, &attach_script(AGENT_PATH)).await?;
+            let mut child = self.spawn(sb, &attach_as_user_script()).await?;
             let stdout = child.stdout.take().context("exec stdout")?;
             let stdin = child.stdin.take().context("exec stdin")?;
             return Ok(AgentIo {
@@ -2112,19 +2149,26 @@ esac
             name: "fctl-ses-1".into(),
             root: None,
         };
+        let dir = tempfile::tempdir()?;
+        let binary = dir.path().join("fctl-agent");
+        std::fs::write(&binary, "a fctl-agent")?;
         let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
         let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.install_agent(&sb, &binary).await?;
         docker.start_agent(&sb).await?;
         if let Some(mut exec) = docker.attach(&sb).await?.child {
             exec.wait().await?;
         }
+        // Nothing as root: the user puts fctl-agent in its home itself.
         assert_eq!(
             cli.calls(),
             [
                 "exec fctl-ses-1 test -d /var/lib/fctl-agent",
-                r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec /opt/fctl/bin/fctl-agent serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
+                r#"exec -i fctl-ses-1 sh -c mkdir -p "$HOME/.fctl/bin" && cat > "$HOME/.fctl/bin/fctl-agent.new" && chmod 755 "$HOME/.fctl/bin/fctl-agent.new" && mv -f "$HOME/.fctl/bin/fctl-agent.new" "$HOME/.fctl/bin/fctl-agent""#,
                 "exec fctl-ses-1 test -d /var/lib/fctl-agent",
-                r#"exec -i fctl-ses-1 sh -c exec /opt/fctl/bin/fctl-agent attach --socket "$HOME/.fctl/agent.sock""#,
+                r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec "$HOME/.fctl/bin/fctl-agent" serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
+                "exec fctl-ses-1 test -d /var/lib/fctl-agent",
+                r#"exec -i fctl-ses-1 sh -c a="$HOME/.fctl/bin/fctl-agent"; [ -x "$a" ] || a=/opt/fctl/bin/fctl-agent; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#,
             ]
         );
         // One that ran it as root keeps doing so, rather than start another.
@@ -2139,6 +2183,32 @@ esac
             "{:?}",
             cli.calls()
         );
+
+        // Package caches: no chown of a new volume, and no root to measure
+        // or empty them.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let cached = SandboxSpec {
+            cache: Some(Spot::Volume(caches::volume("prj_1"))),
+            ..spec(VERSION_IMAGE, None)
+        };
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.ensure(&cached, &|_| {}).await?;
+        let images = [VERSION_IMAGE.to_owned()];
+        docker
+            .volume_size_mb(&caches::volume("prj_1"), &images)
+            .await?;
+        let calls = cli.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("exec -u 0")),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("run --rm --pull never --network none --mount ")),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.contains("--user 0")), "{calls:?}");
         Ok(())
     }
 

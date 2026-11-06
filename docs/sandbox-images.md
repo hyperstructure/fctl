@@ -157,9 +157,11 @@ variables, a `~/.cargo/registry` it comes with, and browsers in
 `~/.cache/ms-playwright`, which the default image comes with: Playwright
 keeps other versions' browsers there too, so they download in each
 sandbox rather than once into the caches. With Docker, the host gives the
-caches to the image's user, `agent` or another; fctl-agent checks it can
-write to them, and without that, the session's package managers keep
-their own.
+caches to the image's user, `agent` or another; a host that runs nothing
+as root in its sandboxes (`agent_as_root = false`) leaves that to Docker,
+which gives a new volume the owner of the image's `/var/cache/fctl`
+(`agent`'s in the default image). fctl-agent checks it can write to them,
+and without that, the session's package managers keep their own.
 
 An image that installs something as root switches back to `agent` at the
 end:
@@ -405,9 +407,11 @@ don't), it keeps itself from the OOM killer, so that a build that fills
 the sandbox's memory takes the build rather than fctl-agent. Root can
 still stop it, and `agent` has sudo: this guards against accidents, not
 against an agent set on it. A host whose owner turns this off
-(`agent_as_root = false` in `host.toml`) runs fctl-agent as the image's
-user instead, with its files in `~/.fctl`, where the agent's commands can
-stop it; a sandbox where it already ran as root keeps it so. It writes:
+(`agent_as_root = false` in `host.toml`) runs nothing as root in Docker,
+Apple container and Lima sandboxes: the image's user puts fctl-agent in
+its own `~/.fctl/bin` and runs it, with its files in `~/.fctl`, where the
+agent's commands can stop it. A sandbox where it already ran as root
+keeps it so. It writes:
 
 - **`/var/lib/fctl-agent/`**, which only root may enter: fctl-agent's
   socket for the host, its log, and the session's journal and state. A

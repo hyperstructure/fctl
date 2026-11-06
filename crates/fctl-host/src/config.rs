@@ -129,10 +129,12 @@ pub struct HostConfig {
     /// Run fctl-agent as root in container and VM sandboxes, where the
     /// agent's commands, which run as the sandbox's user, can't stop it.
     /// Off: as the sandbox's user, as hosts did before, for owners who want
-    /// no long-lived root process in their sandboxes; a `kill` that matches
-    /// it by accident then cuts the agent's turn short. Sandboxes that
-    /// already ran it as root keep doing so. The process driver runs it as
-    /// the host's user either way.
+    /// nothing to run as root in their sandboxes: the host then runs
+    /// nothing as root in Docker, Apple container and Lima sandboxes, but a
+    /// `kill` that matches fctl-agent by accident cuts the agent's turn
+    /// short. Firecracker's VMs boot with fctl-agent as their init, as root,
+    /// either way, and sandboxes that already ran it as root keep doing so.
+    /// The process driver runs it as the host's user.
     pub agent_as_root: bool,
     /// The `firecracker` driver's settings.
     #[serde(skip_serializing_if = "FirecrackerConfig::is_default")]
