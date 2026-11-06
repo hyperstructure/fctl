@@ -246,6 +246,19 @@ pub fn out_of_space(err: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+/// The free MiB in `df -Pk`'s output for one filesystem: the column before
+/// the share used, since a filesystem's name may have spaces in it
+/// (`map auto_home` on macOS).
+pub fn df_free_mb(out: &str) -> Option<u64> {
+    let fields: Vec<&str> = out.lines().nth(1)?.split_whitespace().collect();
+    let used = fields.iter().position(|f| {
+        f.strip_suffix('%')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    })?;
+    let kb: u64 = fields.get(used.checked_sub(1)?)?.parse().ok()?;
+    Some(kb / 1024)
+}
+
 /// Whether what a program wrote says that its disk had no room left.
 pub fn says_out_of_space(text: &str) -> bool {
     text.to_ascii_lowercase()
@@ -475,6 +488,21 @@ mod tests {
         assert_eq!(serde_json::from_str::<Told>(&json)?, told);
         assert_eq!(serde_json::from_str::<Told>("{}")?, Told::default());
         Ok(())
+    }
+
+    #[test]
+    fn reads_free_space_from_df() {
+        let linux = "Filesystem     1024-blocks    Used Available Capacity Mounted on\n\
+                     /dev/vdb         528310064 2051236 504762220       1% /\n";
+        assert_eq!(df_free_mb(linux), Some(492_931));
+        let mac = "Filesystem     1024-blocks      Used Available Capacity  Mounted on\n\
+                   /dev/disk3s5     482797652 401733996  21059400    96%    /System/Volumes/Data\n";
+        assert_eq!(df_free_mb(mac), Some(20_565));
+        let spaces = "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
+                      map auto_home 0 0 0 100% /System/Volumes/Data/home\n";
+        assert_eq!(df_free_mb(spaces), Some(0));
+        assert_eq!(df_free_mb("df: /nowhere: No such file or directory\n"), None);
+        assert_eq!(df_free_mb(""), None);
     }
 
     #[derive(Debug)]
