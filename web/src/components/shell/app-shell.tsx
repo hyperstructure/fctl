@@ -78,9 +78,11 @@ export function AppShell() {
   const openDrawer = useCallback(() => setDrawer("open"), []);
   const closeDrawer = () => setDrawer("closed");
   const dropDrawer = () => setDrawer("gone");
+  const root = useRef<HTMLDivElement>(null);
   const aside = useRef<HTMLElement>(null);
   const shade = useRef<HTMLButtonElement>(null);
   useDrawerDrag({
+    page: root,
     drawer: aside,
     shade,
     open: drawer === "open",
@@ -97,7 +99,7 @@ export function AppShell() {
   useFactorsWatch();
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
-    <div className="flex min-h-dvh bg-canvas">
+    <div ref={root} className="flex min-h-dvh bg-canvas">
       {/* On phones the sidebar is a drawer over the page: opaque, and out of the page once
           it has slid away (display: none), so that it is drawn anew each time it opens.
           Kept off screen with a blur, it sometimes stopped showing properly in Safari on iOS
@@ -110,21 +112,26 @@ export function AppShell() {
         ref={aside}
         className={cn(
           "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
-          drawer !== "gone" && "transition-[translate,display] transition-discrete duration-300 ease-out",
+          drawer !== "gone" &&
+            "transition-[translate,display] transition-discrete duration-300 ease-out motion-reduce:transition-none",
           shown ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
       >
         <Sidebar onPalette={openPalette} onNavigate={dropDrawer} onClose={closeDrawer} path={path} />
       </aside>
-      {shown && (
-        <button
-          ref={shade}
-          type="button"
-          aria-label="Close menu"
-          className="fixed inset-x-0 top-(--viewport-shift) -bottom-(--viewport-shift) z-20 bg-black/40 transition-opacity duration-300 ease-out md:hidden"
-          onClick={closeDrawer}
-        />
-      )}
+      {/* The shade fades in and out with the drawer's slide (and goes with it at once). */}
+      <button
+        ref={shade}
+        type="button"
+        aria-label="Close menu"
+        className={cn(
+          "fixed inset-x-0 top-(--viewport-shift) -bottom-(--viewport-shift) z-20 bg-black/40 md:hidden",
+          drawer !== "gone" &&
+            "transition-[opacity,visibility] transition-discrete duration-300 ease-out motion-reduce:transition-none",
+          !shown && "pointer-events-none invisible opacity-0",
+        )}
+        onClick={closeDrawer}
+      />
       {/* The page is never wider than the window: what is wider scrolls in its own row. The
           clip, unlike hidden, keeps the sticky bars working. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">

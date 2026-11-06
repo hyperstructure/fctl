@@ -338,7 +338,7 @@ function phone({ wide = false } = {}) {
     state: () => ({
       open: drawer().classList.contains("translate-x-0"),
       slides: drawer().classList.contains("transition-[translate,display]"),
-      shade: closeButtons().some((b) => !drawer().contains(b)),
+      shade: closeButtons().some((b) => !drawer().contains(b) && !b.classList.contains("invisible")),
     }),
     open: () => click(container.querySelector('button[aria-label="Open menu"]')),
     close: () => click(closeButtons().find((b) => drawer().contains(b))),
@@ -488,15 +488,15 @@ describe("the drawer under a finger", () => {
     expect(shell.overlay()?.style.opacity).toBe("");
   });
 
-  it("goes back out when the finger turns back before letting go", () => {
+  it("goes back out when the finger flicks it back before letting go, even past halfway", () => {
     const shell = phone();
     shell.drag(
       shell.page(),
       [10, 300],
       [
         [60, 300],
-        [150, 300],
-        [90, 300],
+        [250, 300],
+        [200, 300],
       ],
     );
     expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
@@ -544,7 +544,7 @@ describe("the drawer under a finger", () => {
     expect(clicks).toBe(false);
     expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
     shell.open();
-    shell.drag(
+    const byShade = shell.drag(
       shell.overlay() as HTMLElement,
       [300, 300],
       [
@@ -552,6 +552,7 @@ describe("the drawer under a finger", () => {
         [100, 300],
       ],
     );
+    expect(byShade.clicks).toBe(false);
     expect(shell.state()).toEqual({ open: false, slides: true, shade: false });
   });
 
@@ -621,5 +622,175 @@ describe("the drawer under a finger", () => {
       ).kept,
     ).toEqual([false, false]);
     expect(shell.state().open).toBe(false);
+  });
+
+  it("follows a flick short of halfway, but not a finger that stopped before it let go", () => {
+    const shell = phone();
+    // 90 px of 244, quickly.
+    shell.drag(
+      shell.page(),
+      [10, 300],
+      [
+        [20, 300],
+        [60, 300],
+        [100, 300],
+      ],
+    );
+    expect(shell.state().open).toBe(true);
+    shell.close();
+    // As far, then still for 100 ms.
+    shell.drag(
+      shell.page(),
+      [10, 300],
+      [
+        [20, 300],
+        [60, 300],
+        [100, 300],
+        [100, 300],
+        [100, 300],
+      ],
+    );
+    expect(shell.state().open).toBe(false);
+  });
+
+  it("doesn't come in under the palette", () => {
+    const shell = phone();
+    shell.open();
+    shell.search();
+    shell.shade();
+    expect(shell.palette()).toBe(true);
+    const palette = document.querySelector('input[placeholder^="Search"]') as HTMLElement;
+    expect(
+      shell.drag(
+        palette,
+        [10, 300],
+        [
+          [60, 300],
+          [200, 300],
+        ],
+      ).kept,
+    ).toEqual([false, false]);
+    expect(shell.state().open).toBe(false);
+  });
+
+  it("doesn't come in under a finger scrolling back a row that scrolls sideways", () => {
+    const shell = phone();
+    const row = document.createElement("nav");
+    const tab = document.createElement("a");
+    row.append(tab);
+    shell.page().append(row);
+    Object.defineProperty(row, "scrollLeft", { value: 40 });
+    expect(
+      shell.drag(
+        tab,
+        [10, 300],
+        [
+          [60, 300],
+          [200, 300],
+        ],
+      ).kept,
+    ).toEqual([false, false]);
+    expect(shell.state().open).toBe(false);
+  });
+
+  it("comes in from past the notch, in landscape", () => {
+    const shell = phone();
+    shell.drawer().style.paddingLeft = "44px";
+    shell.drag(
+      shell.page(),
+      [70, 300],
+      [
+        [80, 300],
+        [300, 300],
+        [300, 300],
+        [300, 300],
+      ],
+    );
+    expect(shell.state().open).toBe(true);
+  });
+
+  it("goes on following its finger when another one lets go", () => {
+    const shell = phone();
+    const el = shell.page();
+    const touch = (id: number, x: number) =>
+      new Touch({ identifier: id, target: el, clientX: x, clientY: 300 });
+    const send = (type: string, touches: Touch[]) =>
+      act(() => {
+        el.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches }));
+      });
+    send("touchstart", [touch(1, 10)]);
+    send("touchmove", [touch(1, 60)]);
+    // A second finger taps elsewhere: it touches, and lets go.
+    act(() => {
+      document.body.dispatchEvent(
+        new TouchEvent("touchstart", { bubbles: true, touches: [touch(1, 60), touch(2, 300)] }),
+      );
+    });
+    send("touchend", [touch(1, 60)]);
+    expect(shell.drawer().style.translate).toBe("-194px 0");
+    send("touchmove", [touch(1, 120)]);
+    expect(shell.drawer().style.translate).toBe("-134px 0");
+  });
+
+  it("lets go of a finger whose touch ended off the page, and of one whose end never came", () => {
+    const shell = phone();
+    // What the finger touched leaves the page as it drags: its end still comes to it.
+    const gone = document.createElement("span");
+    shell.page().append(gone);
+    const touch = (x: number) => new Touch({ identifier: 1, target: gone, clientX: x, clientY: 300 });
+    act(() => {
+      gone.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(10)] }));
+      gone.dispatchEvent(
+        new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch(60)] }),
+      );
+    });
+    act(() => gone.remove());
+    act(() => {
+      gone.dispatchEvent(
+        new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch(240)] }),
+      );
+      gone.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [] }));
+    });
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+    expect(shell.drawer().style.translate).toBe("");
+    // A drag whose end never came: the next touch puts the drawer back, and drags it anew.
+    shell.close();
+    const lost = new Touch({ identifier: 3, target: shell.page(), clientX: 10, clientY: 300 });
+    act(() => {
+      shell.page().dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [lost] }));
+      shell.page().dispatchEvent(
+        new TouchEvent("touchmove", {
+          bubbles: true,
+          cancelable: true,
+          touches: [new Touch({ identifier: 3, target: shell.page(), clientX: 100, clientY: 300 })],
+        }),
+      );
+    });
+    expect(shell.drawer().style.translate).toBe("-154px 0");
+    shell.drag(
+      shell.page(),
+      [10, 300],
+      [
+        [60, 300],
+        [240, 300],
+        [240, 300],
+        [240, 300],
+      ],
+    );
+    expect(shell.state()).toEqual({ open: true, slides: true, shade: true });
+    expect(shell.drawer().style.translate).toBe("");
+  });
+
+  it("fades the shade with the drawer, and neither moves for people who reduce motion", () => {
+    const shell = phone();
+    const shade = shell.overlay() as HTMLElement;
+    expect(shade.className).toContain("transition-[opacity,visibility]");
+    expect(shade.className).toContain("motion-reduce:transition-none");
+    expect(shell.drawer().className).toContain("motion-reduce:transition-none");
+    shell.open();
+    shell.close();
+    // Still there as it fades out, but out of reach.
+    expect(shell.overlay()).toBe(shade);
+    expect(shade.classList).toContain("invisible");
   });
 });

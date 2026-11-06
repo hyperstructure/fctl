@@ -72,4 +72,18 @@ describe("Slide", () => {
     back.moved(160, 1050);
     expect(back.opens(1060)).toBe(false);
   });
+
+  it("takes a finger that stopped before it let go for one at rest", () => {
+    // 15 px in 5 ms, then still until it lets go.
+    const opening = new Slide(false, 244, 10, 0);
+    opening.moved(25, 1000);
+    opening.moved(40, 1005);
+    expect(opening.opens(1010)).toBe(true);
+    expect(opening.opens(1095)).toBe(false);
+    const closing = new Slide(true, 244, 200, 0);
+    closing.moved(185, 1000);
+    closing.moved(170, 1005);
+    expect(closing.opens(1010)).toBe(false);
+    expect(closing.opens(1095)).toBe(true);
+  });
 });

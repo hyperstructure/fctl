@@ -61,12 +61,15 @@ export class Slide {
     return this.width > 0 ? 1 + this.offset / this.width : 0;
   }
 
-  /** Whether a finger that lets go at `at` (ms) leaves it open. */
+  /**
+   * Whether a finger that lets go at `at` (ms) leaves it open. Its speed is
+   * measured up to then: a finger that stopped before it let go flicks nothing.
+   */
   opens(at: number): boolean {
     const recent = this.moves.filter((m) => at - m.at <= RECENT_MS);
     const first = recent[0];
     const last = recent[recent.length - 1];
-    const speed = first && last && last.at > first.at ? (last.x - first.x) / (last.at - first.at) : 0;
+    const speed = first && last && at > first.at ? (last.x - first.x) / (at - first.at) : 0;
     if (Math.abs(speed) > FLICK) return speed > 0;
     return this.shown > HALF;
   }
@@ -84,19 +87,24 @@ export function drags(open: boolean, dx: number, dy: number): boolean | undefine
 }
 
 /**
- * Lets a finger drag the drawer. `open` says whether it is open; `onDrag` is
- * called as a finger takes it, to show it (and the shade) for dragging, at
- * once (in `flushSync`), and `onLetGo` as the finger lets it go, open or not.
+ * Lets a finger drag the drawer. `page` holds the drawer and the page beside
+ * it, but not what shows over them (the palette, sheets, menus): a closed
+ * drawer comes in only from its left edge. `open` says whether it is open;
+ * `onDrag` is called as a finger takes it, to show it (and the shade) for
+ * dragging, at once (in `flushSync`), and `onLetGo` as the finger lets it go,
+ * open or not.
  * Meanwhile the drawer and the shade follow the finger through their inline
  * styles, and slide on from there, at their own pace, once it lets go.
  */
 export function useDrawerDrag({
+  page,
   drawer,
   shade,
   open,
   onDrag,
   onLetGo,
 }: {
+  page: RefObject<HTMLElement | null>;
   drawer: RefObject<HTMLElement | null>;
   shade: RefObject<HTMLElement | null>;
   open: boolean;
@@ -138,14 +146,14 @@ export function useDrawerDrag({
       if (!touched || !t) return;
       // A second finger, or a row of the sidebar lifted to be moved (lib/sortable.ts): not a drag.
       if (e.touches.length > 1 || (!slide && document.documentElement.dataset.dragging !== undefined)) {
-        return end(e);
+        return abandon();
       }
       if (!slide) {
         const takes = drags(touched.open, t.clientX - touched.x, t.clientY - touched.y);
         if (takes === undefined) return;
-        if (!takes) return end(e);
+        if (!takes) return abandon();
         const d = drawer.current;
-        if (!d) return end(e);
+        if (!d) return abandon();
         // Shown where it is, and following the finger from there.
         for (const el of [d, shade.current]) el?.style.setProperty("transition", "none");
         d.style.translate = touched.open ? "0 0" : "-100% 0";
@@ -163,6 +171,8 @@ export function useDrawerDrag({
     };
 
     const end = (e: TouchEvent) => {
+      // Another finger let go: this one is still down.
+      if (finger(e)) return;
       const s = slide;
       const was = touched?.open ?? false;
       touched = undefined;
@@ -175,25 +185,56 @@ export function useDrawerDrag({
       release(e.type === "touchend" ? s.opens(e.timeStamp) : was);
     };
 
+    // Whether a closed drawer comes in under a finger that touches `target`
+    // at `x`: at the left edge of the page (past the notch, in landscape), not
+    // of a dialog over it, nor of something scrolled sideways, which the
+    // finger scrolls back.
+    const edge = (target: Element, x: number) => {
+      const inset = drawer.current ? Number.parseFloat(getComputedStyle(drawer.current).paddingLeft) || 0 : 0;
+      if (x > EDGE + inset || !page.current?.contains(target) || target.closest("dialog")) return false;
+      for (let el: Element | null = target; el && el !== page.current; el = el.parentElement) {
+        if (el.scrollLeft > 0) return false;
+      }
+      return true;
+    };
+
     const start = (e: TouchEvent) => {
       const t = e.touches[0];
+      // The only finger down: any other this followed has let go, though its end
+      // never came (what it touched left the page, in some browsers).
+      if (touched && e.touches.length === 1) abandon();
       if (touched || !t || e.touches.length > 1 || matchMedia(WIDE).matches) return;
       const open = latest.current.open;
-      const target = e.target instanceof Node ? e.target : null;
-      const on = (el: HTMLElement | null) => !!el && !!target && el.contains(target);
-      // Open: by the drawer or the shade. Closed: from the left edge of the page, not of a dialog over it.
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      // Open: by the drawer or the shade. Closed: from the left edge of the page.
       const takes = open
-        ? on(drawer.current) || on(shade.current)
-        : t.clientX <= EDGE && !(target instanceof Element && target.closest("dialog"));
+        ? !!drawer.current?.contains(target) || !!shade.current?.contains(target)
+        : edge(target, t.clientX);
       if (!takes) return;
       touched = { id: t.identifier, x: t.clientX, y: t.clientY, at: e.timeStamp, open };
       // Only while a finger may drag the drawer: a touchmove listener that can
-      // cancel makes the browser wait for it before it scrolls.
+      // cancel makes the browser wait for it before it scrolls. On what it
+      // touched, which gets the touch's events even once it leaves the page
+      // (a list re-rendered under the finger), when the document no longer does.
+      // (Element's types know no touch events: all its kinds of elements get them.)
       const during = new AbortController();
-      document.addEventListener("touchmove", move, { passive: false, signal: during.signal });
-      document.addEventListener("touchend", end, { passive: false, signal: during.signal });
-      document.addEventListener("touchcancel", end, { signal: during.signal });
+      const listen = (type: string, f: (e: TouchEvent) => void, passive: boolean) =>
+        target.addEventListener(type, f as EventListener, { passive, signal: during.signal });
+      listen("touchmove", move, false);
+      listen("touchend", end, false);
+      listen("touchcancel", end, true);
       stop = () => during.abort();
+    };
+    // Lets go of a touch whose end never came, the drawer back where it was.
+    const abandon = () => {
+      const was = touched?.open ?? false;
+      const s = slide;
+      touched = undefined;
+      slide = undefined;
+      stop?.();
+      stop = undefined;
+      if (s) release(was);
     };
 
     document.addEventListener("touchstart", start, { passive: true, signal: off.signal });
@@ -203,5 +244,5 @@ export function useDrawerDrag({
       // Unmounted mid-drag: the drawer goes back to its own styles.
       if (slide) unstyle();
     };
-  }, [drawer, shade]);
+  }, [page, drawer, shade]);
 }
