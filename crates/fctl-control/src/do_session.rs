@@ -939,6 +939,7 @@ impl SessionObject {
         let not_sent = |why: String| internal::FindingsTold {
             delivery_id: None,
             not_sent: Some(why),
+            held: false,
         };
         if s.review.is_some() {
             return Ok(not_sent("it is a review agent's session".into()));
@@ -949,8 +950,9 @@ impl SessionObject {
         if !s.status.accepts_messages() && !s.status.resumes_for_messages() {
             return Ok(not_sent("it failed".into()));
         }
-        let held = |n: u32| {
-            not_sent(format!(
+        let held = |n: u32| internal::FindingsTold {
+            held: true,
+            ..not_sent(format!(
                 "its agent got the findings of {n} reviews in a row, and nobody has messaged it since"
             ))
         };
@@ -965,6 +967,7 @@ impl SessionObject {
                 return Ok(internal::FindingsTold {
                     delivery_id: Some(fctl_proto::DeliveryId(id)),
                     not_sent: None,
+                    held: false,
                 });
             }
             None => {}
@@ -1011,6 +1014,7 @@ impl SessionObject {
         Ok(internal::FindingsTold {
             delivery_id: Some(delivered.delivery_id),
             not_sent: None,
+            held: false,
         })
     }
 
@@ -1051,11 +1055,12 @@ impl SessionObject {
     }
 
     /// Someone passes on the findings of a review that fctl held back from
-    /// the agent (`api::sessions::pass_on`): the agent gets the message it
-    /// would have got, which resumes a stopped session as the review's
-    /// would have, and the reviews in a row count from this one, as after a
-    /// person's message. The transcript says who passed them on. A failed
-    /// session keeps them back until it is resumed.
+    /// the agent, or that went to no session (`api::sessions::pass_on`):
+    /// the agent gets the message it would have got, which resumes a
+    /// stopped session as the review's would have, and the reviews in a
+    /// row count from this one, as after a person's message. The
+    /// transcript says who passed them on. A failed session keeps them
+    /// back until it is resumed.
     async fn pass_on_held(&self, b: internal::PassOn) -> std::result::Result<Delivered, ApiError> {
         let Some(s) = self.summary() else {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
@@ -1067,13 +1072,19 @@ impl SessionObject {
             ));
         }
         // Only a review that its pull request shows as held: not one that a
-        // newer review of the pull request took the place of.
-        let held = self
-            .held_reviews()
-            .into_iter()
-            .find(|h| h.review == b.review)
-            .filter(|_| fctl_domain::reviews::shows_held(&s.pull_requests, &b.review));
-        let Some(held) = held else {
+        // newer review of the pull request took the place of. Findings that
+        // went to no session come with the request.
+        let unsent = b.unsent.is_some();
+        let held = match b.unsent {
+            Some(u) => Some((u.text, u.shown)),
+            None => self
+                .held_reviews()
+                .into_iter()
+                .find(|h| h.review == b.review)
+                .filter(|_| fctl_domain::reviews::shows_held(&s.pull_requests, &b.review))
+                .map(|h| (h.text, h.shown)),
+        };
+        let Some((text, shown)) = held else {
             return Err(api_err(
                 ErrorCode::Conflict,
                 "fctl holds back no findings of this review: the agent got them, someone has written to it since, or a newer review of its pull request came.",
@@ -1093,7 +1104,11 @@ impl SessionObject {
                 ticket: None,
                 level: fctl_proto::event::NoticeLevel::Info,
                 code: "review_passed_on".into(),
-                message: fctl_domain::reviews::passed_on_by(&b.by.name),
+                message: if unsent {
+                    fctl_domain::reviews::unsent_passed_on_by(&b.by.name)
+                } else {
+                    fctl_domain::reviews::passed_on_by(&b.by.name)
+                },
                 until: None,
                 published: None,
                 memory: None,
@@ -1109,9 +1124,7 @@ impl SessionObject {
         self.set_meta(REVIEWS_PASSED_ON, "1");
         // Listed until the agent has them, so that someone can try again
         // when the session fails to resume.
-        let delivered = self
-            .deliver_findings(key, held.text, held.shown, now)
-            .await?;
+        let delivered = self.deliver_findings(key, text, shown, now).await?;
         // The list as it is now: a message, or another held review, may have
         // come while the session resumed.
         let mut kept = self.held_reviews();
@@ -2752,12 +2765,16 @@ impl SessionObject {
     }
 
     /// Records the pull requests the session lists from now on, so that
-    /// GitHub's webhooks about them reach it, and looks them up where the
-    /// instance takes the webhook (`crate::pull_requests`).
+    /// GitHub's webhooks about them reach it, passes on the findings their
+    /// reviews kept since they went to no session (`crate::reviews::listed`),
+    /// and looks them up where the instance takes the webhook
+    /// (`crate::pull_requests`), which shows where those findings went.
     fn track_pull_requests(&self, s: &Session, prs: Vec<PullRequestRef>) {
         let env = self.env.clone();
         let id = s.id.as_str().to_owned();
         let linear = Self::answers_linear(s);
+        // Review agents' sessions take no findings.
+        let reviewer = s.review.is_some();
         self.state.wait_until(async move {
             if linear && let Err(e) = crate::delegations::pull_requests(&env, &id, &prs).await {
                 worker::console_error!(
@@ -2773,6 +2790,12 @@ impl SessionObject {
                     return;
                 }
             };
+            if !reviewer && let Err(e) = crate::reviews::listed(&env, &db, &id, &tracked).await {
+                worker::console_error!(
+                    "passing on the unsent review findings of the pull requests of {id}: {}",
+                    e.0.message
+                );
+            }
             let cfg = crate::config::Config::from_env(&env);
             if crate::pull_requests::enabled(&cfg)
                 && let Err(e) =

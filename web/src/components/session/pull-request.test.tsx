@@ -259,3 +259,51 @@ describe("findings fctl held back", () => {
     expect(button(c1)?.textContent).toBe("Continue for 1 more round");
   });
 });
+
+describe("findings that went to no session", () => {
+  const unsent = review("commented", { findings: 2, unsent: true });
+  const strip = (c: HTMLElement) => c.querySelector('[role="status"]');
+  const button = (c: HTMLElement) =>
+    [...c.querySelectorAll("button")].find((b) => b.textContent === "Pass on to the agent");
+
+  it("ends the card saying they reached no agent", () => {
+    const c = render(<PullRequestReviewLine pr={pr(unsent)} review={unsent} passOnTo="ses_mine" />);
+    expect(strip(c)?.textContent).toContain("Sent to no agent");
+    expect(strip(c)?.textContent).toContain(
+      "These findings reached no agent: no session took them when the review posted.",
+    );
+    expect(c.querySelector("a")?.className).not.toContain("rounded-b");
+    expect(strip(c)?.className).toContain("rounded-b");
+    // Held back from this session's agent says that instead.
+    const both = review("commented", { findings: 2, unsent: true, held_after: 5 });
+    const held = render(<PullRequestReviewLine pr={pr(both)} review={both} passOnTo="ses_mine" />);
+    expect(held.querySelectorAll('[role="status"]').length).toBe(1);
+    expect(strip(held)?.textContent).toContain("Paused after 5 review rounds");
+  });
+
+  it("passes them on to this session's agent for those who may message it", async () => {
+    passOnReview.mockResolvedValue({ delivery_id: "dlv_1" });
+    const { container, rerender } = mount(
+      <PullRequestReviewLine pr={pr(unsent)} review={unsent} passOnTo="ses_mine" />,
+    );
+    act(() => button(container)?.click());
+    await settle();
+    expect(passOnReview).toHaveBeenCalledWith("ses_mine", "ses_review");
+    expect(toast).toHaveBeenCalledWith("Findings passed on to the agent");
+    expect(button(container)?.disabled).toBe(true);
+    const sent = review("commented", { findings: 2 });
+    rerender(<PullRequestReviewLine pr={pr(sent)} review={sent} passOnTo="ses_mine" />);
+    expect(strip(container)).toBeNull();
+  });
+
+  it("only says so to those who can't, and once the pull request merged or closed", () => {
+    expect(button(render(<PullRequestReviewLine pr={pr(unsent)} review={unsent} />))).toBeUndefined();
+    for (const state of ["merged", "closed"]) {
+      const c = render(
+        <PullRequestReviewLine pr={pr(unsent, 9, state)} review={unsent} passOnTo="ses_mine" />,
+      );
+      expect(strip(c)?.textContent).toContain("Sent to no agent");
+      expect(button(c)).toBeUndefined();
+    }
+  });
+});

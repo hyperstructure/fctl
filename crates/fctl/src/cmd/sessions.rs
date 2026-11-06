@@ -416,18 +416,21 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
                 pr.number,
                 style::terminal_safe(&pr.url)
             );
-            // Findings fctl held back from the agent wait for a person.
-            let held = pr
-                .checks
-                .as_ref()
-                .and_then(|c| c.review.as_ref()?.held_after)
-                .map(|n| {
-                    let hint = format!(
-                        "held back from the agent after {n} reviews in a row: fctl review pass-on {}#{} passes them on",
-                        s.project_slug, s.number
-                    );
-                    format!("{:<10}{}", "", style::amber(&hint))
-                });
+            // Findings fctl held back from the agent, or sent to no
+            // session, wait for a person.
+            let review = pr.checks.as_ref().and_then(|c| c.review.as_ref());
+            let pass_on = format!("fctl review pass-on {}#{}", s.project_slug, s.number);
+            let held = review
+                .and_then(|r| match r.held_after {
+                    Some(n) => Some(format!(
+                        "held back from the agent after {n} reviews in a row: {pass_on} passes them on"
+                    )),
+                    None if r.unsent && !pulls::done(pr) => Some(format!(
+                        "its findings went to no session: {pass_on} passes them on to this one"
+                    )),
+                    None => None,
+                })
+                .map(|hint| format!("{:<10}{}", "", style::amber(&hint)));
             std::iter::once(line).chain(held)
         })
         .collect()
@@ -1328,6 +1331,25 @@ mod tests {
                 "          held back from the agent after 5 reviews in a row: fctl review pass-on app#1 passes them on",
                 "          lib#3 https://github.com/acme/lib/pull/3"
             ]
+        );
+        // Findings that went to no session.
+        if let Some(r) = s.pull_requests[0]
+            .checks
+            .as_mut()
+            .and_then(|c| c.review.as_mut())
+        {
+            r.held_after = None;
+            r.unsent = true;
+        }
+        assert_eq!(
+            pull_request_lines(&s, 0)[1],
+            "          its findings went to no session: fctl review pass-on app#1 passes them on to this one"
+        );
+        // Not once the pull request merged or closed.
+        s.pull_requests[0].state = Some("merged".into());
+        assert_eq!(
+            pull_request_lines(&s, 0)[1],
+            "          lib#3 https://github.com/acme/lib/pull/3"
         );
         s.pull_request = None;
         s.pull_requests.clear();
