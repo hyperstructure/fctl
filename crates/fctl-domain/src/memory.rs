@@ -16,7 +16,7 @@ pub const MAX_CHARS: usize = 2_000;
 /// The longest reason for marking a note stale.
 pub const MAX_REASON_CHARS: usize = 500;
 /// The most notes a project keeps, stale ones included.
-pub const MAX_PER_PROJECT: u32 = 500;
+pub const MAX_PER_PROJECT: u32 = 1_000;
 /// The most notes one note takes the place of: those it sums up.
 pub const MAX_REPLACED: usize = 20;
 /// How much of the notes' text an agent starts with, in bytes: about as

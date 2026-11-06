@@ -2749,7 +2749,7 @@ why and who marked it, and the note that took its place or that it repeats
    them stale (duplicates too) or current again and delete them (`POST
    /api/v1/projects/{id}/memories`, `PATCH` and `DELETE
    /api/v1/memories/{id}`), which the workspace's audit log records. A
-   project keeps at most 500 notes, stale ones included. Session pages ask
+   project keeps at most 1,000 notes, stale ones included. Session pages ask
    for the notes their agent wrote or marked stale (`?session=`), and the
    web app reads the memory again when a session of the project changes
    status, as when a turn ends. Deleting a note leaves the transcripts that

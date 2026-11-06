@@ -598,7 +598,7 @@ fctl review summarize summary.json           # review agents, first, where the p
 - fctl pushes the branch after every turn until its pull request merges,
   and another branch checked out then only once GitHub has it; agents
   commit as they go and never force-push.
-- Notes are at most 2,000 characters, a project keeps 500, and a note
+- Notes are at most 2,000 characters, a project keeps 1,000, and a note
   replaces at most 20 others. A session keeps at most 50 retrospectives and
   publishes at most 100 screenshots of 5 MB. In an hour, an agent comments
   on tickets at most 30 times, files at most 20, changes at most 60 and

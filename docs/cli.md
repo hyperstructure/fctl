@@ -555,7 +555,7 @@ retrospectives, and delete none. A note replaces at most 20 others.
 Both are on in new projects and projects from before them; `fctl projects
 set --project-memory off` and `--retrospectives off` turn them off, and the
 notes and retrospectives stay for people to read. A project keeps at most
-500 notes of 2,000 characters, stale ones included, and a session at most
+1,000 notes of 2,000 characters, stale ones included, and a session at most
 50 retrospectives.
 
 ### Review agents
