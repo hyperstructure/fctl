@@ -5,6 +5,7 @@
 use super::boot::say;
 use anyhow::{Context, Result, bail};
 use fctl_proto::vm::{Layer, MAX_LINE, PORT, Reply, Request};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -15,6 +16,9 @@ use vsock::{VMADDR_CID_ANY, VMADDR_CID_HOST, VsockAddr, VsockListener};
 pub struct Unpacked {
     pub files: u64,
     pub bytes: u64,
+    /// Each layer's digest, uncompressed (`sha256:<hex>`): what the image's
+    /// config says they are (`rootfs.diff_ids`), when it tells the truth.
+    pub diff_ids: Vec<String>,
 }
 
 /// Answers the host until one `unpack` request is done.
@@ -59,6 +63,7 @@ pub fn serve(root: &Path) -> Result<()> {
                     Ok(u) => Reply {
                         files: Some(u.files),
                         bytes: Some(u.bytes),
+                        diff_ids: Some(u.diff_ids.clone()),
                         ..Reply::default()
                     },
                     Err(e) => Reply::failed(format!("{e:#}")),
@@ -100,16 +105,17 @@ fn layers_onto(
     for (i, layer) in layers.iter().enumerate() {
         let mut bytes = from.take(layer.size);
         let n = i + 1;
-        match compression(&layer.media_type)? {
-            Compression::Gzip => apply(
+        let digest = match compression(&layer.media_type)? {
+            Compression::Gzip => apply_hashed(
                 root,
                 flate2::read::MultiGzDecoder::new(&mut bytes),
                 &mut done,
                 whiteouts,
             ),
-            Compression::None => apply(root, &mut bytes, &mut done, whiteouts),
+            Compression::None => apply_hashed(root, &mut bytes, &mut done, whiteouts),
         }
         .with_context(|| format!("unpacking layer {n} of {}", layers.len()))?;
+        done.diff_ids.push(digest);
         // What the decompressor left, padding say.
         std::io::copy(&mut bytes, &mut std::io::sink())?;
         say(&format!(
@@ -119,6 +125,37 @@ fn layers_onto(
         ));
     }
     Ok(done)
+}
+
+/// Applies one layer, a tar stream, as [`apply`] does; its digest, of all
+/// of the stream, the end the tar archive doesn't need too.
+fn apply_hashed(
+    root: &Path,
+    layer: impl Read,
+    done: &mut Unpacked,
+    whiteouts: Whiteouts,
+) -> Result<String> {
+    let mut hashed = Hashed {
+        inner: layer,
+        hasher: Sha256::new(),
+    };
+    apply(root, &mut hashed, done, whiteouts)?;
+    std::io::copy(&mut hashed, &mut std::io::sink())?;
+    Ok(format!("sha256:{}", hex::encode(hashed.hasher.finalize())))
+}
+
+/// A stream that hashes what is read from it.
+struct Hashed<R> {
+    inner: R,
+    hasher: Sha256,
+}
+
+impl<R: Read> Read for Hashed<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
 }
 
 enum Compression {
@@ -173,6 +210,34 @@ fn within(root: &Path, path: &Path) -> Option<PathBuf> {
     dir.starts_with(root).then(|| dir.join(name))
 }
 
+/// Makes the directories of `dir` (relative to `root`, which is canonical)
+/// that aren't there, each only once the one it goes in resolves inside
+/// `root`, as the tar crate does for an entry's: none through a link that
+/// leads out of it. Each is root's, 0755, as Docker makes those a layer
+/// doesn't list.
+fn make_dirs(root: &Path, dir: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut at = dir;
+    while std::fs::symlink_metadata(root.join(at)).is_err() {
+        missing.push(at);
+        match at.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => at = parent,
+            _ => break,
+        }
+    }
+    for dir in missing.into_iter().rev() {
+        let Some(made) = within(root, dir) else {
+            bail!("{} would be outside the image", dir.display());
+        };
+        match std::fs::create_dir(&made) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e).with_context(|| format!("making {}", dir.display())),
+        }
+    }
+    Ok(())
+}
+
 /// Applies one layer, a tar stream, onto `root`: `.wh.<name>` removes
 /// `<name>` from the layers below, `.wh..wh..opq` everything they have in
 /// its directory, and an entry replaces what was at its path unless both
@@ -206,6 +271,14 @@ pub fn apply(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         if name == ".wh..wh..opq" {
+            // Kept, it needs its directory, as a whiteout does.
+            if whiteouts == Whiteouts::Overlay
+                && let Some(dir) = path.parent()
+                && !dir.as_os_str().is_empty()
+                && make_dirs(root, dir).is_err()
+            {
+                continue;
+            }
             let Some(dir) = within(root, &path)
                 .as_deref()
                 .and_then(Path::parent)
@@ -229,10 +302,14 @@ pub fn apply(
         }
         if let Some(hidden) = name.strip_prefix(".wh.") {
             let hidden = path.with_file_name(hidden);
+            // Kept, the whiteout needs its directory, which a layer lists
+            // (as BuildKit's and Docker's do) or the image below has.
             if whiteouts == Whiteouts::Overlay
                 && let Some(dir) = hidden.parent()
+                && !dir.as_os_str().is_empty()
+                && make_dirs(root, dir).is_err()
             {
-                std::fs::create_dir_all(root.join(dir))?;
+                continue;
             }
             if let Some(target) = within(root, &hidden) {
                 remove(&target)?;
@@ -283,7 +360,6 @@ fn whiteout(path: &Path) -> Result<()> {
 /// Hides what the image below has in the directory `dir`, as overlayfs
 /// reads it.
 fn opaque(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
     xattr::set(dir, "trusted.overlay.opaque", b"y")
         .with_context(|| format!("making {} opaque", dir.display()))
 }
@@ -291,8 +367,10 @@ fn opaque(dir: &Path) -> Result<()> {
 /// A device node or a FIFO, which the tar crate would make a plain file.
 fn special(root: &Path, path: &Path, header: &tar::Header) -> Result<()> {
     use nix::sys::stat::{Mode, SFlag, makedev, mknod};
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(root.join(dir))?;
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        make_dirs(root, dir)?;
     }
     let Some(target) = within(root, path) else {
         bail!("{} would be outside the image", path.display());
@@ -334,6 +412,9 @@ mod tests {
         for (path, contents) in entries {
             let mut h = tar::Header::new_gnu();
             h.set_mtime(1_700_000_000);
+            // Root's, which a root that keeps owners reads.
+            h.set_uid(0);
+            h.set_gid(0);
             if let Some(dir) = path.strip_suffix('/') {
                 h.set_entry_type(tar::EntryType::Directory);
                 h.set_mode(0o755);
@@ -422,9 +503,13 @@ mod tests {
         let mut b = tar::Builder::new(Vec::new());
         let mut h = tar::Header::new_gnu();
         h.set_entry_type(tar::EntryType::Symlink);
+        h.set_uid(0);
+        h.set_gid(0);
         h.set_size(0);
         b.append_link(&mut h, "escape", dir.path())?;
         let mut h = tar::Header::new_gnu();
+        h.set_uid(0);
+        h.set_gid(0);
         h.set_size(1);
         h.set_mode(0o644);
         b.append_data(&mut h, "escape/outside", &b"x"[..])?;
@@ -455,6 +540,164 @@ mod tests {
             relative(Path::new("/./usr//bin/")),
             Some(PathBuf::from("usr/bin"))
         );
+        Ok(())
+    }
+
+    /// Each layer's digest is that of all of its tar stream, uncompressed,
+    /// the blocks after the archive's end too, as Docker's are.
+    #[test]
+    fn layers_tell_their_digests() -> Result<()> {
+        use std::io::Write;
+        let dir = tempfile::tempdir()?;
+        let mut plain = layer(&[("etc/", ""), ("etc/hostname", "base")]);
+        // Padded to a whole record, as GNU tar does.
+        plain.resize(10240, 0);
+        let other = layer(&[("etc/hostname", "top")]);
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&other)?;
+        let gz = gz.finish()?;
+        let layers = [
+            Layer {
+                media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+                size: plain.len() as u64,
+            },
+            Layer {
+                media_type: "application/vnd.oci.image.layer.v1.tar+gzip".into(),
+                size: gz.len() as u64,
+            },
+        ];
+        let stream = [plain.clone(), gz].concat();
+        let done = layers_onto(dir.path(), &layers, &mut &stream[..], Whiteouts::Apply)?;
+        let digest = |b: &[u8]| format!("sha256:{}", hex::encode(Sha256::digest(b)));
+        assert_eq!(done.diff_ids, [digest(&plain), digest(&other)]);
+        assert_eq!(read(dir.path(), "etc/hostname").as_deref(), Some("top"));
+        Ok(())
+    }
+
+    /// Kept for overlayfs, whiteouts make the directories they need in the
+    /// layer, but none through a link out of the root.
+    #[test]
+    fn kept_whiteouts_make_no_directory_outside_the_root() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root)?;
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside)?;
+        let mut done = Unpacked::default();
+        apply(
+            &root,
+            &layer(&[("escape", &format!("->{}", outside.display()))])[..],
+            &mut done,
+            Whiteouts::Overlay,
+        )?;
+        apply(
+            &root,
+            &layer(&[("escape/sub/.wh.y", ""), ("escape/deeper/.wh..wh..opq", "")])[..],
+            &mut done,
+            Whiteouts::Overlay,
+        )?;
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
+        // Nor does a device node's.
+        let mut b = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_entry_type(tar::EntryType::Fifo);
+        h.set_mode(0o644);
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_size(0);
+        b.append_data(&mut h, "escape/pipes/fifo", std::io::empty())?;
+        let bytes = b.into_inner()?;
+        let r = apply(&root, &bytes[..], &mut done, Whiteouts::Apply);
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
+        assert!(make_dirs(&root.canonicalize()?, Path::new("escape/x")).is_err());
+        make_dirs(&root.canonicalize()?, Path::new("a/b/c"))?;
+        assert!(root.join("a/b/c").is_dir());
+        Ok(())
+    }
+
+    /// Whether this process can make whiteouts as overlayfs reads them: a
+    /// character device 0/0 and `trusted.` attributes, which need root
+    /// with `CAP_MKNOD` and `CAP_SYS_ADMIN` (a container's root may lack
+    /// them).
+    fn keeps_whiteouts(dir: &Path) -> bool {
+        nix::unistd::geteuid().is_root()
+            && whiteout(&dir.join("probe")).is_ok()
+            && opaque(dir).is_ok()
+    }
+
+    /// Kept for overlayfs: a whiteout is a character device 0/0, an opaque
+    /// directory has `trusted.overlay.opaque`, and so does a directory in
+    /// place of something else; an entry in place of a whiteout replaces
+    /// it. Only as root, which the VM's init is.
+    #[test]
+    fn whiteouts_stay_as_overlayfs_reads_them() -> Result<()> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let dir = tempfile::tempdir()?;
+        if !keeps_whiteouts(dir.path()) {
+            // CI runs it as root, and sets this so that it can't skip.
+            assert!(
+                std::env::var_os("FCTL_TEST_WHITEOUTS").is_none(),
+                "FCTL_TEST_WHITEOUTS is set, but this process can't make whiteouts"
+            );
+            eprintln!("skipped: only root with CAP_MKNOD and CAP_SYS_ADMIN makes whiteouts");
+            return Ok(());
+        }
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root)?;
+        let mut done = Unpacked::default();
+        apply(
+            &root,
+            &layer(&[
+                ("etc/", ""),
+                ("etc/.wh.motd", ""),
+                ("etc/hostname", "top"),
+                ("opt/app/", ""),
+                ("opt/app/new", "3"),
+                ("opt/app/.wh..wh..opq", ""),
+                ("var/thing", "a file"),
+                ("srv/.wh.data", ""),
+                // In a directory the layer doesn't list.
+                ("usr/share/.wh.games", ""),
+            ])[..],
+            &mut done,
+            Whiteouts::Overlay,
+        )?;
+        let is_whiteout = |p: &str| {
+            std::fs::symlink_metadata(root.join(p))
+                .is_ok_and(|m| m.file_type().is_char_device() && m.rdev() == 0)
+        };
+        let is_opaque = |p: &str| {
+            xattr::get(root.join(p), "trusted.overlay.opaque")
+                .ok()
+                .flatten()
+                .is_some_and(|v| v == b"y")
+        };
+        assert!(is_whiteout("etc/motd"));
+        assert!(!root.join("etc/.wh.motd").exists());
+        assert!(is_opaque("opt/app") && !is_opaque("etc"));
+        assert_eq!(read(&root, "opt/app/new").as_deref(), Some("3"));
+        assert!(!root.join("opt/app/.wh..wh..opq").exists());
+        assert!(is_whiteout("srv/data") && is_whiteout("usr/share/games"));
+        let share = std::fs::metadata(root.join("usr/share"))?;
+        assert_eq!((share.uid(), share.mode() & 0o7777), (0, 0o755));
+        apply(
+            &root,
+            &layer(&[
+                // A file and a directory in place of whiteouts.
+                ("etc/motd", "back"),
+                ("srv/data/", ""),
+                ("srv/data/new", "1"),
+                // A directory in place of a file.
+                ("var/thing/", ""),
+                ("var/thing/inside", "x"),
+            ])[..],
+            &mut done,
+            Whiteouts::Overlay,
+        )?;
+        assert_eq!(read(&root, "etc/motd").as_deref(), Some("back"));
+        assert!(is_opaque("srv/data") && is_opaque("var/thing"));
+        assert_eq!(read(&root, "var/thing/inside").as_deref(), Some("x"));
         Ok(())
     }
 

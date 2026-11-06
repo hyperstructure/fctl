@@ -124,6 +124,39 @@ fn remove_stale(dir: &Path) {
 /// Makes an ext4 filesystem in a new sparse file of `gb` GiB at `path`,
 /// whose root is root's, labelled `label`, with a journal or not. It never
 /// writes over a file there, a sandbox's disk say.
+/// The layers' digests to keep for the image `resolved`: its config's
+/// (`rootfs.diff_ids`), once those of the layers after the first `skip`
+/// (which an image here has) are what the VM that unpacked them found,
+/// `unpacked`. An image whose layers aren't what its config says isn't
+/// kept, as Docker keeps none; one that a VM unpacked without saying is
+/// kept with none, and no image lies over it.
+fn checked_diff_ids(
+    resolved: &registry::Resolved,
+    skip: usize,
+    unpacked: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let Some(unpacked) = unpacked else {
+        return Ok(Vec::new());
+    };
+    let claimed = resolved.diff_ids.get(skip..).unwrap_or_default();
+    if claimed.len() != unpacked.len() {
+        bail!(
+            "its config lists {} layers, its manifest {}",
+            resolved.diff_ids.len(),
+            resolved.layers.len()
+        );
+    }
+    for (i, (claimed, found)) in claimed.iter().zip(unpacked).enumerate() {
+        if claimed != found {
+            bail!(
+                "its layer {} is {found} unpacked, where its config says {claimed}",
+                skip + i + 1
+            );
+        }
+    }
+    Ok(resolved.diff_ids.clone())
+}
+
 async fn make_fs(path: &Path, gb: u64, label: &str, journal: bool) -> Result<()> {
     let mkfs = find_program("mkfs.ext4").context("mkfs.ext4 is not installed (e2fsprogs)")?;
     let file = std::fs::OpenOptions::new()
@@ -430,7 +463,12 @@ impl FirecrackerDriver {
     /// was made from, and those any of them lies over.
     fn needed(&self) -> std::collections::HashSet<String> {
         let mut needed = std::collections::HashSet::new();
-        let roots = self.store.refs().into_values().chain(self.images_in_use());
+        let roots = self
+            .store
+            .refs()
+            .into_values()
+            .chain(self.images_in_use())
+            .chain(self.store.held());
         for id in roots {
             match self.store.chain(&id) {
                 Some(chain) => needed.extend(chain.into_iter().map(|i| i.id)),
@@ -547,20 +585,17 @@ impl FirecrackerDriver {
         let _held = lock.lock().await;
         let registry = registry::Registry::new();
         let resolved = registry.resolve(image, std::env::consts::ARCH).await?;
-        if let Some(mut here) = self.store.image(&resolved.id) {
+        if self.store.image(&resolved.id).is_some() {
+            // One an earlier fctl pulled has no layers' digests: no image
+            // lies over it until it is pulled again (the config's, which no
+            // VM checked, won't do).
             let _images = self.lock_images().await?;
-            // One an earlier fctl pulled, without its layers' digests,
-            // which images that lie over it need.
-            if here.diff_ids.is_empty() && !resolved.diff_ids.is_empty() {
-                here.diff_ids = resolved.diff_ids.clone();
-                self.store.save(&here)?;
-            }
             self.store.tag(image, &resolved.id)?;
             self.remove_unused();
             return Ok(());
         }
         // An image here whose layers it starts with: only the others come.
-        let base = self.base_for(&resolved);
+        let (base, _held) = self.base_for(&resolved).await?.unzip();
         let skip = base.as_ref().map_or(0, |b| b.diff_ids.len());
         let total: u64 = resolved.layers[skip..].iter().map(|l| l.size).sum();
         match &base {
@@ -585,11 +620,14 @@ impl FirecrackerDriver {
             hex::encode(fctl_domain::random_bytes::<6>())
         ));
         let result = async {
-            let (rootfs, files, bytes) = self
+            let (rootfs, unpacked) = self
                 .download_and_unpack(image, &registry, &resolved, skip, &downloads, log)
                 .await?;
+            let diff_ids = checked_diff_ids(&resolved, skip, unpacked.diff_ids.as_deref())
+                .with_context(|| format!("{image} isn't what its config says"))?;
+            let (files, bytes) = (unpacked.files, unpacked.bytes);
             let base = base.map(|b| b.id);
-            self.keep(image, key, &resolved, base, &rootfs, files, bytes)
+            self.keep(image, key, &resolved, base, diff_ids, &rootfs, files, bytes)
                 .await?;
             Ok::<_, anyhow::Error>((files, bytes))
         }
@@ -604,17 +642,27 @@ impl FirecrackerDriver {
     }
 
     /// The image here that `resolved` can lie over ([`Store::base_for`]),
-    /// when its config says its layers' digests.
-    fn base_for(&self, resolved: &registry::Resolved) -> Option<Image> {
+    /// when its config says its layers' digests, held until `resolved` is
+    /// kept: nothing removes it meanwhile.
+    async fn base_for(
+        &self,
+        resolved: &registry::Resolved,
+    ) -> Result<Option<(Image, images::Held)>> {
         if resolved.diff_ids.len() != resolved.layers.len() {
-            return None;
+            return Ok(None);
         }
-        self.store.base_for(&resolved.diff_ids)
+        let _images = self.lock_images().await?;
+        let Some(base) = self.store.base_for(&resolved.diff_ids) else {
+            return Ok(None);
+        };
+        let held = self.store.hold(&base.id)?;
+        Ok(Some((base, held)))
     }
 
     /// Keeps the image `resolved`, whose layers unpacked to `rootfs`
     /// (`files` and `bytes`; over `base`'s, those `base` doesn't have),
-    /// named `name` (`key` as the store keeps it).
+    /// named `name` (`key` as the store keeps it), with its layers'
+    /// digests as a VM found them ([`checked_diff_ids`]).
     #[allow(clippy::too_many_arguments)]
     async fn keep(
         &self,
@@ -622,6 +670,7 @@ impl FirecrackerDriver {
         key: String,
         resolved: &registry::Resolved,
         base: Option<String>,
+        diff_ids: Vec<String>,
         rootfs: &Path,
         files: u64,
         bytes: u64,
@@ -637,7 +686,7 @@ impl FirecrackerDriver {
             files,
             bytes,
             pulled_ms: vsock::now_ms(),
-            diff_ids: resolved.diff_ids.clone(),
+            diff_ids,
             base,
         };
         let _images = self.lock_images().await?;
@@ -669,7 +718,7 @@ impl FirecrackerDriver {
         skip: usize,
         downloads: &Path,
         log: Log<'_>,
-    ) -> Result<(PathBuf, u64, u64)> {
+    ) -> Result<(PathBuf, vsock::Unpacked)> {
         std::fs::create_dir_all(downloads)?;
         let mut files = Vec::new();
         for (i, layer) in resolved.layers.iter().enumerate().skip(skip) {
@@ -689,12 +738,13 @@ impl FirecrackerDriver {
                 size: l.size,
             })
             .collect();
-        let (files_n, bytes) = self.unpack(&rootfs, &layers, &files, skip > 0, log).await?;
-        Ok((rootfs, files_n, bytes))
+        let unpacked = self.unpack(&rootfs, &layers, &files, skip > 0, log).await?;
+        Ok((rootfs, unpacked))
     }
 
     /// Unpacks `layers`, the files `blobs`, onto the filesystem `rootfs`
-    /// in a VM booted for it; what it wrote: files and bytes.
+    /// in a VM booted for it; what it wrote. None, for an image that only
+    /// sets its config over another, needs no VM.
     async fn unpack(
         &self,
         rootfs: &Path,
@@ -702,7 +752,13 @@ impl FirecrackerDriver {
         blobs: &[PathBuf],
         overlay: bool,
         log: Log<'_>,
-    ) -> Result<(u64, u64)> {
+    ) -> Result<vsock::Unpacked> {
+        if layers.is_empty() {
+            return Ok(vsock::Unpacked {
+                diff_ids: Some(Vec::new()),
+                ..vsock::Unpacked::default()
+            });
+        }
         let firecracker = self.firecracker(log).await?;
         let kernel = self.kernel(log).await?;
         let (initrd, _) = self.initrd().await?;
@@ -1157,6 +1213,96 @@ mod tests {
             ..HostConfig::default()
         };
         FirecrackerDriver::new(&host)
+    }
+
+    /// An image is kept with its config's layer digests only once the VM
+    /// that unpacked its layers found them so; one whose layers aren't
+    /// what its config says isn't kept.
+    #[test]
+    fn layers_are_what_their_config_says() {
+        let digest = |n: u8| format!("sha256:{}", n.to_string().repeat(64));
+        let resolved = registry::Resolved {
+            id: digest(9),
+            config: registry::Config::default(),
+            layers: (0..3)
+                .map(|_| registry::Descriptor {
+                    media_type: String::new(),
+                    digest: digest(8),
+                    size: 1,
+                })
+                .collect(),
+            diff_ids: vec![digest(1), digest(2), digest(3)],
+        };
+        let found = |d: &[u8]| d.iter().map(|n| digest(*n)).collect::<Vec<_>>();
+        let checked = |skip, unpacked: Option<&[String]>| {
+            checked_diff_ids(&resolved, skip, unpacked).map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            checked(0, Some(&found(&[1, 2, 3]))),
+            Ok(resolved.diff_ids.clone())
+        );
+        // Over an image here that has the first two.
+        assert_eq!(
+            checked(2, Some(&found(&[3]))),
+            Ok(resolved.diff_ids.clone())
+        );
+        // Over one that has all of them: nothing to unpack.
+        assert_eq!(checked(3, Some(&[])), Ok(resolved.diff_ids.clone()));
+        assert_eq!(
+            checked(1, Some(&found(&[2, 4]))),
+            Err(format!(
+                "its layer 3 is {} unpacked, where its config says {}",
+                digest(4),
+                digest(3)
+            ))
+        );
+        assert_eq!(
+            checked(0, Some(&found(&[1, 2]))),
+            Err("its config lists 3 layers, its manifest 3".to_owned())
+        );
+        // An fctl-agent that doesn't say: kept with none.
+        assert_eq!(checked(0, None), Ok(Vec::new()));
+    }
+
+    /// What a pull or a build lies a new image over stays, though nothing
+    /// else needs it, until it is done.
+    #[tokio::test]
+    async fn an_image_being_lain_over_stays() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let base = Image {
+            id: format!("sha256:{}", "3".repeat(64)),
+            reference: "docker.io/library/debian:trixie".into(),
+            diff_ids: vec![format!("sha256:{}", "4".repeat(64))],
+            ..Image::default()
+        };
+        let rootfs = dir.path().join("rootfs");
+        std::fs::write(&rootfs, b"ext4")?;
+        d.store.add(&base, &rootfs)?;
+        let resolved = registry::Resolved {
+            id: format!("sha256:{}", "5".repeat(64)),
+            config: registry::Config::default(),
+            layers: (0..2)
+                .map(|_| registry::Descriptor {
+                    media_type: String::new(),
+                    digest: String::new(),
+                    size: 1,
+                })
+                .collect(),
+            diff_ids: vec![
+                base.diff_ids[0].clone(),
+                format!("sha256:{}", "6".repeat(64)),
+            ],
+        };
+        let (chosen, held) = d.base_for(&resolved).await?.context("no base")?;
+        assert_eq!(chosen.id, base.id);
+        // Its name goes meanwhile, and no sandbox uses it.
+        d.remove_image("docker.io/library/debian:trixie").await?;
+        assert!(d.store.image(&base.id).is_some());
+        drop(held);
+        d.remove_unused();
+        assert!(d.store.image(&base.id).is_none());
+        Ok(())
     }
 
     #[tokio::test]

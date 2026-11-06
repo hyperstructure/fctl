@@ -134,6 +134,17 @@ fn image_dir(i: u32) -> String {
     }
 }
 
+/// The overlay of a sandbox's root: the `lowers` images' filesystems, the
+/// top one (the last disk of them) first as overlayfs lists them, under
+/// the sandbox's own disk.
+fn overlay_options(lowers: u32) -> String {
+    let lowerdir: Vec<String> = (0..lowers).rev().map(image_dir).collect();
+    format!(
+        "lowerdir={},upperdir=/disk/root,workdir=/disk/work",
+        lowerdir.join(":")
+    )
+}
+
 /// Puts the sandbox's root together from the `lowers` images' filesystems
 /// on its first disks and its own disk after them, copies fctl-agent into
 /// it, and runs it there as PID 1. Returns only when something fails.
@@ -165,16 +176,12 @@ fn switch_root(lowers: u32) -> Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("making {dir}"))?;
     }
     // The image at the top of the stack first, as overlayfs takes them.
-    let lowerdir: Vec<String> = (0..lowers).rev().map(image_dir).collect();
     mount_fs(
         "overlay",
         NEW_ROOT,
         "overlay",
         MsFlags::empty(),
-        Some(&format!(
-            "lowerdir={},upperdir=/disk/root,workdir=/disk/work",
-            lowerdir.join(":")
-        )),
+        Some(&overlay_options(lowers)),
     )?;
     let run = format!("{NEW_ROOT}/run");
     mount_fs(
@@ -376,5 +383,30 @@ fn reap_until(server: Pid) {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The images' filesystems are the first disks, the bottom one first,
+    /// and the sandbox's own disk comes after them; overlayfs lists the
+    /// top one first.
+    #[test]
+    fn a_sandbox_stacks_its_images_in_their_order() {
+        assert_eq!(disk_device(0), "/dev/vda");
+        assert_eq!(disk_device(3), "/dev/vdd");
+        assert_eq!(disk_device(40), "/dev/vdz");
+        assert_eq!(image_dir(0), "/image");
+        assert_eq!(image_dir(2), "/image2");
+        assert_eq!(
+            overlay_options(1),
+            "lowerdir=/image,upperdir=/disk/root,workdir=/disk/work"
+        );
+        assert_eq!(
+            overlay_options(3),
+            "lowerdir=/image2:/image1:/image,upperdir=/disk/root,workdir=/disk/work"
+        );
     }
 }

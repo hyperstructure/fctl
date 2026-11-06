@@ -139,6 +139,13 @@ jobs:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
         run: |
           cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
+      # Whiteouts kept as overlayfs reads them, for images that lie over
+      # others, need root, which the VMs' init is.
+      - name: Unpack layers as root
+        run: |
+          bin=$(CARGO_TERM_COLOR=never cargo test --locked -p fctl-agent --bin fctl-agent --no-run 2>&1 | sed -n 's/.*Executable unittests src\/main.rs (\(.*\))/\1/p')
+          test -x "$bin"
+          sudo env FCTL_TEST_WHITEOUTS=1 "$bin" vm::unpack --nocapture
 
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that

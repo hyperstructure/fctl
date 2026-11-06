@@ -58,9 +58,11 @@ pub fn canonical(reference: &str) -> Option<String> {
     })
 }
 
-/// The images under `dir`: `refs.json`, and a directory for each image
-/// named after its ID's hex digits, with `image.json` and `rootfs.ext4`.
-/// What changes names or removes images holds [`Store::lock`].
+/// The images under `dir`: `refs.json`, a directory for each image named
+/// after its ID's hex digits, with `image.json` and `rootfs.ext4`, and
+/// `held`, with a file for each image that a pull or a build lies a new
+/// image over ([`Store::hold`]). What changes names or removes images holds
+/// [`Store::lock`].
 #[derive(Clone, Debug)]
 pub struct Store {
     pub dir: PathBuf,
@@ -79,9 +81,82 @@ impl Drop for Lock {
     }
 }
 
+/// An image that a pull or a build lies a new image over, kept until this
+/// goes ([`Store::hold`]).
+#[derive(Debug)]
+pub struct Held {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        // As `Lock` does: a process forked meanwhile shares the file.
+        let _ = self.file.unlock();
+    }
+}
+
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
+    }
+
+    fn held_dir(&self) -> PathBuf {
+        self.dir.join("held")
+    }
+
+    /// Keeps the image `id` until the returned [`Held`] goes, though no
+    /// name or sandbox needs it, for a pull or a build that lies a new image
+    /// over it: a file that names it, locked while this process holds it,
+    /// so that a host or `fctl host image pull` that stopped halfway keeps
+    /// it no longer. Under [`Store::lock`], so that nothing removes `id`
+    /// between choosing it and holding it.
+    pub fn hold(&self, id: &str) -> Result<Held> {
+        std::fs::create_dir_all(self.held_dir())?;
+        let path = self
+            .held_dir()
+            .join(hex::encode(fctl_domain::random_bytes::<8>()));
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        file.lock()?;
+        std::fs::write(&path, id)?;
+        Ok(Held { file, path })
+    }
+
+    /// The images that pulls and builds hold ([`Store::hold`]); files of
+    /// holds that ended without removing them go.
+    pub fn held(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.held_dir()) else {
+            return Vec::new();
+        };
+        let mut held = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(file) = std::fs::File::open(entry.path()) else {
+                continue;
+            };
+            match file.try_lock_shared() {
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if let Ok(id) = std::fs::read_to_string(entry.path())
+                        && !id.trim().is_empty()
+                    {
+                        held.push(id.trim().to_owned());
+                    }
+                }
+                Ok(()) => {
+                    // No one holds it; one being made isn't locked yet, for
+                    // a moment, but is still empty.
+                    if std::fs::metadata(entry.path()).is_ok_and(|m| m.len() > 0) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                    let _ = file.unlock();
+                }
+                Err(_) => {}
+            }
+        }
+        held
     }
 
     /// Waits for the store's lock, which the returned [`Lock`] holds until
@@ -242,19 +317,24 @@ impl Store {
     }
 
     /// The image here that an image of the layers `diff_ids` can lie over:
-    /// the one whose layers are most of its first ones, and that stacks few
-    /// enough images for it to stack one more.
+    /// the one whose layers are most of its first ones (all of them, for an
+    /// image that only sets its config), of those that stack few enough
+    /// images for it to stack one more, the one that stacks fewest.
     pub fn base_for(&self, diff_ids: &[String]) -> Option<Image> {
         self.ids()
             .into_iter()
             .filter_map(|id| self.image(&id))
             .filter(|i| {
                 !i.diff_ids.is_empty()
-                    && i.diff_ids.len() < diff_ids.len()
+                    && i.diff_ids.len() <= diff_ids.len()
                     && diff_ids.starts_with(&i.diff_ids)
             })
-            .filter(|i| self.chain(&i.id).is_some_and(|c| c.len() < MAX_CHAIN))
-            .max_by_key(|i| i.diff_ids.len())
+            .filter_map(|i| {
+                let stacks = self.chain(&i.id)?.len();
+                (stacks < MAX_CHAIN).then_some((i, stacks))
+            })
+            .max_by_key(|(i, stacks)| (i.diff_ids.len(), std::cmp::Reverse(*stacks)))
+            .map(|(i, _)| i)
     }
 
     /// The IDs of the images here.
@@ -364,12 +444,23 @@ mod tests {
         };
         let debian = add('a', ids(1), None)?;
         let sandbox = add('b', ids(4), Some(&debian.id))?;
-        // Nothing of the layers, or all of them, is nothing to lie over.
-        assert_eq!(store.base_for(&ids(1)), None);
+        // Nothing of the layers is nothing to lie over.
         assert_eq!(
             store.base_for(&[format!("sha256:{}", "9".repeat(64))]),
             None
         );
+        // All of them is, for an image that only sets its config.
+        assert_eq!(
+            store.base_for(&ids(1)).map(|i| i.id),
+            Some(debian.id.clone())
+        );
+        // Of images with as many of them, the one that stacks fewest.
+        let configured = add('e', ids(4), Some(&sandbox.id))?;
+        assert_eq!(
+            store.base_for(&ids(5)).map(|i| i.id),
+            Some(sandbox.id.clone())
+        );
+        store.remove(&configured.id)?;
         // The image with most of them.
         assert_eq!(
             store.base_for(&ids(6)).map(|i| i.id),
@@ -400,6 +491,32 @@ mod tests {
         // A chain with an image missing is none.
         store.remove(&sandbox.id)?;
         assert_eq!(store.chain(&project.id), None);
+        Ok(())
+    }
+
+    /// A pull or a build holds the image it lies a new one over until it
+    /// is done, and only while its process runs.
+    #[test]
+    fn pulls_hold_the_images_they_lie_over() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::new(dir.path().join("images"));
+        let id = format!("sha256:{}", "a".repeat(64));
+        let held = store.hold(&id)?;
+        assert_eq!(store.held(), std::slice::from_ref(&id));
+        drop(held);
+        assert!(store.held().is_empty());
+        assert_eq!(std::fs::read_dir(store.held_dir())?.count(), 0);
+        // One whose process stopped without removing its file: its lock
+        // went with the process, and the file goes.
+        let stale = store.held_dir().join("0123456789abcdef");
+        std::fs::write(&stale, &id)?;
+        assert!(store.held().is_empty());
+        assert!(!stale.exists());
+        // One being made, not yet locked or written, stays.
+        let making = store.held_dir().join("fedcba9876543210");
+        std::fs::write(&making, "")?;
+        assert!(store.held().is_empty());
+        assert!(making.exists());
         Ok(())
     }
 

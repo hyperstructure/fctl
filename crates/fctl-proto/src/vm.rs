@@ -203,6 +203,11 @@ pub struct Reply {
     pub files: Option<u64>,
     #[serde(default)]
     pub bytes: Option<u64>,
+    /// The digest of each layer it unpacked, uncompressed
+    /// (`sha256:<hex>`), as an image's config lists them
+    /// (`rootfs.diff_ids`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_ids: Option<Vec<String>>,
 }
 
 impl Reply {
@@ -273,6 +278,14 @@ mod tests {
             Some((Mode::Unpack, "fctl".into()))
         );
         assert_eq!(Boot::parse("console=ttyS0 root=/dev/vda"), None);
+        // One image at least, and at most 16; one for what isn't a number.
+        let lowers =
+            |n: &str| Boot::parse(&format!("fctl.mode=sandbox fctl.lowers={n}")).map(|b| b.lowers);
+        assert_eq!(lowers("0"), Some(1));
+        assert_eq!(lowers("4"), Some(4));
+        assert_eq!(lowers("99"), Some(16));
+        assert_eq!(lowers("x"), Some(1));
+        assert_eq!(Boot::parse("fctl.mode=sandbox").map(|b| b.lowers), Some(1));
     }
 
     #[test]

@@ -3439,15 +3439,20 @@ in `firecracker/` in the host's data directory.
   digest, as Docker's image ID; names refer to images as Docker's tags do
   (`images.rs`). A pull whose image is here already reads only its
   manifest, so refreshing the default image works as with Docker. Removing
-  a name keeps the last one of an image that a sandbox uses. An image whose
-  layers start with all of another's here (by their uncompressed digests,
-  its config's `rootfs.diff_ids`), as a project's image `FROM` the default
-  one does, keeps only what its other layers make, over that image's
-  filesystem: a pull or a build downloads and unpacks only those, with
-  their whiteouts kept as overlayfs reads them (a character device 0/0,
-  `trusted.overlay.opaque`), and its sandboxes stack the images' disks,
-  four at most, under their own. An image stays while another here lies
-  over it, its last name gone or not.
+  a name keeps the last one of an image that a sandbox uses. The VM that
+  unpacks a layer hashes it, uncompressed, and an image whose layers
+  aren't what its config says (`rootfs.diff_ids`) isn't kept, as Docker
+  keeps none. An image whose layers start with all of another's here, as a
+  project's image `FROM` the default one does, keeps only what its other
+  layers make (nothing, for one that only sets its config), over that
+  image's filesystem: a pull or a build downloads and unpacks only those,
+  with their whiteouts kept as overlayfs reads them (a character device
+  0/0, `trusted.overlay.opaque`; a directory a layer doesn't list is
+  root's, 0755, as Docker makes it), and its sandboxes stack the images'
+  disks, four at most, under their own. An image stays while another here
+  lies over it, its last name gone or not, and while a pull or a build
+  lies a new one over it (a locked file in the store's `held`). Images an
+  earlier fctl pulled lie under none until they are pulled again.
 - **Builds.** A project's image builds with BuildKit
   (`docker.io/moby/buildkit`, pinned by digest, which the host pulls from
   Docker Hub for a project's first build) in a VM of the project's own,
