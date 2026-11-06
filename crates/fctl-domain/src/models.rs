@@ -21,13 +21,16 @@ pub fn model_label(model: &str) -> &str {
 /// since (`/model` in a message).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelName {
-    /// The name Claude was started on or is switching to, until its
-    /// `system/init` names a model other than the one it worked on.
+    /// The name Claude was started on, until its `system/init` says which
+    /// model that is.
     starting: Option<String>,
     /// A name, and the ID of the model Claude took it for.
     known: Option<(String, String)>,
     /// The ID of the model Claude last said it works on, in this run.
     working: Option<String>,
+    /// A switch Claude didn't answer in time: the name asked for, and the
+    /// ID of the model Claude worked on then.
+    switching: Option<(String, String)>,
 }
 
 impl ModelName {
@@ -36,18 +39,22 @@ impl ModelName {
         self.starting = name.map(str::to_owned);
         self.known = None;
         self.working = None;
+        self.switching = None;
     }
 
     /// Claude was asked to switch to `name` and didn't say in time whether
-    /// it did: the next model its `system/init` names other than the one it
-    /// worked on is the one it switched to.
+    /// it did. Its next `system/init` decides: a model other than the one it
+    /// worked on is the one it switched to; the same one, that it didn't
+    /// (yet), and a model it switches to later shows by its ID. Before
+    /// Claude has named any model, nothing tells, so it shows by its ID.
     pub fn switching(&mut self, name: &str) {
-        self.starting = Some(name.to_owned());
+        self.switching = self.working.clone().map(|from| (name.to_owned(), from));
     }
 
     /// Claude switched to `name`, and named the model it works on now `id`.
     pub fn switched(&mut self, name: &str, id: &str) {
         self.starting = None;
+        self.switching = None;
         self.known = Some((name.to_owned(), id.to_owned()));
         self.working = Some(id.to_owned());
     }
@@ -55,8 +62,10 @@ impl ModelName {
     /// Claude's `system/init` says it works on the model `id`: the name to
     /// show for it.
     pub fn init(&mut self, id: &str) -> String {
-        if self.working.as_deref() != Some(id)
-            && let Some(name) = self.starting.take()
+        if let Some(name) = self.starting.take() {
+            self.known = Some((name, id.to_owned()));
+        } else if let Some((name, from)) = self.switching.take()
+            && from != id
         {
             self.known = Some((name, id.to_owned()));
         }
@@ -115,21 +124,25 @@ mod tests {
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
         assert_eq!(m.init("claude-sonnet-5-5"), "sonnet");
 
-        // A switch Claude didn't answer in time: its turns go on on Sonnet
-        // until it switches, late, to Haiku.
+        // A switch Claude didn't answer in time, which its next turn is on.
         m.switching("haiku");
-        assert_eq!(m.init("claude-sonnet-5-5"), "sonnet");
         assert_eq!(m.init("claude-haiku-5-5"), "haiku");
         assert_eq!(m.init("claude-haiku-5-5"), "haiku");
 
         // Started again on Claude's default: nobody named it.
         m.started(None);
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
-        // A switch it didn't answer in time: still Opus, by its ID, until
-        // it switches.
+        // A switch it didn't answer in time and hasn't made by its next
+        // turn: Opus, by its ID, and a later `/model` to Haiku doesn't take
+        // the name.
         m.switching("sonnet");
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
-        assert_eq!(m.init("claude-sonnet-5-5"), "sonnet");
+        assert_eq!(m.init("claude-haiku-4-5"), "claude-haiku-4-5");
+        // Asked to switch before Claude named a model: nothing tells.
+        m.started(Some("opus"));
+        m.switching("sonnet");
+        assert_eq!(m.init("claude-opus-5-5"), "opus");
+        assert_eq!(m.init("claude-sonnet-5-5"), "claude-sonnet-5-5");
         // Started on a model's ID: the ID.
         m.started(Some("claude-opus-5-5"));
         assert_eq!(m.init("claude-opus-5-5"), "claude-opus-5-5");
