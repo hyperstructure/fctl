@@ -511,7 +511,7 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                     "driver:   {}, {}",
                     cfg.driver,
                     style::amber(&format!(
-                        "not ready: {}",
+                        "not ready: {}: it takes no sessions until it is",
                         info.detail.as_deref().unwrap_or("not available")
                     ))
                 ),

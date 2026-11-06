@@ -1014,6 +1014,9 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 if let Some(d) = low_disk_line(&r) {
                     println!("  {}", style::amber(&d));
                 }
+                if let Some(d) = driver_line(&r) {
+                    println!("  {}", style::amber(&d));
+                }
                 if let Some(l) = &r.sandbox {
                     println!(
                         "  {}",
@@ -1297,6 +1300,24 @@ pub(crate) fn low_disk_line(r: &Runner) -> Option<String> {
     })
 }
 
+/// Why no new session starts on an online runner whose driver can't start
+/// sandboxes, as its host last said: `its docker driver isn't ready: the
+/// Docker daemon isn't running: no new sessions start on it until it is`.
+/// Older hosts' sessions start there anyway, and fail.
+pub(crate) fn driver_line(r: &Runner) -> Option<String> {
+    if r.status != RunnerStatus::Online {
+        return None;
+    }
+    let driver = r.driver.as_deref()?;
+    let why = fctl_domain::schedule::driver_problem(driver, &r.drivers)?;
+    let then = if r.waits_for_driver == Some(true) {
+        "no new sessions start on it until it is"
+    } else {
+        "sessions that start on it fail until it is"
+    };
+    Some(format!("its {driver} driver isn't ready: {why}: {then}"))
+}
+
 /// What a drain leaves running, and what happens to it.
 pub(crate) fn still_running(n: u32, place: &str) -> String {
     match n {
@@ -1349,6 +1370,39 @@ mod tests {
             "created_at": 0,
             "created_by": { "id": "usr_ada", "name": "Ada Lovelace" },
         }))?)
+    }
+
+    #[test]
+    fn runners_say_when_their_driver_cant_start_sandboxes() -> Result<()> {
+        let mut r = runner("rnr_01STUDIO", "studio-mac", "online", Some(NOW))?;
+        assert_eq!(driver_line(&r), None);
+        r.driver = Some("docker".into());
+        r.drivers = serde_json::from_value(serde_json::json!([
+            { "name": "docker", "available": false, "isolation": "container",
+              "detail": "the Docker daemon isn't running" },
+            { "name": "lima", "available": false, "isolation": "vm" }
+        ]))?;
+        // Its host says when that changes: sessions wait.
+        r.waits_for_driver = Some(true);
+        assert_eq!(
+            driver_line(&r).as_deref(),
+            Some(
+                "its docker driver isn't ready: the Docker daemon isn't running: no new sessions start on it until it is"
+            )
+        );
+        // An older host's sessions start there anyway.
+        r.waits_for_driver = None;
+        assert!(
+            driver_line(&r)
+                .is_some_and(|l| l.ends_with("sessions that start on it fail until it is"))
+        );
+        // What an offline runner said is old; another driver's state is no matter.
+        r.status = RunnerStatus::Offline;
+        assert_eq!(driver_line(&r), None);
+        r.status = RunnerStatus::Online;
+        r.driver = Some("process".into());
+        assert_eq!(driver_line(&r), None);
+        Ok(())
     }
 
     #[test]

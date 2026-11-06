@@ -167,6 +167,9 @@ enum Chore {
     /// The release of the newer version the control plane runs is here,
     /// checked.
     Downloaded(Box<Ready>),
+    /// The driver this host uses became ready, or stopped being: the
+    /// control plane hears it at once (`serve`).
+    Drivers,
 }
 
 const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
@@ -199,7 +202,7 @@ impl Daemon {
         );
         if let Some(why) = ctx.driver_problem() {
             tracing::warn!(
-                "the {} driver isn't ready: {why}; sessions here fail until it is",
+                "the {} driver isn't ready: {why}; it takes no sessions until it is",
                 ctx.driver.name()
             );
         }
@@ -700,6 +703,8 @@ impl Daemon {
                 }
             }
             Chore::Downloaded(ready) => self.downloaded(*ready),
+            // `serve` sends them as it loops.
+            Chore::Drivers => {}
         }
     }
 
@@ -1013,10 +1018,12 @@ impl Daemon {
             allowed_builds: images.builds,
             min_free_disk_mb: self.ctx.cfg.min_free_disk_mb(),
             // Its agents, of its own version, run review agents' sessions
-            // and know agents that triage.
+            // and know agents that triage; it says when its driver becomes
+            // ready or stops being, and takes no session while it isn't.
             features: vec![
                 fctl_proto::runner::FEATURE_REVIEWS.to_owned(),
                 fctl_proto::runner::FEATURE_TRIAGE.to_owned(),
+                fctl_proto::runner::FEATURE_DRIVERS.to_owned(),
             ],
             claude_token: Some(claude_token::announce(&self.ctx.cfg.claude_token())),
             auto_update: Some(self.updates.is_some()),
@@ -1067,7 +1074,7 @@ impl Daemon {
         // Once the runtime answers.
         self.refresh_image();
         self.start_sweep();
-        refresh_facts_every(self.ctx.clone(), FACTS_EVERY);
+        refresh_facts_every(self.ctx.clone(), FACTS_EVERY, self.chores_tx.clone());
         watch_disk(self.ctx.clone(), self.chores_tx.clone());
         let url = format!(
             "{}/api/v1/runner/connect",
@@ -1120,6 +1127,14 @@ impl Daemon {
         let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
         heartbeat.tick().await;
         loop {
+            // The drivers changed since the control plane last heard of
+            // them: it hears now, rather than at the next beat, since it
+            // starts no session here while the driver isn't ready.
+            if self.ctx.drivers_differ(&self.drivers_said) {
+                let hb = self.heartbeat();
+                self.outbox.push_back(HostToFleet::Heartbeat(hb));
+                heartbeat.reset();
+            }
             // What the last step queued, and what waited for a connection.
             // A message that can't be sent waits for the next one.
             while let Some(m) = self.outbox.pop_front() {
@@ -1174,6 +1189,23 @@ impl Daemon {
                     request_id: rid,
                     session_id,
                     kind,
+                });
+            }
+            // It never started: its driver isn't ready. The control plane
+            // queues it again, and hears why from the next heartbeat, which
+            // comes now (`serve`), as the drivers changed.
+            SessionEvent::Ended {
+                session_id,
+                status: SessionStatus::Queued,
+                reason,
+                ..
+            } => {
+                self.sessions.remove(&session_id);
+                self.removable = true;
+                self.outbox.push_back(HostToFleet::StartResult {
+                    session_id,
+                    accepted: false,
+                    error: reason,
                 });
             }
             SessionEvent::Ended {
@@ -1372,6 +1404,12 @@ impl Daemon {
             *waiting = spec;
             return Ok(());
         }
+        // Its driver can't start sandboxes, nor start the one a session has:
+        // it takes none. The control plane sends none, but it learns of the
+        // driver from heartbeats; the next one comes now (`serve`).
+        if let Some(why) = self.ctx.driver_problem() {
+            return Err(session::not_ready(&self.ctx, &why));
+        }
         // Low on disk, it takes only the sessions whose sandboxes it has:
         // they need no new one. The control plane sends no others, but it
         // learns the free disk from heartbeats, which come every 15 s.
@@ -1466,8 +1504,9 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
 /// Probes the drivers and measures what sandboxes run on every `period`, in
 /// the background, and every [`NOT_READY_EVERY`] while the driver it uses
 /// isn't ready: once someone starts Docker, say, the control plane hears it
-/// soon.
-fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration) {
+/// soon, and starts the sessions that wait. It tells the daemon when that
+/// driver becomes ready or stops being, so that it says so now.
+fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration, chores: mpsc::UnboundedSender<Chore>) {
     tokio::spawn(async move {
         loop {
             let wait = match ctx.driver_problem() {
@@ -1479,12 +1518,18 @@ fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration) {
             ctx.refresh_facts().await;
             let after = ctx.driver_problem();
             if after != before {
-                match after {
+                match &after {
                     Some(why) => tracing::warn!(
-                        "the {} driver isn't ready: {why}; sessions here fail until it is",
+                        "the {} driver isn't ready: {why}; it takes no sessions until it is",
                         ctx.driver.name()
                     ),
-                    None => tracing::info!("the {} driver is ready again", ctx.driver.name()),
+                    None => tracing::info!(
+                        "the {} driver is ready again; it takes sessions",
+                        ctx.driver.name()
+                    ),
+                }
+                if chores.send(Chore::Drivers).is_err() {
+                    return;
                 }
             }
         }
@@ -1587,6 +1632,9 @@ mod tests {
         let mut cfg = HostConfig {
             driver: "process".into(),
             data_dir: Some(dir.path().to_owned()),
+            // Named, the process driver is ready wherever the tests run,
+            // with fctl-agent on PATH or not: it takes sessions.
+            agent_bin: Some(dir.path().join("fctl-agent")),
             ..HostConfig::default()
         };
         configure(&mut cfg);
@@ -1749,6 +1797,71 @@ mod tests {
                 .map(|i| i.available),
             Some(false)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_host_whose_driver_isnt_ready_takes_no_session_and_hands_back_those_it_couldnt_start()
+    -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |cfg| cfg.name = "studio".into()).await?;
+        assert!(
+            d.hello()
+                .features
+                .iter()
+                .any(|f| f == fctl_proto::runner::FEATURE_DRIVERS)
+        );
+        // The process driver is ready when fctl-agent is found: the test
+        // says whether it is.
+        let set_process = |d: &Daemon, detail: Option<&str>| {
+            let mut drivers = d
+                .ctx
+                .drivers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for info in drivers.iter_mut().filter(|i| i.name == "process") {
+                info.available = detail.is_none();
+                info.detail = detail.map(Into::into);
+            }
+        };
+        set_process(&d, None);
+        d.drivers_said = d.hello().drivers;
+        assert!(!d.ctx.drivers_differ(&d.drivers_said));
+        // It stops being ready: the control plane hears at once…
+        let why = "fctl-agent was not found next to fctl or on PATH";
+        set_process(&d, Some(why));
+        assert!(d.ctx.drivers_differ(&d.drivers_said));
+        // …and until it has, the host declines what it sends.
+        let refused = d
+            .start_session(spec("ses_01NEW")?)
+            .err()
+            .unwrap_or_default();
+        assert_eq!(
+            refused,
+            format!("studio's process driver isn't ready: {why}")
+        );
+        assert!(d.sessions.is_empty() && d.pending_starts.is_empty());
+        // A run that couldn't make its sandbox for that goes back to the
+        // queue: declined, with no end of a run to report.
+        running(&mut d, "ses_01BACK");
+        d.on_session_event(SessionEvent::Ended {
+            session_id: SessionId("ses_01BACK".into()),
+            status: SessionStatus::Queued,
+            reason: Some(refused.clone()),
+            run_id: Some("run_1".into()),
+        });
+        assert!(d.sessions.is_empty());
+        assert_eq!(
+            d.outbox.drain(..).collect::<Vec<_>>(),
+            [HostToFleet::StartResult {
+                session_id: SessionId("ses_01BACK".into()),
+                accepted: false,
+                error: Some(refused),
+            }]
+        );
+        // Ready again: it takes sessions.
+        set_process(&d, None);
+        d.hold("fctl-ses-01next");
+        assert_eq!(d.start_session(spec("ses_01NEXT")?), Ok(()));
         Ok(())
     }
 

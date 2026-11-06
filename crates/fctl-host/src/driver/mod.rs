@@ -354,14 +354,16 @@ impl Driver {
         )))
     }
 
-    /// Every driver this host could use, for the runner's hello.
+    /// Every driver this host could use, for the runner's hello, each with
+    /// `cfg`'s settings, as the one it uses has them: the control plane
+    /// starts no session here while that one isn't ready.
     pub async fn probe_all(cfg: &HostConfig) -> Vec<DriverInfo> {
         let (apple, docker, firecracker, lima, process) = (
             container::ContainerDriver::apple(),
             container::ContainerDriver::docker(),
             firecracker::FirecrackerDriver::new(cfg),
             lima::LimaDriver::new(),
-            process::ProcessDriver::new(&cfg.data_dir(), None),
+            process::ProcessDriver::new(&cfg.data_dir(), cfg.agent_bin.clone()),
         );
         let (apple, docker, firecracker, lima, process) = tokio::join!(
             apple.probe(),

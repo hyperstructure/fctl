@@ -120,6 +120,32 @@ impl HostCtx {
             .clone()
     }
 
+    /// Whether the drivers differ from `said`, what the control plane last
+    /// heard of them.
+    pub fn drivers_differ(&self, said: &[DriverInfo]) -> bool {
+        *self.drivers.lock().unwrap_or_else(PoisonError::into_inner) != said
+    }
+
+    /// Probes the driver this host uses again, now, and notes what it found
+    /// for the next heartbeat: why it isn't ready, or `None` when it is. A
+    /// sandbox it failed to make may have failed for that: Docker stopped
+    /// since the last probe, say.
+    pub async fn recheck_driver(&self) -> Option<String> {
+        let info = self.driver.probe().await;
+        let why = (!info.available).then(|| {
+            info.detail
+                .clone()
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| "not available".into())
+        });
+        let mut drivers = self.drivers.lock().unwrap_or_else(PoisonError::into_inner);
+        match drivers.iter_mut().find(|d| d.name == info.name) {
+            Some(d) => *d = info,
+            None => drivers.push(info),
+        }
+        why
+    }
+
     /// Probes the drivers and measures what sandboxes run on again (Docker's
     /// VM may have been resized), and finds where their disk is. The
     /// runner's hello reports what this found last, so the control
@@ -239,6 +265,8 @@ pub enum SessionEvent {
         request_id: String,
         kind: CredentialKind,
     },
+    /// The run ended. `Queued`: it never started, since the driver isn't
+    /// ready (`reason` says so), and the control plane queues it again.
     Ended {
         session_id: SessionId,
         status: SessionStatus,
@@ -799,6 +827,25 @@ async fn prepare(
     Ok((sb, for_agent))
 }
 
+/// Why this host takes no session now: `studio's docker driver isn't ready:
+/// the Docker daemon isn't running`.
+pub fn not_ready(ctx: &HostCtx, why: &str) -> String {
+    format!(
+        "{}'s {} driver isn't ready: {why}",
+        ctx.cfg.name,
+        ctx.driver.name()
+    )
+}
+
+/// Whether someone asked to stop the session, of what came for it so far.
+fn stop_asked(cmds: &mut mpsc::UnboundedReceiver<SessionCmd>) -> bool {
+    let mut asked = false;
+    while let Ok(cmd) = cmds.try_recv() {
+        asked |= matches!(cmd, SessionCmd::Stop { .. });
+    }
+    asked
+}
+
 /// Starts fctl-agent in a sandbox that has one, perhaps of an older host,
 /// which may not run as root (`serve --user`): this host's goes in first.
 /// One that runs keeps running.
@@ -890,6 +937,26 @@ async fn run(
                 }
                 Ok(Err(e)) => {
                     let msg = format!("{e:#}");
+                    // The driver may have stopped being ready since the host
+                    // last probed it (Docker quit, say): then the session
+                    // goes back to the control plane's queue, to start once
+                    // a runner can start it, rather than fail. Not when
+                    // someone stopped it meanwhile.
+                    if let Some(why) = ctx.recheck_driver().await
+                        && !stop_asked(&mut cmds)
+                    {
+                        let reason = not_ready(&ctx, &why);
+                        tracing::warn!("{session_id} goes back to the queue: {reason} ({msg})");
+                        host_log(
+                            &uplink,
+                            LogLevel::Warn,
+                            format!(
+                                "{reason}, so the session waits for a runner that can start it"
+                            ),
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        return (SessionStatus::Queued, Some(reason));
+                    }
                     host_log(&uplink, LogLevel::Error, msg.clone());
                     uplink.state(state(SessionStatus::Failed, &msg));
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1315,6 +1382,100 @@ fn agent_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session of a project that sets nothing.
+    fn spec(session_id: &str) -> Result<Box<SessionSpec>> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "session_id": session_id,
+            "number": 1,
+            "title": "T",
+            "project": {
+                "id": "prj_1", "slug": "app", "name": "App",
+                "repo": { "owner": "acme", "name": "app" },
+                "default_branch": "main", "settings": {}
+            },
+            "branch": "fctl/1", "base_branch": "main",
+            "author": { "id": "usr_1", "name": "Ada" },
+            "claude_session_id": "00000000-0000-0000-0000-000000000000",
+            "resume": false, "secrets": {},
+            "credentials": {
+                "claude": { "id": "crd_1", "kind": "oauth", "access_token": "a", "scopes": [] },
+                "github": { "token": "ghs_w", "expires_at": 1 }
+            },
+            "git_author": { "name": "bot", "email": "bot@example.com" },
+            "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
+        }))?)
+    }
+
+    /// Starts a new run of `session_id` and waits for it to end: how, and why.
+    async fn run_to_end(
+        ctx: &Arc<HostCtx>,
+        session_id: &str,
+    ) -> Result<(SessionStatus, Option<String>)> {
+        let (events, mut ended) = mpsc::unbounded_channel();
+        let _handle = spawn(ctx.clone(), Start::New(spec(session_id)?), events);
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(60), ended.recv()).await?;
+            match event.context("the run ended without saying so")? {
+                SessionEvent::Ended { status, reason, .. } => return Ok((status, reason)),
+                SessionEvent::CredentialRequest { .. } => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_driver_stopped_being_ready_goes_back_to_the_queue() -> Result<()> {
+        use crate::driver::container::Flavor;
+        use crate::driver::fake::FakeCli;
+        let data = tempfile::tempdir()?;
+        let cfg = HostConfig {
+            name: "studio".into(),
+            driver: "docker".into(),
+            // Nothing answers there: the session's uplink tries in vain.
+            server: "http://127.0.0.1:9".into(),
+            data_dir: Some(data.path().to_owned()),
+            ..HostConfig::default()
+        };
+        let cli = FakeCli::new(&[&cfg.image()], &[])?;
+        let ctx = Arc::new(HostCtx::new(
+            cfg,
+            cli.host_driver(Flavor::Docker),
+            "fctl_rt_test".into(),
+        ));
+        // When the host last probed it, Docker answered; then it stopped.
+        *ctx.drivers.lock().unwrap_or_else(PoisonError::into_inner) =
+            vec![ctx.driver.probe().await];
+        assert_eq!(ctx.driver_problem(), None);
+        cli.refuse(
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        )?;
+        let (status, reason) = run_to_end(&ctx, "ses_01DOWN").await?;
+        assert_eq!(status, SessionStatus::Queued);
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason
+                .starts_with("studio's docker driver isn't ready: the Docker daemon isn't running"),
+            "{reason}"
+        );
+        // The next heartbeat says so.
+        let why = ctx.driver_problem().unwrap_or_default();
+        assert!(why.starts_with("the Docker daemon isn't running"), "{why}");
+        // Docker answers again, but the sandbox can't be made for another
+        // reason: that session fails, as before.
+        cli.answer()?;
+        cli.fail_runs()?;
+        let (status, reason) = run_to_end(&ctx, "ses_01FULL").await?;
+        assert_eq!(status, SessionStatus::Failed);
+        assert!(
+            reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no room for it"),
+            "{reason:?}"
+        );
+        assert_eq!(ctx.driver_problem(), None);
+        Ok(())
+    }
 
     fn delivery(id: &str, kind: DeliveryKind) -> Delivery {
         Delivery {

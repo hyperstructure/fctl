@@ -15,12 +15,13 @@ use crate::internal::{
 use crate::spec;
 use fctl_domain::image::HostImages;
 use fctl_domain::reconcile::{self, Known, Unassigned};
-use fctl_domain::schedule::{Home, Slot, TokenWait, Wait};
+use fctl_domain::schedule::{Home, Slot, TokenWait, Unready, Wait};
 use fctl_proto::api::{ClaudeLoginJob, ClaudeLoginState, FeedServer};
 use fctl_proto::event::{Notice, NoticeLevel};
 use fctl_proto::runner::{
-    ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_REVIEWS, FEATURE_TRIAGE, FleetToHost,
-    HostHello, HostSessionReport, HostToFleet, RunnerClaudeToken, SandboxLimits, StopReason,
+    ClaudeLoginUpdate, CredentialKind, DriverInfo, FEATURE_DRIVERS, FEATURE_REVIEWS,
+    FEATURE_TRIAGE, FleetToHost, HostHello, HostSessionReport, HostToFleet, RunnerClaudeToken,
+    SandboxLimits, StopReason,
 };
 use fctl_proto::session::{GithubAccess, RunnerRef, SessionStatus};
 use fctl_proto::{ApiError, ErrorCode, LoginJobId, RunnerId, SessionId};
@@ -191,6 +192,10 @@ struct Candidate {
     allowed_builds: Option<Vec<String>>,
     /// Its host runs review agents' sessions.
     reviews: bool,
+    /// The driver its host uses and why it can't start sandboxes now, as
+    /// its host last said; `None` while it can, and from hosts that don't
+    /// keep saying ([`FEATURE_DRIVERS`]), whose word may be old.
+    unready: Option<(String, String)>,
     /// The Claude token its host keeps for its owner, as it last said:
     /// `None` from hosts too old to keep one.
     claude_token: Option<RunnerClaudeToken>,
@@ -243,6 +248,7 @@ impl Candidate {
     fn slot(&self, want: &spec::SessionWants) -> Slot<'_> {
         Slot {
             id: &self.id,
+            name: &self.name,
             online: true,
             enabled: true,
             serves: self.serves.takes(want) && (!want.on_runners || self.keeps_token()),
@@ -258,6 +264,10 @@ impl Candidate {
                 builds: self.allowed_builds.as_deref(),
             },
             reviews: self.reviews,
+            unready: self
+                .unready
+                .as_ref()
+                .map(|(driver, why)| Unready { driver, why }),
         }
     }
 }
@@ -321,6 +331,9 @@ impl DurableObject for FleetObject {
         // Columns added after the first release. A failing statement throws past
         // Rust (workers-rs does not catch every SQL error), so check first.
         add_column(&sql, "assignments", "run_id", "TEXT");
+        // Set once FleetDO asked its runner to stop the session: a decline
+        // that crosses that ask doesn't queue it again.
+        add_column(&sql, "assignments", "stopping", "INTEGER");
         // Why a queued session waits, as it last said.
         add_column(&sql, "queue", "reason", "TEXT");
         add_column(&sql, "runners", "memory_available_mb", "INTEGER");
@@ -1587,10 +1600,34 @@ impl FleetObject {
             );
             return;
         }
+        // Declined, or handed back once its driver stopped being ready
+        // (`FEATURE_DRIVERS`), after someone stopped it: it stays stopped,
+        // unless a message or a resume queued it again since.
+        let stopping = self
+            .sql
+            .exec(
+                "SELECT session_id FROM assignments WHERE session_id = ? AND runner_id = ? AND stopping = 1",
+                Some(vec![sv(session_id.as_str()), sv(runner_id)]),
+            )
+            .and_then(|c| c.to_array::<serde_json::Value>())
+            .is_ok_and(|r| !r.is_empty());
         let _ = self.sql.exec(
             "DELETE FROM assignments WHERE session_id = ?",
             Some(vec![sv(session_id.as_str())]),
         );
+        if stopping {
+            if !self.queued(session_id.as_str()) {
+                self.session_control(
+                    session_id,
+                    Some(SessionStatus::Stopped),
+                    Some("Stopped before it started".into()),
+                    true,
+                )
+                .await;
+            }
+            self.dispatch().await;
+            return;
+        }
         #[derive(Deserialize)]
         struct A {
             attempts: f64,
@@ -2168,6 +2205,13 @@ impl FleetObject {
                     .get(&r.id)
                     .cloned()
                     .unwrap_or_default();
+                let unready = hello
+                    .features
+                    .iter()
+                    .any(|f| f == FEATURE_DRIVERS)
+                    .then(|| fctl_domain::schedule::driver_problem(&hello.driver, &hello.drivers))
+                    .flatten()
+                    .map(|why| (hello.driver.clone(), why.to_owned()));
                 Some(Candidate {
                     id: r.id,
                     name: r.name,
@@ -2184,6 +2228,7 @@ impl FleetObject {
                     allowed_images: hello.allowed_images,
                     allowed_builds: hello.allowed_builds,
                     reviews: hello.features.iter().any(|f| f == FEATURE_REVIEWS),
+                    unready,
                     claude_token: hello.claude_token,
                     serves,
                 })
@@ -2320,6 +2365,10 @@ impl FleetObject {
             .unwrap_or_default();
         match assigned.first() {
             Some(a) if self.runner_socket(&a.runner_id).is_some() => {
+                let _ = self.sql.exec(
+                    "UPDATE assignments SET stopping = 1 WHERE session_id = ?",
+                    Some(vec![sv(b.session_id.as_str())]),
+                );
                 // Stopping first: from then on the session keeps messages for
                 // its next run instead of handing them to an agent that stops.
                 self.session_control(

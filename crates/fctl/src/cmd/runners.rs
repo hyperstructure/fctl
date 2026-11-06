@@ -5,7 +5,7 @@
 //! tokens, with which machines enroll themselves as their runners, or as
 //! yours.
 
-use crate::cmd::admin::{drain_line, find_runner, low_disk_line, still_running};
+use crate::cmd::admin::{drain_line, driver_line, find_runner, low_disk_line, still_running};
 use crate::config;
 use crate::style;
 use anyhow::{Result, bail};
@@ -600,6 +600,9 @@ fn print_runner(r: &Runner) {
         println!("  {}", style::dim(&d));
     }
     if let Some(d) = low_disk_line(r) {
+        println!("  {}", style::amber(&d));
+    }
+    if let Some(d) = driver_line(r) {
         println!("  {}", style::amber(&d));
     }
     if let Some(h) = r.remove_offline_after_minutes {

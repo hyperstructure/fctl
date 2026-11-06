@@ -8,6 +8,8 @@ use fctl_proto::runner::{DriverInfo, SandboxLimits, SandboxSize};
 #[derive(Clone, Debug)]
 pub struct Slot<'a> {
     pub id: &'a str,
+    /// What people call it, as a session that waits for it says.
+    pub name: &'a str,
     pub online: bool,
     pub enabled: bool,
     /// It runs the sessions of the session's workspace.
@@ -28,6 +30,39 @@ pub struct Slot<'a> {
     pub images: HostImages<'a>,
     /// Its host runs review agents' sessions (`fctl_proto::runner::FEATURE_REVIEWS`).
     pub reviews: bool,
+    /// Why the driver its host uses can't start sandboxes now, as its host
+    /// last said ([`driver_problem`]); `None` while it can, and for hosts
+    /// that don't keep saying (`fctl_proto::runner::FEATURE_DRIVERS`). Such
+    /// a runner takes no session, not even a resume into the sandbox it
+    /// has, as if it were offline.
+    pub unready: Option<Unready<'a>>,
+}
+
+/// Why a runner's driver can't start sandboxes now.
+#[derive(Clone, Copy, Debug)]
+pub struct Unready<'a> {
+    /// The driver its host uses: `docker`, say.
+    pub driver: &'a str,
+    /// Why, as its host says: `the Docker daemon isn't running`.
+    pub why: &'a str,
+}
+
+/// A runner that would take a session once its driver is ready.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitsForDriver {
+    pub name: String,
+    pub driver: String,
+    pub why: String,
+}
+
+impl WaitsForDriver {
+    fn of(slot: &Slot) -> Option<Self> {
+        slot.unready.map(|u| Self {
+            name: slot.name.to_owned(),
+            driver: u.driver.to_owned(),
+            why: u.why.trim().trim_end_matches('.').to_owned(),
+        })
+    }
 }
 
 /// The runner that keeps a session's sandbox from an earlier run: there,
@@ -75,6 +110,9 @@ pub enum Wait {
     /// It is a review agent's session, and no online runner of its
     /// workspace runs a version of fctl that has review agents.
     Reviews,
+    /// The online runners that would take it can't start sandboxes until
+    /// their driver is ready: Docker isn't running there, say.
+    Driver { runners: Vec<WaitsForDriver> },
 }
 
 impl Wait {
@@ -118,6 +156,20 @@ impl Wait {
             Self::Image { image } => format!("No runner allows this project's image, {image}"),
             Self::Build { repo } => format!("No runner builds this project's image from {repo}"),
             Self::Reviews => "Waiting for a runner that runs review agents: the ones online run an older fctl. Update them with `fctl self update`.".into(),
+            Self::Driver { runners } => match &runners[..] {
+                [] => Self::NoRunner.reason(),
+                [one] => format!(
+                    "Waiting for {}, whose {} driver isn't ready: {}",
+                    one.name, one.driver, one.why
+                ),
+                all => format!(
+                    "Waiting for a runner: the drivers of the ones that could take it aren't ready ({})",
+                    all.iter()
+                        .map(|r| format!("{}: {}", r.name, r.why))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            },
         }
     }
 
@@ -148,13 +200,16 @@ fn parts(cpus: Option<u32>, memory_mb: Option<u32>, memory_suffix: &str) -> Stri
 
 /// The least loaded online runner with a free slot that has every required
 /// label, runs or builds the image the session wants, gives a sandbox the
-/// size it wants and, for a review agent's session (`review`), runs review
-/// agents. Ties go to the runner listed first.
+/// size it wants, can start sandboxes now (its driver is ready) and, for a
+/// review agent's session (`review`), runs review agents. Ties go to the
+/// runner listed first.
 ///
 /// A session's `home` comes first when it is online and could take it, also
 /// while it drains or is low on disk: with a free slot it gets the session,
 /// and without one the session waits for it if `home.wait` says so. Other
-/// runners that drain or are low on disk take no sessions.
+/// runners that drain or are low on disk take no sessions. A home whose
+/// driver isn't ready counts as offline: the session starts elsewhere when
+/// it can, and otherwise waits for a runner whose driver is.
 pub fn pick<'a>(
     slots: &'a [Slot<'a>],
     required_labels: &[String],
@@ -189,16 +244,20 @@ pub fn pick<'a>(
     if online.is_empty() {
         return Err(Wait::image(image));
     }
+    // A home that would take it once its driver is ready, which a session
+    // that waits names too.
+    let mut home_unready = None;
     if let Some(home) = home
         && let Some(slot) = online
             .iter()
             .copied()
             .find(|s| s.id == home.id && s.sandbox.is_none_or(|l| want.fits(&l)))
     {
-        if slot.active < slot.capacity {
+        if slot.unready.is_some() {
+            home_unready = WaitsForDriver::of(slot);
+        } else if slot.active < slot.capacity {
             return Ok(slot);
-        }
-        if home.wait {
+        } else if home.wait {
             return Err(Wait::Home {
                 name: home.name.to_owned(),
             });
@@ -210,6 +269,11 @@ pub fn pick<'a>(
         .filter(|s| !s.draining && !s.low_disk)
         .collect();
     if open.is_empty() {
+        if let Some(home) = home_unready {
+            return Err(Wait::Driver {
+                runners: vec![home],
+            });
+        }
         let draining = online.iter().any(|s| s.draining);
         return Err(if online.iter().all(|s| s.draining) {
             Wait::Draining
@@ -225,7 +289,24 @@ pub fn pick<'a>(
     if fitting.is_empty() {
         return Err(too_big(&open, want));
     }
-    fitting
+    let ready: Vec<&Slot> = fitting
+        .iter()
+        .copied()
+        .filter(|s| s.unready.is_none())
+        .collect();
+    if ready.is_empty() {
+        let mut runners: Vec<WaitsForDriver> = fitting
+            .iter()
+            .filter_map(|s| WaitsForDriver::of(s))
+            .collect();
+        if let Some(home) = home_unready
+            && !runners.contains(&home)
+        {
+            runners.insert(0, home);
+        }
+        return Err(Wait::Driver { runners });
+    }
+    ready
         .into_iter()
         .filter(|s| s.active < s.capacity)
         .min_by(|a, b| {
@@ -277,10 +358,22 @@ pub fn runs_for(
 /// last said of its `drivers`: Docker answers it, say. Hosts that don't
 /// list it count as ready.
 pub fn driver_ready(driver: &str, drivers: &[DriverInfo]) -> bool {
+    driver_problem(driver, drivers).is_none()
+}
+
+/// Why the driver a runner's host uses (`driver`) can't start sandboxes, as
+/// the host last said of its `drivers`; `None` while it can, and when they
+/// don't list it.
+pub fn driver_problem<'a>(driver: &str, drivers: &'a [DriverInfo]) -> Option<&'a str> {
     drivers
         .iter()
-        .find(|d| d.name == driver)
-        .is_none_or(|d| d.available)
+        .find(|d| d.name == driver && !d.available)
+        .map(|d| {
+            d.detail
+                .as_deref()
+                .filter(|why| !why.trim().is_empty())
+                .unwrap_or("not available")
+        })
 }
 
 /// Whether a session runs only on its person's runners: they keep their
@@ -374,6 +467,7 @@ mod tests {
     fn slot<'a>(id: &'a str, capacity: u32, active: u32, labels: &'a [String]) -> Slot<'a> {
         Slot {
             id,
+            name: id,
             online: true,
             enabled: true,
             serves: true,
@@ -385,6 +479,7 @@ mod tests {
             low_disk: false,
             images: HostImages::default(),
             reviews: false,
+            unready: None,
         }
     }
 
@@ -1081,6 +1176,167 @@ mod tests {
         assert!(Wait::Reviews.reason().contains("fctl self update"));
     }
 
+    const DOWN: Unready<'static> = Unready {
+        driver: "docker",
+        why: "the Docker daemon isn't running",
+    };
+
+    #[test]
+    fn a_runner_whose_driver_isnt_ready_takes_no_sessions() {
+        let none: Vec<String> = vec![];
+        let any = Want::default();
+        let slots = [
+            Slot {
+                unready: Some(DOWN),
+                ..slot("studio", 4, 0, &none)
+            },
+            slot("laptop", 1, 0, &none),
+        ];
+        let new = |slots: &[Slot]| {
+            pick(slots, &[], any, &ImageWant::Default, None, false)
+                .map(|s| s.id.to_owned())
+                .map_err(|w| w.reason())
+        };
+        // Emptier, but it can't start sandboxes: new sessions go elsewhere.
+        assert_eq!(new(&slots), Ok("laptop".into()));
+        // The other one is full: it frees up by itself.
+        let full = [
+            slots[0].clone(),
+            Slot {
+                active: 1,
+                ..slots[1].clone()
+            },
+        ];
+        assert_eq!(new(&full), Err(Wait::Busy.reason()));
+        // With no other runner, a session waits, and says why.
+        assert_eq!(
+            new(&slots[..1]),
+            Err("Waiting for studio, whose docker driver isn't ready: the Docker daemon isn't running".into())
+        );
+        // Once its driver is ready, it takes sessions again.
+        let ready = [Slot {
+            unready: None,
+            ..slots[0].clone()
+        }];
+        assert_eq!(new(&ready), Ok("studio".into()));
+        // Several: each with why.
+        let both = [
+            slots[0].clone(),
+            Slot {
+                unready: Some(Unready {
+                    driver: "apple",
+                    why: "the `container` service is not running.",
+                }),
+                ..slots[1].clone()
+            },
+        ];
+        assert_eq!(
+            new(&both),
+            Err("Waiting for a runner: the drivers of the ones that could take it aren't ready (studio: the Docker daemon isn't running; laptop: the `container` service is not running)".into())
+        );
+    }
+
+    #[test]
+    fn a_session_waits_only_for_drivers_of_runners_that_would_take_it() {
+        let none: Vec<String> = vec![];
+        let slots = [
+            Slot {
+                unready: Some(DOWN),
+                sandbox: limits(4, 8192),
+                ..slot("small", 4, 0, &none)
+            },
+            Slot {
+                draining: true,
+                ..slot("draining", 4, 0, &none)
+            },
+        ];
+        let reason = |want: Want| {
+            pick(&slots, &[], want, &ImageWant::Default, None, false)
+                .err()
+                .map(|w| w.reason())
+        };
+        // It fits the one whose driver isn't ready.
+        assert_eq!(
+            reason(memory(4096)).as_deref(),
+            Some(
+                "Waiting for small, whose docker driver isn't ready: the Docker daemon isn't running"
+            )
+        );
+        // It doesn't: a ready driver wouldn't start it there either.
+        assert_eq!(
+            reason(memory(16_384)).as_deref(),
+            Some("No runner can give this session 16 GiB of memory (the most is 8 GiB)")
+        );
+        // A runner that drains takes no new session, whatever its driver.
+        assert_eq!(
+            pick(
+                &slots[1..],
+                &[],
+                Want::default(),
+                &ImageWant::Default,
+                None,
+                false
+            )
+            .map(|s| s.id),
+            Err(Wait::Draining)
+        );
+    }
+
+    #[test]
+    fn a_resume_whose_home_cant_start_sandboxes_starts_elsewhere_or_waits_for_it() {
+        let none: Vec<String> = vec![];
+        let any = Want::default();
+        let slots = [
+            Slot {
+                unready: Some(DOWN),
+                ..slot("studio", 4, 0, &none)
+            },
+            slot("laptop", 4, 3, &none),
+        ];
+        let resume = |slots: &[Slot], wait: bool| {
+            pick(
+                slots,
+                &[],
+                any,
+                &ImageWant::Default,
+                home("studio", wait),
+                false,
+            )
+            .map(|s| s.id.to_owned())
+            .map_err(|w| w.reason())
+        };
+        // As if it were offline: elsewhere, in a new sandbox.
+        assert_eq!(resume(&slots, true), Ok("laptop".into()));
+        // Nowhere else to go: it waits for its home's driver.
+        let waits = Err(
+            "Waiting for studio, whose docker driver isn't ready: the Docker daemon isn't running"
+                .to_owned(),
+        );
+        assert_eq!(resume(&slots[..1], true), waits);
+        // Also when its home drains or is low on disk, which a resume
+        // doesn't mind, and the others drain.
+        let closed = [
+            Slot {
+                low_disk: true,
+                ..slots[0].clone()
+            },
+            Slot {
+                draining: true,
+                ..slots[1].clone()
+            },
+        ];
+        assert_eq!(resume(&closed, true), waits);
+        // Once its driver is ready, it goes back to its sandbox there.
+        let ready = [
+            Slot {
+                unready: None,
+                ..closed[0].clone()
+            },
+            closed[1].clone(),
+        ];
+        assert_eq!(resume(&ready, true), Ok("studio".into()));
+    }
+
     #[test]
     fn a_runner_is_ready_unless_its_driver_says_otherwise() {
         let info = |name: &str, available: bool| DriverInfo {
@@ -1100,5 +1356,16 @@ mod tests {
         // Hosts that list nothing, or not the driver they use.
         assert!(driver_ready("docker", &[]));
         assert!(driver_ready("process", &drivers));
+        assert_eq!(
+            driver_problem("lima", &drivers),
+            Some("the Docker daemon isn't running")
+        );
+        assert_eq!(driver_problem("docker", &drivers), None);
+        // A host that says no more than that it isn't.
+        let quiet = [DriverInfo {
+            detail: Some(" ".into()),
+            ..info("docker", false)
+        }];
+        assert_eq!(driver_problem("docker", &quiet), Some("not available"));
     }
 }

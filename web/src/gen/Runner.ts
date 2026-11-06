@@ -84,6 +84,15 @@ claude_token?: RunnerClaudeToken,
  */
 auto_update?: boolean, 
 /**
+ * Whether no new session starts on it while the driver it uses isn't
+ * ready (`drivers` says why), rather than start there and fail: its
+ * host keeps the control plane told of its drivers
+ * ([`FEATURE_DRIVERS`]). Absent from older hosts and control planes.
+ *
+ * [`FEATURE_DRIVERS`]: crate::runner::FEATURE_DRIVERS
+ */
+waits_for_driver?: boolean, 
+/**
  * The workspace it enrolled in with one of its enrollment tokens
  * (`fctl host install --enroll`), and the only one whose sessions it
  * runs. Without `created_by`, it belongs to the workspace: its admins
