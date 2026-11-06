@@ -1233,7 +1233,8 @@ agent posts a notice; a primary repository out of reach fails the session.
   the session stops, it looks up only the pull request of a pushed branch
   it follows none of (`Moment::Stopping`), so that a session whose turn
   was cut short before fctl-agent saw `gh pr create` still lists the pull
-  request it opened; GitHub has 20 seconds to answer. The
+  request it opened; GitHub has 20 seconds from the start of that refresh
+  to answer for them all. The
   system prompt tells agents to make another pull request's branch where
   the repository is checked out, not in a worktree, since Changes shows
   the checked-out branches.
@@ -1676,15 +1677,19 @@ posts what it found on GitHub
    before the pull request is looked up, the findings of its newest review
    that posted go to the session that opened it, as above, if they went
    to no session and the pull request isn't merged or closed
-   (`fctl_domain::reviews::owed`): a newer review that posted takes the
-   place of an older one. Until then, the review's `Review.unsent` says
+   (`fctl_domain::reviews::owed`). A newer review that posted takes the
+   place of an older one, and drops what the older ones of its workspace
+   kept, as a `pull_request` delivery that says the pull request merged or
+   closed drops what all of its reviews kept (`drop_unsent`). Until then,
+   the review's `Review.unsent` says
    its findings went to no session, in the Reviews tab, its session's
    rail and `fctl review`, and so does its check on the pull requests of
    sessions that list it (`ReviewCheck::unsent`), whose page offers to
    pass them on to that session's agent, as `fctl review pass-on` does
    (`crate::reviews::pass_on_unsent`, through SessionObject's `/pass-on`):
    for one that lists the pull request in the review's workspace, while it
-   is open, and whose agent writes on GitHub.
+   is open and owes that review's findings, and whose agent writes on
+   GitHub.
 8. **A review that ends otherwise** (superseded, stopped, failed) ends
    its check as cancelled, saying why (`crate::reviews::ended`, from
    SessionObject; the hourly job catches what it missed).

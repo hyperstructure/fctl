@@ -425,7 +425,7 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
                     Some(n) => Some(format!(
                         "held back from the agent after {n} reviews in a row: {pass_on} passes them on"
                     )),
-                    None if r.unsent => Some(format!(
+                    None if r.unsent && !pulls::done(pr) => Some(format!(
                         "its findings went to no session: {pass_on} passes them on to this one"
                     )),
                     None => None,
@@ -1344,6 +1344,12 @@ mod tests {
         assert_eq!(
             pull_request_lines(&s, 0)[1],
             "          its findings went to no session: fctl review pass-on app#1 passes them on to this one"
+        );
+        // Not once the pull request merged or closed.
+        s.pull_requests[0].state = Some("merged".into());
+        assert_eq!(
+            pull_request_lines(&s, 0)[1],
+            "          lib#3 https://github.com/acme/lib/pull/3"
         );
         s.pull_request = None;
         s.pull_requests.clear();

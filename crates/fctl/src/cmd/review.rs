@@ -327,9 +327,13 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
         .filter_map(|pr| {
             let checks = pr.checks.as_ref()?;
             let review = checks.review.as_ref()?;
+            // Findings that went to no session go on only while their
+            // pull request is open.
             let after = match review.held_after {
                 Some(after) => after,
-                None if review.unsent => fctl_domain::reviews::MAX_PASSED_ON,
+                None if review.unsent && !fctl_domain::pulls::done(pr) => {
+                    fctl_domain::reviews::MAX_PASSED_ON
+                }
                 None => return None,
             };
             let unsent = review.held_after.is_none();
@@ -347,13 +351,18 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
             "fctl holds back no review's findings from the agent of {name}, and sent none of its pull requests' reviews to no session"
         );
     }
+    // Each review's on its own: one that the control plane refuses (a newer
+    // review came meanwhile, say) keeps none of the others back.
     let mut passed = Vec::new();
+    let mut refused = Vec::new();
     for (pr, sha, review, after, unsent) in held {
-        let sent = api.pass_on_review(s.id.as_str(), review.as_str()).await?;
-        passed.push((pr, sha, after, unsent, review, sent.delivery_id));
+        match api.pass_on_review(s.id.as_str(), review.as_str()).await {
+            Ok(sent) => passed.push((pr, sha, after, unsent, review, sent.delivery_id)),
+            Err(e) => refused.push((pr, e)),
+        }
     }
     if json {
-        return style::print_json(&PassedOn {
+        style::print_json(&PassedOn {
             passed_on: passed
                 .into_iter()
                 .map(|(pr, _, _, _, review, delivery_id)| PassedOnReview {
@@ -362,17 +371,11 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
                     delivery_id,
                 })
                 .collect(),
-        });
+        })?;
+        return refusals(&refused);
     }
     for (pr, sha, after, unsent, _, _) in passed {
-        let what = match pr
-            .repo
-            .clone()
-            .or_else(|| fctl_domain::pulls::repo_of(&pr.url))
-        {
-            Some(repo) => format!("{}#{}", repo.full_name(), pr.number),
-            None => format!("#{}", pr.number),
-        };
+        let what = pull_request_name(pr);
         let at = sha.map(|s| format!(" at {}", short(s))).unwrap_or_default();
         let nowhere = if unsent {
             ", which went to no session,"
@@ -391,7 +394,38 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
             ))
         );
     }
-    Ok(())
+    refusals(&refused)
+}
+
+/// `acme/web#12`, or `#12` where neither the pull request nor its URL
+/// names its repository.
+fn pull_request_name(pr: &fctl_proto::session::PullRequestRef) -> String {
+    match pr
+        .repo
+        .clone()
+        .or_else(|| fctl_domain::pulls::repo_of(&pr.url))
+    {
+        Some(repo) => format!("{}#{}", repo.full_name(), pr.number),
+        None => format!("#{}", pr.number),
+    }
+}
+
+/// Says why the findings of the pull requests in `refused` didn't go on,
+/// and fails where any didn't.
+fn refusals(refused: &[(&fctl_proto::session::PullRequestRef, fctl_client::Error)]) -> Result<()> {
+    for (pr, e) in refused {
+        eprintln!(
+            "{} Didn't pass on the findings of fctl's review of {}: {}",
+            style::red("✗"),
+            style::terminal_safe(&pull_request_name(pr)),
+            style::terminal_safe(&format!("{e:#}"))
+        );
+    }
+    match refused.len() {
+        0 => Ok(()),
+        1 => bail!("the findings of 1 review didn't go on"),
+        n => bail!("the findings of {n} reviews didn't go on"),
+    }
 }
 
 /// `fctl review bots [NAME]`.

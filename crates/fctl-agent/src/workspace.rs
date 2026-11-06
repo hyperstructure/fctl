@@ -1301,8 +1301,10 @@ impl Moment {
     }
 }
 
-/// How long GitHub has to say which pull request a branch has as the
-/// session stops ([`Moment::Stopping`]), which waits for it.
+/// How long GitHub has to say which pull requests the branches have as
+/// the session stops ([`Moment::Stopping`]), all of them together: the
+/// stop waits for it, and the host forces a session down a minute after
+/// asking it to stop.
 const STOP_LOOKUP: Duration = Duration::from_secs(20);
 
 /// A branch and its head, when the remote has that commit.
@@ -1367,6 +1369,8 @@ struct Run<'a> {
     /// The URLs of the pull requests looked up so far.
     looked: Vec<String>,
     logs: Vec<(LogLevel, String)>,
+    /// When lookups give up: [`STOP_LOOKUP`] after a stop's sync starts.
+    deadline: Option<tokio::time::Instant>,
 }
 
 /// A repository whose branch fctl-agent pushes and looks up the pull
@@ -1390,12 +1394,12 @@ impl Run<'_> {
 
     /// Looks up the pull request of `branch`, checked out in `w`; if what it
     /// finds changes whether that merged, or how, `st` follows. As the
-    /// session stops, GitHub has [`STOP_LOOKUP`] to answer.
+    /// session stops, GitHub has until the run's deadline to answer.
     async fn look_up(&mut self, w: &Writable<'_>, st: &mut GitState, branch: &str) {
         let look = followed::look_up(self.p, w.dir, branch);
-        let found = match self.moment {
-            Moment::Stopping => tokio::time::timeout(STOP_LOOKUP, look).await.ok().flatten(),
-            _ => look.await,
+        let found = match self.deadline {
+            Some(at) => tokio::time::timeout_at(at, look).await.ok().flatten(),
+            None => look.await,
         };
         let Some(found) = found else {
             return;
@@ -1554,6 +1558,7 @@ pub async fn sync(
         pulls,
         looked: Vec::new(),
         logs: Vec::new(),
+        deadline: (moment == Moment::Stopping).then(|| tokio::time::Instant::now() + STOP_LOOKUP),
     };
     let mut st = state(p, spec, run.pulls).await?;
     // The branch fctl-agent checked out.

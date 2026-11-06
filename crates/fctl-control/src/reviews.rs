@@ -720,6 +720,11 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
     let Some((action, pr)) = rv::delivered(payload) else {
         return Ok(0);
     };
+    // A merged or closed pull request owes no session its reviews'
+    // findings, before the sessions that list it hear of it.
+    if !pr.open {
+        drop_unsent(&ctx.db, &pr.repo, pr.number, None).await;
+    }
     if !rv::starts_review(&action, &pr) {
         return Ok(0);
     }
@@ -1924,6 +1929,9 @@ pub async fn submit(
             "resolved": posting.review.resolved.len(),
         })),
     );
+    // Its findings, and what it says of theirs, take the place of those
+    // earlier reviews kept for a session.
+    drop_unsent(&ctx.db, &repo, row.number(), Some(&row)).await;
     let sent_to = match pass_on(ctx, &row, &repo, &sub, &posting).await {
         Ok(to) => to,
         Err(e) => {
@@ -2130,7 +2138,7 @@ struct Posting {
 /// or closed meanwhile, nor sessions whose agent only reads on GitHub now.
 /// The review keeps the message until a session takes it
 /// (`reviews.unsent_findings`): one that lists the pull request later gets
-/// it then ([`owed`]). Returns the session, once it has the message.
+/// it then ([`listed`]). Returns the session, once it has the message.
 async fn pass_on(
     ctx: &Ctx,
     row: &ReviewRow,
@@ -2379,18 +2387,6 @@ pub async fn listed(
     session_id: &str,
     prs: &[(RepoRef, u64)],
 ) -> AppResult<usize> {
-    #[derive(Deserialize)]
-    struct Of {
-        session_id: String,
-        state: String,
-        #[serde(deserialize_with = "int")]
-        created_at: i64,
-        #[serde(deserialize_with = "int_bool", default)]
-        unsent: bool,
-        /// What was last said of the pull request's state, as the session
-        /// lists it.
-        pr_state: Option<String>,
-    }
     if prs.is_empty() {
         return Ok(0);
     }
@@ -2403,31 +2399,13 @@ pub async fn listed(
     let mut sent = 0;
     for (repo, number) in prs {
         let key = crate::pull_requests::key(repo);
-        let reviews: Vec<Of> = q(
-            db,
-            "SELECT rv.session_id, rv.state, rv.created_at, rv.unsent_findings IS NOT NULL AS unsent, \
-             (SELECT l.state FROM pull_request_sessions l WHERE l.repo = ?1 AND l.number = ?2 \
-              AND l.session_id = ?4) AS pr_state \
-             FROM reviews rv JOIN projects p ON p.id = rv.project_id \
-             WHERE rv.repo_key = ?1 AND rv.number = ?2 AND p.workspace_id = ?3 \
-             AND rv.state IN ('passed', 'commented') ORDER BY rv.created_at DESC LIMIT 5",
-            &[s(&key), n(*number as i64), s(workspace), s(session_id)],
-        )?
-        .all()
-        .await?;
-        let late: Vec<rv::Late> = reviews
-            .iter()
-            .map(|r| rv::Late {
-                state: ReviewState::parse(&r.state),
-                created_at: r.created_at,
-                unsent: r.unsent,
-            })
-            .collect();
-        let state = reviews.first().and_then(|r| r.pr_state.as_deref());
-        let Some(owed) = rv::owed(&late, state).and_then(|i| reviews.get(i)) else {
+        let Some(state) = listing(db, &key, *number, session_id).await? else {
             continue;
         };
-        let Some(row) = of_session(db, &owed.session_id).await? else {
+        let Some(owed) = owed(db, workspace, &key, *number, state.as_deref()).await? else {
+            continue;
+        };
+        let Some(row) = of_session(db, &owed).await? else {
             continue;
         };
         match send(env, db, &row, repo).await {
@@ -2448,6 +2426,118 @@ pub async fn listed(
         }
     }
     Ok(sent)
+}
+
+/// Whether session `session_id` lists pull request `number` of repository
+/// `key` (`crate::pull_requests::key`): `None` where it doesn't, else what
+/// was last said of its state.
+async fn listing(
+    db: &D1Database,
+    key: &str,
+    number: u64,
+    session_id: &str,
+) -> AppResult<Option<Option<String>>> {
+    #[derive(Deserialize)]
+    struct Listed {
+        state: Option<String>,
+    }
+    let listed: Option<Listed> = q(
+        db,
+        "SELECT state FROM pull_request_sessions WHERE repo = ? AND number = ? AND session_id = ?",
+        &[s(key), n(number as i64), s(session_id)],
+    )?
+    .first()
+    .await?;
+    Ok(listed.map(|l| l.state))
+}
+
+/// The review of pull request `number` of repository `key` in workspace
+/// `workspace` whose findings, which went to no session, the pull request
+/// still owes the session that opened it, given what was last said of its
+/// state (`rv::owed`): its newest that posted.
+async fn owed(
+    db: &D1Database,
+    workspace: &str,
+    key: &str,
+    number: u64,
+    state: Option<&str>,
+) -> AppResult<Option<String>> {
+    #[derive(Deserialize)]
+    struct Of {
+        session_id: String,
+        state: String,
+        #[serde(deserialize_with = "int")]
+        created_at: i64,
+        #[serde(deserialize_with = "int_bool", default)]
+        unsent: bool,
+    }
+    let reviews: Vec<Of> = q(
+        db,
+        "SELECT rv.session_id, rv.state, rv.created_at, rv.unsent_findings IS NOT NULL AS unsent \
+         FROM reviews rv JOIN projects p ON p.id = rv.project_id \
+         WHERE rv.repo_key = ?1 AND rv.number = ?2 AND p.workspace_id = ?3 \
+         AND rv.state IN ('passed', 'commented') ORDER BY rv.created_at DESC LIMIT 5",
+        &[s(key), n(number as i64), s(workspace)],
+    )?
+    .all()
+    .await?;
+    let late: Vec<rv::Late> = reviews
+        .iter()
+        .map(|r| rv::Late {
+            state: ReviewState::parse(&r.state),
+            created_at: r.created_at,
+            unsent: r.unsent,
+        })
+        .collect();
+    Ok(rv::owed(&late, state)
+        .and_then(|i| reviews.get(i))
+        .map(|r| r.session_id.clone()))
+}
+
+/// Drops the findings that reviews of pull request `number` of `repo` kept
+/// since they went to no session, which no session is owed any more: it
+/// merged or closed, or review `newer` of it posted, whose findings, and
+/// what it says of theirs, take their place in its workspace.
+async fn drop_unsent(db: &D1Database, repo: &RepoRef, number: u64, newer: Option<&ReviewRow>) {
+    let key = crate::pull_requests::key(repo);
+    let dropped: AppResult<usize> = async {
+        let query = match newer {
+            None => q(
+                db,
+                "UPDATE reviews SET unsent_findings = NULL \
+                 WHERE repo_key = ? AND number = ? AND unsent_findings IS NOT NULL",
+                &[s(&key), n(number as i64)],
+            )?,
+            Some(r) => q(
+                db,
+                "UPDATE reviews SET unsent_findings = NULL \
+                 WHERE repo_key = ?1 AND number = ?2 AND unsent_findings IS NOT NULL \
+                 AND session_id != ?3 AND created_at < ?4 AND project_id IN (SELECT id FROM projects \
+                 WHERE workspace_id = (SELECT workspace_id FROM projects WHERE id = ?5))",
+                &[
+                    s(&key),
+                    n(number as i64),
+                    s(&r.session_id),
+                    n(r.created_at),
+                    s(&r.project_id),
+                ],
+            )?,
+        };
+        query.run().await
+    }
+    .await;
+    match dropped {
+        Ok(0) => {}
+        Ok(n) => worker::console_log!(
+            "dropped the unsent findings of {n} earlier reviews of {}#{number}",
+            repo.full_name()
+        ),
+        Err(e) => worker::console_error!(
+            "dropping the unsent findings of {}#{number}'s reviews: {}",
+            repo.full_name(),
+            e.0.message
+        ),
+    }
 }
 
 /// Someone passes on review `review`'s findings, which went to no session
@@ -2471,30 +2561,21 @@ pub async fn pass_on_unsent(
     let Some(repo) = row.repo() else {
         return Ok(None);
     };
-    let in_workspace = crate::spec::project_row(&ctx.db, &row.project_id)
+    let key = crate::pull_requests::key(&repo);
+    let workspace = crate::spec::project_row(&ctx.db, &row.project_id)
         .await?
-        .is_some_and(|p| Some(p.workspace_id()) == to.workspace.workspace_id.as_deref());
-    #[derive(Deserialize)]
-    struct Listed {
-        state: Option<String>,
-    }
-    let listed: Option<Listed> = q(
-        &ctx.db,
-        "SELECT state FROM pull_request_sessions WHERE repo = ? AND number = ? AND session_id = ?",
-        &[
-            s(&crate::pull_requests::key(&repo)),
-            n(row.number),
-            s(to.session_id().as_str()),
-        ],
-    )?
-    .first()
-    .await?;
-    let Some(listed) = listed.filter(|_| in_workspace) else {
+        .map(|p| p.workspace_id().to_owned())
+        .filter(|w| Some(w.as_str()) == to.workspace.workspace_id.as_deref());
+    let listed = match &workspace {
+        Some(_) => listing(&ctx.db, &key, row.number(), to.session_id().as_str()).await?,
+        None => None,
+    };
+    let (Some(workspace), Some(state)) = (workspace, listed) else {
         return Err(conflict(
             "This session doesn't list the review's pull request: pass its findings on from one that does.",
         ));
     };
-    if let Some(state @ ("merged" | "closed")) = listed.state.as_deref() {
+    if let Some(state @ ("merged" | "closed")) = state.as_deref() {
         return Err(conflict(&format!(
             "The pull request is {state}: its findings stay on GitHub."
         )));
@@ -2503,6 +2584,11 @@ pub async fn pass_on_unsent(
         return Err(conflict(
             "This session's agent only reads on GitHub, so it can't answer the findings there.",
         ));
+    }
+    // Not those of a review that a newer one took the place of.
+    let owed = owed(&ctx.db, &workspace, &key, row.number(), state.as_deref()).await?;
+    if owed.as_deref() != Some(review.as_str()) {
+        return Ok(None);
     }
     let Some(unsent) = claim(&ctx.db, review.as_str()).await? else {
         return Ok(None);
