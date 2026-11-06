@@ -773,7 +773,15 @@ removing the connection (`api::claude::remove`). Disabling a runner or
 replacing its token closes its control connection and its sessions'
 uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
-workspaces.
+workspaces: the first of those whose driver is ready, as its host last
+said (`fctl_domain::schedule::login_runner`). When the host can't make the
+sign-in's sandbox, it probes its driver again (Docker may have stopped
+since it last did), and when that isn't ready it sends a heartbeat that
+says so at once, then fails the sign-in saying why it was
+(`ClaudeLoginUpdate::Failed`'s `unready`). FleetDO then sends the sign-in
+on to the next of those runners whose driver is ready, and the job stays
+`starting` meanwhile; when there is none, it fails with the first such
+runner's reason.
 
 Hosts update themselves to the version the control plane runs
 ([Host updates](#host-updates)). The Agent Floor tells the person who
@@ -2584,10 +2592,21 @@ come through:
   fctl-agent works, with when it last heard from it and what went wrong. Hosts
   say it again after every reconnect, and SessionDO forgets it when the
   uplink closes. Older hosts never say it.
+- **The runner paused the sandbox** while its disk is nearly full
+  (`AgentLink.paused`, [Sandboxes and drivers](#sandboxes-and-drivers)): the
+  agent holds its place until there is room, and the host doesn't try to
+  reach it meanwhile.
 
-The session page and `fctl attach` say which, and since when, once it has
-lasted 10 seconds (a host that restarts reconnects within them), and show
-nothing in progress meanwhile.
+The session page and `fctl attach` say which, and since when, and show
+nothing in progress meanwhile: a runner that went away once it has been
+gone for 10 seconds (a host that restarts reconnects within them), an
+agent it can't reach as its host says so, and a paused sandbox at once.
+
+They also say how short of disk the session's runner is, while it is
+(`runner_disk` in the snapshot, `disk` in `runner_connected`), which
+FleetDO tells SessionDO after its heartbeats and SessionDO keeps for pages
+opened later: below its floor, in amber, and nearly out, below 2 GiB, in
+red. The agent's work still comes through then, and shows as it does.
 
 ### Search
 
@@ -3253,8 +3272,10 @@ carries on with it, also across another supervisor that dies first.
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
 connection never waits on one: the hello reports what the drivers said
-when the host last probed them (at start and every five minutes, the
-driver it uses every minute between those), and
+when the host last probed them (at start, every five minutes, the
+driver it uses every minute between those, and every 30 seconds while
+that driver isn't ready, as a session or a Claude sign-in may find it
+between two probes), and
 sweeps and cleanups of sandboxes run in tasks of their own, so heartbeats
 keep flowing. A host that starts while its driver doesn't answer waits to
 connect until it can list its sandboxes, rather than report sessions as
@@ -3266,7 +3287,7 @@ or taking a sandbox it couldn't stop or remove for gone.
 A runner whose driver isn't ready (Docker isn't running, or the host's
 user can't use its socket; Apple's `container` service stopped) takes no
 session until it is
-([ADR 0076](adr/0076-sessions-wait-for-a-runner-whose-driver-is-ready.md)):
+([ADR 0077](adr/0077-sessions-wait-for-a-runner-whose-driver-is-ready.md)):
 
 - The host probes its drivers every 30 seconds while the one it uses
   isn't ready, and says them in a heartbeat as soon as they change
@@ -3293,13 +3314,16 @@ session until it is
   FleetDO queues it again rather than fail it. Each decline counts towards
   the five attempts a session gets. Declines for the driver say so
   (`StartResult.unready`), and unlike after other declines, a resume
-  still goes back to the sandbox it has there once the driver is ready. A session that someone stopped
+  still goes back to the sandbox it has there once the driver is ready;
+  a session that had no sandbox there keeps the home it had before
+  (`assignments.home_before`). A session that someone stopped
   meanwhile stays stopped: FleetDO marks the assignment it asked to stop
   (`assignments.stopping`), and a decline for it doesn't queue it again.
 - Hosts announce this with `drivers` in their hello's features
-  (`FEATURE_DRIVERS`). Older ones say their drivers only as they connect,
-  so FleetDO places sessions on them whatever they said, and those fail
-  while the driver isn't ready. The runners list, `fctl runners`,
+  (`FEATURE_DRIVERS`). Older ones don't decline or hand back sessions for
+  their driver, and before 0.30.0 said their drivers only as they
+  connected, so FleetDO places sessions on them whatever they said, and
+  those fail while the driver isn't ready. The runners list, `fctl runners`,
   `fctl admin runners` and `fctl host status` say why a runner's driver
   isn't ready, and which of the two happens to sessions
   (`Runner.waits_for_driver`).
@@ -3338,6 +3362,39 @@ the data directory with Firecracker and the process driver. It measures every 30
   the others itself, for a control plane that hasn't had its heartbeat yet.
   Unlike a drain, it stops no idle sessions early, and it ends when there is
   room again ([ADR 0019](adr/0019-hosts-make-room-when-their-disk-runs-low.md)).
+- It measures every 5 seconds rather than 30 (not in Docker's VM).
+- Its sessions hear of it
+  ([ADR 0076](adr/0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md)).
+  FleetDO keeps what each runner's sessions were told
+  (`runners.disk_told`) and, after each heartbeat, tells them as
+  `fctl_domain::disk::heard` says: a `runner_low_on_disk` notice (`warn`)
+  as it goes below its floor, `runner_out_of_disk` (`error`) below 2 GiB,
+  or its floor if lower, when writes are about to fail, and
+  `runner_disk_ok` (`info`) once it has had room for ten minutes, the
+  sweep making room only up to the floor. Less room is told at once, more
+  only once it has lasted. Their pages show how short it is meanwhile
+  ([Viewers](#viewers)). A session that starts on a runner short of disk
+  hears so, and the admins' runners list says `out of disk` below 2 GiB.
+
+Below 2 GiB (or its floor if lower), a host with the Firecracker driver
+pauses its running VMs through Firecracker's API, and resumes them once
+twice that is free (`fctl_domain::disk::holds`), or when their session
+stops. A VM's disk is a file on the host's that the VM can't see fill, so
+what it writes once the host has no room would be lost: paused, it keeps
+that in its memory. The host tells the session's viewers
+(`AgentLink.paused`, and `sandbox_paused` and `sandbox_resumed` notices,
+which it says in the transcript with `UplinkUp::Notice`), and doesn't ping
+or attach to the agent of a paused sandbox, also after it restarts. Other
+drivers don't pause: Docker's containers see the host's disk fill, while
+Apple's and Lima's VMs can still lose writes.
+
+A full disk is named where it is the cause (`fctl_domain::disk::out_of_space`):
+a session that fails to start says "Runner X ran out of disk: …"; the
+transcript says when the host starts fctl-agent again while its disk is
+short, or couldn't for want of room (`agent_restarted`); fctl-agent tells
+the host, beside a journal it can't write, that the sandbox's disk is
+full; and Claude's `claude_restarted` and `claude_crashed` notices say so
+when it was.
 
 Older hosts send no floor and remove sandboxes by age only.
 
@@ -3383,7 +3440,11 @@ in `firecracker/` in the host's data directory.
   writes. Its VM's init lays it over the image's filesystem with overlayfs,
   and the disk gives the host back what the session deletes (discard).
   Stopping a sandbox keeps its disk; starting it again boots from it, with
-  the size the session asks for then.
+  the size the session asks for then. While the host's disk is nearly
+  full, the host pauses the VM (`PATCH /vm` on Firecracker's API socket),
+  which keeps what it has yet to write in its memory, and resumes it once
+  there is room; a VM paused when its sandbox stops or starts again is
+  resumed first ([ADR 0076](adr/0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md)).
 - **The VM's init** is fctl-agent, from an initramfs the host makes of its
   own static fctl-agent (`crates/fctl-agent/src/vm`). It mounts the root,
   copies itself to `/opt/fctl/bin/fctl-agent`, sets up what images don't

@@ -157,6 +157,34 @@ pub struct HostHeartbeat {
     pub drivers: Option<Vec<DriverInfo>>,
 }
 
+/// How short of room a runner is on the disk where its sandboxes are
+/// (`fctl_domain::disk::room`), when it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DiskRoom {
+    /// Below the floor its host keeps ([`HostHello::min_free_disk_mb`]):
+    /// it takes no new sessions, and removes stopped sandboxes early.
+    Low,
+    /// Nearly out of disk (`fctl_domain::disk::OUT_MB`): what its sandboxes
+    /// write is about to fail.
+    Out,
+}
+
+/// The disk of a session's runner, while it is short of room, as its
+/// heartbeats last said.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RunnerDisk {
+    pub room: DiskRoom,
+    /// Free MiB where its sandboxes are.
+    pub free_mb: u64,
+    /// The free disk (MiB) its host keeps.
+    pub min_free_mb: u64,
+    /// Since when it has been this short of room.
+    pub since: Millis,
+}
+
 /// Which credential a session needs refreshed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -417,8 +445,9 @@ pub const FEATURE_REVIEWS: &str = "reviews";
 /// change ([`HostHeartbeat::drivers`]), and that decline, or hand back, a
 /// session while the driver they use isn't ready: FleetDO then starts no
 /// session on them, and a session that has nowhere else to go waits and
-/// says why. Older hosts' drivers are only as fresh as their hello, so
-/// sessions still start on them, and fail while their driver isn't ready.
+/// says why. Older hosts don't decline sessions for their driver, and
+/// before 0.30.0 said their drivers only in their hello, so sessions still
+/// start on them, and fail while their driver isn't ready.
 pub const FEATURE_DRIVERS: &str = "drivers";
 
 /// What hosts whose agents know [`GithubAccess::Triage`] announce in their
@@ -509,6 +538,13 @@ pub enum ClaudeLoginUpdate {
     },
     Failed {
         error: String,
+        /// It couldn't start its sandbox because the host's driver isn't
+        /// ready (Docker stopped, say), as the host found on probing it
+        /// again: the control plane passes the sign-in on to another of
+        /// the person's runners. Absent from older hosts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        unready: Option<bool>,
     },
 }
 
@@ -663,6 +699,32 @@ mod tests {
             "git_author": { "name": "bot", "email": "bot@example.com" },
             "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
         })
+    }
+
+    #[test]
+    fn a_sign_in_that_failed_says_so_as_older_hosts_and_control_planes_read_it()
+    -> serde_json::Result<()> {
+        // From an older host: no word of the driver.
+        let old: ClaudeLoginUpdate =
+            serde_json::from_str(r#"{"state":"failed","error":"No room"}"#)?;
+        assert_eq!(
+            old,
+            ClaudeLoginUpdate::Failed {
+                error: "No room".into(),
+                unready: None,
+            }
+        );
+        // To an older control plane, which ignores fields it doesn't know.
+        let unready = serde_json::to_value(ClaudeLoginUpdate::Failed {
+            error: "Docker isn't running".into(),
+            unready: Some(true),
+        })?;
+        assert_eq!(
+            unready,
+            serde_json::json!({"state": "failed", "error": "Docker isn't running", "unready": true})
+        );
+        assert_eq!(serde_json::to_value(old)?.get("unready"), None);
+        Ok(())
     }
 
     #[test]

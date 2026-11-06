@@ -27,10 +27,11 @@ use fctl_proto::event::{
     DiffKey, EventBody, FileDiff, FollowUp, FollowUpEvent, GitState, KeptImage, StatusChange,
     UserMessage,
 };
+use fctl_proto::runner::RunnerDisk;
 use fctl_proto::session::{PullRequestRef, RepoRef, Session, SessionRole, SessionStatus, UserRef};
 use fctl_proto::uplink::{
-    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SessionState,
-    UplinkDown, UplinkUp,
+    AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SandboxPaused,
+    SessionState, UplinkDown, UplinkUp,
 };
 use fctl_proto::viewer::{Presence, ViewerClient, ViewerServer};
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
@@ -56,6 +57,15 @@ const QUIET_MS: i64 = 60_000;
 const HEARD_EVERY_MS: i64 = 5_000;
 /// The longest reason a host gives for not reaching its agent that is kept.
 const REASON_MAX_CHARS: usize = 300;
+/// The longest notice a host may put in the transcript, in characters.
+const NOTICE_MAX_CHARS: usize = 2000;
+
+/// Cuts `text` to at most `max` characters.
+fn clip(text: &mut String, max: usize) {
+    if let Some((cut, _)) = text.char_indices().nth(max) {
+        text.truncate(cut);
+    }
+}
 /// How long a session on a draining runner waits for a message before it
 /// stops, so that quick replies still reach the running agent.
 const DRAIN_IDLE_MS: i64 = 60_000;
@@ -99,6 +109,9 @@ struct SocketInfo {
     /// An uplink: its host can't reach the agent, as it last said.
     #[serde(default)]
     agent_unreachable: Option<AgentUnreachable>,
+    /// An uplink: its host paused the sandbox, as it last said.
+    #[serde(default)]
+    sandbox_paused: Option<SandboxPaused>,
     /// A viewer: when its access was last checked.
     #[serde(default)]
     checked_at: Option<i64>,
@@ -119,6 +132,9 @@ struct RunnerView {
     connected: bool,
     last_seen_at: Option<i64>,
     agent_unreachable: Option<AgentUnreachable>,
+    /// How short of disk it is, as FleetObject last said.
+    disk: Option<RunnerDisk>,
+    sandbox_paused: Option<SandboxPaused>,
 }
 
 #[derive(Default)]
@@ -317,6 +333,16 @@ impl DurableObject for SessionObject {
                 Ok(b) => self.control(b).await,
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            (worker::Method::Post, "/runner-disk") => {
+                match req.json::<internal::DiskNews>().await {
+                    Ok(b) => {
+                        self.runner_disk(b);
+                        self.broadcast_runner(None);
+                        Ok(serde_json::json!({ "ok": true }))
+                    }
+                    Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+                }
+            }
             (worker::Method::Post, "/drain-stop") => match req.json::<DrainStop>().await {
                 Ok(b) => self.drain_stop(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
@@ -1816,9 +1842,15 @@ impl SessionObject {
         if b.clear_runner {
             s.runner = None;
         }
-        // When the last run's runner was seen is no news for this one.
+        // When the last run's runner was seen, and how short of disk it
+        // was, is no news for this one.
         if new_runner {
             self.delete_meta("runner_seen_at");
+            self.delete_meta("runner_disk");
+        }
+        let disk_changed = b.disk.is_some();
+        if let Some(news) = b.disk {
+            self.runner_disk(news);
         }
         let mut status_changed = false;
         if let Some(st) = b.status
@@ -1838,7 +1870,7 @@ impl SessionObject {
         // After the summary: viewers of a session that the fleet stopped
         // because its runner stayed away don't take this for the runner's
         // return.
-        if new_runner {
+        if new_runner || disk_changed {
             self.broadcast_runner(None);
         }
         // The API wrote the title to D1 already; writing it again now keeps
@@ -1853,6 +1885,15 @@ impl SessionObject {
         self.notify_fleet(&s);
         self.notify_followers(&s, before, now);
         Ok(serde_json::json!({ "ok": true }))
+    }
+
+    /// Keeps how short of disk the session's runner is, for its pages
+    /// (`runner_disk`).
+    fn runner_disk(&self, news: internal::DiskNews) {
+        match news.disk.and_then(|d| serde_json::to_string(&d).ok()) {
+            Some(json) => self.set_meta("runner_disk", &json),
+            None => self.delete_meta("runner_disk"),
+        }
     }
 
     fn set_status(
@@ -2003,6 +2044,15 @@ impl SessionObject {
             .and_then(|a| serde_json::to_string(&a).ok())
         {
             runner_fields.push_str(&format!(r#","agent_unreachable":{a}"#));
+        }
+        if let Some(d) = runner.disk.and_then(|d| serde_json::to_string(&d).ok()) {
+            runner_fields.push_str(&format!(r#","runner_disk":{d}"#));
+        }
+        if let Some(p) = runner
+            .sandbox_paused
+            .and_then(|p| serde_json::to_string(&p).ok())
+        {
+            runner_fields.push_str(&format!(r#","sandbox_paused":{p}"#));
         }
         format!(
             r#"{{"type":"snapshot","session":{session},"role":{role},"events":[{}],"has_more_before":{has_more_before},"next_seq":{},"live":[{live}],"viewers":{viewers},"runner_connected":{}{runner_fields}}}"#,
@@ -2584,19 +2634,37 @@ impl SessionObject {
                     }
                 }
             }
-            UplinkUp::AgentLink { unreachable } => {
+            UplinkUp::AgentLink {
+                unreachable,
+                paused,
+            } => {
                 let unreachable = unreachable.map(|mut a| {
-                    if let Some((cut, _)) = a.reason.char_indices().nth(REASON_MAX_CHARS) {
-                        a.reason.truncate(cut);
-                    }
+                    clip(&mut a.reason, REASON_MAX_CHARS);
                     a
                 });
+                let paused = paused.map(|mut p| {
+                    clip(&mut p.reason, REASON_MAX_CHARS);
+                    p
+                });
                 if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>()
-                    && info.agent_unreachable != unreachable
+                    && (info.agent_unreachable != unreachable || info.sandbox_paused != paused)
                 {
                     info.agent_unreachable = unreachable;
+                    info.sandbox_paused = paused;
                     let _ = ws.serialize_attachment(&info);
                     self.broadcast_runner(None);
+                }
+            }
+            UplinkUp::Notice { mut notice } => {
+                // Only what a host may say: no screenshots, notes, reviews
+                // or tickets of its own.
+                clip(&mut notice.message, NOTICE_MAX_CHARS);
+                let notice = fctl_proto::event::Notice {
+                    until: notice.until,
+                    ..fctl_proto::event::Notice::new(notice.level, &notice.code, notice.message)
+                };
+                if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+                    self.broadcast_events(&[json]);
                 }
             }
         }
@@ -2643,21 +2711,35 @@ impl SessionObject {
             .get_websockets_with_tag(TAG_UPLINK)
             .into_iter()
             .rfind(|w| closing.is_none_or(|c| c != w));
+        let disk = self
+            .meta("runner_disk")
+            .and_then(|d| serde_json::from_str(&d).ok());
         match uplink.map(|ws| ws.deserialize_attachment::<SocketInfo>().ok().flatten()) {
             Some(Some(info)) if info.quiet => RunnerView {
                 connected: false,
                 last_seen_at: Some(info.heard()),
                 agent_unreachable: None,
+                disk,
+                sandbox_paused: None,
             },
-            Some(info) => RunnerView {
-                connected: true,
-                last_seen_at: None,
-                agent_unreachable: info.and_then(|i| i.agent_unreachable),
-            },
+            Some(info) => {
+                let (agent_unreachable, sandbox_paused) = info
+                    .map(|i| (i.agent_unreachable, i.sandbox_paused))
+                    .unwrap_or_default();
+                RunnerView {
+                    connected: true,
+                    last_seen_at: None,
+                    agent_unreachable,
+                    disk,
+                    sandbox_paused,
+                }
+            }
             None => RunnerView {
                 connected: false,
                 last_seen_at: self.meta("runner_seen_at").and_then(|v| v.parse().ok()),
                 agent_unreachable: None,
+                disk,
+                sandbox_paused: None,
             },
         }
     }
@@ -2668,6 +2750,8 @@ impl SessionObject {
             connected: view.connected,
             last_seen_at: view.last_seen_at,
             agent_unreachable: view.agent_unreachable,
+            disk: view.disk,
+            sandbox_paused: view.sandbox_paused,
         }) {
             self.broadcast(&text);
         }

@@ -8,9 +8,9 @@
 use crate::crypto;
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, Activity, ClaudeUsage, ControlState, Drain, DrainStop, DrainStopped, FeedIdentity,
-    LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, RunnerIdent, RunnerRemoved,
-    Schedule, Stop, WorkspacesChanged,
+    self, Activity, ClaudeUsage, ControlState, DiskNews, Drain, DrainStop, DrainStopped,
+    FeedIdentity, LiveRunners, LoginCode, LoginStart, NotifySession, RunnerChanged, RunnerIdent,
+    RunnerRemoved, Schedule, Stop, WorkspacesChanged,
 };
 use crate::spec;
 use fctl_domain::image::HostImages;
@@ -146,6 +146,19 @@ struct QueueRow {
     driver_declined: Option<f64>,
 }
 
+impl QueueRow {
+    /// Whether its last runner declined it for its driver.
+    fn declined_for_driver(&self) -> bool {
+        self.driver_declined.is_some_and(|d| d > 0.0)
+    }
+
+    /// [`declined_for_driver`](Self::declined_for_driver) for the row that
+    /// queues it again, which keeps it.
+    fn driver_declined(&self) -> SqlStorageValue {
+        iv(i64::from(self.declined_for_driver()))
+    }
+}
+
 #[derive(Deserialize)]
 struct AssignRow {
     session_id: String,
@@ -178,6 +191,16 @@ impl LiveRow {
     fn online(&self, fleet: &FleetObject) -> bool {
         self.connected > 0.0 && fleet.runner_socket(&self.id).is_some()
     }
+}
+
+/// A runner's disk, as FleetObject has it.
+#[derive(Default)]
+struct DiskState {
+    /// Free MiB, as its last heartbeat said.
+    free_mb: Option<u64>,
+    /// What its host keeps free (MiB), as its hello said.
+    min_free_mb: Option<u64>,
+    told: fctl_domain::disk::Told,
 }
 
 /// A connected runner, as scheduling sees it.
@@ -280,6 +303,21 @@ impl Candidate {
 struct LoginRow {
     runner_id: Option<String>,
     user_id: String,
+    /// The runners that may run it, in the order to try them (JSON), and
+    /// whom it is for (JSON `UserRef`): it goes on to the next of them
+    /// when its runner's driver turns out not to be ready. Absent from
+    /// sign-ins started before they were kept.
+    #[serde(default)]
+    runners: Option<String>,
+    #[serde(default)]
+    user: Option<String>,
+    /// The runners it went to whose driver turned out not to be ready
+    /// (JSON), and why the first of them couldn't run it, which it fails
+    /// with when no other can.
+    #[serde(default)]
+    tried: Option<String>,
+    #[serde(default)]
+    first_error: Option<String>,
 }
 
 fn sv(s: &str) -> SqlStorageValue {
@@ -338,6 +376,11 @@ impl DurableObject for FleetObject {
         // Set once FleetDO asked its runner to stop the session: a decline
         // that crosses that ask doesn't queue it again.
         add_column(&sql, "assignments", "stopping", "INTEGER");
+        // The session's attempts when it was assigned, which a decline adds
+        // to, and the runner that had its sandbox then, which a runner that
+        // hands it back for its driver gives the home back to.
+        add_column(&sql, "assignments", "attempts", "INTEGER");
+        add_column(&sql, "assignments", "home_before", "TEXT");
         // Why a queued session waits, as it last said.
         add_column(&sql, "queue", "reason", "TEXT");
         // Set when its runner declined it for its driver (`driver_declined`).
@@ -351,6 +394,14 @@ impl DurableObject for FleetObject {
         // Set for a runner whose enrollment token removes it once offline
         // this long (milliseconds), as it said when it connected.
         add_column(&sql, "runners", "remove_after_ms", "INTEGER");
+        // What its sessions were told about its disk (JSON,
+        // `fctl_domain::disk::Told`).
+        add_column(&sql, "runners", "disk_told", "TEXT");
+        // What a sign-in needs to go on to another runner (`LoginRow`).
+        add_column(&sql, "logins", "runners", "TEXT");
+        add_column(&sql, "logins", "user", "TEXT");
+        add_column(&sql, "logins", "tried", "TEXT");
+        add_column(&sql, "logins", "first_error", "TEXT");
         Self {
             state,
             env,
@@ -977,7 +1028,7 @@ impl FleetObject {
         match msg {
             HostToFleet::Hello(hello) => self.on_hello(ws, rs, *hello, now).await,
             HostToFleet::Heartbeat(hb) => {
-                let (was_low, min_free) = self.low_on_disk(&rs.id);
+                let disk = self.disk_state(&rs.id);
                 let sessions = serde_json::to_string(&hb.sessions).unwrap_or_else(|_| "[]".into());
                 let mib =
                     |v: Option<u64>| SqlStorageValue::from(v.and_then(|v| i64::try_from(v).ok()));
@@ -1004,13 +1055,31 @@ impl FleetObject {
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
                 let token_changed = self.note_claude_token(&rs.id, hb.claude_token).await;
                 let drivers_changed = self.note_drivers(&rs.id, hb.drivers).await;
+                let (told, tell) = fctl_domain::disk::heard(
+                    &disk.told,
+                    &rs.name,
+                    hb.disk_available_mb,
+                    disk.min_free_mb,
+                    now,
+                );
+                if told != disk.told {
+                    let _ = self.sql.exec(
+                        "UPDATE runners SET disk_told = ? WHERE id = ?",
+                        Some(vec![
+                            sv(&serde_json::to_string(&told).unwrap_or_default()),
+                            sv(&rs.id),
+                        ]),
+                    );
+                }
+                self.tell_disk(&rs.id, tell).await;
                 // The runners list says when a runner takes no new sessions
-                // for its disk, and when it takes them again, why its driver
-                // isn't ready, and its owner sees whether it keeps their
-                // Claude token.
+                // for its disk, when it is nearly out, and when it takes them
+                // again, why its driver isn't ready, and its owner sees
+                // whether it keeps their Claude token.
+                let room = |free| fctl_domain::disk::room(free, disk.min_free_mb);
                 if token_changed
                     || drivers_changed
-                    || fctl_domain::disk::low(hb.disk_available_mb, min_free) != was_low
+                    || room(hb.disk_available_mb) != room(disk.free_mb)
                 {
                     self.feed_runner(&rs.id).await;
                 }
@@ -1452,23 +1521,16 @@ impl FleetObject {
         {
             worker::console_error!("carrying {id} on: {}", e.0.message);
         }
-        let notice = Notice {
-            ticket: None,
-            level: NoticeLevel::Info,
-            code: "runner_back".into(),
-            message: format!(
+        let notice = Notice::new(
+            NoticeLevel::Info,
+            "runner_back",
+            format!(
                 "Runner {} is back with the agent still running, so the session carries on there.",
                 rs.name
             ),
-            until: None,
-            published: None,
-            memory: None,
-            retrospective: None,
-            review: None,
-            summarized: None,
-            follow_up: None,
-        };
+        );
         if let Ok(stub) = internal::session_stub(&self.env, id) {
+            let (disk, _) = self.disk_for(&rs.id, &rs.name);
             let done: std::result::Result<serde_json::Value, _> = internal::post(
                 &stub,
                 "/control",
@@ -1479,6 +1541,7 @@ impl FleetObject {
                         name: rs.name.clone(),
                     }),
                     notice: Some(notice),
+                    disk,
                     ..Default::default()
                 },
             )
@@ -1611,22 +1674,53 @@ impl FleetObject {
             );
             return;
         }
-        // Declined, or handed back once its driver stopped being ready
-        // (`FEATURE_DRIVERS`), after someone stopped it: it stays stopped,
-        // unless a message or a resume queued it again since.
-        let stopping = self
+        // The run it declines, as dispatch recorded it: the queue's row went
+        // as it was assigned.
+        #[derive(Deserialize, Default)]
+        struct Run {
+            #[serde(default)]
+            accepted: f64,
+            #[serde(default)]
+            stopping: Option<f64>,
+            #[serde(default)]
+            attempts: Option<f64>,
+            #[serde(default)]
+            home_before: Option<String>,
+        }
+        let run = self
             .sql
             .exec(
-                "SELECT session_id FROM assignments WHERE session_id = ? AND runner_id = ? AND stopping = 1",
+                "SELECT accepted, stopping, attempts, home_before FROM assignments WHERE session_id = ? AND runner_id = ?",
                 Some(vec![sv(session_id.as_str()), sv(runner_id)]),
             )
-            .and_then(|c| c.to_array::<serde_json::Value>())
-            .is_ok_and(|r| !r.is_empty());
+            .and_then(|c| c.to_array::<Run>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .unwrap_or_default();
         let _ = self.sql.exec(
             "DELETE FROM assignments WHERE session_id = ?",
             Some(vec![sv(session_id.as_str())]),
         );
-        if stopping {
+        // Handed back once its driver stopped being ready: it accepted the
+        // session, which made it the session's home, but a session that had
+        // no sandbox there has none now either, so its home is the one it
+        // had before.
+        if unready && run.accepted > 0.0 {
+            match run.home_before.as_deref() {
+                Some(home) if home == runner_id => {}
+                Some(home) => self.set_home(session_id.as_str(), home, now),
+                None => {
+                    let _ = self.sql.exec(
+                        "DELETE FROM sandboxes WHERE session_id = ? AND runner_id = ?",
+                        Some(vec![sv(session_id.as_str()), sv(runner_id)]),
+                    );
+                }
+            }
+        }
+        // Declined, or handed back once its driver stopped being ready
+        // (`FEATURE_DRIVERS`), after someone stopped it: it stays stopped,
+        // unless a message or a resume queued it again since.
+        if run.stopping.is_some_and(|s| s > 0.0) {
             if !self.queued(session_id.as_str()) {
                 self.session_control(
                     session_id,
@@ -1639,11 +1733,13 @@ impl FleetObject {
             self.dispatch().await;
             return;
         }
+        // Its earlier declines count: the run's, or the queue's when it was
+        // queued again meanwhile.
         #[derive(Deserialize)]
         struct A {
             attempts: f64,
         }
-        let attempts = self
+        let queued_attempts = self
             .sql
             .exec(
                 "SELECT attempts FROM queue WHERE session_id = ?",
@@ -1653,6 +1749,7 @@ impl FleetObject {
             .ok()
             .and_then(|r| r.first().map(|a| a.attempts as i64))
             .unwrap_or(0);
+        let attempts = queued_attempts.max(run.attempts.unwrap_or(0.0) as i64);
         let reason = error.unwrap_or_else(|| "The runner declined the session".into());
         if attempts + 1 >= MAX_ATTEMPTS {
             let _ = self.sql.exec(
@@ -1848,14 +1945,16 @@ impl FleetObject {
         }
     }
 
-    /// Whether a runner's free disk was below what its host keeps at its
-    /// last heartbeat, and what its host keeps (MiB).
-    fn low_on_disk(&self, runner_id: &str) -> (bool, Option<u64>) {
+    /// A runner's disk as its last heartbeat said, the free disk its host
+    /// keeps, and what its sessions were told about it.
+    fn disk_state(&self, runner_id: &str) -> DiskState {
         #[derive(Deserialize)]
         struct R {
             hello: Option<String>,
             #[serde(default)]
             disk_available_mb: Option<f64>,
+            #[serde(default)]
+            disk_told: Option<String>,
         }
         #[derive(Deserialize)]
         struct Floor {
@@ -1865,22 +1964,78 @@ impl FleetObject {
         let Some(r) = self
             .sql
             .exec(
-                "SELECT hello, disk_available_mb FROM runners WHERE id = ?",
+                "SELECT hello, disk_available_mb, disk_told FROM runners WHERE id = ?",
                 Some(vec![sv(runner_id)]),
             )
             .and_then(|c| c.to_array::<R>())
             .ok()
             .and_then(|r| r.into_iter().next())
         else {
-            return (false, None);
+            return DiskState::default();
         };
-        let min_free = r
-            .hello
-            .as_deref()
-            .and_then(|h| serde_json::from_str::<Floor>(h).ok())
-            .and_then(|f| f.min_free_disk_mb);
-        let free = r.disk_available_mb.map(|d| d as u64);
-        (fctl_domain::disk::low(free, min_free), min_free)
+        DiskState {
+            free_mb: r.disk_available_mb.map(|d| d as u64),
+            min_free_mb: r
+                .hello
+                .as_deref()
+                .and_then(|h| serde_json::from_str::<Floor>(h).ok())
+                .and_then(|f| f.min_free_disk_mb),
+            told: r
+                .disk_told
+                .as_deref()
+                .and_then(|t| serde_json::from_str(t).ok())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// What a session that starts on a runner, or carries on there, hears
+    /// of its disk: how short of room it is, if it is, and, for one that
+    /// starts, the notice that says so.
+    fn disk_for(&self, runner_id: &str, name: &str) -> (Option<DiskNews>, Option<Notice>) {
+        let d = self.disk_state(runner_id);
+        let shown = fctl_domain::disk::shown(&d.told, d.free_mb, d.min_free_mb);
+        let notice = fctl_domain::disk::joined(&d.told, name, d.free_mb, d.min_free_mb);
+        (shown.map(|disk| DiskNews { disk: Some(disk) }), notice)
+    }
+
+    /// Tells the sessions on a runner what a heartbeat said of its disk:
+    /// their transcripts, and what their pages show, which alone changes
+    /// nothing else of theirs.
+    async fn tell_disk(&self, runner_id: &str, tell: fctl_domain::disk::Tell) {
+        if tell.notice.is_none() && !tell.changed {
+            return;
+        }
+        let disk = tell.changed.then(|| DiskNews {
+            disk: tell.disk.clone(),
+        });
+        for a in self.assigned_to_runner(runner_id) {
+            let Ok(stub) = internal::session_stub(&self.env, &a.session_id) else {
+                continue;
+            };
+            let r: std::result::Result<serde_json::Value, _> = match (&tell.notice, &disk) {
+                (Some(notice), _) => {
+                    internal::post(
+                        &stub,
+                        "/control",
+                        &ControlState {
+                            notice: Some(notice.clone()),
+                            disk: disk.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                }
+                (None, Some(disk)) => internal::post(&stub, "/runner-disk", disk).await,
+                (None, None) => continue,
+            };
+            if let Err(e) = r {
+                worker::console_error!(
+                    "telling {} about its runner's disk: {}",
+                    a.session_id,
+                    e.0.message
+                );
+            }
+        }
     }
 
     /// The sessions a runner reported last.
@@ -2071,7 +2226,7 @@ impl FleetObject {
             // Claude continues the same conversation, and waits a while for
             // it when it is busy. Not after it declined the session, unless
             // for its driver, which takes no session until it is ready.
-            let home = if item.attempts > 0.0 && item.driver_declined.unwrap_or(0.0) == 0.0 {
+            let home = if item.attempts > 0.0 && !item.declined_for_driver() {
                 None
             } else {
                 self.home_of(&item.session_id)
@@ -2112,8 +2267,8 @@ impl FleetObject {
                         e.0.code == ErrorCode::Unavailable && (item.attempts as i64) < MAX_ATTEMPTS;
                     if retryable {
                         let _ = self.sql.exec(
-                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?)",
-                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000)]),
+                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
+                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000), item.driver_declined()]),
                         );
                         self.session_control(
                             &session_id,
@@ -2151,9 +2306,19 @@ impl FleetObject {
                 Some(vec![sv(&item.session_id)]),
             );
             let run_id = spec.run_id.clone().unwrap_or_default();
+            // With the attempts so far, for a decline to count on, and the
+            // runner that has its sandbox, for a hand-back to keep.
+            let home_before = self.home_of(&item.session_id);
             let _ = self.sql.exec(
-                "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted, run_id) VALUES (?, ?, ?, 0, ?)",
-                Some(vec![sv(&item.session_id), sv(&runner_id), iv(now), sv(&run_id)]),
+                "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted, run_id, attempts, home_before) VALUES (?, ?, ?, 0, ?, ?, ?)",
+                Some(vec![
+                    sv(&item.session_id),
+                    sv(&runner_id),
+                    iv(now),
+                    sv(&run_id),
+                    iv(item.attempts as i64),
+                    SqlStorageValue::from(home_before),
+                ]),
             );
             let sent = self.send_runner(
                 &runner_id,
@@ -2164,6 +2329,9 @@ impl FleetObject {
             if sent {
                 let stub = internal::session_stub(&self.env, &item.session_id);
                 if let Ok(stub) = stub {
+                    // A runner short of disk takes the sessions whose
+                    // sandboxes it has: they hear how short.
+                    let (disk, notice) = self.disk_for(&runner_id, &runner_name);
                     let _: std::result::Result<serde_json::Value, _> = internal::post(
                         &stub,
                         "/control",
@@ -2174,6 +2342,8 @@ impl FleetObject {
                                 id: RunnerId(runner_id.clone()),
                                 name: runner_name.clone(),
                             }),
+                            notice,
+                            disk,
                             ..Default::default()
                         },
                     )
@@ -2185,8 +2355,8 @@ impl FleetObject {
                     Some(vec![sv(&item.session_id)]),
                 );
                 let _ = self.sql.exec(
-                    "INSERT OR REPLACE INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?)",
-                    Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 5_000)]),
+                    "INSERT OR REPLACE INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
+                    Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 5_000), item.driver_declined()]),
                 );
             }
         }
@@ -2598,27 +2768,25 @@ impl FleetObject {
     // ───────────────────────────── Claude sign-in ─────────────────────────────
 
     fn login_start(&self, b: LoginStart) -> std::result::Result<serde_json::Value, ApiError> {
-        let online = self.live_runners().online;
-        // The first online of the runners that may run it, in their order
-        // (the person's own first): a login passes its tokens through the
-        // host. Of those, the first whose driver is ready, as an offline
-        // one would be passed over: a host that can't start a sandbox
-        // fails the sign-in. When none is, the first, which says why.
-        let candidates: Vec<&String> = match &b.runners {
-            Some(allowed) => allowed.iter().filter(|r| online.contains(r)).collect(),
-            None => online.iter().collect(),
+        // The runners that may run it, in their order (the person's own
+        // first): a login passes its tokens through the host.
+        let runners = match b.runners {
+            Some(allowed) => allowed,
+            None => self.live_runners().online,
         };
-        let ready = |r: &&String| {
-            self.hello_of(r)
-                .is_none_or(|h| fctl_domain::schedule::driver_ready(&h.driver, &h.drivers))
-        };
-        let picked = candidates.iter().find(|r| ready(r)).or(candidates.first());
-        let Some(runner_id) = picked.map(|r| (*r).clone()) else {
+        let Some(runner_id) = self.login_runner(&runners, &[]) else {
             return Ok(serde_json::json!({ "ok": false }));
         };
         let _ = self.sql.exec(
-            "INSERT OR REPLACE INTO logins (job_id, runner_id, user_id, created_at) VALUES (?, ?, ?, ?)",
-            Some(vec![sv(b.job_id.as_str()), sv(&runner_id), sv(b.user.id.as_str()), iv(now_ms())]),
+            "INSERT OR REPLACE INTO logins (job_id, runner_id, user_id, created_at, runners, user) VALUES (?, ?, ?, ?, ?, ?)",
+            Some(vec![
+                sv(b.job_id.as_str()),
+                sv(&runner_id),
+                sv(b.user.id.as_str()),
+                iv(now_ms()),
+                sv(&serde_json::to_string(&runners).unwrap_or_default()),
+                sv(&serde_json::to_string(&b.user).unwrap_or_default()),
+            ]),
         );
         let sent = self.send_runner(
             &runner_id,
@@ -2630,10 +2798,76 @@ impl FleetObject {
         Ok(serde_json::json!({ "ok": sent }))
     }
 
+    /// Of `runners`, in the order to try them, the one a sign-in goes to,
+    /// passing over those it went to whose driver wasn't ready (`tried`):
+    /// the first online one whose driver is ready, as its host last said,
+    /// as an offline one would be passed over. When none is, at first the
+    /// first online one, whose host fails it saying why; after that, none
+    /// (`fctl_domain::schedule::login_runner`).
+    fn login_runner(&self, runners: &[String], tried: &[&str]) -> Option<String> {
+        let online = self.live_runners().online;
+        let runners: Vec<fctl_domain::schedule::LoginRunner<'_>> = runners
+            .iter()
+            .map(|r| fctl_domain::schedule::LoginRunner {
+                id: r,
+                online: online.contains(r),
+                ready: self
+                    .hello_of(r)
+                    .is_none_or(|h| fctl_domain::schedule::driver_ready(&h.driver, &h.drivers)),
+            })
+            .collect();
+        fctl_domain::schedule::login_runner(&runners, tried).map(str::to_owned)
+    }
+
+    /// Sends a sign-in whose runner, `from`, found its driver not ready
+    /// (`error`) on to the next of its runners that can run it: the runner
+    /// it went to, or `None` when none can.
+    fn pass_login_on(
+        &self,
+        job_id: &LoginJobId,
+        from: &str,
+        row: &LoginRow,
+        error: &str,
+    ) -> Option<String> {
+        let runners: Vec<String> = serde_json::from_str(row.runners.as_deref()?).ok()?;
+        let user: fctl_proto::session::UserRef = serde_json::from_str(row.user.as_deref()?).ok()?;
+        let mut tried: Vec<String> = row
+            .tried
+            .as_deref()
+            .and_then(|t| serde_json::from_str(t).ok())
+            .unwrap_or_default();
+        tried.push(from.to_owned());
+        let first_error = row.first_error.as_deref().unwrap_or(error);
+        loop {
+            let ids: Vec<&str> = tried.iter().map(String::as_str).collect();
+            let next = self.login_runner(&runners, &ids)?;
+            let _ = self.sql.exec(
+                "UPDATE logins SET runner_id = ?, tried = ?, first_error = ? WHERE job_id = ?",
+                Some(vec![
+                    sv(&next),
+                    sv(&serde_json::to_string(&tried).unwrap_or_default()),
+                    sv(first_error),
+                    sv(job_id.as_str()),
+                ]),
+            );
+            if self.send_runner(
+                &next,
+                &FleetToHost::ClaudeLoginStart {
+                    job_id: job_id.clone(),
+                    user: user.clone(),
+                },
+            ) {
+                return Some(next);
+            }
+            // Gone since: the one after it.
+            tried.push(next);
+        }
+    }
+
     fn login_row(&self, job_id: &str) -> Option<LoginRow> {
         self.sql
             .exec(
-                "SELECT job_id, runner_id, user_id FROM logins WHERE job_id = ?",
+                "SELECT job_id, runner_id, user_id, runners, user, tried, first_error FROM logins WHERE job_id = ?",
                 Some(vec![sv(job_id)]),
             )
             .and_then(|c| c.to_array::<LoginRow>())
@@ -2682,6 +2916,8 @@ impl FleetObject {
             return;
         };
         let Ok(db) = self.env.d1("DB") else { return };
+        // The runner the job is on, as people see it.
+        let mut on = row.runner_id.clone();
         let state = match update {
             ClaudeLoginUpdate::Starting => ClaudeLoginState::Starting,
             // The host may be another member's: only Claude's own page is
@@ -2695,7 +2931,24 @@ impl FleetObject {
                 error: "The runner sent a sign-in link that isn't on claude.ai. Start the sign-in again, or connect a long-lived token instead.".into(),
             },
             ClaudeLoginUpdate::Verifying => ClaudeLoginState::Verifying,
-            ClaudeLoginUpdate::Failed { error } => ClaudeLoginState::Failed { error },
+            // Its runner's driver isn't ready (Docker stopped since its host
+            // last said, say): it goes on to the next of its runners that
+            // can run it, and stays starting meanwhile. When none can, it
+            // fails with the first such runner's reason. Hosts that don't
+            // say why fail it as before.
+            ClaudeLoginUpdate::Failed {
+                error,
+                unready: Some(true),
+            } => match self.pass_login_on(job_id, runner_id, &row, &error) {
+                Some(next) => {
+                    on = Some(next);
+                    ClaudeLoginState::Starting
+                }
+                None => ClaudeLoginState::Failed {
+                    error: row.first_error.clone().unwrap_or(error),
+                },
+            },
+            ClaudeLoginUpdate::Failed { error, .. } => ClaudeLoginState::Failed { error },
             ClaudeLoginUpdate::Succeeded { bundle } => {
                 match self.store_login(&db, &row.user_id, *bundle, now).await {
                     Ok(credential_id) => ClaudeLoginState::Succeeded { credential_id },
@@ -2718,7 +2971,7 @@ impl FleetObject {
             "UPDATE claude_login_jobs SET state = ?, runner_id = ?, updated_at = ? WHERE id = ?",
             &[
                 crate::db::s(&text),
-                crate::db::os(row.runner_id.as_deref()),
+                crate::db::os(on.as_deref()),
                 crate::db::n(now),
                 crate::db::s(job_id.as_str()),
             ],

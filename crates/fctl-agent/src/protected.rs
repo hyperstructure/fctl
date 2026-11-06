@@ -38,7 +38,7 @@ pub struct Started {
     /// The host's socket, bound.
     pub listener: UnixListener,
     /// Held while it serves.
-    pub lock: File,
+    pub lock: link::Lock,
     pub socket: PathBuf,
     pub state: PathBuf,
     /// Where the user's `fctl` reaches the supervisor: in its `~/.fctl`.
@@ -132,7 +132,20 @@ fn held(path: &Path) -> bool {
     let Ok(file) = open_plain(path) else {
         return false;
     };
-    matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+    held_through(file)
+}
+
+/// [`held`], with the lock's file open.
+fn held_through(file: File) -> bool {
+    match file.try_lock() {
+        // Let go of it before the file closes, for a process forked meanwhile
+        // would hold it until it execs ([`link::Lock`]).
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(e) => matches!(e, std::fs::TryLockError::WouldBlock),
+    }
 }
 
 /// Opens the regular file at `path` for reading and writing, where the
@@ -308,11 +321,22 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("agent.lock");
         assert!(!held(&path));
-        let lock = link::lock(&path)?;
-        assert!(lock.is_some());
+        // Finding it free lets go of it, though a process forked meanwhile
+        // keeps a copy of the file until it execs.
+        std::fs::File::create(&path)?;
+        let file = open_plain(&path)?;
+        let checked = file.try_clone()?;
+        assert!(!held_through(file));
+        let Some(lock) = link::lock(&path)? else {
+            bail!("nobody else holds the lock");
+        };
         assert!(held(&path));
+        // A process another test forks keeps a copy of the file until it
+        // execs: the lock is let go of all the same.
+        let copy = lock.copy()?;
         drop(lock);
         assert!(!held(&path));
+        drop((copy, checked));
         Ok(())
     }
 }

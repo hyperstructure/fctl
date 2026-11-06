@@ -600,6 +600,9 @@ fn print_runner(r: &Runner) {
         println!("  {}", style::dim(&d));
     }
     if let Some(d) = low_disk_line(r) {
+        println!("  {d}");
+    }
+    if let Some(d) = driver_line(r) {
         println!("  {}", style::amber(&d));
     }
     if let Some(d) = driver_line(r) {

@@ -61,6 +61,7 @@ import {
   driverProblem,
   lowOnDisk,
   memory,
+  outOfDisk,
   sandboxLimits,
   stamp,
 } from "@/lib/format";
@@ -1403,7 +1404,7 @@ function Runners() {
               <span
                 className={cn(
                   "mt-1.5 size-2 shrink-0 rounded-full sm:mt-0",
-                  r.status === "disabled"
+                  r.status === "disabled" || outOfDisk(r)
                     ? "bg-danger"
                     : r.drain || lowOnDisk(r) || r.pending_until || driverProblem(r)
                       ? "bg-amber"
@@ -1416,7 +1417,10 @@ function Runners() {
               <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
                 <div className="min-w-0 flex-1">
                   <div className="text-[14px] text-ink">
-                    {r.name} <span className="ml-1 text-[12px] text-ink-4">{runnerState(r)}</span>
+                    {r.name}{" "}
+                    <span className={cn("ml-1 text-[12px]", outOfDisk(r) ? "text-danger" : "text-ink-4")}>
+                      {runnerState(r)}
+                    </span>
                   </div>
                   <div className="mt-0.5 text-[12px] text-ink-4">
                     {r.hostname ? `${r.hostname} · ` : ""}
@@ -1535,12 +1539,14 @@ function Runners() {
 
 /**
  * "online", or why it takes no new sessions: a drain ("draining" while sessions run, then "drained"), its
- * disk, or its workspace's admins, who haven't approved it yet.
+ * disk ("low on disk", then "out of disk" once its sessions' writes are about to fail), its workspace's
+ * admins, who haven't approved it yet, or a driver that can't start sandboxes.
  */
 function runnerState(r: G.Runner): string {
   if (r.status === "disabled") return r.status;
   if (r.pending_until) return "waiting for approval";
   if (r.drain) return r.active_sessions > 0 ? "draining" : "drained";
+  if (outOfDisk(r)) return "out of disk";
   if (lowOnDisk(r)) return "low on disk";
   return driverProblem(r) ? "driver not ready" : r.status;
 }
@@ -1565,10 +1571,19 @@ function DrainLine({ runner: r }: { runner: G.Runner }) {
 /** How far a runner's free disk is below what its host keeps, and what happens meanwhile. */
 function LowDiskLine({ runner: r }: { runner: G.Runner }) {
   if (!lowOnDisk(r) || r.disk_available_mb == null || r.min_free_disk_mb == null) return null;
+  const below = diskBelow(r.disk_available_mb, r.min_free_disk_mb);
+  if (outOfDisk(r)) {
+    // Firecracker's VMs would lose what they write without a word: they wait in memory.
+    const pauses = r.driver === "firecracker" ? " and pauses running ones" : "";
+    return (
+      <div className="mt-0.5 text-[12px] text-danger">
+        {`${below}, nearly out: what its sessions write is about to fail. Until there is room, its host removes stopped sandboxes${pauses}, and no new sessions start on it.`}
+      </div>
+    );
+  }
   return (
     <div className="mt-0.5 text-[12px] text-amber">
-      {diskBelow(r.disk_available_mb, r.min_free_disk_mb)}: its host removes stopped sandboxes, and no new
-      sessions start on it until there is room.
+      {below}: its host removes stopped sandboxes, and no new sessions start on it until there is room.
     </div>
   );
 }

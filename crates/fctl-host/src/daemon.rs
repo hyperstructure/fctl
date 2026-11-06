@@ -30,8 +30,8 @@ use fctl_domain::image::ImageWant;
 use fctl_domain::size::{self, Want};
 use fctl_domain::updates::Version;
 use fctl_proto::runner::{
-    DriverInfo, FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec,
-    StopReason,
+    ClaudeLoginUpdate, DriverInfo, FleetToHost, HostHeartbeat, HostHello, HostSessionReport,
+    HostToFleet, SessionSpec, StopReason,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
@@ -178,6 +178,9 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 const FACTS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often the host measures its free disk elsewhere.
 const DISK_EVERY: Duration = Duration::from_secs(30);
+/// How often below its floor: its sessions may fill the rest within
+/// [`DISK_EVERY`].
+const DISK_LOW_EVERY: Duration = Duration::from_secs(5);
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 /// How often the host probes its drivers while the one it uses isn't ready.
 const NOT_READY_EVERY: Duration = Duration::from_secs(30);
@@ -910,6 +913,12 @@ impl Daemon {
     fn note_disk(&mut self, free_mb: Option<u64>) {
         let was_low = self.low_on_disk();
         self.disk_free_mb = free_mb;
+        // Sessions pause and resume their sandboxes by it.
+        self.ctx.disk.send_if_modified(|was| {
+            let changed = *was != free_mb;
+            *was = free_mb;
+            changed
+        });
         match (was_low, self.low_on_disk(), free_mb) {
             (false, true, _) => tracing::warn!(
                 "{} at {}: removing stopped sandboxes, those stopped longest first, and taking no new sessions until there is room",
@@ -1034,6 +1043,18 @@ impl Daemon {
         }
     }
 
+    /// The hello for a new connection. Heartbeats that waited for one go:
+    /// the hello says their sessions and drivers as they are now, and one
+    /// sent after it would say older ones, which the control plane would
+    /// keep (a driver not ready that is ready since, say).
+    fn greet(&mut self) -> HostHello {
+        self.outbox
+            .retain(|m| !matches!(m, HostToFleet::Heartbeat(_)));
+        let hello = self.hello();
+        self.drivers_said = hello.drivers.clone();
+        hello
+    }
+
     fn heartbeat(&mut self) -> HostHeartbeat {
         // Its driver may have become ready since, or stopped being.
         let drivers = self.ctx.drivers();
@@ -1125,8 +1146,7 @@ impl Daemon {
         shutdown: &mut oneshot::Receiver<()>,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
-        let hello = self.hello();
-        self.drivers_said = hello.drivers.clone();
+        let hello = self.greet();
         ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(hello))).await?;
         let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
         heartbeat.tick().await;
@@ -1160,7 +1180,7 @@ impl Daemon {
                     }
                 }
                 Some(ev) = self.events_rx.recv() => self.on_session_event(ev),
-                Some(msg) = self.login_rx.recv() => self.outbox.push_back(msg),
+                Some(msg) = self.login_rx.recv() => self.on_login(msg),
                 Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
                 _ = self.sweep.tick() => self.start_sweep(),
                 _ = self.update_check.tick(), if self.ready.is_some() => self.update_if_quiet(),
@@ -1174,6 +1194,27 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// Passes on what a sign-in says. One that found the driver not ready
+    /// (`HostCtx::recheck_driver`) comes after a heartbeat that says so,
+    /// rather than at the next beat: the control plane, which passes the
+    /// sign-in on to another runner, then sends neither it nor sessions
+    /// here until the driver is ready again.
+    fn on_login(&mut self, msg: HostToFleet) {
+        if let HostToFleet::ClaudeLogin {
+            update:
+                ClaudeLoginUpdate::Failed {
+                    unready: Some(true),
+                    ..
+                },
+            ..
+        } = &msg
+        {
+            let hb = self.heartbeat();
+            self.outbox.push_back(HostToFleet::Heartbeat(hb));
+        }
+        self.outbox.push_back(msg);
     }
 
     /// Handles a session event; what it has for the control plane goes to
@@ -1496,8 +1537,10 @@ async fn clean_up_images(ctx: &HostCtx) {
 }
 
 /// Measures the free disk where sandboxes are, now and then, in the
-/// background, and tells the daemon: every [`DISK_EVERY`], or inside the
-/// Docker VM, where measuring starts a container, every [`FACTS_EVERY`].
+/// background, and tells the daemon: every [`DISK_EVERY`], or
+/// [`DISK_LOW_EVERY`] below the floor, so that sandboxes pause before the
+/// disk is full; inside the Docker VM, where measuring starts a container,
+/// every [`FACTS_EVERY`].
 fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
     tokio::spawn(async move {
         loop {
@@ -1507,6 +1550,9 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
             }
             let every = match ctx.disk_spot() {
                 DiskSpot::DockerVm => FACTS_EVERY,
+                DiskSpot::Dir(_) if disk::low(free_mb, ctx.cfg.min_free_disk_mb()) => {
+                    DISK_LOW_EVERY
+                }
                 DiskSpot::Dir(_) => DISK_EVERY,
             };
             tokio::time::sleep(every).await;
@@ -1526,9 +1572,9 @@ fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration, chores: mpsc::Unboun
     tokio::spawn(async move {
         let mut probed = Probed::now();
         loop {
-            // It looks every NOT_READY_EVERY, since a session that couldn't
-            // make its sandbox may have found the driver not ready since the
-            // last probe (`HostCtx::recheck_driver`).
+            // It looks every NOT_READY_EVERY, since a session or a sign-in
+            // that couldn't make its sandbox may have found the driver not
+            // ready since the last probe (`HostCtx::recheck_driver`).
             tokio::time::sleep(NOT_READY_EVERY.min(period)).await;
             if probe_due(&ctx, &mut probed, period).await && chores.send(Chore::Drivers).is_err() {
                 return;
@@ -1885,8 +1931,8 @@ mod tests {
     #[test]
     fn hosts_probe_a_driver_that_isnt_ready_every_30_seconds() {
         let s = Duration::from_secs;
-        // Not ready, also when a session found that out between two probes:
-        // every driver, every 30 s.
+        // Not ready, also when a session or a sign-in found that out
+        // between two probes: every driver, every 30 s.
         assert_eq!(
             probe_now(false, s(30), s(30), FACTS_EVERY),
             Some(Probe::All)
@@ -2075,6 +2121,73 @@ mod tests {
         set_process(&d, None);
         d.hold("fctl-ses-01next");
         assert_eq!(d.start_session(spec("ses_01NEXT")?), Ok(()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_new_connection_hears_no_heartbeat_older_than_its_hello() -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        // A heartbeat, saying the drivers changed, waits with a decline for
+        // a connection: the last one dropped.
+        d.drivers_said.clear();
+        let beat = d.heartbeat();
+        assert!(beat.drivers.is_some());
+        let declined = HostToFleet::StartResult {
+            session_id: SessionId("ses_01WAIT".into()),
+            accepted: false,
+            error: Some("the host is at capacity".into()),
+            unready: None,
+        };
+        d.outbox.push_back(HostToFleet::Heartbeat(beat));
+        d.outbox.push_back(declined.clone());
+        // The next connection's hello says the drivers as they are now, and
+        // the heartbeat goes; what else waited is still sent.
+        let hello = d.greet();
+        assert_eq!(d.drivers_said, hello.drivers);
+        assert_eq!(d.outbox.drain(..).collect::<Vec<_>>(), [declined]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_that_found_the_driver_not_ready_comes_after_a_heartbeat_that_says_so()
+    -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        let set_process = |d: &Daemon, detail: Option<&str>| {
+            let mut drivers = d
+                .ctx
+                .drivers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for info in drivers.iter_mut().filter(|i| i.name == "process") {
+                info.available = detail.is_none();
+                info.detail = detail.map(Into::into);
+            }
+            drivers.clone()
+        };
+        set_process(&d, None);
+        d.drivers_said = d.hello().drivers;
+        let failed = |unready| HostToFleet::ClaudeLogin {
+            job_id: LoginJobId("lgn_01".into()),
+            update: ClaudeLoginUpdate::Failed {
+                error: "Starting a sandbox on studio: no room".into(),
+                unready,
+            },
+        };
+        // Failed for another reason: it goes as it is.
+        d.on_login(failed(None));
+        assert_eq!(d.outbox.drain(..).collect::<Vec<_>>(), [failed(None)]);
+        // The sign-in probed the driver again and found it not ready: the
+        // control plane hears that first, rather than at the next beat.
+        let broken = set_process(&d, Some("the Docker daemon isn't running"));
+        d.on_login(failed(Some(true)));
+        let sent: Vec<_> = d.outbox.drain(..).collect();
+        let [HostToFleet::Heartbeat(hb), login] = &sent[..] else {
+            anyhow::bail!("{sent:?}");
+        };
+        assert_eq!(hb.drivers, Some(broken));
+        assert_eq!(*login, failed(Some(true)));
+        // Said once.
+        assert_eq!(d.heartbeat().drivers, None);
         Ok(())
     }
 

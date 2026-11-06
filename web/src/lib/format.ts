@@ -77,6 +77,11 @@ export function lowOnDisk(r: Pick<G.Runner, "disk_available_mb" | "min_free_disk
   );
 }
 
+/** Whether a runner is nearly out of disk: what its sessions write is about to fail. */
+export function outOfDisk(r: Pick<G.Runner, "disk_room">): boolean {
+  return r.disk_room === "out";
+}
+
 /**
  * Why the driver a connected runner's host uses can't start sandboxes, as its host last said ("fctl can't use
  * Docker: …"). Null while it can, while the runner is offline (what it said is old), and from hosts that don't say.

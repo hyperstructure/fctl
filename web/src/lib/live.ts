@@ -48,6 +48,10 @@ export interface LiveState {
   runnerAway?: { lastSeenAt: number; noticedAt: number };
   /** The connected runner can't reach the agent in the sandbox. */
   agentUnreachable?: G.AgentUnreachable;
+  /** The session's runner is short of room on its disk. */
+  runnerDisk?: G.RunnerDisk;
+  /** The connected runner paused the session's sandbox until it has room. */
+  sandboxPaused?: G.SandboxPaused;
   hasMoreBefore: boolean;
   loadingOlder: boolean;
   /** The last load of earlier activity brought nothing, though there is more: a page failed. */
@@ -118,12 +122,20 @@ export class LiveSession {
   }
 
   /** The runner's state, as the snapshot or a `runner_connected` message has it. */
-  private runner(connected: boolean, lastSeenAt?: number, agent?: G.AgentUnreachable): Partial<LiveState> {
+  private runner(
+    connected: boolean,
+    lastSeenAt?: number,
+    agent?: G.AgentUnreachable,
+    disk?: G.RunnerDisk,
+    paused?: G.SandboxPaused,
+  ): Partial<LiveState> {
     const noticedAt = this.state.runnerAway?.noticedAt ?? Date.now();
     return {
       runnerConnected: connected,
       runnerAway: !connected && lastSeenAt ? { lastSeenAt, noticedAt } : undefined,
       agentUnreachable: connected ? agent : undefined,
+      runnerDisk: disk,
+      sandboxPaused: connected ? paused : undefined,
     };
   }
 
@@ -238,7 +250,13 @@ export class LiveSession {
           live,
           viewers: m.viewers,
           connection: "live",
-          ...this.runner(m.runner_connected, m.runner_last_seen_at, m.agent_unreachable),
+          ...this.runner(
+            m.runner_connected,
+            m.runner_last_seen_at,
+            m.agent_unreachable,
+            m.runner_disk,
+            m.sandbox_paused,
+          ),
           hasMoreBefore: fresh ? m.has_more_before : this.state.hasMoreBefore,
           firstSeq: this.events[0]?.seq ?? 0,
           lastSeq: Math.max(this.state.lastSeq, events[events.length - 1]?.seq ?? 0, m.next_seq - 1),
@@ -285,7 +303,7 @@ export class LiveSession {
         this.set({ viewers: m.viewers });
         return;
       case "runner_connected":
-        this.set(this.runner(m.connected, m.last_seen_at, m.agent_unreachable));
+        this.set(this.runner(m.connected, m.last_seen_at, m.agent_unreachable, m.disk, m.sandbox_paused));
         return;
       case "result": {
         const p = this.pending.get(m.client_id);

@@ -1012,6 +1012,9 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     println!("  {}", style::dim(&d));
                 }
                 if let Some(d) = low_disk_line(&r) {
+                    println!("  {d}");
+                }
+                if let Some(d) = driver_line(&r) {
                     println!("  {}", style::amber(&d));
                 }
                 if let Some(d) = driver_line(&r) {
@@ -1287,16 +1290,20 @@ pub(crate) fn drain_line(r: &Runner) -> Option<String> {
     ))
 }
 
-/// Why no new session starts on a runner whose disk is low:
+/// Why no new session starts on a runner whose disk is low, in amber:
 /// `12.3 GiB of disk free, below the 20 GiB it keeps free: no new sessions
-/// start on it`.
+/// start on it`. Nearly out of disk, it says in red that its sessions'
+/// writes are about to fail.
 pub(crate) fn low_disk_line(r: &Runner) -> Option<String> {
+    use fctl_domain::disk;
+    use fctl_proto::runner::DiskRoom;
     let (free, min) = (r.disk_available_mb?, r.min_free_disk_mb?);
-    (free < min).then(|| {
-        format!(
-            "{}: no new sessions start on it",
-            fctl_domain::disk::below(free, min)
-        )
+    let below = disk::below(free, min);
+    Some(match disk::room(Some(free), Some(min))? {
+        DiskRoom::Low => style::amber(&format!("{below}: no new sessions start on it")),
+        DiskRoom::Out => style::red(&format!(
+            "{below}, nearly out: no new sessions start on it, and its sessions' writes are about to fail"
+        )),
     })
 }
 

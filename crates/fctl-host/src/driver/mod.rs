@@ -704,6 +704,38 @@ impl Driver {
         }
     }
 
+    /// Whether it pauses sandboxes while the disk is nearly full: VMs whose
+    /// disk is a file on the host's, which lose what they write when the
+    /// host has no room for it. Docker's containers write to the host's
+    /// disk, and see that it is full.
+    pub fn pauses(&self) -> bool {
+        matches!(self, Self::Firecracker(_))
+    }
+
+    /// Pauses a sandbox ([`pauses`](Self::pauses)).
+    pub async fn pause(&self, sb: &Sandbox) -> Result<()> {
+        match self {
+            Self::Firecracker(d) => d.pause(sb).await,
+            _ => anyhow::bail!("the {} driver doesn't pause sandboxes", self.name()),
+        }
+    }
+
+    /// Resumes a paused sandbox.
+    pub async fn resume(&self, sb: &Sandbox) -> Result<()> {
+        match self {
+            Self::Firecracker(d) => d.resume(sb).await,
+            _ => anyhow::bail!("the {} driver doesn't pause sandboxes", self.name()),
+        }
+    }
+
+    /// Whether a sandbox is paused.
+    pub async fn paused(&self, sb: &Sandbox) -> bool {
+        match self {
+            Self::Firecracker(d) => d.paused(sb).await,
+            _ => false,
+        }
+    }
+
     /// Stops the sandbox, which keeps its files. An Apple `container`
     /// sandbox first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
