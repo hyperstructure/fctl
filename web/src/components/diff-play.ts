@@ -75,7 +75,10 @@ function playAll(boxes: HTMLElement[], live: LiveView) {
   const writing = pick("[data-how]");
   // What still played on these rows from the version before is done (and the layout read
   // below lets it play again).
-  for (const el of writing) delete el.dataset.play;
+  for (const el of writing) {
+    delete el.dataset.play;
+    delete el.dataset.playUntil;
+  }
   // The rows that came and went above what shows take their room out of sight.
   live.hold();
   const still = reduced();
@@ -193,10 +196,9 @@ function adjacent(a: HTMLElement, b: HTMLElement): boolean {
  * them. A row that plays already (the agent changed it again) plays on.
  */
 export function light(rows: HTMLElement[]) {
-  const now = performance.now();
-  const until = String(Math.round(now + LIT_MS));
+  const until = String(Math.round(performance.now() + LIT_MS));
   for (const el of rows) {
-    if (!el.isConnected || Number(el.dataset.playUntil ?? 0) > now) continue;
+    if (!el.isConnected || el.dataset.play) continue;
     el.style.setProperty("--diff-delay", "0ms");
     el.dataset.play = "seen";
     el.dataset.playUntil = until;

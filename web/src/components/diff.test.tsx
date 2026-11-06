@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parsePatch } from "@/lib/diff";
 import { DiffLines, type LiveView } from "./diff";
-import { SETTLE_MS } from "./diff-play";
+import { light, SETTLE_MS } from "./diff-play";
 
 // No Shiki in tests: lines show as plain text, unless a test colors them.
 const highlight = vi.hoisted(() => ({
@@ -253,6 +253,25 @@ describe("a live diff's lines", () => {
       ["// end"],
     ]);
     expect(row("    zero();")?.dataset.play).toBeUndefined();
+  });
+
+  it("light up as the reader comes to them though the agent changed them again while they were lit", async () => {
+    // In view as the first change plays, out of sight as the next comes.
+    const band = { top: -1, bottom: 10_000 };
+    const view = { ...shower(), band: () => band };
+    const { draw, row } = live(view);
+    await draw("@@ -1,2 +1,2 @@", " a", "-b", "+B");
+    await draw("@@ -1,2 +1,2 @@", " a", "-b", "+B2");
+    expect(row("B2")?.dataset.play).toBe("rewritten");
+    band.top = -10;
+    band.bottom = -5;
+    await draw("@@ -1,2 +1,2 @@", " a", "-b", "+B3");
+    const again = row("B3") as HTMLElement;
+    expect(again.dataset.play).toBeUndefined();
+    expect(view.unseen).toHaveBeenLastCalledWith([[again]]);
+    // The reader comes to it: it lights up, whatever its write would have lit it for.
+    light([again]);
+    expect(again.dataset.play).toBe("seen");
   });
 
   it("come in from nothing, as a file's lines do when the agent changed it first", async () => {
