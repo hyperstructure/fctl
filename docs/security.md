@@ -652,7 +652,8 @@ plane schedules sessions by these lists, and the host checks them again
 before it takes a session. To build, the host downloads the repository at
 the tip of its default branch with the session's GitHub token, which the
 build never sees, and runs the build in its container runtime's builder,
-outside any sandbox ([Sandbox images](sandbox-images.md#which-images-a-host-runs)),
+outside any sandbox, or with Firecracker in a VM of the project's own that
+holds its builds' cache, apart from other projects' ([Sandbox images](sandbox-images.md#which-images-a-host-runs)),
 from the repository's files alone: the host checks again that the
 Dockerfile and the directory a project names are in the repository, and
 keeps each sandbox's name to letters, digits and dashes, whatever the

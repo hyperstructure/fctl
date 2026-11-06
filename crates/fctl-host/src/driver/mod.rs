@@ -395,10 +395,10 @@ impl Driver {
         matches!(self, Self::Container(_) | Self::Firecracker(_))
     }
 
-    /// Whether it builds images from Dockerfiles (Firecracker pulls them
-    /// only).
+    /// Whether it builds images from Dockerfiles: Docker and Apple's
+    /// `container` themselves, Firecracker with BuildKit in a VM.
     pub fn builds_images(&self) -> bool {
-        matches!(self, Self::Container(_))
+        matches!(self, Self::Container(_) | Self::Firecracker(_))
     }
 
     /// Whether `image` is on this host.
@@ -470,7 +470,7 @@ impl Driver {
     ) -> Result<()> {
         match self {
             Self::Container(d) => d.build(job, log).await,
-            Self::Firecracker(_) => anyhow::bail!("the firecracker driver builds no images"),
+            Self::Firecracker(d) => d.build(job, log).await,
             _ => anyhow::bail!("the {} driver does not use images", self.name()),
         }
     }

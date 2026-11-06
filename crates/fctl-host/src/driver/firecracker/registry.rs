@@ -62,6 +62,45 @@ struct ConfigFile {
     config: Config,
 }
 
+/// What an image's config file says about running it.
+pub fn read_config(bytes: &[u8]) -> Result<Config> {
+    let file: ConfigFile = serde_json::from_slice(bytes).context("reading an image's config")?;
+    Ok(file.config)
+}
+
+/// What an index or an image's manifest lists, as registries and OCI image
+/// layouts keep them.
+pub enum Listed {
+    /// An index: its manifests' digests, and their platforms (os and
+    /// architecture) where it says.
+    Index(Vec<(String, Option<(String, String)>)>),
+    /// An image's manifest: its config and layers.
+    Image {
+        config: Descriptor,
+        layers: Vec<Descriptor>,
+    },
+}
+
+/// What the index or manifest `bytes` lists.
+pub fn read_manifest(bytes: &[u8]) -> Result<Listed> {
+    let m: Manifest = serde_json::from_slice(bytes).context("reading a manifest")?;
+    if let Some(index) = m.manifests {
+        return Ok(Listed::Index(
+            index
+                .into_iter()
+                .map(|p| (p.digest, p.platform.map(|p| (p.os, p.architecture))))
+                .collect(),
+        ));
+    }
+    match (m.config, m.layers) {
+        (Some(config), Some(layers)) => Ok(Listed::Image { config, layers }),
+        _ => bail!(
+            "a manifest ({}) that isn't one fctl reads",
+            m.media_type.unwrap_or_default()
+        ),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {

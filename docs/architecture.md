@@ -3440,7 +3440,19 @@ in `firecracker/` in the host's data directory.
   (`images.rs`). A pull whose image is here already reads only its
   manifest, so refreshing the default image works as with Docker. Removing
   a name keeps the last one of an image that a sandbox uses. Images share
-  no layers, and the driver builds none.
+  no layers.
+- **Builds.** A project's image builds with BuildKit
+  (`docker.io/moby/buildkit`, pinned by digest) in a VM of the project's
+  own, `fctl-builder-<project>`, booted from BuildKit's image like a
+  sandbox, which keeps BuildKit's state, and so its cache, on its disk
+  between builds and stops after each (`builds.rs`). The host starts
+  `buildkitd` there as root (its state on the VM's own ext4 disk, where
+  its overlay snapshots go; its builds' `RUN` steps use the VM's network),
+  sends the context and the Dockerfile in as tar archives over the vsock,
+  runs `buildctl build` with the job's target and build arguments, whose
+  plain progress goes to the session's log, and takes the image back as
+  an OCI archive, whose layers a VM unpacks as a pull's (`oci.rs`).
+  Nothing of the repository or the image runs or unpacks on the host.
 - **Sandboxes.** A sandbox is a directory with its own disk, a sparse ext4
   file of `disk_gb` (64 GiB by default) that takes what the session
   writes. Its VM's init lays it over the image's filesystem with overlayfs,
