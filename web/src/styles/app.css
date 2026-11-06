@@ -346,9 +346,11 @@
 [data-play="rewritten"] {
   animation: diff-write var(--diff-write-ms, 360ms) var(--diff-ease) var(--diff-delay, 0ms) backwards;
 }
+/* A line written over is written from where it changed (--diff-from, in
+   columns): what it kept stays, clear of the soft edge. */
 @keyframes diff-write {
   from {
-    --diff-x: 0px;
+    --diff-x: calc(var(--diff-from, 0) * 1ch + min(var(--diff-from, 0) * 100ch, var(--diff-edge)));
   }
   to {
     --diff-x: calc(var(--diff-w) + var(--diff-edge));

@@ -229,6 +229,8 @@ describe("a live diff's lines", () => {
     expect(after).toBe(before);
     expect(after?.dataset.play).toBe("rewritten");
     expect(after?.querySelector<HTMLElement>(".diff-code")?.dataset.was).toBe("let b = 3;");
+    // Written from where it changed: `let b = ` stays as it was.
+    expect(after?.style.getPropertyValue("--diff-from")).toBe("8");
     // What it said before shows from its pseudo-element: not in its text, which finding reads.
     expect(after?.querySelector(".diff-code")?.textContent).toBe("let b = a + 3;");
   });

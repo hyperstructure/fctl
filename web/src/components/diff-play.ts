@@ -41,6 +41,19 @@ const reduced = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").ma
 /** How many columns a line's text takes, tabs as four. */
 const columns = (text: string) => text.length + (text.split("\t").length - 1) * 3;
 
+/**
+ * Where a line written over starts to differ from what it said: the
+ * columns before the first word that changed, which stay as they are while
+ * the rest is written in.
+ */
+export function unchanged(was: string, now: string): number {
+  let i = 0;
+  while (i < was.length && i < now.length && was[i] === now[i]) i++;
+  if (i === was.length && i === now.length) return 0;
+  while (i > 0 && /\w/.test(now[i - 1] ?? "")) i--;
+  return columns(now.slice(0, i));
+}
+
 /** The diffs whose new versions play, gathered from one commit (each file's diff is its own). */
 const queued = new Map<LiveView, Set<HTMLElement>>();
 
@@ -149,12 +162,17 @@ function playAll(boxes: HTMLElement[], live: LiveView) {
       }
       const delay = wave(el) + (el.closest("[data-open='in']") ? WRITE_AFTER_MS : 0);
       const code = el.querySelector<HTMLElement>(".diff-code");
-      const chars = Math.max(columns(code?.textContent ?? ""), columns(code?.dataset.was ?? ""));
+      const text = code?.textContent ?? "";
+      const was = code?.dataset.was;
+      const chars = Math.max(columns(text), columns(was ?? ""));
+      // A line written over is written from where it changed, at that part's pace.
+      const from = was === undefined ? 0 : unchanged(was, text);
       // A line that wraps is written in line after line, too far for a caret to follow.
       if (wraps(code)) el.dataset.wraps = "";
       else delete el.dataset.wraps;
-      const ms = Math.min(WRITE_MS[1], Math.max(WRITE_MS[0], chars * WRITE_MS_PER_CHAR));
+      const ms = Math.min(WRITE_MS[1], Math.max(WRITE_MS[0], (chars - from) * WRITE_MS_PER_CHAR));
       el.style.setProperty("--diff-chars", String(chars));
+      el.style.setProperty("--diff-from", String(from));
       el.style.setProperty("--diff-write-ms", `${ms}ms`);
       el.style.setProperty("--diff-delay", `${delay}ms`);
       el.dataset.play = how;
