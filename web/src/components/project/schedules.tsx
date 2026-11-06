@@ -1233,6 +1233,10 @@ function DeleteSchedule({
     mutationFn: () => api.deleteSchedule(s.id),
     onSuccess: () => {
       saved(project, s, true);
+      // The sessions it kept off the lists come back to them, and to the projects' counts.
+      if (s.hide_sessions)
+        for (const queryKey of [["sessions"], keys.projects])
+          void queryClient.invalidateQueries({ queryKey });
       toast(`Deleted ${s.name}`);
       onClose();
     },
@@ -1242,7 +1246,11 @@ function DeleteSchedule({
       open={open}
       onClose={onClose}
       title={`Delete ${s.name}?`}
-      description="It starts no more sessions. The sessions it started stay, with their transcripts."
+      description={
+        s.hide_sessions
+          ? "It starts no more sessions. The sessions it started stay, with their transcripts, and show in session lists again."
+          : "It starts no more sessions. The sessions it started stay, with their transcripts."
+      }
     >
       <div className="flex flex-col gap-5">
         {remove.error && <Banner tone="error">{remove.error.message}</Banner>}
