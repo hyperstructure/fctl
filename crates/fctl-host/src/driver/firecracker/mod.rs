@@ -1179,13 +1179,34 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // passt makes itself undumpable: root sees the rest, where sudo
+            // asks for no password (as on CI's runners).
+            let sudo = |args: &[&str]| {
+                std::process::Command::new("sudo")
+                    .arg("-n")
+                    .args(args)
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default()
+            };
+            let p = pid.to_string();
             format!(
-                "{}\n{}\nfds: {fds:?}",
+                "{}\n{}\nfds: {fds:?}\nas root: fds {}\nsyscall {}\nstack {}\nsockets: {}",
                 proc("cmdline").replace('\0', " "),
                 proc("status")
                     .lines()
                     .filter(|l| l.starts_with("State"))
-                    .collect::<String>()
+                    .collect::<String>(),
+                sudo(&["ls", "-l", &format!("/proc/{p}/fd")]),
+                sudo(&["cat", &format!("/proc/{p}/syscall")]),
+                sudo(&["cat", &format!("/proc/{p}/stack")]),
+                sudo(&["ss", "-xanp"])
+                    .lines()
+                    .filter(|l| l.contains("v.sock")
+                        || l.contains("passt")
+                        || l.contains("firecracker"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             )
         });
         // Its capture, where the test asked for one (debug_passt).
