@@ -356,9 +356,10 @@ fn locks_hold_between_vms() -> anyhow::Result<()> {
     std::fs::write(dir.path().join(".package-cache"), b"")?;
     let mut a = Client::new(dir.path())?;
     let mut b = Client::new(dir.path())?;
-    for c in [&mut a, &mut b] {
+    // As flock's: whatever the file is open for, on either side.
+    for (c, mode) in [(&mut a, RDONLY), (&mut b, RDWR)] {
         assert_eq!(c.walk(0, 1, &[b".package-cache"]), Ok(1));
-        assert!(c.lopen(1, RDWR).is_ok());
+        assert!(c.lopen(1, mode).is_ok());
     }
     assert_eq!(a.lock(1, lock::WRLCK), Ok(lock::SUCCESS));
     assert_eq!(b.lock(1, lock::WRLCK), Ok(lock::BLOCKED));
@@ -430,6 +431,20 @@ fn serves_on_a_unix_socket() -> anyhow::Result<()> {
     assert_eq!(reply[4], kind::TVERSION + 1);
     assert_eq!(&reply[7..11], &MAX_MSIZE.to_le_bytes());
     assert_eq!(&reply[13..], b"9P2000.L");
+    // As many connections as it serves at once; the next is refused.
+    let mut others = Vec::new();
+    for _ in 1..MAX_CONNECTIONS {
+        let mut other = UnixStream::connect(&socket)?;
+        let mut w = Writer::new(kind::TVERSION, wire::NOTAG);
+        w.u32(8192).bytes(b"9P2000.L");
+        other.write_all(&w.finish())?;
+        let mut reply = vec![0u8; 4 + 1 + 2 + 4 + 2 + 8];
+        other.read_exact(&mut reply)?;
+        others.push(other);
+    }
+    let mut refused = UnixStream::connect(&socket)?;
+    let mut nothing = Vec::new();
+    assert_eq!(refused.read_to_end(&mut nothing)?, 0);
     // A message larger than any the server takes ends the connection.
     conn.write_all(&(MAX_MSIZE * 2).to_le_bytes())?;
     let mut rest = Vec::new();

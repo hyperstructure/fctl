@@ -401,11 +401,11 @@ comes with its own), so a setup script like `npm ci` or `cargo fetch` gets
 only what is new. The runner keeps them for the project up to its owner's
 limit, 10 GiB unless `host.toml` says otherwise, empties them past it, and
 removes them two weeks after a session last used them ([Hosts](#hosts)).
-Sessions get them on runners with the Docker or Apple container driver
-(and the process driver), not Firecracker or Lima, and review agents never
-do. A session
-in a sandbox made before the project turned them on gets them in its next
-sandbox.
+Sessions get them on runners with the Docker, Apple container or
+Firecracker driver (and the process driver), not Lima, and review agents
+never do. A session in a sandbox made before the project turned them on
+gets them in its next sandbox, but with Firecracker, whose VMs mount them
+as they boot.
 
 ### Ticket trackers
 

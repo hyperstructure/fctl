@@ -54,6 +54,9 @@ pub const MAX_MSIZE: u32 = 1024 * 1024;
 /// server's.
 const MAX_FIDS: usize = 1 << 16;
 
+/// The most connections served at once: the VM's mount makes one.
+const MAX_CONNECTIONS: usize = 16;
+
 /// The protocol, the one the Linux client asks for first.
 const VERSION: &[u8] = b"9P2000.L";
 
@@ -114,20 +117,39 @@ pub fn serve(dir: &Path, socket: &Path) -> Result<()> {
     let listener =
         UnixListener::bind(socket).with_context(|| format!("listening on {}", socket.display()))?;
     tracing::info!("serving {} on {}", dir.display(), socket.display());
+    let serving = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // A failure here costs a connection, never the server: the VM's mount
+    // would fail with it.
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(100));
     for conn in listener.incoming() {
         let conn = match conn {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::warn!("taking a connection: {e}");
+                pause();
                 continue;
             }
         };
-        let root = root.try_clone()?;
+        if serving.load(std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
+            tracing::warn!("refused a connection: {MAX_CONNECTIONS} are served already");
+            continue;
+        }
+        let root = match root.try_clone() {
+            Ok(root) => root,
+            Err(e) => {
+                tracing::warn!("refused a connection: {e}");
+                pause();
+                continue;
+            }
+        };
+        let serving = serving.clone();
+        serving.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::thread::spawn(move || {
             let mut session = Session::new(root);
             if let Err(e) = session.run(conn) {
                 tracing::debug!("a connection ended: {e}");
             }
+            serving.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         });
     }
     Ok(())
@@ -169,6 +191,10 @@ struct Fid {
     fd: OwnedFd,
     kind: Kind,
     open: Option<File>,
+    /// The file opened for its locks, which `fcntl` takes only on a file
+    /// open for writing (write locks) or reading (read locks), whatever
+    /// the client opened it for.
+    locks: Option<File>,
     /// A directory's entries, read when the client reads it from the start.
     entries: Vec<(Vec<u8>, Qid, u8)>,
     /// An extended attribute's: it has none, so it reads as nothing.
@@ -181,6 +207,7 @@ impl Fid {
             fd,
             kind,
             open: None,
+            locks: None,
             entries: Vec::new(),
             xattr: false,
         }
@@ -317,6 +344,31 @@ impl Session {
             return fail(libc::ENOTDIR);
         }
         Ok(&f.fd)
+    }
+
+    /// The file `fid`'s locks are taken on: the file the client opened,
+    /// opened again for reading and writing, where the host's user may, so
+    /// that a write lock on a file the client opened to read holds, as
+    /// `flock` on one does.
+    fn locks(&mut self, fid: u32) -> io::Result<&File> {
+        let f = self.fid_mut(fid)?;
+        if f.kind != Kind::File {
+            return fail(libc::EBADF);
+        }
+        if f.locks.is_none() {
+            let Some(open) = &f.open else {
+                return fail(libc::EBADF);
+            };
+            let locks = File::options()
+                .read(true)
+                .write(true)
+                .open(reopen_path(&f.fd))
+                .or_else(|_| open.try_clone())?;
+            f.locks = Some(locks);
+        }
+        f.locks
+            .as_ref()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))
     }
 
     fn insert(&mut self, fid: u32, f: Fid) -> io::Result<()> {
@@ -512,19 +564,13 @@ impl Session {
                 Ok(reply(t).finish())
             }
             kind::TLOCK => {
-                let f = self.fid(r.u32()?)?;
+                let fid = r.u32()?;
                 let kind = r.u8()?;
                 let _flags = r.u32()?;
                 let start = r.u64()?;
                 let length = r.u64()?;
-                let file = f
-                    .open
-                    .as_ref()
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?;
-                let status = match nix::fcntl::fcntl(
-                    file,
-                    FcntlArg::F_OFD_SETLK(&flock(kind, start, length)?),
-                ) {
+                let fl = flock(kind, start, length)?;
+                let status = match nix::fcntl::fcntl(self.locks(fid)?, FcntlArg::F_OFD_SETLK(&fl)) {
                     Ok(_) => lock::SUCCESS,
                     Err(Errno::EAGAIN | Errno::EACCES) => lock::BLOCKED,
                     Err(_) => lock::ERROR,
@@ -534,18 +580,15 @@ impl Session {
                 Ok(w.finish())
             }
             kind::TGETLOCK => {
-                let f = self.fid(r.u32()?)?;
+                let fid = r.u32()?;
                 let kind = r.u8()?;
                 let start = r.u64()?;
                 let length = r.u64()?;
                 let proc_id = r.u32()?;
                 let client = r.bytes()?;
-                let file = f
-                    .open
-                    .as_ref()
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?;
                 let mut fl = flock(kind, start, length)?;
-                nix::fcntl::fcntl(file, FcntlArg::F_OFD_GETLK(&mut fl)).map_err(errno)?;
+                nix::fcntl::fcntl(self.locks(fid)?, FcntlArg::F_OFD_GETLK(&mut fl))
+                    .map_err(errno)?;
                 let mut w = reply(t);
                 if i32::from(fl.l_type) == libc::F_UNLCK {
                     w.u8(lock::UNLCK)

@@ -55,8 +55,6 @@ pub struct Spec {
     pub memory_mb: u32,
     /// Whether the VM gets a network (`passt`).
     pub network: bool,
-    /// A directory of the host's that the VM mounts (`fctl-agent share`).
-    pub share: Option<Share>,
 }
 
 /// A directory the host serves to a VM over its vsock ([`SHARE_PORT`]): the
@@ -184,9 +182,6 @@ impl Vm {
     async fn start_processes(&self, spec: &Spec, firecracker: &Path) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         std::fs::create_dir_all(&self.run)?;
-        if let Some(share) = &spec.share {
-            self.start_share(share).await?;
-        }
         let config = self.dir.join("firecracker.json");
         std::fs::write(&config, serde_json::to_vec_pretty(&self.config(spec))?)?;
         let console = std::fs::File::create(self.console())?;
@@ -244,9 +239,17 @@ impl Vm {
         Ok(())
     }
 
-    /// `fctl-agent share`, which serves `share`'s directory where the VM's
-    /// connections to [`SHARE_PORT`] come.
-    async fn start_share(&self, share: &Share) -> Result<()> {
+    /// Whether `fctl-agent share` serves the VM a directory.
+    pub fn sharing(&self) -> bool {
+        self.pid("share").is_some()
+    }
+
+    /// Starts `fctl-agent share`, which serves `share`'s directory where the
+    /// VM's connections to [`SHARE_PORT`] come, in place of one that served
+    /// it before.
+    pub async fn serve_share(&self, share: &Share) -> Result<()> {
+        self.kill_one("share").await;
+        let _ = std::fs::remove_file(self.share());
         let log = std::fs::File::create(self.dir.join("share.log"))?;
         let mut cmd = std::process::Command::new(&share.agent);
         cmd.arg("share")
@@ -671,7 +674,6 @@ pub fn unpack_spec(kernel: PathBuf, initrd: PathBuf, name: &str, rootfs: &Path) 
         cpus: 2,
         memory_mb: 1024,
         network: false,
-        share: None,
     }
 }
 
@@ -707,7 +709,6 @@ mod tests {
             cpus: 64,
             memory_mb: 4096,
             network: true,
-            share: None,
         };
         let c = vm.config(&spec);
         assert_eq!(
@@ -1041,16 +1042,19 @@ mod tests {
             "#!/bin/sh\nfor a; do [ \"$prev\" = --socket ] && touch \"$a\"; prev=$a; done\nsleep 60\n",
         )?;
         let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
-        let spec = Spec {
-            share: Some(Share {
-                agent: share,
-                dir: dir.path().to_owned(),
-            }),
-            ..unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"))
-        };
+        let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
         vm.start(&spec, &firecracker).await?;
-        assert!(vm.running() && !vm.linked());
-        assert!(vm.pid("share").is_some() && vm.share().exists());
+        assert!(vm.running() && !vm.linked() && !vm.sharing());
+        let share = Share {
+            agent: share,
+            dir: dir.path().to_owned(),
+        };
+        vm.serve_share(&share).await?;
+        let first_share = vm.pid("share");
+        assert!(vm.sharing() && vm.share().exists());
+        // Served again: the first server goes.
+        vm.serve_share(&share).await?;
+        assert!(vm.sharing() && vm.pid("share") != first_share);
         let (close, got) = vsock_stand_in(&vm.vsock())?;
         // A passt that fails once it has made its pid's file: no link.
         let e = vm.link_network(&failing).await.err().map(|e| e.to_string());

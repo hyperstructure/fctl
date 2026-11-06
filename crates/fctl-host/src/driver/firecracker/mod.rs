@@ -722,6 +722,14 @@ impl FirecrackerDriver {
                         .context("passt is not installed: it gives the VMs their network")?;
                     vm.link_network(&passt).await?;
                 }
+                // Its server of the package caches is gone: another, which
+                // the VM mounts in place of the mount the old one left.
+                if let Some(share) = self.share_of(spec).await?
+                    && !vm.sharing()
+                {
+                    log(format!("Serving the package caches of {} again", spec.name));
+                    self.share_caches(&vm, &spec.name, &share, log).await;
+                }
                 return Ok(sb);
             }
             log(format!(
@@ -759,15 +767,7 @@ impl FirecrackerDriver {
         let passt = self
             .passt()
             .context("passt is not installed: it gives the VMs their network")?;
-        let share = match &spec.cache {
-            Some(Spot::Dir(dir)) => Some(vm::Share {
-                agent: crate::agentbin::linux_agent(&self.host)
-                    .await
-                    .context("getting fctl-agent to serve the package caches")?,
-                dir: dir.clone(),
-            }),
-            _ => None,
-        };
+        let share = self.share_of(spec).await?;
         let boot = Spec {
             kernel,
             initrd,
@@ -790,7 +790,6 @@ impl FirecrackerDriver {
             cpus: spec.cpus,
             memory_mb: spec.memory_mb,
             network: true,
-            share: share.clone(),
         };
         vm.start(&boot, &firecracker).await?;
         vm.wait_ready().await?;
@@ -800,15 +799,40 @@ impl FirecrackerDriver {
         }
         record.agent = Some(agent);
         self.save_record(&spec.name, &record)?;
-        if share.is_some()
-            && let Err(e) = self.mount_caches(&vm, &spec.name).await
-        {
-            log(format!(
-                "The package caches couldn't be mounted in {} ({e:#}), so this session's package managers keep their own downloads",
-                spec.name
-            ));
+        if let Some(share) = &share {
+            self.share_caches(&vm, &spec.name, share, log).await;
         }
         Ok(sb)
+    }
+
+    /// What `spec`'s VM is served of the host's: its project's package
+    /// caches, which `fctl-agent share` serves.
+    async fn share_of(&self, spec: &SandboxSpec) -> Result<Option<vm::Share>> {
+        let Some(Spot::Dir(dir)) = &spec.cache else {
+            return Ok(None);
+        };
+        let agent = crate::agentbin::linux_agent(&self.host)
+            .await
+            .context("getting fctl-agent to serve the package caches")?;
+        Ok(Some(vm::Share {
+            agent,
+            dir: dir.clone(),
+        }))
+    }
+
+    /// Serves `share` to the VM, which is up, and mounts it there. Without
+    /// it, the session runs on without package caches, and its log says so.
+    async fn share_caches(&self, vm: &Vm, name: &str, share: &vm::Share, log: Log<'_>) {
+        let shared = async {
+            vm.serve_share(share).await?;
+            self.mount_caches(vm, name).await
+        }
+        .await;
+        if let Err(e) = shared {
+            log(format!(
+                "The package caches couldn't be mounted in {name} ({e:#}), so this session's package managers keep their own downloads"
+            ));
+        }
     }
 
     /// Mounts the project's package caches, which `fctl-agent share` serves
@@ -1449,7 +1473,9 @@ mod tests {
                 .await?;
             assert_eq!(owner.trim(), "0:0 644");
             // A lock one holds keeps the other waiting, as cargo's do.
-            d.spawn(a, "exec flock /var/cache/fctl/.package-cache sleep 30")
+            // Its program runs while the host holds it.
+            let holder = d
+                .spawn(a, "exec flock /var/cache/fctl/.package-cache sleep 30")
                 .await?;
             tokio::time::sleep(Duration::from_secs(2)).await;
             let busy = d
@@ -1459,6 +1485,7 @@ mod tests {
                 )
                 .await?;
             assert_eq!(busy.trim(), "held");
+            drop(holder);
             // A sandbox started again mounts them again.
             d.stop(b).await?;
             let b = d.ensure(&spec(&names[1]), &log).await?;

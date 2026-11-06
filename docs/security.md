@@ -219,8 +219,15 @@ its VM, and nothing outside it except through these channels:
 
 - **Firecracker VMs** have a kernel of their own, as Apple's and Lima's
   do, where a Docker container shares the host's: a kernel bug in the
-  sandbox stays there. They share no files with the host, and the host
-  runs what it runs in them through their vsock, not SSH. Firecracker runs
+  sandbox stays there. They share no filesystem with the host, and the host
+  runs what it runs in them through their vsock, not SSH. In projects that
+  share package caches, the host serves the project's cache directory to
+  each of its VMs over 9P on the vsock (`fctl-agent share`, a process of
+  the host's user beside each VM), which anything in the VM can reach: the
+  server walks one name at a time without following symlinks, refuses `.`,
+  `..` and names with `/`, opens only files and directories, and makes
+  neither devices nor setuid files, so the VM reaches nothing of the
+  host's but that directory, which its sandbox mounts anyway. Firecracker runs
   as the host's user, with its seccomp filters but without its jailer,
   which needs root: a VM escape would run as that user, who can read the
   runner's token, as a container escape can with Docker. Their images
