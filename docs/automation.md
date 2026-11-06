@@ -105,12 +105,12 @@ schedule lists it as a run by a tool.
 1. **A schedule for the case.** One that runs **when asked** has no time
    of its own, since the tool decides when it runs: choose When asked in
    its form, or `fctl schedules add "Triage an issue" -p web --when-asked
-   --github comment -m "Triage the issue that comes with this: label it,
+   --github triage -m "Triage the issue that comes with this: label it,
    say what is missing to act on it, link duplicates and point at the code
    it concerns."` Its details show the request below, with its id, ready
    to copy (any schedule can be run this way).
 2. **A token that runs sessions.** `fctl token "Issue triage" --access run
-   -p web --github comment --days 90`.
+   -p web --github triage --days 90`.
 3. **The request.** The tool posts to the schedule's runs, with what it
    knows in `context` (at most 20,000 characters):
 
@@ -148,12 +148,13 @@ It prints the token once. Three questions limit it:
 |---|---|---|
 | What it can do | **Run sessions**: start sessions, message their agents, stop and resume the ones it started, keep projects' memory. **Read**: read projects and sessions, change nothing. **Everything**: all you can do in its projects. | `--access run`, `read` or `full` |
 | Where | All your projects, or some projects, or every project of some workspaces (those made later too) | `-p web` and `-w acme`, repeated |
-| What its sessions' agents may do on GitHub | Push, comment or read (below), for a token that runs sessions | `--github push`, `comment` or `read` |
+| What its sessions' agents may do on GitHub | Push, comment, triage or read (below), for a token that runs sessions | `--github push`, `comment`, `triage` or `read` |
 
 A token with any limit reaches projects and sessions only: never your
 account, your workspaces' people and settings, your Claude connections or
 your other tokens, so it can't make itself a token without limits. Only a
-token that runs sessions holds their agents to commenting or reading: one
+token that runs sessions holds their agents to commenting, triage or
+reading: one
 that does everything could change its projects' settings, and so what
 every agent there does. It
 works as you, within its limits and never beyond your own roles, until it
@@ -173,13 +174,14 @@ bell on their page or `fctl follow`.
 
 ## What agents may do on GitHub
 
-Each session's agent pushes, comments or only reads, in the repositories
-its project may write to:
+Each session's agent pushes, comments, triages or only reads, in the
+repositories its project may write to:
 
 | | Its GitHub token | The agent |
 |---|---|---|
 | **Push** | writes contents, pull requests, issues and workflows | commits, pushes its branch and opens pull requests, as agents always did |
 | **Comment** | writes pull requests and issues, reads contents | reviews, comments, labels and resolves review threads; can't push or merge |
+| **Triage** | reads | labels the project's tickets and comments on them, through fctl; writes nothing else |
 | **Read** | reads | reads the code, pull requests, issues and CI results; writes nothing |
 
 A session asks for one as it starts (the list beside the model in the
@@ -195,6 +197,17 @@ sandbox, which its `~/AGENTS.md` explains. An agent that comments can
 still edit, close and approve pull requests and issues, as GitHub's
 permissions for comments allow: it is asked to approve only when its task
 says so.
+
+An agent that triages is for work whose input anyone may have written,
+such as going through new issues: whatever an issue tells it, it can't
+change code, open or review pull requests, or close, edit or file
+tickets. Its token only reads, and it labels and comments with `fctl
+ticket` in its sandbox, which fctl does for it in the project's ticket
+tracker (GitHub's issues or Linear's) and holds to that: on GitHub it
+writes only on issues, with labels the repository has. Its session's
+transcript shows each label it put on or took off and each comment. A
+project without a ticket tracker gives it nothing to triage, and it only
+reads.
 
 ## Review pull requests from GitHub Actions
 
@@ -291,10 +304,12 @@ What to keep in mind:
 
 ## Other uses
 
-- **Triage new issues.** On `issues: types: [opened]`, start a session
-  that comments: `fctl run -p web --github comment --detach "Triage issue
+- **Triage new issues.** Start from the Schedules tab's **Triage new
+  issues** idea, which goes through the issues opened since its last run
+  each weekday, or on `issues: types: [opened]`, start a session that
+  triages: `fctl run -p web --github triage --detach "Triage issue
   #$ISSUE: label it, say what is missing to act on it, and point at the
-  code it concerns."`
+  code it concerns."` Either way its agent only labels and comments.
 - **Nightly maintenance.** A schedule does it without a workflow
   ([Schedules](#schedules)): `fctl schedules add "Nightly dependencies"
   -p web --cron "0 3 * * *" -m "Update the dependencies that have patch
@@ -302,8 +317,8 @@ What to keep in mind:
 - **Plan before building.** Choose **Read only** in the task box, or `fctl
   run --github read`, and ask for a plan: the agent reads the code, issues
   and pull requests and answers in the session, writing nothing to
-  GitHub. A project whose agents should only ever read or comment says so
-  in its settings.
+  GitHub. A project whose agents should only ever read, triage or
+  comment says so in its settings.
 - **Dashboards and reports.** A token that reads (`--access read`) lists
   sessions, transcripts, retrospectives and project memory, and starts
   nothing: `fctl sessions --active --json`, `fctl retro list -p web --json`,

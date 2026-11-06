@@ -41,7 +41,7 @@ timezone: string,
 model?: string, effort?: string, base_branch?: string, 
 /**
  * What its sessions' agents may do on GitHub; absent: as much as the
- * project allows.
+ * project allows. One this version doesn't know reads as `read`.
  */
 github_access?: GithubAccess, 
 /**

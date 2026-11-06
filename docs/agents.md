@@ -20,7 +20,7 @@ A program uses an access token that a person made for it, limited to what
 it is for, in `FCTL_TOKEN`:
 
 ```sh
-fctl token "Nightly triage" --access run -p my-app --github comment --days 30   # a person runs this
+fctl token "Nightly triage" --access run -p my-app --github triage --days 30   # a person runs this
 export FCTL_SERVER=https://app.fctl.sh FCTL_TOKEN=fctl_pat_…
 fctl whoami                      # whose it is, and what it may do
 ```
@@ -86,8 +86,8 @@ says:
   fctl whoami                      # whose it is, and what it may do
   ```
 
-  Adding `--github comment` or `--github read` keeps the agents of its
-  sessions from pushing. `--access full` (Everything) in place of `run`
+  Adding `--github comment`, `--github triage` or `--github read` keeps
+  the agents of its sessions from pushing. `--access full` (Everything) in place of `run`
   also lets the agent change the project's settings, secrets, members and
   schedules, as far as the person's role there allows, but takes no
   `--github`: it could change the settings that say what the project's
@@ -276,8 +276,9 @@ wrote.
 - `fctl stop SESSION` ends the session and keeps its sandbox; `fctl resume
   SESSION "…"` starts it again on your subscription, a failed one too,
   which a message doesn't.
-- A token that may comment or read on GitHub can only read a session whose
-  agent started able to do more, so it can't steer an agent that pushes.
+- A token that may comment, triage or read on GitHub can only read a
+  session whose agent started able to do more, so it can't steer an agent
+  that pushes.
 - Review agents' sessions take no messages.
 - People can share a session with others in its workspace, and anyone who
   may message it can see, and have its agent hand over, what is in its
@@ -300,9 +301,11 @@ wrote.
   from issues, emails, chats and webhooks goes in a when-asked schedule's
   `context` ([below](#from-any-tool)), which the agent gets marked as
   information, not instructions.
-- More GitHub access than the task needs. Reviews, triage and planning run
-  with `--github comment` or `--github read`; a project's maintainers can
-  cap every session (`fctl projects set --github comment`).
+- More GitHub access than the task needs. Reviews run with `--github
+  comment`, triage with `--github triage` (labels and comments on the
+  project's tickets, nothing else, whatever an issue says), planning with
+  `--github read`; a project's maintainers can cap every session (`fctl
+  projects set --github comment`).
 - `--env` for credentials: its values are not secret. Secrets go in the
   project's secrets, with the value on stdin (`printenv STRIPE_KEY | fctl
   projects secrets set STRIPE_KEY -p my-app`), never as an argument;
@@ -358,9 +361,9 @@ what it knows as `context`.
 1. A person sets up the schedule and a token:
 
    ```sh
-   fctl schedules add "Triage an issue" -p my-app --when-asked --github comment \
+   fctl schedules add "Triage an issue" -p my-app --when-asked --github triage \
      -m "Triage the issue that comes with this: label it, say what is missing to act on it, link duplicates and point at the code it concerns."
-   fctl token "Issue triage" --access run -p my-app --github comment --days 90
+   fctl token "Issue triage" --access run -p my-app --github triage --days 90
    ```
 
 2. The program posts to the schedule's runs, with at most 20,000
@@ -408,7 +411,7 @@ jobs:
           FCTL_TOKEN: ${{ secrets.FCTL_TOKEN }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
-          fctl run -p my-app --github comment -d "Triage issue #$ISSUE: label it, say what is missing to act on it, and point at the code it concerns."
+          fctl run -p my-app --github triage -d "Triage issue #$ISSUE: label it, say what is missing to act on it, and point at the code it concerns."
 ```
 
 Pass what comes from GitHub (titles, bodies) through `env`, never `${{ }}`

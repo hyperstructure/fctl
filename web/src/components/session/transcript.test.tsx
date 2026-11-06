@@ -953,4 +953,36 @@ describe("tickets", () => {
     act(() => line?.click());
     expect(c.textContent).toContain("Fixed: the cookie lost its SameSite setting.");
   });
+
+  it("says which labels an agent put on a ticket and took off", () => {
+    const updated = (state?: G.TicketState): Item => ({
+      kind: "notice",
+      key: `n-${++seq}`,
+      seq,
+      ts: 0,
+      notice: {
+        level: "info",
+        code: "ticket_updated",
+        message: "Labeled acme/web#12 on GitHub: +bug, +needs info, −question",
+        ticket: {
+          tracker: "github",
+          ticket: { key: "acme/web#12", title: "", url: "https://github.com/acme/web/issues/12" },
+          state,
+          labeled: ["bug", "needs info"],
+          unlabeled: ["question"],
+        },
+      },
+    });
+    const c = transcript([updated()], "idle");
+    expect(c.textContent).toContain("Labeled acme/web#12 on GitHub");
+    expect(c.textContent).toContain("added bug");
+    expect(c.textContent).toContain("added needs info");
+    expect(c.textContent).toContain("removed question");
+    expect(c.querySelector(".line-through")?.textContent).toBe("removed question");
+    // A change of more than labels comes with the ticket's state.
+    const more = transcript([updated({ name: "Closed", kind: "completed" })], "idle");
+    expect(more.textContent).toContain("Changed acme/web#12 on GitHub");
+    expect(more.textContent).toContain("Closed");
+    expect(more.textContent).toContain("added bug");
+  });
 });

@@ -963,6 +963,8 @@ async fn moved_notice(env: &Env, session_id: &str, ticket: TicketLink, state: Ti
             body: None,
             url: None,
             state: Some(state),
+            labeled: Vec::new(),
+            unlabeled: Vec::new(),
         },
     )
     .await;
@@ -1445,6 +1447,8 @@ pub async fn turn_ended(env: &Env, session_id: &str, text: &str) -> AppResult<()
                 body: Some(body.clone()),
                 url: None,
                 state: None,
+                labeled: Vec::new(),
+                unlabeled: Vec::new(),
             },
         )
         .await;

@@ -59,7 +59,8 @@ pub struct Opener {
     pub workspace_id: Option<String>,
     pub project_slug: String,
     /// Why its agent hears of nothing that happens there: its project is
-    /// archived, or its agent only reads on GitHub now.
+    /// archived, or its agent writes nothing to pull requests now (it only
+    /// reads on GitHub, or triages).
     pub deaf: Option<&'static str>,
 }
 
@@ -123,6 +124,8 @@ fn pick(listers: &[Lister], head_ref: Option<&str>) -> Option<Opener> {
         Some("its project is archived")
     } else if access == GithubAccess::Read {
         Some("its agent only reads on GitHub")
+    } else if !access.tokens_write() {
+        Some("its agent only triages on GitHub")
     } else {
         None
     };

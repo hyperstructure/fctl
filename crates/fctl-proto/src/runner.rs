@@ -387,7 +387,9 @@ pub struct SessionSpec {
     /// may do less than push: its agent then pushes nothing, and tells
     /// Claude what it may do. Absent: push, as from older control planes.
     /// Older hosts leave it out of the agent's configuration, and their
-    /// agents' pushes fail.
+    /// agents' pushes fail. `triage` goes only to hosts that announce
+    /// [`FEATURE_TRIAGE`]; one this version doesn't know reads as `read`.
+    #[serde(default, deserialize_with = "crate::session::least_if_unknown")]
     pub github_access: Option<GithubAccess>,
     /// What a review agent's session reviews, and how. Its agent checks
     /// the pull request out at the commit, reviews it, posts what it found
@@ -406,6 +408,13 @@ pub struct SessionSpec {
 /// What hosts whose agents run review sessions announce in their hello
 /// ([`HostHello::features`]).
 pub const FEATURE_REVIEWS: &str = "reviews";
+
+/// What hosts whose agents know [`GithubAccess::Triage`] announce in their
+/// hello. Older hosts can't read a spec that has it, so FleetDO tells
+/// their agents they only read (`fctl_domain::limits::for_host`): their
+/// tokens are the same, and the control plane still lets them label and
+/// comment as their tracker's lines say.
+pub const FEATURE_TRIAGE: &str = "triage";
 
 /// The pull request a review session reviews, and what its agent is told.
 #[skip_serializing_none]
@@ -632,6 +641,23 @@ mod tests {
             "git_author": { "name": "bot", "email": "bot@example.com" },
             "co_authors": [], "web_url": "https://fctl.test/s/ses_1", "idle_timeout_secs": 60
         })
+    }
+
+    #[test]
+    fn a_github_access_this_version_does_not_know_reads_as_reading() -> serde_json::Result<()> {
+        // What a newer control plane may send: the agent reads it as the
+        // least, rather than fail the whole spec.
+        let mut json = spec_json();
+        json["github_access"] = serde_json::json!("merge");
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert_eq!(spec.github_access, Some(GithubAccess::Read));
+        let mut json = spec_json();
+        json["github_access"] = serde_json::json!("triage");
+        let spec: SessionSpec = serde_json::from_value(json)?;
+        assert_eq!(spec.github_access, Some(GithubAccess::Triage));
+        let spec: SessionSpec = serde_json::from_value(spec_json())?;
+        assert_eq!(spec.github_access, None);
+        Ok(())
     }
 
     #[test]

@@ -15,6 +15,12 @@ export type TicketNotice = { tracker: Tracker, ticket: TicketLink,
  */
 body?: string, url?: string, 
 /**
- * For a ticket it moved or changed: its state now.
+ * For a ticket it moved or changed: its state now. Absent for a
+ * change of labels alone.
  */
-state?: TicketState, };
+state?: TicketState, 
+/**
+ * For a ticket it changed: the labels it put on, and those it took
+ * off. Absent from control planes before them.
+ */
+labeled?: Array<string>, unlabeled?: Array<string>, };

@@ -9,9 +9,15 @@
 //! ticket` reaches the team's tickets through the control plane, which
 //! holds the Linear workspace's credentials (`crate::linear`).
 //!
+//! An agent that triages (`GithubAccess::Triage`) reaches the tracker with
+//! `fctl ticket` whatever it is, since its GitHub tokens only read: the
+//! control plane lets it label tickets and comment on them, and refuses
+//! every other write ([`check_write`]).
+//!
 //! This is what that decides without I/O: which issues a session's GitHub
-//! tokens may touch, how its agent reaches the tracker, what it is told,
-//! how it names tickets, and how its replies go back to a ticket.
+//! tokens may touch, how its agent reaches the tracker, what it may write
+//! there, what it is told, how it names tickets, and how its replies go
+//! back to a ticket.
 
 use crate::validate::Result;
 use fctl_proto::ApiError;
@@ -75,7 +81,9 @@ pub const MAX_LABELS_PER_CALL: usize = 20;
 /// Checks the labels a call names before anything reaches the tracker:
 /// GitHub takes each label a call removes in a request of its own, so that
 /// one call, which counts once, can't send the tracker's API any number of
-/// them, nor names no tracker keeps.
+/// them, nor names no tracker keeps. Nor `.` or `..`, which go in GitHub's
+/// paths as they are and which URLs take as steps up the path: removing
+/// `.` would ask GitHub to remove all of an issue's labels.
 pub fn check_labels(request: &fctl_proto::tickets::TicketRequest) -> Result<()> {
     use fctl_proto::tickets::TicketRequest as R;
     let lists: Vec<(&str, &[String])> = match request {
@@ -103,8 +111,39 @@ pub fn check_labels(request: &fctl_proto::tickets::TicketRequest) -> Result<()> 
                 format!("A label has at most {MAX_LABEL} characters, and no control characters"),
             ));
         }
+        if labels.iter().any(|l| matches!(l.trim(), "." | "..")) {
+            return Err(ApiError::validation(field, "A label isn't `.` or `..`"));
+        }
     }
     Ok(())
+}
+
+/// What a session's transcript says fctl changed on ticket `key` for its
+/// agent, `place` being "on GitHub" or "in Linear": "Labeled acme/web#12 on
+/// GitHub: +bug, −question" when it changed only labels (`only_labels`),
+/// "Changed ENG-7 in Linear" otherwise, with the labels too.
+pub fn changed(
+    key: &str,
+    place: &str,
+    labeled: &[String],
+    unlabeled: &[String],
+    only_labels: bool,
+) -> String {
+    let labels: Vec<String> = labeled
+        .iter()
+        .map(|l| format!("+{l}"))
+        .chain(unlabeled.iter().map(|l| format!("−{l}")))
+        .collect();
+    let verb = if only_labels && !labels.is_empty() {
+        "Labeled"
+    } else {
+        "Changed"
+    };
+    if labels.is_empty() {
+        format!("{verb} {key} {place}")
+    } else {
+        format!("{verb} {key} {place}: {}", labels.join(", "))
+    }
 }
 
 /// What a session's agent hears when it reached a limit above.
@@ -202,9 +241,9 @@ pub struct IssueTokens {
 /// is for. A token carries one set of permissions for all its
 /// repositories, so the issues of one repository go on the write token
 /// only when it is the only one there; otherwise agents reach them through
-/// the control plane (`fctl ticket`). An agent that only reads gets one
-/// token for every repository, which reads issues only where all of them
-/// may.
+/// the control plane (`fctl ticket`). An agent that only reads, or
+/// triages, gets one token for every repository, which reads issues only
+/// where all of them may.
 pub fn issue_tokens(
     issues: &GithubIssues,
     write_names: &[String],
@@ -216,10 +255,7 @@ pub fn issue_tokens(
             write: true,
             read: true,
         },
-        GithubIssues::One(r) if access == GithubAccess::Read => {
-            let _ = r;
-            IssueTokens::default()
-        }
+        GithubIssues::One(_) if !access.tokens_write() => IssueTokens::default(),
         GithubIssues::One(r) => IssueTokens {
             write: matches!(write_names, [only] if only.eq_ignore_ascii_case(&r.name)),
             read: false,
@@ -227,7 +263,9 @@ pub fn issue_tokens(
     }
 }
 
-/// How a session's agent reaches its project's tracker.
+/// How a session's agent reaches its project's tracker. One that triages
+/// writes through the control plane alone, so it reaches GitHub's issues
+/// with `fctl ticket` too.
 pub fn via(
     t: &Tickets,
     primary: Option<&RepoRef>,
@@ -246,6 +284,7 @@ pub fn via(
                 .collect();
             match &issues {
                 GithubIssues::None => TicketsVia::Nothing,
+                _ if access == GithubAccess::Triage => TicketsVia::Fctl,
                 GithubIssues::Writable => TicketsVia::Gh,
                 GithubIssues::One(_) if issue_tokens(&issues, &names, access).write => {
                     TicketsVia::Gh
@@ -259,7 +298,8 @@ pub fn via(
 /// How one of a project's sessions reaches its tracker: as [`via`] says,
 /// but with `gh` for GitHub Issues when the session reaches GitHub's
 /// issues beyond its tracker ([`session_issues`]), since its tokens then
-/// reach those of every repository it writes to, the tracker's among them.
+/// reach those of every repository it writes to, the tracker's among them;
+/// still `fctl ticket` for one that triages, which writes through it alone.
 pub fn session_via(
     t: &Tickets,
     primary: Option<&RepoRef>,
@@ -268,16 +308,80 @@ pub fn session_via(
     asked: bool,
 ) -> TicketsVia {
     match via(t, primary, grants, access) {
-        TicketsVia::Fctl if asked && t.tracker == Tracker::Github => TicketsVia::Gh,
+        TicketsVia::Fctl
+            if asked && t.tracker == Tracker::Github && access != GithubAccess::Triage =>
+        {
+            TicketsVia::Gh
+        }
         v => v,
     }
 }
 
-/// Whether an agent that may do `access` on GitHub writes tickets: one that
-/// only reads there reads them alone, in any tracker.
-pub fn writes(access: GithubAccess) -> bool {
-    access >= GithubAccess::Comment
+/// What an agent may write in its project's tracker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TicketWrites {
+    /// Nothing: it reads tickets alone.
+    Nothing,
+    /// Labels and comments, and nothing else: it triages.
+    Triage,
+    /// Whatever its tracker takes: it files, comments on and changes tickets.
+    All,
 }
+
+/// What an agent that may do `access` on GitHub writes in its tracker,
+/// whichever that is: one that only reads there reads tickets alone, and
+/// one that triages labels them and comments on them.
+pub fn ticket_writes(access: GithubAccess) -> TicketWrites {
+    match access {
+        GithubAccess::Read => TicketWrites::Nothing,
+        GithubAccess::Triage => TicketWrites::Triage,
+        GithubAccess::Comment | GithubAccess::Push => TicketWrites::All,
+    }
+}
+
+/// Whether an agent that may do `access` on GitHub writes whatever its
+/// tracker takes ([`TicketWrites::All`]).
+pub fn writes(access: GithubAccess) -> bool {
+    ticket_writes(access) == TicketWrites::All
+}
+
+/// Checks what a session's agent, which may do `access` on GitHub, asks of
+/// its tracker before anything reaches it: one that reads writes nothing,
+/// and one that triages only comments on tickets and changes their labels,
+/// so that a ticket that tells it to do more can't make it.
+pub fn check_write(
+    access: GithubAccess,
+    request: &fctl_proto::tickets::TicketRequest,
+) -> Result<()> {
+    use fctl_proto::tickets::TicketRequest as R;
+    if request.reads() {
+        return Ok(());
+    }
+    match (ticket_writes(access), request) {
+        (TicketWrites::All, _) => Ok(()),
+        (TicketWrites::Nothing, _) => Err(ApiError::forbidden(
+            "This session's agent only reads: it can't write tickets.",
+        )),
+        (TicketWrites::Triage, R::Comment { .. }) => Ok(()),
+        (
+            TicketWrites::Triage,
+            R::Update {
+                title: None,
+                description: None,
+                state: None,
+                parent: None,
+                priority: None,
+                ..
+            },
+        ) => Ok(()),
+        (TicketWrites::Triage, R::Create { .. }) => Err(ApiError::forbidden(TRIAGE_FILES_NONE)),
+        (TicketWrites::Triage, _) => Err(ApiError::forbidden(TRIAGE_CHANGES_NOTHING_ELSE)),
+    }
+}
+
+const TRIAGE_FILES_NONE: &str = "This session's agent triages: it labels tickets and comments on them, and files none. Say in your reply what you would file.";
+
+const TRIAGE_CHANGES_NOTHING_ELSE: &str = "This session's agent triages: it labels tickets and comments on them, and changes nothing else about them (their state, title, description, parent or priority). Say in your reply what you would change.";
 
 // ───────────────────────────── what a project chose ─────────────────────────────
 
@@ -633,12 +737,40 @@ pub struct StartedFrom<'a> {
 pub fn instructions(t: &Told<'_>) -> String {
     let mut s = String::new();
     let writes = writes(t.access);
+    let triages = ticket_writes(t.access) == TicketWrites::Triage;
     match t.tickets.tracker {
         Tracker::None => s.push_str(&no_tracker(t)),
         Tracker::Github => {
             let issues = github_issues(t.tickets, t.primary, t.grants);
             match (&issues, t.via) {
                 (GithubIssues::None, _) | (_, TicketsVia::Nothing) => s.push_str(&no_tracker(t)),
+                (GithubIssues::Writable, _) if triages => {
+                    let what = writable_words(t);
+                    s.push_str(&format!(
+                        "- This project tracks its work in GitHub issues of {what}: read them with `gh issue` or `fctl ticket`, and label them and comment on them with `fctl ticket` (below), {TRIAGE_ALL}.\n"
+                    ));
+                }
+                (GithubIssues::One(r), _) if triages => {
+                    let name = r.full_name();
+                    let read = if t.github_issues {
+                        format!("read {name}'s with `gh issue` or `fctl ticket`")
+                    } else {
+                        format!(
+                            "gh can't reach issues in this session, so read {name}'s with `fctl ticket` (below)"
+                        )
+                    };
+                    let others = if t.github_issues {
+                        format!(
+                            "The person who started this session let it read the issues of {} too, only as the task asks.",
+                            writable_words(t)
+                        )
+                    } else {
+                        "Leave the issues of other repositories alone.".to_owned()
+                    };
+                    s.push_str(&format!(
+                        "- This project tracks its work in GitHub issues of {name}, and only there: {read}, and label them and comment on them with `fctl ticket`, {TRIAGE_ALL}. {others}\n"
+                    ));
+                }
                 (GithubIssues::Writable, _) => {
                     let what = writable_words(t);
                     let how = if writes {
@@ -694,9 +826,13 @@ pub fn instructions(t: &Told<'_>) -> String {
             Some(l) => {
                 let scope = linear_scope(l, t.linear_workspace);
                 let how = if writes {
-                    "read and write its tickets with `fctl ticket` (below), which acts as fctl's agent in Linear"
+                    "read and write its tickets with `fctl ticket` (below), which acts as fctl's agent in Linear".to_owned()
+                } else if triages {
+                    format!(
+                        "read its tickets with `fctl ticket` (below), and label them and comment on them with it, as fctl's agent in Linear, {TRIAGE_ALL}"
+                    )
                 } else {
-                    "read its tickets with `fctl ticket` (below); you can't write to them in this session"
+                    "read its tickets with `fctl ticket` (below); you can't write to them in this session".to_owned()
                 };
                 let github = if t.github_issues {
                     format!(
@@ -731,10 +867,14 @@ pub fn instructions(t: &Told<'_>) -> String {
         s.push_str(&started_from(t, from));
     }
     if t.via == TicketsVia::Fctl {
-        s.push_str(&fctl_ticket(t.tickets.tracker, writes));
+        s.push_str(&fctl_ticket(t.tickets.tracker, ticket_writes(t.access)));
     }
     s
 }
+
+/// What the tracker's lines say of what an agent that triages writes.
+const TRIAGE_ALL: &str =
+    "which is all you write in this session: you triage, and fctl refuses every other change";
 
 /// The repositories whose issues a session reaches through `gh`, in words.
 fn writable_words(t: &Told<'_>) -> String {
@@ -890,8 +1030,9 @@ fn own_moves(l: &LinearTickets) -> String {
     )
 }
 
-/// How to use `fctl ticket`, for agents that reach their tracker with it.
-fn fctl_ticket(tracker: Tracker, writes: bool) -> String {
+/// How to use `fctl ticket`, for agents that reach their tracker with it,
+/// which write there what `writes` says.
+fn fctl_ticket(tracker: Tracker, writes: TicketWrites) -> String {
     let key = match tracker {
         Tracker::Github => "#12",
         _ => "ENG-123",
@@ -899,7 +1040,18 @@ fn fctl_ticket(tracker: Tracker, writes: bool) -> String {
     let mut s = format!(
         "\n`fctl ticket` reaches the project's tickets through fctl, which talks to this session directly:\n\n- `fctl ticket` says what it reaches and which tickets this session works on; `fctl ticket list` lists open tickets (`--closed`, `--all`, `--search WORDS`, `--label NAME`), and `fctl ticket view {key}` shows one with its comments.\n"
     );
-    if writes {
+    if writes == TicketWrites::Triage {
+        // GitHub's issue comments don't thread.
+        let reply = if tracker == Tracker::Linear {
+            " (`--reply-to ID` answers a comment)"
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "- `fctl ticket comment {key} \"…\"` comments{reply}, and `fctl ticket update {key} --add-label bug --remove-label question` changes a ticket's labels, among those `fctl ticket labels` lists. That is all you can write: fctl files no tickets for you and changes nothing else about them (their state, title, description, parent or priority).\n- Comment when the people there need to know or answer something: what is missing to act on a ticket, a question only they can answer, a duplicate. Don't narrate your progress: the session shows it, and fctl turns away an agent that comments too often.\n"
+        ));
+    }
+    if writes == TicketWrites::All {
         s.push_str(&format!(
             "- `fctl ticket comment {key} \"…\"` comments (`--reply-to ID` answers a comment); `fctl ticket create --title \"…\" --description \"…\"` files a ticket (`--parent {key}` makes it a sub-ticket); `fctl ticket update {key} --state \"In Review\" --add-label bug` changes one; `fctl ticket states` and `fctl ticket labels` list what they can be.\n- Comment when people there need to know something: a question only they can answer, a decision, what changed. Don't narrate your progress: the session shows it, and fctl turns away an agent that comments too often.\n"
         ));
@@ -1326,6 +1478,12 @@ mod tests {
         let long = "x".repeat(MAX_LABEL + 1);
         assert!(check_labels(&update(vec![], vec![long])).is_err());
         assert!(check_labels(&update(vec!["a\nb".into()], vec![])).is_err());
+        // Names a URL takes as steps up its path, to add or to remove.
+        for dots in [".", "..", " .. "] {
+            assert!(check_labels(&update(vec![dots.into()], vec![])).is_err());
+            assert!(check_labels(&update(vec![], vec![dots.into()])).is_err());
+        }
+        assert!(check_labels(&update(vec!["v1.0".into(), "...".into()], vec![])).is_ok());
         assert!(check_labels(&R::States).is_ok());
     }
 
@@ -2234,5 +2392,175 @@ mod tests {
         assert!(one.contains("the repositories you can write to too"));
         assert!(!one.contains("fctl ticket"));
         assert!(!one.contains("Leave the issues of other repositories alone"));
+    }
+
+    #[test]
+    fn agents_that_triage_reach_their_tracker_through_fctl_with_tokens_that_read() {
+        let primary = r("acme/web");
+        let grants = [g("lib", RepoAccess::Write), g("docs", RepoAccess::Read)];
+        let names = ["web".to_owned(), "lib".to_owned()];
+        let triage = GithubAccess::Triage;
+        // GitHub's issues of every repository they write to: their one
+        // token reads them, and fctl ticket writes.
+        let all = github(None);
+        let issues = github_issues(&all, Some(&primary), &grants);
+        assert_eq!(
+            issue_tokens(&issues, &names, triage),
+            IssueTokens {
+                write: true,
+                read: true
+            }
+        );
+        assert_eq!(via(&all, Some(&primary), &grants, triage), TicketsVia::Fctl);
+        // One repository's: only fctl ticket reaches them, as for reading.
+        let one = github(Some("acme/web"));
+        let issues = github_issues(&one, Some(&primary), &[]);
+        assert_eq!(
+            issue_tokens(&issues, &["web".into()], triage),
+            IssueTokens::default()
+        );
+        assert_eq!(via(&one, Some(&primary), &[], triage), TicketsVia::Fctl);
+        // Also when the session reaches GitHub's issues beyond the tracker.
+        assert_eq!(
+            session_via(&one, Some(&primary), &grants, triage, true),
+            TicketsVia::Fctl
+        );
+        assert_eq!(
+            via(&linear(), Some(&primary), &[], triage),
+            TicketsVia::Fctl
+        );
+        let none = Tickets {
+            tracker: Tracker::None,
+            ..Default::default()
+        };
+        assert_eq!(via(&none, Some(&primary), &[], triage), TicketsVia::Nothing);
+    }
+
+    #[test]
+    fn transcripts_say_which_labels_changed() {
+        let l = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            changed(
+                "acme/web#12",
+                "on GitHub",
+                &l(&["bug", "needs info"]),
+                &l(&["question"]),
+                true
+            ),
+            "Labeled acme/web#12 on GitHub: +bug, +needs info, −question"
+        );
+        assert_eq!(
+            changed("ENG-7", "in Linear", &l(&["Bug"]), &[], false),
+            "Changed ENG-7 in Linear: +Bug"
+        );
+        assert_eq!(
+            changed("ENG-7", "in Linear", &[], &[], false),
+            "Changed ENG-7 in Linear"
+        );
+        assert_eq!(
+            changed("ENG-7", "in Linear", &[], &[], true),
+            "Changed ENG-7 in Linear"
+        );
+    }
+
+    #[test]
+    fn agents_that_triage_only_label_and_comment() {
+        use fctl_proto::tickets::{StateFilter, TicketRequest as R};
+        // An update that changes the labels, and what `more` names besides.
+        let update = |more: &str| {
+            let has = |field: &str| (more == field).then(|| "something".to_owned());
+            R::Update {
+                key: "#12".into(),
+                title: has("title"),
+                description: has("description"),
+                state: has("state"),
+                add_labels: vec!["bug".into()],
+                remove_labels: vec!["question".into()],
+                parent: has("parent"),
+                priority: has("priority"),
+            }
+        };
+        let comment = R::Comment {
+            key: "#12".into(),
+            body: "Which browser was it?".into(),
+            reply_to: None,
+        };
+        let create = R::Create {
+            title: "Another".into(),
+            description: None,
+            parent: None,
+            labels: vec![],
+            state: None,
+            priority: None,
+            place: None,
+        };
+        let list = R::List {
+            state: StateFilter::default(),
+            query: None,
+            label: None,
+            limit: None,
+        };
+        let triage = GithubAccess::Triage;
+        assert!(check_write(triage, &list).is_ok());
+        assert!(check_write(triage, &R::Labels).is_ok());
+        assert!(check_write(triage, &comment).is_ok());
+        assert!(check_write(triage, &update("")).is_ok());
+        let refused = |r: &R| check_write(triage, r).err().map(|e| e.message);
+        assert!(refused(&create).is_some_and(|m| m.contains("files none")));
+        for more in ["state", "title", "description", "parent", "priority"] {
+            assert!(
+                refused(&update(more)).is_some_and(|m| m.contains("changes nothing else")),
+                "{more}"
+            );
+        }
+        // One that reads writes nothing; one that comments writes it all.
+        assert!(check_write(GithubAccess::Read, &comment).is_err());
+        assert!(check_write(GithubAccess::Read, &list).is_ok());
+        for access in [GithubAccess::Comment, GithubAccess::Push] {
+            assert!(check_write(access, &create).is_ok());
+            assert!(check_write(access, &update("state")).is_ok());
+        }
+        assert!(!writes(triage));
+        assert_eq!(ticket_writes(triage), TicketWrites::Triage);
+    }
+
+    #[test]
+    fn agents_that_triage_hear_they_label_and_comment_with_fctl_ticket() {
+        let primary = r("acme/web");
+        let told = |t: &Tickets, github_issues| {
+            instructions(&Told {
+                tickets: t,
+                via: session_via(t, Some(&primary), &[], GithubAccess::Triage, github_issues),
+                primary: Some(&primary),
+                grants: &[],
+                access: GithubAccess::Triage,
+                github_issues,
+                linear_workspace: Some("Acme"),
+                started_from: None,
+            })
+        };
+        let all = told(&github(None), false);
+        assert!(all.contains(
+            "GitHub issues of acme/web: read them with `gh issue` or `fctl ticket`, and label them and comment on them with `fctl ticket` (below), which is all you write in this session"
+        ));
+        assert!(all.contains("`fctl ticket update #12 --add-label bug --remove-label question`"));
+        assert!(all.contains("`fctl ticket comment #12 \"…\"` comments, and"));
+        assert!(!all.contains("--reply-to"));
+        assert!(!all.contains("fctl ticket create"));
+        assert!(!all.contains("Fixes #12"));
+        let one = told(&github(Some("acme/web")), false);
+        assert!(one.contains("gh can't reach issues in this session, so read acme/web's with `fctl ticket` (below), and label them"));
+        assert!(one.contains("Leave the issues of other repositories alone."));
+        let beyond = told(&github(Some("acme/web")), true);
+        assert!(beyond.contains("read acme/web's with `gh issue` or `fctl ticket`"));
+        let lin = told(&linear(), false);
+        assert!(lin.contains("Linear team ENG (Acme): read its tickets with `fctl ticket` (below), and label them and comment on them with it"));
+        assert!(lin.contains("(`--reply-to ID` answers a comment)"));
+        assert!(!lin.contains("--state") && !lin.contains("fctl ticket create"));
+        let none = Tickets {
+            tracker: Tracker::None,
+            ..Default::default()
+        };
+        assert!(told(&none, false).contains("no ticket tracker"));
     }
 }

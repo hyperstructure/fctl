@@ -9,10 +9,12 @@
 //! other tokens or administration, so that one handed to CI or a bot can't
 //! make itself a token without limits.
 //!
-//! A session's agent pushes, comments or only reads on GitHub
+//! A session's agent pushes, comments, triages or only reads on GitHub
 //! ([`GithubAccess`]): as much as its project and the token that starts it
 //! allow, or less when it asks ([`session_github`]). Its GitHub tokens
-//! carry that ([`crate::repos::permissions`]), so GitHub enforces it.
+//! carry that ([`crate::repos::permissions`]), so GitHub enforces it; an
+//! agent that triages writes through the control plane alone
+//! ([`crate::tickets::check_write`]).
 
 use crate::perm::{self, SessionAccess, lower_project_role, lower_session_role};
 use crate::validate::Result;
@@ -59,7 +61,7 @@ pub fn check(access: TokenAccess, github_access: Option<GithubAccess>) -> Result
     if access == TokenAccess::Full && github_access.is_some_and(|g| g != GithubAccess::Push) {
         return Err(ApiError::validation(
             "github_access",
-            "A token that does everything in its projects can change their settings, and so what every agent there does. To hold its agents to commenting or reading, let it run sessions instead.",
+            "A token that does everything in its projects can change their settings, and so what every agent there does. To hold its agents to commenting, triage or reading, let it run sessions instead.",
         ));
     }
     Ok(())
@@ -297,7 +299,22 @@ pub fn effective(session: Option<GithubAccess>, project: Option<GithubAccess>) -
     session.unwrap_or_default().min(project.unwrap_or_default())
 }
 
-/// What an agent at `access` does, for messages: "push", "comment", "read".
+/// What a session's spec tells a host its agent may do on GitHub: hosts
+/// from before triage (`knows_triage` false: no
+/// `fctl_proto::runner::FEATURE_TRIAGE` in their hello) can't read a spec
+/// that has it, so their agents hear they only read. Their tokens are the
+/// same, and the control plane still lets them label and comment as the
+/// tracker's lines say.
+pub fn for_host(access: GithubAccess, knows_triage: bool) -> GithubAccess {
+    if access == GithubAccess::Triage && !knows_triage {
+        GithubAccess::Read
+    } else {
+        access
+    }
+}
+
+/// What an agent at `access` does, for messages: "push", "comment",
+/// "triage", "read".
 pub fn verb(access: GithubAccess) -> &'static str {
     access.as_str()
 }
@@ -375,9 +392,11 @@ mod tests {
 
     #[test]
     fn a_token_that_does_everything_holds_its_agents_to_nothing() {
-        use GithubAccess::{Comment, Push, Read};
+        use GithubAccess::{Comment, Push, Read, Triage};
         assert!(check(TokenAccess::Full, Some(Comment)).is_err());
+        assert!(check(TokenAccess::Full, Some(Triage)).is_err());
         assert!(check(TokenAccess::Full, Some(Read)).is_err());
+        assert!(check(TokenAccess::Run, Some(Triage)).is_ok());
         assert!(check(TokenAccess::Full, Some(Push)).is_ok());
         assert!(check(TokenAccess::Full, None).is_ok());
         assert!(check(TokenAccess::Run, Some(Comment)).is_ok());
@@ -610,5 +629,46 @@ mod tests {
         assert_eq!(effective(None, None), Push);
         assert_eq!(effective(Some(Push), Some(Read)), Read);
         assert_eq!(effective(Some(Comment), Some(Push)), Comment);
+    }
+
+    #[test]
+    fn triage_sits_between_reading_and_commenting() {
+        use GithubAccess::{Comment, Push, Read, Triage};
+        // A project or token that triages lets sessions triage or read.
+        assert_eq!(session_github(None, Some(Triage), None), Ok(Triage));
+        assert_eq!(session_github(Some(Read), Some(Triage), None), Ok(Read));
+        assert_eq!(
+            session_github(Some(Triage), None, Some(Comment)),
+            Ok(Triage)
+        );
+        let refused = session_github(Some(Comment), Some(Triage), None)
+            .err()
+            .map(|e| e.message)
+            .unwrap_or_default();
+        assert!(refused.contains("This project's agents may at most triage on GitHub"));
+        assert!(session_github(Some(Triage), Some(Read), None).is_err());
+        // A project held lower holds its triaging sessions too.
+        assert_eq!(effective(Some(Triage), Some(Read)), Read);
+        assert_eq!(effective(Some(Push), Some(Triage)), Triage);
+        // Hosts from before it hear their agents only read.
+        assert_eq!(for_host(Triage, false), Read);
+        assert_eq!(for_host(Triage, true), Triage);
+        for access in [Read, Comment, Push] {
+            assert_eq!(for_host(access, false), access);
+        }
+        // A token for triage can't steer an agent that may comment.
+        let triage = Limits {
+            access: TokenAccess::Run,
+            places: None,
+            github_access: Some(Triage),
+        };
+        assert_eq!(
+            triage.session_role("wsp_1", "prj_1", admin(), Comment),
+            Some(SessionRole::Viewer)
+        );
+        assert_ne!(
+            triage.session_role("wsp_1", "prj_1", admin(), Triage),
+            Some(SessionRole::Viewer)
+        );
     }
 }
