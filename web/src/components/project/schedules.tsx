@@ -1426,9 +1426,10 @@ function Editor({
     },
     onSuccess: (s) => {
       saved(project, s);
-      // Its sessions leave the session lists, or come back to them.
+      // Its sessions leave the session lists and the projects' counts, or come back to them.
       if (schedule && schedule.hide_sessions !== s.hide_sessions)
-        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        for (const queryKey of [["sessions"], keys.projects])
+          void queryClient.invalidateQueries({ queryKey });
       if (!schedule) draft?.onSaved?.();
       toast(
         schedule
