@@ -3480,7 +3480,8 @@ in `firecracker/` in the host's data directory.
   there is room; a VM paused when its sandbox stops or starts again is
   resumed first ([ADR 0076](adr/0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md)).
 - **Saved states.** Stopping a sandbox saves its VM's state first
-  (`snapshots`, on unless `host.toml` turns it off): the host writes out
+  (`snapshots`, on unless `host.toml` turns it off, which also lets the
+  states kept before go, at the next sweep or start): the host writes out
   what the VM has yet to write to its disk, pauses it, and has
   Firecracker save its state and its memory in the sandbox's `saved/`
   (`PUT /snapshot/create`), then gives back the disk the memory's zero

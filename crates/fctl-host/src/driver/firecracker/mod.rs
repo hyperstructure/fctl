@@ -1039,9 +1039,11 @@ impl FirecrackerDriver {
             ));
             vm.kill().await;
         }
-        // A jailed VM saves no state ([`stop`](Self::stop)): one saved before
-        // the host ran as root goes.
+        // A host that keeps no states (`snapshots = false`) resumes none it
+        // kept before, nor does a jailed VM ([`stop`](Self::stop)) one saved
+        // before the host ran as root: they go.
         if let Some(saved) = self.record(&spec.name).and_then(|r| r.saved)
+            && self.cfg().snapshots
             && vm.jails.is_none()
             && !self.resized(&vm, spec, log)
         {
@@ -2039,6 +2041,55 @@ mod tests {
                 .and_then(|r| r.saved)
                 .is_some()
         );
+        Ok(())
+    }
+
+    /// A host that keeps no states resumes none it kept before: a start
+    /// lets the state go without trying it.
+    #[tokio::test]
+    async fn keeping_no_states_resumes_none() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bin = tempfile::tempdir()?;
+        // Another release than the one that saved: a resume would fail at
+        // once, and say so.
+        let firecracker = bin.path().join("firecracker");
+        crate::driver::fake::write_script(
+            &firecracker,
+            "#!/bin/sh\necho 'Firecracker v1.18.0'\necho\necho 'Supported snapshot data format versions: v8.0.0'\n",
+        )?;
+        let mut host = HostConfig {
+            data_dir: Some(dir.path().to_owned()),
+            ..HostConfig::default()
+        };
+        host.firecracker.firecracker = Some(firecracker);
+        host.firecracker.snapshots = false;
+        let d = FirecrackerDriver::new(&host);
+        let vm = with_saved(&d, "fctl-ses-01cold", "1.17.0")?;
+        // The size it saved with, which the start asks for again.
+        std::fs::write(
+            vm.dir.join("firecracker.json"),
+            br#"{"machine-config": {"vcpu_count": 1, "mem_size_mib": 512}}"#,
+        )?;
+        let spec = SandboxSpec {
+            name: "fctl-ses-01cold".into(),
+            image: "127.0.0.1:9/fctl-test/none:1".into(),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: None,
+        };
+        let said = std::sync::Mutex::new(Vec::new());
+        let log = |line: String| {
+            said.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        // No KVM here, nor that image: it can't boot, but its state goes first.
+        let _ = d.ensure(&spec, &log).await;
+        assert!(!vm.dir.join("saved").exists());
+        assert_eq!(d.record("fctl-ses-01cold").and_then(|r| r.saved), None);
+        let said = said.into_inner().unwrap_or_else(PoisonError::into_inner);
+        assert!(!said.iter().any(|l| l.contains("resume")), "{said:?}");
         Ok(())
     }
 

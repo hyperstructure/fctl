@@ -367,8 +367,10 @@ impl Daemon {
         self.sweeping = true;
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
         // While the disk is low, the VMs' saved states go first: their
-        // sandboxes boot again from their disks, and lose no more.
+        // sandboxes boot again from their disks, and lose no more. A host
+        // that keeps none (`snapshots = false`) lets go of those it kept.
         let low = self.low_on_disk();
+        let keeps_states = self.ctx.cfg.firecracker.snapshots;
         let in_use: HashSet<String> = self
             .sessions
             .keys()
@@ -378,12 +380,18 @@ impl Daemon {
         tokio::spawn(async move {
             // What that freed counts before any sandbox goes for room.
             let mut measured = None;
-            if low {
+            if low || !keeps_states {
                 let freed = ctx.driver.drop_saved_states(&in_use).await;
                 if freed > 0 {
-                    tracing::info!(
-                        "let go of the saved states of stopped sandboxes for room on the disk: {freed} MiB"
-                    );
+                    if low {
+                        tracing::info!(
+                            "let go of the saved states of stopped sandboxes for room on the disk: {freed} MiB"
+                        );
+                    } else {
+                        tracing::info!(
+                            "let go of the saved states of stopped sandboxes, which snapshots = false keeps none of: {freed} MiB"
+                        );
+                    }
                     measured = ctx.disk_free_mb().await;
                 }
             }
