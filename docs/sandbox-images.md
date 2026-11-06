@@ -202,7 +202,7 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
 ```
 
 1. **Build it for both architectures** and push it to a registry: Apple
-   silicon hosts run arm64 images, most others amd64.
+   silicon runners run arm64 images, most others amd64.
 
    ```sh
    docker buildx build --platform linux/arm64,linux/amd64 \
@@ -228,8 +228,8 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
 
 4. **Private registries.** Hosts pull images with their own login to the
    registry: run `docker login ghcr.io` (with Apple container,
-   `container registry login ghcr.io`) on each host, as the user its
-   service runs as. fctl sends no registry credentials. For GHCR, a token
+   `container registry login ghcr.io`) on each runner, as the user its
+   host service runs as. fctl sends no registry credentials. For GHCR, a token
    with `read:packages` is enough. Firecracker hosts read the credentials
    `docker login` keeps in `~/.docker/config.json` (but not those of a
    credential helper), so `docker login` there needs Docker's CLI only.
@@ -389,7 +389,7 @@ An image that doesn't start from the default one needs:
   and runs the supervisor as root, and Claude and its commands as the
   image's user (its `USER`), in `~/workspace`. An image that runs as root
   runs Claude as root, whose commands can stop fctl-agent.
-- **arm64** builds for Apple silicon hosts, and amd64 for most others.
+- **arm64** builds for Apple silicon runners, and amd64 for most others.
 
 ## What fctl writes into a sandbox
 

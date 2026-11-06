@@ -19,7 +19,8 @@ pub enum ClaudeCmd {
         /// A token from `claude setup-token` (otherwise you are asked for one).
         #[arg(long, conflicts_with_all = ["login", "on_runners"])]
         token: Option<String>,
-        /// Sign in with claude.ai through a host instead (enables Remote Control).
+        /// Sign in with claude.ai, in a sandbox on one of your runners, instead
+        /// (enables Remote Control).
         #[arg(long, conflicts_with = "on_runners")]
         login: bool,
         /// Run your sessions on the token you keep on your runners (`fctl
@@ -339,7 +340,9 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
         }
         ClaudeCmd::Connect { login: true, .. } => {
             let mut job = api.start_claude_login().await?;
-            println!("Starting the official `claude auth login` in a sandbox on a host…");
+            println!(
+                "Starting the official `claude auth login` in a sandbox on one of your runners…"
+            );
             let mut prompted = false;
             for _ in 0..900 {
                 match &job.state {

@@ -1,4 +1,4 @@
-//! `fctl host …`: run this machine as a runner.
+//! `fctl host …`: make this machine a runner, and look after it there.
 
 use crate::cmd::admin;
 use crate::config;
@@ -17,9 +17,9 @@ use std::io::IsTerminal;
 
 #[derive(Subcommand)]
 pub enum HostCmd {
-    /// Register this machine as a runner and start it as a service: signed
-    /// in, for a workspace you are in; with a runner token; or, without
-    /// signing in, with a workspace's enrollment token (`--enroll`).
+    /// Register this machine as a runner and start the host service on it:
+    /// signed in, for a workspace you are in; with a runner token; or,
+    /// without signing in, with a workspace's enrollment token (`--enroll`).
     #[command(after_help = "Examples:
   fctl host install --workspace acme              # signed in (fctl login)
   fctl host install --enroll fctl_et_…            # as one of a workspace's runners, without signing in
@@ -35,30 +35,30 @@ pub enum HostCmd {
         /// Maximum concurrent sessions.
         #[arg(long, default_value_t = 4)]
         capacity: u32,
-        /// CPUs for a sandbox whose project sets none (new hosts: 4).
+        /// CPUs for a sandbox whose project sets none (new runners: 4).
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         cpus: Option<u32>,
-        /// Memory for a sandbox whose project sets none, like 8g or 8192m (new hosts: 8g).
+        /// Memory for a sandbox whose project sets none, like 8g or 8192m (new runners: 8g).
         #[arg(long, value_parser = memory_arg)]
         memory: Option<u32>,
-        /// The most CPUs one sandbox may have (new hosts: all of the machine's or the Docker VM's).
+        /// The most CPUs one sandbox may have (new runners: all of the machine's or the Docker VM's).
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         max_cpus: Option<u32>,
-        /// The most memory one sandbox may have, like 16g (new hosts: all of the machine's or the Docker VM's).
+        /// The most memory one sandbox may have, like 16g (new runners: all of the machine's or the Docker VM's).
         #[arg(long, value_parser = memory_arg)]
         max_memory: Option<u32>,
         /// Sandbox image for sessions whose project sets none (default: the
         /// published image of this version; "" goes back to it).
         #[arg(long)]
         image: Option<String>,
-        /// An image this host runs for projects that choose their own: a
+        /// An image this runner runs for projects that choose their own: a
         /// reference, or a prefix like ghcr.io/acme/* (repeat it for more;
         /// it replaces the list, and "*" allows any). Without the list, any
         /// image runs.
         #[arg(long = "allow-image", value_name = "REF")]
         allow_images: Vec<String>,
         /// A repository, owner/name or owner/*, whose Dockerfile or
-        /// devcontainer.json this host builds images from (repeat it for
+        /// devcontainer.json this runner builds images from (repeat it for
         /// more; it replaces the list, and "" builds none).
         #[arg(long = "allow-build", value_name = "REPO")]
         allow_builds: Vec<String>,
@@ -92,33 +92,36 @@ pub enum HostCmd {
         /// Write the configuration but do not install a service.
         #[arg(long)]
         no_service: bool,
-        /// Also build the sandbox image here (the Lima base VM, or for a host
+        /// Also build the sandbox image here (the Lima base VM, or for a runner
         /// that can't pull the published image).
         #[arg(long)]
         build_image: bool,
         /// on or off: whether the host updates fctl to the version the
-        /// control plane runs, by itself (new hosts: on).
+        /// control plane runs, by itself (new runners: on).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         auto_update: Option<bool>,
     },
-    /// Run the host in the foreground (what the service runs).
+    /// Run the host service in the foreground (what the service runs).
     Run,
-    /// Show the host's configuration and service state.
+    /// Show this runner: its host service's configuration and state, and
+    /// what the control plane says of it (its id, sessions, whether it drains).
     Status,
-    /// Check that everything a host needs is in place.
+    /// Check that everything this machine needs to run sessions as a
+    /// runner is in place: its configuration and tokens, the connection,
+    /// the driver, the images, the disk and the service.
     Doctor,
-    /// Print the host's log.
+    /// Print the host service's log.
     Logs {
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: usize,
     },
-    /// Pull the sandbox image, or build it with this host's driver.
+    /// Pull the sandbox image, or build it with this runner's driver.
     #[command(subcommand)]
     Image(ImageCmd),
     /// Keep your Claude token on this runner rather than in fctl.
     #[command(subcommand)]
     Claude(super::host_claude::HostClaudeCmd),
-    /// Restart the service (sessions keep running).
+    /// Restart the host service (sessions keep running).
     Restart,
     /// Whether the host updates fctl, and so its agents and sandbox image,
     /// to the version the control plane runs, by itself: on unless turned
@@ -132,19 +135,20 @@ pub enum HostCmd {
         #[arg(value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         on: Option<bool>,
     },
-    /// Take no new sessions; the ones here carry on, and a message resumes
-    /// them here.
+    /// Drain this runner: it takes no new sessions; the ones here carry on,
+    /// and a message resumes them here.
     Drain {
         /// Wait until no session runs here.
         #[arg(long)]
         wait: bool,
     },
-    /// Take new sessions again.
+    /// Undrain this runner: it takes new sessions again.
     Undrain,
-    /// Stop and remove the service (sandboxes are kept). When sessions run
-    /// here, it says what happens to them and asks first.
+    /// Stop and remove the host service, so this machine runs no more
+    /// sessions (sandboxes are kept). When sessions run here, it says what
+    /// happens to them and asks first.
     Uninstall {
-        /// Drain this host first, and uninstall once no session runs here.
+        /// Drain this runner first, and uninstall once no session runs here.
         #[arg(long, conflicts_with = "force")]
         wait: bool,
         /// Stop the sessions that run here now, then uninstall. Their agents
@@ -157,14 +161,14 @@ pub enum HostCmd {
 
 #[derive(Subcommand)]
 pub enum ImageCmd {
-    /// Pull the host's sandbox image now (again: for a newer build of it).
+    /// Pull this runner's sandbox image now (again: for a newer build of it).
     Pull,
     /// Build the default image here instead of pulling it (or the Lima base VM).
     Build {
-        /// apple, docker or lima (default: the host's driver).
+        /// apple, docker or lima (default: this runner's driver).
         #[arg(long)]
         driver: Option<String>,
-        /// Image tag (default: the host's image, so that sessions use the build).
+        /// Image tag (default: this runner's image, so that sessions use the build).
         #[arg(long)]
         tag: Option<String>,
         /// A checkout of hyperstructure/sandbox to build from (default: its
@@ -840,7 +844,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
             let online = d.runner.status == RunnerStatus::Online;
             if !json {
                 println!(
-                    "{} on this host:",
+                    "{} on this runner:",
                     match n {
                         1 => "1 session runs".to_owned(),
                         n => format!("{n} sessions run"),
@@ -850,7 +854,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                 println!(
                     "{}",
                     style::dim(if wait {
-                        "Draining the host: no new sessions start here, and it uninstalls once none runs."
+                        "Draining this runner: no new sessions start here, and it uninstalls once none runs."
                     } else if n == 1 {
                         "Uninstalling now stops it: its agent stops and pushes what it committed, and a message resumes the session on another runner, in a new sandbox without its conversation."
                     } else {
@@ -886,7 +890,7 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
                         return Ok(());
                     }
                     bail!(
-                        "{sessions} on this host. `fctl host uninstall --wait` lets {them} finish first; `--force` stops {them} now."
+                        "{sessions} on this runner. `fctl host uninstall --wait` lets {them} finish first; `--force` stops {them} now."
                     );
                 }
                 let d = api.drain_this_runner(true, true).await?;
@@ -1302,7 +1306,7 @@ async fn wait_until_drained(
         println!(
             "{}",
             style::dim(
-                "Waiting until none runs here (Ctrl-C stops waiting; the host keeps draining)…"
+                "Waiting until none runs here (Ctrl-C stops waiting; the runner keeps draining)…"
             )
         );
     }
@@ -1549,7 +1553,7 @@ async fn doctor() -> Result<()> {
             "{} {}",
             style::dim("·"),
             style::dim(&format!(
-                "allowed_builds: the {} driver builds no images, so this host builds none",
+                "allowed_builds: the {} driver builds no images, so this runner builds none",
                 d.name()
             ))
         );
