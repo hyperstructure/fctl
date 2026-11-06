@@ -354,18 +354,40 @@ impl FirecrackerDriver {
         let rootfs = dir.join("rootfs.ext4");
         let _ = std::fs::remove_file(&rootfs);
         super::make_fs(&rootfs, super::IMAGE_FS_GB, "fctl-image", false).await?;
-        let layers: Vec<fctl_proto::vm::Layer> = image
-            .resolved
-            .layers
+        // Built `FROM` an image here: only the layers it adds unpack, over
+        // that image's filesystem.
+        let (base, _held) = self.base_for(&image.resolved).await?.unzip();
+        let skip = base.as_ref().map_or(0, |b| b.diff_ids.len());
+        if let Some(b) = &base {
+            log(format!(
+                "Keeping {tag} over {}, which has {skip} of its layers",
+                b.reference
+            ));
+        }
+        let layers: Vec<fctl_proto::vm::Layer> = image.resolved.layers[skip..]
             .iter()
             .map(|l| fctl_proto::vm::Layer {
                 media_type: l.media_type.clone(),
                 size: l.size,
             })
             .collect();
-        let (files, bytes) = self.unpack(&rootfs, &layers, &image.layers, log).await?;
-        self.keep(tag, key, &image.resolved, &rootfs, files, bytes)
-            .await
+        let unpacked = self
+            .unpack(&rootfs, &layers, &image.layers[skip..], skip > 0, log)
+            .await?;
+        let diff_ids = super::checked_diff_ids(&image.resolved, skip, unpacked.diff_ids.as_deref())
+            .context("the image built isn't what its config says")?;
+        let base = base.map(|b| b.id);
+        self.keep(
+            tag,
+            key,
+            &image.resolved,
+            base,
+            diff_ids,
+            &rootfs,
+            unpacked.files,
+            unpacked.bytes,
+        )
+        .await
     }
 }
 
@@ -509,6 +531,7 @@ mod tests {
                     size: 1,
                 })
                 .collect(),
+            diff_ids: Vec::new(),
         };
         let one = built_id(&resolved(&["sha256:1"]));
         assert_ne!(one, resolved(&[]).id);

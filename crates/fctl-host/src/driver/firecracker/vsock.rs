@@ -337,18 +337,32 @@ pub async fn start(socket: &Path, mut exec: Exec) -> Result<Started> {
     })
 }
 
+/// What a VM unpacked of an image's layers.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Unpacked {
+    pub files: u64,
+    pub bytes: u64,
+    /// Each layer's digest, uncompressed, as the VM found it; `None` from
+    /// an fctl-agent that doesn't say.
+    pub diff_ids: Option<Vec<String>>,
+}
+
 /// Asks a VM booted to unpack an image to unpack `layers`, whose bytes are
-/// the files `blobs`, and sends them, within `within`; what it wrote: files
-/// and bytes. A VM that fails stops reading and says why, which is the
-/// error rather than the write that failed after it.
+/// the files `blobs`, and sends them, within `within`; what it unpacked.
+/// With `overlay`, the layers' whiteouts stay as overlayfs reads
+/// them, for an image that lies over another's. A VM that fails stops
+/// reading and says why, which is the error rather than the write that
+/// failed after it.
 pub async fn unpack(
     socket: &Path,
     layers: &[fctl_proto::vm::Layer],
     blobs: &[std::path::PathBuf],
+    overlay: bool,
     within: Duration,
-) -> Result<(u64, u64)> {
+) -> Result<Unpacked> {
     let unpacking = Request::Unpack {
         layers: layers.to_vec(),
+        overlay,
     };
     let (mut r, mut w) = request(socket, &unpacking).await?;
     let work = async {
@@ -363,7 +377,11 @@ pub async fn unpack(
         match (sent, read_reply(&mut r).await) {
             (_, Ok(Reply { error: Some(e), .. })) => bail!("{e}"),
             (Err(e), _) => Err(anyhow::Error::from(e).context("sending a layer to the VM")),
-            (Ok(()), Ok(reply)) => Ok((reply.files.unwrap_or(0), reply.bytes.unwrap_or(0))),
+            (Ok(()), Ok(reply)) => Ok(Unpacked {
+                files: reply.files.unwrap_or(0),
+                bytes: reply.bytes.unwrap_or(0),
+                diff_ids: reply.diff_ids,
+            }),
             (Ok(()), Err(e)) => Err(e),
         }
     };
@@ -535,7 +553,7 @@ mod tests {
         let ok_dir = dir.path().join("ok");
         std::fs::create_dir_all(&ok_dir)?;
         let ok = fake_vm(&ok_dir, |request, mut r, mut w| async move {
-            let Request::Unpack { layers } = request else {
+            let Request::Unpack { layers, .. } = request else {
                 return;
             };
             reply(&mut w, &Reply::default()).await;
@@ -544,6 +562,7 @@ mod tests {
                 let done = Reply {
                     files: Some(3),
                     bytes: Some(10),
+                    diff_ids: Some(vec!["sha256:1".into()]),
                     ..Reply::default()
                 };
                 reply(&mut w, &done).await;
@@ -552,8 +571,12 @@ mod tests {
         .await?;
         let blobs = [blob.clone()];
         assert_eq!(
-            unpack(&ok, &layers, &blobs, Duration::from_secs(30)).await?,
-            (3, 10)
+            unpack(&ok, &layers, &blobs, false, Duration::from_secs(30)).await?,
+            Unpacked {
+                files: 3,
+                bytes: 10,
+                diff_ids: Some(vec!["sha256:1".into()])
+            }
         );
         let failing_dir = dir.path().join("failing");
         std::fs::create_dir_all(&failing_dir)?;
@@ -568,7 +591,7 @@ mod tests {
             .await;
         })
         .await?;
-        let e = unpack(&failing, &layers, &blobs, Duration::from_secs(30)).await;
+        let e = unpack(&failing, &layers, &blobs, false, Duration::from_secs(30)).await;
         assert_eq!(
             e.err().map(|e| e.to_string()).as_deref(),
             Some("unpacking layer 1 of 1: No space left on device")
