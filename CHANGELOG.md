@@ -2,6 +2,21 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.29.2 (2026-11-06)
+
+### Features
+
+- Let a project keep 1,000 memory notes ([#399](https://github.com/hyperstructure/fctl/pull/399))
+- **web:** Animate the agent's changes into the diffs as it makes them ([#398](https://github.com/hyperstructure/fctl/pull/398))
+- **web:** Write a rewritten line in from where it changed ([#400](https://github.com/hyperstructure/fctl/pull/400))
+- **xtask:** Record the video of a session's diffs following its agent ([#401](https://github.com/hyperstructure/fctl/pull/401))
+
+### Fixes
+
+- **web:** Scroll the page again after closing the diffs on a phone ([#392](https://github.com/hyperstructure/fctl/pull/392))
+- **web:** Close the details sheet when its link opens another session ([#396](https://github.com/hyperstructure/fctl/pull/396))
+- Keep the model alias a session asked for once Claude names its ID ([#393](https://github.com/hyperstructure/fctl/pull/393))
+
 ## 0.29.1 (2026-11-05)
 
 ### Features
