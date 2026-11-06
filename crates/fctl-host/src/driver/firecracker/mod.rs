@@ -1219,8 +1219,9 @@ mod tests {
                 "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev /sys/class/net/eth0/address 2>&1; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1 && echo 'TCP to 1.1.1.1:80 works'; true",
             )
             .await;
+        let strace = std::fs::read_to_string("/tmp/passt.strace").unwrap_or_default();
         format!(
-            "passt: {passt:?}\npasst said:\n{}\npasst's capture: {frames:?}\nthe VM's console:\n{}\nthe VM's network:\n{}",
+            "passt: {passt:?}\npasst's syscalls:\n{strace}\npasst said:\n{}\npasst's capture: {frames:?}\nthe VM's console:\n{}\nthe VM's network:\n{}",
             read("passt.log").trim(),
             read("console.log").trim(),
             vm.unwrap_or_else(|e| format!("{e:#}"))
@@ -1253,7 +1254,7 @@ mod tests {
         crate::driver::fake::write_script(
             &script,
             &format!(
-                "#!/bin/sh\n# As the host runs it, with its debug log and a capture of its frames.\nfor a; do shift; [ \"$a\" = --quiet ] || set -- \"$@\" \"$a\"; done\nexec {} --trace --pcap \"$FCTL_TEST_FIRECRACKER_PASST_DEBUG\" \"$@\"\n",
+                "#!/bin/sh\n# As the host runs it, with its debug log and a capture of its frames.\nfor a; do shift; [ \"$a\" = --quiet ] || set -- \"$@\" \"$a\"; done\nexec strace -f -tt -e trace=accept4,accept,getsockopt,setsockopt,epoll_ctl -o /tmp/passt.strace {} --trace --pcap \"$FCTL_TEST_FIRECRACKER_PASST_DEBUG\" \"$@\"\n",
                 passt.display()
             ),
         )?;
