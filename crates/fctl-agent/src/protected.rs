@@ -38,7 +38,7 @@ pub struct Started {
     /// The host's socket, bound.
     pub listener: UnixListener,
     /// Held while it serves.
-    pub lock: File,
+    pub lock: link::Lock,
     pub socket: PathBuf,
     pub state: PathBuf,
     /// Where the user's `fctl` reaches the supervisor: in its `~/.fctl`.
@@ -308,11 +308,16 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("agent.lock");
         assert!(!held(&path));
-        let lock = link::lock(&path)?;
-        assert!(lock.is_some());
+        let Some(lock) = link::lock(&path)? else {
+            bail!("nobody else holds the lock");
+        };
         assert!(held(&path));
+        // A process another test forks keeps a copy of the file until it
+        // execs: the lock is let go of all the same.
+        let copy = lock.copy()?;
         drop(lock);
         assert!(!held(&path));
+        drop(copy);
         Ok(())
     }
 }
