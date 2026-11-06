@@ -455,10 +455,7 @@ mod tests {
         // Its driver turned out not to be ready: the next ready one…
         assert_eq!(login_runner(&runners, &["rnr_studio"]), Some("rnr_theirs"));
         // …and none when no other is, so that it fails with that reason.
-        assert_eq!(
-            login_runner(&runners, &["rnr_studio", "rnr_theirs"]),
-            None
-        );
+        assert_eq!(login_runner(&runners, &["rnr_studio", "rnr_theirs"]), None);
         assert_eq!(login_runner(&none_ready, &["rnr_mine"]), None);
     }
 
