@@ -1253,7 +1253,7 @@ mod tests {
         crate::driver::fake::write_script(
             &script,
             &format!(
-                "#!/bin/sh\n# As the host runs it, with its debug log and a capture of its frames.\nfor a; do shift; [ \"$a\" = --quiet ] || set -- \"$@\" \"$a\"; done\nexec {} --debug --pcap \"$FCTL_TEST_FIRECRACKER_PASST_DEBUG\" \"$@\"\n",
+                "#!/bin/sh\n# As the host runs it, with its debug log and a capture of its frames.\nfor a; do shift; [ \"$a\" = --quiet ] || set -- \"$@\" \"$a\"; done\nexec {} --trace --pcap \"$FCTL_TEST_FIRECRACKER_PASST_DEBUG\" \"$@\"\n",
                 passt.display()
             ),
         )?;
