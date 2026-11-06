@@ -110,6 +110,16 @@ export function SessionPage() {
   // The details sheet, where the rail doesn't fit.
   const [details, setDetails] = useState(false);
   const [share, setShare] = useState(false);
+  // They belong to the session they opened on. The router keeps this page when a link (in the
+  // sheet, to the review agent's session) or Back leads to another session, so they close as it
+  // comes in: in the same render, without sliding away, which the view transition would show
+  // over the next session.
+  const [overlaysOf, setOverlaysOf] = useState(id);
+  if (overlaysOf !== id) {
+    setOverlaysOf(id);
+    setDetails(false);
+    setShare(false);
+  }
   const transcript = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLDivElement>(null);
   const footer = useRef<HTMLDivElement>(null);
@@ -611,6 +621,8 @@ export function SessionPage() {
       {rail && session && (
         <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
+            // Anew for another session: a diff or the retrospectives it showed close.
+            key={session.id}
             session={session}
             role={role}
             review={review}
