@@ -30,8 +30,8 @@ use fctl_domain::image::ImageWant;
 use fctl_domain::size::{self, Want};
 use fctl_domain::updates::Version;
 use fctl_proto::runner::{
-    DriverInfo, FleetToHost, HostHeartbeat, HostHello, HostSessionReport, HostToFleet, SessionSpec,
-    StopReason,
+    ClaudeLoginUpdate, DriverInfo, FleetToHost, HostHeartbeat, HostHello, HostSessionReport,
+    HostToFleet, SessionSpec, StopReason,
 };
 use fctl_proto::session::SessionStatus;
 use fctl_proto::{LoginJobId, PROTOCOL_VERSION, SessionId};
@@ -1150,7 +1150,7 @@ impl Daemon {
                     }
                 }
                 Some(ev) = self.events_rx.recv() => self.on_session_event(ev),
-                Some(msg) = self.login_rx.recv() => self.outbox.push_back(msg),
+                Some(msg) = self.login_rx.recv() => self.on_login(msg),
                 Some(chore) = self.chores_rx.recv() => self.on_chore(chore),
                 _ = self.sweep.tick() => self.start_sweep(),
                 _ = self.update_check.tick(), if self.ready.is_some() => self.update_if_quiet(),
@@ -1164,6 +1164,27 @@ impl Daemon {
                 }
             }
         }
+    }
+
+    /// Passes on what a sign-in says. One that found the driver not ready
+    /// (`HostCtx::recheck_driver`) comes after a heartbeat that says so,
+    /// rather than at the next beat: the control plane, which passes the
+    /// sign-in on to another runner, then sends neither it nor sessions
+    /// here until the driver is ready again.
+    fn on_login(&mut self, msg: HostToFleet) {
+        if let HostToFleet::ClaudeLogin {
+            update:
+                ClaudeLoginUpdate::Failed {
+                    unready: Some(true),
+                    ..
+                },
+            ..
+        } = &msg
+        {
+            let hb = self.heartbeat();
+            self.outbox.push_back(HostToFleet::Heartbeat(hb));
+        }
+        self.outbox.push_back(msg);
     }
 
     /// Handles a session event; what it has for the control plane goes to
@@ -1483,12 +1504,16 @@ fn watch_disk(ctx: Arc<HostCtx>, chores: mpsc::UnboundedSender<Chore>) {
 /// soon.
 fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration) {
     tokio::spawn(async move {
+        let mut last = tokio::time::Instant::now();
         loop {
-            let wait = match ctx.driver_problem() {
-                None => period,
-                Some(_) => NOT_READY_EVERY.min(period),
-            };
-            tokio::time::sleep(wait).await;
+            // It looks every NOT_READY_EVERY, since a sign-in that couldn't
+            // make its sandbox may have found the driver not ready since the
+            // last probe (`HostCtx::recheck_driver`).
+            tokio::time::sleep(NOT_READY_EVERY.min(period)).await;
+            if !probe_now(ctx.driver_problem().is_none(), last.elapsed(), period) {
+                continue;
+            }
+            last = tokio::time::Instant::now();
             let before = ctx.driver_problem();
             ctx.refresh_facts().await;
             let after = ctx.driver_problem();
@@ -1503,6 +1528,18 @@ fn refresh_facts_every(ctx: Arc<HostCtx>, period: Duration) {
             }
         }
     });
+}
+
+/// Whether the host probes its drivers again now, `since` it last did:
+/// every `period` while the driver it uses is `ready`, else every
+/// [`NOT_READY_EVERY`].
+fn probe_now(ready: bool, since: Duration, period: Duration) -> bool {
+    since
+        >= if ready {
+            period
+        } else {
+            NOT_READY_EVERY.min(period)
+        }
 }
 
 fn jitter(d: Duration) -> Duration {
@@ -1763,6 +1800,62 @@ mod tests {
                 .map(|i| i.available),
             Some(false)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn hosts_probe_a_driver_that_isnt_ready_every_30_seconds() {
+        let s = Duration::from_secs;
+        // Ready: every five minutes.
+        assert!(!probe_now(true, s(30), FACTS_EVERY));
+        assert!(probe_now(true, s(300), FACTS_EVERY));
+        // Not ready, also when a sign-in found that out between two probes.
+        assert!(probe_now(false, s(30), FACTS_EVERY));
+        assert!(!probe_now(false, s(29), FACTS_EVERY));
+        // Never less often than asked.
+        assert!(probe_now(false, s(10), s(10)));
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_that_found_the_driver_not_ready_comes_after_a_heartbeat_that_says_so()
+    -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        let set_process = |d: &Daemon, detail: Option<&str>| {
+            let mut drivers = d
+                .ctx
+                .drivers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for info in drivers.iter_mut().filter(|i| i.name == "process") {
+                info.available = detail.is_none();
+                info.detail = detail.map(Into::into);
+            }
+            drivers.clone()
+        };
+        set_process(&d, None);
+        d.drivers_said = d.hello().drivers;
+        let failed = |unready| HostToFleet::ClaudeLogin {
+            job_id: LoginJobId("lgn_01".into()),
+            update: ClaudeLoginUpdate::Failed {
+                error: "Starting a sandbox on studio: no room".into(),
+                unready,
+            },
+        };
+        // Failed for another reason: it goes as it is.
+        d.on_login(failed(None));
+        assert_eq!(d.outbox.drain(..).collect::<Vec<_>>(), [failed(None)]);
+        // The sign-in probed the driver again and found it not ready: the
+        // control plane hears that first, rather than at the next beat.
+        let broken = set_process(&d, Some("the Docker daemon isn't running"));
+        d.on_login(failed(Some(true)));
+        let sent: Vec<_> = d.outbox.drain(..).collect();
+        let [HostToFleet::Heartbeat(hb), login] = &sent[..] else {
+            anyhow::bail!("{sent:?}");
+        };
+        assert_eq!(hb.drivers, Some(broken));
+        assert_eq!(*login, failed(Some(true)));
+        // Said once.
+        assert_eq!(d.heartbeat().drivers, None);
         Ok(())
     }
 

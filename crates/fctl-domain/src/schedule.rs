@@ -292,6 +292,35 @@ pub fn only_theirs(own_runners: bool, on_runners: bool) -> bool {
     own_runners || on_runners
 }
 
+/// A runner that may run someone's Claude sign-in, as
+/// [`login_runner`] sees it.
+#[derive(Clone, Copy, Debug)]
+pub struct LoginRunner<'a> {
+    pub id: &'a str,
+    pub online: bool,
+    /// Its driver is ready, as its host last said ([`driver_ready`]).
+    pub ready: bool,
+}
+
+/// The runner a Claude sign-in goes to, of `runners` in the order to try
+/// them (the person's own first), passing over those it went to and that
+/// found their driver not ready (`tried`): the first online one whose
+/// driver is ready. When none is, at first (`tried` empty) the first
+/// online one, which fails it saying why; after a runner found its driver
+/// not ready, none: the sign-in fails with that runner's reason.
+pub fn login_runner<'a>(runners: &[LoginRunner<'a>], tried: &[&str]) -> Option<&'a str> {
+    let mut left = runners
+        .iter()
+        .filter(|r| r.online && !tried.contains(&r.id))
+        .peekable();
+    let first = left.peek().map(|r| r.id);
+    match left.find(|r| r.ready) {
+        Some(r) => Some(r.id),
+        None if tried.is_empty() => first,
+        None => None,
+    }
+}
+
 /// Why a session waits whose Claude token its person keeps on their
 /// runners, when no online runner of its workspace takes it
 /// ([`Wait::Workspace`]): only their runners that keep the token
@@ -406,6 +435,28 @@ mod tests {
             cpus: None,
             memory_mb: Some(mb),
         }
+    }
+
+    #[test]
+    fn a_sign_in_goes_to_a_ready_runner_and_on_to_the_next_when_its_driver_stopped() {
+        let r = |id, online, ready| LoginRunner { id, online, ready };
+        let runners = [
+            r("rnr_off", false, true),
+            r("rnr_mine", true, false),
+            r("rnr_studio", true, true),
+            r("rnr_theirs", true, true),
+        ];
+        // At first: the first online one whose driver is ready…
+        assert_eq!(login_runner(&runners, &[]), Some("rnr_studio"));
+        // …else the first online one, which says why it can't.
+        let none_ready = [r("rnr_off", false, true), r("rnr_mine", true, false)];
+        assert_eq!(login_runner(&none_ready, &[]), Some("rnr_mine"));
+        assert_eq!(login_runner(&[r("rnr_off", false, true)], &[]), None);
+        // Its driver turned out not to be ready: the next ready one…
+        assert_eq!(login_runner(&runners, &["rnr_studio"]), Some("rnr_theirs"));
+        // …and none when no other is, so that it fails with that reason.
+        assert_eq!(login_runner(&runners, &["rnr_studio", "rnr_theirs"]), None);
+        assert_eq!(login_runner(&none_ready, &["rnr_mine"]), None);
     }
 
     #[test]

@@ -27,7 +27,8 @@ use std::sync::{Mutex, PoisonError};
 /// with `du` and empty it with `find`. `exec` prints `uid` (`1000:1000`
 /// without it), as `id` would, or its user's part for `id -u`, unless it
 /// runs as root or in the background; asked whether fctl-agent ran as root,
-/// it says so when `agent_dir` is there; `cp` copies nothing.
+/// it says so when `agent_dir` is there; `cp` copies nothing. `version`
+/// answers with the daemon's version, as a daemon that runs does.
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -63,6 +64,7 @@ used() {
   return 1
 }
 case "$1 $2" in
+  "version --format") echo 28.5.1 ;;
   "image inspect")
     here "$last"
     case "$3 $4" in
