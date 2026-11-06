@@ -1030,6 +1030,18 @@ impl Daemon {
         }
     }
 
+    /// The hello for a new connection. Heartbeats that waited for one go:
+    /// the hello says their sessions and drivers as they are now, and one
+    /// sent after it would say older ones, which the control plane would
+    /// keep (a driver not ready that is ready since, say).
+    fn greet(&mut self) -> HostHello {
+        self.outbox
+            .retain(|m| !matches!(m, HostToFleet::Heartbeat(_)));
+        let hello = self.hello();
+        self.drivers_said = hello.drivers.clone();
+        hello
+    }
+
     fn heartbeat(&mut self) -> HostHeartbeat {
         // Its driver may have become ready since, or stopped being.
         let drivers = self.ctx.drivers();
@@ -1121,8 +1133,7 @@ impl Daemon {
         shutdown: &mut oneshot::Receiver<()>,
     ) -> Result<()> {
         let (mut sink, mut stream) = socket.split();
-        let hello = self.hello();
-        self.drivers_said = hello.drivers.clone();
+        let hello = self.greet();
         ws::send_json(&mut sink, &HostToFleet::Hello(Box::new(hello))).await?;
         let mut heartbeat = tokio::time::interval(HEARTBEAT_EVERY);
         heartbeat.tick().await;
@@ -1926,6 +1937,30 @@ mod tests {
         set_process(&d, None);
         d.hold("fctl-ses-01next");
         assert_eq!(d.start_session(spec("ses_01NEXT")?), Ok(()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_new_connection_hears_no_heartbeat_older_than_its_hello() -> Result<()> {
+        let (_dir, mut d) = daemon_where(&[], |_| {}).await?;
+        // A heartbeat, saying the drivers changed, waits with a decline for
+        // a connection: the last one dropped.
+        d.drivers_said.clear();
+        let beat = d.heartbeat();
+        assert!(beat.drivers.is_some());
+        let declined = HostToFleet::StartResult {
+            session_id: SessionId("ses_01WAIT".into()),
+            accepted: false,
+            error: Some("the host is at capacity".into()),
+            unready: None,
+        };
+        d.outbox.push_back(HostToFleet::Heartbeat(beat));
+        d.outbox.push_back(declined.clone());
+        // The next connection's hello says the drivers as they are now, and
+        // the heartbeat goes; what else waited is still sent.
+        let hello = d.greet();
+        assert_eq!(d.drivers_said, hello.drivers);
+        assert_eq!(d.outbox.drain(..).collect::<Vec<_>>(), [declined]);
         Ok(())
     }
 

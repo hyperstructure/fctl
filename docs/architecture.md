@@ -3286,7 +3286,9 @@ session until it is
   FleetDO queues it again rather than fail it. Each decline counts towards
   the five attempts a session gets. Declines for the driver say so
   (`StartResult.unready`), and unlike after other declines, a resume
-  still goes back to the sandbox it has there once the driver is ready. A session that someone stopped
+  still goes back to the sandbox it has there once the driver is ready;
+  a session that had no sandbox there keeps the home it had before
+  (`assignments.home_before`). A session that someone stopped
   meanwhile stays stopped: FleetDO marks the assignment it asked to stop
   (`assignments.stopping`), and a decline for it doesn't queue it again.
 - Hosts announce this with `drivers` in their hello's features

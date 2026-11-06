@@ -351,6 +351,11 @@ impl DurableObject for FleetObject {
         // Set once FleetDO asked its runner to stop the session: a decline
         // that crosses that ask doesn't queue it again.
         add_column(&sql, "assignments", "stopping", "INTEGER");
+        // The session's attempts when it was assigned, which a decline adds
+        // to, and the runner that had its sandbox then, which a runner that
+        // hands it back for its driver gives the home back to.
+        add_column(&sql, "assignments", "attempts", "INTEGER");
+        add_column(&sql, "assignments", "home_before", "TEXT");
         // Why a queued session waits, as it last said.
         add_column(&sql, "queue", "reason", "TEXT");
         // Set when its runner declined it for its driver (`driver_declined`).
@@ -1624,22 +1629,53 @@ impl FleetObject {
             );
             return;
         }
-        // Declined, or handed back once its driver stopped being ready
-        // (`FEATURE_DRIVERS`), after someone stopped it: it stays stopped,
-        // unless a message or a resume queued it again since.
-        let stopping = self
+        // The run it declines, as dispatch recorded it: the queue's row went
+        // as it was assigned.
+        #[derive(Deserialize, Default)]
+        struct Run {
+            #[serde(default)]
+            accepted: f64,
+            #[serde(default)]
+            stopping: Option<f64>,
+            #[serde(default)]
+            attempts: Option<f64>,
+            #[serde(default)]
+            home_before: Option<String>,
+        }
+        let run = self
             .sql
             .exec(
-                "SELECT session_id FROM assignments WHERE session_id = ? AND runner_id = ? AND stopping = 1",
+                "SELECT accepted, stopping, attempts, home_before FROM assignments WHERE session_id = ? AND runner_id = ?",
                 Some(vec![sv(session_id.as_str()), sv(runner_id)]),
             )
-            .and_then(|c| c.to_array::<serde_json::Value>())
-            .is_ok_and(|r| !r.is_empty());
+            .and_then(|c| c.to_array::<Run>())
+            .ok()
+            .and_then(|r| r.into_iter().next())
+            .unwrap_or_default();
         let _ = self.sql.exec(
             "DELETE FROM assignments WHERE session_id = ?",
             Some(vec![sv(session_id.as_str())]),
         );
-        if stopping {
+        // Handed back once its driver stopped being ready: it accepted the
+        // session, which made it the session's home, but a session that had
+        // no sandbox there has none now either, so its home is the one it
+        // had before.
+        if unready && run.accepted > 0.0 {
+            match run.home_before.as_deref() {
+                Some(home) if home == runner_id => {}
+                Some(home) => self.set_home(session_id.as_str(), home, now),
+                None => {
+                    let _ = self.sql.exec(
+                        "DELETE FROM sandboxes WHERE session_id = ? AND runner_id = ?",
+                        Some(vec![sv(session_id.as_str()), sv(runner_id)]),
+                    );
+                }
+            }
+        }
+        // Declined, or handed back once its driver stopped being ready
+        // (`FEATURE_DRIVERS`), after someone stopped it: it stays stopped,
+        // unless a message or a resume queued it again since.
+        if run.stopping.is_some_and(|s| s > 0.0) {
             if !self.queued(session_id.as_str()) {
                 self.session_control(
                     session_id,
@@ -1652,11 +1688,13 @@ impl FleetObject {
             self.dispatch().await;
             return;
         }
+        // Its earlier declines count: the run's, or the queue's when it was
+        // queued again meanwhile.
         #[derive(Deserialize)]
         struct A {
             attempts: f64,
         }
-        let attempts = self
+        let queued_attempts = self
             .sql
             .exec(
                 "SELECT attempts FROM queue WHERE session_id = ?",
@@ -1666,6 +1704,7 @@ impl FleetObject {
             .ok()
             .and_then(|r| r.first().map(|a| a.attempts as i64))
             .unwrap_or(0);
+        let attempts = queued_attempts.max(run.attempts.unwrap_or(0.0) as i64);
         let reason = error.unwrap_or_else(|| "The runner declined the session".into());
         if attempts + 1 >= MAX_ATTEMPTS {
             let _ = self.sql.exec(
@@ -2164,9 +2203,19 @@ impl FleetObject {
                 Some(vec![sv(&item.session_id)]),
             );
             let run_id = spec.run_id.clone().unwrap_or_default();
+            // With the attempts so far, for a decline to count on, and the
+            // runner that has its sandbox, for a hand-back to keep.
+            let home_before = self.home_of(&item.session_id);
             let _ = self.sql.exec(
-                "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted, run_id) VALUES (?, ?, ?, 0, ?)",
-                Some(vec![sv(&item.session_id), sv(&runner_id), iv(now), sv(&run_id)]),
+                "INSERT OR REPLACE INTO assignments (session_id, runner_id, assigned_at, accepted, run_id, attempts, home_before) VALUES (?, ?, ?, 0, ?, ?, ?)",
+                Some(vec![
+                    sv(&item.session_id),
+                    sv(&runner_id),
+                    iv(now),
+                    sv(&run_id),
+                    iv(item.attempts as i64),
+                    SqlStorageValue::from(home_before),
+                ]),
             );
             let sent = self.send_runner(
                 &runner_id,
