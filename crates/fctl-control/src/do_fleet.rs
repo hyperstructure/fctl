@@ -146,6 +146,19 @@ struct QueueRow {
     driver_declined: Option<f64>,
 }
 
+impl QueueRow {
+    /// Whether its last runner declined it for its driver.
+    fn declined_for_driver(&self) -> bool {
+        self.driver_declined.is_some_and(|d| d > 0.0)
+    }
+
+    /// [`declined_for_driver`](Self::declined_for_driver) for the row that
+    /// queues it again, which keeps it.
+    fn driver_declined(&self) -> SqlStorageValue {
+        iv(i64::from(self.declined_for_driver()))
+    }
+}
+
 #[derive(Deserialize)]
 struct AssignRow {
     session_id: String,
@@ -2071,7 +2084,7 @@ impl FleetObject {
             // Claude continues the same conversation, and waits a while for
             // it when it is busy. Not after it declined the session, unless
             // for its driver, which takes no session until it is ready.
-            let home = if item.attempts > 0.0 && item.driver_declined.unwrap_or(0.0) == 0.0 {
+            let home = if item.attempts > 0.0 && !item.declined_for_driver() {
                 None
             } else {
                 self.home_of(&item.session_id)
@@ -2112,8 +2125,8 @@ impl FleetObject {
                         e.0.code == ErrorCode::Unavailable && (item.attempts as i64) < MAX_ATTEMPTS;
                     if retryable {
                         let _ = self.sql.exec(
-                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?)",
-                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000)]),
+                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
+                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000), item.driver_declined()]),
                         );
                         self.session_control(
                             &session_id,
@@ -2185,8 +2198,8 @@ impl FleetObject {
                     Some(vec![sv(&item.session_id)]),
                 );
                 let _ = self.sql.exec(
-                    "INSERT OR REPLACE INTO queue (session_id, enqueued_at, attempts, not_before) VALUES (?, ?, ?, ?)",
-                    Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 5_000)]),
+                    "INSERT OR REPLACE INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
+                    Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 5_000), item.driver_declined()]),
                 );
             }
         }
