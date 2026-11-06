@@ -81,3 +81,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0073](0073-changing-review-agents-runs-them-on-the-changers-subscription.md) | Changing review agents runs them on the subscription of whoever changes them |
 | [0074](0074-sessions-keep-their-changes-diffs-for-their-viewers.md) | Sessions keep their changes' diffs for their viewers |
 | [0075](0075-agents-that-triage-write-labels-and-comments-through-fctl-alone.md) | Agents that triage write labels and comments through fctl alone |
+| [0076](0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md) | Sessions hear when their runner runs short of disk, and VM sandboxes pause before it fills |

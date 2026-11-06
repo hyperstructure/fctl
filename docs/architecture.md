@@ -2582,10 +2582,20 @@ come through:
   fctl-agent works, with when it last heard from it and what went wrong. Hosts
   say it again after every reconnect, and SessionDO forgets it when the
   uplink closes. Older hosts never say it.
+- **The runner paused the sandbox** while its disk is nearly full
+  (`AgentLink.paused`, [Sandboxes and drivers](#sandboxes-and-drivers)): the
+  agent holds its place until there is room, and the host doesn't try to
+  reach it meanwhile.
 
 The session page and `fctl attach` say which, and since when, once it has
 lasted 10 seconds (a host that restarts reconnects within them), and show
 nothing in progress meanwhile.
+
+They also say how short of disk the session's runner is, while it is
+(`runner_disk` in the snapshot, `disk` in `runner_connected`), which
+FleetDO tells SessionDO after its heartbeats and SessionDO keeps for pages
+opened later: below its floor, in amber, and nearly out, below 2 GiB, in
+red. The agent's work still comes through then, and shows as it does.
 
 ### Search
 
@@ -3286,6 +3296,39 @@ the data directory with Firecracker and the process driver. It measures every 30
   the others itself, for a control plane that hasn't had its heartbeat yet.
   Unlike a drain, it stops no idle sessions early, and it ends when there is
   room again ([ADR 0019](adr/0019-hosts-make-room-when-their-disk-runs-low.md)).
+- It measures every 5 seconds rather than 30 (not in Docker's VM).
+- Its sessions hear of it
+  ([ADR 0076](adr/0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md)).
+  FleetDO keeps what each runner's sessions were told
+  (`runners.disk_told`) and, after each heartbeat, tells them as
+  `fctl_domain::disk::heard` says: a `runner_low_on_disk` notice (`warn`)
+  as it goes below its floor, `runner_out_of_disk` (`error`) below 2 GiB,
+  or its floor if lower, when writes are about to fail, and
+  `runner_disk_ok` (`info`) once it has had room for ten minutes, the
+  sweep making room only up to the floor. Less room is told at once, more
+  only once it has lasted. Their pages show how short it is meanwhile
+  ([Viewers](#viewers)). A session that starts on a runner short of disk
+  hears so, and the admins' runners list says `out of disk` below 2 GiB.
+
+Below 2 GiB (or its floor if lower), a host with the Firecracker driver
+pauses its running VMs through Firecracker's API, and resumes them once
+twice that is free (`fctl_domain::disk::holds`), or when their session
+stops. A VM's disk is a file on the host's that the VM can't see fill, so
+what it writes once the host has no room would be lost: paused, it keeps
+that in its memory. The host tells the session's viewers
+(`AgentLink.paused`, and `sandbox_paused` and `sandbox_resumed` notices,
+which it says in the transcript with `UplinkUp::Notice`), and doesn't ping
+or attach to the agent of a paused sandbox, also after it restarts. Other
+drivers don't pause: Docker's containers see the host's disk fill, while
+Apple's and Lima's VMs can still lose writes.
+
+A full disk is named where it is the cause (`fctl_domain::disk::out_of_space`):
+a session that fails to start says "Runner X ran out of disk: …"; the
+transcript says when the host starts fctl-agent again while its disk is
+short, or couldn't for want of room (`agent_restarted`); fctl-agent tells
+the host, beside a journal it can't write, that the sandbox's disk is
+full; and Claude's `claude_restarted` and `claude_crashed` notices say so
+when it was.
 
 Older hosts send no floor and remove sandboxes by age only.
 
@@ -3331,7 +3374,11 @@ in `firecracker/` in the host's data directory.
   writes. Its VM's init lays it over the image's filesystem with overlayfs,
   and the disk gives the host back what the session deletes (discard).
   Stopping a sandbox keeps its disk; starting it again boots from it, with
-  the size the session asks for then.
+  the size the session asks for then. While the host's disk is nearly
+  full, the host pauses the VM (`PATCH /vm` on Firecracker's API socket),
+  which keeps what it has yet to write in its memory, and resumes it once
+  there is room; a VM paused when its sandbox stops or starts again is
+  resumed first ([ADR 0076](adr/0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md)).
 - **The VM's init** is fctl-agent, from an initramfs the host makes of its
   own static fctl-agent (`crates/fctl-agent/src/vm`). It mounts the root,
   copies itself to `/opt/fctl/bin/fctl-agent`, sets up what images don't
