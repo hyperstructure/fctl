@@ -752,6 +752,7 @@ impl FirecrackerDriver {
                 mode: Mode::Sandbox,
                 name: spec.name.clone(),
                 time_ms: Some(vsock::now_ms()),
+                dns: vm::vm_dns(),
             },
             drives: vec![
                 Drive {
@@ -1241,7 +1242,7 @@ mod tests {
                 let net = d
                     .exec(
                         &sb,
-                        "cat /etc/resolv.conf /proc/net/route /sys/class/net/eth0/operstate; ls -l /etc/resolv.conf",
+                        "cat /etc/resolv.conf /proc/net/route /sys/class/net/eth0/operstate; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' && echo 'TCP to 1.1.1.1:80 works'",
                     )
                     .await;
                 bail!(

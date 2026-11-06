@@ -50,13 +50,18 @@ pub enum Mode {
 }
 
 /// What the init reads from the kernel's command line: `fctl.mode=`,
-/// `fctl.name=` (the VM's hostname) and `fctl.time=` (the host's clock at
-/// boot, in milliseconds since the Unix epoch).
+/// `fctl.name=` (the VM's hostname), `fctl.time=` (the host's clock at
+/// boot, in milliseconds since the Unix epoch) and `fctl.dns=` (the
+/// nameservers the VM asks, separated by commas).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Boot {
     pub mode: Mode,
     pub name: String,
     pub time_ms: Option<i64>,
+    /// The nameservers the VM asks: the host's own, which `passt` reaches as
+    /// the host does. Empty: [`DNS`], which `passt` forwards to the host's
+    /// resolver.
+    pub dns: Vec<std::net::Ipv4Addr>,
 }
 
 impl Boot {
@@ -70,6 +75,10 @@ impl Boot {
         if let Some(t) = self.time_ms {
             p.push_str(&format!(" fctl.time={t}"));
         }
+        if !self.dns.is_empty() {
+            let dns: Vec<String> = self.dns.iter().map(ToString::to_string).collect();
+            p.push_str(&format!(" fctl.dns={}", dns.join(",")));
+        }
         p
     }
 
@@ -78,12 +87,16 @@ impl Boot {
         let mut mode = None;
         let mut name = String::from("fctl");
         let mut time_ms = None;
+        let mut dns = Vec::new();
         for word in cmdline.split_whitespace() {
             match word.split_once('=') {
                 Some(("fctl.mode", "sandbox")) => mode = Some(Mode::Sandbox),
                 Some(("fctl.mode", "unpack")) => mode = Some(Mode::Unpack),
                 Some(("fctl.name", n)) if !n.is_empty() => n.clone_into(&mut name),
                 Some(("fctl.time", t)) => time_ms = t.parse().ok(),
+                Some(("fctl.dns", list)) => {
+                    dns = list.split(',').filter_map(|a| a.parse().ok()).collect();
+                }
                 _ => {}
             }
         }
@@ -91,6 +104,7 @@ impl Boot {
             mode: mode?,
             name,
             time_ms,
+            dns,
         })
     }
 }
@@ -223,11 +237,13 @@ mod tests {
             mode: Mode::Sandbox,
             name: "fctl-ses-01abc".into(),
             time_ms: Some(1_761_700_000_000),
+            dns: vec![[168, 63, 129, 16].into(), [10, 1, 0, 2].into()],
         };
         let cmdline = format!(
             "console=ttyS0 reboot=k panic=1 {} rdinit=/init",
             boot.params()
         );
+        assert!(cmdline.contains(" fctl.dns=168.63.129.16,10.1.0.2 "));
         assert_eq!(Boot::parse(&cmdline), Some(boot));
         let unpack = Boot::parse("fctl.mode=unpack quiet");
         assert_eq!(

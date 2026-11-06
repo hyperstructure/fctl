@@ -264,11 +264,17 @@ fn system(boot: &Boot) {
         "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n127.0.1.1\t{}\n",
         boot.name
     );
-    let dns = std::net::Ipv4Addr::from(fctl_proto::vm::DNS);
-    for (file, text) in [
-        ("/etc/hosts", hosts),
-        ("/etc/resolv.conf", format!("nameserver {dns}\n")),
-    ] {
+    // The host's nameservers, which passt reaches as the host does, or the
+    // address where passt forwards queries to the host's resolver.
+    let servers = match boot.dns.as_slice() {
+        [] => vec![std::net::Ipv4Addr::from(fctl_proto::vm::DNS)],
+        some => some.to_vec(),
+    };
+    let resolv: String = servers
+        .iter()
+        .map(|s| format!("nameserver {s}\n"))
+        .collect();
+    for (file, text) in [("/etc/hosts", hosts), ("/etc/resolv.conf", resolv)] {
         if let Err(e) = replace(file, &text) {
             say(&format!("writing {file}: {e}"));
         }

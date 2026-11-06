@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use fctl_proto::vm::{ADDRESS, Boot, DNS, GATEWAY, Mode, NET_PORT, PREFIX};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -199,7 +199,7 @@ impl Vm {
     async fn start_passt(&self, passt: &Path) -> Result<()> {
         let log = std::fs::File::create(self.dir.join("passt.log"))?;
         let mut cmd = std::process::Command::new(passt);
-        cmd.args(passt_args(&self.net(), &host_dns()))
+        cmd.args(passt_args(&self.net()))
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
@@ -430,14 +430,13 @@ fn response(buf: &[u8]) -> Result<Option<(u16, &[u8])>> {
     Ok((body.len() >= len).then(|| (status, &body[..len])))
 }
 
-/// The arguments of `passt` for a VM whose frames come to `socket`, whose
-/// DNS queries go to `dns` (when empty, to the host's resolver): the
+/// The arguments of `passt` for a VM whose frames come to `socket`: the
 /// options of passt's releases since 2022, which Ubuntu 24.04 and Debian 12
 /// have. The VM names itself, so passt's DHCP needs no `--hostname`, which
 /// came later.
-fn passt_args(socket: &Path, dns: &[IpAddr]) -> Vec<String> {
+fn passt_args(socket: &Path) -> Vec<String> {
     let mask = PREFIX.to_string();
-    let mut args: Vec<String> = vec![
+    vec![
         "--foreground".into(),
         "--quiet".into(),
         "--socket".into(),
@@ -452,55 +451,46 @@ fn passt_args(socket: &Path, dns: &[IpAddr]) -> Vec<String> {
         Ipv4Addr::from(DNS).to_string(),
         // The gateway's address doesn't lead to the host's loopback.
         "--no-map-gw".into(),
-    ];
-    for addr in dns {
-        args.extend(["--dns".into(), addr.to_string()]);
-    }
-    args
+    ]
 }
 
-/// Where the VMs' DNS queries go, when passt can't find it alone: as Docker
-/// does, the servers systemd-resolved asks, where the host's
-/// `/etc/resolv.conf` names only a resolver on its loopback (systemd-resolved's
-/// 127.0.0.53). passt before 2024's summer forwards no queries to a resolver
-/// on the loopback with `--no-map-gw` (Ubuntu 24.04's says "Couldn't get any
-/// nameserver address"). Empty when the host names another resolver, or
-/// nothing else is known: passt finds it then, or newer passt forwards to the
-/// loopback's.
-fn host_dns() -> Vec<IpAddr> {
+/// The nameservers a VM asks, which passt reaches as the host does: as
+/// Docker gives its containers, the host's own, but for those on its
+/// loopback, which the VM can't reach, and where only those are left
+/// (systemd-resolved's 127.0.0.53, as Ubuntu has it) the servers
+/// systemd-resolved asks. Empty when there are none: the VM asks passt's
+/// forwarder then, which passes its queries to the host's resolver, but in
+/// passt's releases before the summer of 2024 (Ubuntu 24.04's) not to one on
+/// the loopback.
+pub fn vm_dns() -> Vec<Ipv4Addr> {
     let read = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
-    dns_for_vms(
+    dns_for_vm(
         &read("/etc/resolv.conf"),
         &read("/run/systemd/resolve/resolv.conf"),
     )
 }
 
-/// [`host_dns`], from the files' text: the IPv4 servers first, and IPv6
-/// ones only without any, at most three. Link-local IPv6 servers are left
-/// out: `--dns` can't say which interface reaches them (`fe80::1%eth0`).
-fn dns_for_vms(resolv_conf: &str, resolved_upstream: &str) -> Vec<IpAddr> {
-    let servers = |text: &str| -> Vec<IpAddr> {
+/// [`vm_dns`], from the files' text: at most three IPv4 servers (the VM
+/// has no IPv6), and none of the addresses that mean something else in the
+/// VM's network, where the gateway and passt's forwarder are.
+fn dns_for_vm(resolv_conf: &str, resolved_upstream: &str) -> Vec<Ipv4Addr> {
+    let usable = |text: &str| -> Vec<Ipv4Addr> {
         text.lines()
             .filter_map(|l| l.trim().strip_prefix("nameserver"))
             .filter_map(|rest| rest.split_whitespace().next())
-            // A link-local IPv6 server carries its interface: `fe80::1%eth0`.
-            .filter_map(|a| a.split('%').next().and_then(|a| a.parse().ok()))
+            .filter_map(|a| a.parse::<Ipv4Addr>().ok())
+            .filter(|a| {
+                !a.is_loopback()
+                    && !a.is_unspecified()
+                    && ![ADDRESS, GATEWAY, DNS].contains(&a.octets())
+            })
+            .take(3)
             .collect()
     };
-    let host = servers(resolv_conf);
-    if host.is_empty() || host.iter().any(|a| !a.is_loopback()) {
-        return Vec::new();
+    match usable(resolv_conf) {
+        none if none.is_empty() => usable(resolved_upstream),
+        some => some,
     }
-    let upstream: Vec<IpAddr> = servers(resolved_upstream)
-        .into_iter()
-        .filter(|a| match a {
-            IpAddr::V4(a) => !a.is_loopback(),
-            IpAddr::V6(a) => !a.is_loopback() && !a.is_unicast_link_local(),
-        })
-        .collect();
-    let v4: Vec<IpAddr> = upstream.iter().copied().filter(IpAddr::is_ipv4).collect();
-    let pick = if v4.is_empty() { upstream } else { v4 };
-    pick.into_iter().take(3).collect()
 }
 
 /// Starts `cmd` in a process group of its own, writes its id to
@@ -547,6 +537,7 @@ pub fn unpack_spec(kernel: PathBuf, initrd: PathBuf, name: &str, rootfs: &Path) 
             mode: Mode::Unpack,
             name: name.into(),
             time_ms: Some(vsock::now_ms()),
+            dns: Vec::new(),
         },
         drives: vec![Drive {
             path: rootfs.to_owned(),
@@ -575,6 +566,7 @@ mod tests {
                 mode: Mode::Sandbox,
                 name: "fctl-ses-1".into(),
                 time_ms: Some(5),
+                dns: vec![[168, 63, 129, 16].into()],
             },
             drives: vec![
                 Drive {
@@ -594,7 +586,7 @@ mod tests {
         assert_eq!(
             c["boot-source"]["boot_args"],
             format!(
-                "{} fctl.mode=sandbox fctl.name=fctl-ses-1 fctl.time=5",
+                "{} fctl.mode=sandbox fctl.name=fctl-ses-1 fctl.time=5 fctl.dns=168.63.129.16",
                 kernel_args()
             )
         );
@@ -612,43 +604,34 @@ mod tests {
 
     #[test]
     fn passt_gives_the_vm_its_network_and_nothing_of_the_hosts() {
-        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0/v.sock_1025"), &[]).join(" ");
+        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0/v.sock_1025")).join(" ");
         assert_eq!(
             args,
             "--foreground --quiet --socket /tmp/fctl-ada/vm-0/v.sock_1025 --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw"
         );
-        let dns = [IpAddr::from([168, 63, 129, 16])];
-        let args = passt_args(Path::new("/s"), &dns).join(" ");
-        assert!(args.ends_with("--no-map-gw --dns 168.63.129.16"), "{args}");
     }
 
-    /// systemd-resolved's stub on the loopback, as Ubuntu has it, and its
-    /// upstream servers, which passt gets; any other resolver passt finds
-    /// itself.
+    /// The host's nameservers, past systemd-resolved's stub on its loopback
+    /// as Ubuntu has it, to the servers it asks.
     #[test]
-    fn dns_goes_past_a_resolver_on_the_hosts_loopback() {
+    fn vms_ask_the_hosts_nameservers_and_none_on_its_loopback() {
         let stub = "# This is /run/systemd/resolve/stub-resolv.conf\nnameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n";
         let upstream = "nameserver 168.63.129.16\nnameserver fe80::1%eth0\nnameserver 10.0.0.2\nnameserver 1.1.1.1\nnameserver 8.8.8.8\nsearch example.internal\n";
-        let v4 = |a: [u8; 4]| IpAddr::from(a);
+        let v4 = |a: [u8; 4]| Ipv4Addr::from(a);
         assert_eq!(
-            dns_for_vms(stub, upstream),
+            dns_for_vm(stub, upstream),
             [v4([168, 63, 129, 16]), v4([10, 0, 0, 2]), v4([1, 1, 1, 1])]
         );
-        // IPv6 servers only where there is no IPv4 one, and no link-local
-        // one, which passt can't reach without its interface.
-        let only_v6 = "nameserver fe80::1%eth0\nnameserver 2001:4860:4860::8888\nnameserver ::1\n";
-        assert_eq!(
-            dns_for_vms(stub, only_v6),
-            [IpAddr::from([0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888])]
-        );
-        assert!(dns_for_vms(stub, "nameserver fe80::1%eth0\nnameserver fe80::2\n").is_empty());
-        // A resolver passt can reach, or nothing to go past to.
-        assert!(dns_for_vms("nameserver 10.0.2.3\n", upstream).is_empty());
-        assert!(
-            dns_for_vms("nameserver 127.0.0.53\nnameserver 192.168.1.1\n", upstream).is_empty()
-        );
-        assert!(dns_for_vms(stub, "").is_empty());
-        assert!(dns_for_vms("", upstream).is_empty());
+        // The host's own, but for those on its loopback.
+        let router = "nameserver 127.0.0.1\nnameserver 192.168.1.1\n";
+        assert_eq!(dns_for_vm(router, upstream), [v4([192, 168, 1, 1])]);
+        assert_eq!(dns_for_vm("", upstream)[0], v4([168, 63, 129, 16]));
+        // Nothing the VM could ask: passt's forwarder. QEMU's user network
+        // has its resolver where the VM's forwarder is, 10.0.2.3, and IPv6
+        // doesn't reach the VM.
+        assert!(dns_for_vm(stub, "").is_empty());
+        assert!(dns_for_vm(stub, "nameserver 2001:4860:4860::8888\n").is_empty());
+        assert!(dns_for_vm("nameserver 10.0.2.3\n", "").is_empty());
     }
 
     #[test]
