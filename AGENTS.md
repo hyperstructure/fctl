@@ -203,8 +203,9 @@ from GitHub at the tag `web/package.json` pins, without signing in.
 - An issue closes when everything in it is done and verified, or when a
   person decides it won't be done. Leftovers move to new, linked issues. Ask
   before closing an issue your task didn't name.
-- New issues: search for duplicates first, follow the shape of #12 and
-  #13, and add labels. Add to other people's issues (a comment or a new
+- Issues for all the repositories are tracked here, in fctl. New issues:
+  search for duplicates first, follow the shape of #12 and #13, and add
+  labels; an issue from someone without write access gets `triage`. Add to other people's issues (a comment or a new
   section) instead of rewriting them.
 - An fctl session's token covers only this repository: name what
   hyperstructure/fctl-site, hyperstructure/design or hyperstructure/sandbox
