@@ -689,6 +689,10 @@ async fn ask(
     }
 }
 
+/// How long a sandbox that stayed paused as it was resumed waits before the
+/// host tries again.
+const RESUME_AGAIN_AFTER: Duration = Duration::from_secs(10);
+
 fn host_log(uplink: &Uplink, level: LogLevel, text: String) {
     uplink.log(LogLine {
         source: LogSource::Host,
@@ -1079,6 +1083,8 @@ async fn run(
     }
     // Pausing failed while the disk is nearly full: tried once.
     let mut pause_failed = false;
+    // Resuming failed, and the sandbox is still paused: tried again then.
+    let mut resume_again_at: Option<Instant> = None;
     // Whether the transcript said why the host starts fctl-agent again,
     // since the agent last said hello.
     let mut told_restart = false;
@@ -1367,7 +1373,17 @@ async fn run(
                             && exited.is_none()
                             && !pause_failed =>
                     {
-                        match ctx.driver.pause(&sb).await {
+                        let paused = match ctx.driver.pause(&sb).await {
+                            Ok(()) => Ok(()),
+                            // Firecracker may have paused it before its
+                            // answer failed to come.
+                            Err(e) if ctx.driver.paused(&sb).await => {
+                                tracing::warn!("pausing {}: {e:#}, but it is paused", sb.name);
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        };
+                        match paused {
                             Ok(()) => {
                                 let p = paused_for(free);
                                 tracing::warn!("paused {}: {}", sb.name, p.reason);
@@ -1390,11 +1406,14 @@ async fn run(
                         }
                     }
                     (Some(_), false) => {
-                        held = None;
-                        resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, free, false)).await;
-                        reach.told_nothing(Instant::now());
-                        if let Some(l) = link.as_mut() {
-                            l.health.heard(Instant::now());
+                        if resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, free, false)).await {
+                            held = None;
+                            reach.told_nothing(Instant::now());
+                            if let Some(l) = link.as_mut() {
+                                l.health.heard(Instant::now());
+                            }
+                        } else {
+                            resume_again_at = Some(Instant::now() + RESUME_AGAIN_AFTER);
                         }
                     }
                     _ => {}
@@ -1403,8 +1422,10 @@ async fn run(
             c = cmds.recv() => match c {
                 Some(SessionCmd::Stop { reason, destroy }) => {
                     // The agent stops what it does, and the sandbox writes
-                    // out its disk, only once it runs.
+                    // out its disk, only once it runs. One that stays paused
+                    // stops at the deadline, which resumes it first.
                     if held.take().is_some() {
+                        resume_again_at = None;
                         resume(&ctx, &sb, &uplink, resumed_notice(&ctx.cfg.name, None, true)).await;
                         reach.told_nothing(Instant::now());
                         if let Some(l) = link.as_mut() {
@@ -1442,6 +1463,12 @@ async fn run(
                     && let Some(done) = exited.clone() {
                         break done;
                     }
+                // A sandbox that stayed paused as it was resumed: the disk
+                // is looked at again, which resumes it if there is room.
+                if resume_again_at.is_some_and(|at| Instant::now() >= at) {
+                    resume_again_at = None;
+                    free_disk.mark_changed();
+                }
                 // A link that goes quiet is replaced. A paused sandbox's
                 // says nothing, and the viewers know why.
                 if held.is_some() {
@@ -1499,17 +1526,34 @@ async fn run(
     (status, reason)
 }
 
-/// Resumes the sandbox the host held paused, and says so.
-async fn resume(ctx: &HostCtx, sb: &Sandbox, uplink: &Uplink, notice: Notice) {
-    match ctx.driver.resume(sb).await {
-        Ok(()) => tracing::info!("resumed {}", sb.name),
-        Err(e) => tracing::warn!("resuming {}: {e:#}", sb.name),
-    }
+/// Resumes the sandbox the host held paused, and says so. False while it
+/// stays paused: resuming failed, and the host tries again. One that isn't
+/// paused after a failure (its VM may have resumed before the answer failed
+/// to come, or stopped) is no longer held, and the agent's link says which;
+/// only one that resumed is said to have resumed.
+async fn resume(ctx: &HostCtx, sb: &Sandbox, uplink: &Uplink, notice: Notice) -> bool {
+    let resumed = match ctx.driver.resume(sb).await {
+        Ok(()) => {
+            tracing::info!("resumed {}", sb.name);
+            true
+        }
+        Err(e) if ctx.driver.paused(sb).await => {
+            tracing::warn!("resuming {}: {e:#}; trying again", sb.name);
+            return false;
+        }
+        Err(e) => {
+            tracing::warn!("resuming {}: {e:#}, but it isn't paused", sb.name);
+            false
+        }
+    };
     uplink.send(UplinkUp::AgentLink {
         unreachable: None,
         paused: None,
     });
-    uplink.send(UplinkUp::Notice { notice });
+    if resumed {
+        uplink.send(UplinkUp::Notice { notice });
+    }
+    true
 }
 
 fn agent_config(

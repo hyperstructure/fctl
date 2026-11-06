@@ -702,8 +702,6 @@ impl Driver {
         }
     }
 
-    /// Stops the sandbox, which keeps its files. An Apple `container`
-    /// sandbox first gives back the disk space of the files deleted in it.
     /// Whether it pauses sandboxes while the disk is nearly full: VMs whose
     /// disk is a file on the host's, which lose what they write when the
     /// host has no room for it. Docker's containers write to the host's
@@ -736,6 +734,8 @@ impl Driver {
         }
     }
 
+    /// Stops the sandbox, which keeps its files. An Apple `container`
+    /// sandbox first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
         match self {
             Self::Process(d) => d.stop(sb).await,

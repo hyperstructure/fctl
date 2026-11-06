@@ -104,7 +104,7 @@ describe("stalls", () => {
     });
     expect(st).toMatchObject({ kind: "paused", showFrom: 0, since: now - 3 * minute });
     expect(stallText(must(st), now)).toEqual({
-      title: `Runner now paused this session's sandbox since ${clock(now - 3 * minute)}: it is nearly out of disk, with 800 MiB free.`,
+      title: `Runner now has kept this session's sandbox paused since ${clock(now - 3 * minute)}: it is nearly out of disk, with 800 MiB free.`,
       detail:
         "The sandbox keeps what the agent wrote. The agent carries on where it was once there is room, and messages you send reach the agent then.",
     });
@@ -139,11 +139,18 @@ describe("stalls", () => {
     expect(diskLabel(d)).toBe("Runner nearly out of disk: 800 MiB free");
   });
 
-  it("say nothing of the disk of a session that has ended, or while the page reconnects", () => {
+  it("say nothing of the disk of a session that has ended, while the page reconnects or the runner is away", () => {
     const low = { room: "low" as const, free_mb: 1, min_free_mb: 2, since: now };
     expect(diskOf(session("stopped"), { connection: "live", runnerDisk: low })).toBeUndefined();
     expect(diskOf(session("running"), { connection: "reconnecting", runnerDisk: low })).toBeUndefined();
     expect(diskOf(session("running"), { connection: "live" })).toBeUndefined();
+    const away = stallOf(session("running"), {
+      connection: "live",
+      runnerConnected: false,
+      runnerAway: { lastSeenAt: now - 10 * minute, noticedAt: now },
+    });
+    expect(away?.kind).toBe("away");
+    expect(diskOf(session("running"), { connection: "live", runnerDisk: low }, away)).toBeUndefined();
   });
 
   it("say the runner when the session has none", () => {

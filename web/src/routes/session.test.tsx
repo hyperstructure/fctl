@@ -26,7 +26,6 @@ vi.mock("@/lib/live", async (original) => {
     ...live,
     useLiveSession: (id: string, initial?: G.Session) => {
       // One for each session, as the real one keeps it while the cached session changes.
-      // biome-ignore lint/correctness/useExhaustiveDependencies: initial seeds the store only
       const store = useMemo(() => new live.LiveSession(id, initial), [id]);
       stores.set(id, store as unknown as { onMessage(m: unknown): void });
       return [store.getSnapshot(), store];
@@ -182,7 +181,7 @@ describe("SessionPage", () => {
       disk: { room: "out", free_mb: 800, min_free_mb: 20_480, since },
       sandbox_paused: { since, reason: "it is nearly out of disk, with 800 MiB free" },
     });
-    expect(p.text()).toContain("Runner now paused this session's sandbox since");
+    expect(p.text()).toContain("Runner now has kept this session's sandbox paused since");
     expect(p.text()).toContain("The sandbox keeps what the agent wrote.");
     expect(p.working()).toBe(false);
 

@@ -114,7 +114,7 @@ export function stallText(st: Stall, now = Date.now()): { title: string; detail:
   const reason = st.reason.replace(/[.\s]+$/, "");
   if (st.kind === "paused") {
     return {
-      title: `${who} paused this session's sandbox ${since(st.since, now)}: ${reason}.`,
+      title: `${who} has kept this session's sandbox paused ${since(st.since, now)}: ${reason}.`,
       detail: `The sandbox keeps what the agent wrote. The agent carries on where it was once there is room${messages}.`,
     };
   }
@@ -139,7 +139,7 @@ export type DiskShort = G.RunnerDisk & {
 
 /**
  * How short of disk the session's runner is, while the session runs there. A sandbox the runner paused for it
- * says so in its stall.
+ * says so in its stall, and what a runner that isn't heard from said last is old news.
  */
 export function diskOf(
   session: G.Session | undefined,
@@ -147,7 +147,7 @@ export function diskOf(
   stall?: Stall,
 ): DiskShort | undefined {
   if (!session || !ACTIVE.has(session.status) || s.connection !== "live" || !s.runnerDisk) return undefined;
-  if (stall?.kind === "paused") return undefined;
+  if (stall?.kind === "paused" || stall?.kind === "away") return undefined;
   return { ...s.runnerDisk, runner: session.runner?.name };
 }
 
