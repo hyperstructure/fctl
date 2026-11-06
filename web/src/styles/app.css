@@ -313,18 +313,20 @@
   /* At rest the code shows whole. */
   initial-value: 100000px;
 }
+/* The caret is the accent (yellow; ink on light backgrounds), the wash
+   and the bar the highlight's yellow, lime on light backgrounds, where the
+   bar takes some ink to show on white. */
 :root,
 :root[data-theme="dark"] {
   --diff-caret: var(--c-accent);
-  --diff-caret-glow: rgb(255 255 93 / 0.55);
-  --diff-lit: rgb(255 255 93 / 0.15);
-  --diff-lit-bar: var(--c-accent);
+  --diff-caret-glow: color-mix(in srgb, var(--c-accent) 55%, transparent);
+  --diff-lit: color-mix(in srgb, var(--c-highlight) 15%, transparent);
+  --diff-lit-bar: var(--c-highlight);
 }
 :root[data-theme="light"] {
-  --diff-caret: #171717;
-  --diff-caret-glow: rgb(23 23 23 / 0.25);
-  --diff-lit: rgb(212 245 60 / 0.24);
-  --diff-lit-bar: #9bc400;
+  --diff-caret-glow: color-mix(in srgb, var(--c-accent) 25%, transparent);
+  --diff-lit: color-mix(in srgb, var(--c-highlight) 60%, transparent);
+  --diff-lit-bar: color-mix(in srgb, var(--c-highlight), var(--c-ink) 32%);
 }
 [data-play] {
   /* Behind its code, above its own background: the washes below. */
