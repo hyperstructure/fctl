@@ -13,9 +13,9 @@
 //!   and starting it again boots from it.
 //! - **The VM** boots the kernel with fctl-agent as its init
 //!   ([`assets::initrd`]); Firecracker and `passt`, which gives the VM its
-//!   network over the vsock without a TAP device or root on the host, run
-//!   in process groups of their own, so that restarting the host leaves
-//!   them running ([`vm`]).
+//!   network over a vsock connection the host makes once the VM is up,
+//!   without a TAP device or root on the host, run in process groups of
+//!   their own, so that restarting the host leaves them running ([`vm`]).
 //! - **The host runs programs** in the VM through its vsock, as `docker
 //!   exec` would ([`vsock`]).
 
@@ -631,7 +631,7 @@ impl FirecrackerDriver {
         remove_stale(&self.root.join("unpacking"));
         let vm = Vm::new(self.root.join("unpacking").join(&name))?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
-        vm.start(&spec, &firecracker, None).await?;
+        vm.start(&spec, &firecracker).await?;
         let result = async {
             vm.wait_ready().await?;
             let within =
@@ -708,6 +708,14 @@ impl FirecrackerDriver {
             let socket = vm.vsock();
             let answers = tokio::time::timeout(Duration::from_secs(10), vsock::hello(&socket));
             if matches!(answers.await, Ok(Ok(_))) {
+                // Its passt exited, or was stopped: the VM gets another.
+                if !vm.linked() {
+                    log(format!("Linking the network of {} again", spec.name));
+                    let passt = self
+                        .passt()
+                        .context("passt is not installed: it gives the VMs their network")?;
+                    vm.link_network(&passt).await?;
+                }
                 return Ok(sb);
             }
             log(format!(
@@ -768,8 +776,12 @@ impl FirecrackerDriver {
             memory_mb: spec.memory_mb,
             network: true,
         };
-        vm.start(&boot, &firecracker, Some(&passt)).await?;
+        vm.start(&boot, &firecracker).await?;
         vm.wait_ready().await?;
+        if let Err(e) = vm.link_network(&passt).await {
+            vm.kill().await;
+            return Err(e);
+        }
         record.agent = Some(agent);
         self.save_record(&spec.name, &record)?;
         Ok(sb)
@@ -1168,97 +1180,24 @@ mod tests {
     async fn network_report(d: &super::super::Driver, sb: &Sandbox, data: &Path) -> String {
         let dir = data.join("firecracker/sandboxes").join(&sb.name);
         let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
-        let passt = read("passt.pid").trim().parse::<u32>().ok().map(|pid| {
-            let proc =
-                |f: &str| std::fs::read_to_string(format!("/proc/{pid}/{f}")).unwrap_or_default();
-            let fds = std::fs::read_dir(format!("/proc/{pid}/fd"))
-                .map(|d| {
-                    d.flatten()
-                        .filter_map(|e| std::fs::read_link(e.path()).ok())
-                        .map(|l| l.display().to_string())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            // passt makes itself undumpable: root sees the rest, where sudo
-            // asks for no password (as on CI's runners).
-            let sudo = |args: &[&str]| {
-                std::process::Command::new("sudo")
-                    .arg("-n")
-                    .args(args)
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-                    .unwrap_or_default()
-            };
-            let p = pid.to_string();
-            format!(
-                "{}\n{}\nfds: {fds:?}\nas root: fds {}\nsyscall {}\nstack {}\nsockets: {}",
-                proc("cmdline").replace('\0', " "),
-                proc("status")
-                    .lines()
-                    .filter(|l| l.starts_with("State"))
-                    .collect::<String>(),
-                sudo(&["ls", "-l", &format!("/proc/{p}/fd")]),
-                sudo(&["cat", &format!("/proc/{p}/syscall")]),
-                sudo(&["cat", &format!("/proc/{p}/stack")]),
-                sudo(&["ss", "-xanp"])
-                    .lines()
-                    .filter(|l| l.contains("v.sock")
-                        || l.contains("passt")
-                        || l.contains("firecracker"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        });
-        // Its capture, where the test asked for one (debug_passt).
-        let frames = std::env::var_os("FCTL_TEST_FIRECRACKER_PASST_DEBUG")
-            .and_then(|pcap| std::fs::read(pcap).ok())
-            .map(|pcap| pcap_summary(&pcap));
+        let passt = read("passt.pid")
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/cmdline")).ok())
+            .map(|cmdline| cmdline.replace('\0', " "));
         let vm = d
             .exec(
                 sb,
-                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev /sys/class/net/eth0/address 2>&1; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1 && echo 'TCP to 1.1.1.1:80 works'; true",
+                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev 2>&1; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1 && echo 'TCP to 1.1.1.1:80 works'; true",
             )
             .await;
-        let strace = std::fs::read_to_string("/tmp/passt.strace").unwrap_or_default();
         format!(
-            "passt: {passt:?}\npasst's syscalls:\n{strace}\npasst said:\n{}\npasst's capture: {frames:?}\nthe VM's console:\n{}\nthe VM's network:\n{}",
+            "passt runs: {passt:?}\npasst said:\n{}\nthe VM's console:\n{}\nthe VM's network:\n{}",
             read("passt.log").trim(),
             read("console.log").trim(),
             vm.unwrap_or_else(|e| format!("{e:#}"))
         )
-    }
-
-    /// The frames in a pcap file, each as its length and first bytes.
-    fn pcap_summary(pcap: &[u8]) -> Vec<String> {
-        let mut frames = Vec::new();
-        let mut at = 24;
-        while let Some(header) = pcap.get(at..at + 16) {
-            let len = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
-            let frame = pcap.get(at + 16..at + 16 + len).unwrap_or_default();
-            frames.push(format!(
-                "{len}: {}",
-                hex::encode(&frame[..frame.len().min(42)])
-            ));
-            at += 16 + len;
-        }
-        frames
-    }
-
-    /// passt with its debug log and a capture of its frames, in place of the
-    /// host's: a script that runs it so, which
-    /// `FCTL_TEST_FIRECRACKER_PASST_DEBUG` asks for, naming the capture's
-    /// file (in /tmp, where Ubuntu's AppArmor profile lets passt write).
-    fn debug_passt(dir: &Path) -> Result<PathBuf> {
-        let passt = find_program("passt").context("passt is not installed")?;
-        let script = dir.join("passt-debug");
-        crate::driver::fake::write_script(
-            &script,
-            &format!(
-                "#!/bin/sh\n# As the host runs it, with its debug log and a capture of its frames.\nfor a; do shift; [ \"$a\" = --quiet ] || set -- \"$@\" \"$a\"; done\nexec strace -f -tt -e trace=accept4,accept,getsockopt,setsockopt,epoll_ctl -o /tmp/passt.strace {} --trace --pcap \"$FCTL_TEST_FIRECRACKER_PASST_DEBUG\" \"$@\"\n",
-                passt.display()
-            ),
-        )?;
-        Ok(script)
     }
 
     /// Boots a sandbox from an image of Docker Hub (or
@@ -1293,9 +1232,6 @@ mod tests {
         };
         cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
         cfg.firecracker.disk_gb = 4;
-        if std::env::var_os("FCTL_TEST_FIRECRACKER_PASST_DEBUG").is_some() {
-            cfg.firecracker.passt = Some(debug_passt(temp.path())?);
-        }
         let d = Driver::select("firecracker", &cfg).await?;
         let probed = d.probe().await;
         assert!(probed.available, "{probed:?}");

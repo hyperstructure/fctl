@@ -9,9 +9,10 @@
 //! exits; after an [`Request::Unpack`], the layers' bytes one after the
 //! other, then a second [`Reply`].
 //!
-//! The VM itself reaches the host's [`NET_PORT`], where the host's `passt`
-//! takes its network: Ethernet frames, each after its length (4 bytes, big
-//! endian), as passt reads them from QEMU.
+//! The host connects to the VM's [`NET_PORT`] too, once the VM is up, and
+//! hands the connection to a `passt` of the VM's own, which takes its
+//! network: Ethernet frames, each after its length (4 bytes, big endian),
+//! as passt reads them from QEMU.
 //!
 //! A host may be one version ahead of the init of a VM that was running
 //! when it updated, so requests only gain optional fields, and an init
@@ -23,7 +24,8 @@ use serde_with::skip_serializing_none;
 /// The vsock port the init serves requests on.
 pub const PORT: u32 = 1024;
 
-/// The vsock port of the host's network for the VM (`passt`).
+/// The vsock port where the VM takes the host's link to its network
+/// (`passt`).
 pub const NET_PORT: u32 = 1025;
 
 /// The VM's network, as the host's `passt` gives it: the VM's address and
