@@ -797,9 +797,10 @@ prints the end of it on both.
 driver can't run sessions (Apple's `container` or Lima isn't installed, a
 service isn't running), it says what to fix and stops. `--driver auto` (the
 default) picks the first ready one of apple, docker and lima, never
-firecracker, which a host's owner chooses, or the process driver, and the
-driver it checked goes into the host's settings in
-`~/.config/fctl/host.toml`:
+firecracker, which a host's owner chooses, or the process driver. When none
+is ready, it says what each lacks, and on Linux what Firecracker lacks or
+that it is ready for `--driver firecracker`. The driver it checked goes
+into the host's settings in `~/.config/fctl/host.toml`:
 
 ```toml
 server = "https://app.fctl.sh"
