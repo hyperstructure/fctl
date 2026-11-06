@@ -139,6 +139,13 @@ jobs:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
         run: |
           cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
+      - name: Boot a sandbox on a host that runs as root
+        env:
+          FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
+        run: |
+          bin=$(cargo test --locked -p fctl-host --lib --no-run 2>&1 | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p')
+          sudo env "FCTL_TEST_FIRECRACKER_AGENT=$FCTL_TEST_FIRECRACKER_AGENT" "FCTL_TEST_FIRECRACKER_DATA=$RUNNER_TEMP/root" \
+            "$bin" driver::firecracker::tests::boots_a_sandbox --ignored --nocapture
 
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that

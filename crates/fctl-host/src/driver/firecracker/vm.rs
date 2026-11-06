@@ -63,6 +63,9 @@ pub struct Spec {
 pub struct Vm {
     pub dir: PathBuf,
     pub run: PathBuf,
+    /// What tells the VM's processes from others': the start of the
+    /// SHA-256 of `dir`, which names `run` too.
+    pub key: String,
 }
 
 /// Where VMs' sockets go: a directory of this user's in /tmp, private.
@@ -95,7 +98,7 @@ impl Vm {
     pub fn new(dir: PathBuf) -> Result<Self> {
         let key = hex::encode(&Sha256::digest(dir.display().to_string().as_bytes())[..8]);
         let run = socket_base()?.join(format!("vm-{key}"));
-        Ok(Self { dir, run })
+        Ok(Self { dir, run, key })
     }
 
     pub fn api(&self) -> PathBuf {
@@ -133,10 +136,12 @@ impl Vm {
         let ours = self.run.display().to_string();
         // A kernel thread, which may take the id too, has no executable.
         let starting = cmdline.is_empty() && std::fs::read_link(format!("/proc/{pid}/exe")).is_ok();
+        // passt has its pid's file beside `run`, named by this VM's key.
         let mine = starting
-            || cmdline
-                .split(|b| *b == 0)
-                .any(|arg| String::from_utf8_lossy(arg).starts_with(&ours));
+            || cmdline.split(|b| *b == 0).any(|arg| {
+                let arg = String::from_utf8_lossy(arg);
+                arg.starts_with(&ours) || arg.contains(&self.key)
+            });
         (mine && !zombie).then_some(pid)
     }
 
@@ -196,7 +201,7 @@ impl Vm {
     pub async fn link_network(&self, passt: &Path) -> Result<()> {
         self.kill_one("passt").await;
         let conn = self.connect_port(NET_PORT, LINK_TIMEOUT).await?;
-        let ready = self.run.join("passt.pid");
+        let ready = self.passt_pid();
         let _ = std::fs::remove_file(&ready);
         let log = std::fs::File::create(self.dir.join("passt.log"))?;
         let mut cmd = std::process::Command::new(passt);
@@ -376,6 +381,16 @@ impl Vm {
             self.kill_one(what).await;
         }
         let _ = std::fs::remove_dir_all(&self.run);
+        let _ = std::fs::remove_file(self.passt_pid());
+    }
+
+    /// Where passt writes its pid: beside `run`, in the host's user's
+    /// directory in /tmp, where passt's AppArmor profile lets it write, and
+    /// where it can as it starts on a host that runs as root, as root but
+    /// for its capabilities, which it drops first.
+    fn passt_pid(&self) -> PathBuf {
+        self.run
+            .with_file_name(format!("vm-{}.passt.pid", self.key))
     }
 
     /// Kills the VM's process `what`, if it runs.
@@ -464,10 +479,10 @@ fn response(buf: &[u8]) -> Result<Option<(u16, &[u8])>> {
 }
 
 /// The arguments of `passt` for a VM whose link is its input, and which
-/// writes its pid to `pid` (in the VM's directory of sockets, whose path
-/// tells it from other processes): the options of passt's releases since
-/// 2022, which Ubuntu 24.04 and Debian 12 have. The VM names itself, so
-/// passt's DHCP needs no `--hostname`, which came later.
+/// writes its pid to `pid` (whose path tells it from other processes): the
+/// options of passt's releases since 2022, which Ubuntu 24.04 and Debian 12
+/// have. The VM names itself, so passt's DHCP needs no `--hostname`, which
+/// came later. On a host that runs as root, passt runs as nobody.
 fn passt_args(pid: &Path) -> Vec<String> {
     let mask = PREFIX.to_string();
     vec![
@@ -636,6 +651,7 @@ mod tests {
         let vm = Vm {
             dir: PathBuf::from("/data/firecracker/sandboxes/fctl-ses-1"),
             run: PathBuf::from("/tmp/fctl-ada/vm-0123"),
+            key: "0123".into(),
         };
         let spec = Spec {
             kernel: "/k/vmlinux".into(),
@@ -681,10 +697,10 @@ mod tests {
 
     #[test]
     fn passt_gives_the_vm_its_network_and_nothing_of_the_hosts() {
-        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0/passt.pid")).join(" ");
+        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0.passt.pid")).join(" ");
         assert_eq!(
             args,
-            "--foreground --quiet --fd 0 --pid /tmp/fctl-ada/vm-0/passt.pid --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw"
+            "--foreground --quiet --fd 0 --pid /tmp/fctl-ada/vm-0.passt.pid --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw"
         );
     }
 
