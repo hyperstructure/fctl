@@ -3225,7 +3225,15 @@ since the user owns them. Once a supervisor has served a sandbox as root,
 `~/.fctl` has no say in who serves it. A sandbox's user has
 `sudo`, so this guards against accidents (an agent stopping its own dev
 stack by a pattern that matches fctl-agent too), not against an agent set
-on stopping it. The process driver runs fctl-agent as the host's user.
+on stopping it. A host whose owner wants no long-lived root process in its
+sandboxes (`agent_as_root = false`) runs nothing there as root, but in
+Firecracker's VMs, whose init fctl-agent is: the user puts fctl-agent in
+its `~/.fctl/bin` through a plain exec (`limactl copy` with Lima) and runs
+it, as hosts did before, and Docker cache volumes take the owner of the
+image's `/var/cache/fctl` rather than a `chown` as root. A sandbox where
+fctl-agent ran as root already (it has `/var/lib/fctl-agent`) keeps it so,
+rather than start a second supervisor beside one that may run. The process driver runs fctl-agent as
+the host's user.
 
 Claude leads a process group of its own, which the supervisor records with
 its pid and start time in its state. Claude's output goes to the

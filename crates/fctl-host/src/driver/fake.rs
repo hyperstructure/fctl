@@ -25,7 +25,8 @@ use std::sync::{Mutex, PoisonError};
 /// mounts the volume. Short-lived containers (`run --rm`) measure a volume
 /// with `du` and empty it with `find`. `exec` prints `uid` (`1000:1000`
 /// without it), as `id` would, or its user's part for `id -u`, unless it
-/// runs as root or in the background; `cp` copies nothing.
+/// runs as root or in the background; asked whether fctl-agent ran as root,
+/// it says so when `agent_dir` is there; `cp` copies nothing.
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -141,7 +142,11 @@ case "$1 $2" in
   "exec -u" | "exec -d" | "cp "*) ;;
   "exec "*)
     ids=$(cat "$d/uid" 2>/dev/null || echo 1000:1000)
-    case "$3 $4" in "id -u") echo "${ids%%:*}" ;; *) echo "$ids" ;; esac ;;
+    case "$3 $4 $5" in
+      "id -u "*) echo "${ids%%:*}" ;;
+      *"/var/lib/fctl-agent ]"*) if [ -e "$d/agent_dir" ]; then echo root; else echo user; fi ;;
+      *) echo "$ids" ;;
+    esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "##;
@@ -234,6 +239,12 @@ impl FakeCli {
     /// Makes the sandbox's user `uid:gid`, as `id` prints them.
     pub fn user(&self, ids: &str) -> Result<()> {
         std::fs::write(self.dir.path().join("uid"), format!("{ids}\n"))?;
+        Ok(())
+    }
+
+    /// Makes the sandbox one where fctl-agent ran as root.
+    pub fn ran_agent_as_root(&self) -> Result<()> {
+        std::fs::write(self.dir.path().join("agent_dir"), "")?;
         Ok(())
     }
 

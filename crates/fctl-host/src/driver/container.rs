@@ -9,8 +9,9 @@
 
 use super::{
     AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
-    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
-    run_cmd_within, serve_as_root, timed_out, unanswered,
+    RAN_AS_ROOT_SCRIPT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut,
+    attach_as_root, attach_as_user_script, install_as_user_script, ran_as_root, run_cmd_within,
+    serve_as_root, serve_as_user_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use crate::docker_access::Unreachable;
@@ -31,6 +32,8 @@ pub enum Flavor {
 pub struct ContainerDriver {
     flavor: Flavor,
     bin: String,
+    /// Whether it starts fctl-agent as root (`agent_as_root` in host.toml).
+    agent_as_root: bool,
 }
 
 /// An image on this host, as its runtime describes it.
@@ -69,6 +72,7 @@ impl ContainerDriver {
         Self {
             flavor: Flavor::Apple,
             bin: std::env::var("FCTL_CONTAINER_BIN").unwrap_or_else(|_| "container".into()),
+            agent_as_root: true,
         }
     }
 
@@ -76,13 +80,27 @@ impl ContainerDriver {
         Self {
             flavor: Flavor::Docker,
             bin: std::env::var("FCTL_DOCKER_BIN").unwrap_or_else(|_| "docker".into()),
+            agent_as_root: true,
+        }
+    }
+
+    /// The driver, starting fctl-agent as root (`on`, the default) or as
+    /// the image's user.
+    pub fn agent_as_root(self, on: bool) -> Self {
+        Self {
+            agent_as_root: on,
+            ..self
         }
     }
 
     /// A driver whose CLI is `bin`, a stand-in.
     #[cfg(test)]
     pub(crate) fn with_bin(flavor: Flavor, bin: String) -> Self {
-        Self { flavor, bin }
+        Self {
+            flavor,
+            bin,
+            agent_as_root: true,
+        }
     }
 
     pub fn flavor_name(&self) -> &'static str {
@@ -90,6 +108,41 @@ impl ContainerDriver {
             Flavor::Apple => "apple",
             Flavor::Docker => "docker",
         }
+    }
+
+    /// [`Self::run`], with `input` for the command to read.
+    async fn run_with_input(&self, args: &[&str], input: &[u8]) -> Result<String> {
+        use tokio::io::AsyncWriteExt;
+        let mut child = tokio::process::Command::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| super::spawn_error(&self.bin, e))?;
+        let mut stdin = child.stdin.take().context("exec stdin")?;
+        let input = input.to_vec();
+        // A command that stops reading says why with its exit.
+        let writer = tokio::spawn(async move {
+            let _ = stdin.write_all(&input).await;
+        });
+        let out = tokio::time::timeout(COMMAND_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| TimedOut {
+                command: super::command_line(&self.bin, args),
+                after: COMMAND_TIMEOUT,
+            })??;
+        let _ = writer.await;
+        if !out.status.success() {
+            anyhow::bail!(
+                "{} {} failed: {}",
+                self.bin,
+                args.first().copied().unwrap_or_default(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     async fn run(&self, args: &[&str]) -> Result<String> {
@@ -507,6 +560,11 @@ impl ContainerDriver {
     /// fctl-agent finds it can't write to them, and the session's package
     /// managers keep their own.
     async fn give_cache_to_user(&self, name: &str) {
+        if !self.agent_as_root {
+            // No root: the caches are the user's where the image's
+            // /var/cache/fctl is, whose owner Docker gives a new volume.
+            return;
+        }
         let ids = self
             .run(&["exec", name, "sh", "-c", r#"echo "$(id -u):$(id -g)""#])
             .await;
@@ -602,21 +660,13 @@ impl ContainerDriver {
         let mount = format!("type=volume,source={volume},target=/cache{ro}");
         let mut failed = None;
         for image in images {
-            let mut run = vec![
-                "run",
-                "--rm",
-                "--pull",
-                "never",
-                "--network",
-                "none",
-                "--user",
-                "0",
-                "--mount",
-                &mount,
-                "--entrypoint",
-                program,
-                image,
-            ];
+            let mut run = vec!["run", "--rm", "--pull", "never", "--network", "none"];
+            // As root, which reaches every file; as the image's user on a
+            // host that runs nothing in its sandboxes as root.
+            if self.agent_as_root {
+                run.extend(["--user", "0"]);
+            }
+            run.extend(["--mount", &mount, "--entrypoint", program, image]);
             run.extend(args);
             match self.run(&run).await {
                 Ok(out) => return Ok(out),
@@ -858,6 +908,17 @@ impl ContainerDriver {
     /// place, so that one that runs keeps running: the host puts its own in
     /// whenever it starts fctl-agent.
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
+        if !self.agent_root(sb).await? {
+            // As the user, into its home: no root.
+            let bytes = tokio::fs::read(binary)
+                .await
+                .with_context(|| format!("reading {}", binary.display()))?;
+            let script = install_as_user_script();
+            self.run_with_input(&["exec", "-i", &sb.name, "sh", "-c", &script], &bytes)
+                .await
+                .context("copying fctl-agent into the sandbox")?;
+            return Ok(());
+        }
         let src = binary.display().to_string();
         let new = format!("{AGENT_PATH}.new");
         let dest = format!("{}:{new}", sb.name);
@@ -874,9 +935,34 @@ impl ContainerDriver {
         Ok(())
     }
 
+    /// Whether fctl-agent runs as root in `sb`: where the host runs it so,
+    /// and where it ran so before ([`AGENT_DIR`] is there), which keeps it
+    /// so, rather than start another beside one that may run.
+    /// An error when the sandbox doesn't say.
+    async fn agent_root(&self, sb: &Sandbox) -> Result<bool> {
+        if self.agent_as_root {
+            return Ok(true);
+        }
+        let said = self
+            .run(&["exec", &sb.name, "sh", "-c", RAN_AS_ROOT_SCRIPT])
+            .await
+            .context("asking whether fctl-agent ran as root in the sandbox")?;
+        ran_as_root(&said)
+    }
+
     /// Starts fctl-agent as root, and Claude and its commands as the
-    /// image's user, who can't stop it then.
+    /// image's user, who can't stop it then; as the image's user too where
+    /// the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
+        if !self.agent_root(sb).await? {
+            tracing::info!(
+                "fctl-agent runs as {}'s user (agent_as_root = false), so the agent's commands can stop it",
+                sb.name
+            );
+            self.run(&["exec", "-d", &sb.name, "sh", "-c", &serve_as_user_script()])
+                .await?;
+            return Ok(());
+        }
         let uid = self
             .run(&["exec", &sb.name, "id", "-u"])
             .await
@@ -899,6 +985,16 @@ impl ContainerDriver {
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+        if !self.agent_root(sb).await? {
+            let mut child = self.spawn(sb, &attach_as_user_script()).await?;
+            let stdout = child.stdout.take().context("exec stdout")?;
+            let stdin = child.stdin.take().context("exec stdin")?;
+            return Ok(AgentIo {
+                reader: Box::new(stdout),
+                writer: Box::new(stdin),
+                child: Some(child),
+            });
+        }
         let mut args = vec!["exec", "-i", "-u", "0", &sb.name];
         let attach = attach_as_root();
         args.extend(attach.iter().map(String::as_str));
@@ -2077,10 +2173,7 @@ esac
                 "the Docker daemon isn't running",
             ),
         ] {
-            let driver = ContainerDriver {
-                flavor,
-                bin: bin.into(),
-            };
+            let driver = ContainerDriver::with_bin(flavor, bin.into());
             let info = driver.probe().await;
             assert_eq!(info.available, available, "{bin}");
             let got = info.detail.unwrap_or_default();
@@ -2181,6 +2274,81 @@ esac
         cli.user("nobody knows")?;
         assert!(cli.driver(Flavor::Docker).start_agent(&sb).await.is_err());
         assert!(!cli.calls().iter().any(|c| c.contains(" serve ")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hosts_that_want_no_root_agent_run_it_as_the_images_user() -> Result<()> {
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        let dir = tempfile::tempdir()?;
+        let binary = dir.path().join("fctl-agent");
+        std::fs::write(&binary, "a fctl-agent")?;
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.install_agent(&sb, &binary).await?;
+        docker.start_agent(&sb).await?;
+        if let Some(mut exec) = docker.attach(&sb).await?.child {
+            exec.wait().await?;
+        }
+        // Nothing as root: the user puts fctl-agent in its home itself.
+        assert_eq!(
+            cli.calls(),
+            [
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                r#"exec -i fctl-ses-1 sh -c mkdir -p "$HOME/.fctl/bin" && cat > "$HOME/.fctl/bin/fctl-agent.new" && chmod 755 "$HOME/.fctl/bin/fctl-agent.new" && mv -f "$HOME/.fctl/bin/fctl-agent.new" "$HOME/.fctl/bin/fctl-agent""#,
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec "$HOME/.fctl/bin/fctl-agent" serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
+                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                r#"exec -i fctl-ses-1 sh -c a="$HOME/.fctl/bin/fctl-agent"; [ -x "$a" ] || a=/opt/fctl/bin/fctl-agent; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#,
+            ]
+        );
+        // A sandbox that doesn't say gets no supervisor beside one that may
+        // run as root: the host tries again.
+        let silent = ContainerDriver::with_bin(Flavor::Docker, "fctl-test-missing".into())
+            .agent_as_root(false);
+        assert!(silent.start_agent(&sb).await.is_err());
+        assert!(silent.attach(&sb).await.is_err());
+        // One that ran it as root keeps doing so, rather than start another.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.ran_agent_as_root()?;
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.start_agent(&sb).await?;
+        assert!(
+            cli.calls().last().is_some_and(|c| c.starts_with(
+                "exec -d -u 0 fctl-ses-1 /opt/fctl/bin/fctl-agent serve --user 1000 "
+            )),
+            "{:?}",
+            cli.calls()
+        );
+
+        // Package caches: no chown of a new volume, and no root to measure
+        // or empty them.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let cached = SandboxSpec {
+            cache: Some(Spot::Volume(caches::volume("prj_1"))),
+            ..spec(VERSION_IMAGE, None)
+        };
+        let docker = cli.driver(Flavor::Docker).agent_as_root(false);
+        docker.ensure(&cached, &|_| {}).await?;
+        let images = [VERSION_IMAGE.to_owned()];
+        docker
+            .volume_size_mb(&caches::volume("prj_1"), &images)
+            .await?;
+        let calls = cli.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("exec -u 0")),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("run --rm --pull never --network none --mount ")),
+            "{calls:?}"
+        );
+        assert!(!calls.iter().any(|c| c.contains("--user 0")), "{calls:?}");
         Ok(())
     }
 

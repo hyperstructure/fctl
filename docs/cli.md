@@ -743,6 +743,7 @@ fctl host install --token fctl_rt_…   # with a runner token from a workspace's
 fctl host install --enroll fctl_et_…  # without signing in, as one of a workspace's runners, or a member's own (or FCTL_ENROLL_TOKEN)
 fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
+fctl host install --agent-as-root off # run fctl-agent as the sandbox's user, not root
 fctl host run                    # run in the foreground (what the service runs)
 fctl host status                 # with the runner's id and sessions, and whether it drains
 fctl host doctor                 # check the configuration, tokens, connection, driver, images, disk and service
@@ -819,6 +820,7 @@ keep_caches_days = 14    # then remove the caches of a project with no session h
 build_timeout_minutes = 60
 max_build_mb = 20480     # the largest image a build may make
 auto_update = true       # update fctl to the version the control plane runs (false: `fctl self update`)
+agent_as_root = true     # fctl-agent as root in sandboxes, out of the agent's reach (false: as the sandbox's user)
 
 [firecracker]            # with the firecracker driver
 # firecracker = "/usr/local/bin/firecracker"   # unset: the release fctl pins, which the host downloads
@@ -874,6 +876,26 @@ lists the repository. `--allow-image` and `--allow-build` replace the lists
 (`--allow-image '*'` for any image, `--allow-build ""` for no builds), and
 `fctl host status` shows them. [Sandbox images](sandbox-images.md) has the
 details.
+
+In container and VM sandboxes the host runs fctl-agent, the supervisor
+that relays what the agent does, as root, and the agent as the image's
+user, so that an agent's `kill` or `pkill` that matches fctl-agent by
+accident fails rather than cut its turn short ([Sandbox
+images](sandbox-images.md#what-fctl-writes-into-a-sandbox)). A host whose
+owner wants no long-lived root process in its sandboxes runs it as the
+image's user instead: `agent_as_root = false`, or `fctl host install
+--agent-as-root off`, then `fctl host restart`. The agent's commands can
+stop fctl-agent then: the host starts it again, and the agent carries on
+with the turn that was cut off, but what it did meanwhile isn't in the
+transcript. With it off, the host runs nothing as root in Docker, Apple
+container and Lima sandboxes: the sandbox's user puts fctl-agent in its
+own `~/.fctl/bin`, and the package caches stay the image's user's (with
+Docker, a new cache volume takes the owner of the image's
+`/var/cache/fctl`, which the default image gives `agent`). Firecracker's
+VMs boot with fctl-agent as their init, as root, either way. New
+sandboxes follow the setting; one where fctl-agent already ran as root
+keeps it so, rather than start a second one beside it. `fctl host status`
+says which it runs as.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
 host's default. Sessions only start on a runner whose maximum covers that;
