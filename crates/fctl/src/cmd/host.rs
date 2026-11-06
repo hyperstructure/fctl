@@ -14,6 +14,7 @@ use fctl_host::{HostConfig, caches, claude_token, refresh, service, update};
 use fctl_proto::api::{
     EnrollRunnerRequest, EnrollmentInfo, Runner, RunnerDetail, RunnerFacts, RunnerStatus,
 };
+use fctl_proto::runner::DriverInfo;
 use std::io::IsTerminal;
 
 #[derive(Subcommand)]
@@ -289,25 +290,12 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
             // owner chooses.
             let driver = if driver == "auto" {
                 let infos = Driver::probe_all(&cfg).await;
-                let runtimes = infos
+                match infos
                     .iter()
-                    .filter(|i| i.name != "process" && i.name != "firecracker");
-                match runtimes.clone().find(|i| i.available) {
+                    .find(|i| i.available && i.name != "process" && i.name != "firecracker")
+                {
                     Some(info) => info.name.clone(),
-                    None => {
-                        let mut why =
-                            String::from("No VM or container runtime is ready on this machine:");
-                        for info in runtimes {
-                            let detail = info.detail.as_deref().unwrap_or_default();
-                            why.push_str(&format!("\n  {}: {detail}", info.name));
-                        }
-                        if infos.iter().any(|i| i.name == "firecracker" && i.available) {
-                            why.push_str("\nFirecracker is ready: --driver firecracker runs each session in a microVM of its own.");
-                        }
-                        bail!(
-                            "{why}\nInstall one, or pass --driver process to run agents without isolation."
-                        );
-                    }
+                    None => bail!("{}", no_runtime(&infos, std::env::consts::OS)),
                 }
             } else {
                 driver
@@ -1052,6 +1040,38 @@ async fn uninstall(wait: bool, force: bool, json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Why `fctl host install --driver auto` has no driver to pick, from what
+/// the drivers' probes (`infos`) say on `os`: what each one that runs there
+/// lacks, Firecracker's too, which it uses only when asked.
+fn no_runtime(infos: &[DriverInfo], os: &str) -> String {
+    let runs_here = |i: &&DriverInfo| match i.name.as_str() {
+        "process" => false,
+        "apple" => os == "macos",
+        "firecracker" => os == "linux",
+        _ => true,
+    };
+    let firecracker = infos
+        .iter()
+        .any(|i| i.name == "firecracker" && i.available && os == "linux");
+    let mut why = String::from(if firecracker {
+        "Only Firecracker is ready on this machine, and fctl uses it only when asked:"
+    } else {
+        "No VM or container runtime is ready on this machine:"
+    });
+    for info in infos.iter().filter(runs_here) {
+        let detail = info.detail.as_deref().unwrap_or_default();
+        why.push_str(&format!("\n  {}: {detail}", info.name));
+    }
+    why.push_str(if firecracker {
+        "\nPass --driver firecracker to run each session in a microVM of its own, or install another."
+    } else if os == "linux" {
+        "\nInstall one (fctl uses Firecracker only with --driver firecracker), or pass --driver process to run agents without isolation."
+    } else {
+        "\nInstall one, or pass --driver process to run agents without isolation."
+    });
+    why
 }
 
 /// Whether a host on `driver` would use Docker, on Linux, where its socket
@@ -1829,5 +1849,86 @@ mod tests {
         // Ctrl-D, or no input at all, runs nothing.
         assert_eq!(answer("")?, None);
         Ok(())
+    }
+
+    fn probed(name: &str, available: bool, detail: &str) -> DriverInfo {
+        DriverInfo {
+            name: name.into(),
+            available,
+            isolation: "vm".into(),
+            version: None,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// What `fctl host install` heard on a new Ubuntu VM (fctl#345), with
+    /// Firecracker's probe as it would be.
+    fn ubuntu(firecracker: DriverInfo) -> Vec<DriverInfo> {
+        vec![
+            probed(
+                "apple",
+                false,
+                "Apple container needs macOS 26 on Apple silicon",
+            ),
+            probed("docker", false, "the docker CLI is not installed"),
+            firecracker,
+            probed("lima", false, "limactl is not installed"),
+            probed("process", true, "no isolation"),
+        ]
+    }
+
+    #[test]
+    fn says_what_firecracker_lacks_on_linux() {
+        let why = no_runtime(
+            &ubuntu(probed("firecracker", false, "this machine has no /dev/kvm")),
+            "linux",
+        );
+        assert_eq!(
+            why,
+            "No VM or container runtime is ready on this machine:\
+            \n  docker: the docker CLI is not installed\
+            \n  firecracker: this machine has no /dev/kvm\
+            \n  lima: limactl is not installed\
+            \nInstall one (fctl uses Firecracker only with --driver firecracker), or pass --driver process to run agents without isolation."
+        );
+    }
+
+    #[test]
+    fn points_to_firecracker_when_only_it_is_ready() {
+        let why = no_runtime(&ubuntu(probed("firecracker", true, "ready")), "linux");
+        assert_eq!(
+            why,
+            "Only Firecracker is ready on this machine, and fctl uses it only when asked:\
+            \n  docker: the docker CLI is not installed\
+            \n  firecracker: ready\
+            \n  lima: limactl is not installed\
+            \nPass --driver firecracker to run each session in a microVM of its own, or install another."
+        );
+    }
+
+    #[test]
+    fn leaves_firecracker_out_on_a_mac() {
+        let why = no_runtime(
+            &[
+                probed("apple", false, "container is not installed"),
+                probed("docker", false, "the docker CLI is not installed"),
+                probed(
+                    "firecracker",
+                    false,
+                    "Firecracker needs a Linux host with KVM",
+                ),
+                probed("lima", false, "limactl is not installed"),
+                probed("process", true, "no isolation"),
+            ],
+            "macos",
+        );
+        assert_eq!(
+            why,
+            "No VM or container runtime is ready on this machine:\
+            \n  apple: container is not installed\
+            \n  docker: the docker CLI is not installed\
+            \n  lima: limactl is not installed\
+            \nInstall one, or pass --driver process to run agents without isolation."
+        );
     }
 }
