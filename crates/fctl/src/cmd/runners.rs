@@ -605,9 +605,6 @@ fn print_runner(r: &Runner) {
     if let Some(d) = driver_line(r) {
         println!("  {}", style::amber(&d));
     }
-    if let Some(d) = driver_line(r) {
-        println!("  {}", style::amber(&d));
-    }
     if let Some(h) = r.remove_offline_after_minutes {
         println!(
             "  {}",

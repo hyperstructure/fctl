@@ -1017,9 +1017,6 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                 if let Some(d) = driver_line(&r) {
                     println!("  {}", style::amber(&d));
                 }
-                if let Some(d) = driver_line(&r) {
-                    println!("  {}", style::amber(&d));
-                }
                 if let Some(l) = &r.sandbox {
                     println!(
                         "  {}",
