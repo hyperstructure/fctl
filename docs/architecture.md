@@ -979,8 +979,9 @@ queued → provisioning → preparing → running ⇄ idle → stopped
 
 1. `POST /api/v1/projects/{id}/sessions` creates the row and asks FleetDO to
    schedule it, on a runner of its workspace that runs or builds its
-   project's image, gives its sandbox the size it asks for and has the free
-   disk its host keeps. Without a free one it stays `queued`, and says why.
+   project's image, gives its sandbox the size it asks for, has the free
+   disk its host keeps and whose driver can start sandboxes now. Without a
+   free one it stays `queued`, and says why.
 2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
    settings, secrets, fresh GitHub installation tokens, the starter's Claude
    credential) and sends `start_session` to a runner.
@@ -1067,9 +1068,9 @@ FleetDO remembers which runner last took each session (`sandboxes`, in its
 storage) and starts a resume there, where the sandbox has Claude's
 conversation and whatever the agent left uncommitted. While that runner
 runs as many sessions as it may, the session waits for it, for up to ten
-minutes. Then, or right away when that runner is offline or no longer
-gives the sandbox the session asks for, the session starts on another
-runner in a new sandbox: the agent clones the session's branch and starts
+minutes. Then, or right away when that runner is offline, can't start
+sandboxes now (its driver isn't ready) or no longer gives the sandbox the
+session asks for, the session starts on another runner in a new sandbox: the agent clones the session's branch and starts
 a new conversation from the session's task.
 
 ### Draining a runner
@@ -1077,7 +1078,8 @@ a new conversation from the session's task.
 A runner that drains takes no new sessions, and the sessions it has carry on
 there, so that it can be taken out of rotation (for maintenance) without
 dropping anything. A host whose disk runs low takes no new sessions by
-itself, without a drain ([Sandboxes and drivers](#sandboxes-and-drivers)).
+itself, without a drain, and one whose driver isn't ready takes none at
+all ([Sandboxes and drivers](#sandboxes-and-drivers)).
 Its owner and instance admins drain one from the runners list or with
 `fctl admin drain`; its host drains itself with `fctl host drain`, using
 the runner token (`POST /api/v1/runner/drain`). Both set the same state,
@@ -3259,6 +3261,39 @@ gone that may still run. A driver command that can't start says as little
 as one that hangs about the image or sandbox it asked about: the host
 reports the error instead of pulling the image, falling back to `latest`,
 or taking a sandbox it couldn't stop or remove for gone.
+
+A runner whose driver isn't ready (Docker isn't running, or the host's
+user can't use its socket; Apple's `container` service stopped) takes no
+session until it is
+([ADR 0076](adr/0076-sessions-wait-for-a-runner-whose-driver-is-ready.md)):
+
+- The host probes its drivers every 30 seconds while the one it uses
+  isn't ready, and says them in a heartbeat as soon as they change
+  (`HostHeartbeat.drivers`), not at the next beat. FleetDO keeps them with
+  the runner's hello and dispatches at each heartbeat, so a session that
+  waits starts within about 30 seconds of the driver answering.
+- FleetDO places no session on it, not even a resume into the sandbox it
+  has, as if it were offline (`fctl_domain::schedule::driver_problem`,
+  `schedule::pick`): the session starts on another runner when one can
+  take it, and otherwise stays queued, naming the runner and its host's
+  reason ("Waiting for studio, whose docker driver isn't ready: …"). It
+  waits only for runners that would take it once ready.
+- The host declines sessions while its last probe says the driver isn't
+  ready, for a control plane that hasn't had its heartbeat yet. When it
+  can't make a new sandbox, it probes the driver again, since it may have
+  stopped since the last probe: if that is why, it hands the session back,
+  declining it in a second `StartResult` with no `SessionEnded`, and
+  FleetDO queues it again rather than fail it. Each decline counts towards
+  the five attempts a session gets. A session that someone stopped
+  meanwhile stays stopped: FleetDO marks the assignment it asked to stop
+  (`assignments.stopping`), and a decline for it doesn't queue it again.
+- Hosts announce this with `drivers` in their hello's features
+  (`FEATURE_DRIVERS`). Older ones say their drivers only as they connect,
+  so FleetDO places sessions on them whatever they said, and those fail
+  while the driver isn't ready. The runners list, `fctl runners`,
+  `fctl admin runners` and `fctl host status` say why a runner's driver
+  isn't ready, and which of the two happens to sessions
+  (`Runner.waits_for_driver`).
 
 A second socket beside
 it, the session socket (`FCTL_SESSION_SOCKET` in Claude's environment),

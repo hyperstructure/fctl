@@ -1,6 +1,6 @@
 // Under a runner in the Runners tab and the admin's list: why the driver its
 // host uses can't start sandboxes, as its host says (fctl can't use Docker,
-// say), with the command that fixes it.
+// say), with the command that fixes it, and what that means for sessions.
 
 import type * as G from "@/gen";
 import { driverProblem } from "@/lib/format";
@@ -11,7 +11,10 @@ export function DriverLine({ runner: r }: { runner: G.Runner }) {
   if (!why) return null;
   return (
     <div className="mt-0.5 text-[12px] text-amber [overflow-wrap:anywhere]">
-      Its {r.driver} driver isn't ready: <Ticks text={why} />. Sessions that start on it fail until it is.
+      Its {r.driver} driver isn't ready: <Ticks text={why} />.{" "}
+      {r.waits_for_driver
+        ? "No new sessions start on it until it is."
+        : "Sessions that start on it fail until it is."}
     </div>
   );
 }

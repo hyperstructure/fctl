@@ -839,10 +839,22 @@ docker`. When you aren't in it, `fctl host install` offers to add you
 says the command and stops), and after it starts the service it checks
 that the service has the group. A host that still can't reach Docker says
 why, with the command that fixes it, in its log, `fctl host status`,
-`fctl host doctor` and the Runners tab, and sessions that start on it fail
-with that reason until it can. Where `sg` can't give the service the
-group, `sudo systemctl restart user@$(id -u).service`, or restarting the
-machine, does.
+`fctl host doctor`, `fctl runners` and the Runners tab. Where `sg` can't
+give the service the group, `sudo systemctl restart user@$(id -u).service`,
+or restarting the machine, does.
+
+While the driver a host uses isn't ready, whatever the driver (Docker
+isn't running, Apple's `container` service stopped, Lima has no base VM),
+no session starts on its runner, not even a resume into a sandbox it has.
+A session that another runner can take starts there; one that has
+nowhere else to go stays queued and says why ("Waiting for studio, whose
+docker driver isn't ready: …"). The host probes its driver every 30
+seconds meanwhile and tells the control plane as soon as it answers, and
+the sessions that wait start. When Docker stops between two probes, a
+session the host can't make a sandbox for goes back to the queue instead
+of failing. Older hosts, which say how their driver is only as they
+connect, still get sessions, which fail until it is ready; `fctl runners`
+says which happens on each runner.
 
 Apple's `container` service stops when the Mac restarts. A host whose
 driver is apple starts it again (`container system start`, never
