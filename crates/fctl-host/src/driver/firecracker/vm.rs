@@ -63,6 +63,9 @@ pub struct Spec {
 pub struct Vm {
     pub dir: PathBuf,
     pub run: PathBuf,
+    /// What tells the VM's processes from others': the start of the
+    /// SHA-256 of `dir`, which names `run` too.
+    pub key: String,
 }
 
 /// Where VMs' sockets go: a directory of this user's in /tmp, private.
@@ -95,7 +98,7 @@ impl Vm {
     pub fn new(dir: PathBuf) -> Result<Self> {
         let key = hex::encode(&Sha256::digest(dir.display().to_string().as_bytes())[..8]);
         let run = socket_base()?.join(format!("vm-{key}"));
-        Ok(Self { dir, run })
+        Ok(Self { dir, run, key })
     }
 
     pub fn api(&self) -> PathBuf {
@@ -104,12 +107,6 @@ impl Vm {
 
     pub fn vsock(&self) -> PathBuf {
         self.run.join("v.sock")
-    }
-
-    /// Where `passt` takes the VM's network: what Firecracker connects to
-    /// when the VM connects to the host's [`NET_PORT`].
-    pub fn net(&self) -> PathBuf {
-        self.run.join(format!("v.sock_{NET_PORT}"))
     }
 
     pub fn console(&self) -> PathBuf {
@@ -139,10 +136,12 @@ impl Vm {
         let ours = self.run.display().to_string();
         // A kernel thread, which may take the id too, has no executable.
         let starting = cmdline.is_empty() && std::fs::read_link(format!("/proc/{pid}/exe")).is_ok();
+        // passt has its pid's file beside `run`, named by this VM's key.
         let mine = starting
-            || cmdline
-                .split(|b| *b == 0)
-                .any(|arg| String::from_utf8_lossy(arg).starts_with(&ours));
+            || cmdline.split(|b| *b == 0).any(|arg| {
+                let arg = String::from_utf8_lossy(arg);
+                arg.starts_with(&ours) || arg.contains(&self.key)
+            });
         (mine && !zombie).then_some(pid)
     }
 
@@ -151,30 +150,27 @@ impl Vm {
         self.pid("firecracker").is_some()
     }
 
-    /// Starts `passt`, if the VM gets a network, and Firecracker, after
-    /// stopping what an earlier boot left: the `passt` of a VM that powered
-    /// off, say. What it started goes again when it fails.
-    pub async fn start(&self, spec: &Spec, firecracker: &Path, passt: Option<&Path>) -> Result<()> {
+    /// Whether the VM's `passt` runs, which takes its network.
+    pub fn linked(&self) -> bool {
+        self.pid("passt").is_some()
+    }
+
+    /// Starts Firecracker, after stopping what an earlier boot left: the
+    /// `passt` of a VM that powered off, say. What it started goes again
+    /// when it fails. A VM that gets a network gets it once it is up
+    /// ([`link_network`](Self::link_network)).
+    pub async fn start(&self, spec: &Spec, firecracker: &Path) -> Result<()> {
         self.kill().await;
-        let started = self.start_processes(spec, firecracker, passt).await;
+        let started = self.start_processes(spec, firecracker).await;
         if started.is_err() {
             self.kill().await;
         }
         started
     }
 
-    async fn start_processes(
-        &self,
-        spec: &Spec,
-        firecracker: &Path,
-        passt: Option<&Path>,
-    ) -> Result<()> {
+    async fn start_processes(&self, spec: &Spec, firecracker: &Path) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         std::fs::create_dir_all(&self.run)?;
-        if spec.network {
-            let passt = passt.context("the VM needs passt for its network")?;
-            self.start_passt(passt, &spec.boot.name).await?;
-        }
         let config = self.dir.join("firecracker.json");
         std::fs::write(&config, serde_json::to_vec_pretty(&self.config(spec))?)?;
         let console = std::fs::File::create(self.console())?;
@@ -192,28 +188,65 @@ impl Vm {
         Ok(())
     }
 
-    /// `passt`, which takes the VM's frames at [`Vm::net`] and makes them
-    /// connections of the host's: the VM gets [`ADDRESS`], the gateway and
-    /// a DNS forwarder, and reaches neither the host's loopback nor other
-    /// VMs. Nothing reaches the VM from outside.
-    async fn start_passt(&self, passt: &Path, name: &str) -> Result<()> {
+    /// Links the VM's network to a `passt` of its own, once the VM is up:
+    /// connects to the VM's [`NET_PORT`] and hands passt the connection
+    /// (`--fd`), which makes the VM's frames connections of the host's. The
+    /// VM gets [`ADDRESS`] and the gateway, and reaches neither the host's
+    /// loopback nor other VMs; nothing reaches it from outside. passt exits
+    /// when the VM closes the connection, as it stops. passt could take the
+    /// VM's connection on a socket of its own, but Ubuntu's AppArmor profile
+    /// for it refuses one from Firecracker (`accept` fails, EACCES). A link
+    /// made before goes: its passt took a connection that a restored
+    /// snapshot, say, has lost.
+    pub async fn link_network(&self, passt: &Path) -> Result<()> {
+        self.kill_one("passt").await;
+        let conn = self.connect_port(NET_PORT, LINK_TIMEOUT).await?;
+        let ready = self.new_passt_pid()?;
         let log = std::fs::File::create(self.dir.join("passt.log"))?;
         let mut cmd = std::process::Command::new(passt);
-        cmd.args(passt_args(&self.net(), name))
-            .stdin(Stdio::null())
+        cmd.args(passt_args(&ready))
+            .stdin(Stdio::from(std::os::fd::OwnedFd::from(conn)))
             .stdout(log.try_clone()?)
             .stderr(log);
-        spawn_detached(&mut cmd, &self.pid_file("passt"))
+        let spawned = spawn_detached(&mut cmd, &self.pid_file("passt"))
             .with_context(|| format!("starting {}", passt.display()))?;
+        // passt makes its pid's file as it reads its options, writes its
+        // pid there once it has set itself up and is about to take frames,
+        // and exits when it can't.
+        let has_pid = || {
+            std::fs::read_to_string(&ready).is_ok_and(|p| p.trim().parse::<u32>() == Ok(spawned))
+        };
         let until = Instant::now() + Duration::from_secs(10);
-        while !self.net().exists() {
+        while !has_pid() {
             if Instant::now() > until || self.pid("passt").is_none() {
                 let said = std::fs::read_to_string(self.dir.join("passt.log")).unwrap_or_default();
+                self.kill_one("passt").await;
                 bail!("passt did not start: {}", said.trim());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok(())
+    }
+
+    /// A connection to `port` in the VM, through Firecracker's vsock
+    /// socket, once something there takes it, within `within`.
+    async fn connect_port(
+        &self,
+        port: u32,
+        within: Duration,
+    ) -> Result<std::os::unix::net::UnixStream> {
+        let until = Instant::now() + within;
+        loop {
+            let socket = self.vsock();
+            let tried = tokio::task::spawn_blocking(move || connect_raw(&socket, port)).await?;
+            match tried {
+                Ok(conn) => return Ok(conn),
+                Err(e) if Instant::now() > until || !self.running() => {
+                    return Err(e.context(format!("linking the VM's network (vsock port {port})")));
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
     }
 
     /// Firecracker's configuration for `spec`.
@@ -345,16 +378,68 @@ impl Vm {
     /// Kills the VM's processes.
     pub async fn kill(&self) {
         for what in ["firecracker", "passt"] {
-            if let Some(pid) = self.pid(what) {
-                let _ = crate::driver::run_cmd("kill", &["-KILL", &pid.to_string()]).await;
-                let until = Instant::now() + Duration::from_secs(5);
-                while self.pid(what).is_some() && Instant::now() < until {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }
-            let _ = std::fs::remove_file(self.pid_file(what));
+            self.kill_one(what).await;
         }
         let _ = std::fs::remove_dir_all(&self.run);
+    }
+
+    /// Where passt writes its pid, the path naming this VM's key, which
+    /// tells passt from other processes; recorded in the VM's directory.
+    /// Beside `run`, in the host's user's directory in /tmp, where passt's
+    /// AppArmor profile lets it write. On a host that runs as root, passt
+    /// opens it as nobody (passt of 2024) or as root without its
+    /// capabilities (later ones), which only /tmp itself lets write: there
+    /// its name has a random part no one else could make first.
+    fn new_passt_pid(&self) -> Result<PathBuf> {
+        if let Some(old) = self.passt_pid() {
+            let _ = std::fs::remove_file(old);
+        }
+        let pid = if nix::unistd::geteuid().is_root() {
+            PathBuf::from(format!(
+                "/tmp/fctl-passt-{}-{}.pid",
+                self.key,
+                hex::encode(fctl_domain::random_bytes::<8>())
+            ))
+        } else {
+            self.run
+                .with_file_name(format!("vm-{}.passt.pid", self.key))
+        };
+        // One an earlier passt left, whose record went with the VM's
+        // directory, say.
+        let _ = std::fs::remove_file(&pid);
+        std::fs::create_dir_all(&self.dir)?;
+        std::fs::write(
+            self.dir.join("passt.pid-file"),
+            pid.as_os_str().as_encoded_bytes(),
+        )?;
+        Ok(pid)
+    }
+
+    /// Where passt writes its pid ([`new_passt_pid`](Self::new_passt_pid)).
+    fn passt_pid(&self) -> Option<PathBuf> {
+        let path = std::fs::read_to_string(self.dir.join("passt.pid-file")).ok()?;
+        let path = PathBuf::from(path.trim());
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        // Only what this VM named so: nothing else of the host's goes.
+        (name.contains(&self.key) && name.ends_with(".pid")).then_some(path)
+    }
+
+    /// Kills the VM's process `what`, if it runs.
+    async fn kill_one(&self, what: &str) {
+        if let Some(pid) = self.pid(what) {
+            let _ = crate::driver::run_cmd("kill", &["-KILL", &pid.to_string()]).await;
+            let until = Instant::now() + Duration::from_secs(5);
+            while self.pid(what).is_some() && Instant::now() < until {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let _ = std::fs::remove_file(self.pid_file(what));
+        if what == "passt"
+            && let Some(pid) = self.passt_pid()
+        {
+            let _ = std::fs::remove_file(pid);
+            let _ = std::fs::remove_file(self.dir.join("passt.pid-file"));
+        }
     }
 
     /// Stops the VM and removes its files.
@@ -430,15 +515,20 @@ fn response(buf: &[u8]) -> Result<Option<(u16, &[u8])>> {
     Ok((body.len() >= len).then(|| (status, &body[..len])))
 }
 
-/// The arguments of `passt` for a VM named `name` whose frames come to
-/// `socket`.
-fn passt_args(socket: &Path, name: &str) -> Vec<String> {
+/// The arguments of `passt` for a VM whose link is its input, and which
+/// writes its pid to `pid` (whose path tells it from other processes): the
+/// options of passt's releases since 2022, which Ubuntu 24.04 and Debian 12
+/// have. The VM names itself, so passt's DHCP needs no `--hostname`, which
+/// came later. On a host that runs as root, passt runs as nobody.
+fn passt_args(pid: &Path) -> Vec<String> {
     let mask = PREFIX.to_string();
     vec![
         "--foreground".into(),
         "--quiet".into(),
-        "--socket".into(),
-        socket.display().to_string(),
+        "--fd".into(),
+        "0".into(),
+        "--pid".into(),
+        pid.display().to_string(),
         "--address".into(),
         Ipv4Addr::from(ADDRESS).to_string(),
         "--netmask".into(),
@@ -449,9 +539,88 @@ fn passt_args(socket: &Path, name: &str) -> Vec<String> {
         Ipv4Addr::from(DNS).to_string(),
         // The gateway's address doesn't lead to the host's loopback.
         "--no-map-gw".into(),
-        "--hostname".into(),
-        name.into(),
     ]
+}
+
+/// How long a VM that is up may take to take its network's link: its
+/// init listens as it starts.
+const LINK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Connects to `port` in the VM whose vsock socket is `socket` (`CONNECT`,
+/// then Firecracker's `OK`), reading no byte past Firecracker's answer:
+/// what follows is the VM's, for whoever takes the connection.
+fn connect_raw(socket: &Path, port: u32) -> Result<std::os::unix::net::UnixStream> {
+    use std::io::{Read, Write};
+    let mut conn = std::os::unix::net::UnixStream::connect(socket)
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    conn.set_read_timeout(Some(Duration::from_secs(5)))?;
+    // Firecracker closes the connection when nothing in the VM takes it,
+    // which may come as a reset.
+    let refused = || anyhow::anyhow!("nothing in the VM takes connections on port {port} yet");
+    let gone = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe => refused(),
+        _ => e.into(),
+    };
+    conn.write_all(format!("CONNECT {port}\n").as_bytes())
+        .map_err(gone)?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while line.len() < 64 {
+        if conn.read(&mut byte).map_err(gone)? == 0 {
+            return Err(refused());
+        }
+        if byte[0] == b'\n' {
+            break;
+        }
+        line.push(byte[0]);
+    }
+    if !line.starts_with(b"OK ") {
+        bail!(
+            "Firecracker answered {:?} to a connection to port {port}",
+            String::from_utf8_lossy(&line)
+        );
+    }
+    conn.set_read_timeout(None)?;
+    Ok(conn)
+}
+
+/// The nameservers a VM asks, which passt reaches as the host does: as
+/// Docker gives its containers, the host's own, but for those on its
+/// loopback, which the VM can't reach, and where only those are left
+/// (systemd-resolved's 127.0.0.53, as Ubuntu has it) the servers
+/// systemd-resolved asks. Empty when there are none: the VM asks passt's
+/// forwarder then, which passes its queries to the host's resolver, but in
+/// passt's releases before the summer of 2024 (Ubuntu 24.04's) not to one on
+/// the loopback.
+pub fn vm_dns() -> Vec<Ipv4Addr> {
+    let read = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
+    dns_for_vm(
+        &read("/etc/resolv.conf"),
+        &read("/run/systemd/resolve/resolv.conf"),
+    )
+}
+
+/// [`vm_dns`], from the files' text: at most three IPv4 servers (the VM
+/// has no IPv6), and none of the addresses that mean something else in the
+/// VM's network, where the gateway and passt's forwarder are.
+fn dns_for_vm(resolv_conf: &str, resolved_upstream: &str) -> Vec<Ipv4Addr> {
+    let usable = |text: &str| -> Vec<Ipv4Addr> {
+        text.lines()
+            .filter_map(|l| l.trim().strip_prefix("nameserver"))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .filter_map(|a| a.parse::<Ipv4Addr>().ok())
+            .filter(|a| {
+                !a.is_loopback()
+                    && !a.is_unspecified()
+                    && ![ADDRESS, GATEWAY, DNS].contains(&a.octets())
+            })
+            .take(3)
+            .collect()
+    };
+    match usable(resolv_conf) {
+        none if none.is_empty() => usable(resolved_upstream),
+        some => some,
+    }
 }
 
 /// Starts `cmd` in a process group of its own, writes its id to
@@ -498,6 +667,7 @@ pub fn unpack_spec(kernel: PathBuf, initrd: PathBuf, name: &str, rootfs: &Path) 
             mode: Mode::Unpack,
             name: name.into(),
             time_ms: Some(vsock::now_ms()),
+            dns: Vec::new(),
         },
         drives: vec![Drive {
             path: rootfs.to_owned(),
@@ -518,6 +688,7 @@ mod tests {
         let vm = Vm {
             dir: PathBuf::from("/data/firecracker/sandboxes/fctl-ses-1"),
             run: PathBuf::from("/tmp/fctl-ada/vm-0123"),
+            key: "0123".into(),
         };
         let spec = Spec {
             kernel: "/k/vmlinux".into(),
@@ -526,6 +697,7 @@ mod tests {
                 mode: Mode::Sandbox,
                 name: "fctl-ses-1".into(),
                 time_ms: Some(5),
+                dns: vec![[168, 63, 129, 16].into()],
             },
             drives: vec![
                 Drive {
@@ -545,7 +717,7 @@ mod tests {
         assert_eq!(
             c["boot-source"]["boot_args"],
             format!(
-                "{} fctl.mode=sandbox fctl.name=fctl-ses-1 fctl.time=5",
+                "{} fctl.mode=sandbox fctl.name=fctl-ses-1 fctl.time=5 fctl.dns=168.63.129.16",
                 kernel_args()
             )
         );
@@ -557,17 +729,39 @@ mod tests {
         assert_eq!(c["machine-config"]["vcpu_count"], 32);
         assert_eq!(c["machine-config"]["mem_size_mib"], 4096);
         assert_eq!(c["vsock"]["uds_path"], "/tmp/fctl-ada/vm-0123/v.sock");
-        assert_eq!(vm.net(), PathBuf::from("/tmp/fctl-ada/vm-0123/v.sock_1025"));
         Ok(())
     }
 
     #[test]
     fn passt_gives_the_vm_its_network_and_nothing_of_the_hosts() {
-        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0/v.sock_1025"), "fctl-ses-1").join(" ");
+        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0.passt.pid")).join(" ");
         assert_eq!(
             args,
-            "--foreground --quiet --socket /tmp/fctl-ada/vm-0/v.sock_1025 --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw --hostname fctl-ses-1"
+            "--foreground --quiet --fd 0 --pid /tmp/fctl-ada/vm-0.passt.pid --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw"
         );
+    }
+
+    /// The host's nameservers, past systemd-resolved's stub on its loopback
+    /// as Ubuntu has it, to the servers it asks.
+    #[test]
+    fn vms_ask_the_hosts_nameservers_and_none_on_its_loopback() {
+        let stub = "# This is /run/systemd/resolve/stub-resolv.conf\nnameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n";
+        let upstream = "nameserver 168.63.129.16\nnameserver fe80::1%eth0\nnameserver 10.0.0.2\nnameserver 1.1.1.1\nnameserver 8.8.8.8\nsearch example.internal\n";
+        let v4 = |a: [u8; 4]| Ipv4Addr::from(a);
+        assert_eq!(
+            dns_for_vm(stub, upstream),
+            [v4([168, 63, 129, 16]), v4([10, 0, 0, 2]), v4([1, 1, 1, 1])]
+        );
+        // The host's own, but for those on its loopback.
+        let router = "nameserver 127.0.0.1\nnameserver 192.168.1.1\n";
+        assert_eq!(dns_for_vm(router, upstream), [v4([192, 168, 1, 1])]);
+        assert_eq!(dns_for_vm("", upstream)[0], v4([168, 63, 129, 16]));
+        // Nothing the VM could ask: passt's forwarder. QEMU's user network
+        // has its resolver where the VM's forwarder is, 10.0.2.3, and IPv6
+        // doesn't reach the VM.
+        assert!(dns_for_vm(stub, "").is_empty());
+        assert!(dns_for_vm(stub, "nameserver 2001:4860:4860::8888\n").is_empty());
+        assert!(dns_for_vm("nameserver 10.0.2.3\n", "").is_empty());
     }
 
     #[test]
@@ -770,38 +964,118 @@ mod tests {
         Ok(())
     }
 
-    /// Stand-ins: a `passt` that makes its socket's path and waits, and a
-    /// Firecracker that waits.
+    /// Says a stand-in's connections are to close.
+    type Closer = std::sync::Arc<std::sync::atomic::AtomicBool>;
+    /// What a stand-in's connections read.
+    type Seen = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+
+    /// A stand-in for Firecracker's vsock socket at `socket`: each
+    /// connection asking for `CONNECT 1025` gets `OK` and stays open until
+    /// `close` says otherwise; the VM's side keeps what it reads in `got`.
+    /// Anything else is closed at once, as when nothing in the VM listens.
+    fn vsock_stand_in(socket: &Path) -> Result<(Closer, Seen)> {
+        use std::io::{BufRead, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        std::fs::create_dir_all(socket.parent().context("no parent")?)?;
+        let listener = std::os::unix::net::UnixListener::bind(socket)?;
+        let close = Arc::new(AtomicBool::new(false));
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let (closing, seen) = (close.clone(), got.clone());
+        std::thread::spawn(move || {
+            for conn in listener.incoming().flatten() {
+                let mut reader = std::io::BufReader::new(&conn);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line != format!("CONNECT {NET_PORT}\n") {
+                    continue;
+                }
+                let mut w = &conn;
+                // The VM's first frame comes with Firecracker's answer.
+                let _ = w.write_all(b"OK 1073741824\n\0\0\0\x02hi");
+                let (closing, seen) = (closing.clone(), seen.clone());
+                std::thread::spawn(move || {
+                    let _ = conn.set_read_timeout(Some(Duration::from_millis(50)));
+                    let mut buf = [0u8; 64];
+                    while !closing.load(Ordering::Relaxed) {
+                        if let Ok(n) = std::io::Read::read(&mut &conn, &mut buf)
+                            && let Ok(mut g) = seen.lock()
+                        {
+                            g.extend_from_slice(&buf[..n]);
+                        }
+                    }
+                });
+            }
+        });
+        Ok((close, got))
+    }
+
+    /// The host links a VM's network once it is up: passt gets the
+    /// connection, with nothing of it read, a link made again takes the
+    /// first one's place, passt exits as the VM goes, and a start that
+    /// fails leaves nothing running. Stand-ins: a Firecracker that waits,
+    /// and a passt that writes its pid where it's asked and echoes its
+    /// input.
     #[tokio::test]
-    async fn starting_again_stops_what_the_last_boot_left() -> Result<()> {
+    async fn links_the_vms_network_once_it_is_up() -> Result<()> {
         use crate::driver::fake::write_script;
+        use std::sync::atomic::Ordering;
         let dir = tempfile::tempdir()?;
         let passt = dir.path().join("passt");
-        // Without `exec`, so that their command lines keep the sockets.
+        // As passt: its pid's file is made at once and written once it is
+        // set up. Without `exec`, so that its command line keeps the VM's
+        // path.
+        let stand_in = |then: &str| {
+            format!(
+                "#!/bin/sh\nfor a; do [ \"$prev\" = --pid ] && pid=$a; prev=$a; done\n: > \"$pid\"\nsleep 0.3\n{then}\n"
+            )
+        };
+        write_script(&passt, &stand_in("echo $$ > \"$pid\"\ncat >&0"))?;
+        // One that fails as it sets itself up, and tells where its pid's
+        // file was.
+        let failing = dir.path().join("failing-passt");
+        let told = dir.path().join("failing-passt.told");
         write_script(
-            &passt,
-            "#!/bin/sh\nfor a; do [ \"$prev\" = --socket ] && touch \"$a\"; prev=$a; done\nsleep 60\n",
+            &failing,
+            &stand_in(&format!(
+                "echo \"$pid\" > '{}'\necho 'No routable interface' >&2; exit 1",
+                told.display()
+            )),
         )?;
         let firecracker = dir.path().join("firecracker");
         write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
         let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
         let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
-        let spec = Spec {
-            network: true,
-            ..spec
-        };
-        vm.start(&spec, &firecracker, Some(&passt)).await?;
-        let first_passt = vm.pid("passt");
-        assert!(first_passt.is_some() && vm.running());
-        // Firecracker ends by itself (its VM powered off), and passt stays.
-        if let Some(pid) = vm.pid("firecracker") {
-            crate::driver::run_cmd("kill", &["-KILL", &pid.to_string()]).await?;
+        vm.start(&spec, &firecracker).await?;
+        assert!(vm.running() && !vm.linked());
+        let (close, got) = vsock_stand_in(&vm.vsock())?;
+        // A passt that fails once it has made its pid's file: no link,
+        // though an earlier passt's pid is where this one's goes.
+        if !nix::unistd::geteuid().is_root() {
+            std::fs::write(
+                vm.run.with_file_name(format!("vm-{}.passt.pid", vm.key)),
+                std::process::id().to_string(),
+            )?;
         }
-        while vm.running() {
+        let e = vm.link_network(&failing).await.err().map(|e| e.to_string());
+        assert_eq!(
+            e.as_deref(),
+            Some("passt did not start: No routable interface")
+        );
+        let made = PathBuf::from(std::fs::read_to_string(&told)?.trim());
+        assert!(made.is_absolute(), "{made:?}");
+        assert!(!vm.linked() && !made.exists() && vm.passt_pid().is_none());
+        vm.link_network(&passt).await?;
+        let first = vm.pid("passt");
+        assert!(vm.linked());
+        // passt got the VM's first frame, which came with Firecracker's
+        // answer, and sent it back.
+        let until = Instant::now() + Duration::from_secs(5);
+        while got.lock().map(|g| g.clone()).unwrap_or_default() != b"\0\0\0\x02hi" {
+            assert!(Instant::now() < until, "passt didn't get the VM's frame");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert_eq!(vm.pid("passt"), first_passt);
-        vm.start(&spec, &firecracker, Some(&passt)).await?;
+        // Linked again: the first passt goes.
+        vm.link_network(&passt).await?;
         let alive = |pid: u32| {
             std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
                 !s.rsplit_once(')')
@@ -809,14 +1083,41 @@ mod tests {
             })
         };
         assert!(
-            first_passt.is_some_and(|p| !alive(p)),
+            first.is_some_and(|p| !alive(p)),
             "the first passt still runs"
         );
-        assert!(vm.pid("passt").is_some() && vm.running());
+        assert!(vm.linked() && vm.pid("passt") != first);
+        // The VM goes, and its passt with it.
+        close.store(true, Ordering::Relaxed);
+        let until = Instant::now() + Duration::from_secs(5);
+        while vm.linked() {
+            assert!(Instant::now() < until, "passt outlived its link");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Nothing in the VM takes the link: it fails, and says why.
+        let other = Vm::new(dir.path().join("fctl-ses-y"))?;
+        std::fs::create_dir_all(&other.run)?;
+        let refusing = std::os::unix::net::UnixListener::bind(other.vsock())?;
+        std::thread::spawn(move || {
+            for conn in refusing.incoming().flatten() {
+                drop(conn);
+            }
+        });
+        let e = other
+            .connect_port(NET_PORT, Duration::from_millis(300))
+            .await
+            .err()
+            .map(|e| format!("{e:#}"));
+        assert!(
+            e.as_deref()
+                .is_some_and(|e| e.contains("nothing in the VM takes connections")),
+            "{e:?}"
+        );
         // A start that fails leaves nothing running.
         let missing = dir.path().join("no-firecracker");
-        assert!(vm.start(&spec, &missing, Some(&passt)).await.is_err());
-        assert!(vm.pid("passt").is_none() && !vm.running());
+        assert!(vm.start(&spec, &missing).await.is_err());
+        assert!(!vm.linked() && !vm.running());
+        let _ = std::fs::remove_dir_all(&other.run);
         Ok(())
     }
 }

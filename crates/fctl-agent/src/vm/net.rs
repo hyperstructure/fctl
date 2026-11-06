@@ -1,7 +1,8 @@
 //! The VM's network: a TAP device, `eth0`, whose frames travel over the
 //! vsock to the host's `passt`, which carries them to the network as the
 //! host's own connections. The host needs no bridge, TAP or root for it,
-//! and each VM's network is its own.
+//! and each VM's network is its own. The host makes the link: it connects
+//! to the VM's port, and passt takes over its connection.
 
 use super::netlink;
 use fctl_proto::vm::{ADDRESS, GATEWAY, MTU, NET_PORT, PREFIX};
@@ -10,13 +11,20 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tun::Tun;
-use tokio_vsock::{OwnedReadHalf, OwnedWriteHalf, VMADDR_CID_HOST, VsockAddr, VsockStream};
+use tokio_vsock::{
+    OwnedReadHalf, OwnedWriteHalf, VMADDR_CID_ANY, VMADDR_CID_HOST, VsockAddr, VsockListener,
+    VsockStream,
+};
 
 /// The longest frame: the MTU, an Ethernet header and a VLAN tag.
 const MAX_FRAME: usize = MTU as usize + 18;
 
-/// Brings the network up and keeps it linked to the host, connecting again
-/// when the link closes (the host restarts `passt`, say).
+/// Brings the network up and takes the host's link to it: the host connects
+/// to the VM's [`NET_PORT`] once the VM is up and hands the connection to
+/// `passt`, which a connection of passt's own would need to accept (and
+/// Ubuntu's AppArmor profile for passt refuses that, from Firecracker). A
+/// newer link takes the place of the one before (the host started passt
+/// again, after a snapshot's restore, say).
 pub async fn run() {
     if let Err(e) = netlink::ask(&netlink::link_up_message(1)) {
         tracing::warn!("bringing the loopback up: {e}");
@@ -28,19 +36,38 @@ pub async fn run() {
             return;
         }
     };
-    let mut wait = Duration::from_secs(1);
-    loop {
-        match VsockStream::connect(VsockAddr::new(VMADDR_CID_HOST, NET_PORT)).await {
-            Ok(stream) => {
-                tracing::info!("the network is linked to the host");
-                wait = Duration::from_secs(1);
-                let e = forward(&tap, stream).await;
-                tracing::warn!("the network's link to the host closed: {e}");
-            }
-            Err(e) => tracing::debug!("linking the network to the host: {e}"),
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, NET_PORT)) {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("the VM has no network: listening on the vsock: {e}");
+            return;
         }
-        tokio::time::sleep(wait).await;
-        wait = (wait * 2).min(Duration::from_secs(10));
+    };
+    let mut link: Option<tokio::task::JoinHandle<()>> = None;
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                tracing::warn!("taking the host's link to the network: {e}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        // Only the host, not a program in the VM through the vsock's
+        // loopback, which would see the VM's frames.
+        if peer.cid() != VMADDR_CID_HOST {
+            tracing::warn!("refused a network link from vsock CID {}", peer.cid());
+            continue;
+        }
+        if let Some(old) = link.take() {
+            old.abort();
+        }
+        tracing::info!("the network is linked to the host");
+        let tap = tap.clone();
+        link = Some(tokio::spawn(async move {
+            let e = forward(&tap, stream).await;
+            tracing::warn!("the network's link to the host closed: {e}");
+        }));
     }
 }
 

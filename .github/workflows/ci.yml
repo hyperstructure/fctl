@@ -1,5 +1,6 @@
-# Checks every pull request and push, and runs a session through the local
-# stack; on main (also when started by hand), deploys app.fctl.sh and pins
+# Checks every pull request and push, runs a session through the local
+# stack, and boots the firecracker driver's microVMs on a runner with KVM;
+# on main (also when started by hand), deploys app.fctl.sh and pins
 # fctl.sh (hyperstructure/fctl-site) to main's docs when they differ from the
 # ones it shows. Pull request titles are checked in commits.yml; the
 # standalone control plane's image in standalone-image.yml, on pull requests
@@ -111,6 +112,41 @@ jobs:
           cache: npm
       # No npm ci: like a fresh clone, cargo xtask dev installs what it needs.
       - run: xtask dev --smoke
+
+  # The firecracker driver's tests that boot microVMs (`--ignored` ones in
+  # crates/fctl-host/src/driver/firecracker), which need KVM: GitHub's x86_64
+  # runners have it, for root only. They pull an image from Docker Hub, the
+  # kernel hosts pull and Firecracker's release, and run passt under the
+  # AppArmor profile Ubuntu gives it.
+  firecracker:
+    name: Firecracker sandboxes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust
+      - name: KVM for the runner's user, passt and a static fctl-agent
+        run: |
+          sudo chmod 666 /dev/kvm
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends passt e2fsprogs
+          # What confines passt, which runs as the host's user.
+          sudo aa-status 2>/dev/null | grep -i passt || echo "No AppArmor profile confines passt"
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --locked -p fctl-agent --target x86_64-unknown-linux-musl
+      - name: Boot sandboxes
+        env:
+          FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
+        run: |
+          cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
+      - name: Boot a sandbox on a host that runs as root
+        env:
+          FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
+        run: |
+          bin=$(CARGO_TERM_COLOR=never cargo test --locked -p fctl-host --lib --no-run 2>&1 | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p')
+          test -x "$bin"
+          sudo env "FCTL_TEST_FIRECRACKER_AGENT=$FCTL_TEST_FIRECRACKER_AGENT" "FCTL_TEST_FIRECRACKER_DATA=$RUNNER_TEMP/root" \
+            "$bin" driver::firecracker::tests::boots_a_sandbox --ignored --nocapture
 
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that

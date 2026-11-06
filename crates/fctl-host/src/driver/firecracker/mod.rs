@@ -13,9 +13,9 @@
 //!   and starting it again boots from it.
 //! - **The VM** boots the kernel with fctl-agent as its init
 //!   ([`assets::initrd`]); Firecracker and `passt`, which gives the VM its
-//!   network over the vsock without a TAP device or root on the host, run
-//!   in process groups of their own, so that restarting the host leaves
-//!   them running ([`vm`]).
+//!   network over a vsock connection the host makes once the VM is up,
+//!   without a TAP device or root on the host, run in process groups of
+//!   their own, so that restarting the host leaves them running ([`vm`]).
 //! - **The host runs programs** in the VM through its vsock, as `docker
 //!   exec` would ([`vsock`]).
 
@@ -631,7 +631,7 @@ impl FirecrackerDriver {
         remove_stale(&self.root.join("unpacking"));
         let vm = Vm::new(self.root.join("unpacking").join(&name))?;
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
-        vm.start(&spec, &firecracker, None).await?;
+        vm.start(&spec, &firecracker).await?;
         let result = async {
             vm.wait_ready().await?;
             let within =
@@ -708,6 +708,14 @@ impl FirecrackerDriver {
             let socket = vm.vsock();
             let answers = tokio::time::timeout(Duration::from_secs(10), vsock::hello(&socket));
             if matches!(answers.await, Ok(Ok(_))) {
+                // Its passt exited, or was stopped: the VM gets another.
+                if !vm.linked() {
+                    log(format!("Linking the network of {} again", spec.name));
+                    let passt = self
+                        .passt()
+                        .context("passt is not installed: it gives the VMs their network")?;
+                    vm.link_network(&passt).await?;
+                }
                 return Ok(sb);
             }
             log(format!(
@@ -752,6 +760,7 @@ impl FirecrackerDriver {
                 mode: Mode::Sandbox,
                 name: spec.name.clone(),
                 time_ms: Some(vsock::now_ms()),
+                dns: vm::vm_dns(),
             },
             drives: vec![
                 Drive {
@@ -767,8 +776,12 @@ impl FirecrackerDriver {
             memory_mb: spec.memory_mb,
             network: true,
         };
-        vm.start(&boot, &firecracker, Some(&passt)).await?;
+        vm.start(&boot, &firecracker).await?;
         vm.wait_ready().await?;
+        if let Err(e) = vm.link_network(&passt).await {
+            vm.kill().await;
+            return Err(e);
+        }
         record.agent = Some(agent);
         self.save_record(&spec.name, &record)?;
         Ok(sb)
@@ -966,7 +979,11 @@ impl FirecrackerDriver {
             after: super::COMMAND_TIMEOUT,
         })??;
         if out.code != 0 {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+            let said = String::from_utf8_lossy(&out.stderr);
+            match said.trim() {
+                "" => bail!("the command exited with {} in {}", out.code, sb.name),
+                said => bail!("{said}"),
+            }
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -1158,22 +1175,48 @@ mod tests {
         }
     }
 
+    /// What passt, the VM's console and the VM's network say, for a test
+    /// whose sandbox can't reach the network.
+    async fn network_report(d: &super::super::Driver, sb: &Sandbox, data: &Path) -> String {
+        let dir = data.join("firecracker/sandboxes").join(&sb.name);
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+        let passt = read("passt.pid")
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/cmdline")).ok())
+            .map(|cmdline| cmdline.replace('\0', " "));
+        let vm = d
+            .exec(
+                sb,
+                "cat /etc/resolv.conf /proc/net/route /proc/net/arp /proc/net/dev 2>&1; timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/80' 2>&1 && echo 'TCP to 1.1.1.1:80 works'; true",
+            )
+            .await;
+        format!(
+            "passt runs: {passt:?}\npasst said:\n{}\nthe VM's console:\n{}\nthe VM's network:\n{}",
+            read("passt.log").trim(),
+            read("console.log").trim(),
+            vm.unwrap_or_else(|e| format!("{e:#}"))
+        )
+    }
+
     /// Boots a sandbox from an image of Docker Hub (or
     /// `FCTL_TEST_FIRECRACKER_IMAGE`), on a host with KVM, Firecracker's
-    /// needs and a static fctl-agent:
+    /// needs and a static fctl-agent, with the kernel hosts pull (or the
+    /// file `FCTL_TEST_FIRECRACKER_KERNEL`). CI runs it on GitHub's x86_64
+    /// runners, which have KVM (the `firecracker` job of ci.yml):
     ///
     /// ```sh
     /// cargo build --release -p fctl-agent --target "$(uname -m)-unknown-linux-musl"
     /// FCTL_TEST_FIRECRACKER_AGENT=$PWD/target/$(uname -m)-unknown-linux-musl/release/fctl-agent \
-    ///   FCTL_TEST_FIRECRACKER_KERNEL=/path/to/vmlinux \
     ///   cargo test -p fctl-host boots_a_sandbox -- --ignored --nocapture
     /// ```
     ///
-    /// `FCTL_TEST_FIRECRACKER_DATA` keeps the host's files (the image, and
-    /// Firecracker) between runs, and `FCTL_TEST_FIRECRACKER_RUN` is a
-    /// command whose output it shows (`claude --version`, say).
+    /// `FCTL_TEST_FIRECRACKER_DATA` keeps the host's files (the image, the
+    /// kernel and Firecracker) between runs, and `FCTL_TEST_FIRECRACKER_RUN`
+    /// is a command whose output it shows (`claude --version`, say).
     #[tokio::test]
-    #[ignore = "needs KVM, passt, a kernel and a static fctl-agent"]
+    #[ignore = "needs KVM, passt and a static fctl-agent"]
     async fn boots_a_sandbox() -> Result<()> {
         use super::super::Driver;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1187,7 +1230,7 @@ mod tests {
             agent_bin: Some(var("FCTL_TEST_FIRECRACKER_AGENT")?.into()),
             ..HostConfig::default()
         };
-        cfg.firecracker.kernel = Some(var("FCTL_TEST_FIRECRACKER_KERNEL")?);
+        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
         cfg.firecracker.disk_gb = 4;
         let d = Driver::select("firecracker", &cfg).await?;
         let probed = d.probe().await;
@@ -1221,8 +1264,15 @@ mod tests {
             if let Ok(command) = std::env::var("FCTL_TEST_FIRECRACKER_RUN") {
                 eprintln!("{command}: {}", d.exec(&sb, &command).await?.trim());
             }
-            let resolved = d.exec(&sb, "getent hosts example.com").await?;
-            assert!(!resolved.trim().is_empty());
+            // The network, through passt: what it and the VM say when it
+            // doesn't work.
+            let resolved = d.exec(&sb, "getent hosts example.com").await;
+            if resolved.as_ref().is_ok_and(|r| !r.trim().is_empty()) {
+                eprintln!("example.com is {}", resolved.unwrap_or_default().trim());
+            } else {
+                let report = network_report(&d, &sb, &cfg.data_dir()).await;
+                bail!("no address for example.com in the sandbox ({resolved:?})\n{report}");
+            }
             let fetched = d
                 .exec(
                     &sb,
