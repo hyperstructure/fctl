@@ -88,7 +88,10 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   each in a short-lived microVM into a filesystem that the sandboxes made
   from it share, read only; they boot a kernel that hyperstructure/sandbox
   publishes too, `ghcr.io/hyperstructure/sandbox-kernel:<version>`. They
-  build no images ([Architecture](architecture.md#firecracker)).
+  build projects' images with BuildKit in a VM of each project's own,
+  from BuildKit's image, which they pull from Docker Hub
+  (`docker.io/moby/buildkit`) for a project's first build
+  ([Architecture](architecture.md#firecracker)).
 - **Disk.** The host removes the default images that sessions no longer
   start from: builds that a newer one replaced, other versions' images, and
   `latest` once the version's image is there. It does that when it starts,
@@ -237,8 +240,7 @@ ENV DOTNET_ROOT=/home/agent/.dotnet \
    credential helper), so `docker login` there needs Docker's CLI only.
 
 Lima runners don't use images: their sessions run in a clone of the VM
-`fctl host image build` prepared. The process driver uses none either, and
-Firecracker runners build none.
+`fctl host image build` prepared. The process driver uses none either.
 
 ## Building it from the repository
 
@@ -275,7 +277,9 @@ When a session starts in a new sandbox, the host:
 3. Otherwise downloads the repository at that commit (up to 2 GiB), keeps
    only the directory, and builds the image with `docker build`,
    `container build` or, with Firecracker, BuildKit in a VM of the
-   project's own, from the Dockerfile's text as GitHub sent it. The
+   project's own (whose image, `docker.io/moby/buildkit`, the host pulls
+   from Docker Hub for the first), from the Dockerfile's text as GitHub
+   sent it. The
    session's log shows each step. Sessions that need the same build wait
    for the one that builds it. Builds pass no secrets: a Dockerfile that
    needs a token should leave that step to the setup script.

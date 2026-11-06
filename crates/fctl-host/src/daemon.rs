@@ -323,6 +323,20 @@ impl Daemon {
         match listed {
             Ok(list) => {
                 for sb in list.into_iter().filter(|s| s.running) {
+                    // A builder that ran when the host stopped builds nothing
+                    // now: it stops, keeping its cache.
+                    if crate::driver::is_builder(&sb.name) {
+                        tracing::info!("stopping {}, which built for no one", sb.name);
+                        if let Err(e) = self
+                            .ctx
+                            .driver
+                            .stop(&self.ctx.driver.handle(&sb.name))
+                            .await
+                        {
+                            tracing::warn!("stopping {}: {e:#}", sb.name);
+                        }
+                        continue;
+                    }
                     if let Some(id) = session_of(&sb.name).map(SessionId) {
                         tracing::info!("recovering {id} from {}", sb.name);
                         let h = session::spawn(
@@ -384,10 +398,14 @@ impl Daemon {
         let path = expiry::path(&data);
         let now = expiry::now_ms();
         let keep_ms = (hours > 0).then(|| i64::from(hours) * 3_600_000);
-        let plan = expiry::plan(&expiry::load(&path), &list, &in_use, now, keep_ms);
-        if let Err(e) = expiry::save(&path, &plan.stopped) {
-            tracing::warn!("saving {}: {e:#}", path.display());
-        }
+        let plan = {
+            let _writing = expiry::writing();
+            let plan = expiry::plan(&expiry::load(&path), &list, &in_use, now, keep_ms);
+            if let Err(e) = expiry::save(&path, &plan.stopped) {
+                tracing::warn!("saving {}: {e:#}", path.display());
+            }
+            plan
+        };
         // A host that keeps no caches now removes those it kept.
         let keep_caches_ms = match self.ctx.cfg.max_cache_mb() {
             Some(_) => self.ctx.cfg.keep_caches_ms(),

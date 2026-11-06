@@ -1118,7 +1118,13 @@ impl FirecrackerDriver {
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
         let lock = self.lock(&format!("sandbox {}", sb.name));
         let _held = lock.lock().await;
-        self.vm(&sb.name)?.remove().await?;
+        let vm = self.vm(&sb.name)?;
+        // A builder runs only while it builds, and starts under this lock:
+        // one that the sweep found stopped, and that builds now, stays.
+        if crate::driver::is_builder(&sb.name) && vm.running() {
+            bail!("it is building an image");
+        }
+        vm.remove().await?;
         let _images = self.lock_images().await?;
         self.remove_unused();
         Ok(())
@@ -1204,6 +1210,44 @@ mod tests {
         assert!(!listed[0].running);
         let exec = d.sh("fctl-ses-01abc", "true");
         assert_eq!(exec.argv, ["sh", "-c", "true"]);
+        Ok(())
+    }
+
+    /// A builder that the sweep found stopped, and that builds by the time
+    /// its removal comes up, stays: it runs only while it builds.
+    #[tokio::test]
+    async fn a_builder_that_builds_stays() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let name = "fctl-builder-prj-01abc";
+        let sb = Sandbox {
+            name: name.into(),
+            root: None,
+        };
+        let vm = d.vm(name)?;
+        std::fs::create_dir_all(d.sandboxes().join(name))?;
+        // A process whose command line has the VM's socket directory.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30; true", &vm.api().display().to_string()])
+            .spawn()?;
+        let pid_file = d.sandboxes().join(name).join("firecracker.pid");
+        std::fs::write(&pid_file, child.id().to_string())?;
+        // Until its exec, other tests' threads may show it as this process.
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !vm.running() && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(vm.running());
+        let removed = d.remove(&sb).await;
+        assert_eq!(
+            removed.map_err(|e| e.to_string()),
+            Err("it is building an image".to_owned())
+        );
+        assert!(d.sandboxes().join(name).exists());
+        child.kill()?;
+        child.wait()?;
+        d.remove(&sb).await?;
+        assert!(!d.sandboxes().join(name).exists());
         Ok(())
     }
 
@@ -1493,6 +1537,10 @@ mod tests {
         d.build(&job, &log).await?;
         eprintln!("built in {:?}", started.elapsed());
         assert!(d.has_image(&tag).await);
+        // The builder stopped, and the sweep counts its time from now.
+        let builder = super::builds::builder_name(&tag);
+        let stopped = crate::expiry::load(&crate::expiry::path(&cfg.data_dir()));
+        assert!(stopped.contains_key(&builder), "{stopped:?}");
         // It keeps only its own layers, over Debian's.
         let Driver::Firecracker(fd) = &d else {
             bail!("not the firecracker driver");

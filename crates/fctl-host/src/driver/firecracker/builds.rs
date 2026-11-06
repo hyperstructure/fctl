@@ -95,21 +95,23 @@ impl FirecrackerDriver {
         log(format!(
             "Starting the image builder, BuildKit in a VM ({name})"
         ));
+        // Made first: a build dropped while its builder starts stops it too.
+        let mut running = Running {
+            vm: Some(self.vm(&name)?),
+            name: name.clone(),
+            stopped: crate::expiry::path(&self.host.data_dir()),
+        };
         let sb = self
             .ensure(&spec, log)
             .await
             .context("starting the image builder")?;
-        let built = tokio::time::timeout(job.limit, self.build_in(&sb.name, job, log)).await;
-        if let Err(e) = self.stop(&sb).await {
-            tracing::warn!("stopping the image builder {name}: {e:#}");
+        let built = self.build_in(&sb.name, job, log).await;
+        match self.stop(&sb).await {
+            Ok(()) => running.vm = None,
+            Err(e) => tracing::warn!("stopping the image builder {name}: {e:#}"),
         }
-        match built {
-            Ok(result) => result,
-            Err(_) => bail!(
-                "The image build took longer than {} minutes, so the host stopped it (build_timeout_minutes in host.toml)",
-                job.limit.as_secs() / 60
-            ),
-        }
+        drop(running);
+        built
     }
 
     /// A program for the builder VM `name`, as root.
@@ -172,30 +174,37 @@ impl FirecrackerDriver {
         self.send_archive(name, &dockerfile_tar, &format!("{WORK}/dockerfile"))
             .await
             .context("sending the Dockerfile to the image builder")?;
-        self.run_buildctl(name, job, log).await?;
+        // The build itself takes at most `build_timeout_minutes`, as
+        // `docker build` does.
+        tokio::time::timeout(job.limit, self.run_buildctl(name, job, log))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "The image build took longer than {} minutes, so the host stopped it (build_timeout_minutes in host.toml)",
+                    job.limit.as_secs() / 60
+                )
+            })??;
         // The image, back as an OCI archive, kept as a pull would keep it:
-        // beside the images, on their filesystem.
-        let downloads = self.root.join("downloads").join(format!(
+        // beside the images, on their filesystem, which a build dropped
+        // halfway leaves too.
+        let downloads = Scratch(self.root.join("downloads").join(format!(
             "build-{}",
             hex::encode(fctl_domain::random_bytes::<6>())
-        ));
-        std::fs::create_dir_all(&downloads)?;
-        let kept = async {
-            let image_tar = downloads.join("image.tar");
-            self.receive_file(name, &format!("{WORK}/image.tar"), &image_tar)
-                .await
-                .context("getting the image from the image builder")?;
-            let _ = self.builder_sh(name, &format!("rm -rf {WORK}")).await;
-            let blobs = downloads.join("blobs");
-            let image = tokio::task::spawn_blocking(move || {
-                oci::read(&image_tar, &blobs, std::env::consts::ARCH)
-            })
-            .await??;
-            self.keep_built(job.tag, image, &downloads, log).await
-        }
-        .await;
-        let _ = std::fs::remove_dir_all(&downloads);
-        kept
+        )));
+        std::fs::create_dir_all(&downloads.0)?;
+        let image_tar = downloads.0.join("image.tar");
+        let most = u64::from(self.host.max_build_mb) * 1024 * 1024;
+        self.receive_file(name, &format!("{WORK}/image.tar"), &image_tar, most)
+            .await
+            .context("getting the image from the image builder")?;
+        let _ = self.builder_sh(name, &format!("rm -rf {WORK}")).await;
+        let blobs = downloads.0.join("blobs");
+        let tar = image_tar.clone();
+        let image =
+            tokio::task::spawn_blocking(move || oci::read(&tar, &blobs, std::env::consts::ARCH))
+                .await??;
+        let _ = std::fs::remove_file(&image_tar);
+        self.keep_built(job.tag, image, &downloads.0, log).await
     }
 
     /// Starts buildkitd in the builder VM `name` as root, unless it runs,
@@ -258,14 +267,28 @@ impl FirecrackerDriver {
         }
     }
 
-    /// Copies `from` in the builder VM `name` to `to` on the host.
-    async fn receive_file(&self, name: &str, from: &str, to: &Path) -> Result<()> {
+    /// Copies `from` in the builder VM `name` to `to` on the host, up to
+    /// `most` bytes: an image larger than the host keeps (`max_build_mb`)
+    /// stops there.
+    async fn receive_file(&self, name: &str, from: &str, to: &Path, most: u64) -> Result<()> {
         let vm = self.vm(name)?;
         let exec = self.as_root(name, vec!["cat".into(), from.into()]);
         let mut started = vsock::start(&vm.vsock(), exec).await?;
         started.stdin.shutdown().await?;
         let mut file = tokio::fs::File::create(to).await?;
-        tokio::io::copy(&mut started.stdout, &mut file).await?;
+        let copied = tokio::io::copy(
+            &mut tokio::io::AsyncReadExt::take(&mut started.stdout, most.saturating_add(1)),
+            &mut file,
+        )
+        .await?;
+        if copied > most {
+            drop(file);
+            let _ = std::fs::remove_file(to);
+            bail!(
+                "The image is larger than the {} this host keeps (max_build_mb in host.toml)",
+                fctl_domain::size::memory(most / 1024 / 1024)
+            );
+        }
         file.flush().await?;
         match started.exit.await.ok().flatten() {
             Some(0) => Ok(()),
@@ -319,6 +342,11 @@ impl FirecrackerDriver {
         log: Log<'_>,
     ) -> Result<()> {
         let key = images::canonical(tag).with_context(|| format!("{tag} isn't an image name"))?;
+        // An id of its own, which no pulled image has: the builder's VM
+        // wrote its config, and a config copied from another image (the
+        // default one, say) mustn't take that image's place.
+        let mut image = image;
+        image.resolved.id = built_id(&image.resolved);
         if self.store.image(&image.resolved.id).is_some() {
             let _images = self.lock_images().await?;
             return self.store.tag(tag, &image.resolved.id);
@@ -352,6 +380,53 @@ impl FirecrackerDriver {
     }
 }
 
+/// A builder that runs for a build. As the build ends, or is dropped
+/// halfway (its session stopped), the builder stops, and the host notes
+/// when: it goes, with its cache, once it has been stopped for
+/// `keep_stopped_hours` since its last build, as a session's sandbox does.
+struct Running {
+    /// The builder's VM, until it has stopped.
+    vm: Option<super::Vm>,
+    name: String,
+    /// The host's list of stopped sandboxes ([`crate::expiry`]).
+    stopped: std::path::PathBuf,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(vm) = self.vm.take() {
+            vm.kill_now();
+        }
+        let now = crate::expiry::now_ms();
+        if let Err(e) = crate::expiry::note_stopped(&self.stopped, &self.name, now) {
+            tracing::warn!("saving {}: {e:#}", self.stopped.display());
+        }
+    }
+}
+
+/// A directory that goes with this.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The id a built image keeps: its config's digest and its layers', which
+/// a pulled image's (its config's digest alone) never is.
+fn built_id(resolved: &super::registry::Resolved) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"fctl built image\n");
+    hasher.update(resolved.id.as_bytes());
+    for layer in &resolved.layers {
+        hasher.update(b"\n");
+        hasher.update(layer.digest.as_bytes());
+    }
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
 /// Writes the directory tree `dir` as a tar archive to `to`, its symlinks
 /// as symlinks: the build's context.
 fn archive_tree(dir: &Path, to: &Path) -> Result<()> {
@@ -380,6 +455,44 @@ fn archive_dockerfile(dockerfile: &Path, to: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A build dropped halfway, while its builder starts or builds, stops
+    /// the builder; either way the build notes when its builder stopped:
+    /// the sweep counts `keep_stopped_hours` from there.
+    #[tokio::test]
+    async fn a_builder_stops_with_its_build_and_notes_when() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let stopped = crate::expiry::path(dir.path());
+        let name = "fctl-builder-prj-01abc";
+        crate::expiry::note_stopped(&stopped, name, 1)?;
+        let vm = super::super::Vm::new(dir.path().join(name))?;
+        std::fs::create_dir_all(dir.path().join(name))?;
+        // A process whose command line has the VM's socket directory.
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30; true", &vm.api().display().to_string()])
+            .spawn()?;
+        std::fs::write(
+            dir.path().join(name).join("firecracker.pid"),
+            child.id().to_string(),
+        )?;
+        // Until its exec, other tests' threads may show it as this process.
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !vm.running() && std::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(vm.running());
+        let before = crate::expiry::now_ms();
+        drop(Running {
+            vm: Some(super::super::Vm::new(dir.path().join(name))?),
+            name: name.into(),
+            stopped: stopped.clone(),
+        });
+        let status = child.wait()?;
+        assert!(!status.success(), "{status:?}");
+        let noted = crate::expiry::load(&stopped).get(name).copied();
+        assert!(noted.is_some_and(|ms| ms >= before), "{noted:?}");
+        Ok(())
+    }
+
     #[test]
     fn each_project_builds_in_a_vm_of_its_own() {
         assert_eq!(
@@ -390,6 +503,30 @@ mod tests {
             builder_name("fctl-build-prj_a:1"),
             builder_name("fctl-build-prj_b:1")
         );
+    }
+
+    /// A built image's id is never its config's digest, which a pulled
+    /// image's is, and changes with its layers.
+    #[test]
+    fn built_images_have_ids_no_pull_has() {
+        let resolved = |layers: &[&str]| super::super::registry::Resolved {
+            id: format!("sha256:{}", "c".repeat(64)),
+            config: Default::default(),
+            layers: layers
+                .iter()
+                .map(|d| super::super::registry::Descriptor {
+                    media_type: String::new(),
+                    digest: (*d).into(),
+                    size: 1,
+                })
+                .collect(),
+            diff_ids: Vec::new(),
+        };
+        let one = built_id(&resolved(&["sha256:1"]));
+        assert_ne!(one, resolved(&[]).id);
+        assert!(one.starts_with("sha256:") && one.len() == 71);
+        assert_eq!(one, built_id(&resolved(&["sha256:1"])));
+        assert_ne!(one, built_id(&resolved(&["sha256:2"])));
     }
 
     #[test]

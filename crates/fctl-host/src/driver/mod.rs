@@ -190,6 +190,13 @@ pub fn session_of(name: &str) -> Option<String> {
     Some(format!("ses_{}", rest.to_uppercase()))
 }
 
+/// Whether `name` is a project's image builder (`fctl-builder-…`, with the
+/// firecracker driver): a sandbox no session runs in, which only runs while
+/// it builds, and keeps the project's build cache once stopped.
+pub fn is_builder(name: &str) -> bool {
+    name.starts_with("fctl-builder-")
+}
+
 /// Where fctl-agent lives inside container and VM sandboxes.
 pub const AGENT_PATH: &str = "/opt/fctl/bin/fctl-agent";
 

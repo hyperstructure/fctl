@@ -378,6 +378,17 @@ impl Vm {
         let _ = std::fs::remove_dir_all(&self.run);
     }
 
+    /// Kills the VM's processes at once, without waiting: for code that
+    /// can't wait (a drop).
+    pub fn kill_now(&self) {
+        use nix::sys::signal::{Signal, kill};
+        for what in ["firecracker", "passt"] {
+            if let Some(pid) = self.pid(what).and_then(|p| i32::try_from(p).ok()) {
+                let _ = kill(nix::unistd::Pid::from_raw(pid), Signal::SIGKILL);
+            }
+        }
+    }
+
     /// Kills the VM's process `what`, if it runs.
     async fn kill_one(&self, what: &str) {
         if let Some(pid) = self.pid(what) {
