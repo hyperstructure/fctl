@@ -195,9 +195,6 @@ impl LimaDriver {
         Ok(())
     }
 
-    /// Starts fctl-agent as root with `sudo`, and Claude and its commands
-    /// as the VM's user, who can't stop it then; as that user where `sudo`
-    /// asks for a password.
     /// Whether fctl-agent runs as root in `sb`: where the host runs it so
     /// (or it ran so before, which keeps it so, rather than start another
     /// beside one that may run), and `sudo` asks no password.
@@ -217,6 +214,9 @@ impl LimaDriver {
         ran_as_root(&said)
     }
 
+    /// Starts fctl-agent as root with `sudo`, and Claude and its commands
+    /// as the VM's user, who can't stop it then; as that user where `sudo`
+    /// asks for a password, or the host doesn't run it as root.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
         let wanted = self.wants_root(sb).await?;
         let root = wanted && self.agent_root(sb).await?;

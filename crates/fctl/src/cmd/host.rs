@@ -395,7 +395,9 @@ pub async fn run(server: Option<&str>, cmd: HostCmd, json: bool) -> Result<()> {
                 );
             }
             println!("{}", style::dim(&updates_sentence(&cfg)));
-            if !cfg.agent_as_root {
+            // The process driver has no sandboxes, and runs fctl-agent as
+            // this machine's user either way.
+            if !cfg.agent_as_root && d.needs_linux_agent() {
                 println!("{}", style::dim(AGENT_AS_USER));
             }
             if !no_service {
