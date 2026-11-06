@@ -173,7 +173,7 @@ impl Vm {
         std::fs::create_dir_all(&self.run)?;
         if spec.network {
             let passt = passt.context("the VM needs passt for its network")?;
-            self.start_passt(passt, &spec.boot.name).await?;
+            self.start_passt(passt).await?;
         }
         let config = self.dir.join("firecracker.json");
         std::fs::write(&config, serde_json::to_vec_pretty(&self.config(spec))?)?;
@@ -196,10 +196,10 @@ impl Vm {
     /// connections of the host's: the VM gets [`ADDRESS`], the gateway and
     /// a DNS forwarder, and reaches neither the host's loopback nor other
     /// VMs. Nothing reaches the VM from outside.
-    async fn start_passt(&self, passt: &Path, name: &str) -> Result<()> {
+    async fn start_passt(&self, passt: &Path) -> Result<()> {
         let log = std::fs::File::create(self.dir.join("passt.log"))?;
         let mut cmd = std::process::Command::new(passt);
-        cmd.args(passt_args(&self.net(), name))
+        cmd.args(passt_args(&self.net()))
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
@@ -430,9 +430,11 @@ fn response(buf: &[u8]) -> Result<Option<(u16, &[u8])>> {
     Ok((body.len() >= len).then(|| (status, &body[..len])))
 }
 
-/// The arguments of `passt` for a VM named `name` whose frames come to
-/// `socket`.
-fn passt_args(socket: &Path, name: &str) -> Vec<String> {
+/// The arguments of `passt` for a VM whose frames come to `socket`: the
+/// options of passt's releases since 2022, which Ubuntu 24.04 and Debian 12
+/// have. The VM names itself, so passt's DHCP needs no `--hostname`, which
+/// came later.
+fn passt_args(socket: &Path) -> Vec<String> {
     let mask = PREFIX.to_string();
     vec![
         "--foreground".into(),
@@ -449,8 +451,6 @@ fn passt_args(socket: &Path, name: &str) -> Vec<String> {
         Ipv4Addr::from(DNS).to_string(),
         // The gateway's address doesn't lead to the host's loopback.
         "--no-map-gw".into(),
-        "--hostname".into(),
-        name.into(),
     ]
 }
 
@@ -563,10 +563,10 @@ mod tests {
 
     #[test]
     fn passt_gives_the_vm_its_network_and_nothing_of_the_hosts() {
-        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0/v.sock_1025"), "fctl-ses-1").join(" ");
+        let args = passt_args(Path::new("/tmp/fctl-ada/vm-0/v.sock_1025")).join(" ");
         assert_eq!(
             args,
-            "--foreground --quiet --socket /tmp/fctl-ada/vm-0/v.sock_1025 --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw --hostname fctl-ses-1"
+            "--foreground --quiet --socket /tmp/fctl-ada/vm-0/v.sock_1025 --address 10.0.2.15 --netmask 24 --gateway 10.0.2.2 --dns-forward 10.0.2.3 --no-map-gw"
         );
     }
 
