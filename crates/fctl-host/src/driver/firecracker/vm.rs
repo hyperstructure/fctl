@@ -206,10 +206,13 @@ impl Vm {
             .stderr(log);
         spawn_detached(&mut cmd, &self.pid_file("passt"))
             .with_context(|| format!("starting {}", passt.display()))?;
-        // passt writes its pid as it is about to take frames, and exits
-        // when it can't.
+        // passt makes its pid's file as it reads its options, writes its
+        // pid there once it has set itself up and is about to take frames,
+        // and exits when it can't.
+        let has_pid =
+            || std::fs::read_to_string(&ready).is_ok_and(|p| p.trim().parse::<u32>().is_ok());
         let until = Instant::now() + Duration::from_secs(10);
-        while !ready.exists() {
+        while !has_pid() {
             if Instant::now() > until || self.pid("passt").is_none() {
                 let said = std::fs::read_to_string(self.dir.join("passt.log")).unwrap_or_default();
                 self.kill_one("passt").await;
@@ -965,10 +968,20 @@ mod tests {
         use std::sync::atomic::Ordering;
         let dir = tempfile::tempdir()?;
         let passt = dir.path().join("passt");
-        // Without `exec`, so that its command line keeps the VM's path.
+        // As passt: its pid's file is made at once and written once it is
+        // set up. Without `exec`, so that its command line keeps the VM's
+        // path.
+        let stand_in = |then: &str| {
+            format!(
+                "#!/bin/sh\nfor a; do [ \"$prev\" = --pid ] && pid=$a; prev=$a; done\n: > \"$pid\"\nsleep 0.3\n{then}\n"
+            )
+        };
+        write_script(&passt, &stand_in("echo $$ > \"$pid\"\ncat >&0"))?;
+        // One that fails as it sets itself up.
+        let failing = dir.path().join("failing-passt");
         write_script(
-            &passt,
-            "#!/bin/sh\nfor a; do [ \"$prev\" = --pid ] && echo $$ > \"$a\"; prev=$a; done\ncat >&0\n",
+            &failing,
+            &stand_in("echo 'No routable interface' >&2; exit 1"),
         )?;
         let firecracker = dir.path().join("firecracker");
         write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
@@ -977,6 +990,13 @@ mod tests {
         vm.start(&spec, &firecracker).await?;
         assert!(vm.running() && !vm.linked());
         let (close, got) = vsock_stand_in(&vm.vsock())?;
+        // A passt that fails once it has made its pid's file: no link.
+        let e = vm.link_network(&failing).await.err().map(|e| e.to_string());
+        assert_eq!(
+            e.as_deref(),
+            Some("passt did not start: No routable interface")
+        );
+        assert!(!vm.linked());
         vm.link_network(&passt).await?;
         let first = vm.pid("passt");
         assert!(vm.linked());
