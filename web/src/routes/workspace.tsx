@@ -838,11 +838,13 @@ function Runners({ w }: { w: G.Workspace }) {
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        Sessions in {w.name} start only on these machines, which see their code, secrets and Claude tokens
-        while they work. A runner belongs to the person who registered it, who can let it work for several
-        workspaces, or to {w.name} itself when it enrolled with one of its enrollment tokens for everyone's
-        sessions. Its own and the ones its admins add run everyone's sessions; one a member adds, or enrolls
-        with a token of their own, runs only theirs.
+        Runners are the machines that run sessions: on each, the host service (
+        <code className="rounded bg-raised px-1 font-mono text-[12.5px]">fctl host</code>) runs every session
+        in a sandbox of its own. Sessions in {w.name} start only on these, which see their code, secrets and
+        Claude tokens while they work. A runner belongs to the person who registered it, who can let it work
+        for several workspaces, or to {w.name} itself when it enrolled with one of its enrollment tokens for
+        everyone's sessions. Its own and the ones its admins add run everyone's sessions; one a member adds,
+        or enrolls with a token of their own, runs only theirs.
         {onRunners ? (
           <>
             {" "}
@@ -1075,7 +1077,9 @@ function Runners({ w }: { w: G.Workspace }) {
           <div className="flex flex-col gap-3">
             <div className="text-[12.5px] text-ink-3">1. Install fctl</div>
             <CodeBox value={installCommand()} />
-            <div className="text-[12.5px] text-ink-3">2. Register it as a runner and start the service</div>
+            <div className="text-[12.5px] text-ink-3">
+              2. Register it as a runner and start the host service
+            </div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${reg.token}`} />
             <p className="text-[12.5px] leading-relaxed text-ink-4">
               It shows up here as online within seconds. Add it to your other workspaces from their Runners
@@ -1129,8 +1133,8 @@ function AddRunner({
       body: (
         <>
           <p>
-            Sign in, then register it as a runner and start its service. It shows up here as online within
-            seconds.
+            Sign in, then register it as a runner and start its host service, which runs the sessions it
+            takes. It shows up here as online within seconds.
           </p>
           <CodeBox value={`fctl login ${location.origin}`} />
           <CodeBox value={`fctl host install --workspace ${w.slug}`} />

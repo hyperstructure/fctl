@@ -689,7 +689,7 @@ or with `fctl attach`) aren't notified about it.
 ## Claude
 
 ```sh
-fctl claude connect --login      # full sign-in through a host (Remote Control)
+fctl claude connect --login      # full sign-in, on one of your runners (Remote Control)
 fctl claude connect              # paste a token from `claude setup-token`
 fctl claude connect --token sk-ant-oat01-…
 fctl claude connect --on-runners # run on the token your runners keep, which you never give to fctl
@@ -713,8 +713,17 @@ your secrets manager writes.
 
 ## Hosts
 
+`fctl host` turns the machine you run it on into a [runner](#runners),
+which runs sessions, and looks after it there. `fctl host install`
+registers the runner and starts the host service, which connects to the
+control plane, takes the runner's sessions and runs each in a sandbox of
+its own; the other commands check, drain, update and remove that service.
+They act on this machine alone: to see or manage runners from anywhere, by
+name or id, use [`fctl runners`](#runners). One machine runs one host
+service and is one runner.
+
 ```sh
-fctl host install                # register this machine and start the service
+fctl host install                # register this machine as a runner and start the host service
 fctl host install --driver lima --capacity 2 --build-image
 fctl host install --driver firecracker   # Linux with KVM: each session in a microVM of its own
 fctl host install --cpus 4 --memory 8g --max-cpus 8 --max-memory 12g   # sandbox sizes
@@ -746,16 +755,16 @@ fctl host uninstall --wait       # drain, and uninstall once none runs
 fctl host uninstall --force      # stop the sessions here now, then uninstall
 ```
 
-Drain a host before maintenance: no new session starts on it, and the
+Drain a runner before maintenance: no new session starts on it, and the
 sessions it has carry on there. Those that wait for a message stop once
-they have waited a minute, and a message resumes each of them on this host,
-where its sandbox has Claude's conversation. So the host is empty whenever
-no turn runs, and `--wait` returns then. Admins can drain a runner too,
-from the runners list or with `fctl admin drain`; whoever drained it,
+they have waited a minute, and a message resumes each of them on this
+runner, where its sandbox has Claude's conversation. So the runner is empty
+whenever no turn runs, and `--wait` returns then. Admins can drain a runner
+too, from the runners list or with `fctl admin drain`; whoever drained it,
 either can stop the drain.
 
 `fctl host uninstall` stops the service, so it never leaves sessions to
-agents nobody sees: when sessions run on the host, it lists them and asks
+agents nobody sees: when sessions run on the machine, it lists them and asks
 before it stops them, or, without a terminal, needs `--wait` or `--force`.
 Stopped this way, their agents stop and push their work, and a message
 resumes each on another runner, in a new sandbox without its conversation.
@@ -843,7 +852,7 @@ lists the repository. `--allow-image` and `--allow-build` replace the lists
 details.
 
 A project's Settings → Sandbox can ask for more CPUs or memory than the
-host's default. Sessions only start on a host whose maximum covers that;
+host's default. Sessions only start on a runner whose maximum covers that;
 when none does, they stay queued and say so ("No runner can give this
 session 32 GiB of memory (the most is 15.6 GiB)"). Without `max_cpus` and
 `max_memory_mb`, the maximum is what the machine has, or with Docker the
@@ -937,6 +946,11 @@ either: `fctl host status` and `fctl host doctor` say so
 
 ## Runners
 
+A runner is a machine that runs sessions, with the host service on it
+([Hosts](#hosts)). `fctl runners` sees runners from any machine, by their
+name or id: the ones you registered, your workspaces', and, as an instance
+admin, every one. A workspace's **Runners** tab shows the same.
+
 ```sh
 fctl runners                     # the runners you see: yours, your workspaces' (every one for instance admins)
 fctl runners -w acme             # one workspace's
@@ -999,7 +1013,7 @@ workspace, so a boot script can run it every time, and `fctl host
 uninstall` removes it. With `--remove-offline-after`, runners that stay
 offline that long (`1m` to `30d`) go too, as machines that autoscaling
 destroys do without uninstalling. Only time the control plane is up counts,
-so a deploy or an outage of its own removes none, but a host that loses
+so a deploy or an outage of its own removes none, but a runner that loses
 its network for longer is gone, and enrolls again: give a fleet whose
 machines stay up `15m` or more.
 

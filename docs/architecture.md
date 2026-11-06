@@ -715,6 +715,14 @@ on update), which changes nothing and brings the browser back to the tab.
 
 ### Runners and workspaces
 
+A runner (`runners`, `rnr_…`) is a machine as the control plane sees it:
+what FleetDO hands sessions to, what workspaces add and people list. The
+host (`crates/fctl-host`, `fctl host run`) is the daemon on that machine:
+it holds the runner's token, keeps its control connection and makes its
+sandboxes, all with one driver. One host is one runner, never several:
+this document says "host" for the daemon and what it does on the machine,
+and "runner" for the machine in the control plane, its API and its UI.
+
 A runner belongs to the person who registered it (`runners.created_by`) and
 runs the sessions of the workspaces it is added to (`runner_workspaces`):
 everyone's there, or only its owner's (`personal`). A workspace trusts a

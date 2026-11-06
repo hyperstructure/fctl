@@ -456,8 +456,8 @@ function GettingStarted({
           }
         >
           {yours
-            ? "Install fctl on the machine that runs agents (your spare Mac is perfect) and register it for your workspace."
-            : "A workspace admin connects a machine that runs its agents."}
+            ? "A runner is a machine that runs your agents' sessions (your spare Mac is perfect): install fctl on it and register it for your workspace."
+            : "A workspace admin adds a runner: a machine that runs its agents' sessions."}
         </Step>
         <Step
           done={project}

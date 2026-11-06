@@ -92,6 +92,12 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   them there, tag a release, then bump the tag here.
 - Copy is plain and specific: say what happens ("The agent reads your message
   at its next step"), not what is possible.
+- A **runner** is a machine that runs sessions, as the control plane, the
+  web app and `fctl runners` see it; the **host** is the `fctl host` service
+  on it (`crates/fctl-host`). One machine runs one host and is one runner.
+  In copy people read, call the machine a runner, and the software the host
+  service or `fctl host`, as
+  [docs/README.md](docs/README.md#words-used-in-these-docs) defines them.
 - Every capability is reachable from the CLI with `--json`. When you add an
   API endpoint, add the client method in `crates/fctl-client` and, if people
   need it, a command in `crates/fctl`.

@@ -15,7 +15,7 @@ export function explain(error: unknown): { code: string; title: string; detail: 
         code: "off",
         title: "Can’t reach fctl.",
         detail:
-          "The app couldn’t connect to its server. Check your connection. Your sessions keep running on their hosts.",
+          "The app couldn’t connect to its server. Check your connection. Your sessions keep running on their runners.",
         bug: false,
       };
     }
@@ -23,7 +23,7 @@ export function explain(error: unknown): { code: string; title: string; detail: 
       return {
         code: String(error.status),
         title: "The factory lost power.",
-        detail: `fctl’s server answered ${error.status} while loading this page. Your sessions keep running on their hosts.`,
+        detail: `fctl’s server answered ${error.status} while loading this page. Your sessions keep running on their runners.`,
         bug: false,
       };
     }
@@ -37,7 +37,7 @@ export function explain(error: unknown): { code: string; title: string; detail: 
   return {
     code: "bug",
     title: "This page hit a bug.",
-    detail: "Something in the app went wrong while showing it. Your sessions keep running on their hosts.",
+    detail: "Something in the app went wrong while showing it. Your sessions keep running on their runners.",
     bug: true,
   };
 }
@@ -45,7 +45,7 @@ export function explain(error: unknown): { code: string; title: string; detail: 
 const STILL = [
   "Still down. It isn’t you: the server keeps failing.",
   "Still down. Give it a minute, then try again.",
-  "Still down. Agents keep working on their hosts meanwhile.",
+  "Still down. Agents keep working on their runners meanwhile.",
 ];
 
 /**

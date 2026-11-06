@@ -1324,10 +1324,11 @@ function Runners() {
   return (
     <div>
       <p className="max-w-2xl text-[14px] leading-relaxed text-ink-3">
-        Runners are the machines that run agents, every one on the instance. Each session gets its own sandbox
-        — a lightweight VM with Apple's container on macOS 26, or Docker, Lima, or plain processes elsewhere —
-        on a runner of its workspace. A runner belongs to whoever registered it, who adds it to the workspaces
-        they run.
+        Runners are the machines that run agents, every one on the instance, each with the host service (
+        <code className="rounded bg-raised px-1 font-mono text-[12.5px]">fctl host</code>) on it. A session
+        gets its own sandbox — a lightweight VM with Apple's container on macOS 26, or Docker, Lima, or plain
+        processes elsewhere — on a runner of its workspace. A runner belongs to whoever registered it, who
+        adds it to the workspaces they run.
       </p>
       {/* The fields line up by their labels, so the hint or error under the name moves nothing.
           On a phone, the workspace goes under the name. */}
@@ -1504,7 +1505,9 @@ function Runners() {
           <div className="flex flex-col gap-3">
             <div className="text-[12.5px] text-ink-3">1. Install fctl</div>
             <CodeBox value={installCommand()} />
-            <div className="text-[12.5px] text-ink-3">2. Register it as a runner and start the service</div>
+            <div className="text-[12.5px] text-ink-3">
+              2. Register it as a runner and start the host service
+            </div>
             <CodeBox value={`FCTL_SERVER=${location.origin} fctl host install --token ${reg.token}`} />
             <p className="text-[12.5px] leading-relaxed text-ink-4">
               It shows up here as online within seconds and pulls the sandbox image in the background. With
