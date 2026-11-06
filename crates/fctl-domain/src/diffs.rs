@@ -332,7 +332,7 @@ pub fn untracked(path: &str, bytes: &[u8], whole: bool) -> FileDiff {
         hash.update(b"\0more");
     }
     file.digest = hex::encode(hash.finalize());
-    if bytes[..bytes.len().min(BINARY_SNIFF)].contains(&0) {
+    if binary(bytes) {
         file.binary = true;
         return file;
     }
@@ -362,6 +362,22 @@ pub fn untracked(path: &str, bytes: &[u8], whole: bool) -> FileDiff {
     }
     file.patch = Some(patch);
     file
+}
+
+/// Whether git would call a file of `bytes` binary: a NUL near its start.
+fn binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(BINARY_SNIFF)].contains(&0)
+}
+
+/// The lines `git diff --numstat` would count as added for a new file of
+/// `bytes`, all of it, as [`untracked`] adds them: none for a binary file.
+pub fn added_lines(bytes: &[u8]) -> Option<u32> {
+    if binary(bytes) {
+        return None;
+    }
+    let ends = bytes.iter().filter(|&&b| b == b'\n').count();
+    let unended = bytes.last().is_some_and(|&b| b != b'\n');
+    u32::try_from(ends + usize::from(unended)).ok()
 }
 
 /// A file whose diff is too large to read, let alone keep: `what` says
@@ -656,6 +672,38 @@ pub fn name_status(out: &str) -> Vec<(String, &'static str)> {
         files.push((path.to_owned(), status));
     }
     files
+}
+
+/// What `git status --porcelain -z` lists.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Status<'a> {
+    /// How many entries: a renamed file is one, and so is a directory git
+    /// lists whole.
+    pub entries: u32,
+    /// The paths of the untracked entries (`??`). A directory that holds
+    /// only untracked files, or another repository, is listed whole, with
+    /// a `/` at the end.
+    pub untracked: Vec<&'a str>,
+}
+
+/// Reads `git status --porcelain -z`'s output: two letters, a space and the
+/// path, ended by a NUL, and for a rename or a copy the old path after it,
+/// in a field of its own.
+pub fn status(out: &str) -> Status<'_> {
+    let mut st = Status::default();
+    let mut fields = out.split('\0');
+    while let Some(entry) = fields.next() {
+        let (Some(code), Some(path)) = (entry.get(..2), entry.get(3..)) else {
+            continue;
+        };
+        st.entries += 1;
+        if code == "??" {
+            st.untracked.push(path);
+        } else if code.contains(['R', 'C']) {
+            fields.next();
+        }
+    }
+    st
 }
 
 #[cfg(test)]
@@ -1161,5 +1209,37 @@ index 1..2 100644
         );
         assert!(numstat("").is_empty());
         assert!(name_status("").is_empty());
+    }
+
+    #[test]
+    fn reads_status_with_nuls() {
+        // As git 2.47 printed it, after `git mv old.txt renamed.txt`.
+        let out = "R  renamed.txt\x00old.txt\x00 M src/x.ts\x00?? nested/\x00?? src/y.ts\x00?? test/\x00?? we ird/caf$\u{e9}.txt\x00";
+        assert_eq!(
+            status(out),
+            Status {
+                entries: 6,
+                untracked: vec!["nested/", "src/y.ts", "test/", "we ird/caf$\u{e9}.txt"],
+            }
+        );
+        assert_eq!(status(""), Status::default());
+    }
+
+    #[test]
+    fn counts_the_lines_of_a_new_file_as_git_does() {
+        assert_eq!(added_lines(b""), Some(0));
+        assert_eq!(added_lines(b"one\ntwo\n"), Some(2));
+        assert_eq!(added_lines(b"one\ntwo"), Some(2));
+        assert_eq!(added_lines(b"\n\n"), Some(2));
+        assert_eq!(added_lines(b"crlf\r\nends\r\n"), Some(2));
+        // Latin-1 is text to git, a NUL makes it binary.
+        assert_eq!(added_lines(b"caf\xe9\n"), Some(1));
+        assert_eq!(added_lines(b"\x89PNG\0\0"), None);
+        // As many as untracked() adds.
+        for text in [&b"a\nb\nc"[..], b"a\n\nb\n", b"x"] {
+            let patch = untracked("t", text, true).patch.unwrap_or_default();
+            let added = patch.lines().filter(|l| l.starts_with('+')).count();
+            assert_eq!(added_lines(text), u32::try_from(added).ok());
+        }
     }
 }

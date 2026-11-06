@@ -338,7 +338,8 @@ pub struct FileChange {
     pub path: String,
     /// `added`, `modified`, `deleted`, `renamed` or `untracked`.
     pub status: String,
-    /// Absent for binary files.
+    /// Absent for binary files, and for untracked files past what
+    /// fctl-agent reads of them to count their lines.
     pub additions: Option<u32>,
     pub deletions: Option<u32>,
     /// The [`FileDiff::digest`] of its diff, which the session keeps for
@@ -435,6 +436,8 @@ pub struct GitState {
     /// base), uncommitted and untracked work included. Older agents
     /// compared the work with the base's tip.
     pub files: Vec<FileChange>,
+    /// What `git status` lists as not committed: changed files, and
+    /// untracked ones, a directory git tracks nothing in counting once.
     pub uncommitted: u32,
     pub last_commit: Option<CommitInfo>,
     /// Whether the branch's latest commit is on the remote.

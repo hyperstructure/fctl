@@ -26,6 +26,9 @@ use tokio::sync::mpsc;
 const MAX_CLONES: usize = 30;
 const MAX_CLONE_FILES: usize = 200;
 
+/// Most changed files a repository's state lists: the first by path.
+const MAX_FILES: usize = 500;
+
 /// Paths fctl-agent manages inside the sandbox.
 #[derive(Clone)]
 pub struct Paths {
@@ -726,28 +729,30 @@ pub async fn state_at(
             });
         }
     }
-    let porcelain = run_with(dir, home, "git", &["status", "--porcelain"], &env).await?;
-    let mut uncommitted = 0u32;
-    for line in porcelain.stdout.lines() {
-        uncommitted += 1;
-        if let Some(path) = line.strip_prefix("?? ") {
-            let path = path.trim_matches('"').to_owned();
-            if !path.ends_with('/') && !files.iter().any(|f| f.path == path) {
-                let lines = std::fs::read_to_string(dir.join(&path))
-                    .map(|t| t.lines().count() as u32)
-                    .ok();
-                files.push(FileChange {
-                    path,
-                    status: "untracked".into(),
-                    additions: lines,
-                    deletions: Some(0),
-                    digest: None,
-                });
-            }
-        }
-    }
+    let status = ["status", "--porcelain", "-z", "--untracked-files=normal"];
+    let porcelain = run_with(dir, home, "git", &status, &env).await?;
+    let listed = diffs::status(&porcelain.stdout);
+    let uncommitted = listed.entries;
+    let (new_dirs, mut untracked): (Vec<&str>, Vec<&str>) =
+        listed.untracked.into_iter().partition(|p| p.ends_with('/'));
+    let in_new_dirs = untracked_in(dir, home, &new_dirs, &env).await;
+    untracked.extend(in_new_dirs.iter().map(String::as_str));
+    files.extend(untracked.into_iter().map(|path| FileChange {
+        path: path.to_owned(),
+        status: "untracked".into(),
+        additions: None,
+        deletions: Some(0),
+        digest: None,
+    }));
+    // A file git diffs as well, as one taken out of the index alone, is
+    // listed as git diffs it.
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    files.truncate(500);
+    files.dedup_by(|later, first| later.path == first.path);
+    files.truncate(MAX_FILES);
+    let mut left = MOST_COUNTED;
+    for f in files.iter_mut().filter(|f| f.status == "untracked") {
+        f.additions = untracked_lines(dir, &f.path, &mut left);
+    }
     let last_commit = git_ok_in(dir, home, &["log", "-1", "--format=%H%x00%s"])
         .await
         .ok()
@@ -803,6 +808,76 @@ pub async fn state_at(
         repos: None,
         pull_requests: None,
     })
+}
+
+/// The untracked files in `new_dirs`, directories `git status` lists whole
+/// since git tracks nothing in them: the first [`MAX_FILES`] by path, as
+/// many as a repository's state lists. Another repository in one stays
+/// out, as `git status` leaves it.
+async fn untracked_in(
+    dir: &Path,
+    home: &Path,
+    new_dirs: &[&str],
+    env: &[(&str, &OsStr)],
+) -> Vec<String> {
+    if new_dirs.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec!["ls-files", "-z", "--others", "--exclude-standard", "--"];
+    let specs: Vec<String> = new_dirs.iter().map(|d| format!(":(literal){d}")).collect();
+    args.extend(specs.iter().map(String::as_str));
+    // Enough for that many of the longest paths: a directory a build
+    // filled holds far more.
+    let most = MAX_FILES * (diffs::MAX_PATH_BYTES + 1);
+    let read = match run_bounded(dir, home, "git", &args, env, most).await {
+        Ok(read) if read.ok || read.cut => read,
+        Ok(_) => {
+            tracing::debug!("git ls-files in {} failed", dir.display());
+            return Vec::new();
+        }
+        Err(e) => {
+            tracing::debug!("git ls-files in {}: {e:#}", dir.display());
+            return Vec::new();
+        }
+    };
+    let out = String::from_utf8_lossy(&read.out);
+    // Each path ends with a NUL: what follows the last is cut short.
+    let whole = out.rsplit_once('\0').map_or("", |(whole, _)| whole);
+    whole
+        .split('\0')
+        .filter(|p| !p.is_empty() && !p.ends_with('/'))
+        .take(MAX_FILES)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The lines an untracked file in `dir` adds, read whole if it is within
+/// what is `left` to read, which it takes them from: none past that, nor
+/// for a binary file. A symbolic link adds the path it points to, as git
+/// has it, and is not followed.
+fn untracked_lines(dir: &Path, path: &str, left: &mut usize) -> Option<u32> {
+    use std::io::Read;
+    let full = dir.join(path);
+    let meta = std::fs::symlink_metadata(&full).ok()?;
+    if meta.file_type().is_symlink() {
+        return Some(1);
+    }
+    if !meta.is_file() || meta.len() > *left as u64 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&full)
+        .ok()?
+        .take(*left as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    // It grew past what is left since it was looked at.
+    if bytes.len() > *left {
+        *left = 0;
+        return None;
+    }
+    *left -= bytes.len();
+    diffs::added_lines(&bytes)
 }
 
 /// What a clone's changes are counted from: the merge base of its branch
@@ -960,6 +1035,10 @@ async fn diffs_within(
 /// The most of git's diff and of untracked files fctl-agent reads for one
 /// refresh of a session's diffs: twice what a session keeps.
 const MOST_READ: usize = 2 * diffs::MAX_SESSION_BYTES;
+
+/// The most of untracked files fctl-agent reads for one state of a
+/// repository, to count their lines.
+const MOST_COUNTED: usize = MOST_READ;
 
 /// How far past what it keeps of git's diff fctl-agent reads, to see where
 /// the file that a cut falls in starts.
@@ -2669,6 +2748,127 @@ cat "$answer"
             ["added a.txt +3 -0", "untracked new.txt +1 -0"]
         );
         assert_eq!((st.ahead, st.behind, st.uncommitted), (1, 1, 2));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn untracked_files_in_new_directories_are_changes_too() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        commit(&p.workdir, &p.home, ".gitignore", "*.log\n", "Ignore logs").await?;
+        std::fs::create_dir_all(p.workdir.join("src"))?;
+        commit(&p.workdir, &p.home, "src/a.ts", "a\n", "Add a.ts").await?;
+        // Beside tracked files, and in directories git knows nothing in.
+        std::fs::write(p.workdir.join("src/b.ts"), "b\n")?;
+        let sync_dir = p.workdir.join("test/sync");
+        std::fs::create_dir_all(&sync_dir)?;
+        std::fs::write(sync_dir.join("retry.test.ts"), "it()\nit()\n")?;
+        std::fs::write(sync_dir.join("debug.log"), "ignored\n")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("retry.test.ts", sync_dir.join("latest"))?;
+        std::fs::create_dir_all(p.workdir.join("docs/caf\u{e9}"))?;
+        std::fs::write(p.workdir.join("docs/caf\u{e9}/menu \"du jour\".md"), "x\n")?;
+        std::fs::create_dir_all(p.workdir.join("build"))?;
+        std::fs::write(p.workdir.join("build/out.log"), "ignored\n")?;
+        // Another repository stays out, as git status leaves it.
+        let other = p.workdir.join("vendor/lib");
+        std::fs::create_dir_all(&other)?;
+        git_ok_in(&other, &p.home, &["init", "-q"]).await?;
+        std::fs::write(other.join("lib.rs"), "fn lib() {}\n")?;
+
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        let mut expected = vec![
+            "added .gitignore +1 -0",
+            "untracked docs/caf\u{e9}/menu \"du jour\".md +1 -0",
+            "added src/a.ts +1 -0",
+            "untracked src/b.ts +1 -0",
+        ];
+        // The link adds the path it points to, not what that file holds.
+        #[cfg(unix)]
+        expected.push("untracked test/sync/latest +1 -0");
+        expected.push("untracked test/sync/retry.test.ts +2 -0");
+        assert_eq!(changes(&st), expected);
+        // What git status lists: src/b.ts, docs/, test/ and vendor/.
+        assert_eq!(st.uncommitted, 4);
+
+        // With their diffs, as other untracked files.
+        let mut pulls = Pulls::default();
+        let working = Moment::Working { opened_pr: false };
+        let synced = sync(&p, &spec, true, working, None, &mut pulls, true).await?;
+        let diffs = synced.diffs.context("diffs")?;
+        let retry = diffs
+            .iter()
+            .find(|d| d.path == "test/sync/retry.test.ts")
+            .context("retry.test.ts")?;
+        assert_eq!(retry.status, "untracked");
+        assert_eq!(
+            retry.patch.as_deref(),
+            Some("@@ -0,0 +1,2 @@\n+it()\n+it()")
+        );
+        assert!(synced.state.files.iter().all(|f| f.digest.is_some()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_new_directory_lists_as_many_files_as_a_state_holds() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = sandbox(dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        // A build's output that .gitignore misses, and a file after it.
+        let out = p.workdir.join("out");
+        std::fs::create_dir_all(&out)?;
+        for i in 0..MAX_FILES + 20 {
+            std::fs::write(out.join(format!("{i:04}.js")), "x\n")?;
+        }
+        std::fs::write(p.workdir.join("z.txt"), "z\n")?;
+        let st = state(&p, &spec, &Pulls::default()).await?;
+        assert_eq!(st.files.len(), MAX_FILES);
+        assert_eq!(st.files[0].path, "out/0000.js");
+        assert_eq!(
+            st.files[MAX_FILES - 1].path,
+            format!("out/{:04}.js", MAX_FILES - 1)
+        );
+        assert!(st.files.iter().all(|f| f.additions == Some(1)));
+        assert_eq!(st.uncommitted, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn untracked_files_are_counted_within_what_is_left_to_read() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let work = dir.path();
+        std::fs::write(work.join("big.txt"), "line\n".repeat(100))?;
+        std::fs::write(work.join("small.txt"), "one\ntwo\n")?;
+        std::fs::write(work.join("logo.png"), b"\x89PNG\0\0")?;
+        // Too large for what is left: not read, and the next one still is.
+        let mut left = 100;
+        assert_eq!(untracked_lines(work, "big.txt", &mut left), None);
+        assert_eq!(left, 100);
+        assert_eq!(untracked_lines(work, "small.txt", &mut left), Some(2));
+        assert_eq!(left, 92);
+        assert_eq!(untracked_lines(work, "logo.png", &mut left), None);
+        assert_eq!(left, 86);
+        let mut all = MOST_COUNTED;
+        assert_eq!(untracked_lines(work, "big.txt", &mut all), Some(100));
+        assert_eq!(untracked_lines(work, "missing", &mut all), None);
+        std::fs::create_dir(work.join("dir"))?;
+        assert_eq!(untracked_lines(work, "dir", &mut all), None);
+        #[cfg(unix)]
+        {
+            // A link isn't followed: this one would never end.
+            std::os::unix::fs::symlink("/dev/zero", work.join("zeros"))?;
+            assert_eq!(untracked_lines(work, "zeros", &mut left), Some(1));
+            assert_eq!(left, 86);
+        }
         Ok(())
     }
 
