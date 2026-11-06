@@ -787,6 +787,24 @@ async fn prepare(
     Ok((sb, for_agent))
 }
 
+/// Starts fctl-agent in a sandbox that has one, perhaps of an older host,
+/// which may not run as root (`serve --user`): this host's goes in first.
+/// One that runs keeps running.
+async fn start_again(ctx: &HostCtx, sb: &Sandbox) -> Result<()> {
+    if ctx.driver.needs_linux_agent() {
+        let installed = async {
+            let bin = crate::agentbin::linux_agent(&ctx.cfg)
+                .await
+                .context("getting fctl-agent for the sandbox")?;
+            ctx.driver.install_agent(sb, &bin).await
+        };
+        if let Err(e) = installed.await {
+            tracing::warn!("putting this host's fctl-agent in {}: {e:#}", sb.name);
+        }
+    }
+    ctx.driver.start_agent(sb).await
+}
+
 async fn run(
     ctx: Arc<HostCtx>,
     start: Start,
@@ -882,7 +900,7 @@ async fn run(
         }
         None => {
             let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
-            if let Err(e) = ctx.driver.start_agent(&sb).await {
+            if let Err(e) = start_again(&ctx, &sb).await {
                 tracing::warn!("restarting fctl-agent in {}: {e:#}", sb.name);
             }
             sb
@@ -941,7 +959,7 @@ async fn run(
             let (ctx, sb) = (ctx.clone(), sb.clone());
             let restart = std::mem::take(&mut restart_agent);
             attaching = Some(tokio::spawn(async move {
-                if restart && let Err(e) = ctx.driver.start_agent(&sb).await {
+                if restart && let Err(e) = start_again(&ctx, &sb).await {
                     tracing::warn!("starting fctl-agent in {}: {e:#}", sb.name);
                 }
                 ctx.driver.attach(&sb).await

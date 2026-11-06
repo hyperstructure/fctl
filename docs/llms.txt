@@ -31,7 +31,7 @@ web app · fctl CLI · HTTP API · Claude apps · Linear · GitHub webhooks
 
 - The **control plane** (one per instance, such as app.fctl.sh) serves the API and the web app, keeps each session's event log, mints short-lived GitHub tokens, hands sessions to runners and relays messages. It never runs Claude itself.
 - A **host** is the `fctl host` service on a machine; registered with an instance it is a **runner**. It runs each session in a **sandbox** made by its **driver**, and puts **fctl-agent** in it.
-- **fctl-agent** supervises `claude -p` in stream-json mode, journals every event until the control plane acknowledges it, pushes branches, looks up pull requests, and answers the in-sandbox `fctl` commands (`fctl edit`, `fctl memory`, `fctl ticket`…) without any fctl credentials in the sandbox.
+- **fctl-agent** supervises `claude -p` in stream-json mode, journals every event until the control plane acknowledges it, pushes branches, looks up pull requests, and answers the in-sandbox `fctl` commands (`fctl edit`, `fctl memory`, `fctl ticket`…) without any fctl credentials in the sandbox. In container and VM sandboxes it runs as root and Claude as the sandbox's user, whose `kill` can't stop it.
 
 ## Vocabulary
 
