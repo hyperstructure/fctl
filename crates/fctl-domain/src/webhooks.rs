@@ -704,6 +704,7 @@ fn review_of(run: &Value) -> ReviewCheck {
         url: None,
         project_id: None,
         held_after: None,
+        unsent: false,
     }
 }
 

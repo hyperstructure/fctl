@@ -26,8 +26,8 @@ pub mod vm;
 pub mod vsock;
 
 use super::{
-    AGENT_PATH, AgentIo, DiskSpot, Running, Sandbox, SandboxInfo, SandboxSpec, attach_script,
-    serve_script,
+    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, Running, Sandbox, SandboxInfo, SandboxSpec,
+    attach_as_root, serve_as_root,
 };
 use crate::config::{FirecrackerConfig, HostConfig};
 use crate::driver::ImageInfo;
@@ -850,7 +850,7 @@ impl FirecrackerDriver {
                 "sh".into(),
                 "-c".into(),
                 format!(
-                    "mkdir -p /opt/fctl/bin && cat > {AGENT_PATH}.new && chmod 755 {AGENT_PATH}.new && mv -f {AGENT_PATH}.new {AGENT_PATH}"
+                    "{AGENT_DIR_SCRIPT} && cat > {AGENT_PATH}.new && chmod 755 {AGENT_PATH}.new && mv -f {AGENT_PATH}.new {AGENT_PATH}"
                 ),
             ],
             user: Some("root".into()),
@@ -871,15 +871,34 @@ impl FirecrackerDriver {
         Ok(())
     }
 
+    /// Starts fctl-agent as root, and Claude and its commands as the
+    /// image's user, who can't stop it then.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
         let vm = self.vm(&sb.name)?;
-        vsock::detach(&vm.vsock(), self.sh(&sb.name, &serve_script(AGENT_PATH))).await
+        vsock::detach(&vm.vsock(), self.serve(&sb.name)).await
+    }
+
+    /// `fctl-agent serve` as root, for the image's user.
+    fn serve(&self, name: &str) -> Exec {
+        let exec = self.exec_for(name, Vec::new());
+        let user = exec.user.clone().unwrap_or_else(|| "root".into());
+        Exec {
+            argv: serve_as_root(&user),
+            user: Some("root".into()),
+            cwd: Some("/".into()),
+            ..exec
+        }
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
         let vm = self.vm(&sb.name)?;
-        let started =
-            vsock::start(&vm.vsock(), self.sh(&sb.name, &attach_script(AGENT_PATH))).await?;
+        let exec = Exec {
+            argv: attach_as_root(),
+            user: Some("root".into()),
+            cwd: Some("/".into()),
+            ..self.exec_for(&sb.name, Vec::new())
+        };
+        let started = vsock::start(&vm.vsock(), exec).await?;
         // Why an attach failed, in the host's log.
         let name = sb.name.clone();
         let mut stderr = started.stderr;

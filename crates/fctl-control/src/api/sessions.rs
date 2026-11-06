@@ -607,11 +607,13 @@ pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 /// Passes on to the session's agent the findings of review `review`, which
-/// fctl held back from it (`ReviewCheck::held_after`): the agent gets the
-/// message from fctl it would have got, which resumes a stopped session on
-/// the subscription it ran on, and those of up to
-/// `fctl_domain::reviews::MAX_PASSED_ON` reviews in a row, these included,
-/// before fctl holds them back again. For those who may message the agent.
+/// fctl held back from it (`ReviewCheck::held_after`), or which went to no
+/// session (`ReviewCheck::unsent`) where this one lists the review's pull
+/// request: the agent gets the message from fctl it would have got, which
+/// resumes a stopped session on the subscription it ran on, and those of up
+/// to `fctl_domain::reviews::MAX_PASSED_ON` reviews in a row, these
+/// included, before fctl holds them back again. For those who may message
+/// the agent.
 pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
     a.require_editor()?;
@@ -624,6 +626,17 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
         return Err(conflict("The session failed. Resume it to continue."));
     }
     let by = ctx.user()?.to_ref();
+    if let Some(out) = crate::reviews::pass_on_unsent(ctx, &a.row, &review, &by).await? {
+        ctx.audit_in(
+            Some(a.workspace_id()),
+            "review.unsent_passed_on",
+            Some(id),
+            Some(serde_json::json!({ "review": review })),
+        );
+        return http::ok(&SendMessageResponse {
+            delivery_id: out.delivery_id,
+        });
+    }
     let stub = internal::session_stub(&ctx.env, id)?;
     let out: Delivered = internal::post(
         &stub,
@@ -631,6 +644,7 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
         &internal::PassOn {
             review: review.clone(),
             by,
+            unsent: None,
         },
     )
     .await?;

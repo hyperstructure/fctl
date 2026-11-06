@@ -9,6 +9,8 @@ pub struct User {
     /// Its supplementary groups.
     pub groups: Vec<u32>,
     pub home: String,
+    /// Its name, when an account has its uid.
+    pub name: Option<String>,
 }
 
 /// The user `spec` names (`name`, `uid`, `name:group` or `uid:gid`; unset:
@@ -98,6 +100,7 @@ pub fn find_in(spec: Option<&str>, passwd: &str, group: &str) -> Result<User, St
         gid,
         groups: supplementary,
         home: if home.is_empty() { "/".into() } else { home },
+        name: name.map(str::to_owned),
     })
 }
 
@@ -117,7 +120,8 @@ mod tests {
                 uid: 1000,
                 gid: 1000,
                 groups: vec![1000, 27, 999],
-                home: "/home/agent".into()
+                home: "/home/agent".into(),
+                name: Some("agent".into()),
             })
         );
         // By uid, with another group.
@@ -136,7 +140,10 @@ mod tests {
         }
         // A uid no account has.
         let u = find_in(Some("4242"), PASSWD, GROUP);
-        assert_eq!(u.map(|u| (u.uid, u.gid, u.home)), Ok((4242, 0, "/".into())));
+        assert_eq!(
+            u.map(|u| (u.uid, u.gid, u.home, u.name)),
+            Ok((4242, 0, "/".into(), None))
+        );
         assert_eq!(
             find_in(Some("ghost"), PASSWD, GROUP),
             Err("unable to find user ghost: no matching entries in passwd file".into())

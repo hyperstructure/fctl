@@ -8,9 +8,9 @@
 //! fctl-agent attach`.
 
 use super::{
-    AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, SLOW_COMMAND_TIMEOUT, Sandbox,
-    SandboxInfo, SandboxSpec, TimedOut, attach_script, run_cmd_within, serve_script, timed_out,
-    unanswered,
+    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
+    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut, attach_as_root,
+    run_cmd_within, serve_as_root, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use crate::docker_access::Unreachable;
@@ -854,32 +854,62 @@ impl ContainerDriver {
         Ok(names_in(&out, repository))
     }
 
+    /// Puts fctl-agent in the sandbox, beside it first and then in its
+    /// place, so that one that runs keeps running: the host puts its own in
+    /// whenever it starts fctl-agent.
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
         let src = binary.display().to_string();
-        let dest = format!("{}:{AGENT_PATH}", sb.name);
-        if self.flavor == Flavor::Docker {
-            let _ = self
-                .run(&["exec", "-u", "0", &sb.name, "mkdir", "-p", "/opt/fctl/bin"])
-                .await;
-        }
+        let new = format!("{AGENT_PATH}.new");
+        let dest = format!("{}:{new}", sb.name);
+        self.run(&["exec", "-u", "0", &sb.name, "sh", "-c", AGENT_DIR_SCRIPT])
+            .await
+            .context("readying /opt/fctl/bin in the sandbox")?;
         self.run(&["cp", &src, &dest])
             .await
             .context("copying fctl-agent into the sandbox")?;
-        let _ = self
-            .run(&["exec", "-u", "0", &sb.name, "chmod", "755", AGENT_PATH])
-            .await;
+        let script = format!("chown 0:0 {new} && chmod 755 {new} && mv -f {new} {AGENT_PATH}");
+        self.run(&["exec", "-u", "0", &sb.name, "sh", "-c", &script])
+            .await
+            .context("putting fctl-agent in place in the sandbox")?;
         Ok(())
     }
 
+    /// Starts fctl-agent as root, and Claude and its commands as the
+    /// image's user, who can't stop it then.
     pub async fn start_agent(&self, sb: &Sandbox) -> Result<()> {
-        let script = serve_script(AGENT_PATH);
-        self.run(&["exec", "-d", &sb.name, "sh", "-c", &script])
-            .await?;
+        let uid = self
+            .run(&["exec", &sb.name, "id", "-u"])
+            .await
+            .context("finding the sandbox's user")?;
+        let uid = uid.trim();
+        if uid.is_empty() || !uid.bytes().all(|b| b.is_ascii_digit()) {
+            anyhow::bail!("`id -u` in {} said {uid:?}, not a user id", sb.name);
+        }
+        if uid == "0" {
+            tracing::warn!(
+                "{}'s image runs as root, so Claude does, and its commands can stop fctl-agent",
+                sb.name
+            );
+        }
+        let serve = serve_as_root(uid);
+        let mut args = vec!["exec", "-d", "-u", "0", &sb.name];
+        args.extend(serve.iter().map(String::as_str));
+        self.run(&args).await?;
         Ok(())
     }
 
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
-        let mut child = self.spawn(sb, &attach_script(AGENT_PATH)).await?;
+        let mut args = vec!["exec", "-i", "-u", "0", &sb.name];
+        let attach = attach_as_root();
+        args.extend(attach.iter().map(String::as_str));
+        let mut child = tokio::process::Command::new(&self.bin)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("running {} exec", self.bin))?;
         let stdout = child.stdout.take().context("exec stdout")?;
         let stdin = child.stdin.take().context("exec stdin")?;
         Ok(AgentIo {
@@ -1182,13 +1212,12 @@ fn installed(bin: &str) -> bool {
 /// fallback either. One that ran out of time may, as after any other
 /// failure.
 fn may_fall_back(e: &anyhow::Error) -> bool {
-    !(e.is::<super::NotStarted>() || e.is::<Unreachable>())
+    !(e.is::<NotStarted>() || e.is::<Unreachable>())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver::NotStarted;
     use crate::driver::fake::{FakeCli, write_script};
     use std::sync::{Mutex, PoisonError};
 
@@ -2100,6 +2129,58 @@ esac
         assert!(!missing.start_service().await?);
         let broken = ContainerDriver::with_bin(Flavor::Apple, "false".into());
         assert!(broken.start_service().await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fctl_agent_runs_as_root_and_claude_as_the_images_user() -> Result<()> {
+        let sb = Sandbox {
+            name: "fctl-ses-1".into(),
+            root: None,
+        };
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        let docker = cli.driver(Flavor::Docker);
+        docker.install_agent(&sb, Path::new("fctl-agent")).await?;
+        docker.start_agent(&sb).await?;
+        assert_eq!(
+            cli.calls(),
+            [
+                // Root's, as fctl-agent runs as root from there.
+                "exec -u 0 fctl-ses-1 sh -c mkdir -p /opt/fctl/bin && chown 0:0 /opt/fctl /opt/fctl/bin && chmod 755 /opt/fctl /opt/fctl/bin",
+                // Beside the one that may run, then in its place.
+                "cp fctl-agent fctl-ses-1:/opt/fctl/bin/fctl-agent.new",
+                "exec -u 0 fctl-ses-1 sh -c chown 0:0 /opt/fctl/bin/fctl-agent.new && chmod 755 /opt/fctl/bin/fctl-agent.new && mv -f /opt/fctl/bin/fctl-agent.new /opt/fctl/bin/fctl-agent",
+                "exec fctl-ses-1 id -u",
+                "exec -d -u 0 fctl-ses-1 /opt/fctl/bin/fctl-agent serve --user 1000 --socket /var/lib/fctl-agent/agent.sock --state /var/lib/fctl-agent/state --log /var/lib/fctl-agent/agent.log",
+            ]
+        );
+        // The host reaches it as root.
+        if let Some(mut exec) = docker.attach(&sb).await?.child {
+            exec.wait().await?;
+        }
+        assert_eq!(
+            cli.calls().last().map(String::as_str),
+            Some(
+                "exec -i -u 0 fctl-ses-1 /opt/fctl/bin/fctl-agent attach --socket /var/lib/fctl-agent/agent.sock"
+            )
+        );
+
+        // An image that runs as root runs Claude as root.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.user("0:0")?;
+        cli.driver(Flavor::Docker).start_agent(&sb).await?;
+        assert!(
+            cli.calls()
+                .last()
+                .is_some_and(|c| c.contains(" serve --user 0 ")),
+            "{:?}",
+            cli.calls()
+        );
+        // One whose user can't be told stops there.
+        let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
+        cli.user("nobody knows")?;
+        assert!(cli.driver(Flavor::Docker).start_agent(&sb).await.is_err());
+        assert!(!cli.calls().iter().any(|c| c.contains(" serve ")));
         Ok(())
     }
 

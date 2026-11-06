@@ -18,8 +18,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::mpsc;
 
 /// Most other repositories reported after a turn, and files per repository.
@@ -87,7 +87,7 @@ async fn run_with(
     args: &[&str],
     env: &[(&str, &OsStr)],
 ) -> Result<Output> {
-    let out = Command::new(program)
+    let out = crate::user::command(program)
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
@@ -560,7 +560,7 @@ pub async fn setup_script(
     log: &LogSink,
 ) -> Result<bool> {
     let _ = log.send((LogLevel::Info, "Running the setup script".into()));
-    let mut cmd = Command::new("bash");
+    let mut cmd = crate::user::command("bash");
     cmd.args(["-lc", script])
         .current_dir(&p.workdir)
         .env("HOME", &p.home)
@@ -1125,7 +1125,7 @@ async fn run_bounded(
     most: usize,
 ) -> Result<Bounded> {
     use tokio::io::AsyncReadExt;
-    let mut child = Command::new(program)
+    let mut child = crate::user::command(program)
         .args(args)
         .current_dir(dir)
         .env("HOME", home)
@@ -1360,7 +1360,11 @@ pub enum Moment {
     /// branch, new commits are pushed, unless their branch's pull request
     /// merged, and every pull request is looked up that isn't merged.
     TurnEnded,
-    /// The session stops: as when a turn ends, without lookups.
+    /// The session stops: as when a turn ends, but it looks up only the
+    /// pull request of a pushed branch it follows none for, which the agent
+    /// opened in a turn cut short, say, before fctl-agent saw `gh pr
+    /// create`, or that a person opened from the branch. What it found
+    /// before stands for the others.
     Stopping,
 }
 
@@ -1373,13 +1377,14 @@ impl Moment {
 
     /// Whether to look up the pull request of a branch whose head is on the
     /// remote as `now` says. `before` is how the last report had it: `None`
-    /// when it didn't have the repository.
-    fn looks_up(self, now: OnRemote, before: Option<OnRemote>) -> bool {
+    /// when it didn't have the repository; `follows`, whether fctl-agent
+    /// follows a pull request of the branch.
+    fn looks_up(self, now: OnRemote, before: Option<OnRemote>, follows: bool) -> bool {
         now.is_some()
             && match self {
                 Moment::Working { opened_pr } => opened_pr || before != Some(now),
                 Moment::TurnEnded => true,
-                Moment::Stopping => false,
+                Moment::Stopping => !follows,
             }
     }
 
@@ -1394,6 +1399,12 @@ impl Moment {
         }
     }
 }
+
+/// How long GitHub has to say which pull requests the branches have as
+/// the session stops ([`Moment::Stopping`]), all of them together: the
+/// stop waits for it, and the host forces a session down a minute after
+/// asking it to stop.
+const STOP_LOOKUP: Duration = Duration::from_secs(20);
 
 /// A branch and its head, when the remote has that commit.
 type OnRemote<'a> = Option<(&'a str, &'a str)>;
@@ -1457,6 +1468,8 @@ struct Run<'a> {
     /// The URLs of the pull requests looked up so far.
     looked: Vec<String>,
     logs: Vec<(LogLevel, String)>,
+    /// When lookups give up: [`STOP_LOOKUP`] after a stop's sync starts.
+    deadline: Option<tokio::time::Instant>,
 }
 
 /// A repository whose branch fctl-agent pushes and looks up the pull
@@ -1479,9 +1492,15 @@ impl Run<'_> {
     }
 
     /// Looks up the pull request of `branch`, checked out in `w`; if what it
-    /// finds changes whether that merged, or how, `st` follows.
+    /// finds changes whether that merged, or how, `st` follows. As the
+    /// session stops, GitHub has until the run's deadline to answer.
     async fn look_up(&mut self, w: &Writable<'_>, st: &mut GitState, branch: &str) {
-        let Some(found) = followed::look_up(self.p, w.dir, branch).await else {
+        let look = followed::look_up(self.p, w.dir, branch);
+        let found = match self.deadline {
+            Some(at) => tokio::time::timeout_at(at, look).await.ok().flatten(),
+            None => look.await,
+        };
+        let Some(found) = found else {
             return;
         };
         let was = self.pulls.merged(Some(w.repo), Some(branch)).cloned();
@@ -1573,7 +1592,8 @@ impl Run<'_> {
         }
         let now = on_remote(&st.branch, &st.head, st.pushed);
         let before = before.map(Before::on_remote);
-        let mut look = self.moment.looks_up(now, before);
+        let follows = self.pulls.of_branch(w.repo, &branch).is_some();
+        let mut look = self.moment.looks_up(now, before, follows);
         if !look
             && now.is_none()
             && self.moment.looks_up_deleted(before)
@@ -1637,6 +1657,7 @@ pub async fn sync(
         pulls,
         looked: Vec::new(),
         logs: Vec::new(),
+        deadline: (moment == Moment::Stopping).then(|| tokio::time::Instant::now() + STOP_LOOKUP),
     };
     let mut st = state(p, spec, run.pulls).await?;
     // The branch fctl-agent checked out.
@@ -1798,6 +1819,7 @@ pub fn detached(st: &GitState) -> bool {
 pub(crate) mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
 
     pub(crate) fn spec() -> Result<SessionSpec> {
         spec_with(serde_json::Value::Null)
@@ -2490,21 +2512,27 @@ cat "$answer"
         let committed = on_remote(&branch, &second, false);
         let working = Moment::Working { opened_pr: false };
         // A branch pushed since the last report, or whose pushed head moved.
-        assert!(working.looks_up(pushed, Some(None)));
-        assert!(working.looks_up(moved, Some(pushed)));
+        assert!(working.looks_up(pushed, Some(None), false));
+        assert!(working.looks_up(moved, Some(pushed), true));
         // A repository the last report didn't have.
-        assert!(working.looks_up(pushed, None));
+        assert!(working.looks_up(pushed, None, false));
         // Nothing new for GitHub.
-        assert!(!working.looks_up(pushed, Some(pushed)));
-        assert!(!working.looks_up(committed, Some(pushed)));
+        assert!(!working.looks_up(pushed, Some(pushed), false));
+        assert!(!working.looks_up(committed, Some(pushed), false));
         // After `gh pr create`, every pushed branch.
         let opened = Moment::Working { opened_pr: true };
-        assert!(opened.looks_up(pushed, Some(pushed)));
-        assert!(!opened.looks_up(committed, Some(pushed)));
-        // When a turn ends, every pushed branch; none when the session stops.
-        assert!(Moment::TurnEnded.looks_up(pushed, Some(pushed)));
-        assert!(!Moment::TurnEnded.looks_up(committed, None));
-        assert!(!Moment::Stopping.looks_up(moved, Some(None)));
+        assert!(opened.looks_up(pushed, Some(pushed), true));
+        assert!(!opened.looks_up(committed, Some(pushed), false));
+        // When a turn ends, every pushed branch.
+        assert!(Moment::TurnEnded.looks_up(pushed, Some(pushed), true));
+        assert!(!Moment::TurnEnded.looks_up(committed, None, false));
+        // When the session stops, a pushed branch it follows no pull
+        // request of, whatever the last report said.
+        let stopping = Moment::Stopping;
+        assert!(stopping.looks_up(pushed, Some(pushed), false));
+        assert!(stopping.looks_up(moved, Some(None), false));
+        assert!(!stopping.looks_up(moved, Some(None), true));
+        assert!(!stopping.looks_up(committed, Some(pushed), false));
     }
 
     #[test]
@@ -2519,6 +2547,44 @@ cat "$answer"
         assert!(Moment::Working { opened_pr: true }.looks_up_deleted(Some(None)));
         assert!(Moment::TurnEnded.looks_up_deleted(Some(None)));
         assert!(!Moment::Stopping.looks_up_deleted(None));
+    }
+
+    #[tokio::test]
+    async fn a_stopping_session_looks_up_only_a_pushed_branch_it_follows_no_pull_request_of()
+    -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut p = sandbox(dir.path())?;
+        let gh = FakeGh::install(&mut p, dir.path())?;
+        let spec = spec()?;
+        configure_git(&p, &spec.git_author).await?;
+        let origin = fake_github(dir.path(), &p.home, "acme/widgets").await?;
+        let (log, _logs) = mpsc::unbounded_channel();
+        prepare(&p, &spec, &log).await?;
+        let main = git_ok_in(&origin, &p.home, &["rev-parse", "main"]).await?;
+        // The agent's turn was cut short after it committed and a pull
+        // request was opened from its branch, which fctl-agent never saw.
+        let head = commit(&p.workdir, &p.home, "a.txt", "one\n", "Add a.txt").await?;
+        gh.knows(1, "fctl/1-test", "OPEN", &head, main.trim())?;
+        let mut pulls = Pulls::default();
+        let stopping = Moment::Stopping;
+        let stopped = sync(&p, &spec, true, stopping, None, &mut pulls, false).await?;
+        assert_eq!(log_texts(&stopped.logs), ["Pushed fctl/1-test"]);
+        let pr = stopped
+            .state
+            .pull_request
+            .clone()
+            .context("its pull request")?;
+        assert_eq!((pr.number, pr.state.as_deref()), (1, Some("open")));
+        assert_eq!(pulls.listed().len(), 1);
+        assert_eq!(gh.calls().lines().count(), 1);
+        // One it follows stands as found before: no lookup.
+        gh.knows(1, "fctl/1-test", "MERGED", &head, main.trim())?;
+        let last = Some(&stopped.state);
+        let again = sync(&p, &spec, true, stopping, last, &mut pulls, false).await?;
+        let state = again.state.pull_request.and_then(|p| p.state);
+        assert_eq!(state.as_deref(), Some("open"));
+        assert_eq!(gh.calls().lines().count(), 1);
+        Ok(())
     }
 
     #[tokio::test]

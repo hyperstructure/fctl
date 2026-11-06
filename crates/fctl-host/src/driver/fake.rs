@@ -24,7 +24,8 @@ use std::sync::{Mutex, PoisonError};
 /// container mounts. Like Docker, `volume rm` refuses while a container
 /// mounts the volume. Short-lived containers (`run --rm`) measure a volume
 /// with `du` and empty it with `find`. `exec` prints `uid` (`1000:1000`
-/// without it), as `id` would, unless it runs as root.
+/// without it), as `id` would, or its user's part for `id -u`, unless it
+/// runs as root or in the background; `cp` copies nothing.
 const SCRIPT: &str = r##"#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -137,8 +138,10 @@ case "$1 $2" in
     done
     rm "$d/volumes/$3"
     echo "$3" ;;
-  "exec -u") ;;
-  "exec "*) cat "$d/uid" 2>/dev/null || echo 1000:1000 ;;
+  "exec -u" | "exec -d" | "cp "*) ;;
+  "exec "*)
+    ids=$(cat "$d/uid" 2>/dev/null || echo 1000:1000)
+    case "$3 $4" in "id -u") echo "${ids%%:*}" ;; *) echo "$ids" ;; esac ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "##;

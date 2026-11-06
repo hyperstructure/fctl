@@ -193,7 +193,49 @@ pub fn session_of(name: &str) -> Option<String> {
 /// Where fctl-agent lives inside container and VM sandboxes.
 pub const AGENT_PATH: &str = "/opt/fctl/bin/fctl-agent";
 
-/// The shell snippet that starts the supervisor inside a sandbox.
+/// Readies `/opt/fctl/bin` for fctl-agent, as root: root's, where an image
+/// gives it to its user (the default image did), since fctl-agent runs as
+/// root from there, and its user must not put another in its place.
+pub const AGENT_DIR_SCRIPT: &str = "mkdir -p /opt/fctl/bin && chown 0:0 /opt/fctl /opt/fctl/bin && chmod 755 /opt/fctl /opt/fctl/bin";
+
+/// Where fctl-agent keeps its socket, state and log in container and VM
+/// sandboxes, where it runs as root: a directory only root may enter, out
+/// of reach of the user Claude runs as.
+pub const AGENT_DIR: &str = "/var/lib/fctl-agent";
+
+/// `fctl-agent serve` as root, with Claude and its commands as `user` (a
+/// name or a uid), who can't stop it then.
+pub fn serve_as_root(user: &str) -> Vec<String> {
+    [
+        AGENT_PATH,
+        "serve",
+        "--user",
+        user,
+        "--socket",
+        &format!("{AGENT_DIR}/agent.sock"),
+        "--state",
+        &format!("{AGENT_DIR}/state"),
+        "--log",
+        &format!("{AGENT_DIR}/agent.log"),
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// `fctl-agent attach` to a supervisor that runs as root, as root.
+pub fn attach_as_root() -> Vec<String> {
+    [
+        AGENT_PATH,
+        "attach",
+        "--socket",
+        &format!("{AGENT_DIR}/agent.sock"),
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// The shell snippet that starts the supervisor inside a sandbox as the
+/// sandbox's user, where it can't run as root.
 pub fn serve_script(agent: &str) -> String {
     format!(
         "mkdir -p \"$HOME/.fctl\" && exec {agent} serve --socket \"$HOME/.fctl/agent.sock\" --state \"$HOME/.fctl/state\" --log \"$HOME/.fctl/agent.log\""
@@ -202,6 +244,14 @@ pub fn serve_script(agent: &str) -> String {
 
 pub fn attach_script(agent: &str) -> String {
     format!("exec {agent} attach --socket \"$HOME/.fctl/agent.sock\"")
+}
+
+/// Arguments as one line of `sh`, each quoted.
+pub fn shell_words(args: &[String]) -> String {
+    args.iter()
+        .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub enum Driver {

@@ -3,7 +3,8 @@
 
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, CirclePause, Play, RotateCw } from "lucide-react";
+import { ArrowRight, CirclePause, Inbox, Play, RotateCw, Send } from "lucide-react";
+import type { ReactNode } from "react";
 import { ReviewStateIcon } from "@/components/review";
 import { Button, ChecksIcon, PullRequestIcon, toast } from "@/components/ui";
 import type * as G from "@/gen";
@@ -74,8 +75,8 @@ export function PullRequestReviewMark({ pr, className }: { pr: G.PullRequestRef;
  * fctl's review of it, under it on the session's page: how it stands, in a line that opens the
  * review's session, where its agent's work and what it found show. Once it ended, a button beside
  * reviews the pull request again for those who may ask for reviews in the review's project. When
- * fctl held its findings back from the agent of the session whose pull request it is, the card
- * ends with that (`HeldReview`).
+ * fctl held its findings back from the agent of the session whose pull request it is, or they went
+ * to no session, the card ends with that (`HeldReview`, `UnsentReview`).
  */
 export function PullRequestReviewLine({
   pr,
@@ -92,8 +93,9 @@ export function PullRequestReviewLine({
   const id = review.session_id;
   const tone = look === "commented" && "text-ink-2";
   const held = review.held_after;
+  const unsent = held == null && review.unsent === true;
   // The card's last line has its rounded corners.
-  const last = held == null && "rounded-b-[calc(var(--radius-md)-1px)]";
+  const last = held == null && !unsent && "rounded-b-[calc(var(--radius-md)-1px)]";
   return (
     <>
       <div
@@ -131,6 +133,7 @@ export function PullRequestReviewLine({
         {again && <ReviewAgain pr={pr} review={review} project={again} />}
       </div>
       {held != null && <HeldReview review={review} after={held} passOnTo={passOnTo} />}
+      {unsent && <UnsentReview pr={pr} review={review} passOnTo={passOnTo} />}
     </>
   );
 }
@@ -143,8 +146,7 @@ const rounds = (n: number, more = false) =>
  * What fctl held back of the review: its findings, which the agent didn't get, since it got those
  * of `after` reviews in a row with no message from a person. Those who may message the agent pass
  * them on, and it gets those of as many reviews in a row again; a message to it ends the pause
- * too, and leaves the findings to what it says. Its button stays off until the card shows the
- * findings went on.
+ * too, and leaves the findings to what it says.
  */
 function HeldReview({
   review,
@@ -154,6 +156,70 @@ function HeldReview({
   review: G.ReviewCheck;
   after: number;
   passOnTo?: string;
+}) {
+  return (
+    <PassOnStrip
+      review={review}
+      passOnTo={passOnTo}
+      icon={<CirclePause aria-hidden="true" className="size-3.5 text-amber" />}
+      title={`Paused after ${rounds(after)}`}
+      text="fctl held these findings back, as nobody wrote to the agent in that time."
+      action={{
+        label: `Continue for ${rounds(after, true)}`,
+        icon: <Play aria-hidden="true" className="size-3" />,
+      }}
+    />
+  );
+}
+
+/**
+ * The review's findings went to no agent: one of fctl's agents opened the pull request, but no session
+ * took them when the review posted, as none listed it yet, say. fctl passes them on by itself once
+ * the session that opened it lists it; those who may message this session's agent pass them on to
+ * it, while the pull request is open.
+ */
+function UnsentReview({
+  pr,
+  review,
+  passOnTo,
+}: {
+  pr: G.PullRequestRef;
+  review: G.ReviewCheck;
+  passOnTo?: string;
+}) {
+  const state = prState(pr);
+  const done = state === "merged" || state === "closed";
+  return (
+    <PassOnStrip
+      review={review}
+      passOnTo={done ? undefined : passOnTo}
+      icon={<Inbox aria-hidden="true" className="size-3.5 text-amber" />}
+      title="Sent to no agent"
+      text="These findings reached no agent: no session took them when the review posted."
+      action={{ label: "Pass on to the agent", icon: <Send aria-hidden="true" className="size-3" /> }}
+    />
+  );
+}
+
+/**
+ * The end of a pull request's card for findings of its review that the agent didn't get, and why,
+ * with a button that passes them on to the agent of session `passOnTo` where there is one. The
+ * button stays off once they went, until the card stops showing them.
+ */
+function PassOnStrip({
+  review,
+  passOnTo,
+  icon,
+  title,
+  text,
+  action,
+}: {
+  review: G.ReviewCheck;
+  passOnTo?: string;
+  icon: ReactNode;
+  title: string;
+  text: string;
+  action: { label: string; icon: ReactNode };
 }) {
   const pass = useMutation<G.SendMessageResponse, Error, { session: string; review: string }>({
     mutationFn: (v) => api.passOnReview(v.session, v.review),
@@ -169,24 +235,20 @@ function HeldReview({
       className="flex items-start gap-2.5 rounded-b-[calc(var(--radius-md)-1px)] border-t border-amber/20 bg-amber-soft px-3 pt-2 pb-2.5 text-[11.5px] leading-relaxed motion-safe:animate-rise"
     >
       {/* In the column of the pull request's icon, on the first line. */}
-      <span className="flex h-[1lh] w-4 shrink-0 items-center justify-center">
-        <CirclePause aria-hidden="true" className="size-3.5 text-amber" />
-      </span>
+      <span className="flex h-[1lh] w-4 shrink-0 items-center justify-center">{icon}</span>
       <div className="min-w-0 flex-1">
-        <p className="font-medium text-ink-2">Paused after {rounds(after)}</p>
-        <p className="text-ink-3">
-          fctl held these findings back, as nobody wrote to the agent in that time.
-        </p>
+        <p className="font-medium text-ink-2">{title}</p>
+        <p className="text-ink-3">{text}</p>
         {passOnTo && id && (
           <Button
             size="sm"
             className="mt-2"
             loading={pass.isPending}
             disabled={done}
-            icon={<Play aria-hidden="true" className="size-3" />}
+            icon={action.icon}
             onClick={() => pass.mutate({ session: passOnTo, review: id })}
           >
-            Continue for {rounds(after, true)}
+            {action.label}
           </Button>
         )}
       </div>
