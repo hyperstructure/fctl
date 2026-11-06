@@ -879,8 +879,9 @@ fctl host install --driver firecracker
 
 The host downloads Firecracker and the VMs' kernel itself, and pulls
 images without Docker: a short-lived VM unpacks each, so its first pull
-takes a little longer than Docker's. Its sandboxes get no package caches
-and it builds no images; projects' own images run as with Docker.
+takes a little longer than Docker's. Its sandboxes mount their project's
+package caches from the host over their vsock, and it builds no images;
+projects' own images run as with Docker.
 [Architecture](architecture.md#firecracker) has the details.
 
 Sessions start from their project's image or, without one, the host's:

@@ -13,18 +13,23 @@
 //!   vsock, as `docker exec` would, and bridges the VM's network to the
 //!   host's `passt` ([`net`]). PID 1 itself only reaps the programs whose
 //!   parents exit before them.
+//! - **The project's package caches.** The host serves them over the
+//!   vsock (`fctl-agent share`, src/share), and asks `fctl-agent vm-mount`
+//!   to mount them at boot and after a snapshot's restore ([`mount`]).
 //! - **Unpacking an image.** The init mounts `/dev/vda`, an empty
 //!   filesystem, and unpacks the layers the host sends onto it, as root, so
 //!   that their owners and modes stay theirs ([`unpack`]), then powers off.
 //!   An image's files never touch the host's filesystem.
 
 mod boot;
+mod mount;
 mod net;
 mod netlink;
 mod serve;
 mod unpack;
 
 pub use boot::init;
+pub use mount::mount;
 pub use serve::serve;
 
 /// What the init reports to the host's `hello`.

@@ -3479,9 +3479,10 @@ in `firecracker/` in the host's data directory.
   the user's in `/tmp` (sockets' paths are limited to about 100 bytes).
   A VM's console goes to `console.log` in its directory.
 
-The VMs share no files with the host, so they get no
-[package caches](#package-caches). Firecracker runs as the host's user,
-without its jailer, which needs root: a VM escape would run as that user.
+The VMs share no filesystem with the host: they mount a project's
+[package caches](#package-caches) from a file server beside each VM.
+Firecracker runs as the host's user, without its jailer, which needs root:
+a VM escape would run as that user.
 
 ### Package caches
 
@@ -3499,11 +3500,22 @@ and the host checks.
   Apple's `container`, a directory in the host's data directory,
   `caches/<project id>`, that each sandbox bind-mounts: Apple's named
   volumes are ext4 images, which two running VMs must not mount at once.
-  Both appear at `/var/cache/fctl`. The process driver's agents use the
-  directory where it is, and Firecracker's and Lima's VMs get none: they
-  share no files with the host. The mount is made with
+  Firecracker's VMs mount that directory too, though Firecracker has no
+  shared filesystem: the host runs `fctl-agent share` beside each VM, as
+  it runs `passt`, a 9P2000.L server of the directory on the VM's vsock
+  (port 1026), and once the VM is up, `fctl-agent vm-mount` in it mounts
+  the connection with the kernel's 9p client (`trans=fd`), which several
+  VMs of a project do at once. The server takes nothing but the
+  directory's files: it walks one name at a time without following
+  symlinks, opens only files and directories, makes neither devices nor
+  setuid files, and holds locks as the host's (`F_OFD_SETLK`), so two
+  VMs' cargo runs wait for each other; the VM sees the files as its image
+  user's. All three appear at `/var/cache/fctl`. The process driver's
+  agents use the directory where it is, and Lima's VMs get none: they
+  share no files with the host. Docker's and Apple's mounts are made with
   the sandbox, so a sandbox made before its project turned caches on gets
-  none until the session's next one. Docker makes a new volume's root
+  none until the session's next one; a Firecracker VM mounts them as it
+  boots. Docker makes a new volume's root
   root's, so the host gives it to the image's user (`id -u` in the
   sandbox, then `chown` as root) as it creates the sandbox.
 - **In the sandbox.** The host passes the directory and the limit to

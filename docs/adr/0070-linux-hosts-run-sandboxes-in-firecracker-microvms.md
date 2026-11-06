@@ -79,8 +79,11 @@ microVM of its own.
   token and any Claude token kept on the host, as a container escape can
   with Docker. Running Firecracker through its jailer, as another user in
   a chroot, needs a host that runs as root, and is for later.
-- Firecracker's VMs share no filesystem with the host, so they get no
-  package caches, as Lima's don't.
+- Firecracker's VMs share no filesystem with the host. Package caches
+  come from a 9P server the host runs beside each VM on its vsock
+  (`fctl-agent share`), which the VM's kernel mounts: Firecracker has no
+  virtio-fs or virtio-9p, and the kernel hyperstructure/sandbox publishes
+  has 9p with its fd transport for it, from 6.18.59-1.
 - An image's first pull takes longer than Docker's (it unpacks in a VM),
   and each image takes all its size on disk: images share no layers.
 - A VM holds the memory its guest has touched, but for what its balloon

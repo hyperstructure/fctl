@@ -1,10 +1,11 @@
-//! A microVM's processes on the host: Firecracker, and `passt` for its
-//! network. Both run in process groups of their own, so that restarting the
-//! host (whose service stops only its main process) leaves them running.
+//! A microVM's processes on the host: Firecracker, `passt` for its network,
+//! and `fctl-agent share` for the project's package caches. They run in
+//! process groups of their own, so that restarting the host (whose service
+//! stops only its main process) leaves them running.
 
 use super::vsock;
 use anyhow::{Context, Result, anyhow, bail};
-use fctl_proto::vm::{ADDRESS, Boot, DNS, GATEWAY, Mode, NET_PORT, PREFIX};
+use fctl_proto::vm::{ADDRESS, Boot, DNS, GATEWAY, Mode, NET_PORT, PREFIX, SHARE_PORT};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::net::Ipv4Addr;
@@ -54,6 +55,17 @@ pub struct Spec {
     pub memory_mb: u32,
     /// Whether the VM gets a network (`passt`).
     pub network: bool,
+    /// A directory of the host's that the VM mounts (`fctl-agent share`).
+    pub share: Option<Share>,
+}
+
+/// A directory the host serves to a VM over its vsock ([`SHARE_PORT`]): the
+/// project's package caches.
+#[derive(Clone, Debug)]
+pub struct Share {
+    /// The static fctl-agent, which serves it (`fctl-agent share`).
+    pub agent: PathBuf,
+    pub dir: PathBuf,
 }
 
 /// A microVM's files: `dir` keeps its configuration, its console's log and
@@ -110,6 +122,12 @@ impl Vm {
     /// when the VM connects to the host's [`NET_PORT`].
     pub fn net(&self) -> PathBuf {
         self.run.join(format!("v.sock_{NET_PORT}"))
+    }
+
+    /// Where `fctl-agent share` serves the VM's [`Share`]: what Firecracker
+    /// connects to when the VM connects to the host's [`SHARE_PORT`].
+    pub fn share(&self) -> PathBuf {
+        self.run.join(format!("v.sock_{SHARE_PORT}"))
     }
 
     pub fn console(&self) -> PathBuf {
@@ -175,6 +193,9 @@ impl Vm {
             let passt = passt.context("the VM needs passt for its network")?;
             self.start_passt(passt).await?;
         }
+        if let Some(share) = &spec.share {
+            self.start_share(share).await?;
+        }
         let config = self.dir.join("firecracker.json");
         std::fs::write(&config, serde_json::to_vec_pretty(&self.config(spec))?)?;
         let console = std::fs::File::create(self.console())?;
@@ -210,6 +231,32 @@ impl Vm {
             if Instant::now() > until || self.pid("passt").is_none() {
                 let said = std::fs::read_to_string(self.dir.join("passt.log")).unwrap_or_default();
                 bail!("passt did not start: {}", said.trim());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok(())
+    }
+
+    /// `fctl-agent share`, which serves `share`'s directory where the VM's
+    /// connections to [`SHARE_PORT`] come.
+    async fn start_share(&self, share: &Share) -> Result<()> {
+        let log = std::fs::File::create(self.dir.join("share.log"))?;
+        let mut cmd = std::process::Command::new(&share.agent);
+        cmd.arg("share")
+            .arg("--dir")
+            .arg(&share.dir)
+            .arg("--socket")
+            .arg(self.share())
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        spawn_detached(&mut cmd, &self.pid_file("share"))
+            .with_context(|| format!("starting {} share", share.agent.display()))?;
+        let until = Instant::now() + Duration::from_secs(10);
+        while !self.share().exists() {
+            if Instant::now() > until || self.pid("share").is_none() {
+                let said = std::fs::read_to_string(self.dir.join("share.log")).unwrap_or_default();
+                bail!("fctl-agent share did not start: {}", said.trim());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -344,7 +391,7 @@ impl Vm {
 
     /// Kills the VM's processes.
     pub async fn kill(&self) {
-        for what in ["firecracker", "passt"] {
+        for what in ["firecracker", "passt", "share"] {
             if let Some(pid) = self.pid(what) {
                 let _ = crate::driver::run_cmd("kill", &["-KILL", &pid.to_string()]).await;
                 let until = Instant::now() + Duration::from_secs(5);
@@ -546,6 +593,7 @@ pub fn unpack_spec(kernel: PathBuf, initrd: PathBuf, name: &str, rootfs: &Path) 
         cpus: 2,
         memory_mb: 1024,
         network: false,
+        share: None,
     }
 }
 
@@ -581,6 +629,7 @@ mod tests {
             cpus: 64,
             memory_mb: 4096,
             network: true,
+            share: None,
         };
         let c = vm.config(&spec);
         assert_eq!(
@@ -834,8 +883,8 @@ mod tests {
         Ok(())
     }
 
-    /// Stand-ins: a `passt` that makes its socket's path and waits, and a
-    /// Firecracker that waits.
+    /// Stand-ins: a `passt` that makes its socket's path and waits (which
+    /// stands in for `fctl-agent share` too), and a Firecracker that waits.
     #[tokio::test]
     async fn starting_again_stops_what_the_last_boot_left() -> Result<()> {
         use crate::driver::fake::write_script;
@@ -852,11 +901,17 @@ mod tests {
         let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
         let spec = Spec {
             network: true,
+            share: Some(Share {
+                agent: passt.clone(),
+                dir: dir.path().to_owned(),
+            }),
             ..spec
         };
         vm.start(&spec, &firecracker, Some(&passt)).await?;
         let first_passt = vm.pid("passt");
-        assert!(first_passt.is_some() && vm.running());
+        let first_share = vm.pid("share");
+        assert!(first_passt.is_some() && first_share.is_some() && vm.running());
+        assert!(vm.share().exists());
         // Firecracker ends by itself (its VM powered off), and passt stays.
         if let Some(pid) = vm.pid("firecracker") {
             crate::driver::run_cmd("kill", &["-KILL", &pid.to_string()]).await?;
@@ -876,11 +931,15 @@ mod tests {
             first_passt.is_some_and(|p| !alive(p)),
             "the first passt still runs"
         );
-        assert!(vm.pid("passt").is_some() && vm.running());
+        assert!(
+            first_share.is_some_and(|p| !alive(p)),
+            "the first share still runs"
+        );
+        assert!(vm.pid("passt").is_some() && vm.pid("share").is_some() && vm.running());
         // A start that fails leaves nothing running.
         let missing = dir.path().join("no-firecracker");
         assert!(vm.start(&spec, &missing, Some(&passt)).await.is_err());
-        assert!(vm.pid("passt").is_none() && !vm.running());
+        assert!(vm.pid("passt").is_none() && vm.pid("share").is_none() && !vm.running());
         Ok(())
     }
 }

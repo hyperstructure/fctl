@@ -7,6 +7,9 @@
 //!   the host asks there (src/vm).
 //! - `fctl-agent run-as` runs a program as another user, for `vm-serve` and
 //!   for a supervisor that runs as root.
+//! - `fctl-agent share`, on a Firecracker host, serves a project's package
+//!   caches to a VM over its vsock (src/share), and `vm-mount` in the VM
+//!   mounts them.
 //!
 //! See docs/architecture.md and crates/fctl-proto/src/agent.rs.
 
@@ -22,6 +25,8 @@ mod prompt;
 #[cfg(target_os = "linux")]
 mod protected;
 mod refresh;
+#[cfg(target_os = "linux")]
+mod share;
 mod supervisor;
 mod tasks;
 mod user;
@@ -81,6 +86,30 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(hide = true)]
     VmServe,
+    /// Serve a directory to a Firecracker VM over 9P, on the unix socket
+    /// where Firecracker connects the VM's vsock port (on the host).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    Share {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    /// Mount what the host shares on a vsock port at a directory, as a user's
+    /// files (in a Firecracker VM, as root).
+    #[cfg(target_os = "linux")]
+    #[command(hide = true)]
+    VmMount {
+        #[arg(long)]
+        port: u32,
+        #[arg(long)]
+        dir: PathBuf,
+        /// Whose files they are in the VM: a name or a uid, as `docker exec
+        /// -u` takes them.
+        #[arg(long)]
+        user: Option<String>,
+    },
     /// Run a program as a user, in a session of its own (for vm-serve, and
     /// a supervisor that runs as root).
     #[cfg(target_os = "linux")]
@@ -153,6 +182,13 @@ fn main() -> anyhow::Result<()> {
                 .init();
             runtime()?.block_on(vm::serve())
         }
+        #[cfg(target_os = "linux")]
+        Command::Share { dir, socket } => {
+            init_logging(None)?;
+            share::serve(&dir, &socket)
+        }
+        #[cfg(target_os = "linux")]
+        Command::VmMount { port, dir, user } => vm::mount(port, &dir, user.as_deref()),
         #[cfg(target_os = "linux")]
         Command::RunAs { .. } => Ok(()),
     }

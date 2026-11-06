@@ -575,10 +575,10 @@ impl Driver {
 
     /// Where `project`'s package caches are with this driver: a Docker
     /// volume, or a directory in `data_dir`, which Apple's `container`
-    /// mounts and the process driver's agents use. `None` with Lima and
-    /// Firecracker, whose VMs share no files with the host, and for a
-    /// directory that Apple's `container` can't mount, whose path has a
-    /// comma.
+    /// mounts, Firecracker's VMs mount from `fctl-agent share` and the
+    /// process driver's agents use. `None` with Lima, whose VMs share no
+    /// files with the host, and for a directory that Apple's `container`
+    /// can't mount, whose path has a comma.
     pub fn cache_spot(&self, project: &str, data_dir: &Path) -> Option<Spot> {
         let dir = caches::dir(data_dir, project);
         match self {
@@ -586,8 +586,8 @@ impl Driver {
                 Some(Spot::Volume(caches::volume(project)))
             }
             Self::Container(_) => (!dir.to_string_lossy().contains(',')).then_some(Spot::Dir(dir)),
-            Self::Process(_) => Some(Spot::Dir(dir)),
-            Self::Firecracker(_) | Self::Lima(_) => None,
+            Self::Process(_) | Self::Firecracker(_) => Some(Spot::Dir(dir)),
+            Self::Lima(_) => None,
         }
     }
 
@@ -603,8 +603,10 @@ impl Driver {
     pub async fn caches(&self, data_dir: &Path) -> Result<Vec<String>> {
         match self {
             Self::Container(d) if d.flavor_name() == "docker" => d.cache_volumes().await,
-            Self::Container(_) | Self::Process(_) => Ok(caches::dirs(data_dir)),
-            Self::Firecracker(_) | Self::Lima(_) => Ok(Vec::new()),
+            Self::Container(_) | Self::Process(_) | Self::Firecracker(_) => {
+                Ok(caches::dirs(data_dir))
+            }
+            Self::Lima(_) => Ok(Vec::new()),
         }
     }
 
