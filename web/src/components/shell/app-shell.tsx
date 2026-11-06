@@ -17,7 +17,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Avatar,
   Kbd,
@@ -60,14 +60,16 @@ import {
   useFolded,
 } from "@/lib/workspaces";
 import { CommandPalette, usePaletteKeys } from "./command-palette";
+import { useDrawerDrag } from "./drawer-drag";
 import { FloorLink } from "./floor-link";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 
 /**
  * The sidebar on phones: open, closed with its button or the shade (it slides away), or
- * gone, closed by one of its links or by an entry of the palette opened from it (at once).
+ * gone, closed by one of its links or by an entry of the palette opened from it (at once); or
+ * dragged, in or out, by a finger (it follows the finger, then slides open or closed).
  */
-type Drawer = "open" | "closed" | "gone";
+type Drawer = "open" | "closed" | "gone" | "dragged";
 
 export function AppShell() {
   const [palette, setPalette] = useState(false);
@@ -76,6 +78,18 @@ export function AppShell() {
   const openDrawer = useCallback(() => setDrawer("open"), []);
   const closeDrawer = () => setDrawer("closed");
   const dropDrawer = () => setDrawer("gone");
+  const root = useRef<HTMLDivElement>(null);
+  const aside = useRef<HTMLElement>(null);
+  const shade = useRef<HTMLButtonElement>(null);
+  useDrawerDrag({
+    page: root,
+    drawer: aside,
+    shade,
+    open: drawer === "open",
+    onDrag: () => setDrawer("dragged"),
+    onLetGo: (open) => setDrawer(open ? "open" : "closed"),
+  });
+  const shown = drawer === "open" || drawer === "dragged";
   // A page whose header holds the menu button (the session's) takes the top bar's place.
   const [headerButton, shell] = useHeaderButtons(openDrawer);
   usePaletteKeys(openPalette);
@@ -85,31 +99,39 @@ export function AppShell() {
   useFactorsWatch();
   const path = useRouterState({ select: (s) => s.location.pathname });
   return (
-    <div className="flex min-h-dvh bg-canvas">
+    <div ref={root} className="flex min-h-dvh bg-canvas">
       {/* On phones the sidebar is a drawer over the page: opaque, and out of the page once
           it has slid away (display: none), so that it is drawn anew each time it opens.
           Kept off screen with a blur, it sometimes stopped showing properly in Safari on iOS
           until a reload. A link in it, or an entry of the palette opened from it, takes it
           out at once, without the slide: the router's view transition snapshots the page as
           the link is followed, and a drawer that had only started to slide away showed there
-          open, fading out over the page the link opened. */}
+          open, fading out over the page the link opened. A finger drags it in from the left
+          edge of the screen, and out by it or the shade (./drawer-drag.ts). */}
       <aside
+        ref={aside}
         className={cn(
           "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
-          drawer !== "gone" && "transition-[translate,display] transition-discrete duration-300 ease-out",
-          drawer === "open" ? "translate-x-0" : "-translate-x-full max-md:hidden",
+          drawer !== "gone" &&
+            "transition-[translate,display] transition-discrete duration-300 ease-out motion-reduce:transition-none",
+          shown ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
       >
         <Sidebar onPalette={openPalette} onNavigate={dropDrawer} onClose={closeDrawer} path={path} />
       </aside>
-      {drawer === "open" && (
-        <button
-          type="button"
-          aria-label="Close menu"
-          className="fixed inset-x-0 top-(--viewport-shift) -bottom-(--viewport-shift) z-20 bg-black/40 md:hidden"
-          onClick={closeDrawer}
-        />
-      )}
+      {/* The shade fades in and out with the drawer's slide (and goes with it at once). */}
+      <button
+        ref={shade}
+        type="button"
+        aria-label="Close menu"
+        className={cn(
+          "fixed inset-x-0 top-(--viewport-shift) -bottom-(--viewport-shift) z-20 bg-black/40 md:hidden",
+          drawer !== "gone" &&
+            "transition-[opacity,visibility] transition-discrete duration-300 ease-out motion-reduce:transition-none",
+          !shown && "pointer-events-none invisible opacity-0",
+        )}
+        onClick={closeDrawer}
+      />
       {/* The page is never wider than the window: what is wider scrolls in its own row. The
           clip, unlike hidden, keeps the sticky bars working. */}
       <div className="flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
