@@ -1026,11 +1026,16 @@ mod tests {
             )
         };
         write_script(&passt, &stand_in("echo $$ > \"$pid\"\ncat >&0"))?;
-        // One that fails as it sets itself up.
+        // One that fails as it sets itself up, and tells where its pid's
+        // file was.
         let failing = dir.path().join("failing-passt");
+        let told = dir.path().join("failing-passt.told");
         write_script(
             &failing,
-            &stand_in("echo 'No routable interface' >&2; exit 1"),
+            &stand_in(&format!(
+                "echo \"$pid\" > '{}'\necho 'No routable interface' >&2; exit 1",
+                told.display()
+            )),
         )?;
         let firecracker = dir.path().join("firecracker");
         write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
@@ -1045,7 +1050,9 @@ mod tests {
             e.as_deref(),
             Some("passt did not start: No routable interface")
         );
-        assert!(!vm.linked() && vm.passt_pid().is_none_or(|p| !p.exists()));
+        let made = PathBuf::from(std::fs::read_to_string(&told)?.trim());
+        assert!(made.is_absolute(), "{made:?}");
+        assert!(!vm.linked() && !made.exists() && vm.passt_pid().is_none());
         vm.link_network(&passt).await?;
         let first = vm.pid("passt");
         assert!(vm.linked());
