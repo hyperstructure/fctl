@@ -6,8 +6,9 @@
 
 use crate::error::ApiError;
 use crate::event::SessionEvent;
+use crate::runner::RunnerDisk;
 use crate::session::{Session, SessionRole, UserRef};
-use crate::uplink::AgentUnreachable;
+use crate::uplink::{AgentUnreachable, SandboxPaused};
 use crate::{AttachmentId, Millis};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -57,6 +58,15 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub agent_unreachable: Option<AgentUnreachable>,
+    /// The session's runner is short of room on its disk, as its last
+    /// heartbeats said. Absent while it has room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub runner_disk: Option<RunnerDisk>,
+    /// The connected runner paused the session's sandbox until it has room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub sandbox_paused: Option<SandboxPaused>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,9 +95,9 @@ pub enum ViewerServer {
     Presence {
         viewers: Vec<Presence>,
     },
-    /// The session's runner connected, went away or went quiet, or what it
-    /// says about reaching the agent changed. The fields are as in the
-    /// snapshot.
+    /// The session's runner connected, went away or went quiet, what it
+    /// says about reaching the agent changed, or how much room it has on
+    /// its disk did. The fields are as in the snapshot.
     RunnerConnected {
         connected: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +106,13 @@ pub enum ViewerServer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         agent_unreachable: Option<AgentUnreachable>,
+        /// As the snapshot's `runner_disk`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        disk: Option<RunnerDisk>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        sandbox_paused: Option<SandboxPaused>,
     },
     /// The outcome of a client command, matched by `client_id`.
     Result {
@@ -154,6 +171,8 @@ mod tests {
                 connected: false,
                 last_seen_at: None,
                 agent_unreachable: None,
+                disk: None,
+                sandbox_paused: None,
             }
         );
         // Nothing to say leaves the new fields out, for older clients.
@@ -174,6 +193,7 @@ mod tests {
             connected,
             last_seen_at,
             agent_unreachable,
+            ..
         } = msg
         else {
             panic!("expected runner_connected");
@@ -181,6 +201,35 @@ mod tests {
         assert!(connected);
         assert_eq!(last_seen_at, None);
         assert_eq!(agent_unreachable.map(|a| a.since), Some(5));
+        Ok(())
+    }
+
+    #[test]
+    fn runner_messages_say_how_short_of_disk_it_is() -> serde_json::Result<()> {
+        let msg: ViewerServer = serde_json::from_value(serde_json::json!({
+            "type": "runner_connected",
+            "connected": true,
+            "disk": { "room": "out", "free_mb": 800, "min_free_mb": 20480, "since": 7 },
+            "sandbox_paused": { "since": 8, "reason": "runner now is nearly out of disk" }
+        }))?;
+        let ViewerServer::RunnerConnected {
+            disk,
+            sandbox_paused,
+            ..
+        } = msg
+        else {
+            panic!("expected runner_connected");
+        };
+        assert_eq!(
+            disk,
+            Some(RunnerDisk {
+                room: crate::runner::DiskRoom::Out,
+                free_mb: 800,
+                min_free_mb: 20_480,
+                since: 7
+            })
+        );
+        assert_eq!(sandbox_paused.map(|p| p.since), Some(8));
         Ok(())
     }
 }

@@ -153,6 +153,34 @@ pub struct HostHeartbeat {
     pub claude_token: Option<RunnerClaudeToken>,
 }
 
+/// How short of room a runner is on the disk where its sandboxes are
+/// (`fctl_domain::disk::room`), when it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DiskRoom {
+    /// Below the floor its host keeps ([`HostHello::min_free_disk_mb`]):
+    /// it takes no new sessions, and removes stopped sandboxes early.
+    Low,
+    /// Nearly out of disk (`fctl_domain::disk::OUT_MB`): what its sandboxes
+    /// write is about to fail.
+    Out,
+}
+
+/// The disk of a session's runner, while it is short of room, as its
+/// heartbeats last said.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RunnerDisk {
+    pub room: DiskRoom,
+    /// Free MiB where its sandboxes are.
+    pub free_mb: u64,
+    /// The free disk (MiB) its host keeps.
+    pub min_free_mb: u64,
+    /// Since when it has been this short of room.
+    pub since: Millis,
+}
+
 /// Which credential a session needs refreshed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
