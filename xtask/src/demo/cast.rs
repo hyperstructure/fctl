@@ -282,6 +282,25 @@ pub struct Project {
     pub retros: Vec<u32>,
     /// Its sandboxes, as its settings have them.
     pub sandbox: Option<Sandbox>,
+    /// The icon its people chose for it in the sidebar's picker. Absent:
+    /// the one the web app finds for its name and description, in gray
+    /// lines.
+    pub icon: Option<Icon>,
+}
+
+/// A project's icon: a glyph of the web app's set
+/// (`web/src/lib/project-icon-data.ts`), in a workspace color or a color
+/// of its own, drawn in a style.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Icon {
+    pub name: String,
+    /// `ink`, `yellow`, `pink` or `blue`; absent with `hex`.
+    pub color: Option<String>,
+    /// A color of its own, `#rrggbb`, which the app shades for each theme.
+    pub hex: Option<String>,
+    /// `outline`, `duotone` or `solid`.
+    pub style: String,
 }
 
 /// A project's sandboxes. The rewrite sets them, and shows them in its

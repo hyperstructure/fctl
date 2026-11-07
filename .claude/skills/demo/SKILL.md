@@ -98,7 +98,7 @@ In the sidebar in this order, with these projects.
 | Workspace | Slug | Avatar | People | Settings |
 |---|---|---|---|---|
 | Romanesco | `romanesco` | Uploaded: the Romanesco logo | Noor (primary admin), Kofi (admin); Jonas, Asha, Tomás, Aiko, Lucía, Sanna; Inês invited | Base role editor; two-factor required; GitHub `romanescohq`; Linear connected |
-| milkfloat | `milkfloat` | Uploaded: the milkfloat logo | Noor (primary admin), Asha (admin), Lena | Base role maintainer; two-factor required; GitHub `milkfloat` |
+| milkfloat | `milkfloat` | `route`, yellow | Uploaded: the milkfloat logo | Noor (primary admin), Asha (admin), Lena | Base role maintainer; two-factor required; GitHub `milkfloat` |
 | punschrulle | `punschrulle` | Uploaded: Noor's avatar | Noor | Invites skipped; GitHub `punschrulle` |
 | Crimp Collective | `crimp-collective` | None: CC on pink | Elsa (primary admin), Noor | Base role editor; GitHub `crimpcollective` |
 
@@ -115,20 +115,24 @@ In the sidebar in this order, with these projects.
 ## Projects
 
 A project's count leaves out its review sessions, which take numbers
-too: Shop's newest session is #231 of its 164.
+too: Shop's newest session is #231 of its 164. Each has an icon its
+people chose in the sidebar's picker (`icon` in `cast.toml`), all
+duotone: the workspace's colors, or one of their own where the thing it
+shows has a color (a carrot, a crust, a leaf), so that no two side by
+side look alike and none is the gray of a project without one.
 
-| Project | Slug | Repositories (primary first) | Sessions | Description |
-|---|---|---|---|---|
-| Shop | `shop` | `romanescohq/shop`; `romanescohq/design-system` (write), `romanescohq/platform` (read) | 164, 2 active | 🥕 The web shop: build a box, pick a delivery day, pay and manage the subscription. Next.js, TypeScript and Stripe. |
-| Platform | `platform` | `romanescohq/platform`; `romanescohq/infra` (read) | 287, 1 active | Orders, subscriptions, farms and delivery routes behind every app. Rust (axum, sqlx) on Postgres, with milkfloat planning the vans' routes. |
-| Driver app | `driver-app` | `romanescohq/driver-app` | 77, 1 active | 📱 The app drivers deliver with: the day's route, door codes, a photo at the door when nobody answers. Expo and React Native. |
-| Infra | `infra` | `romanescohq/infra` | 38, 1 active | Terraform for AWS and Cloudflare, and the workflows that deploy everything. Agents plan; people apply. |
-| milkfloat | `milkfloat` | `milkfloat/milkfloat`; `milkfloat/milkfloat.dev` (write) | 61, 1 active | 🚐 A vehicle-routing solver in Rust with Python bindings: time windows, capacities, driver breaks, and re-planning while the vans are out. MIT licensed. |
-| Benchmarks | `milkfloat-bench` | `milkfloat/bench`; `milkfloat/milkfloat` (read) | 41 | Nightly runs of the Solomon and Gehring–Homberger instances against main, published at milkfloat.dev/bench. |
-| sourdough | `sourdough` | `punschrulle/sourdough` | 12 | 🍞 Feeding reminders for my starter, and a bake-day plan that works back from when the bread should be ready. SvelteKit, installed on my phone. |
-| plantwatch | `plantwatch` | `punschrulle/plantwatch` | 23 | 🌱 Soil sensors on ESP32s in every pot, Rust firmware on embassy, and a dashboard that says which plant is thirsty. |
-| Website | `website` | `punschrulle/noorhaddad.se` | 9 | noorhaddad.se: notes on building Romanesco, recipes and the odd talk. Astro on Cloudflare Pages. |
-| Bookings | `bookings` | `crimpcollective/bookings` | 17 | Session bookings, memberships and the route board for the club's wall. Django, kept alive by volunteers. |
+| Project | Slug | Icon | Repositories (primary first) | Sessions | Description |
+|---|---|---|---|---|---|
+| Shop | `shop` | `carrot`, carrot orange `#ff7a1a` | `romanescohq/shop`; `romanescohq/design-system` (write), `romanescohq/platform` (read) | 164, 2 active | The web shop: build a box, pick a delivery day, pay and manage the subscription. Next.js, TypeScript and Stripe. |
+| Platform | `platform` | `server-stack`, blue | `romanescohq/platform`; `romanescohq/infra` (read) | 287, 1 active | Orders, subscriptions, farms and delivery routes behind every app. Rust (axum, sqlx) on Postgres, with milkfloat planning the vans' routes. |
+| Driver app | `driver-app` | `delivery-van`, yellow | `romanescohq/driver-app` | 77, 1 active | The app drivers deliver with: the day's route, door codes, a photo at the door when nobody answers. Expo and React Native. |
+| Infra | `infra` | `cloud`, violet `#9b7bff` | `romanescohq/infra` | 38, 1 active | Terraform for AWS and Cloudflare, and the workflows that deploy everything. Agents plan; people apply. |
+| milkfloat | `milkfloat` | `route`, yellow | `milkfloat/milkfloat`; `milkfloat/milkfloat.dev` (write) | 61, 1 active | A vehicle-routing solver in Rust with Python bindings: time windows, capacities, driver breaks, and re-planning while the vans are out. MIT licensed. |
+| Benchmarks | `milkfloat-bench` | `gauge`, blue | `milkfloat/bench`; `milkfloat/milkfloat` (read) | 41 | Nightly runs of the Solomon and Gehring–Homberger instances against main, published at milkfloat.dev/bench. |
+| sourdough | `sourdough` | `bread`, crust `#e0a458` | `punschrulle/sourdough` | 12 | Feeding reminders for my starter, and a bake-day plan that works back from when the bread should be ready. SvelteKit, installed on my phone. |
+| plantwatch | `plantwatch` | `sprout`, leaf green `#4cc76a` | `punschrulle/plantwatch` | 23 | Soil sensors on ESP32s in every pot, Rust firmware on embassy, and a dashboard that says which plant is thirsty. |
+| Website | `website` | `feather`, pink | `punschrulle/noorhaddad.se` | 9 | noorhaddad.se: notes on building Romanesco, recipes and the odd talk. Astro on Cloudflare Pages. |
+| Bookings | `bookings` | `climbing`, pink | `crimpcollective/bookings` | 17 | Session bookings, memberships and the route board for the club's wall. Django, kept alive by volunteers. |
 
 Every default branch is `main`. A project's repositories all belong to one
 GitHub account, so Platform uses milkfloat as a crate, not as a repository.
@@ -252,8 +256,11 @@ The feature pages of hyperstructure/fctl-site (`features/<page>/`) show
 the cast in screenshots that `shoot.mjs --features` takes, into the site's
 `src/features/shots/<page>/<name>-<theme>.webp` (desktop shots 2200 px
 wide, phone ones 780 × 1576: the site's phone frame draws iOS's status bar
-above them) and a `thumb-<theme>.webp` of each page's first shot for the
-features overview:
+above them). The features overview's tile for each page shows a part of
+one of them at the app's own size, `card-<theme>.webp`: the shot's `card`,
+`[x, y, width, height]` in CSS pixels, at twice that size (the sidebar's
+comes from a window of its own, 1440 × 1400, and Memory's is a whole phone
+shot):
 
 ```sh
 cargo xtask demo                          # wait for "the demo is running"
@@ -268,7 +275,12 @@ or opens a dialog (the sandbox's setup log, a new access token, the
 schedule editor). Shots of a session pick it by the cast's name
 (`shop#231`), so they hold across runs. A page's HTML names its shots by
 those names: add a shot to both, and keep the alt texts saying what the
-shot shows. A run of all of them takes about ten minutes.
+shot shows. A page shows each shot once: where it needs the same screen
+twice, as when a hero's phone (`only-phone`) and a section's would both be
+the Agent Floor, take another of something near it (the Sessions page's
+`phone-needs` is the sidebar a phone opens, the Runners page's
+`phone-milkfloat` another workspace's runners). A run of all of them takes
+about ten minutes.
 
 The Sessions page shows a video where its `diff` shot was: platform#437's
 diffs changing as its agent works, as the session page shows them (a new
