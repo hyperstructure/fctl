@@ -22,14 +22,28 @@ type Badging = Navigator & {
   clearAppBadge?: () => Promise<void>;
 };
 
-/** Shows `n` things that need the person, in the title and on the app's icon (none: clears them). */
+function show(n: number) {
+  count = n;
+  apply();
+  const nav = navigator as Badging;
+  const done = n > 0 ? nav.setAppBadge?.(n) : nav.clearAppBadge?.();
+  // Browsers without the API, or that refuse it (not installed), say nothing.
+  done?.catch(() => {});
+}
+
+/**
+ * Takes the count off the title and the app's icon: as the person signs out, whose page then
+ * leaves without the sidebar unmounting, and an installed app's icon would keep it.
+ */
+export function clearAttention() {
+  show(0);
+}
+
+/**
+ * Shows `n` things that need the person, in the title and on the app's icon (none: clears them),
+ * until the component that shows them goes.
+ */
 export function useAttention(n: number) {
-  useEffect(() => {
-    count = n;
-    apply();
-    const nav = navigator as Badging;
-    const done = n > 0 ? nav.setAppBadge?.(n) : nav.clearAppBadge?.();
-    // Browsers without the API, or that refuse it (not installed), say nothing.
-    done?.catch(() => {});
-  }, [n]);
+  useEffect(() => show(n), [n]);
+  useEffect(() => clearAttention, []);
 }

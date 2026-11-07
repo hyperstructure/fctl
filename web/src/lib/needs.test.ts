@@ -74,6 +74,12 @@ describe("what needs you", () => {
     ]);
   });
 
+  it("is nothing until it is known who you are, since the lists hold other people's sessions", () => {
+    const asking = session({ status: "idle", question: { text: "Keep øre?", asked_at: NOW } });
+    expect(needsOf(undefined, [asking], NOW)).toEqual([]);
+    expect(needsOf("usr_noor", [asking], NOW)).toHaveLength(1);
+  });
+
   it("leaves out drafts, archived sessions, review agents' and failures from before yesterday", () => {
     const draft = session({ status: "stopped", pull_requests: [pr(2, { state: "draft" })] });
     const archived = session({ status: "idle", status_reason: "Waiting for a message", archived: true });

@@ -19,15 +19,17 @@ export interface Need {
 
 const RANK: Record<NeedKind, number> = { asking: 0, failed: 1, checks: 2, ready: 3, waiting: 4, paused: 5 };
 /** A failed session needs someone for a day; then it's history. */
-const FAILED_FOR = 24 * 3_600_000;
+export const FAILED_FOR = 24 * 3_600_000;
 
 /**
  * What needs `me` in `sessions` (any lists, in any order; each session once, its newest summary):
  * a question its agent asks, a failure in the last day, a pull request whose checks failed, a pull
  * request its agent finished (it waits for a reply, or ended, and the pull request is open and
- * not a draft), a reply it waits for, a pause on a usage limit.
+ * not a draft), a reply it waits for, a pause on a usage limit. Nothing until it is known who
+ * `me` is: the lists hold other people's sessions too.
  */
 export function needsOf(me: string | undefined, sessions: readonly G.Session[], now: number): Need[] {
+  if (!me) return [];
   const newest = new Map<string, G.Session>();
   for (const s of sessions) {
     const seen = newest.get(s.id);
@@ -36,7 +38,7 @@ export function needsOf(me: string | undefined, sessions: readonly G.Session[], 
   const out: Need[] = [];
   for (const s of newest.values()) {
     if (s.archived || s.review) continue;
-    if (me && s.created_by?.id !== me && !s.following) continue;
+    if (s.created_by?.id !== me && !s.following) continue;
     const need = needOf(s, now);
     if (need) out.push(need);
   }

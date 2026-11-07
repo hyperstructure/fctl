@@ -88,7 +88,7 @@ const projects: G.ProjectList = { projects: [project("web", acme, 2), project("a
 function reload(
   path = "/",
   cached: (client: QueryClient) => void = () => {},
-  more: { folded?: boolean; onFold?: (f: boolean) => void } = {},
+  more: { folded?: boolean; onFold?: (f: boolean) => void; scope?: string } = {},
 ) {
   const client = new QueryClient();
   client.setQueryData(keys.me, {
@@ -203,6 +203,8 @@ const session = (
 const recent = { since: "1h", limit: 100 };
 const working = { status: "active", limit: 50 };
 const ended = { status: "ended", limit: 12 };
+/** What Needs you looks through: the sessions Ada started or follows, from the last day. */
+const yours = { yours: true, since: "1d", limit: 200 };
 
 describe("the sidebar's sessions", () => {
   // The sidebar's clock, which moves on every minute.
@@ -375,6 +377,38 @@ describe("what needs you", () => {
     expect(link?.getAttribute("title")).toBe("1 ready for review, of 2 open");
   });
 
+  it("looks through every session you started or follow from the last day", async () => {
+    const failed = session(11, "Migrate the orders", "failed", "prj_api", {
+      created_by: ada,
+      updated_at: 11,
+      ended_at: NOW - 5 * HOUR,
+    });
+    const sidebar = reload("/");
+    // Twelve others ended since: the Agent Floor's list of ended sessions no longer has it.
+    await sidebar.come({ workspaces, projects, sessions: [yours, [failed]] });
+    expect(asked.sessions).toContainEqual({ yours: true, activeSince: NOW - 24 * HOUR, limit: 200 });
+    const needs = [...sidebar.container.querySelectorAll('ul[aria-label="What needs you"] a')];
+    expect(needs.map((a) => a.getAttribute("title"))).toEqual(["Migrate the orders\nFailed"]);
+  });
+
+  it("keeps its links out of Tab's way while it is closed", async () => {
+    const waits = session(9, "Fix the build", "idle", "prj_api", {
+      created_by: ada,
+      updated_at: 9,
+      status_reason: "Waiting for a message",
+    });
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [working, [waits]] });
+    const list = () => sidebar.container.querySelector('ul[aria-label="What needs you"]');
+    expect(list()?.closest("[inert]")).toBeNull();
+    const toggle = [...sidebar.container.querySelectorAll("button")].find((b) =>
+      b.textContent?.startsWith("Needs you"),
+    );
+    act(() => toggle?.click());
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(list()?.closest("[inert]")).not.toBeNull();
+  });
+
   it("folds into a rail of the projects' icons, and unfolds from it", async () => {
     const onFold = vi.fn();
     const sidebar = reload("/", () => {}, { folded: true, onFold });
@@ -385,6 +419,62 @@ describe("what needs you", () => {
     expect(names).toEqual(["web", "api"]);
     act(() => sidebar.container.querySelector<HTMLButtonElement>('button[aria-label^="Unfold"]')?.click());
     expect(onFold).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps Settings in the rail, and Admin for admins", async () => {
+    const member = reload("/", () => {}, { folded: true });
+    await member.come({ workspaces, projects });
+    const links = (c: HTMLElement) =>
+      [...c.querySelectorAll('a[href="/settings"], a[href="/admin"]')].map((a) =>
+        a.getAttribute("aria-label"),
+      );
+    expect(links(member.container)).toEqual(["Settings"]);
+    const admin = reload(
+      "/admin",
+      (client) =>
+        client.setQueryData(keys.me, {
+          user: { id: "usr_ada", name: "Ada Lovelace", role: "admin" },
+          claude: [],
+        } as unknown as G.Me),
+      { folded: true },
+    );
+    await admin.come({ workspaces, projects });
+    expect(links(admin.container)).toEqual(["Admin", "Settings"]);
+    expect(admin.container.querySelector('a[href="/admin"]')?.getAttribute("aria-current")).toBe("page");
+  });
+});
+
+describe("the project a page is about", () => {
+  /** The links under each project: its own pages, and its sessions. */
+  const links = (c: HTMLElement) =>
+    [...c.querySelectorAll("section a[aria-current]")].map((a) => a.textContent?.trim());
+
+  it("keeps its own links on its pull requests page, the one it is on lit", async () => {
+    const sidebar = reload("/pulls", () => {}, { scope: "p:api" });
+    await sidebar.come({ workspaces, projects });
+    const pulls = [...sidebar.container.querySelectorAll('a[href="/pulls"]')];
+    // The one at the top, and the project's own.
+    expect(pulls).toHaveLength(2);
+    expect(pulls[0]?.getAttribute("aria-current")).toBeNull();
+    expect(links(sidebar.container)).toEqual(["Pull requests"]);
+    expect(sidebar.container.textContent).toContain("Tickets");
+  });
+
+  it("lights the pull requests at the top when the page lists every one", async () => {
+    const sidebar = reload("/pulls");
+    await sidebar.come({ workspaces, projects });
+    const pulls = [...sidebar.container.querySelectorAll('a[href="/pulls"]')];
+    expect(pulls).toHaveLength(1);
+    expect(pulls[0]?.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("is the project of a session no list has, as its page loaded it", async () => {
+    const old = session(40, "Last month's", "stopped", "prj_api", { ended_at: NOW - 30 * 24 * HOUR });
+    const sidebar = reload(`/s/${old.id}`);
+    await sidebar.come({ workspaces, projects, session: old });
+    expect(sidebar.container.textContent).toContain("Tickets");
+    const open = [...sidebar.container.querySelectorAll('a[href="/pulls"]')];
+    expect(open).toHaveLength(2);
   });
 });
 
@@ -491,6 +581,29 @@ function phone({ wide = false } = {}) {
     },
   };
 }
+
+describe("folding the sidebar", () => {
+  const fold = () =>
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "\\", metaKey: true, ctrlKey: true, bubbles: true }),
+      );
+    });
+
+  it("folds and unfolds it with ⌘\\ beside the page", () => {
+    phone({ wide: true });
+    fold();
+    expect(localStorage.getItem("fctl:sidebar-folded")).toBe("1");
+    fold();
+    expect(localStorage.getItem("fctl:sidebar-folded")).toBeNull();
+  });
+
+  it("leaves it as it was where it is a drawer, which doesn't fold", () => {
+    phone();
+    fold();
+    expect(localStorage.getItem("fctl:sidebar-folded")).toBeNull();
+  });
+});
 
 describe("the drawer", () => {
   it("slides in, and away when its close button or the shade closes it", () => {

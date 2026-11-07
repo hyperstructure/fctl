@@ -18,6 +18,7 @@ import { PullRequestChecksIcon, PullRequestStateIcon } from "@/components/sessio
 import { Avatar, Kbd, Menu, MenuItem, MenuSeparator, StatusDot, statusLabel } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
+import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { apple } from "@/lib/hotkeys";
@@ -116,6 +117,10 @@ export function SessionLine({
 }
 
 /** Admin (for instance admins, with who waits for early access) and Settings. */
+/** What the Admin link's count says. */
+export const waitingForAccess = (n: number) =>
+  n === 1 ? "1 person waits for early access" : `${n} people wait for early access`;
+
 export function SettingsRows({
   isAdmin,
   asking,
@@ -134,16 +139,11 @@ export function SettingsRows({
           Admin
           {asking > 0 && (
             <span
-              title={
-                asking === 1 ? "1 person waits for early access" : `${asking} people wait for early access`
-              }
+              title={waitingForAccess(asking)}
               className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 text-[10.5px] font-semibold text-highlight-ink tabular-nums"
             >
               {asking}
-              <span className="sr-only">
-                :{" "}
-                {asking === 1 ? "1 person waits for early access" : `${asking} people wait for early access`}
-              </span>
+              <span className="sr-only">: {waitingForAccess(asking)}</span>
             </span>
           )}
         </FootRow>
@@ -264,6 +264,7 @@ export function UserMenu({
               await forgetDraft();
               await api.logout().catch(() => {});
               queryClient.clear();
+              clearAttention();
               forgetSidebar(); // last, so that no list that comes is kept again
               window.location.assign("/login");
             }}

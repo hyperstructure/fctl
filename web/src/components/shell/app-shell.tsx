@@ -52,14 +52,20 @@ export function AppShell() {
   useFactorsWatch();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const tab = useRouterState({ select: (s) => (s.location.search as { tab?: string } | undefined)?.tab });
+  const scope = useRouterState({
+    select: (s) => (s.location.search as { scope?: string } | undefined)?.scope,
+  });
   // How wide the sidebar is, and whether it is folded into its rail: as each person leaves it.
   const [width, setWidth] = useSidebarWidth();
   const [folded, setFolded] = useSidebarFolded();
   const [resizing, setResizing] = useState(false);
   const wide = useWide();
+  // Only where it shows: on a narrow screen the sidebar is a drawer, which doesn't fold.
   useHotkey(
     "mod+\\",
-    useCallback(() => setFolded(!folded), [folded, setFolded]),
+    useCallback(() => {
+      if (wide) setFolded(!folded);
+    }, [wide, folded, setFolded]),
   );
   return (
     <div
@@ -93,6 +99,7 @@ export function AppShell() {
           onClose={closeDrawer}
           path={path}
           tab={tab}
+          scope={path === "/pulls" ? scope : undefined}
           folded={folded && wide}
           onFold={setFolded}
         />

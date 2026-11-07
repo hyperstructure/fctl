@@ -21,6 +21,8 @@ import {
   PanelLeftOpen,
   Plus,
   Search,
+  Settings,
+  Shield,
   X,
 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
@@ -47,6 +49,7 @@ import {
   useSessions,
   useSidebarSessions,
   useWorkspaces,
+  useYourSessions,
 } from "@/lib/queries";
 import { type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
 import { type Sortable, useSortable } from "@/lib/sortable";
@@ -59,7 +62,15 @@ import {
   useFolded,
 } from "@/lib/workspaces";
 import { FloorLink } from "./floor-link";
-import { Count, SearchButton, SessionLine, SettingsRows, UserMenu, useMinute } from "./sidebar-parts";
+import {
+  Count,
+  SearchButton,
+  SessionLine,
+  SettingsRows,
+  UserMenu,
+  useMinute,
+  waitingForAccess,
+} from "./sidebar-parts";
 
 export interface SidebarProps {
   onPalette: () => void;
@@ -70,6 +81,8 @@ export interface SidebarProps {
   path: string;
   /** The page's tab, on a project's page: its own links light up. */
   tab?: string;
+  /** On the pull requests page, the workspace or project it lists (`w:slug`, `p:slug`). */
+  scope?: string;
   /** Folded into its rail (wide screens only), and how to fold or unfold it. */
   folded?: boolean;
   onFold?: (folded: boolean) => void;
@@ -79,14 +92,14 @@ export interface SidebarProps {
 export const OPEN_PULLS = { pulls: "open" as const, limit: 200 };
 
 export function Sidebar(props: SidebarProps) {
-  const data = useSidebarData(props.path);
+  const data = useSidebarData(props.path, props.scope);
   useAttention(data.needs.length);
   return props.folded ? <Rail {...props} data={data} /> : <Tree {...props} data={data} />;
 }
 
 type Data = ReturnType<typeof useSidebarData>;
 
-function useSidebarData(path: string) {
+function useSidebarData(path: string, scope?: string) {
   const { data: me } = useMe();
   const { data: instance } = useInstance();
   const { data: projectList } = useProjects();
@@ -101,11 +114,17 @@ function useSidebarData(path: string) {
   const ended = useSessions({ status: "ended", limit: 12 }).data?.sessions;
   const listed = useSidebarSessions().data?.sessions;
   const open = useSessions(OPEN_PULLS).data?.sessions;
+  // Every session they started or follow from the last day, which the others may not reach.
+  const yours = useYourSessions(!!me).data?.sessions;
   const recent = useMemo(() => byProject(recentSessions(listed ?? [], now)), [listed, now]);
   const needs = useMemo(
     () =>
-      needsOf(me?.user.id, [...(listed ?? []), ...(active ?? []), ...(ended ?? []), ...(open ?? [])], now),
-    [me?.user.id, listed, active, ended, open, now],
+      needsOf(
+        me?.user.id,
+        [...(yours ?? []), ...(listed ?? []), ...(active ?? []), ...(ended ?? []), ...(open ?? [])],
+        now,
+      ),
+    [me?.user.id, yours, listed, active, ended, open, now],
   );
   // The open pull requests, each once: those ready for review, and each project's.
   const pulls = useMemo(() => listPulls(open ?? []).filter((l) => stateOf(l) === "open"), [open]);
@@ -122,10 +141,22 @@ function useSidebarData(path: string) {
   // Each session at work lights a thread on the Agent Floor's row.
   const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
   const session = path.startsWith("/s/") ? path.slice(3) : undefined;
-  const current = [...(listed ?? []), ...(active ?? []), ...(ended ?? [])].find((s) => s.id === session);
+  // The session page's own, which the sidebar only reads, for one no list here has.
+  const opened = useQuery({
+    queryKey: keys.session(session ?? ""),
+    queryFn: () => api.session(session ?? ""),
+    enabled: false,
+  }).data;
+  const current =
+    [...(listed ?? []), ...(active ?? []), ...(ended ?? []), ...(yours ?? [])].find(
+      (s) => s.id === session,
+    ) ?? (opened?.id === session ? opened : undefined);
+  const scoped = scope?.startsWith("p:") ? scope.slice(2) : undefined;
   const here = path.startsWith("/p/")
     ? projects?.find((p) => p.slug === path.slice(3))
-    : current && projects?.find((p) => p.id === current.project_id);
+    : scoped
+      ? projects?.find((p) => p.slug === scoped)
+      : current && projects?.find((p) => p.id === current.project_id);
   return {
     me: me ?? undefined,
     instance,
@@ -176,6 +207,8 @@ const ORDER_HELP = "sidebar-order-help";
 function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: SidebarProps & { data: Data }) {
   const [folded, toggleFold] = useFolded();
   const [needsOpen, setNeedsOpen] = useNeedsOpen();
+  // The page lists every pull request, not one project's (whose own link lights up then).
+  const allPulls = path === "/pulls" && !data.here;
   const sort = useSortable({
     // Kept lists don't move: a new order names the workspaces the control plane sent.
     ids: data.kept ? [] : data.groups.map((g) => g.workspace.id),
@@ -228,6 +261,7 @@ function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: Sideb
           to="/pulls"
           search={{}}
           onClick={onNavigate}
+          aria-current={allPulls ? "page" : undefined}
           title={
             data.ready.length
               ? `${data.ready.length} ready for review, of ${data.pulls.length} open`
@@ -235,12 +269,12 @@ function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: Sideb
           }
           className={cn(
             "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
-            path === "/pulls" ? HERE : "text-ink-3 hover:bg-hover hover:text-ink",
+            allPulls ? HERE : "text-ink-3 hover:bg-hover hover:text-ink",
           )}
         >
           <PullRequestIcon
             state="open"
-            className={cn("size-4", path === "/pulls" ? "text-accent" : "text-ink-4 group-hover:text-ink-3")}
+            className={cn("size-4", allPulls ? "text-accent" : "text-ink-4 group-hover:text-ink-3")}
           />
           <span className="flex-1">Pull requests</span>
           {data.ready.length > 0 ? (
@@ -386,7 +420,9 @@ function NeedsYou({
           />
         )}
       </button>
+      {/* Closed, its links are out of the way of Tab and screen readers too. */}
       <div
+        inert={!(open && n > 0)}
         className={cn(
           "grid transition-[grid-template-rows] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
           open && n > 0 ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
@@ -813,6 +849,7 @@ function SubLink({
       to={to}
       search={search}
       onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
       className={cn(
         "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors",
         active ? HERE : "text-ink-3 hover:bg-hover hover:text-ink",
@@ -915,6 +952,21 @@ function Rail({ onPalette, onNavigate, onFold, path, data }: SidebarProps & { da
         ))}
       </div>
       <div className="flex w-full flex-col items-center gap-1 border-t border-line pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {data.isAdmin && (
+          <RailLink
+            to="/admin"
+            label={data.asking ? `Admin · ${waitingForAccess(data.asking)}` : "Admin"}
+            active={path === "/admin"}
+            badge={data.asking}
+            tone="highlight"
+            onNavigate={onNavigate}
+          >
+            <Shield className="size-4" />
+          </RailLink>
+        )}
+        <RailLink to="/settings" label="Settings" active={path === "/settings"} onNavigate={onNavigate}>
+          <Settings className="size-4" />
+        </RailLink>
         {onFold && (
           <RailButton
             label={`Unfold the sidebar (${apple() ? "⌘" : "Ctrl+"}\\)`}
@@ -957,14 +1009,17 @@ function RailLink({
   active,
   lit,
   badge,
+  tone = "pr",
   onNavigate,
   children,
 }: {
-  to: "/" | "/pulls";
+  to: "/" | "/pulls" | "/admin" | "/settings";
   label: string;
   active: boolean;
   lit?: boolean;
   badge?: number;
+  /** The badge's color: pull requests' green, or the highlight of people waiting. */
+  tone?: "pr" | "highlight";
   onNavigate: () => void;
   children: ReactNode;
 }) {
@@ -974,6 +1029,7 @@ function RailLink({
       search={{}}
       onClick={onNavigate}
       aria-label={label}
+      aria-current={active ? "page" : undefined}
       title={label}
       className={cn(
         "relative flex size-9 items-center justify-center rounded-lg transition-colors",
@@ -986,7 +1042,12 @@ function RailLink({
     >
       {children}
       {!!badge && (
-        <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-pr-open px-1 text-[9px] font-semibold text-white tabular-nums">
+        <span
+          className={cn(
+            "absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-[9px] font-semibold tabular-nums",
+            tone === "pr" ? "bg-pr-open text-white" : "bg-highlight text-highlight-ink",
+          )}
+        >
           {badge}
         </span>
       )}

@@ -356,6 +356,12 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     if http::query(req, "mine").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.created_by = ?1");
     }
+    // The sessions the caller started or follows (`session_followers`,
+    // joined for the caller in SESSION_SELECT): what the web app's Needs
+    // you looks through.
+    if http::query(req, "yours").is_some_and(|v| v == "1" || v == "true") {
+        sql.push_str(" AND (s.created_by = ?1 OR f.user_id IS NOT NULL)");
+    }
     // The sessions that list a pull request, in a state, for the pull
     // requests page and the sidebar: among those `pull_request_sessions`
     // has, those whose own list (what their pages show, from their agents'

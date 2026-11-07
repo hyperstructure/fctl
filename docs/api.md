@@ -110,7 +110,8 @@ It answers with the session, `queued`. A session is:
   `?status=active` (queued to stopping), `?status=ended` (stopped or
   failed) or one status, `?active_since=` (a time in milliseconds: those
   that haven't ended, and those that ended since, as the app's sidebar
-  lists the last hour's), `?mine=1` (started by the caller), `?reviews=1`,
+  lists the last hour's), `?mine=1` (started by the caller), `?yours=1`
+  (started or followed by the caller, as the app's Needs you lists them), `?reviews=1`,
   `?archived=1`, `?hidden=1`, `?pulls=open|merged|closed|any` (those that
   list a pull request in that state in their `pull_requests`, as their
   agents and GitHub last said; one nobody looked up counts as open: the
