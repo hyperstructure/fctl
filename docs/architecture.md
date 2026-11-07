@@ -565,8 +565,13 @@ five or more. Anyone on the instance creates one, as its primary admin.
   project's page and settings, `fctl projects set --icon`), which everyone
   in the workspace sees in the sidebar, the project's page and search: a
   glyph of [IconMCP](https://iconmcp.com) (an MIT-licensed set of 6,800
-  icons on a 16-unit grid) by its name, in a workspace color and outline,
-  duotone or solid (`ProjectIcon`, `projects.icon` as JSON). The web app
+  icons on a 16-unit grid) by its name, in a workspace color or one of its
+  own (`#rrggbb`, kept with the workspace color nearest it for older
+  clients), and outline, duotone or solid (`ProjectIcon`, `projects.icon`
+  as JSON). A color of its own is drawn lighter in the dark theme or darker
+  in the light one, keeping its hue, only as far as its lines need to stand
+  4.5:1 against the background, as the workspace colors' shades do
+  (`web/src/lib/color.ts`). The web app
   carries the glyphs it offers, about 210 of them, in three styles
   (`web/src/lib/project-icon-data.ts`, in a chunk of its own, which
   `web/scripts/project-icons.mjs` adds to from IconMCP's MCP server), and

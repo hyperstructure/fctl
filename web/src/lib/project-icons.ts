@@ -1,17 +1,19 @@
-// Projects' icons: an IconMCP glyph in a workspace color and a style, which people choose for a
-// project (G.ProjectIcon). A project without one shows the glyph that fits it best: the words of
-// its name first, then its description's emoji, then its words.
+// Projects' icons: an IconMCP glyph in a workspace color or one of its own, and a style, which
+// people choose for a project (G.ProjectIcon). A project without one shows the glyph that fits it
+// best: the words of its name first, then its description's emoji, then its words.
 
 import { useMutation } from "@tanstack/react-query";
+import type { CSSProperties } from "react";
 import type * as G from "@/gen";
 import { api } from "./api";
+import { parseHex, shades } from "./color";
 import { ICONS, type IconDef } from "./project-icon-data";
 import { keys, queryClient } from "./queries";
 
 export { ICONS, type IconDef };
 
-/** An icon with its color and style settled: what draws it. */
-export type IconChoice = Required<G.ProjectIcon>;
+/** An icon with its color and style settled: what draws it. `hex`, a color of its own, draws in `color`'s place. */
+export type IconChoice = Required<Omit<G.ProjectIcon, "hex">> & { hex?: string };
 
 export const ICON_STYLES: { style: G.IconStyle; label: string }[] = [
   { style: "outline", label: "Outline" },
@@ -30,6 +32,44 @@ export const ICON_COLORS: Record<G.WorkspaceColor, { label: string; ink: string;
   blue: { label: "Blue", ink: "var(--p-blue)", soft: "var(--c-blue-soft)" },
 };
 export const COLOR_ORDER: G.WorkspaceColor[] = ["ink", "yellow", "pink", "blue"];
+/** The brand's own of each workspace color, where a color of one's own starts from it. */
+export const BRAND_HEX: Record<G.WorkspaceColor, string> = {
+  ink: "#8d8d8d",
+  yellow: "#ffff5d",
+  pink: "#ff00d8",
+  blue: "#007eff",
+};
+
+/**
+ * What paints an icon in its color: the glyph's ink and the tile's soft fill, as CSS colors. A
+ * color of its own comes in each theme's shade (lib/color.ts), as custom properties that the
+ * `pi-own` class picks between (styles/app.css): put `className` and `style` on the element
+ * whose `color` or `background` uses them, or on one around it.
+ */
+export function iconPaint(icon: Pick<IconChoice, "color" | "hex">): {
+  ink: string;
+  soft: string;
+  className?: string;
+  style?: CSSProperties;
+} {
+  const hex = icon.hex && parseHex(icon.hex);
+  if (!hex) {
+    const c = ICON_COLORS[knownColor(icon.color)];
+    return { ink: c.ink, soft: c.soft };
+  }
+  const { dark, light } = shades(hex);
+  return {
+    ink: "var(--pi-ink)",
+    soft: "var(--pi-soft)",
+    className: "pi-own",
+    style: {
+      "--pi-ink-dark": dark.ink,
+      "--pi-soft-dark": dark.soft,
+      "--pi-ink-light": light.ink,
+      "--pi-soft-light": light.soft,
+    } as CSSProperties,
+  };
+}
 
 const byName = new Map(ICONS.map((i) => [i.name, i]));
 export const iconDef = (name: string): IconDef | undefined => byName.get(name);
@@ -266,11 +306,13 @@ export function iconOf(p: Fits & { icon?: G.ProjectIcon }): IconChoice & { chose
   const own = p.icon;
   const fits = fittingIcon(p);
   if (!own) return { ...fits, chosen: false };
+  const hex = own.hex ? parseHex(own.hex) : undefined;
   return {
     name: byName.has(own.name) ? own.name : fits.name,
     // A color or a style from a newer control plane draws as ink lines.
     color: knownColor(own.color),
     style: knownStyle(own.style),
+    ...(hex && { hex }),
     chosen: true,
   };
 }
@@ -282,11 +324,29 @@ export const knownColor = (c: string | undefined): G.WorkspaceColor =>
 export const knownStyle = (s: string | undefined): G.IconStyle =>
   ICON_STYLES.some((x) => x.style === s) ? (s as G.IconStyle) : "outline";
 
+/** An icon's color, as it draws: its own, or the workspace color. */
+const colorOf = (i: G.ProjectIcon | undefined) => (i?.hex && parseHex(i.hex)) || (i?.color ?? "ink");
+
 /** Whether two icons draw the same. */
 export const sameIcon = (a: G.ProjectIcon | undefined, b: G.ProjectIcon | undefined) =>
-  a?.name === b?.name &&
-  (a?.color ?? "ink") === (b?.color ?? "ink") &&
-  (a?.style ?? "outline") === (b?.style ?? "outline");
+  a?.name === b?.name && colorOf(a) === colorOf(b) && (a?.style ?? "outline") === (b?.style ?? "outline");
+
+/** An icon as it's saved: with a color of its own, the control plane picks the workspace color nearest it. */
+export function toSave({ name, color, style, hex }: IconChoice): G.ProjectIcon {
+  return hex ? { name, style, hex } : { name, color, style };
+}
+
+/** The colors of their own that `projects`' icons have, each once with the projects', the most used first. */
+export function ownColors(
+  projects: readonly { name: string; icon?: G.ProjectIcon }[],
+): { hex: string; names: string[] }[] {
+  const by = new Map<string, string[]>();
+  for (const p of projects) {
+    const hex = p.icon?.hex && parseHex(p.icon.hex);
+    if (hex) by.set(hex, [...(by.get(hex) ?? []), p.name]);
+  }
+  return [...by].sort((a, b) => b[1].length - a[1].length).map(([hex, names]) => ({ hex, names }));
+}
 
 /**
  * Saves a project's icon (none: the one that fits it again). Lists show it at once, and go back

@@ -218,8 +218,9 @@ impl IconStyle {
 
 /// A project's icon, which people choose for it: one of the glyphs of
 /// [IconMCP](https://iconmcp.com) that the web app has, by its name there,
-/// in a workspace color and a style. A project without one shows the glyph
-/// that fits its name and description best, in ink lines.
+/// in a workspace color or one of its own, and a style. A project without
+/// one shows the glyph that fits its name and description best, in ink
+/// lines.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ProjectIcon {
@@ -227,12 +228,21 @@ pub struct ProjectIcon {
     /// letters, digits and dashes. In an update, an empty name takes the
     /// project's icon away.
     pub name: String,
+    /// With `hex`, the workspace color nearest it, which apps before
+    /// colors of their own show.
     #[serde(default = "ink")]
     #[cfg_attr(feature = "ts", ts(as = "Option<WorkspaceColor>", optional))]
     pub color: WorkspaceColor,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<IconStyle>", optional))]
     pub style: IconStyle,
+    /// A color of its own, `#rrggbb`, in place of `color`. The web app
+    /// shades it lighter or darker where a theme needs it to read.
+    /// Absent: `color`; from control planes before colors of their own
+    /// too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub hex: Option<String>,
 }
 
 fn ink() -> WorkspaceColor {

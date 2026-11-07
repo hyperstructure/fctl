@@ -5,15 +5,7 @@ import { createElement, type ReactNode, useId } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import type { IconElement } from "@/lib/project-icon-data";
-import {
-  type Fits,
-  ICON_COLORS,
-  type IconChoice,
-  iconDef,
-  iconOf,
-  knownColor,
-  knownStyle,
-} from "@/lib/project-icons";
+import { type Fits, type IconChoice, iconDef, iconOf, iconPaint, knownStyle } from "@/lib/project-icons";
 
 function draw(els: IconElement[], mask: string, prefix = ""): ReactNode[] {
   return els.map(([tag, attrs, ...kids], i) => {
@@ -24,17 +16,20 @@ function draw(els: IconElement[], mask: string, prefix = ""): ReactNode[] {
   });
 }
 
-/** A glyph alone, `size` pixels square, in `color` (or the text's). */
+/** A glyph alone, `size` pixels square, in `color` or `hex` (or the text's). */
 export function Glyph({
   name,
   style = "outline",
   color,
+  hex,
   size = 16,
   className,
 }: {
   name: string;
   style?: G.IconStyle;
   color?: G.WorkspaceColor;
+  /** A color of its own, in `color`'s place. */
+  hex?: string;
   size?: number;
   className?: string;
 }) {
@@ -43,6 +38,7 @@ export function Glyph({
   const def = iconDef(name);
   // Strokes about 1.25 px wide at sidebar sizes, a little bolder as the glyph grows.
   const stroke = ((1.25 + Math.max(0, size - 16) * 0.03) * 16) / size;
+  const paint = color || hex ? iconPaint({ color: color ?? "ink", hex }) : undefined;
   return (
     <svg
       viewBox="0 0 16 16"
@@ -54,8 +50,8 @@ export function Glyph({
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
-      className={cn("shrink-0", className)}
-      style={color ? { color: ICON_COLORS[knownColor(color)].ink } : undefined}
+      className={cn("shrink-0", paint?.className, className)}
+      style={paint && { ...paint.style, color: paint.ink }}
     >
       {def && draw(def[knownStyle(style)], mask)}
     </svg>
@@ -86,22 +82,24 @@ export function ProjectIcon({
         name={icon.name}
         style={icon.style}
         color={muted ? undefined : icon.color}
+        hex={muted ? undefined : icon.hex}
         size={size}
         className={cn(muted && "text-ink-4", className)}
       />
     );
-  const c = ICON_COLORS[knownColor(icon.color)];
+  const paint = iconPaint(icon);
   return (
     <span
-      className={cn("inline-flex shrink-0 items-center justify-center", className)}
+      className={cn("inline-flex shrink-0 items-center justify-center", paint.className, className)}
       style={{
+        ...paint.style,
         width: tile,
         height: tile,
         borderRadius: Math.max(5, Math.round(tile * 0.28)),
-        background: c.soft,
-        color: c.ink,
+        background: paint.soft,
+        color: paint.ink,
         // A hairline keeps the ink tile's square on both themes.
-        boxShadow: icon.color === "ink" ? "inset 0 0 0 1px var(--c-line)" : undefined,
+        boxShadow: icon.color === "ink" && !icon.hex ? "inset 0 0 0 1px var(--c-line)" : undefined,
       }}
     >
       <Glyph name={icon.name} style={icon.style} size={Math.round(tile * 0.6)} />

@@ -56,6 +56,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { showHex } from "@/lib/color";
 import { draftId, forgetDraft, loadText } from "@/lib/draft";
 import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
 import { GITHUB_ACCESS } from "@/lib/github-access";
@@ -123,7 +124,12 @@ function IconField({ project }: { project: G.Project }) {
           {icon.chosen ? (
             <>
               <span className="text-ink-2">{iconDef(icon.name)?.label ?? icon.name}</span> ·{" "}
-              {ICON_COLORS[icon.color].label.toLowerCase()}, {icon.style}
+              {icon.hex ? (
+                <span className="font-mono text-[12px]">{showHex(icon.hex)}</span>
+              ) : (
+                ICON_COLORS[icon.color].label.toLowerCase()
+              )}
+              , {icon.style}
             </>
           ) : (
             "The one that fits its name, until someone chooses one"

@@ -52,4 +52,21 @@ describe("a project's icon", () => {
     );
     expect(c2.querySelector("svg path")).not.toBeNull();
   });
+
+  it("draws a color of its own in each theme's shade, which the theme picks", () => {
+    const icon = { name: "rocket", color: "yellow", style: "outline", hex: "#ffff5d" } as const;
+    const tile = render(<ProjectIcon icon={icon} tile={24} />).firstElementChild as HTMLElement;
+    expect(tile.classList).toContain("pi-own");
+    expect(tile.style.getPropertyValue("--pi-ink-dark")).toBe("#ffff5d");
+    expect(tile.style.getPropertyValue("--pi-ink-light")).toBe("#787700");
+    expect(tile.style.color).toBe("var(--pi-ink)");
+    expect(tile.style.background).toBe("var(--pi-soft)");
+    // Alone, the glyph carries them itself; muted, it's in the faint ink.
+    const glyph = render(<ProjectIcon icon={icon} size={16} />).querySelector("svg");
+    expect(glyph?.classList).toContain("pi-own");
+    expect(glyph?.style.color).toBe("var(--pi-ink)");
+    const muted = render(<ProjectIcon icon={icon} size={16} muted />).querySelector("svg");
+    expect(muted?.classList).not.toContain("pi-own");
+    expect(muted?.classList).toContain("text-ink-4");
+  });
 });
