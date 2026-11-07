@@ -32,7 +32,7 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
 import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { KeepTokenOut } from "@/components/claude/stand-in";
@@ -157,7 +157,15 @@ export function SettingsPage() {
   );
 }
 
-function SettingsBody({ tab, me, search }: { tab: SettingsTab; me: G.Me; search: SettingsSearch }) {
+function SettingsBody({
+  tab,
+  me,
+  search,
+}: {
+  tab: SettingsTab;
+  me: G.Me;
+  search: SettingsSearch & { linear?: LinearOutcome };
+}) {
   switch (tab) {
     case "profile":
       return <Profile me={me} />;
@@ -168,7 +176,7 @@ function SettingsBody({ tab, me, search }: { tab: SettingsTab; me: G.Me; search:
     case "claude":
       return <Claude me={me} />;
     case "linear":
-      return <LinearAccounts returned={search.linear as LinearOutcome | undefined} />;
+      return <LinearAccounts returned={search.linear} />;
     case "notifications":
       return <Notifications me={me} />;
     case "appearance":
@@ -210,13 +218,55 @@ function Pages({
   className?: string;
 }) {
   const attention = useAttention(me);
+  const nav = useRef<HTMLElement>(null);
+  // The highlight under the page open, which slides to the page chosen. Where it was first
+  // measured it shows at once: it moves only from one page to another.
+  const [mark, setMark] = useState<{ top: number; height: number; moved: boolean }>();
+  const shown = SETTINGS_GROUPS.flat()
+    .filter((p) => has(p.tab))
+    .map((p) => p.tab)
+    .join();
+  useLayoutEffect(() => {
+    const list = nav.current;
+    if (!list) return;
+    const measure = () => {
+      const here = list.querySelector<HTMLElement>('[aria-current="page"]');
+      // Hidden, where the window is narrow: measured once it shows.
+      if (!here || !list.offsetHeight) return;
+      // From the top of the list, past the groups above.
+      const top = here.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      const height = here.offsetHeight;
+      setMark((m) => (m?.top === top && m.height === height ? m : { top, height, moved: !!m }));
+    };
+    measure();
+    const resized = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    resized?.observe(list);
+    return () => resized?.disconnect();
+  }, [tab, shown]);
   return (
-    // Its icons line up with the page's title, their highlight in the margin beside it.
-    <nav aria-label="Settings" className={cn("sticky top-8 -ml-2.5 max-md:top-20", className)}>
+    // Its icons line up with the page's title, their highlight in the margin beside it. The
+    // router's view transition leaves it out of its cross-fade (styles/app.css), so that the
+    // highlight slides rather than fading out in one place and in at another.
+    <nav
+      ref={nav}
+      aria-label="Settings"
+      className={cn("sticky top-8 -ml-2.5 [view-transition-name:settings-pages] max-md:top-20", className)}
+    >
+      {mark && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute inset-x-0 top-0 rounded-md bg-raised shadow-[inset_0_0_0_1px_var(--c-line)]",
+            mark.moved && "transition-[translate] duration-[260ms] ease-[var(--ease-out)]",
+          )}
+          style={{ translate: `0 ${mark.top}px`, height: mark.height }}
+        />
+      )}
       {SETTINGS_GROUPS.map((group, i) => (
         <ul
           key={group[0]?.tab}
-          className={cn("flex flex-col gap-0.5", i > 0 && "mt-3 border-t border-line pt-3")}
+          // Over the highlight, which is positioned (absolute): so are the groups (relative).
+          className={cn("relative flex flex-col gap-0.5", i > 0 && "mt-3 border-t border-line pt-3")}
         >
           {group
             .filter((p) => has(p.tab))
@@ -230,29 +280,22 @@ function Pages({
                     search={{ tab: p.tab }}
                     aria-current={here ? "page" : undefined}
                     className={cn(
-                      "group relative flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
+                      "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
                       here ? "text-ink" : "text-ink-3 hover:bg-hover hover:text-ink",
                     )}
                   >
-                    {/* Moves to the page chosen, with the router's view transition (styles/app.css). */}
-                    {here && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute inset-0 rounded-md bg-raised shadow-[inset_0_0_0_1px_var(--c-line)] [view-transition-name:settings-page]"
-                      />
-                    )}
                     <SettingsIcon
                       tab={p.tab}
                       className={cn(
-                        "relative size-4 shrink-0",
-                        here ? "text-accent" : "text-ink-4 transition-colors group-hover:text-ink-3",
+                        "size-4 shrink-0 transition-colors duration-150",
+                        here ? "text-accent" : "text-ink-4 group-hover:text-ink-3",
                       )}
                     />
-                    <span className="relative min-w-0 flex-1 truncate">{p.label}</span>
+                    <span className="min-w-0 flex-1 truncate">{p.label}</span>
                     {needs && (
                       <span
                         title={needs.text}
-                        className="relative size-1.5 shrink-0 rounded-full bg-amber shadow-[0_0_6px_var(--c-amber)]"
+                        className="size-1.5 shrink-0 rounded-full bg-amber shadow-[0_0_6px_var(--c-amber)]"
                       >
                         <span className="sr-only">: {needs.text}</span>
                       </span>
