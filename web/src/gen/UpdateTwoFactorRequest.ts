@@ -7,4 +7,9 @@ export type UpdateTwoFactorRequest = {
 /**
  * Google sign-ins ask for a code too.
  */
-google?: boolean, };
+google?: boolean, 
+/**
+ * Names the authenticator app (`TwoFactor.authenticator_name`); an
+ * empty name takes its name away.
+ */
+authenticator_name?: string, };

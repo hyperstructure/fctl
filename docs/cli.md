@@ -1229,6 +1229,7 @@ fctl account two-factor                    # what you have, and what the instanc
 fctl account two-factor enable             # prints a QR code, asks for the app's code, shows recovery codes
 fctl account two-factor enable --code 123456   # replace your app: a code from it, or a recovery code
 fctl account two-factor recovery-codes     # ten new ones; the old ones stop working
+fctl account two-factor rename 1Password   # name the app after the one that keeps it ("" goes back to Authenticator app)
 fctl account two-factor google on          # Google sign-ins ask you for a code too (off asks to confirm it's you, and emails you)
 fctl account two-factor disable            # asks for a code (not while the instance requires it)
 ```

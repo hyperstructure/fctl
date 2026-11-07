@@ -367,9 +367,11 @@ pub async fn creation_options(ctx: &mut Ctx, req: &mut Request) -> AppResult<Res
     })
 }
 
-/// A passkey's name: what its person typed, its provider's, or the device's
-/// the browser suggests.
-fn clean_name(name: &str) -> Option<String> {
+/// A passkey's or authenticator app's name as people type it (or a
+/// passkey's provider's, or the device's the browser suggests): trimmed,
+/// without control characters, at most [`MAX_NAME`] characters; `None`
+/// when nothing is left.
+pub(crate) fn clean_name(name: &str) -> Option<String> {
     let name: String = name.trim().chars().filter(|c| !c.is_control()).collect();
     (!name.is_empty()).then(|| name.chars().take(MAX_NAME).collect())
 }

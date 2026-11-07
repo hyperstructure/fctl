@@ -16,6 +16,7 @@ import {
   Mail,
   Monitor,
   Moon,
+  Pencil,
   Plus,
   Radio,
   Shield,
@@ -1198,8 +1199,8 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
               {on ? <ShieldCheck className="size-4" /> : <Shield className="size-4" />}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-[13.5px] text-ink">
-                Authenticator app
+              <div className="flex min-w-0 items-center gap-2 text-[13.5px] text-ink">
+                {on ? <AuthenticatorName name={t.authenticator_name} /> : "Authenticator app"}
                 {on && (
                   <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10.5px] font-medium text-ink">
                     on
@@ -1374,6 +1375,79 @@ function TwoFactorSettings({ me }: { me: G.Me }) {
         )}
       </Dialog>
     </Section>
+  );
+}
+
+/**
+ * The authenticator app's name, which its person can change in place: nothing
+ * about the app's secret says which app keeps it, 1Password or another.
+ */
+function AuthenticatorName({ name }: { name?: string }) {
+  const shown = name ?? "Authenticator app";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name ?? "");
+  const input = useRef<HTMLInputElement>(null);
+  const rename = useMutation({
+    mutationFn: (n: string) => api.updateTwoFactor({ authenticator_name: n }),
+    onSuccess: (m) => {
+      queryClient.setQueryData(keys.me, m);
+      setEditing(false);
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  useEffect(() => {
+    if (editing) input.current?.select();
+  }, [editing]);
+  const stop = () => {
+    setDraft(name ?? "");
+    setEditing(false);
+  };
+  // An empty name goes back to "Authenticator app".
+  const save = () => {
+    const next = draft.trim();
+    if (next === (name ?? "")) stop();
+    else rename.mutate(next);
+  };
+  return editing ? (
+    <form
+      className="min-w-0 flex-1"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save();
+      }}
+    >
+      <Input
+        ref={input}
+        value={draft}
+        placeholder="Authenticator app"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            // The field's own, not the page's or a dialog's.
+            e.preventDefault();
+            stop();
+          }
+        }}
+        maxLength={60}
+        aria-label="The authenticator app's name"
+        className="h-8 max-w-xs"
+        disabled={rename.isPending}
+      />
+    </form>
+  ) : (
+    <button
+      type="button"
+      className="group flex min-w-0 items-center gap-1.5 text-left"
+      onClick={() => {
+        setDraft(name ?? "");
+        setEditing(true);
+      }}
+      title="Rename it"
+    >
+      <span className="truncate">{shown}</span>
+      <Pencil className="size-3 shrink-0 text-ink-4 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+    </button>
   );
 }
 

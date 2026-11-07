@@ -245,7 +245,10 @@ with an authenticator app: TOTP (RFC 6238) with HMAC-SHA1, six digits and
    stolen session or token, with the password or not, must not set one up
    (`two_factor::setup_proof`). Replacing the
    app, turning two-factor off and getting new recovery codes take a
-   current code, from the app or a recovery code.
+   current code, from the app or a recovery code. Nothing in the secret
+   says which app keeps it, so people name it themselves ("1Password",
+   `authenticator_apps.name`, through `PATCH /me/two-factor`); replacing
+   the app forgets the name.
 2. **Signing in.** A sign-in with a password then starts no web session. It
    leaves a challenge (`sign_in_challenges`, for ten minutes) that the
    browser holds in the `__Host-fctl-2fa` cookie, and the page asks for a
