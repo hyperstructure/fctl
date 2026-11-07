@@ -98,6 +98,39 @@ describe("project icons", () => {
     expect(suggestIcons({ name: "zoo", description: "🦊 Foxes" })[0]).toBe("fox");
   });
 
+  it("suggests brewing, factory, voting and cooking icons", () => {
+    // Homebrew's mark is a beer mug.
+    expect(suggestIcons({ name: "homebrew", description: "Homebrew tap of fctl CLI." })[0]).toBe("beer");
+    expect(suggestIcons({ name: "Formulae", description: "Our Homebrew tap" })).toEqual(
+      expect.arrayContaining(["beer", "package-open"]),
+    );
+    expect(suggestIcons({ name: "Works", description: "🏭 A software factory" }).slice(0, 2)).toEqual([
+      "factory",
+      "manufacturing-plant",
+    ]);
+    // A poll in a name's last part, and what voting on decisions is about.
+    expect(suggestIcons({ name: "metapoll", description: "Web app and backend for metapoll.io" })[0]).toBe(
+      "ballot-box",
+    );
+    expect(
+      suggestIcons({ name: "Atlas", description: "Ranked choice voting on decision spaces" }, 4),
+    ).toEqual(expect.arrayContaining(["ballot-box", "ranking", "decision-tree"]));
+    // Polling is how code waits, not voting.
+    expect(suggestIcons({ name: "Sync", description: "Long polling for updates" }, 12)).not.toContain(
+      "ballot-box",
+    );
+    // What it cooks before what kind of app it is.
+    const recipes = suggestIcons({
+      name: "Pantry",
+      description: "A baking and cooking web app with recipes",
+    });
+    expect(recipes[0]).toBe("chef-hat");
+    expect(recipes).toEqual(expect.arrayContaining(["whisk", "cooking-pot", "smartphone"]));
+    expect(suggestIcons({ name: "Bakery", description: "🥐 Orders" })).toEqual(
+      expect.arrayContaining(["bread", "croissant"]),
+    );
+  });
+
   it("falls back on a generic icon that stays the same for a project", () => {
     const one = fittingIcon({ id: "prj_1", name: "Zxq" });
     expect(fittingIcon({ id: "prj_1", name: "Zxq" })).toEqual(one);
@@ -144,6 +177,23 @@ describe("project icons", () => {
     expect(searchIcons("python")[0]?.name).toBe("snake");
     expect(searchIcons("rabbitmq").map((i) => i.name)).toEqual(
       expect.arrayContaining(["message-queue", "rabbit"]),
+    );
+    expect(searchIcons("beer")[0]?.name).toBe("beer");
+    expect(searchIcons("homebrew").map((i) => i.name)).toEqual(
+      expect.arrayContaining(["beer", "beer-bottle"]),
+    );
+    expect(searchIcons("software factory").map((i) => i.name)).toEqual(
+      expect.arrayContaining(["factory", "manufacturing-plant", "assembly-line"]),
+    );
+    expect(searchIcons("ranked choice").map((i) => i.name)).toEqual(
+      expect.arrayContaining(["ranking", "poll-options"]),
+    );
+    expect(searchIcons("vote").map((i) => i.name)).toEqual(expect.arrayContaining(["ballot-box", "poll"]));
+    expect(searchIcons("recipes").map((i) => i.name)).toEqual(
+      expect.arrayContaining(["chef-hat", "cooking-pot", "utensils"]),
+    );
+    expect(searchIcons("baking").map((i) => i.name)).toEqual(
+      expect.arrayContaining(["whisk", "rolling-pin", "cupcake", "croissant"]),
     );
     expect(searchIcons("  ")).toHaveLength(ICONS.length);
   });
