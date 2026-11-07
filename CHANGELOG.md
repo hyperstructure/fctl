@@ -2,6 +2,27 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.31.0 (2026-11-07)
+
+### Features
+
+- Projects keep an icon, chosen from IconMCP's ([#440](https://github.com/hyperstructure/fctl/pull/440))
+- **host:** Save and resume the state of jailed Firecracker VMs ([#439](https://github.com/hyperstructure/fctl/pull/439))
+- Agents ask people for their input with fctl ask ([#441](https://github.com/hyperstructure/fctl/pull/441))
+- A page of pull requests, sorted by what each needs next ([#442](https://github.com/hyperstructure/fctl/pull/442))
+- **web:** The sidebar as a tree, with what needs you and pull requests ([#443](https://github.com/hyperstructure/fctl/pull/443))
+- **host:** Unpack a Firecracker image's layers as they download ([#444](https://github.com/hyperstructure/fctl/pull/444))
+- Answer agents from a redesigned pull requests page ([#448](https://github.com/hyperstructure/fctl/pull/448))
+- **web:** More project icons, and an icon picker that fits phones ([#449](https://github.com/hyperstructure/fctl/pull/449))
+
+### Fixes
+
+- **host:** Build fctl for macOS again, and check it in CI ([#450](https://github.com/hyperstructure/fctl/pull/450))
+
+### Documentation
+
+- Restore how jailed Firecracker VMs save and resume their state ([#447](https://github.com/hyperstructure/fctl/pull/447))
+
 ## 0.30.2 (2026-11-07)
 
 ### Features
