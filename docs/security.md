@@ -412,8 +412,9 @@ its VM, and nothing outside it except through these channels:
   for requests to the Anthropic API, as Claude does: its plan's usage, and
   whatever the token's scopes allow there. Claude trusts a certificate
   authority of the host's own for the API's name alone, whose key never
-  leaves the host. Turning it off again takes confirming it's you, where
-  the instance asks for that. Hosts of an fctl from before it ignore it and
+  leaves the host, and the host gives no sandbox the token once its owner
+  keeps it out, whatever the sandbox says. Turning it off again takes
+  confirming it's you, where the instance asks for that. Hosts of an fctl from before it ignore it and
   give the agent the token, until they update themselves, and so does the
   `process` driver, which isolates nothing.
 - **claude.ai connectors.** A session on a full Claude login gets the

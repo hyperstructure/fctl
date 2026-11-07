@@ -66,6 +66,11 @@ isn't known yet.
   API's certificate, as anything else the host reaches. Requests without the
   stand-in go on as they are; upgrades are refused. The token goes nowhere
   but the Anthropic API.
+- **The control plane's flag decides, not the sandbox.** An agent the host
+  doesn't relay for gets no credential flagged `stand_in`: neither a session
+  that started before its owner turned the setting on, whose Claude keeps
+  the token it has but gets no fresh one, nor a sandbox that says after a
+  host restart that it doesn't relay, which a root agent could.
 - **The stand-in is the same everywhere.** Its secrecy would add nothing:
   what a request may use is decided by the channel it comes on, which only
   that session's sandbox has. So a host that restarts needs no state to

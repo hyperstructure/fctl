@@ -403,11 +403,6 @@ pub async fn new_gravatar(ctx: &Ctx, user: UserRow) -> AppResult<UserRow> {
 pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateMeRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    // Giving sandboxes the Claude token again lets their agents hand it
-    // over: a stolen session can't do it alone.
-    if body.claude_stand_in == Some(false) && user.claude_stand_in {
-        ctx.verified(Sensitive::GiveClaudeTokenToSandboxes)?;
-    }
     let person = if body.given_name.is_some() || body.name.is_some() {
         validate::person_name(
             body.given_name.as_deref(),
@@ -440,10 +435,20 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         Some(p) => validate::preferred_name(p)?,
         None => user.preferred_name.clone(),
     };
+    let commit_email = body
+        .commit_email
+        .as_deref()
+        .map(validate::commit_email)
+        .transpose()?;
+    // Giving sandboxes the Claude token again lets their agents hand it
+    // over: a stolen session can't do it alone. Asked once the rest is
+    // checked, before anything changes.
+    if body.claude_stand_in == Some(false) && user.claude_stand_in {
+        ctx.verified(Sensitive::GiveClaudeTokenToSandboxes)?;
+    }
     // The primary address's commit email (Settings → Email addresses sets
     // the others').
-    if let Some(e) = body.commit_email.as_deref() {
-        let commit_email = validate::commit_email(e)?;
+    if let Some(commit_email) = commit_email {
         crate::api::emails::set_commit_email(ctx, &user, &user.email, commit_email.as_deref())
             .await?;
     }

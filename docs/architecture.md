@@ -3223,7 +3223,12 @@ change it. Turning it off again is a sensitive action
    refused. A fresh token the session gets replaces the one it had. A host
    that restarts learns from the agent's hello that it relays
    (`AgentHello.claude_relay`) and asks the control plane for the session's
-   token again; requests wait for it up to a minute.
+   token again; requests wait for it up to a minute. What an agent says
+   never decides whether it gets the token: an agent the host doesn't relay
+   for (its session started before its owner turned the setting on, or
+   after a restart it says it doesn't relay) gets no credential flagged
+   `stand_in`, and Claude's request for a fresh token fails, saying to
+   resume the session (`session::for_agent`).
 
 Nothing in the sandbox has the token then: not Claude's environment or
 memory, nor fctl-agent's. An agent, root in its sandbox or not, has only

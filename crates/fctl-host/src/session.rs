@@ -1170,6 +1170,9 @@ async fn run(
     // restart asks at once.
     let mut token_wanted = spec.is_none();
     let channels = Arc::new(AtomicUsize::new(0));
+    // When the host last said that Claude has as many connections as it
+    // relays: once a minute at most.
+    let mut cap_told: Option<Instant> = None;
     // Whether the agent has said hello since the host started, and so
     // whether its Claude has the stand-in. Until then, a Claude token the
     // host asked for after a restart waits here rather than go to an agent
@@ -1333,7 +1336,11 @@ async fn run(
                             relaying = true;
                         }
                         if let Some(HeldCredentials { request_id, mut claude, github, github_read, error }) = held_creds.take() {
-                            keep_token(relaying, &claude_token, &mut claude);
+                            // No request of the agent's waits for it: a token
+                            // it can't have just stays here.
+                            if let Some(why) = for_agent(relaying, keeps_nothing_out(&ctx), &claude_token, &mut claude) {
+                                tracing::info!("{session_id}: {why}");
+                            }
                             l.send(HostToAgent::Credentials { request_id, claude, github, github_read, error });
                         }
                         // A host that restarted has no token for it yet.
@@ -1437,12 +1444,17 @@ async fn run(
                             });
                         }
                         if !relaying {
-                            tracing::warn!("{session_id}: fctl-agent asked for a Claude connection, though its Claude has the token");
+                            tracing::warn!("{session_id}: fctl-agent asked for a Claude connection, though the host doesn't relay for it");
                         } else if channels.load(Ordering::Relaxed) >= MAX_CLAUDE_CONNECTIONS {
-                            tracing::warn!("{session_id}: Claude has {MAX_CLAUDE_CONNECTIONS} connections open; it waits for one to close");
+                            if cap_told.is_none_or(|at: Instant| at.elapsed() >= Duration::from_secs(60)) {
+                                cap_told = Some(Instant::now());
+                                tracing::warn!("{session_id}: Claude has {MAX_CLAUDE_CONNECTIONS} connections open; more wait for one to close");
+                            }
                         } else {
                             match ctx.claude_relay() {
                                 Ok(relay) => {
+                                    // Counted now, so that a burst stops at the cap.
+                                    channels.fetch_add(1, Ordering::Relaxed);
                                     tokio::spawn(claude_connection(ctx.clone(), sb.clone(), id, relay, claude_token.clone(), channels.clone()));
                                 }
                                 Err(e) => tracing::warn!("{session_id}: no relay for Claude's connections: {e:#}"),
@@ -1658,14 +1670,16 @@ async fn run(
                     if !hello_seen && request_id.as_deref() == Some(RECOVERED_CREDENTIALS) {
                         held_creds = Some(HeldCredentials { request_id, claude, github, github_read, error });
                     } else {
-                        // The token stays here: the agent gets the stand-in.
-                        keep_token(relaying, &claude_token, &mut claude);
+                        // The token stays here: the agent gets the stand-in,
+                        // or none.
+                        let withheld = for_agent(relaying, keeps_nothing_out(&ctx), &claude_token, &mut claude);
                         if ours {
                             // The host asked for itself, after a restart.
                             if let Some(e) = &error {
                                 host_log(&uplink, LogLevel::Warn, format!("Claude can't reach the Anthropic API until this runner gets the session's Claude token again: {e}"));
                             }
                         } else if let Some(l) = &link {
+                            let error = error.or(withheld);
                             l.send(HostToAgent::Credentials { request_id, claude, github, github_read, error });
                         }
                     }
@@ -1790,11 +1804,7 @@ fn relay_for(
     if !cred.stand_in {
         return Ok(None);
     }
-    // The process driver keeps nothing out of the agent's reach: it runs as
-    // the host's user, who can read the token in the host's memory, and
-    // fctl-agent's proxy would listen where the machine's other users reach
-    // it. Debug builds relay all the same, for `cargo xtask dev`.
-    if matches!(ctx.driver, Driver::Process(_)) && !cfg!(debug_assertions) {
+    if keeps_nothing_out(ctx) {
         host_log(
             uplink,
             LogLevel::Info,
@@ -1834,21 +1844,50 @@ struct HeldCredentials {
     error: Option<String>,
 }
 
-/// Keeps a Claude credential's token here when the session's agent relays
-/// ([`claude_relay`]): the session's connections get it, and the agent the
-/// stand-in.
-fn keep_token(relaying: bool, token: &claude_relay::Token, claude: &mut Option<ClaudeCredential>) {
-    if relaying && let Some(c) = claude.as_mut() {
+/// What the agent gets of a Claude credential, and why it gets none when it
+/// doesn't. Where the host relays for the session ([`claude_relay`]), the
+/// session's connections get the token and the agent the stand-in. Where the
+/// credential's owner keeps it out of sandboxes but the host doesn't relay
+/// (the session started before they did, or after a restart its agent says
+/// it doesn't relay), the agent gets none: the control plane's flag decides
+/// whether a sandbox gets the token, never what the sandbox says. `exempt`:
+/// the host gives it all the same ([`keeps_nothing_out`]).
+fn for_agent(
+    relaying: bool,
+    exempt: bool,
+    token: &claude_relay::Token,
+    claude: &mut Option<ClaudeCredential>,
+) -> Option<String> {
+    let c = claude.as_mut()?;
+    if relaying {
         token.set(&c.access_token);
         c.access_token = CLAUDE_STAND_IN.to_owned();
+        return None;
     }
+    if c.stand_in && !exempt {
+        *claude = None;
+        return Some(
+            "Its owner keeps their Claude token out of sandboxes, and this sandbox's Claude doesn't reach the Anthropic API through the runner: resume the session to start Claude with a stand-in".into(),
+        );
+    }
+    None
+}
+
+/// Whether this host gives Claude its token although its owner keeps it out
+/// of sandboxes: the process driver keeps nothing out of the agent's reach,
+/// as it runs as the host's user, who can read the host's memory, and
+/// fctl-agent's proxy would listen where the machine's other users reach it.
+/// Debug builds relay all the same, for `cargo xtask dev`.
+fn keeps_nothing_out(ctx: &HostCtx) -> bool {
+    matches!(ctx.driver, Driver::Process(_)) && !cfg!(debug_assertions)
 }
 
 /// Most of Claude's connections the host relays for one session at a time.
 const MAX_CLAUDE_CONNECTIONS: usize = 32;
 
 /// Relays one of Claude's connections to the Anthropic API, `id`: a channel
-/// to the sandbox's relay socket, on which the host answers it.
+/// to the sandbox's relay socket, on which the host answers it. `channels`
+/// counted it as it was asked for; it goes down as it ends.
 async fn claude_connection(
     ctx: Arc<HostCtx>,
     sb: Sandbox,
@@ -1857,7 +1896,6 @@ async fn claude_connection(
     token: claude_relay::Token,
     channels: Arc<AtomicUsize>,
 ) {
-    channels.fetch_add(1, Ordering::Relaxed);
     let served = async {
         let tls = relay.authority.server()?;
         let AgentIo {
@@ -1922,6 +1960,49 @@ fn agent_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn credential(stand_in: bool) -> Option<ClaudeCredential> {
+        Some(ClaudeCredential {
+            id: fctl_proto::CredentialId("crd_1".into()),
+            kind: fctl_proto::runner::ClaudeCredentialKind::SetupToken,
+            access_token: "sk-ant-oat01-the-real-one".into(),
+            scopes: vec![],
+            expires_at: None,
+            subscription_type: None,
+            account: None,
+            on_runners: false,
+            stand_in,
+        })
+    }
+
+    fn token_of(c: &Option<ClaudeCredential>) -> Option<&str> {
+        c.as_ref().map(|c| c.access_token.as_str())
+    }
+
+    #[test]
+    fn a_sandbox_gets_a_token_its_owner_keeps_out_only_as_the_stand_in() {
+        let token = claude_relay::Token::default();
+        // The host relays: the agent gets the stand-in, the relay the token.
+        let mut c = credential(true);
+        assert_eq!(for_agent(true, false, &token, &mut c), None);
+        assert_eq!(token_of(&c), Some(CLAUDE_STAND_IN));
+        assert!(token.known());
+        // It doesn't (the session started before, or the agent says so after
+        // a restart): the agent gets none, and hears why.
+        let mut c = credential(true);
+        let why = for_agent(false, false, &token, &mut c).unwrap_or_default();
+        assert!(why.contains("resume the session"), "{why}");
+        assert_eq!(c, None);
+        // A driver that keeps nothing out gives it all the same, as does a
+        // credential whose owner lets sandboxes have it.
+        let mut c = credential(true);
+        assert_eq!(for_agent(false, true, &token, &mut c), None);
+        assert_eq!(token_of(&c), Some("sk-ant-oat01-the-real-one"));
+        let mut c = credential(false);
+        assert_eq!(for_agent(false, false, &token, &mut c), None);
+        assert_eq!(token_of(&c), Some("sk-ant-oat01-the-real-one"));
+        assert_eq!(for_agent(false, false, &token, &mut None), None);
+    }
 
     /// A session of a project that sets nothing.
     fn spec(session_id: &str) -> Result<Box<SessionSpec>> {

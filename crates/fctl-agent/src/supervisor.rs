@@ -1086,10 +1086,12 @@ impl Supervisor {
         if self.relay.is_some() {
             return;
         }
-        let Some(socket) = self.relay_socket.take() else {
+        // The socket is taken last, once nothing else can fail: what fails
+        // now may not when Claude starts again (`start_claude` tries again).
+        if self.relay_socket.is_none() {
             tracing::error!("no relay socket, so Claude's proxy can't reach the host");
             return;
-        };
+        }
         let var = |keys: &[&str]| session_var(config, keys);
         let upstream = var(&["https_proxy", "HTTPS_PROXY"])
             .and_then(|u| relay::Upstream::parse(&u, var(&["no_proxy", "NO_PROXY"]).as_deref()));
@@ -1106,6 +1108,16 @@ impl Supervisor {
             tracing::error!("writing {}: {e}", ca.display());
             return;
         }
+        let listener = match relay::listen(self.persisted.relay_port.unwrap_or(0)) {
+            Ok(listener) => listener,
+            Err(e) => {
+                tracing::error!("starting Claude's proxy: {e:#}");
+                return;
+            }
+        };
+        let Some(socket) = self.relay_socket.take() else {
+            return;
+        };
         let (ask, mut asked) = mpsc::unbounded_channel();
         let work = self.work_tx.clone();
         tokio::spawn(async move {
@@ -1113,23 +1125,14 @@ impl Supervisor {
                 let _ = work.send(Work::ClaudeConnection(id));
             }
         });
-        match relay::Relay::start(
-            self.persisted.relay_port.unwrap_or(0),
-            socket,
-            upstream,
-            ask,
-        ) {
-            Ok(r) => {
-                tracing::info!(
-                    "Claude's proxy listens on 127.0.0.1:{}; the host keeps Claude's token",
-                    r.port()
-                );
-                self.persisted.relay_port = Some(r.port());
-                self.persist();
-                self.relay = Some((r, ca));
-            }
-            Err(e) => tracing::error!("starting Claude's proxy: {e:#}"),
-        }
+        let r = relay::Relay::serve(listener, socket, upstream, ask);
+        tracing::info!(
+            "Claude's proxy listens on 127.0.0.1:{}; the host keeps Claude's token",
+            r.port()
+        );
+        self.persisted.relay_port = Some(r.port());
+        self.persist();
+        self.relay = Some((r, ca));
     }
 
     fn configure(&mut self, config: AgentConfig) {
@@ -1513,6 +1516,10 @@ impl Supervisor {
         let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
             anyhow::bail!("not configured");
         };
+        // What kept Claude's proxy from starting may be gone now.
+        if config.claude_relay.is_some() && self.relay.is_none() {
+            self.start_relay(&config);
+        }
         if config.claude_relay.is_some() && self.relay.is_none() {
             anyhow::bail!(
                 "the proxy through which Claude reaches the Anthropic API didn't start, and the runner keeps the Claude token, as its owner asked"
@@ -3206,6 +3213,44 @@ mod tests {
         );
         assert!(matches!(elsewhere, Some(SessionReply::Error { .. })));
         assert_eq!(sup.state.title.as_deref(), Some("Fix the login test"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn claudes_proxy_starts_on_a_later_try_after_one_fails() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.relay_socket = Some(tokio::net::UnixListener::bind(
+            dir.path().join("agent.relay.sock"),
+        )?);
+        let mut config = config(dir.path(), false)?;
+        config.claude_relay = Some(fctl_proto::agent::ClaudeRelay {
+            ca: "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".into(),
+        });
+        // Where the certificates go is a file: writing them fails.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "")?;
+        sup.user_state = blocked;
+        sup.start_relay(&config);
+        assert!(sup.relay.is_none());
+        assert!(
+            sup.relay_socket.is_some(),
+            "the socket waits for the next try"
+        );
+        let AgentToHost::Hello(hello) = sup.hello() else {
+            anyhow::bail!("a hello");
+        };
+        assert!(hello.features.iter().any(|f| f == FEATURE_CLAUDE_RELAY));
+        assert!(!hello.claude_relay);
+        // The next try, as Claude starts, gets through.
+        sup.user_state = dir.path().join("user");
+        sup.start_relay(&config);
+        assert!(sup.relay.is_some());
+        assert!(sup.relay_socket.is_none());
+        let AgentToHost::Hello(hello) = sup.hello() else {
+            anyhow::bail!("a hello");
+        };
+        assert!(hello.claude_relay);
         Ok(())
     }
 

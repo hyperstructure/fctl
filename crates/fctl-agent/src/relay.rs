@@ -36,6 +36,26 @@ pub fn socket_path(host_socket: &std::path::Path) -> std::path::PathBuf {
 
 type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<UnixStream>>>>;
 
+/// Where Claude's proxy listens, before it serves ([`Relay::serve`]).
+pub struct Listener {
+    listener: TcpListener,
+    port: u16,
+}
+
+/// Listens on `127.0.0.1:port`, or on another port when that one is taken
+/// (or `port` is 0).
+pub fn listen(port: u16) -> Result<Listener> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
+        .context("listening for Claude's connections")?;
+    listener.set_nonblocking(true)?;
+    let port = listener.local_addr()?.port();
+    Ok(Listener {
+        listener: TcpListener::from_std(listener)?,
+        port,
+    })
+}
+
 /// The proxy, while the session runs.
 pub struct Relay {
     port: u16,
@@ -43,23 +63,18 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Listens on `127.0.0.1:port`, or on another port when that one is
-    /// taken (or `port` is 0), and takes the host's channels on `socket`.
-    /// The connections to the Anthropic API that need one go to `ask`, by
-    /// id; the others go out through `upstream` when the session had a
-    /// proxy, except those `upstream` leaves alone.
-    pub fn start(
-        port: u16,
+    /// Serves Claude's connections on `listener` ([`listen`]) and takes the
+    /// host's channels on `socket`. The connections to the Anthropic API
+    /// that need one go to `ask`, by id; the others go out through
+    /// `upstream` when the session had a proxy, except those `upstream`
+    /// leaves alone.
+    pub fn serve(
+        listener: Listener,
         socket: UnixListener,
         upstream: Option<Upstream>,
         ask: mpsc::UnboundedSender<String>,
-    ) -> Result<Self> {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", port))
-            .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
-            .context("listening for Claude's connections")?;
-        listener.set_nonblocking(true)?;
-        let port = listener.local_addr()?.port();
-        let listener = TcpListener::from_std(listener)?;
+    ) -> Self {
+        let Listener { listener, port } = listener;
         let pending: Pending = Arc::default();
         let upstream = Arc::new(upstream);
         let ids = Arc::new(AtomicU64::new(0));
@@ -79,7 +94,7 @@ impl Relay {
             }
         });
         tokio::spawn(channels(socket, pending.clone()));
-        Ok(Self { port, pending })
+        Self { port, pending }
     }
 
     /// The port it listens on, on `127.0.0.1`.
@@ -601,7 +616,7 @@ mod tests {
         let socket_path = dir.path().join("agent.relay.sock");
         let socket = UnixListener::bind(&socket_path)?;
         let (ask_tx, mut asked) = mpsc::unbounded_channel();
-        let relay = Relay::start(0, socket, None, ask_tx)?;
+        let relay = Relay::serve(listen(0)?, socket, None, ask_tx);
 
         // A connection to the Anthropic API waits for the host's channel.
         let port = relay.port();
@@ -672,7 +687,7 @@ mod tests {
         let socket = UnixListener::bind(dir.path().join("agent.relay.sock"))?;
         let upstream = Upstream::parse(&format!("http://ada:pw@127.0.0.1:{proxy_port}"), None);
         let (ask_tx, _asked) = mpsc::unbounded_channel();
-        let relay = Relay::start(0, socket, upstream, ask_tx)?;
+        let relay = Relay::serve(listen(0)?, socket, upstream, ask_tx);
         let (mut c, head) = ask(relay.port(), "github.com:443").await?;
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         let said = heard.recv().await.context("the proxy was asked")?;
