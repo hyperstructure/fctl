@@ -69,7 +69,7 @@ function icon(now: Now): ReactNode {
       return <PenLine className="size-3.5 text-accent" />;
     case "preparing":
     case "working":
-      return <DotWave />;
+      return <DotWave className="text-accent" />;
     case "tool":
       return <span className="text-ink-2 [&_svg]:size-3.5">{toolIcon(now.tool ?? "")}</span>;
     case "setup":
@@ -194,7 +194,7 @@ export function JumpPill({ count, up, onClick }: { count: number; up?: boolean; 
     <button
       type="button"
       onClick={onClick}
-      className="jump-pill pointer-events-auto flex h-8 shrink-0 animate-rise items-center gap-1.5 rounded-full border border-line-strong bg-raised/90 pr-3 pl-2.5 text-[12.5px] font-medium text-ink-2 shadow-[0_6px_24px_rgb(0_0_0/0.22)] backdrop-blur-xl transition-[color,background-color,scale] duration-150 hover:text-ink active:scale-95"
+      className="jump-pill pointer-events-auto ml-auto flex h-8 shrink-0 animate-rise items-center gap-1.5 rounded-full border border-line-strong bg-raised/90 pr-3 pl-2.5 text-[12.5px] font-medium text-ink-2 shadow-[0_6px_24px_rgb(0_0_0/0.22)] backdrop-blur-xl transition-[color,background-color,scale] duration-150 hover:text-ink active:scale-95"
     >
       {up ? <ArrowUp className="size-3.5" /> : <ArrowDown className="size-3.5" />}
       {count > 0 ? (

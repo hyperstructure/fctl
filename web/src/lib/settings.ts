@@ -46,7 +46,11 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsPage[])[] = [
   ],
   [
     { tab: "notifications", label: "Notifications", keywords: "push alerts follow browsers" },
-    { tab: "appearance", label: "Appearance", keywords: "theme dark light clock 24-hour 12-hour" },
+    {
+      tab: "appearance",
+      label: "Appearance",
+      keywords: "theme dark light clock 24-hour 12-hour session view classic new",
+    },
   ],
   [
     {

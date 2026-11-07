@@ -184,7 +184,7 @@ export function nowOf({
       return undefined;
   }
   const block = live.blocks.findLast((b) => !b.done);
-  if (block?.type === "text") return { kind: "writing", text: "Writing", since: live.updatedAt || undefined };
+  if (block?.type === "text") return { kind: "writing", text: "Writing" };
   if (block?.type === "thinking") return { kind: "thinking", text: thinking(block.tokens) };
   if (block?.type === "tool_use") return { kind: "preparing", text: preparing(block.name), tool: block.name };
   const call = waitingOn(items);

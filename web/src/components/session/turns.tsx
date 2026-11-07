@@ -229,16 +229,18 @@ export const TurnTranscript = memo(function TurnTranscript({
     );
     // Where it starts, for the bar that says which turn the reader is in.
     if (turn.ask && turn.askPart) {
-      marked(turn.askPart.key, false);
+      // What came while the reader was away starts with this turn: the line says so above its card.
+      const isNew = turn.askPart.key === newFrom;
       rows.push(
         <div
           key={turn.askPart.key}
           data-item
           data-part={turn.askPart.key}
           data-turn={turn.key}
-          className={cn(first ? (cover ? "pt-2" : "pt-1") : gap ? "pt-10" : "pt-12")}
+          className={cn(first ? (cover ? "pt-2" : "pt-1") : gap || isNew ? "pt-10" : "pt-12")}
         >
           {gap}
+          {isNew && <NewLine thread={false} className="-mt-2 mb-3" />}
           <Unreadable>
             <AskCard item={turn.ask} sessionId={sessionId} />
           </Unreadable>
@@ -274,7 +276,7 @@ export const TurnTranscript = memo(function TurnTranscript({
           {resting && (
             <div className="flex h-8 items-center" title="At work">
               <RailIcon>
-                <DotWave />
+                <DotWave className="text-accent" />
               </RailIcon>
             </div>
           )}
@@ -345,9 +347,9 @@ function useShownUpTo(session: string, items: Item[]): number {
 }
 
 /** Where what came while the reader was away starts. */
-function NewLine({ thread }: { thread: boolean }) {
+function NewLine({ thread, className }: { thread: boolean; className?: string }) {
   return (
-    <div className={cn("new-line flex items-center gap-3 py-2", thread && "thread")}>
+    <div className={cn("new-line flex items-center gap-3 py-2", thread && "thread", className)}>
       <span className="h-px flex-1 bg-gradient-to-r from-transparent via-pink/60 to-pink/60" />
       <span className="text-[11.5px] font-medium text-pink">New</span>
       <span className="h-px w-6 bg-pink/60" />
@@ -435,13 +437,6 @@ function LinesChanged({ added, removed }: { added: number; removed: number }) {
   );
 }
 
-/** A dot between facts. */
-const Dot = () => (
-  <span aria-hidden="true" className="text-ink-4">
-    ·
-  </span>
-);
-
 /**
  * Where a turn's thread ends: how it ended and after how long, its steps, and the files its edits
  * changed, which open into a list of them, each a click from its diff.
@@ -464,26 +459,18 @@ function Outcome({
   const files = facts.files;
   return (
     <div className="py-1.5">
-      <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] leading-5 text-ink-3">
-        <RailIcon className={cn("-mr-0.5", tone)}>{icon}</RailIcon>
-        <span className="font-medium text-ink-2">{text}</span>
-        {facts.calls > 0 && (
-          <>
-            <Dot />
+      <div className="flex items-start gap-2 text-[12.5px] leading-5 text-ink-3">
+        <RailIcon className={tone}>{icon}</RailIcon>
+        {/* Its facts wrap beside the icon, apart without dots, which would start a line. */}
+        <div className="flex min-h-6 min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-0.5">
+          <span className="font-medium text-ink-2">{text}</span>
+          {facts.calls > 0 && (
             <span>
               {facts.calls} {facts.calls === 1 ? "step" : "steps"}
             </span>
-          </>
-        )}
-        {facts.failed > 0 && (
-          <>
-            <Dot />
-            <span className="text-danger/80">{facts.failed} failed</span>
-          </>
-        )}
-        {files.length > 0 && (
-          <>
-            <Dot />
+          )}
+          {facts.failed > 0 && <span className="text-danger/80">{facts.failed} failed</span>}
+          {files.length > 0 && (
             <button
               type="button"
               aria-expanded={open}
@@ -495,8 +482,8 @@ function Outcome({
               <LinesChanged {...facts.lines} />
               <Chevron open={open} className="-ml-0.5 size-3" />
             </button>
-          </>
-        )}
+          )}
+        </div>
       </div>
       {open && (
         <ul id={id} className="mt-1 ml-[34px] flex animate-rise flex-col py-0.5">
