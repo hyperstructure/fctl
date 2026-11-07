@@ -6,7 +6,7 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Check, Info, KeyRound, Minus, Radio } from "lucide-react";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Banner, Button, buttonClass, CodeBox, Input, SecretInput, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -57,8 +57,6 @@ export function ConnectClaude({
   onWay: (way: Way | null) => void;
 }) {
   const name = useId();
-  // Kept here, so that a sign-in under way survives looking at the other way.
-  const login = useClaudeLogin();
   const first = me.claude.length === 0;
   return (
     <div id={CONNECT_ID} className="scroll-mt-6">
@@ -88,7 +86,7 @@ export function ConnectClaude({
           title="Sign in with Claude"
           facts={LOGIN_FACTS}
         >
-          <SignInFlow login={login} />
+          <SignInFlow onConnected={() => onWay(null)} />
         </WayCard>
       </fieldset>
     </div>
@@ -193,9 +191,11 @@ function WayCard({
           {checked && <Check className="size-2.5" strokeWidth={3} />}
         </span>
       </label>
-      {checked && (
-        <div className="animate-rise border-t border-line px-4 pt-5 pb-5 sm:pl-[66px]">{children}</div>
-      )}
+      {/* Hidden rather than gone while another way is open, so that a pasted token or a sign-in
+          under way is still there on coming back. */}
+      <div hidden={!checked} className="animate-rise border-t border-line px-4 pt-5 pb-5 sm:pl-[66px]">
+        {children}
+      </div>
     </div>
   );
 }
@@ -252,7 +252,15 @@ function TokenFlow({ onRunners, onConnected }: { onRunners: boolean; onConnected
           </p>
         </fieldset>
       )}
-      {runners ? <OnRunnersSteps onConnected={onConnected} /> : <PasteSteps onConnected={onConnected} />}
+      {/* Both stay, one hidden, so that a pasted token is still there after a look at the other. */}
+      <div hidden={runners}>
+        <PasteSteps onConnected={onConnected} />
+      </div>
+      {!onRunners && (
+        <div hidden={!runners}>
+          <OnRunnersSteps onConnected={onConnected} />
+        </div>
+      )}
       <p className="flex gap-2 text-[12px] leading-relaxed text-ink-4">
         <Info aria-hidden="true" className="mt-[3px] size-3.5 shrink-0" />
         <span>
@@ -294,7 +302,7 @@ function PasteSteps({ onConnected }: { onConnected: () => void }) {
           }}
         >
           <SecretInput
-            aria-label="Long-lived token"
+            aria-label="Token to paste"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             placeholder="sk-ant-oat01-…"
@@ -320,8 +328,11 @@ function PasteSteps({ onConnected }: { onConnected: () => void }) {
   );
 }
 
-/** A sign-in with Claude: starting it, following its job, and relaying the code. */
-function useClaudeLogin() {
+/**
+ * A sign-in with Claude: starting it, following its job, and relaying the code. Once it succeeds,
+ * it starts over, so that the next one, for another account or once Claude ends this login, can.
+ */
+function useClaudeLogin(onConnected: () => void) {
   const [job, setJob] = useState<G.ClaudeLoginJob | null>(null);
   const [code, setCode] = useState("");
   const start = useMutation({
@@ -343,18 +354,24 @@ function useClaudeLogin() {
     refetchInterval: 1500,
   });
   const current = live.data ?? job;
+  const connected = useRef(onConnected);
+  connected.current = onConnected;
   useEffect(() => {
-    if (current?.state === "succeeded") {
-      void queryClient.invalidateQueries({ queryKey: keys.me });
-      toast("Signed in with Claude: Remote Control is on");
-    }
-  }, [current?.state]);
+    if (current?.state !== "succeeded") return;
+    void queryClient.invalidateQueries({ queryKey: keys.me });
+    toast("Signed in with Claude: Remote Control is on");
+    setJob(null);
+    setCode("");
+    start.reset();
+    submit.reset();
+    connected.current();
+  }, [current?.state, start.reset, submit.reset]);
   return { current, start, submit, code, setCode };
 }
 
 /** The official sign-in, in three steps that tick off as the job goes. */
-function SignInFlow({ login }: { login: ReturnType<typeof useClaudeLogin> }) {
-  const { current, start, submit, code, setCode } = login;
+function SignInFlow({ onConnected }: { onConnected: () => void }) {
+  const { current, start, submit, code, setCode } = useClaudeLogin(onConnected);
   const [opened, setOpened] = useState<string | null>(null);
   const state = current?.state;
   const starting = state === "pending" || state === "starting";
@@ -437,8 +454,6 @@ function SignInFlow({ login }: { login: ReturnType<typeof useClaudeLogin> }) {
             <p className="flex items-center gap-2 text-ink-3" role="status">
               <Spinner className="size-3.5" /> Verifying with Claude…
             </p>
-          ) : state === "succeeded" ? (
-            <Banner tone="ok">Connected. New sessions enable Remote Control.</Banner>
           ) : (
             <p className="text-ink-4">Once you approve, claude.ai shows a code to bring back here.</p>
           )}
@@ -452,5 +467,34 @@ function SignInFlow({ login }: { login: ReturnType<typeof useClaudeLogin> }) {
       {start.error && <Banner tone="error">{start.error.message}</Banner>}
       {current?.state === "failed" && <Banner tone="error">{current.error}</Banner>}
     </div>
+  );
+}
+
+/**
+ * Under a login Claude ended, which sessions can't run on: signing in again, or connecting a
+ * long-lived token, which doesn't end for a year. Only logins end: Claude refuses to refresh them.
+ * Tokens from `claude setup-token` aren't refreshed, so fctl never finds one ended.
+ */
+export function EndedLogin({ onReconnect }: { onReconnect: (way: Way) => void }) {
+  return (
+    <Banner tone="error">
+      <p>
+        Claude ended this login, so sessions can't run on it. Sign in again, or connect a long-lived token,
+        which lasts a year.
+      </p>
+      <div className="mt-2.5 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          icon={<KeyRound className="size-3.5" />}
+          onClick={() => onReconnect("token")}
+        >
+          Connect a long-lived token
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => onReconnect("login")}>
+          Sign in again
+        </Button>
+      </div>
+    </Banner>
   );
 }

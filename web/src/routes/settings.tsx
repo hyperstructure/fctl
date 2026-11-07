@@ -25,7 +25,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { CONNECT_ID, ConnectClaude, type Way } from "@/components/claude/connect";
+import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
 import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
@@ -680,7 +680,9 @@ function Claude({ me }: { me: G.Me }) {
                   </button>
                 </div>
                 <div className="mt-3 flex flex-col gap-4 pl-11">
-                  {c.status === "invalid" && <Ended connection={c} onReconnect={reconnect} />}
+                  {c.status === "invalid" && c.kind === "oauth" && !c.on_runners && (
+                    <EndedLogin onReconnect={reconnect} />
+                  )}
                   {c.on_runners && <OnRunnersDetails />}
                   {c.usage?.length ? (
                     <PlanUsageList usage={c.usage} />
@@ -697,44 +699,6 @@ function Claude({ me }: { me: G.Me }) {
         <ConnectClaude me={me} way={way} onWay={setWay} />
       </div>
     </Section>
-  );
-}
-
-/**
- * Under a connection Claude no longer takes: sessions can't run on it. A login Claude ended can be
- * signed in again, or replaced with a long-lived token, which doesn't end for a year.
- */
-function Ended({
-  connection: c,
-  onReconnect,
-}: {
-  connection: G.ClaudeCredentialInfo;
-  onReconnect: (w: Way) => void;
-}) {
-  const login = c.kind === "oauth" && !c.on_runners;
-  return (
-    <Banner tone="error">
-      <p>
-        {login
-          ? "Claude ended this login, so sessions can't run on it. Sign in again, or connect a long-lived token, which lasts a year."
-          : "Claude no longer takes this token, so sessions can't run on it. Connect a new one."}
-      </p>
-      <div className="mt-2.5 flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          variant="primary"
-          icon={<KeyRound className="size-3.5" />}
-          onClick={() => onReconnect("token")}
-        >
-          Connect a long-lived token
-        </Button>
-        {login && (
-          <Button size="sm" variant="ghost" onClick={() => onReconnect("login")}>
-            Sign in again
-          </Button>
-        )}
-      </div>
-    </Banner>
   );
 }
 
