@@ -26,6 +26,8 @@ const GOOGLE_ERRORS: Record<string, string> = {
   google_exchange: "Google did not confirm the sign-in. Try again.",
   google_invalid: "Google returned an invalid sign-in.",
   google_unverified: "Your Google account's email is not verified.",
+  google_not_authoritative:
+    "Google can't vouch for this address, as it doesn't host it: sign up with the invitation sent to it, or with a Gmail or Google Workspace account.",
   google_link_required:
     "An account with this email exists. Sign in with your password, then link Google in Settings.",
   not_allowed: "This email is not allowed on this instance. Ask an admin for access.",

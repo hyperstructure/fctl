@@ -10,7 +10,7 @@ trusts.
 |---|---|---|
 | Passwords | argon2id hashes in D1 | nobody can read them back |
 | Authenticator app secrets (two-factor) | encrypted (AES-256-GCM) in D1 | the control plane, to check codes |
-| Recovery codes | SHA-256 hashes in D1 | nobody can read them back |
+| Recovery codes | HMAC-SHA256 hashes in D1, keyed by the master key (older ones SHA-256 hashes, until used or replaced) | nobody can read them back |
 | Passkeys | public keys in D1; the private key never leaves the person's device or password manager | the person, with their fingerprint, face or screen lock |
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
 | Claude credentials | encrypted (AES-256-GCM) in D1, or, for tokens people keep on their runners, only in a file on those runners (mode 0600) | sessions their owner starts |
@@ -115,7 +115,7 @@ owner and purpose), so a value copied between rows does not decrypt.
   roles, turning two-factor sign-in, codes on Google sign-in or this off,
   resetting someone's
   two-factor sign-in, removing a passkey, adding or registering a runner
-  for a workspace and replacing its token, new access tokens and CLI
+  and replacing a runner's token, new access tokens and CLI
   sign-ins, connecting a Claude subscription (whose account a full login's
   sessions show in), linking a Linear account (whose delegations start
   sessions as you), exporting your data, deleting accounts, projects and
@@ -390,10 +390,13 @@ its VM, and nothing outside it except through these channels:
   the project's secrets: a full Claude login's token lasts hours, one from
   `claude setup-token` a year. Run sessions on a token from `claude
   setup-token` only where you would trust those people with it. Hosts
-  replace every Claude token they know of with `[Claude token, redacted by
-  fctl]` in what agents send to the control plane, so a token an agent
-  prints by mistake (`printenv`), or repeats in its reply, stays out of the
-  transcript and of what viewers see live; one it is asked to send
+  replace every Claude token they know of, and anything shaped like a
+  Claude access token (`sk-ant-oat…`), with `[Claude token, redacted by
+  fctl]`, and anything shaped like a GitHub installation token (`ghs_…`)
+  with `[GitHub token, redacted by fctl]`, in what agents send to the
+  control plane, so a token an agent prints by mistake (`printenv`), or
+  repeats in its reply, stays out of the transcript and of what viewers
+  see live, also after the host restarted; one it is asked to send
   elsewhere, or to write in another form (spaced out, encoded), doesn't.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
@@ -588,8 +591,11 @@ their code, secrets and tokens, so making one takes the same as adding a
 runner for everyone's sessions: an admin of the workspace, open to them
 under its two-factor requirement, who confirms it's them where the
 instance asks for that. A token is limited by its expiry, the most runners
-it keeps enrolled at once and its admins' revoking it, and, with approval,
-enrolls only machines an admin then lets in: a runner that waits gets
+it keeps enrolled at once and its admins' revoking it, and enrolls only
+while the admin who made it is still one, as an invitation counts only
+while the admin who sent it is: an admin who is removed, demoted or
+disabled can't enroll a machine of theirs with a token they kept. With
+approval, it enrolls only machines an admin then lets in: a runner that waits gets
 nothing of any session, nor a Claude sign-in, and approving it takes
 confirming it's you too. The control plane keeps only the token's hash, a
 token it doesn't know counts towards its caller's rate limit, and the token
@@ -638,7 +644,17 @@ screenshots for it: a stopped session stays with the runner it last ran
 on, which would otherwise keep that person's reach in the project. A
 Claude sign-in through a host, which passes the full login's long-lived
 tokens through it, runs on one of the person's own runners when one is
-online, else on a runner that runs their sessions.
+online, else on a runner that runs their sessions. That runner's host
+could keep those tokens, and it could also answer with a login of a
+Claude account of its owner's choosing, which fctl can't tell from the
+person's: it becomes the person's default, so that their sessions in
+every workspace run on that account, and its claude.ai/code and Claude
+apps show them, where they can be followed and steered (Remote Control).
+So when a sign-in runs on a runner that isn't the person's own, the app
+and `fctl claude connect --login` say which runner, and whose, before
+they approve it (`ClaudeLoginJob.runner`), and the CLI asks whether to go
+on. Where you don't trust that runner's owner with your Claude account,
+start one of your runners first, or connect a long-lived token.
 
 **Updates.** Hosts update fctl by themselves to the version the control
 plane runs, unless `auto_update = false` in `host.toml` (`fctl host
@@ -675,9 +691,14 @@ build never sees, and runs the build in its container runtime's builder,
 outside any sandbox, or with Firecracker in a VM of the project's own that
 holds its builds' cache, apart from other projects' ([Sandbox images](sandbox-images.md#which-images-a-host-runs)),
 from the repository's files alone: the host checks again that the
-Dockerfile and the directory a project names are in the repository, and
-keeps each sandbox's name to letters, digits and dashes, whatever the
-control plane sends. Hosts pull images with their own registry logins;
+Dockerfile and the directory a project names are in the repository,
+removes the repository's symbolic links that lead out of it, so that no
+builder reads the host's files through one, and keeps each sandbox's
+name to letters, digits and dashes, whatever the control plane sends. A
+build starts `FROM` whatever image its Dockerfile names, or its
+devcontainer.json does, whatever `allowed_images` says, so allowing a
+repository's builds allows the images anyone who can push to its
+default branch names. Hosts pull images with their own registry logins;
 fctl stores no registry credentials.
 
 ## The control plane without Cloudflare

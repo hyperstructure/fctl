@@ -200,10 +200,31 @@ pub fn is_builder(name: &str) -> bool {
 /// Where fctl-agent lives inside container and VM sandboxes.
 pub const AGENT_PATH: &str = "/opt/fctl/bin/fctl-agent";
 
+/// The PATH of what the host runs as root in a sandbox, and of the
+/// commands whose answers it goes by: the system's own directories, never
+/// the image's PATH, whose first directory may be its user's
+/// (`~/.local/bin` in the default image), where the agent's commands could
+/// put an `sh`, a `chown` or an `id` of theirs for root, or for the host,
+/// to run.
+pub const SYSTEM_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// The shell that runs [`system_script`]s: by its path, not the first `sh`
+/// on the image's PATH.
+pub const SH: &str = "/bin/sh";
+
+/// `script`, for [`SH`] `-c`, with [`SYSTEM_PATH`] for the commands it
+/// runs.
+pub fn system_script(script: &str) -> String {
+    format!("PATH={SYSTEM_PATH}; export PATH; {script}")
+}
+
 /// Readies `/opt/fctl/bin` for fctl-agent, as root: root's, where an image
 /// gives it to its user (the default image did), since fctl-agent runs as
-/// root from there, and its user must not put another in its place.
-pub const AGENT_DIR_SCRIPT: &str = "mkdir -p /opt/fctl/bin && chown 0:0 /opt/fctl /opt/fctl/bin && chmod 755 /opt/fctl /opt/fctl/bin";
+/// root from there, and its user must not put another in its place. Each
+/// directory, the outer one first, becomes root's real directory, so that
+/// none of its user's links leads root's `chown` and `chmod` elsewhere, and
+/// a `fctl-agent.new` its user left goes before the host writes one.
+pub const AGENT_DIR_SCRIPT: &str = r#"for d in /opt/fctl /opt/fctl/bin; do if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then rm -f "$d" || exit 1; fi; mkdir -p "$d" && chown -h 0:0 "$d" && chmod 755 "$d" || exit 1; done; rm -f /opt/fctl/bin/fctl-agent.new"#;
 
 /// Where fctl-agent keeps its socket, state and log in container and VM
 /// sandboxes, where it runs as root: a directory only root may enter, out

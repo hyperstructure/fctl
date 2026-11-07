@@ -344,7 +344,10 @@ pub async fn start(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Resp
         ));
     }
     let me = ctx.user()?.clone();
-    let session = match reviews::start(ctx, &p.row, &pr, inst, Some(&me)).await? {
+    // Asking for a review doesn't make its author one who may write: its
+    // agent runs the code only of those GitHub says may.
+    let trusted = reviews::author_trusted(ctx, &pr, inst).await;
+    let session = match reviews::start(ctx, &p.row, &pr, inst, Some(&me), trusted).await? {
         Started::Review(session) => session,
         Started::Already => return Err(conflict("A review of this commit just started.")),
         Started::Skipped(why) => {

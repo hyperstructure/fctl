@@ -36,6 +36,10 @@ struct TokenRow {
     /// token for their own sessions enrolls nothing.
     #[serde(deserialize_with = "int_bool", default)]
     maker_member: bool,
+    /// Its maker is an active admin of its workspace, without which a
+    /// token for everyone's sessions enrolls nothing.
+    #[serde(deserialize_with = "int_bool", default)]
+    maker_admin: bool,
     #[serde(deserialize_with = "int_bool")]
     approval: bool,
     #[serde(deserialize_with = "opt_int", default)]
@@ -64,6 +68,8 @@ const TOKEN_SELECT: &str = "SELECT t.id, t.workspace_id, t.name, t.personal, t.a
     t.remove_offline_after_minutes, t.expires_at, t.created_by, cu.name AS creator_name, t.created_at, \
     EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = t.workspace_id \
       AND m.user_id = t.created_by AND cu.status = 'active') AS maker_member, \
+    EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = t.workspace_id \
+      AND m.user_id = t.created_by AND m.role IN ('owner', 'admin') AND cu.status = 'active') AS maker_admin, \
     t.last_used_at, t.revoked_at, t.revoked_by, ru.name AS revoker_name, \
     (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) AS runners, \
     (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id AND x.pending_until IS NOT NULL) AS pending \
@@ -113,10 +119,18 @@ impl TokenRow {
 
     /// Whether it enrolls runners at all, whatever its state: a token for
     /// its maker's own sessions doesn't once they are no longer an active
-    /// member of its workspace, or have no account.
+    /// member of its workspace, or have no account, and one for everyone's
+    /// sessions doesn't once they are no longer an active admin there, as
+    /// an invitation counts only while the admin who sent it is still one
+    /// (`workspaces::INVITER_STILL_ADMIN`): an admin who is removed,
+    /// demoted or disabled can't enroll a machine of theirs for everyone's
+    /// sessions with a token they kept.
     fn usable(&self, workspace: &str) -> AppResult<()> {
         if self.personal && !(self.owner().is_some() && self.maker_member) {
             return Err(AppError(enrollment::maker_gone(workspace)));
+        }
+        if !self.personal && !self.maker_admin {
+            return Err(AppError(enrollment::maker_no_admin(workspace)));
         }
         Ok(())
     }
@@ -368,9 +382,10 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     // One statement checks the token again and counts its runners as it
     // inserts, so that two machines that enroll at once can't both take
     // its last place, and a token for its maker's own sessions enrolls
-    // only while they are an active member. A runner that needs no
-    // approval runs the workspace's sessions from the start: everyone's,
-    // or its owner's alone.
+    // only while they are an active member, one for everyone's only while
+    // they are an active admin. A runner that needs no approval runs the
+    // workspace's sessions from the start: everyone's, or its owner's
+    // alone.
     let changes = batch_changes(
         &ctx.db,
         vec![
@@ -383,8 +398,9 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                  FROM enrollment_tokens t WHERE t.id = ?9 AND t.revoked_at IS NULL \
                  AND (t.expires_at IS NULL OR t.expires_at > ?4) \
                  AND (t.max_runners IS NULL OR (SELECT COUNT(*) FROM runners x WHERE x.enrollment_id = t.id) < t.max_runners) \
-                 AND (t.personal = 0 OR EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id \
-                   WHERE m.workspace_id = t.workspace_id AND m.user_id = t.created_by AND u.status = 'active'))",
+                 AND EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id \
+                   WHERE m.workspace_id = t.workspace_id AND m.user_id = t.created_by AND u.status = 'active' \
+                   AND (t.personal = 1 OR m.role IN ('owner', 'admin')))",
                 &[
                     s(runner_id.as_str()),
                     s(&name),
@@ -417,8 +433,8 @@ pub async fn enroll(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     )
     .await?;
     if changes.first().copied().unwrap_or(0) == 0 {
-        // Revoked, expired or full since it was read, or its maker left:
-        // say which.
+        // Revoked, expired or full since it was read, or its maker left
+        // or is no longer an admin: say which.
         let row = token_row(ctx, &p.token.workspace_id, &p.token.id).await?;
         row.usable(&workspace)?;
         return Err(match enrollment::check(&row.state(), ctx.now) {

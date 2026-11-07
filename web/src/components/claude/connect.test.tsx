@@ -214,6 +214,27 @@ describe("connecting Claude", () => {
     expect(button(view, "Finish")?.disabled).toBe(false);
   });
 
+  it("says whose runner a sign-in runs on, when it isn't yours", async () => {
+    const runner = { id: "rnr_1", name: "build-01", yours: false, owner: "Ada Lovelace" };
+    claudeLogin.mockImplementationOnce(() => Promise.resolve({ ...awaiting, runner }));
+    const { view } = render([], "login");
+    await act(async () => button(view, "Start the sign-in")?.click());
+    expect(view.textContent).toContain(
+      "This sign-in runs on build-01, Ada Lovelace's runner that runs your sessions, because none of yours is online.",
+    );
+    expect(view.textContent).toContain("Go on only if you trust Ada Lovelace with your Claude account");
+    // The link is there to go on with all the same.
+    expect(view.querySelector(`a[href="${awaiting.url}"]`)).not.toBeNull();
+  });
+
+  it("says nothing of a runner of yours", async () => {
+    const runner = { id: "rnr_1", name: "laptop", yours: true };
+    claudeLogin.mockImplementationOnce(() => Promise.resolve({ ...awaiting, runner }));
+    const { view } = render([], "login");
+    await act(async () => button(view, "Start the sign-in")?.click());
+    expect(view.textContent).not.toContain("This sign-in runs on");
+  });
+
   it("closes once the sign-in succeeds, and starts over when opened again", async () => {
     const { view, ways } = render([], "login");
     await act(async () => button(view, "Start the sign-in")?.click());

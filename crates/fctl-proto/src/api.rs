@@ -3939,6 +3939,30 @@ pub struct ClaudeLoginJob {
     pub state: ClaudeLoginState,
     pub created_at: Millis,
     pub updated_at: Millis,
+    /// The runner it runs on, once one took it. Absent from older control
+    /// planes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub runner: Option<ClaudeLoginRunner>,
+}
+
+/// The runner a Claude sign-in runs on, whose host sees the login's
+/// long-lived tokens as they pass to fctl: one of the person's own, or,
+/// when none of theirs is online, one of someone else's that runs their
+/// sessions, whose host could keep the tokens, or answer with a Claude
+/// login of its own in their place (docs/security.md).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ClaudeLoginRunner {
+    pub id: RunnerId,
+    pub name: String,
+    /// One of the person's own runners.
+    #[serde(default)]
+    pub yours: bool,
+    /// Whose it is, when it isn't theirs: the person who registered it, or
+    /// the workspace it enrolled in.
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

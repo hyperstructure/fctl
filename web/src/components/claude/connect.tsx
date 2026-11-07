@@ -369,6 +369,29 @@ function useClaudeLogin(onConnected: () => void) {
   return { current, start, submit, code, setCode };
 }
 
+/** Whether a Claude sign-in is still under way: its runner may still pass on what it signs in to. */
+function signingIn(job: G.ClaudeLoginJob): boolean {
+  return job.state !== "succeeded" && job.state !== "failed";
+}
+
+/**
+ * What a Claude sign-in that runs on someone else's runner means: none of the person's is online, and
+ * that runner's host sees the login's long-lived tokens, and could keep them or connect a Claude
+ * account of its own in their place (docs/security.md).
+ */
+function OthersRunner({ runner }: { runner: G.ClaudeLoginRunner }) {
+  const whose = runner.owner ? `${runner.owner}'s runner` : "a runner";
+  return (
+    <>
+      This sign-in runs on <span className="font-medium text-ink">{runner.name}</span>, {whose} that runs your
+      sessions, because none of yours is online. Its machine sees your Claude login's long-lived tokens as
+      they pass to fctl: it could keep them, or connect a Claude account of its own in place of yours, on
+      which your sessions would then run. Go on only if you trust {runner.owner ?? "its owner"} with your
+      Claude account; otherwise start one of your runners and start again, or use a long-lived token.
+    </>
+  );
+}
+
 /** The official sign-in, in three steps that tick off as the job goes. */
 function SignInFlow({ onConnected }: { onConnected: () => void }) {
   const { current, start, submit, code, setCode } = useClaudeLogin(onConnected);
@@ -385,6 +408,11 @@ function SignInFlow({ onConnected }: { onConnected: () => void }) {
             Claude Code's own sign-in starts in a sandbox on one of your runners or, when none is online, on
             one that runs your sessions, whose machine sees the tokens.
           </p>
+          {current?.runner && !current.runner.yours && signingIn(current) && (
+            <Banner tone="warn">
+              <OthersRunner runner={current.runner} />
+            </Banner>
+          )}
           {starting ? (
             <p className="flex items-center gap-2 text-ink-3" role="status">
               <Spinner className="size-3.5" /> Starting Claude Code in a sandbox…

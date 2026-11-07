@@ -266,6 +266,10 @@ pub enum SessionCmd {
     },
 }
 
+/// The request id of the Claude credential a session found running after
+/// a restart asks for, which no agent request waits for.
+const RECOVERED_CREDENTIALS: &str = "host-recovered";
+
 pub enum SessionEvent {
     CredentialRequest {
         session_id: SessionId,
@@ -389,7 +393,7 @@ impl AgentLink {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let line = secrets.redact(&line);
+                let line = secrets.redact_frame(&line);
                 match serde_json::from_str::<AgentToHost>(line.trim()) {
                     Ok(m) => {
                         if in_tx.send(m).is_err() {
@@ -981,6 +985,18 @@ async fn run(
     }
     if let Ok(Some(kept)) = claude_token::load(&ctx.cfg.claude_token()) {
         secrets.add(&kept.token);
+    }
+    // A session found running after this host restarted: its agent has a
+    // Claude token this host no longer knows. It asks for the one the
+    // session runs on now, which the agent takes as its own too, so that
+    // what it prints of it stays redacted (as any Claude token does by its
+    // shape: `claude_token::redact_shapes`).
+    if spec.is_none() {
+        let _ = events.send(SessionEvent::CredentialRequest {
+            session_id: session_id.clone(),
+            request_id: RECOVERED_CREDENTIALS.into(),
+            kind: CredentialKind::Claude,
+        });
     }
     // Claude streams what it writes in pieces, which may split a token.
     let mut streaming = claude_token::StreamRedactor::default();

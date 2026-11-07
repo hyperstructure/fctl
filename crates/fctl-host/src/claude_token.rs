@@ -27,6 +27,97 @@ pub const REDACTED: &str = "[Claude token, redacted by fctl]";
 /// are about a hundred characters long.
 const MIN_REDACTED: usize = 32;
 
+/// What a redacted GitHub token reads as.
+pub const REDACTED_GITHUB: &str = "[GitHub token, redacted by fctl]";
+
+/// A kind of token redacted by its shape, whoever's it is: one this host
+/// never knew of too, such as the one a session found running after the
+/// host restarted started with, or another session's.
+struct Shape {
+    /// How each starts.
+    prefix: &'static str,
+    /// The fewest characters one has, its prefix included: shorter ones
+    /// stay.
+    min: usize,
+    /// The characters it goes on with.
+    body: fn(u8) -> bool,
+    /// What it reads as, redacted.
+    redacted: &'static str,
+}
+
+/// Claude's OAuth access tokens (`sk-ant-oat01-…`, from a full login or
+/// `claude setup-token`), and GitHub's installation tokens (`ghs_…`), which
+/// sessions' agents have.
+const SHAPES: [Shape; 2] = [
+    Shape {
+        prefix: "sk-ant-oat",
+        min: 40,
+        body: base64url,
+        redacted: REDACTED,
+    },
+    Shape {
+        prefix: "ghs_",
+        min: 40,
+        body: alphanumeric,
+        redacted: REDACTED_GITHUB,
+    },
+];
+
+fn base64url(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+fn alphanumeric(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+}
+
+impl Shape {
+    /// Where the token of this shape that starts at `at` in `text` ends.
+    fn end(&self, text: &[u8], at: usize) -> usize {
+        let from = at + self.prefix.len();
+        from + text.get(from..).map_or(0, |rest| {
+            rest.iter().take_while(|b| (self.body)(**b)).count()
+        })
+    }
+}
+
+/// `text` with every token of a [`Shape`] in it replaced, whoever's it is.
+pub fn redact_shapes(text: &str) -> Cow<'_, str> {
+    let mut out = Cow::Borrowed(text);
+    for shape in &SHAPES {
+        if !out.contains(shape.prefix) {
+            continue;
+        }
+        let bytes = out.as_bytes();
+        let mut redacted = String::with_capacity(out.len());
+        let (mut copied, mut from, mut changed) = (0, 0, false);
+        while let Some(at) = out.get(from..).and_then(|s| s.find(shape.prefix)) {
+            let at = from + at;
+            let end = shape.end(bytes, at);
+            if end - at >= shape.min {
+                // Prefixes and bodies are ASCII: these are characters' starts.
+                redacted.push_str(out.get(copied..at).unwrap_or_default());
+                redacted.push_str(shape.redacted);
+                copied = end;
+                changed = true;
+            }
+            from = end;
+        }
+        if changed {
+            redacted.push_str(out.get(copied..).unwrap_or_default());
+            out = Cow::Owned(redacted);
+        }
+    }
+    out
+}
+
+/// Whether `line`, a frame from fctl-agent, is a stream's
+/// (`AgentToHost::Stream`), whose deltas may cut a token in two: the
+/// [`StreamRedactor`] redacts those by their shape, as they come whole.
+pub fn is_stream_frame(line: &str) -> bool {
+    line.trim_start().starts_with(r#"{"type":"stream""#)
+}
+
 /// A token the host keeps, and when it was saved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Kept {
@@ -180,6 +271,20 @@ impl Secrets {
         }
     }
 
+    /// A frame from fctl-agent without any of them, nor any token of a
+    /// [`Shape`] but in a stream's deltas, which the [`StreamRedactor`]
+    /// redacts.
+    pub fn redact_frame<'a>(&self, line: &'a str) -> Cow<'a, str> {
+        let known = self.redact(line);
+        if is_stream_frame(&known) {
+            return known;
+        }
+        match redact_shapes(&known) {
+            Cow::Borrowed(_) => known,
+            Cow::Owned(s) => Cow::Owned(s),
+        }
+    }
+
     fn all(&self) -> Vec<String> {
         self.0
             .lock()
@@ -222,7 +327,19 @@ impl StreamRedactor {
     /// them live (`AgentToHost::Stream`): none, while all of a delta waits;
     /// the delta without what waits; or, at a block's end, what waited and
     /// then the end. Other messages pass as they are.
-    pub fn apply(&mut self, secrets: &Secrets, mut event: Value) -> Vec<Value> {
+    pub fn apply(&mut self, secrets: &Secrets, event: Value) -> Vec<Value> {
+        let mut out = self.held_back(secrets, event);
+        // Tokens of a shape whole in any message, held back or not: a
+        // block's start, a delta without a text, a tool's progress.
+        for event in &mut out {
+            redact_shapes_in(event);
+        }
+        out
+    }
+
+    /// [`Self::apply`] for the known secrets, and the tokens of a
+    /// [`Shape`] a delta's text may cut in two.
+    fn held_back(&mut self, secrets: &Secrets, mut event: Value) -> Vec<Value> {
         if event.get("type").and_then(Value::as_str) != Some("stream_event") {
             return vec![event];
         }
@@ -247,9 +364,6 @@ impl StreamRedactor {
                 }) else {
                     return vec![event];
                 };
-                if secrets.is_empty() {
-                    return vec![event];
-                }
                 let key = (parent, index);
                 let before = self.held.remove(&key).map(|h| h.text).unwrap_or_default();
                 let (out, kept) = hold_back(&format!("{before}{text}"), &secrets);
@@ -309,10 +423,11 @@ impl StreamRedactor {
     }
 }
 
-/// A delta that sends what a block held back.
+/// A delta that sends what a block held back: a token of a [`Shape`] it
+/// ends with is whole now.
 fn flushed(parent: &Option<String>, index: u64, held: Held) -> Value {
     let mut delta = held.delta;
-    delta[held.field] = Value::String(held.text);
+    delta[held.field] = Value::String(redact_shapes(&held.text).into_owned());
     serde_json::json!({
         "type": "stream_event",
         "parent_tool_use_id": parent,
@@ -321,10 +436,69 @@ fn flushed(parent: &Option<String>, index: u64, held: Held) -> Value {
 }
 
 /// `text` with whole secrets replaced, split into what can go now and the
-/// end that could start one of `secrets`, which waits for more.
+/// end that could start one of `secrets`, or be a token of a [`Shape`]
+/// that may go on, which waits for more. What goes now has the tokens of
+/// a shape in it replaced, which end there.
 fn hold_back(text: &str, secrets: &[String]) -> (String, String) {
+    let (now, later) = hold_back_known(text, secrets);
+    let wait = shaped_wait(&now);
+    let cut = now.len() - wait;
+    match (now.get(..cut), now.get(cut..)) {
+        (Some(go), Some(held)) => (redact_shapes(go).into_owned(), format!("{held}{later}")),
+        _ => (redact_shapes(&now).into_owned(), later),
+    }
+}
+
+/// How much of the end of `text` could be a token of a [`Shape`] that goes
+/// on in the next delta: one that runs to its end, or the start of a
+/// prefix.
+fn shaped_wait(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    // Every shape's prefix and body are base64url characters.
+    let run = bytes.iter().rev().take_while(|b| base64url(**b)).count();
+    let tail = text.get(text.len() - run..).unwrap_or_default();
+    SHAPES
+        .iter()
+        .map(|shape| {
+            // One that runs to the end, wherever in the word it starts
+            // (`key_sk-ant-oat01-…`).
+            if let Some(at) = tail.find(shape.prefix) {
+                return run - at;
+            }
+            // The characters at the end that could start one, wherever
+            // the word does: also after a letter or digit, so that the next
+            // delta, which starts mid-prefix, doesn't let one through. They
+            // wait for that delta alone (the `s` of `tokens`), a few tens of
+            // milliseconds, while the rest goes out at once.
+            (1..shape.prefix.len())
+                .rev()
+                .find(|&k| tail.ends_with(&shape.prefix[..k]))
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// `value` with every token of a [`Shape`] in its strings replaced.
+fn redact_shapes_in(value: &mut Value) {
+    match value {
+        Value::String(s) => {
+            if let Cow::Owned(redacted) = redact_shapes(s) {
+                *s = redacted;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(redact_shapes_in),
+        Value::Object(fields) => fields.values_mut().for_each(redact_shapes_in),
+        _ => {}
+    }
+}
+
+/// [`hold_back`] for the known `secrets` alone.
+fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
     let text = redact(text, secrets).into_owned();
     let bytes = text.as_bytes();
+    // The characters at the end that could start a secret, wherever the
+    // word does, as for a token's shape ([`shaped_wait`]).
     let wait = secrets
         .iter()
         .filter(|s| s.len() >= MIN_REDACTED)
@@ -532,12 +706,154 @@ mod tests {
         assert_eq!(shown(&out, "partial_json"), "sk-ant-oat01-abcdefgh");
         assert_eq!(out[0]["event"]["delta"]["type"], "input_json_delta");
         assert_eq!(out[1]["event"]["type"], "content_block_stop");
-        // Without secrets, and for other messages, nothing changes.
+        // Without secrets, nothing changes but where a token's shape may
+        // start, and for other messages, nothing at all.
         let mut quiet = StreamRedactor::default();
-        let plain = delta(None, 0, "text", "sk-ant-o");
+        let plain = delta(None, 0, "text", "skip it");
         assert_eq!(quiet.apply(&Secrets::default(), plain.clone()), [plain]);
+        assert!(
+            quiet
+                .apply(&Secrets::default(), delta(None, 0, "text", "sk-ant-o"))
+                .is_empty()
+        );
         let progress = serde_json::json!({"type": "tool_progress", "tool_use_id": "t1"});
         assert_eq!(quiet.apply(&secrets, progress.clone()), [progress]);
+    }
+
+    /// A Claude token this host never knew of: the one a session found
+    /// running after a restart started with, say.
+    const UNKNOWN: &str = "sk-ant-oat01-ZYXWVUTSRQPONMLKJIHGFEDCBA9876543210zyxwvutsrqp-_AbC";
+    /// A session's GitHub installation token.
+    const GITHUB: &str = "ghs_abcdefghijklmnopqrstuvwxyz0123456789";
+
+    #[test]
+    fn redacts_tokens_by_their_shape_whoever_s_they_are() {
+        let text = format!("CLAUDE_CODE_OAUTH_TOKEN={UNKNOWN}\nGH_TOKEN={GITHUB} and {UNKNOWN}.");
+        assert_eq!(
+            redact_shapes(&text),
+            format!(
+                "CLAUDE_CODE_OAUTH_TOKEN={REDACTED}\nGH_TOKEN={REDACTED_GITHUB} and {REDACTED}."
+            )
+        );
+        // What only starts like one, or is too short to be one, stays.
+        for plain in [
+            "sk-ant-oat01-short",
+            "ghs_short",
+            "the ghs_ prefix and sk-ant-oat",
+            "ghs_snake_case_name_that_goes_on_and_on_and_on",
+        ] {
+            assert!(matches!(redact_shapes(plain), Cow::Borrowed(_)), "{plain}");
+        }
+        // In frames from fctl-agent, but in a stream's deltas, which the
+        // stream's redactor takes as they come whole.
+        let secrets = Secrets::default();
+        let events = format!(r#"{{"type":"events","events":[{{"text":"{UNKNOWN}"}}]}}"#);
+        assert_eq!(
+            secrets.redact_frame(&events),
+            format!(r#"{{"type":"events","events":[{{"text":"{REDACTED}"}}]}}"#)
+        );
+        let stream = format!(r#"{{"type":"stream","event":{{"text":"{UNKNOWN}"}}}}"#);
+        assert_eq!(secrets.redact_frame(&stream), stream);
+        assert!(is_stream_frame(&stream) && !is_stream_frame(&events));
+    }
+
+    #[test]
+    fn only_what_could_start_a_token_waits() {
+        let secrets = Secrets::default();
+        secrets.add(TOKEN);
+        let mut r = StreamRedactor::default();
+        let text = |out: &[Value]| -> Vec<String> {
+            out.iter()
+                .filter_map(|e| e["event"]["delta"]["text"].as_str().map(str::to_owned))
+                .collect()
+        };
+        // A word that doesn't end like a token starts goes out at once.
+        for (index, said) in [(0, "two words."), (1, "a token's end")] {
+            let plain = delta(None, index, "text", said);
+            assert_eq!(r.apply(&secrets, plain.clone()), [plain], "{said}");
+        }
+        // One that does goes out but for its last letters, which wait for
+        // the next delta, or the block's end.
+        assert_eq!(
+            text(&r.apply(&secrets, delta(None, 2, "text", "two tokens"))),
+            ["two token"]
+        );
+        assert_eq!(
+            text(&r.apply(&secrets, delta(None, 2, "text", " more"))),
+            ["s more"]
+        );
+        for (index, said, now) in [
+            (3, "see sk", "see "),
+            (4, "GH_TOKEN=ghs_ab", "GH_TOKEN="),
+            (5, "key_sk-a", "key_"),
+            (6, "x-ghs_ab", "x-"),
+            (7, "ask-ant-oa", "a"),
+            (8, "ag", "a"),
+        ] {
+            assert_eq!(
+                text(&r.apply(&secrets, delta(None, index, "text", said))),
+                [now],
+                "{said}"
+            );
+        }
+    }
+
+    #[test]
+    fn redacts_tokens_by_their_shape_in_any_streamed_message() {
+        let secrets = Secrets::default();
+        let mut r = StreamRedactor::default();
+        // A block that starts with text, a delta without one, and a
+        // message of another kind.
+        let start = serde_json::json!({"type": "stream_event", "parent_tool_use_id": null,
+            "event": {"type": "content_block_start", "index": 0,
+                "content_block": {"type": "text", "text": format!("Here: {UNKNOWN}")}}});
+        let out = r.apply(&secrets, start);
+        assert_eq!(
+            out[0]["event"]["content_block"]["text"],
+            format!("Here: {REDACTED}")
+        );
+        let no_index = serde_json::json!({"type": "stream_event", "parent_tool_use_id": null,
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": GITHUB}}});
+        assert_eq!(
+            r.apply(&secrets, no_index)[0]["event"]["delta"]["text"],
+            REDACTED_GITHUB
+        );
+        let progress = serde_json::json!({"type": "tool_progress", "output": [UNKNOWN]});
+        assert_eq!(r.apply(&secrets, progress)[0]["output"][0], REDACTED);
+    }
+
+    #[test]
+    fn redacts_a_token_it_never_knew_streamed_in_pieces() {
+        let secrets = Secrets::default();
+        // Also glued to a letter or a digit, split anywhere.
+        let said = format!(
+            "Here: {UNKNOWN}, and {GITHUB}, key_{UNKNOWN} and x-{GITHUB}, a{UNKNOWN} 7{GITHUB} 9{TOKEN}."
+        );
+        for size in [1, 2, 3, 5, 7, 13, 40, 200] {
+            let chars: Vec<char> = said.chars().collect();
+            let mut events: Vec<Value> = chars
+                .chunks(size)
+                .map(|c| delta(None, 0, "text", &c.iter().collect::<String>()))
+                .collect();
+            events.push(stop(None, 0));
+            let mut r = StreamRedactor::default();
+            let out = streamed(&mut r, &secrets, events);
+            assert_eq!(
+                shown(&out, "text"),
+                format!(
+                    "Here: {REDACTED}, and {REDACTED_GITHUB}, key_{REDACTED} and x-{REDACTED_GITHUB}, a{REDACTED} 7{REDACTED_GITHUB} 9{REDACTED}."
+                ),
+                "{size}"
+            );
+            // No piece of either shows on its way.
+            for e in &out {
+                let piece = e["event"]["delta"]["text"].as_str().unwrap_or_default();
+                assert!(
+                    !piece.contains("ZYXWVUTSRQ") && !piece.contains("abcdefghij"),
+                    "{size}: {piece}"
+                );
+            }
+        }
     }
 
     #[test]

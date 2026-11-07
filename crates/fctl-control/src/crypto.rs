@@ -29,6 +29,7 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct Keys {
     enc: [u8; 32],
     mac: [u8; 32],
+    recovery: [u8; 32],
 }
 
 impl Keys {
@@ -36,7 +37,17 @@ impl Keys {
         Self {
             enc: hmac_raw(master, b"fctl/v1/encryption"),
             mac: hmac_raw(master, b"fctl/v1/mac"),
+            recovery: hmac_raw(master, b"fctl/v1/recovery-codes"),
         }
+    }
+
+    /// What D1 keeps of `user_id`'s recovery code `code` (normalized:
+    /// `fctl_domain::two_factor::normalize_recovery_code`): an HMAC keyed
+    /// by the master key, since a code has about 43 bits, so that a copy
+    /// of D1 without the key doesn't give them away as a plain hash would.
+    pub fn recovery_hash(&self, user_id: &str, code: &str) -> String {
+        let tag = hmac_raw(&self.recovery, format!("{user_id}\n{code}").as_bytes());
+        format!("{RECOVERY_HASH}{}", hex::encode(tag))
     }
 
     /// Seals `plaintext`, binding it to `aad` (for example `claude:<id>`).
@@ -110,6 +121,11 @@ impl Keys {
         URL_SAFE_NO_PAD.decode(p).ok()
     }
 }
+
+/// How a recovery code's keyed hash ([`Keys::recovery_hash`]) starts: those
+/// from before it are plain SHA-256s (`fctl_domain::tokens::hash_secret`),
+/// which count until they are used or replaced.
+pub const RECOVERY_HASH: &str = "v2:";
 
 fn hmac_raw(key: &[u8], data: &[u8]) -> [u8; 32] {
     // HMAC accepts keys of any length; new_from_slice cannot fail here.

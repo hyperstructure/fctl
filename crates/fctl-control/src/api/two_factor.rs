@@ -472,11 +472,10 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
 
 // ───────────────────────────── codes ─────────────────────────────
 
+/// An authenticator app, as far as whether its codes wait goes: codes are
+/// checked with what [`take_attempt`] reads.
 #[derive(Deserialize)]
 struct AppRow {
-    secret_enc: String,
-    #[serde(deserialize_with = "crate::db::int")]
-    last_step: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     locked_until: Option<i64>,
 }
@@ -484,7 +483,7 @@ struct AppRow {
 async fn app(ctx: &Ctx, user_id: &str) -> AppResult<Option<AppRow>> {
     q(
         &ctx.db,
-        "SELECT secret_enc, last_step, locked_until FROM authenticator_apps WHERE user_id = ?",
+        "SELECT locked_until FROM authenticator_apps WHERE user_id = ?",
         &[s(user_id)],
     )?
     .first()
@@ -537,36 +536,117 @@ fn locked(until: i64, now: i64) -> AppError {
 /// codes from the app: six digits can be guessed, recovery codes can't, so
 /// whoever has them can always sign in.
 async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<Valid> {
-    let Some(app) = app(ctx, &user.id).await? else {
-        return Err(AppError(ApiError::new(
-            ErrorCode::Conflict,
-            "Two-factor sign-in is off for this account. Start again.",
-        )));
-    };
     if let Some(code) = totp::normalize(typed) {
-        if let Some(until) = app.locked_until.filter(|t| *t > ctx.now) {
-            return Err(locked(until, ctx.now));
-        }
-        let secret = ctx.keys()?.open(&totp_aad(&user.id), &app.secret_enc)?;
-        return match totp::check(&secret, &code, ctx.now, app.last_step) {
+        let Some(attempt) = take_attempt(ctx, &user.id).await? else {
+            // No app, or one that makes codes wait.
+            return Err(match app(ctx, &user.id).await? {
+                None => two_factor_off(),
+                Some(app) => match app.locked_until.filter(|t| *t > ctx.now) {
+                    Some(until) => locked(until, ctx.now),
+                    None => validation("code", "Try that code again."),
+                },
+            });
+        };
+        let secret = ctx.keys()?.open(&totp_aad(&user.id), &attempt.secret_enc)?;
+        return match totp::check(&secret, &code, ctx.now, attempt.last_step) {
             totp::Check::Valid(step) => Ok(Valid::Totp { step }),
-            totp::Check::Used => Err(code_used()),
-            totp::Check::Wrong => Err(wrong(ctx, user).await),
+            totp::Check::Used => {
+                forgive_attempt(ctx, &user.id, Some(attempt.failures)).await;
+                Err(code_used())
+            }
+            totp::Check::Wrong => Err(match after_wrong(ctx, user, attempt.failures).await {
+                Result::Ok(e) | Err(e) => e,
+            }),
         };
     }
-    if let Some(hash) = policy::hash_recovery_code(typed) {
-        let unused: Option<Count> = q(
+    if app(ctx, &user.id).await?.is_none() {
+        return Err(two_factor_off());
+    }
+    if let Some(code) = policy::normalize_recovery_code(typed) {
+        // Keyed by the master key, or a plain hash from before that.
+        #[derive(Deserialize)]
+        struct Unused {
+            code_hash: String,
+        }
+        let keyed = ctx.keys()?.recovery_hash(&user.id, &code);
+        let plain = fctl_domain::tokens::hash_secret(&code);
+        let unused: Option<Unused> = q(
             &ctx.db,
-            "SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
-            &[s(&user.id), s(&hash)],
+            "SELECT code_hash FROM recovery_codes WHERE user_id = ? AND code_hash IN (?, ?) AND used_at IS NULL LIMIT 1",
+            &[s(&user.id), s(&keyed), s(&plain)],
         )?
         .first()
         .await?;
-        if unused.is_some_and(|c| c.n > 0) {
-            return Ok(Valid::Recovery { hash });
+        if let Some(u) = unused {
+            return Ok(Valid::Recovery { hash: u.code_hash });
         }
     }
     Err(wrong(ctx, user).await)
+}
+
+fn two_factor_off() -> AppError {
+    AppError(ApiError::new(
+        ErrorCode::Conflict,
+        "Two-factor sign-in is off for this account. Start again.",
+    ))
+}
+
+/// An attempt at a code from the app, counted ([`take_attempt`]).
+#[derive(Deserialize)]
+struct Attempt {
+    secret_enc: String,
+    #[serde(deserialize_with = "crate::db::int")]
+    last_step: i64,
+    /// Wrong codes in a row, this one counted as one until it checks out.
+    #[serde(deserialize_with = "crate::db::int")]
+    failures: i64,
+}
+
+/// Counts an attempt at a code from `user_id`'s app as a wrong one before
+/// it is checked, and starts the wait that one more brings
+/// (`policy::lockout_sql`), in the statement that checks that codes don't
+/// wait now: so that of codes sent at once, no more get checked than one
+/// at a time would, whatever arrives before any was found wrong. A right
+/// code starts the count over, and ends the wait it started
+/// ([`use_code`]). `None` without an app, or while codes wait.
+async fn take_attempt(ctx: &Ctx, user_id: &str) -> AppResult<Option<Attempt>> {
+    let wait = policy::lockout_sql("failures + 1");
+    q(
+        &ctx.db,
+        &format!(
+            "UPDATE authenticator_apps SET failures = failures + 1, \
+             locked_until = COALESCE(?2 + ({wait}), locked_until) \
+             WHERE user_id = ?1 AND (locked_until IS NULL OR locked_until <= ?2) \
+             RETURNING secret_enc, last_step, failures"
+        ),
+        &[s(user_id), n(ctx.now)],
+    )?
+    .first()
+    .await
+}
+
+/// Takes back the attempt [`take_attempt`] counted for a code that was
+/// right but used already (sent twice, or used by another request first),
+/// and the wait that attempt started, when it brought the count to
+/// `failures`: only wrong codes count towards a wait.
+async fn forgive_attempt(ctx: &Ctx, user_id: &str, failures: Option<i64>) {
+    let started = failures
+        .and_then(|f| policy::lockout_ms(f.clamp(0, i64::from(u32::MAX)) as u32))
+        .map(|ms| ctx.now + ms);
+    let forgiven = q(
+        &ctx.db,
+        "UPDATE authenticator_apps SET failures = MAX(failures - 1, 0), \
+         locked_until = CASE WHEN locked_until = ?2 THEN NULL ELSE locked_until END \
+         WHERE user_id = ?1",
+        &[s(user_id), crate::db::on(started)],
+    );
+    let done = match forgiven {
+        Ok(q) => q.run().await.map(|_| ()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = done {
+        worker::console_error!("taking back a used code's attempt: {}", e.0.message);
+    }
 }
 
 /// Uses up a code that checked out; fails when another request used it
@@ -584,6 +664,8 @@ async fn use_code(ctx: &Ctx, user: &UserRow, valid: Valid) -> AppResult<CodeUse>
             .run()
             .await?;
             if changed == 0 {
+                // Another request used it first: right all the same.
+                forgive_attempt(ctx, &user.id, None).await;
                 return Err(code_used());
             }
             Ok(CodeUse::Totp)
@@ -643,7 +725,13 @@ async fn count_wrong(ctx: &Ctx, user: &UserRow) -> AppResult<AppError> {
     )?
     .first()
     .await?;
-    let failures = row.map_or(1, |r| r.failures.clamp(1, i64::from(u32::MAX))) as u32;
+    after_wrong(ctx, user, row.map_or(1, |r| r.failures)).await
+}
+
+/// What a wrong code that brought the count to `failures` answers with:
+/// the wait it starts, once there are too many.
+async fn after_wrong(ctx: &Ctx, user: &UserRow, failures: i64) -> AppResult<AppError> {
+    let failures = failures.clamp(1, i64::from(u32::MAX)) as u32;
     let Some(until) = policy::lockout_ms(failures).map(|ms| ctx.now + ms) else {
         return Ok(validation(
             "code",
@@ -704,8 +792,11 @@ fn recovery_statements(ctx: &Ctx, user_id: &str, codes: &[String]) -> AppResult<
         "DELETE FROM recovery_codes WHERE user_id = ?",
         &[s(user_id)],
     )?];
+    let keys = ctx.keys()?;
     for code in codes {
-        let hash = policy::hash_recovery_code(code).ok_or_else(|| internal("recovery code"))?;
+        let code =
+            policy::normalize_recovery_code(code).ok_or_else(|| internal("recovery code"))?;
+        let hash = keys.recovery_hash(user_id, &code);
         statements.push(q(
             &ctx.db,
             "INSERT INTO recovery_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)",

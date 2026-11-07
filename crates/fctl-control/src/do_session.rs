@@ -88,6 +88,17 @@ const VIEWER_STALE_MS: i64 = 2 * VIEWER_CHECK_MS;
 /// checked for a while (they reconnect).
 const CLOSE_NO_ACCESS: u16 = 4403;
 const CLOSE_RECHECK: u16 = 4000;
+/// How often an open uplink is checked again, as the Worker checked it when
+/// it opened (`spec::check_runs`), on what its host sends (a ping every 20
+/// seconds) and before anything goes to it: once its runner is disabled or
+/// removed, its token replaced, it no longer runs the session's workspace,
+/// or the session's person may no longer run it, the uplink closes within
+/// this long, a stopped session's too, which nothing else closes.
+const UPLINK_CHECK_MS: i64 = 60_000;
+/// Close code for an uplink whose runner no longer runs the session.
+const CLOSE_NOT_RUNNER: u16 = 4003;
+/// How soon an uplink's check is tried again when D1 didn't answer it.
+const UPLINK_RETRY_MS: i64 = 5_000;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct SocketInfo {
@@ -114,9 +125,15 @@ struct SocketInfo {
     /// An uplink: its host paused the sandbox, as it last said.
     #[serde(default)]
     sandbox_paused: Option<SandboxPaused>,
-    /// A viewer: when its access was last checked.
+    /// A viewer: when its access was last checked; an uplink: when its
+    /// runner was.
     #[serde(default)]
     checked_at: Option<i64>,
+    /// An uplink: the SHA-256 of the runner token it opened with
+    /// (`internal::HDR_RUNNER_TOKEN`), which its checks compare with the
+    /// runner's.
+    #[serde(default)]
+    runner_token: Option<String>,
 }
 
 impl SocketInfo {
@@ -735,6 +752,22 @@ impl SessionObject {
         }
     }
 
+    /// Sends `msg` to the uplink once its runner was checked within
+    /// [`UPLINK_CHECK_MS`] ([`Self::recheck_uplink`]): what people send the
+    /// agent goes only to a runner that still runs the session.
+    async fn send_checked_uplink(&self, msg: &UplinkDown, now: i64) {
+        let Some(ws) = self.uplink() else { return };
+        let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>() else {
+            return;
+        };
+        if now - info.checked() >= UPLINK_CHECK_MS && !self.recheck_uplink(&ws, &info, now).await {
+            return;
+        }
+        if let Ok(text) = serde_json::to_string(msg) {
+            let _ = ws.send_with_str(&text);
+        }
+    }
+
     fn presence(&self, exclude: Option<&WebSocket>) -> Vec<Presence> {
         let mut by_user: Vec<Presence> = Vec::new();
         for ws in self.state.get_websockets_with_tag(TAG_VIEWER) {
@@ -914,9 +947,13 @@ impl SessionObject {
         self.touch_activity(now);
         self.search_soon(now).await;
         if !stopping {
-            self.send_uplink(&UplinkDown::Deliver {
-                delivery: b.delivery.clone(),
-            });
+            self.send_checked_uplink(
+                &UplinkDown::Deliver {
+                    delivery: b.delivery.clone(),
+                },
+                now,
+            )
+            .await;
             if has_files(&b.delivery) && self.uplink_lacks_files() {
                 self.old_host_notice(now);
             }
@@ -1838,7 +1875,8 @@ impl SessionObject {
             );
             // A host that hasn't said hello yet gets it after its hello.
             if host_takes == Some(true) {
-                self.send_uplink(&UplinkDown::Deliver { delivery });
+                self.send_checked_uplink(&UplinkDown::Deliver { delivery }, now_ms())
+                    .await;
             }
         }
         if let Some(m) = &b.model {
@@ -2397,9 +2435,13 @@ impl SessionObject {
         let pair = WebSocketPair::new()?;
         self.state
             .accept_websocket_with_tags(&pair.server, &[TAG_UPLINK]);
+        // The Worker checked it just now (`api::runners::uplink`).
+        let now = now_ms();
         pair.server.serialize_attachment(&SocketInfo {
             runner_id: Some(runner_id),
-            since: now_ms(),
+            since: now,
+            checked_at: Some(now),
+            runner_token: crate::http::header(req, internal::HDR_RUNNER_TOKEN),
             ..Default::default()
         })?;
         let pending: Vec<Delivery> = self
@@ -2425,8 +2467,70 @@ impl SessionObject {
         Response::from_websocket(pair.client)
     }
 
+    /// Checks again that the runner whose uplink `ws` is still runs the
+    /// session, as the Worker checked when it opened: it is enabled, with
+    /// the token the uplink opened with, and runs the session for its
+    /// person (`spec::check_runs`). One that no longer does closes, and
+    /// `false` says so, so that a runner disabled, removed, taken out of
+    /// the session's workspace or given a new token, or whose session's
+    /// person may no longer run it, hears nothing more of the session and
+    /// says nothing more for its agent through an uplink it opened before,
+    /// a stopped session's too, which no assignment closes. A check D1
+    /// didn't answer leaves it open until the next one.
+    async fn recheck_uplink(&self, ws: &WebSocket, info: &SocketInfo, now: i64) -> bool {
+        let (Some(runner_id), Some(token)) = (info.runner_id.clone(), info.runner_token.clone())
+        else {
+            // Opened through an older Worker: its host connects again, and
+            // through this one it says which token it holds.
+            let _ = ws.close(Some(CLOSE_RECHECK), Some("checking the runner again"));
+            return false;
+        };
+        let Some(summary) = self.summary() else {
+            return true;
+        };
+        // What the host sends while D1 answers doesn't check again.
+        Self::checked_at(ws, now);
+        let holds = match self.env.d1("DB") {
+            Ok(db) => crate::spec::uplink_holds(&db, &runner_id, &token, summary.id.as_str()).await,
+            Err(e) => Err(crate::error::internal(e)),
+        };
+        match holds {
+            Ok(true) => true,
+            Ok(false) => {
+                let _ = ws.close(
+                    Some(CLOSE_NOT_RUNNER),
+                    Some("this runner no longer runs this session"),
+                );
+                self.broadcast_runner(Some(ws));
+                false
+            }
+            Err(e) => {
+                // Again in a few seconds, not with each of the dozen
+                // messages a second a stream brings.
+                worker::console_error!("checking an uplink's runner again: {}", e.0.message);
+                Self::checked_at(ws, now - UPLINK_CHECK_MS + UPLINK_RETRY_MS);
+                true
+            }
+        }
+    }
+
+    /// Notes that the runner of uplink `ws` was checked at `at`, on its
+    /// attachment as it is now: what its host said meanwhile stays.
+    fn checked_at(ws: &WebSocket, at: i64) {
+        if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() {
+            info.checked_at = Some(at);
+            let _ = ws.serialize_attachment(&info);
+        }
+    }
+
     async fn on_uplink(&self, ws: &WebSocket, msg: UplinkUp) {
         let now = now_ms();
+        if let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>()
+            && now - info.checked() >= UPLINK_CHECK_MS
+            && !self.recheck_uplink(ws, &info, now).await
+        {
+            return;
+        }
         // Token deltas come by the dozen a second; pings every 20 s suffice.
         if !matches!(msg, UplinkUp::Stream { .. }) {
             self.heard(ws, now);
