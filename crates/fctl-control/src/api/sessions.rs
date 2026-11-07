@@ -357,22 +357,27 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         sql.push_str(" AND s.created_by = ?1");
     }
     // The sessions that list a pull request, in a state, for the pull
-    // requests page: what GitHub last said of each, as
-    // `crate::pull_requests` keeps it. One nobody looked up yet counts as
-    // open.
+    // requests page and the sidebar: among those `pull_request_sessions`
+    // has, those whose own list (what their pages show, from their agents'
+    // lookups and GitHub's webhooks) has one in that state; sessions from
+    // before that list have their one. One nobody looked up counts as open.
     if let Some(pulls) = http::query(req, "pulls") {
         let states = match pulls.as_str() {
-            "any" | "1" | "true" => "",
-            "open" => " WHERE state IS NULL OR state IN ('open','draft','queued')",
-            "merged" => " WHERE state = 'merged'",
-            "closed" => " WHERE state = 'closed'",
+            "any" | "1" | "true" => None,
+            "open" => Some("'open','draft','queued'"),
+            "merged" => Some("'merged'"),
+            "closed" => Some("'closed'"),
             _ => {
                 return Err(validation("pulls", "Use open, merged, closed or any"));
             }
         };
-        sql.push_str(&format!(
-            " AND s.id IN (SELECT session_id FROM pull_request_sessions{states})"
-        ));
+        sql.push_str(" AND s.id IN (SELECT session_id FROM pull_request_sessions)");
+        if let Some(states) = states {
+            sql.push_str(&format!(
+                " AND EXISTS (SELECT 1 FROM json_each(COALESCE(s.pull_requests, json_array(json_object('state', s.pr_state)))) j \
+                 WHERE COALESCE(json_extract(j.value, '$.state'), 'open') IN ({states}))"
+            ));
+        }
     }
     // Review agents' sessions have a list of their own (the project's
     // reviews), and stay off the Agent Floor and the project's sessions.

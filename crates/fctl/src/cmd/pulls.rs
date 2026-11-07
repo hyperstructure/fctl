@@ -53,12 +53,15 @@ pub async fn run(server: Option<&str>, args: PullsArgs, json: bool) -> Result<()
         Some(_) => None,
         None => args.project,
     };
-    let (pulls, states) = args.state.query();
+    // Every session that lists one, whatever its state: each pull request
+    // takes the state the session that heard of it last says, which one
+    // that heard of it earlier may not.
+    let (_, states) = args.state.query();
     let list = api
         .sessions_with_pulls(
             args.workspace.as_deref(),
             project.as_deref(),
-            pulls,
+            "any",
             args.mine,
             args.limit,
         )

@@ -26,7 +26,6 @@ import {
   StatusDot,
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
-import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
@@ -67,20 +66,12 @@ export function PullsPage() {
   const state = search.state ?? "open";
   const [kind, slug] = (search.scope ?? "").split(":");
   const scope = { workspace: kind === "w" ? slug : undefined, project: kind === "p" ? slug : undefined };
-  // One list for each tab, which counts its own: the open ones first (the sidebar's, unless
-  // narrowed), the merged and closed ones beside them for their counts.
-  const lists = {
-    open: usePulls("open", scope, search.mine),
-    merged: usePulls("merged", scope, search.mine),
-    closed: usePulls("closed", scope, search.mine),
-  };
-  const sessions = lists[state];
+  // Every session that lists one, whatever its state: each pull request takes the state the session
+  // that heard of it last says, which one that heard of it earlier may not.
+  const q = { pulls: "any" as const, limit: LOOK_AT, ...scope, mine: search.mine };
+  const sessions = useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
   const all = useMemo(() => listPulls(sessions.data?.sessions ?? []), [sessions.data]);
-  const counts: Record<PullState, number | undefined> = {
-    open: useCount(lists.open.data, "open"),
-    merged: useCount(lists.merged.data, "merged"),
-    closed: useCount(lists.closed.data, "closed"),
-  };
+  const counts = useMemo(() => countStates(all), [all]);
   const shown = useMemo(
     () => all.filter((l) => stateOf(l) === state && pullMatches(l, search.q ?? "")),
     [all, state, search.q],
@@ -124,7 +115,7 @@ export function PullsPage() {
                   state === s ? "bg-hover text-ink-2" : "text-ink-4",
                 )}
               >
-                {counts[s] ?? "·"}
+                {sessions.isPending ? "·" : counts[s]}
               </span>
               {state === s && (
                 <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />
@@ -225,20 +216,6 @@ export function PullsPage() {
       </p>
     </div>
   );
-}
-
-/**
- * The sessions that list a pull request in `state`, newest first: the open ones as the sidebar
- * asks for them (`OPEN_PULLS`), so that they show at once.
- */
-function usePulls(state: PullState, scope: { workspace?: string; project?: string }, mine?: boolean) {
-  const q = { pulls: state, limit: LOOK_AT, ...scope, mine };
-  return useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q) });
-}
-
-/** How many pull requests in `state` a tab's list has, once it came. */
-function useCount(list: G.SessionList | undefined, state: PullState): number | undefined {
-  return useMemo(() => (list ? countStates(listPulls(list.sessions))[state] : undefined), [list, state]);
 }
 
 /** "your projects", or the workspace's or project's name as the scope says. */
