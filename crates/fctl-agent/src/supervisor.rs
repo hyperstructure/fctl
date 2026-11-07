@@ -2934,6 +2934,9 @@ async fn serving(
 
 /// The MiB free to the image's user on the filesystem of `dir`, as `df`
 /// says (`f_bavail`).
+// The kernel's counts are 64 bits on the Linux sandboxes run, narrower
+// elsewhere.
+#[allow(clippy::useless_conversion)]
 fn free_mb(dir: &Path) -> Option<u64> {
     let s = nix::sys::statvfs::statvfs(dir).ok()?;
     let bytes = u64::from(s.blocks_available()).saturating_mul(u64::from(s.fragment_size()));
