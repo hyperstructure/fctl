@@ -96,7 +96,19 @@ describe("⌘K", () => {
   it("lists the Agent Floor first, before the sessions, while nothing is typed", () => {
     const { entries } = palette();
     expect(entries()[0]).toBe("Agent Floornew session");
-    expect(entries()[1]).toBe("Fix the flaky login testweb#12");
+    expect(entries()[1]).toBe("Pull requestswhat each needs next");
+    expect(entries()[2]).toBe("Fix the flaky login testweb#12");
+  });
+
+  it("goes to the pull requests, by name or what people call them", () => {
+    const { entries, input, press } = palette();
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "prs");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(entries()[0]).toBe("Pull requestswhat each needs next");
+    press("Enter");
+    expect(navigate).toHaveBeenCalledWith({ to: "/pulls", search: {} });
   });
 
   it("finds the Agent Floor by the name it had before, Home", () => {

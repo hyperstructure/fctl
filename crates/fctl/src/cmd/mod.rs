@@ -13,6 +13,7 @@ pub mod project_members;
 pub mod project_secrets;
 pub mod projects;
 pub mod publish;
+pub mod pulls;
 pub mod resolve;
 pub mod retro;
 pub mod review;

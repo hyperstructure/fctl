@@ -356,6 +356,24 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     if http::query(req, "mine").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.created_by = ?1");
     }
+    // The sessions that list a pull request, in a state, for the pull
+    // requests page: what GitHub last said of each, as
+    // `crate::pull_requests` keeps it. One nobody looked up yet counts as
+    // open.
+    if let Some(pulls) = http::query(req, "pulls") {
+        let states = match pulls.as_str() {
+            "any" | "1" | "true" => "",
+            "open" => " WHERE state IS NULL OR state IN ('open','draft','queued')",
+            "merged" => " WHERE state = 'merged'",
+            "closed" => " WHERE state = 'closed'",
+            _ => {
+                return Err(validation("pulls", "Use open, merged, closed or any"));
+            }
+        };
+        sql.push_str(&format!(
+            " AND s.id IN (SELECT session_id FROM pull_request_sessions{states})"
+        ));
+    }
     // Review agents' sessions have a list of their own (the project's
     // reviews), and stay off the Agent Floor and the project's sessions.
     if !http::query(req, "reviews").is_some_and(|v| v == "1" || v == "true") {

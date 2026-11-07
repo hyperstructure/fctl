@@ -446,7 +446,7 @@ fn pull_request_lines(s: &Session, now: i64) -> Vec<String> {
 /// checks passed`, `draft, 1 of 4 checks failed`, and how fctl's review
 /// of it went: `open, checks passed, fctl's review agent found 2 issues`.
 /// Nothing while nobody looked it up.
-fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
+pub(crate) fn pull_request_state(pr: &PullRequestRef, now: i64) -> Option<String> {
     let state = style::terminal_safe(pr.state.as_deref()?);
     if matches!(state.as_ref(), "merged" | "closed") {
         let when = pr

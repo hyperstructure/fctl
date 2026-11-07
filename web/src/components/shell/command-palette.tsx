@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AgentFloorIcon, Spinner, StatusDot } from "@/components/ui";
+import { AgentFloorIcon, PullRequestIcon, Spinner, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
@@ -116,6 +116,15 @@ export function CommandPalette({
           void navigate({ to: "/" });
           focusTaskBox();
         }),
+      },
+      {
+        id: "pulls",
+        group: "Go to",
+        label: "Pull requests",
+        hint: "what each needs next",
+        keywords: "prs review merge checks",
+        icon: <PullRequestIcon state="open" className="size-4" />,
+        run: go(() => void navigate({ to: "/pulls", search: {} })),
       },
     ];
     for (const s of sessions?.sessions ?? []) {
