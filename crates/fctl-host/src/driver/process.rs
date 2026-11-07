@@ -1,7 +1,7 @@
 //! The process driver: a directory and a process per session, no isolation.
 //! For development, CI and hosts that are themselves disposable VMs.
 
-use super::{AgentIo, Sandbox, SandboxInfo, SandboxSpec};
+use super::{AgentIo, Sandbox, SandboxInfo, SandboxSpec, Socket};
 use anyhow::{Context, Result};
 use fctl_proto::runner::DriverInfo;
 use sha2::Digest;
@@ -132,8 +132,13 @@ impl ProcessDriver {
         Ok(())
     }
 
-    pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+    pub async fn attach(&self, sb: &Sandbox, which: Socket) -> Result<AgentIo> {
         let (_, socket) = Self::paths(sb)?;
+        // Beside the host's, as fctl-agent puts it: `….sock` → `….relay.sock`.
+        let socket = match which {
+            Socket::Host => socket,
+            Socket::Relay => socket.with_extension("relay.sock"),
+        };
         let mut last = None;
         for _ in 0..100 {
             match UnixStream::connect(&socket).await {

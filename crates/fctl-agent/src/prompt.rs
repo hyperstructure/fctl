@@ -926,6 +926,7 @@ mod tests {
                     subscription_type: None,
                     account: None,
                     on_runners: false,
+                    stand_in: false,
                 },
                 github: None,
                 github_read: None,

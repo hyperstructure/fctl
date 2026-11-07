@@ -25,6 +25,7 @@ mod prompt;
 #[cfg(target_os = "linux")]
 mod protected;
 mod refresh;
+mod relay;
 #[cfg(target_os = "linux")]
 mod share;
 mod supervisor;

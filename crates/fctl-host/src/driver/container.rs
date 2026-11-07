@@ -9,9 +9,9 @@
 
 use super::{
     AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
-    RAN_AS_ROOT_SCRIPT, SH, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut,
-    attach_as_root, attach_as_user_script, install_as_user_script, ran_as_root, run_cmd_within,
-    serve_as_root, serve_as_user_script, system_script, timed_out, unanswered,
+    RAN_AS_ROOT_SCRIPT, SH, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, Socket,
+    TimedOut, attach_as_root, attach_as_user_script, install_as_user_script, ran_as_root,
+    run_cmd_within, serve_as_root, serve_as_user_script, system_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use crate::docker_access::Unreachable;
@@ -1010,9 +1010,9 @@ impl ContainerDriver {
         Ok(())
     }
 
-    pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+    pub async fn attach(&self, sb: &Sandbox, socket: Socket) -> Result<AgentIo> {
         if !self.agent_root(sb).await? {
-            let mut child = self.spawn(sb, &attach_as_user_script()).await?;
+            let mut child = self.spawn(sb, &attach_as_user_script(socket)).await?;
             let stdout = child.stdout.take().context("exec stdout")?;
             let stdin = child.stdin.take().context("exec stdin")?;
             return Ok(AgentIo {
@@ -1022,7 +1022,7 @@ impl ContainerDriver {
             });
         }
         let mut args = vec!["exec", "-i", "-u", "0", &sb.name];
-        let attach = attach_as_root();
+        let attach = attach_as_root(socket);
         args.extend(attach.iter().map(String::as_str));
         let mut child = tokio::process::Command::new(&self.bin)
             .args(&args)
@@ -2274,7 +2274,7 @@ esac
             ]
         );
         // The host reaches it as root.
-        if let Some(mut exec) = docker.attach(&sb).await?.child {
+        if let Some(mut exec) = docker.attach(&sb, Socket::Host).await?.child {
             exec.wait().await?;
         }
         assert_eq!(
@@ -2316,7 +2316,7 @@ esac
         let docker = cli.driver(Flavor::Docker).agent_as_root(false);
         docker.install_agent(&sb, &binary).await?;
         docker.start_agent(&sb).await?;
-        if let Some(mut exec) = docker.attach(&sb).await?.child {
+        if let Some(mut exec) = docker.attach(&sb, Socket::Host).await?.child {
             exec.wait().await?;
         }
         // Nothing as root: the user puts fctl-agent in its home itself.
@@ -2336,7 +2336,7 @@ esac
         let silent = ContainerDriver::with_bin(Flavor::Docker, "fctl-test-missing".into())
             .agent_as_root(false);
         assert!(silent.start_agent(&sb).await.is_err());
-        assert!(silent.attach(&sb).await.is_err());
+        assert!(silent.attach(&sb, Socket::Host).await.is_err());
         // One that ran it as root keeps doing so, rather than start another.
         let cli = FakeCli::new(&[VERSION_IMAGE], &[])?;
         cli.ran_agent_as_root()?;

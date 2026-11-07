@@ -269,13 +269,34 @@ pub fn serve_as_root(user: &str) -> Vec<String> {
     .to_vec()
 }
 
+/// The sockets of fctl-agent's that the host reaches, side by side in its
+/// directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Socket {
+    /// The host's link (`agent.sock`).
+    Host,
+    /// Claude's connections to the Anthropic API, where the host keeps its
+    /// token (`agent.relay.sock`; [`fctl_proto::agent::ClaudeRelay`]).
+    Relay,
+}
+
+impl Socket {
+    /// Its file's name.
+    pub fn file(self) -> &'static str {
+        match self {
+            Self::Host => "agent.sock",
+            Self::Relay => "agent.relay.sock",
+        }
+    }
+}
+
 /// `fctl-agent attach` to a supervisor that runs as root, as root.
-pub fn attach_as_root() -> Vec<String> {
+pub fn attach_as_root(socket: Socket) -> Vec<String> {
     [
         AGENT_PATH,
         "attach",
         "--socket",
-        &format!("{AGENT_DIR}/agent.sock"),
+        &format!("{AGENT_DIR}/{}", socket.file()),
     ]
     .map(str::to_owned)
     .to_vec()
@@ -301,9 +322,10 @@ pub fn serve_as_user_script() -> String {
 
 /// Attaches to fctl-agent as the user: with the user's own fctl-agent, or
 /// the one in `/opt/fctl/bin` of a sandbox that a host put it in before.
-pub fn attach_as_user_script() -> String {
+pub fn attach_as_user_script(socket: Socket) -> String {
     format!(
-        r#"a="{USER_AGENT}"; [ -x "$a" ] || a={AGENT_PATH}; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#
+        r#"a="{USER_AGENT}"; [ -x "$a" ] || a={AGENT_PATH}; exec "$a" attach --socket "$HOME/.fctl/{}""#,
+        socket.file()
     )
 }
 
@@ -315,8 +337,11 @@ pub fn serve_script(agent: &str) -> String {
     )
 }
 
-pub fn attach_script(agent: &str) -> String {
-    format!("exec {agent} attach --socket \"$HOME/.fctl/agent.sock\"")
+pub fn attach_script(agent: &str, socket: Socket) -> String {
+    format!(
+        "exec {agent} attach --socket \"$HOME/.fctl/{}\"",
+        socket.file()
+    )
 }
 
 /// Arguments as one line of `sh`, each quoted.
@@ -706,11 +731,17 @@ impl Driver {
 
     /// Opens a channel to the supervisor.
     pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+        self.attach_to(sb, Socket::Host).await
+    }
+
+    /// Opens a channel to one of the supervisor's sockets, as the host
+    /// attaches to it.
+    pub async fn attach_to(&self, sb: &Sandbox, socket: Socket) -> Result<AgentIo> {
         match self {
-            Self::Process(d) => d.attach(sb).await,
-            Self::Container(d) => d.attach(sb).await,
-            Self::Firecracker(d) => d.attach(sb).await,
-            Self::Lima(d) => d.attach(sb).await,
+            Self::Process(d) => d.attach(sb, socket).await,
+            Self::Container(d) => d.attach(sb, socket).await,
+            Self::Firecracker(d) => d.attach(sb, socket).await,
+            Self::Lima(d) => d.attach(sb, socket).await,
         }
     }
 

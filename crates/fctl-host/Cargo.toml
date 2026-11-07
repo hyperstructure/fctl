@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+bytes.workspace = true
 fctl-client.workspace = true
 fctl-domain.workspace = true
 fctl-proto.workspace = true
@@ -20,10 +21,18 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
+time.workspace = true
 hex.workspace = true
 nix.workspace = true
 http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server"] }
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 toml.workspace = true
 tracing.workspace = true
