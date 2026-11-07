@@ -103,7 +103,7 @@ fctl search -p my-app "flaky test" --limit 50
 
 fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
-fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it
+fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it, and it answers what its agent asks (fctl show prints the question)
 fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)

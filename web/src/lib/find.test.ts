@@ -245,6 +245,16 @@ describe("the transcript's regions", () => {
     expect(of(fs, `msg:${scheduled.key}`)?.text).toBe(`Check the deploy\n${note}`);
     expect(of(fs, `memory:${memory.key}`)?.text).toBe("Run npm ci first");
   });
+
+  it("find what the agent asked as the page shows it: the question alone", () => {
+    const asked = notice({
+      code: "question_asked",
+      message: "Asked: Keep øre? (Yes / No)",
+      question: { text: "Keep øre?", options: ["Yes", "No"], asked_at: 1 },
+    });
+    const fs = findables([asked]);
+    expect(fs.map((f) => f.text)).toEqual(["Keep øre?"]);
+  });
 });
 
 describe("matches", () => {

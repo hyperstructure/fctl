@@ -694,6 +694,9 @@ pub struct SessionRow {
     /// The ticket it started from (JSON: `crate::delegations::TicketColumn`).
     #[serde(default)]
     pub ticket: Option<String>,
+    /// Its agent's open question, as JSON (`SessionQuestion`).
+    #[serde(default)]
+    pub question: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -769,66 +772,69 @@ impl SessionRow {
     }
 
     pub fn to_session(&self, role: Option<SessionRole>) -> Session {
-        let mut s = Session {
-            id: self.session_id(),
-            project_id: ProjectId(self.project_id.clone()),
-            project_slug: self.project_slug.clone(),
-            workspace: self.workspace.to_ref(),
-            number: self.number.max(0) as u32,
-            title: self.title.clone(),
-            description: self.description.clone(),
-            status: self.status(),
-            status_reason: self.status_reason.clone(),
-            resume_at: self.resume_at,
-            created_by: self.creator_ref(),
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-            started_at: self.started_at,
-            ended_at: self.ended_at,
-            last_activity_at: self.last_activity_at,
-            branch: self.branch.clone(),
-            base_branch: self.base_branch.clone(),
-            pull_request: match (self.pr_number, &self.pr_url) {
-                (Some(number), Some(url)) => Some(PullRequestRef {
-                    number: number.max(0) as u64,
-                    url: url.clone(),
-                    title: self.pr_title.clone(),
-                    state: self.pr_state.clone(),
-                    ..Default::default()
+        let mut s =
+            Session {
+                id: self.session_id(),
+                project_id: ProjectId(self.project_id.clone()),
+                project_slug: self.project_slug.clone(),
+                workspace: self.workspace.to_ref(),
+                number: self.number.max(0) as u32,
+                title: self.title.clone(),
+                description: self.description.clone(),
+                status: self.status(),
+                status_reason: self.status_reason.clone(),
+                resume_at: self.resume_at,
+                created_by: self.creator_ref(),
+                created_at: self.created_at,
+                updated_at: self.updated_at,
+                started_at: self.started_at,
+                ended_at: self.ended_at,
+                last_activity_at: self.last_activity_at,
+                branch: self.branch.clone(),
+                base_branch: self.base_branch.clone(),
+                pull_request: match (self.pr_number, &self.pr_url) {
+                    (Some(number), Some(url)) => Some(PullRequestRef {
+                        number: number.max(0) as u64,
+                        url: url.clone(),
+                        title: self.pr_title.clone(),
+                        state: self.pr_state.clone(),
+                        ..Default::default()
+                    }),
+                    _ => None,
+                },
+                pull_requests: self
+                    .pull_requests
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str::<Vec<PullRequestRef>>(j).ok())
+                    .unwrap_or_default(),
+                runner: match (&self.runner_id, &self.runner_name) {
+                    (Some(id), Some(name)) => Some(RunnerRef {
+                        id: RunnerId(id.clone()),
+                        name: name.clone(),
+                    }),
+                    _ => None,
+                },
+                model: self.model.clone(),
+                effort: self.claude_effort.clone(),
+                github_access: Some(self.github_access()),
+                github_issues: self.github_issues.then_some(true),
+                remote_control: self
+                    .remote_control
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<RemoteControlState>(s).ok()),
+                stats: serde_json::from_str::<SessionStats>(&self.stats).unwrap_or_default(),
+                role,
+                archived: self.archived,
+                following: Some(self.following),
+                review: self.review(),
+                schedule: self.schedule(),
+                ticket: self.ticket.as_deref().and_then(|j| {
+                    serde_json::from_str::<fctl_proto::session::SessionTicket>(j).ok()
                 }),
-                _ => None,
-            },
-            pull_requests: self
-                .pull_requests
-                .as_deref()
-                .and_then(|j| serde_json::from_str::<Vec<PullRequestRef>>(j).ok())
-                .unwrap_or_default(),
-            runner: match (&self.runner_id, &self.runner_name) {
-                (Some(id), Some(name)) => Some(RunnerRef {
-                    id: RunnerId(id.clone()),
-                    name: name.clone(),
+                question: self.question.as_deref().and_then(|j| {
+                    serde_json::from_str::<fctl_proto::session::SessionQuestion>(j).ok()
                 }),
-                _ => None,
-            },
-            model: self.model.clone(),
-            effort: self.claude_effort.clone(),
-            github_access: Some(self.github_access()),
-            github_issues: self.github_issues.then_some(true),
-            remote_control: self
-                .remote_control
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<RemoteControlState>(s).ok()),
-            stats: serde_json::from_str::<SessionStats>(&self.stats).unwrap_or_default(),
-            role,
-            archived: self.archived,
-            following: Some(self.following),
-            review: self.review(),
-            schedule: self.schedule(),
-            ticket: self
-                .ticket
-                .as_deref()
-                .and_then(|j| serde_json::from_str::<fctl_proto::session::SessionTicket>(j).ok()),
-        };
+            };
         fctl_domain::pulls::backfill(&mut s);
         s
     }
@@ -846,7 +852,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
-    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, \
+    rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.question, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \

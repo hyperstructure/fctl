@@ -919,8 +919,8 @@ it's its person), device codes, workspaces
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
 and runners, with their enrollment tokens, projects (with their icons),
-their members and repositories, sessions (summary rows, and whether the search index has
-all of each), which sessions list which pull
+their members and repositories, sessions (summary rows with their agents'
+open questions, and whether the search index has all of each), which sessions list which pull
 request, projects' review agents and their reviews, shares, who follows
 which session,
 notification settings and browsers (push subscriptions), runners, encrypted
@@ -2341,6 +2341,32 @@ Older control planes and hosts send neither, and their agents see full
 names alone
 ([ADR 0064](adr/0064-agents-call-people-what-they-choose-or-all-their-first-names.md)).
 
+### Questions
+
+An agent that needs a person to go on (a decision only they can make,
+access, an answer) asks with `fctl ask "…"` in its sandbox, with `-o "…"`
+for each answer people could give with a click, and ends its turn
+([ADR 0078](adr/0078-agents-ask-people-with-fctl-ask.md)). fctl reaches
+fctl-agent over the session socket, which asks the control plane through
+its host (`AgentCall::Ask`), as for `fctl memory`. SessionDO keeps the
+session's one open question (`Session.question`: at most 500 characters,
+up to six answers of at most 120), writes it through to D1's
+`sessions.question` so that session lists carry it, and shows it to
+viewers and dashboards at once; a newer question takes its place (the same
+one again changes nothing, and tells nobody again), and `fctl ask
+--withdraw` takes it back. One that comes as the session stops or fails is
+refused, as nobody would see it. A person's next message answers it:
+SessionDO drops it as it delivers a message with an author, however it
+came, and an answer clicked is that message, sent as it is. It goes too
+when the session fails or someone stops or deletes it (FleetDO's stop says
+so: `ControlState::drop_question`), but stays through an idle stop or a
+runner's drain, since a message resumes the session and answers it. Followers hear
+of it as the turn ends ([Notifications](#notifications)), and at once when
+it comes after. fctl-agent writes a `question_asked` notice in the
+transcript, so that the question stays there once answered, and tells
+Claude about `fctl ask`, in place of saying so and stopping, where the
+sandbox's fctl has it. Review agents ask nobody.
+
 ### Titles
 
 A session's title starts as the first line of its task. Once the agent
@@ -2928,7 +2954,10 @@ recorded.
 ## Notifications
 
 A session notifies the people who follow it when it waits for a reply (a
-turn ends: `running` → `idle`), pauses on a usage limit, or fails. Starting
+turn ends: `running` → `idle`), pauses on a usage limit, or fails. A turn
+that ends with a [question](#questions) open says so instead ("my-app#12
+asks you", with the question and its answers), to those who want to hear
+when it waits. Starting
 or resuming a session follows it, unless the person turned that off in
 Settings; anyone who can see a session can follow it (the bell on its page,
 `fctl follow`). Notifications are Web Push messages (RFC 8030) to the

@@ -1392,6 +1392,7 @@ pub async fn notice(
         review: None,
         summarized: None,
         follow_up: None,
+        question: None,
         ticket: Some(ticket),
     };
     let sent = async {
