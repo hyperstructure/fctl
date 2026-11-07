@@ -30,6 +30,7 @@
 //! kernel = "/var/lib/fctl/vmlinux"            # a file, or an image with /vmlinux (unset: the published one)
 //! disk_gb = 64             # each sandbox's own disk, which takes only what it holds
 //! jailer = true            # as root: each VM as a user of its own, in a chroot and a cgroup
+//! snapshots = true         # a stopped sandbox keeps its VM's memory, and resumes as it was
 //! ```
 //!
 //! The runner token lives next to it in `host-token`, and the Claude token
@@ -162,6 +163,11 @@ pub struct FirecrackerConfig {
     /// jailer: as a user of its own, in a chroot with only its files, and
     /// in a cgroup of its own. A host that doesn't run as root can't.
     pub jailer: bool,
+    /// Whether stopping a sandbox saves its VM's state, its memory with the
+    /// programs in it, so that it resumes where it was rather than boot
+    /// again: it takes as much disk as the memory the VM uses, until the
+    /// sandbox starts again, goes, or the disk runs low.
+    pub snapshots: bool,
 }
 
 impl Default for FirecrackerConfig {
@@ -172,6 +178,7 @@ impl Default for FirecrackerConfig {
             passt: None,
             disk_gb: 64,
             jailer: true,
+            snapshots: true,
         }
     }
 }

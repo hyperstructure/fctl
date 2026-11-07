@@ -743,6 +743,16 @@ impl Driver {
         }
     }
 
+    /// Lets the states that stopped sandboxes saved go, but those of
+    /// `keep`, to make room on the disk (Firecracker saves its VMs' as they
+    /// stop); what that freed, in MiB.
+    pub async fn drop_saved_states(&self, keep: &std::collections::HashSet<String>) -> u64 {
+        match self {
+            Self::Firecracker(d) => d.drop_saved_states(keep).await,
+            _ => 0,
+        }
+    }
+
     /// Stops the sandbox, which keeps its files. An Apple `container`
     /// sandbox first gives back the disk space of the files deleted in it.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
@@ -752,6 +762,23 @@ impl Driver {
             Self::Firecracker(d) => d.stop(sb).await,
             Self::Lima(d) => d.stop(sb).await,
         }
+    }
+
+    /// Stops the sandbox, and with `destroy` removes it; what each came to.
+    /// A Firecracker VM that goes isn't stopped first, which would save the
+    /// state of a VM nothing resumes; others are, as Apple's `container`
+    /// sometimes needs its stop's second try.
+    pub async fn finish(&self, sb: &Sandbox, destroy: bool) -> (Result<()>, Result<()>) {
+        if destroy && matches!(self, Self::Firecracker(_)) {
+            return (Ok(()), self.remove(sb).await);
+        }
+        let stopped = self.stop(sb).await;
+        let removed = if destroy {
+            self.remove(sb).await
+        } else {
+            Ok(())
+        };
+        (stopped, removed)
     }
 
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
