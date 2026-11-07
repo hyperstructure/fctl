@@ -10,7 +10,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 
 import { Kbd } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
-import { modKey } from "./diff-find";
+import { modKey } from "@/lib/hotkeys";
 import { Rolling, useChanged } from "./diff-live";
 
 /** A repository's changed files, as the dialog lists them. */

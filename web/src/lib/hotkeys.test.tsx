@@ -92,6 +92,26 @@ describe("useHotkey", () => {
     expect(shifted.fn).toHaveBeenCalledTimes(1);
   });
 
+  it("takes a letter where a layout of another script has it", () => {
+    const { fn, press } = page("mod+b");
+    // A Russian layout gives и where a US one gives b; a Greek one, β.
+    press("и", { ctrlKey: true, code: "KeyB" });
+    press("β", { ctrlKey: true, code: "KeyB" });
+    expect(fn).toHaveBeenCalledTimes(2);
+    // Another key of that layout is another shortcut.
+    press("ш", { ctrlKey: true, code: "KeyI" });
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes a letter where the layout has it, not where a US keyboard does", () => {
+    const { fn, press } = page("mod+m");
+    // On a French layout, the key in M's place gives a comma, and M is beside L.
+    press(",", { ctrlKey: true, code: "KeyM" });
+    expect(fn).not.toHaveBeenCalled();
+    press("m", { ctrlKey: true, code: "Semicolon" });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves a key without mod to the field you are typing in, unless asked", () => {
     const { fn, field, press } = page("n");
     expect(press("n", {}, field).defaultPrevented).toBe(false);

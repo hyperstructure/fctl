@@ -62,6 +62,7 @@ export type { CreatedEnrollmentToken } from "./CreatedEnrollmentToken";
 export type { CreatedToken } from "./CreatedToken";
 export type { CredentialId } from "./CredentialId";
 export type { CredentialStatus } from "./CredentialStatus";
+export type { DataExport } from "./DataExport";
 export type { DeleteAccountRequest } from "./DeleteAccountRequest";
 export type { DeleteWorkspaceRequest } from "./DeleteWorkspaceRequest";
 export type { DeletedProject } from "./DeletedProject";

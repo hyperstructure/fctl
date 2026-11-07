@@ -1164,6 +1164,7 @@ fctl admin set --require-two-factor on     # everyone who signs in with a passwo
 fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
 fctl admin set --verify-sensitive-actions on   # sensitive actions take a passkey or a code (the primary instance owner)
 fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the copies and looks nothing up
+fctl admin set --export-interval 1d        # people export their data once a day (once a week by default; off: at any time)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 ```
 
@@ -1207,7 +1208,7 @@ fctl account set --for ada.lovelace@acme.example --commit-email ada.lovelace@acm
 fctl account set --commit-email ""         # commits stop crediting you
 fctl account primary ada.lovelace@acme.example   # where fctl writes to you
 fctl account disconnect ada@private.example      # it stops signing in; you leave its workspaces
-fctl account export                        # your data as JSON: fctl-export-<date>.json
+fctl account export                        # your data as JSON: fctl-export-<date>.json (once a week)
 fctl account export -o - | jq .sessions    # or print it
 fctl account delete                        # shows what goes, asks for your email address (--confirm EMAIL without a terminal)
 fctl account linear                        # who fctl knows you as in Linear workspaces
@@ -1288,11 +1289,15 @@ devices and tokens, Claude connections (without their secrets),
 notification settings and browsers, addresses, workspaces, and from the
 workspaces open to you the projects you are a member of, the sessions you
 started with their transcripts and the sessions you follow, and your
-activity log. Deleting your account deletes all of that and the
-workspaces only you are in; sessions you started in shared workspaces stay
-there, credited to a deleted user, and the workspaces you are the primary
-admin of pass to their longest-standing admin. Settings in the web app has
-both, the deletion in its danger zone.
+activity log. An export reads all of it, so the instance allows one a
+week, unless its admins chose another wait (`fctl admin set
+--export-interval`); `fctl whoami` and Settings say when you can export
+again, and one that fails on the instance's side doesn't count. Deleting
+your account deletes all of that and the workspaces only you are in;
+sessions you started in shared workspaces stay there, credited to a
+deleted user, and the workspaces you are the primary admin of pass to
+their longest-standing admin. Settings in the web app has both, the
+deletion in its danger zone.
 
 ## Updating
 

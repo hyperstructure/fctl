@@ -60,6 +60,79 @@ pub fn export_filename(now: i64) -> String {
     format!("fctl-export-{}.json", day.get(..10).unwrap_or("export"))
 }
 
+/// The longest admins can make people wait between two exports: a year.
+pub const MAX_EXPORT_INTERVAL_HOURS: u32 = 8760;
+
+const MINUTE_MS: i64 = 60_000;
+const HOUR_MS: i64 = 60 * MINUTE_MS;
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+/// When someone who last exported their data at `last` can export it
+/// again, with `interval_hours` between two exports: `None` when they can
+/// now.
+pub fn next_export_at(last: Option<i64>, interval_hours: u32, now: i64) -> Option<i64> {
+    let next = last?.saturating_add(i64::from(interval_hours) * HOUR_MS);
+    (next > now).then_some(next)
+}
+
+/// How often people can export their data: `once a week`, `once every 3
+/// days`, `at any time`.
+pub fn export_interval_words(hours: u32) -> String {
+    match hours {
+        0 => "at any time".into(),
+        1 => "once an hour".into(),
+        24 => "once a day".into(),
+        168 => "once a week".into(),
+        MAX_EXPORT_INTERVAL_HOURS => "once a year".into(),
+        h if h % 168 == 0 => format!("once every {} weeks", h / 168),
+        h if h % 24 == 0 => format!("once every {} days", h / 24),
+        h => format!("once every {h} hours"),
+    }
+}
+
+/// How long until `at`, rounded up, so that trying again then works: `in
+/// 3 days`, `in 5 hours`, `in 12 minutes`, `in a minute`.
+pub fn until(at: i64, now: i64) -> String {
+    let left = at.saturating_sub(now);
+    let up = |unit: i64| (left + unit - 1) / unit;
+    if left <= MINUTE_MS {
+        "in a minute".into()
+    } else if left < 2 * HOUR_MS {
+        format!("in {} minutes", up(MINUTE_MS))
+    } else if left < 2 * DAY_MS {
+        format!("in {} hours", up(HOUR_MS))
+    } else {
+        format!("in {} days", up(DAY_MS))
+    }
+}
+
+/// Why an export must wait until `next_at`.
+pub fn export_wait(interval_hours: u32, next_at: i64, now: i64) -> String {
+    format!(
+        "You can export your data {}. Try again {}.",
+        export_interval_words(interval_hours),
+        until(next_at, now)
+    )
+}
+
+/// The hours between two exports as admins type them: `1w`, `7d`, `24h`,
+/// or `0` (`off`, `none`) to let people export at any time.
+pub fn parse_export_interval(input: &str) -> Result<u32, String> {
+    let s = input.trim().to_ascii_lowercase();
+    if matches!(s.as_str(), "0" | "off" | "none") {
+        return Ok(0);
+    }
+    let bad =
+        || format!("{input:?} isn't a wait between exports: use 1d, 1w, 30d, or off for none");
+    match crate::enrollment::parse_hours(&s) {
+        Ok(Some(h)) if h <= MAX_EXPORT_INTERVAL_HOURS => Ok(h),
+        Ok(Some(_)) => Err(format!(
+            "{input:?} is longer than people may be made to wait: a year at most"
+        )),
+        _ => Err(bad()),
+    }
+}
+
 /// A serialized JSON object without its closing brace, so that the export
 /// can append a field it streams (`{"a":1}` → `{"a":1`).
 pub fn open_object(json: &str) -> Option<&str> {
@@ -90,6 +163,72 @@ mod tests {
         assert!(!confirms_deletion("ada@example.org", "ada@example.com"));
         assert!(!confirms_deletion("", ""));
         assert!(!confirms_deletion("delete", "ada@example.com"));
+    }
+
+    #[test]
+    fn exports_wait_their_interval() {
+        let day = 86_400_000;
+        let now = 1_792_272_742_000;
+        // Never exported, or no wait: now.
+        assert_eq!(next_export_at(None, 168, now), None);
+        assert_eq!(next_export_at(Some(now - 1000), 0, now), None);
+        // A week after the last one, to the millisecond.
+        assert_eq!(
+            next_export_at(Some(now - 2 * day), 168, now),
+            Some(now + 5 * day)
+        );
+        assert_eq!(next_export_at(Some(now - 7 * day), 168, now), None);
+        assert_eq!(
+            next_export_at(Some(now - 7 * day + 1), 168, now),
+            Some(now + 1)
+        );
+        // An admin who shortens the wait lets people in sooner.
+        assert_eq!(next_export_at(Some(now - 2 * day), 24, now), None);
+    }
+
+    #[test]
+    fn waits_read_as_people_say_them() {
+        assert_eq!(export_interval_words(0), "at any time");
+        assert_eq!(export_interval_words(1), "once an hour");
+        assert_eq!(export_interval_words(12), "once every 12 hours");
+        assert_eq!(export_interval_words(24), "once a day");
+        assert_eq!(export_interval_words(72), "once every 3 days");
+        assert_eq!(export_interval_words(168), "once a week");
+        assert_eq!(export_interval_words(336), "once every 2 weeks");
+        assert_eq!(export_interval_words(720), "once every 30 days");
+        assert_eq!(export_interval_words(8760), "once a year");
+        let now = 1_792_272_742_000;
+        let (min, hour, day) = (60_000, 3_600_000, 86_400_000);
+        assert_eq!(until(now + 1, now), "in a minute");
+        assert_eq!(until(now + min, now), "in a minute");
+        assert_eq!(until(now + min + 1, now), "in 2 minutes");
+        assert_eq!(until(now + 2 * hour - 1, now), "in 120 minutes");
+        assert_eq!(until(now + 2 * hour, now), "in 2 hours");
+        assert_eq!(until(now + 47 * hour + 1, now), "in 48 hours");
+        assert_eq!(until(now + 2 * day, now), "in 2 days");
+        assert_eq!(until(now + 6 * day + 1, now), "in 7 days");
+        assert_eq!(
+            export_wait(168, now + 5 * day, now),
+            "You can export your data once a week. Try again in 5 days."
+        );
+    }
+
+    #[test]
+    fn admins_type_the_wait_as_a_duration() {
+        assert_eq!(parse_export_interval("1w"), Ok(168));
+        assert_eq!(parse_export_interval("7d"), Ok(168));
+        assert_eq!(parse_export_interval(" 24h "), Ok(24));
+        assert_eq!(parse_export_interval("90m"), Ok(2));
+        assert_eq!(parse_export_interval("1y"), Ok(8760));
+        assert_eq!(parse_export_interval("0"), Ok(0));
+        assert_eq!(parse_export_interval("Off"), Ok(0));
+        assert_eq!(parse_export_interval("none"), Ok(0));
+        assert!(parse_export_interval("2y").is_err_and(|e| e.contains("a year at most")));
+        assert!(parse_export_interval("35096545041305y").is_err());
+        // A number alone could mean anything, and never means nothing here.
+        assert!(parse_export_interval("7").is_err());
+        assert!(parse_export_interval("never").is_err());
+        assert!(parse_export_interval("soon").is_err());
     }
 
     #[test]
