@@ -85,7 +85,11 @@ const projects: G.ProjectList = { projects: [project("web", acme, 2), project("a
  * The sidebar as a reload shows it, for Ada, on the page at `path`: the control plane's lists come
  * when the test says, and `cached` is in the cache already.
  */
-function reload(path = "/", cached: (client: QueryClient) => void = () => {}) {
+function reload(
+  path = "/",
+  cached: (client: QueryClient) => void = () => {},
+  more: { folded?: boolean; onFold?: (f: boolean) => void } = {},
+) {
   const client = new QueryClient();
   client.setQueryData(keys.me, {
     user: { id: "usr_ada", name: "Ada Lovelace", role: "member" },
@@ -98,7 +102,7 @@ function reload(path = "/", cached: (client: QueryClient) => void = () => {}) {
   act(() =>
     root.render(
       <QueryClientProvider client={client}>
-        <Sidebar onPalette={() => {}} onNavigate={() => {}} onClose={() => {}} path={path} />
+        <Sidebar onPalette={() => {}} onNavigate={() => {}} onClose={() => {}} path={path} {...more} />
       </QueryClientProvider>,
     ),
   );
@@ -120,11 +124,12 @@ function reload(path = "/", cached: (client: QueryClient) => void = () => {}) {
     /** The sessions listed under each project, with their statuses. */
     sessions: () =>
       Object.fromEntries(
-        [...container.querySelectorAll("ul[aria-label]")].map((ul) => [
+        [...container.querySelectorAll("section ul[aria-label]")].map((ul) => [
           ul.getAttribute("aria-label"),
           [...ul.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.textContent]),
         ]),
       ),
+    container,
     come: (lists: {
       workspaces?: G.WorkspaceList;
       projects?: G.ProjectList;
@@ -235,7 +240,7 @@ describe("the sidebar's sessions", () => {
       });
     }
     // Those the control plane has from an hour back.
-    expect(asked.sessions.at(-1)).toEqual({ activeSince: NOW - HOUR, limit: 100 });
+    expect(asked.sessions).toContainEqual({ activeSince: NOW - HOUR, limit: 100 });
   });
 
   it("goes on listing one that ended for an hour", async () => {
@@ -297,6 +302,89 @@ describe("the sidebar's sessions", () => {
     const sidebar = reload("/");
     await sidebar.come({ workspaces, projects, sessions: [recent, [building]] });
     expect(sidebar.sessions()).toEqual({});
+  });
+});
+
+describe("what needs you", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const ada = { id: "usr_ada", name: "Ada Lovelace" };
+  const pr = (number: number): G.PullRequestRef => ({
+    number,
+    url: `https://github.com/acme/web/pull/${number}`,
+    state: "open",
+  });
+
+  it("lists what its agents ask first, then pull requests they finished and replies they wait for", async () => {
+    const asks = session(7, "Round the prices", "idle", "prj_web", {
+      created_by: ada,
+      updated_at: 7,
+      question: { text: "Whole kroner, or øre?", options: ["Whole kroner", "Øre"], asked_at: NOW - MINUTE },
+    });
+    const finished = session(8, "Add Danish", "stopped", "prj_web", {
+      created_by: ada,
+      updated_at: 8,
+      ended_at: NOW - HOUR,
+      pull_requests: [pr(12)],
+    });
+    const waits = session(9, "Fix the build", "idle", "prj_api", {
+      created_by: ada,
+      updated_at: 9,
+      status_reason: "Waiting for a message",
+    });
+    const theirs = session(10, "Grace's", "idle", "prj_api", {
+      created_by: { id: "usr_grace", name: "Grace" },
+      updated_at: 10,
+      status_reason: "Waiting for a message",
+    });
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [working, [asks, waits, theirs]] });
+    await sidebar.come({ sessions: [ended, [finished]] });
+    const needs = () =>
+      [...sidebar.container.querySelectorAll('ul[aria-label="What needs you"] a')].map((a) =>
+        a.getAttribute("title"),
+      );
+    expect(needs()).toEqual([
+      "Round the prices\nWhole kroner, or øre?",
+      "Add Danish\n#12 is ready for you",
+      "Fix the build\nWaiting for your reply",
+    ]);
+    // Its count is in the tab's title too.
+    expect(document.title).toBe("(3) fctl");
+  });
+
+  it("counts the pull requests ready for review", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({
+      workspaces,
+      projects,
+      sessions: [
+        { pulls: "open", limit: 200 },
+        [
+          session(3, "Ready", "stopped", "prj_web", { pull_requests: [pr(3)] }),
+          session(4, "At work", "running", "prj_web", { pull_requests: [pr(4)] }),
+        ],
+      ],
+    });
+    const link = sidebar.container.querySelector('a[href="/pulls"]');
+    expect(link?.textContent).toBe("Pull requests1");
+    expect(link?.getAttribute("title")).toBe("1 ready for review, of 2 open");
+  });
+
+  it("folds into a rail of the projects' icons, and unfolds from it", async () => {
+    const onFold = vi.fn();
+    const sidebar = reload("/", () => {}, { folded: true, onFold });
+    await sidebar.come({ workspaces, projects });
+    const names = [...sidebar.container.querySelectorAll('a[href^="/p/"]')].map((a) =>
+      a.getAttribute("aria-label"),
+    );
+    expect(names).toEqual(["web", "api"]);
+    act(() => sidebar.container.querySelector<HTMLButtonElement>('button[aria-label^="Unfold"]')?.click());
+    expect(onFold).toHaveBeenCalledWith(false);
   });
 });
 

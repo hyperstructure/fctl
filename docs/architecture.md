@@ -554,7 +554,9 @@ five or more. Anyone on the instance creates one, as its primary admin.
   lists of workspaces and projects come in it (`model::WORKSPACE_ORDER`,
   `PROJECT_ORDER`): what someone hasn't placed follows, oldest first, so
   nothing moves unless they move it. Which workspaces they fold in the
-  sidebar stays in their browser, and so does a copy of what the sidebar
+  sidebar stays in their browser, with how wide they dragged it, whether
+  they folded it into its rail and whether Needs you is open
+  (`web/src/lib/sidebar-layout.ts`), and so does a copy of what the sidebar
   last showed them (names, colors and avatars, their role, each project's
   icon, description and active sessions; `web/src/lib/sidebar.ts`): when the app opens, the
   sidebar shows it at once, until the lists of workspaces and projects

@@ -68,6 +68,7 @@ import {
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
+import { setPageTitle } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { followUpHint } from "@/lib/follow-ups";
 import { ago, duration, num, until } from "@/lib/format";
@@ -160,10 +161,8 @@ export function SessionPage() {
   });
 
   useEffect(() => {
-    if (session) document.title = `${session.title} · ${session.project_slug}#${session.number}`;
-    return () => {
-      document.title = "fctl";
-    };
+    if (session) setPageTitle(`${session.title} · ${session.project_slug}#${session.number}`);
+    return () => setPageTitle(undefined);
   }, [session]);
 
   const resume = useMutation({
