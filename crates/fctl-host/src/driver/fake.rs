@@ -147,7 +147,7 @@ case "$1 $2" in
   "exec "*)
     ids=$(cat "$d/uid" 2>/dev/null || echo 1000:1000)
     case "$3 $4 $5" in
-      "id -u "*) echo "${ids%%:*}" ;;
+      "id -u "*|*"; id -u") echo "${ids%%:*}" ;;
       *"/var/lib/fctl-agent ]"*) if [ -e "$d/agent_dir" ]; then echo root; else echo user; fi ;;
       *) echo "$ids" ;;
     esac ;;

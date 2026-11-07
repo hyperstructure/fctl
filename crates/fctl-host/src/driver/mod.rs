@@ -200,6 +200,24 @@ pub fn is_builder(name: &str) -> bool {
 /// Where fctl-agent lives inside container and VM sandboxes.
 pub const AGENT_PATH: &str = "/opt/fctl/bin/fctl-agent";
 
+/// The PATH of what the host runs as root in a sandbox, and of the
+/// commands whose answers it goes by: the system's own directories, never
+/// the image's PATH, whose first directory may be its user's
+/// (`~/.local/bin` in the default image), where the agent's commands could
+/// put an `sh`, a `chown` or an `id` of theirs for root, or for the host,
+/// to run.
+pub const SYSTEM_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// The shell that runs [`system_script`]s: by its path, not the first `sh`
+/// on the image's PATH.
+pub const SH: &str = "/bin/sh";
+
+/// `script`, for [`SH`] `-c`, with [`SYSTEM_PATH`] for the commands it
+/// runs.
+pub fn system_script(script: &str) -> String {
+    format!("PATH={SYSTEM_PATH}; export PATH; {script}")
+}
+
 /// Readies `/opt/fctl/bin` for fctl-agent, as root: root's, where an image
 /// gives it to its user (the default image did), since fctl-agent runs as
 /// root from there, and its user must not put another in its place.

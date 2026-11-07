@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
@@ -591,12 +591,11 @@ impl Supervisor {
         let Some(dir) = self.config.as_ref().map(|c| c.workdir.clone()) else {
             return false;
         };
-        let df = tokio::process::Command::new("df")
-            .args(["-Pk", &dir])
-            .output();
-        match tokio::time::timeout(Duration::from_secs(5), df).await {
-            Ok(Ok(out)) => fctl_domain::disk::df_free_mb(&String::from_utf8_lossy(&out.stdout))
-                .is_some_and(|free| free < FULL_MB),
+        // Asked of the kernel, not of a `df`: one on the image's PATH, which
+        // its user may write to, would run as root where fctl-agent does.
+        let free = tokio::task::spawn_blocking(move || free_mb(Path::new(&dir)));
+        match tokio::time::timeout(Duration::from_secs(5), free).await {
+            Ok(Ok(Some(free))) => free < FULL_MB,
             _ => false,
         }
     }
@@ -2933,9 +2932,24 @@ async fn serving(
     r
 }
 
+/// The MiB free to the image's user on the filesystem of `dir`, as `df`
+/// says (`f_bavail`).
+fn free_mb(dir: &Path) -> Option<u64> {
+    let s = nix::sys::statvfs::statvfs(dir).ok()?;
+    let bytes = u64::from(s.blocks_available()).saturating_mul(u64::from(s.fragment_size()));
+    Some(bytes / (1024 * 1024))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_disk_comes_from_the_kernel() {
+        let dir = std::env::temp_dir();
+        assert!(free_mb(&dir).is_some());
+        assert_eq!(free_mb(Path::new("/no/such/dir")), None);
+    }
 
     /// What the supervisor answers right away (`None`: it waits for the host).
     fn ask(sup: &mut Supervisor, request: SessionRequest) -> Option<SessionReply> {
