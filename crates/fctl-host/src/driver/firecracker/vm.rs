@@ -192,12 +192,11 @@ impl Vm {
         self.run.join("v.sock")
     }
 
-    /// Where `fctl-agent share` serves the VM's [`Share`]: what Firecracker
-    /// connects to when the VM connects to the host's [`SHARE_PORT`].
-    /// Where the cache server listens for the VM's connections to
-    /// [`SHARE_PORT`]: beside its vsock socket, under `run`, short as
-    /// sockets' paths must be. A jailed VM's Firecracker connects in its
-    /// chroot, where the host links the socket ([`serve_share`](Self::serve_share)).
+    /// Where `fctl-agent share` serves the VM's [`Share`], for the VM's
+    /// connections to the host's [`SHARE_PORT`]: beside its vsock socket,
+    /// under `run`, short as sockets' paths must be. Firecracker connects
+    /// here, or, for a jailed VM, at a link of it that the host puts in the
+    /// chroot ([`serve_share`](Self::serve_share)).
     pub fn share(&self) -> PathBuf {
         self.run.join(format!("v.sock_{SHARE_PORT}"))
     }
