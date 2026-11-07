@@ -584,6 +584,30 @@ function Workspaces({ me }: { me: G.Me }) {
   );
 }
 
+/** Whether a Claude sign-in is still under way: its runner may still pass on what it signs in to. */
+function signingIn(job: G.ClaudeLoginJob): boolean {
+  return job.state !== "succeeded" && job.state !== "failed";
+}
+
+/**
+ * What a Claude sign-in that runs on someone else's runner means: none of the person's is online, and
+ * that runner's host sees the login's long-lived tokens, and could keep them or connect a Claude
+ * account of its own in their place (docs/security.md).
+ */
+function OthersRunner({ runner }: { runner: G.ClaudeLoginRunner }) {
+  const whose = runner.owner ? `${runner.owner}'s runner` : "a runner";
+  return (
+    <>
+      This sign-in runs on <span className="font-medium text-ink">{runner.name}</span>, {whose} that runs your
+      sessions, because none of yours is online. Its machine sees your Claude login's long-lived tokens as
+      they pass to fctl: it could keep them, or connect a Claude account of its own in place of yours, on
+      which your sessions would then run. Go on only if you trust {runner.owner ?? "its owner"} with your
+      Claude account; otherwise start one of your runners and start again, or connect a long-lived token
+      below.
+    </>
+  );
+}
+
 function Claude({ me }: { me: G.Me }) {
   const [token, setToken] = useState("");
   const [job, setJob] = useState<G.ClaudeLoginJob | null>(null);
@@ -739,6 +763,11 @@ function Claude({ me }: { me: G.Me }) {
           )}
           {current && (
             <div className="mt-4 animate-rise">
+              {current.runner && !current.runner.yours && signingIn(current) && (
+                <Banner tone="warn" className="mb-4">
+                  <OthersRunner runner={current.runner} />
+                </Banner>
+              )}
               {(current.state === "pending" || current.state === "starting") && (
                 <p className="flex items-center gap-2 text-[13px] text-ink-3">
                   <Spinner className="size-3.5" /> Starting Claude Code in a sandbox…

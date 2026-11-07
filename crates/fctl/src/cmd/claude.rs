@@ -6,7 +6,8 @@ use anyhow::{Result, bail};
 use clap::Subcommand;
 use fctl_domain::usage::{self as plan, Standing};
 use fctl_proto::api::{
-    ClaudeCredentialInfo, ClaudeLoginState, CredentialStatus, PlanLimit, Runner, RunnerStatus,
+    ClaudeCredentialInfo, ClaudeLoginRunner, ClaudeLoginState, CredentialStatus, PlanLimit, Runner,
+    RunnerStatus,
 };
 
 use std::time::Duration;
@@ -340,11 +341,27 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
         }
         ClaudeCmd::Connect { login: true, .. } => {
             let mut job = api.start_claude_login().await?;
-            println!(
-                "Starting the official `claude auth login` in a sandbox on one of your runners…"
-            );
+            match &job.runner {
+                Some(r) if r.yours => println!(
+                    "Starting the official `claude auth login` in a sandbox on {}, one of your runners…",
+                    style::terminal_safe(&r.name)
+                ),
+                _ => println!("Starting the official `claude auth login` in a sandbox…"),
+            }
             let mut prompted = false;
+            // The runner someone else's it ran on was named on, once each.
+            let mut told = None;
             for _ in 0..900 {
+                if let Some(r) = job.runner.as_ref().filter(|r| !r.yours)
+                    && told.as_ref() != Some(&r.id)
+                {
+                    told = Some(r.id.clone());
+                    println!();
+                    println!("{}", style::amber(&others_runner(r)));
+                    if !go_on("Go on with the sign-in? [y/N] ")? {
+                        bail!("Stopped before signing in: nothing was connected.");
+                    }
+                }
                 match &job.state {
                     ClaudeLoginState::AwaitingCode { url } if !prompted => {
                         prompted = true;
@@ -385,9 +402,58 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
     }
 }
 
+/// What `fctl claude connect --login` says of the runner its sign-in runs
+/// on, when it isn't one of the person's own: whose it is, and what its
+/// host could do with the login (docs/security.md).
+fn others_runner(runner: &ClaudeLoginRunner) -> String {
+    let owner = runner.owner.as_deref().map(style::terminal_safe);
+    let whose = match &owner {
+        Some(o) => format!("{o}'s runner"),
+        None => "a runner".to_owned(),
+    };
+    format!(
+        "This sign-in runs on {name}, {whose} that runs your sessions, because none of yours is online. Its machine sees your Claude login's long-lived tokens as they pass to fctl: it could keep them, or connect a Claude account of its own in place of yours, on which your sessions would then run. Go on only if you trust {trust} with your Claude account; otherwise start one of your runners and run this again, or connect a long-lived token with `fctl claude connect`.",
+        name = style::terminal_safe(&runner.name),
+        trust = owner.as_deref().unwrap_or("its owner"),
+    )
+}
+
+/// Asks whether to go on, on the terminal: only a yes does. Ending the
+/// input (Ctrl-D) says no.
+fn go_on(question: &str) -> Result<bool> {
+    use std::io::{BufRead, Write};
+    print!("{question}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_whose_runner_a_sign_in_runs_on() {
+        let runner = ClaudeLoginRunner {
+            id: fctl_proto::RunnerId("rnr_1".into()),
+            name: "build\u{1b}[2J box".into(),
+            yours: false,
+            owner: Some("Ada Lovelace".into()),
+        };
+        let said = others_runner(&runner);
+        assert!(said.starts_with("This sign-in runs on build"), "{said}");
+        assert!(said.contains("Ada Lovelace's runner that runs your sessions"));
+        assert!(said.contains("trust Ada Lovelace with your Claude account"));
+        // Names come from other people: no terminal controls.
+        assert!(!said.contains('\u{1b}'));
+        let enrolled = ClaudeLoginRunner {
+            owner: None,
+            ..runner
+        };
+        assert!(others_runner(&enrolled).contains("a runner that runs your sessions"));
+        assert!(others_runner(&enrolled).contains("trust its owner"));
+    }
 
     const NOW: i64 = 1_800_000_000_000;
     const DAY: i64 = 86_400_000;

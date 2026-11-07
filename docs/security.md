@@ -643,7 +643,17 @@ screenshots for it: a stopped session stays with the runner it last ran
 on, which would otherwise keep that person's reach in the project. A
 Claude sign-in through a host, which passes the full login's long-lived
 tokens through it, runs on one of the person's own runners when one is
-online, else on a runner that runs their sessions.
+online, else on a runner that runs their sessions. That runner's host
+could keep those tokens, and it could also answer with a login of a
+Claude account of its owner's choosing, which fctl can't tell from the
+person's: it becomes the person's default, so that their sessions in
+every workspace run on that account, and its claude.ai/code and Claude
+apps show them, where they can be followed and steered (Remote Control).
+So when a sign-in runs on a runner that isn't the person's own, the app
+and `fctl claude connect --login` say which runner, and whose, before
+they approve it (`ClaudeLoginJob.runner`), and the CLI asks whether to go
+on. Where you don't trust that runner's owner with your Claude account,
+start one of your runners first, or connect a long-lived token.
 
 **Updates.** Hosts update fctl by themselves to the version the control
 plane runs, unless `auto_update = false` in `host.toml` (`fctl host

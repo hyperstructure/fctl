@@ -2882,7 +2882,7 @@ impl FleetObject {
                 user: b.user,
             },
         );
-        Ok(serde_json::json!({ "ok": sent }))
+        Ok(serde_json::json!({ "ok": sent, "runner_id": runner_id }))
     }
 
     /// Of `runners`, in the order to try them, the one a sign-in goes to,
@@ -3067,7 +3067,7 @@ impl FleetObject {
         }
         let job: Option<crate::api::claude::JobRow> = match crate::db::q(
             &db,
-            "SELECT * FROM claude_login_jobs WHERE id = ?",
+            &format!("{} WHERE j.id = ?", crate::api::claude::JOB_SELECT),
             &[crate::db::s(job_id.as_str())],
         ) {
             Ok(q) => q.first().await.ok().flatten(),

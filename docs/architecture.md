@@ -791,7 +791,15 @@ replacing its token closes its control connection and its sessions'
 uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
 workspaces: the first of those whose driver is ready, as its host last
-said (`fctl_domain::schedule::login_runner`). When the host can't make the
+said (`fctl_domain::schedule::login_runner`). The job says which runner
+it is on, whether it is the person's own, and whose it is otherwise
+(`ClaudeLoginJob.runner`, from `claude_login_jobs.runner_id`, which
+FleetDO's answer to `/login/start` fills in at once): another person's
+runner sees the full login's long-lived tokens, and could answer with a
+login of its owner's own Claude account, which fctl can't tell from the
+person's ([Security](security.md#hosts)), so Settings and `fctl claude
+connect --login` say so before the person approves the sign-in, and the
+CLI asks whether to go on. When the host can't make the
 sign-in's sandbox, it probes its driver again (Docker may have stopped
 since it last did), and when that isn't ready it sends a heartbeat that
 says so at once, then fails the sign-in saying why it was
