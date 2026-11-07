@@ -9,8 +9,8 @@ use crate::runner::{ClaudeCredentialKind, DriverInfo, RunnerClaudeToken, Sandbox
 use crate::session::{
     GithubAccess, InstanceRole, Memory, Project, ProjectIcon, ProjectRole, ProjectSettings,
     PullRequestRef, RepoAccess, RepoRef, Retrospective, RetrospectiveOutcome, Session,
-    SessionQuestion, SessionRef,
-    SessionRole, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    SessionQuestion, SessionRef, SessionRole, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef,
+    WorkspaceRole,
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, EnrollmentTokenId,
