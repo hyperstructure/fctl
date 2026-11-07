@@ -1,16 +1,21 @@
 // The shimmer of "working" labels (.text-shimmer in styles/app.css) passes over
 // all of them at once. A CSS animation starts when its label appears, so a
 // thought that comes under a run's line would shimmer out of step with it;
-// each one starts as if it had been there since the page opened instead.
+// each one starts as if it had been there since the page opened instead. So do
+// the new session page's signs of work: the waves through its dots
+// (components/ui/dot-wave.tsx) and the ring that turns around what the agent
+// does now.
 
-const SHIMMER = "text-shimmer";
+const SYNCED = new Set(["text-shimmer", "dot-wave", "busy-ring"]);
 
-/** Keeps the labels' shimmers in step. Returns what undoes it. */
+/** Keeps the labels' shimmers, and the signs of work, in step. Returns what undoes it. */
 export function syncShimmers(target: EventTarget = document) {
   const sync = (e: Event) => {
-    if ((e as AnimationEvent).animationName !== SHIMMER || !(e.target instanceof Element)) return;
-    for (const a of e.target.getAnimations()) {
-      if ((a as CSSAnimation).animationName === SHIMMER) a.startTime = 0;
+    const { animationName, pseudoElement } = e as AnimationEvent;
+    if (!SYNCED.has(animationName) || !(e.target instanceof Element)) return;
+    // A pseudo-element's animations are its element's only with those under it.
+    for (const a of e.target.getAnimations(pseudoElement ? { subtree: true } : undefined)) {
+      if (SYNCED.has((a as CSSAnimation).animationName)) a.startTime = 0;
     }
   };
   target.addEventListener("animationstart", sync);

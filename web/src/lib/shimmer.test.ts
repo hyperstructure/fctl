@@ -29,6 +29,16 @@ describe("syncShimmers", () => {
     expect(working.animations[0]?.startTime).toBe(1250);
   });
 
+  it("keeps the new session page's signs of work in step too", () => {
+    const page = document.createElement("div");
+    syncShimmers(page);
+    const dots = label(page, "dot-wave");
+    start(dots.el, "dot-wave");
+    const ring = label(page, "busy-ring");
+    start(ring.el, "busy-ring");
+    expect([dots.animations[0]?.startTime, ring.animations[0]?.startTime]).toEqual([0, 0]);
+  });
+
   it("leaves the label's other animations as they are", () => {
     const page = document.createElement("div");
     syncShimmers(page);

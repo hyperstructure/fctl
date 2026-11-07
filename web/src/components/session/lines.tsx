@@ -8,8 +8,21 @@
 // with their icons bare.
 
 import { ChevronRight, CircleAlert } from "lucide-react";
-import { Component, type ReactNode } from "react";
+import { Component, type ComponentType, createContext, type ReactNode, useContext } from "react";
+import { Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
+
+/**
+ * What says a step of the agent's work is under way (a call that runs, one that streams in, the
+ * sandbox's setup): the spinner, unless the page has its own (the new session page's dots).
+ */
+export const BusyMark = createContext<ComponentType<{ className?: string }>>(Spinner);
+
+/** The page's sign that a step is under way ([`BusyMark`]). */
+export function Busy({ className }: { className?: string }) {
+  const Mark = useContext(BusyMark);
+  return <Mark className={className} />;
+}
 
 export function Milestone({
   icon,
@@ -37,10 +50,16 @@ export function Milestone({
   );
 }
 
-/** An icon in the rail, without a tile. */
+/**
+ * An icon in the rail, without a tile. It says it is one (`data-rail`), for the new session page,
+ * whose thread runs down behind the rail's icons.
+ */
 export function RailIcon({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <span className={cn("flex size-6 shrink-0 items-center justify-center [&_svg]:size-3.5", className)}>
+    <span
+      data-rail=""
+      className={cn("flex size-6 shrink-0 items-center justify-center [&_svg]:size-3.5", className)}
+    >
       {children}
     </span>
   );
@@ -75,6 +94,7 @@ export function Tile({
   }
   return (
     <span
+      data-rail="tile"
       className={cn(
         "flex size-6 shrink-0 items-center justify-center rounded-[7px] border transition-colors [&_svg]:size-3.5",
         error

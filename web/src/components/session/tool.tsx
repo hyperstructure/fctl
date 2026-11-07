@@ -35,7 +35,7 @@ import {
 } from "react";
 import { DiffLines } from "@/components/diff";
 import { CodeBlock, Markdown } from "@/components/markdown";
-import { plainClick, Spinner, ThoughtIcon, useLightbox } from "@/components/ui";
+import { plainClick, ThoughtIcon, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
@@ -67,7 +67,7 @@ import {
   type Tool,
 } from "@/lib/transcript";
 import { useRevealed, useWanted } from "./find";
-import { OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
+import { Busy, OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
 import { Thinking, thinkingNow } from "./thinking";
 
 const ICONS: Record<string, ReactNode> = {
@@ -88,7 +88,7 @@ const ICONS: Record<string, ReactNode> = {
 };
 
 /** A tool's icon: its own, a plug for an MCP server's, else a wrench. */
-const toolIcon = (name: string) => ICONS[name] ?? (name.startsWith("mcp__") ? <Plug /> : <Wrench />);
+export const toolIcon = (name: string) => ICONS[name] ?? (name.startsWith("mcp__") ? <Plug /> : <Wrench />);
 
 /** The directory Claude Code works in, which paths in the transcript start from. */
 export const WorkDir = createContext<string | undefined>(undefined);
@@ -600,7 +600,7 @@ export const ToolRow = memo(function ToolRow({
       <OpenLine
         icon={
           <Tile nested={nested} error={error}>
-            {pending ? <Spinner className="size-3.5 text-accent" /> : toolIcon(t.name)}
+            {pending ? <Busy className="size-3.5 text-accent" /> : toolIcon(t.name)}
           </Tile>
         }
         open={open}
@@ -655,7 +655,7 @@ function Coming({ block }: { block: Pick<LiveBlock, "type" | "name" | "tokens"> 
       {block.type === "thinking" ? (
         <ThoughtIcon className="size-3.5 shrink-0 text-violet/80" />
       ) : (
-        <Spinner className="size-3.5 shrink-0 text-accent" />
+        <Busy className="size-3.5 shrink-0 text-accent" />
       )}
       <span className="text-shimmer">
         {block.type === "thinking" ? thinkingNow(block.tokens) : `Preparing ${block.name ?? "a tool"}`}
