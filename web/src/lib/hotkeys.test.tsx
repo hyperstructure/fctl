@@ -315,6 +315,34 @@ describe("what useHotkey leaves alone", () => {
     expect(sheet.fn).toHaveBeenCalledTimes(1);
   });
 
+  it("takes a key on the page's body as the dialog's on top, which the focus was in last", () => {
+    const sheet = page("d", { inDialogs: "dialog.sheet" });
+    // The shortcuts sheet comes first in the page, and opens over the details sheet.
+    const open = (className: string) => {
+      const dialog = document.createElement("dialog");
+      dialog.className = className;
+      dialog.setAttribute("open", "");
+      const button = document.createElement("button");
+      dialog.append(button);
+      cleanups.push(() => dialog.remove());
+      return { dialog, button };
+    };
+    const shortcuts = open("shortcuts");
+    const details = open("sheet");
+    document.body.append(shortcuts.dialog, details.dialog);
+    details.button.focus();
+    shortcuts.button.focus();
+    shortcuts.button.blur();
+    expect(press("d").defaultPrevented).toBe(false);
+    expect(sheet.fn).not.toHaveBeenCalled();
+    // Closed, it gives the focus back to the one under it.
+    shortcuts.dialog.removeAttribute("open");
+    details.button.focus();
+    details.button.blur();
+    press("d");
+    expect(sheet.fn).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves a dialog's keys to it, unless asked", () => {
     const fn = page("n");
     const help = page("?", { inDialogs: true });

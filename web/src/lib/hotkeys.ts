@@ -147,9 +147,7 @@ function onKeyDown(e: KeyboardEvent) {
   setPending(undefined);
   const target = e.target instanceof Element ? e.target : null;
   const typing = typingIn(target);
-  // A click on a dialog's text leaves the focus on the page's body, which the dialog covers: a key
-  // pressed then is the dialog's too.
-  const dialog = target?.closest("dialog[open]") ?? [...document.querySelectorAll("dialog[open]")].at(-1);
+  const dialog = dialogOf(target);
   const inDialog = (b: Binding) =>
     !dialog || b.inDialogs === true || (typeof b.inDialogs === "string" && dialog.matches(b.inDialogs));
   const takes = (b: Binding, step: Chord) => (!typing || !!b.inInputs || step.mod) && inDialog(b);
@@ -181,10 +179,37 @@ function onKeyDown(e: KeyboardEvent) {
   }
 }
 
+/**
+ * The open dialog the focus was in last. Dialogs stack in the order they were shown, not in the
+ * page's: one shown over another takes the focus, and gives it back to the one under it as it
+ * closes, so this is the one on top.
+ */
+let focusedDialog: Element | null = null;
+
+/**
+ * The open dialog a key pressed in `target` is for: the one it is in, or, where a click on a
+ * dialog's text left the focus on the page's body, which the dialogs cover, the one on top.
+ */
+function dialogOf(target: Element | null): Element | null {
+  const own = target?.closest("dialog[open]");
+  if (own) return own;
+  const open = [...document.querySelectorAll("dialog[open]")];
+  if (focusedDialog && open.includes(focusedDialog)) return focusedDialog;
+  return open.at(-1) ?? null;
+}
+
 let listening = false;
 function listen() {
   if (listening) return;
   listening = true;
+  window.addEventListener(
+    "focusin",
+    (e) => {
+      const dialog = e.target instanceof Element ? e.target.closest("dialog[open]") : null;
+      if (dialog) focusedDialog = dialog;
+    },
+    true,
+  );
   window.addEventListener("keydown", onKeyDown);
   // A click ends a sequence.
   window.addEventListener("pointerdown", () => setPending(undefined), true);
