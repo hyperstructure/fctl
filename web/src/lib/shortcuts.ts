@@ -185,22 +185,23 @@ const ARIA: Record<string, string> = {
 
 /**
  * The ways to press `id`, as `aria-keyshortcuts` says them to screen readers: ⌘ as Meta and Ctrl
- * as Control, the steps of a sequence apart.
+ * as Control. It has no way to say a sequence (a space there separates the ways), so it leaves
+ * those out, and says nothing for a shortcut that is only a sequence (the sheet says them).
  */
-export function ariaShortcut(id: ShortcutId): string {
+export function ariaShortcut(id: ShortcutId): string | undefined {
   const mod = apple() ? "Meta" : "Control";
-  return SHORTCUTS[id].keys
+  const ways = SHORTCUTS[id].keys
     .flat()
-    .map((combo) =>
-      parseShortcut(combo)
-        .map((c) =>
-          [c.mod && mod, c.alt && "Alt", c.shift && "Shift", ARIA[c.key] ?? c.key.toUpperCase()]
+    .map(parseShortcut)
+    .filter((steps) => steps.length === 1)
+    .map(([c]) =>
+      c
+        ? [c.mod && mod, c.alt && "Alt", c.shift && "Shift", ARIA[c.key] ?? c.key.toUpperCase()]
             .filter(Boolean)
-            .join("+"),
-        )
-        .join(" "),
-    )
-    .join(" ");
+            .join("+")
+        : "",
+    );
+  return ways.join(" ") || undefined;
 }
 
 /** Takes every way to press the shortcut `id` while the component is there. */

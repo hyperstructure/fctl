@@ -145,11 +145,19 @@ export function SessionPage() {
     if (first && file) setDiffAt({ repo: first.repo, path: file.path });
     else if (session) toast(session.review ? "No changes to review yet" : "No changes yet");
   });
-  useShortcut("details", () => {
-    if (!session) return;
-    if (window.matchMedia?.("(min-width: 64rem)").matches ?? true) setRail((r) => !r);
-    else setDetails((d) => !d);
-  });
+  useShortcut(
+    "details",
+    (e) => {
+      if (!session) return;
+      // In the sheet, it puts the sheet away as Escape does: it slides away first.
+      const sheet = e.target instanceof Element ? e.target.closest("dialog") : null;
+      if (sheet) {
+        if (sheet.dispatchEvent(new Event("cancel", { cancelable: true }))) sheet.close();
+      } else if (window.matchMedia?.("(min-width: 64rem)").matches ?? true) setRail((r) => !r);
+      else setDetails(true);
+    },
+    { inDialogs: "dialog.sheet" },
+  );
   const transcript = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLDivElement>(null);
   const footer = useRef<HTMLDivElement>(null);

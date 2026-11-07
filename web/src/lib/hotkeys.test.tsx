@@ -222,6 +222,15 @@ describe("sequences", () => {
     expect(pulls.fn).toHaveBeenCalledTimes(1);
   });
 
+  it("wait for the next key while their first is held down", () => {
+    const floor = page("g f");
+    press("g");
+    expect(press("g", { repeat: true }).defaultPrevented).toBe(true);
+    press("g", { repeat: true });
+    press("f");
+    expect(floor.fn).toHaveBeenCalledTimes(1);
+  });
+
   it("take a key that follows none as itself", () => {
     const floor = page("g f");
     const fresh = page("n");
@@ -276,6 +285,22 @@ describe("sequences", () => {
 });
 
 describe("what useHotkey leaves alone", () => {
+  it("takes a key in the dialogs it names", () => {
+    const { fn } = page("d", { inDialogs: "dialog.sheet" });
+    const open = (className: string) => {
+      const dialog = document.createElement("dialog");
+      dialog.className = className;
+      dialog.setAttribute("open", "");
+      document.body.append(dialog);
+      cleanups.push(() => dialog.remove());
+      return dialog;
+    };
+    press("d", {}, open("sheet"));
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(press("d", {}, open("other")).defaultPrevented).toBe(false);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves a dialog's keys to it, unless asked", () => {
     const fn = page("n");
     const help = page("?", { inDialogs: true });

@@ -82,8 +82,11 @@ export function pressed(e: KeyboardEvent, c: Chord): boolean {
 export interface HotkeyOptions {
   /** It works in text fields too; a shortcut with ⌘ or Ctrl always does. */
   inInputs?: boolean;
-  /** It works in a dialog too, whose keys are otherwise its own. */
-  inDialogs?: boolean;
+  /**
+   * It works in a dialog too, whose keys are otherwise its own: in any, or in those that match a
+   * selector (the details sheet that `d` opens, for `d` to put it away).
+   */
+  inDialogs?: boolean | string;
   /** Holding the key down repeats it, as j and k in a list do; otherwise it happens once. */
   repeat?: boolean;
   /** What it does, for the hint that shows what can follow the first step of a sequence. */
@@ -135,13 +138,19 @@ function onKeyDown(e: KeyboardEvent) {
   // What the page handled already (a list's arrows, a dialog's own keys), and what an input
   // method composes, are no shortcuts.
   if (e.defaultPrevented || e.isComposing || MODIFIERS.has(e.key)) return;
+  // The first key of a sequence, held down, still waits for the next.
+  if (e.repeat && pending && pressed(e, pending)) {
+    e.preventDefault();
+    return;
+  }
   const first = pending;
   setPending(undefined);
   const target = e.target instanceof Element ? e.target : null;
   const typing = typingIn(target);
-  const inDialog = !!target?.closest("dialog[open]");
-  const takes = (b: Binding, step: Chord) =>
-    (!typing || !!b.inInputs || step.mod) && (!inDialog || !!b.inDialogs);
+  const dialog = target?.closest("dialog[open]");
+  const inDialog = (b: Binding) =>
+    !dialog || b.inDialogs === true || (typeof b.inDialogs === "string" && dialog.matches(b.inDialogs));
+  const takes = (b: Binding, step: Chord) => (!typing || !!b.inInputs || step.mod) && inDialog(b);
   const newestFirst = [...bindings].reverse();
   if (first) {
     for (const b of newestFirst) {

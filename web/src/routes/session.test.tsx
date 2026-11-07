@@ -252,6 +252,28 @@ describe("SessionPage", () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q }));
     press("d");
     expect(open()).toEqual(["Fix the flaky login test"]);
+    // Again in the sheet, it puts the sheet away, as Escape does: the sheet slides away first.
+    vi.useFakeTimers();
+    try {
+      press("d", {}, document.querySelector("dialog.sheet") ?? document.body);
+      act(() => vi.advanceTimersByTime(1000));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(open()).toEqual([]);
+  });
+
+  it("leaves d to another dialog over the page", () => {
+    const p = page();
+    p.click('button[aria-label="Share"]');
+    expect(open()).toEqual(["Share this session"]);
+    const rail = () => !!document.querySelector("aside.lg\\:block");
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("64rem"), media: q }));
+    expect(press("d", {}, document.querySelector("dialog[open]") ?? document.body).defaultPrevented).toBe(
+      false,
+    );
+    expect(rail()).toBe(true);
+    expect(open()).toEqual(["Share this session"]);
   });
 
   it("goes to the message box with r, and Escape leaves it for the page's keys", () => {

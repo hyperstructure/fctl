@@ -56,7 +56,8 @@ describe("how shortcuts are said", () => {
   it("says every way to press one to screen readers", () => {
     on(MAC);
     expect(ariaShortcut("newSession")).toBe("N Meta+Shift+O");
-    expect(ariaShortcut("floor")).toBe("G F");
+    // It has no way to say G, then F: a space there separates the ways to press it.
+    expect(ariaShortcut("floor")).toBeUndefined();
     on(LINUX);
     expect(ariaShortcut("help")).toBe("? Control+/");
     expect(ariaShortcut("send")).toBe("Enter Shift+Enter");
