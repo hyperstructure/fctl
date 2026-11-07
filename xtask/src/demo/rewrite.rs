@@ -462,7 +462,7 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     d1.exec(
         "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
          claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-         pull_requests = ?, updated_at = ?, last_activity_at = ?, started_at = ?, ended_at = ?, created_at = ?, runner_id = COALESCE(?, runner_id), \
+         pull_requests = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, started_at = ?, ended_at = ?, created_at = ?, runner_id = COALESCE(?, runner_id), \
          ticket = COALESCE(?, ticket), github_access = COALESCE(?, github_access) WHERE id = ?",
         vec![
             json!(session.title),
@@ -482,6 +482,7 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             json!(prs),
             json!(session.updated_at),
             json!(session.last_activity_at),
+            json!(session.messaged_at),
             json!(session.started_at),
             json!(session.ended_at),
             json!(session.created_at),

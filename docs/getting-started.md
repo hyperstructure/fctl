@@ -447,8 +447,9 @@ started.
   to another. Above them, **Needs you** gathers what waits on you in the
   sessions you started or follow, most pressing first: what an agent asks
   you, a failure, failed checks, a pull request an agent finished, a reply
-  it waits for. Its count shows in the browser's tab, and on fctl's icon
-  where you installed it. **Pull requests** opens the pull requests agents
+  it waits for (unless its pull requests are all merged or closed and
+  nobody wrote to it since: its work is done). Its count shows in the
+  browser's tab, and on fctl's icon where you installed it. **Pull requests** opens the pull requests agents
   opened in the sessions you started, sorted by what each needs next; turn
   **Mine** off there for everyone's, and the sidebar counts them too. The
   browser keeps that choice, and the page keeps its tab and its filter

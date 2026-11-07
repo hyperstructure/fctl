@@ -1335,6 +1335,10 @@ pub struct Session {
     pub started_at: Option<Millis>,
     pub ended_at: Option<Millis>,
     pub last_activity_at: Option<Millis>,
+    /// When a person last sent it a message (fctl's follow-ups aren't
+    /// people's). Absent until someone does, and from control planes
+    /// before it.
+    pub messaged_at: Option<Millis>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,
     /// The pull request of its branch in the primary repository, or in

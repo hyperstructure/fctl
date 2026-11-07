@@ -38,7 +38,13 @@ description?: string, status: SessionStatus, status_reason?: string,
 /**
  * When a paused session resumes on its own.
  */
-resume_at?: number, created_by: UserRef, created_at: number, updated_at: number, started_at?: number, ended_at?: number, last_activity_at?: number, branch?: string, base_branch?: string, 
+resume_at?: number, created_by: UserRef, created_at: number, updated_at: number, started_at?: number, ended_at?: number, last_activity_at?: number, 
+/**
+ * When a person last sent it a message (fctl's follow-ups aren't
+ * people's). Absent until someone does, and from control planes
+ * before it.
+ */
+messaged_at?: number, branch?: string, base_branch?: string, 
 /**
  * The pull request of its branch in the primary repository, or in
  * another repository when that has none: the last one its agent found.
