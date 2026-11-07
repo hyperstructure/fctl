@@ -157,6 +157,8 @@ describe("the keyboard shortcuts sheet", () => {
       "Message the agent",
       "Open the changes",
       "Show or hide the details",
+      "Next turn / previous",
+      "Switch between the classic and the new view",
     ]);
   });
 

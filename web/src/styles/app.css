@@ -652,6 +652,215 @@
   }
 }
 
+/* The new session page's turns (components/session/turns.tsx): what the agent did in a turn
+   hangs from what was asked on a thread down the rail its steps' icons sit in, which ends where the
+   turn does. Each part of the turn draws its stretch of the thread, behind what it holds; the
+   rail's bare icons sit on it with the page's color around them, which the hover fill takes on
+   under a pointer. */
+:root,
+:root[data-theme="dark"] {
+  --thread: rgb(250 250 250 / 0.12);
+  --hover-solid: color-mix(in srgb, var(--c-canvas) 95%, #fafafa);
+}
+:root[data-theme="light"] {
+  --thread: rgb(23 23 23 / 0.13);
+  --hover-solid: color-mix(in srgb, var(--c-canvas) 94%, #171717);
+}
+.thread {
+  position: relative;
+  /* Its parts' margins stay inside it, and the thread with them. */
+  display: flow-root;
+  isolation: isolate;
+}
+/* A border, not a background: Windows' contrast themes keep borders and drop backgrounds. */
+.thread::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 11.5px;
+  z-index: -1;
+  border-left: 1px solid var(--thread);
+  pointer-events: none;
+}
+.thread [data-rail=""] {
+  border-radius: 9999px;
+  background-color: var(--c-canvas);
+}
+@media (hover: hover) {
+  .thread .group\/line:hover [data-rail=""] {
+    background-color: var(--hover-solid);
+  }
+}
+/* A turn the agent started on its own: the thread starts at the line's icon. */
+.thread-start::before {
+  top: 18px;
+}
+/* The turn's end: the thread stops at its icon. */
+.thread-end::before {
+  bottom: auto;
+  height: 18px;
+}
+/* The end of the turn the agent works on fades out, as what comes next isn't there yet. */
+.thread-live::before {
+  -webkit-mask: linear-gradient(#000 calc(100% - 3rem), transparent);
+  mask: linear-gradient(#000 calc(100% - 3rem), transparent);
+}
+/* The card that opens a turn: the thread hangs from its lower left corner, which is all but
+   square there. The light theme lifts it off the page with a soft shadow. */
+:root[data-theme="light"] .ask-card {
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 4px 16px rgb(0 0 0 / 0.04);
+}
+
+/* What a step that just came draws: its stretch of the thread grows down to it from the step
+   before (components/session/turns.tsx marks the parts that came while the page was open), and
+   a turn that just ended checks itself off. */
+@media (prefers-reduced-motion: no-preference) {
+  .thread.arrive::before {
+    transform-origin: top;
+    animation: thread-draw 560ms var(--ease-out) both;
+  }
+  .thread-end.arrive [data-rail] svg {
+    animation: pop 420ms var(--ease-spring) 240ms both;
+  }
+}
+@keyframes thread-draw {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+/* The new session page's sign of work (components/ui/dot-wave.tsx): a wave of light runs through
+   its dots from one corner to the other, then rests. They take the text's color, the accent where
+   work is under way. Where motion is reduced, the dots hold still, brightest where the wave
+   starts. */
+.dot-wave circle {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dot-wave 1.4s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+  animation-delay: calc(var(--i, 0) * 0.1s);
+}
+@keyframes dot-wave {
+  0%,
+  55%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.72);
+  }
+  22% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-wave circle {
+    animation: none;
+    opacity: calc(1 - var(--i, 0) * 0.16);
+  }
+}
+
+/* What the agent does now, above the new session page's message box (session/now-line.tsx):
+   while it is at it, a short arc of the accent runs around the step's icon on a faint track,
+   brightest at its head, as a comet does. Where motion is reduced, the arc stands still. */
+.busy-ring::before,
+.busy-ring::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 9999px;
+  pointer-events: none;
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px));
+  mask: radial-gradient(closest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px));
+}
+/* The track. */
+.busy-ring::before {
+  background: var(--c-line);
+}
+/* The comet. */
+.busy-ring::after {
+  background: conic-gradient(
+    from 0turn,
+    transparent 0turn 0.62turn,
+    color-mix(in srgb, var(--c-accent) 35%, transparent) 0.8turn,
+    var(--c-accent) 0.97turn,
+    transparent 0.97turn
+  );
+  animation: busy-ring 1.1s linear infinite;
+}
+@keyframes busy-ring {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .busy-ring::after {
+    animation: none;
+  }
+}
+
+/* Between the new session page's turns, when the next one came much later: how much. */
+.turn-gap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.turn-gap::before,
+.turn-gap::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, transparent, var(--c-line-strong));
+}
+.turn-gap::after {
+  background: linear-gradient(90deg, var(--c-line-strong), transparent);
+}
+
+/* While the agent works, a soft light of the accent runs along the new session page's header's
+   lower edge, out of nowhere and back into it. Where motion is reduced, the edge holds still. */
+.header-live {
+  position: absolute;
+  inset: auto 0 -1px;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.header-live::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--c-accent) 70%, transparent) 50%,
+    transparent
+  );
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .header-live::before {
+    background-size: 40% 100%;
+    background-repeat: no-repeat;
+    animation: header-live 3.6s var(--ease-in-out) infinite;
+  }
+}
+@keyframes header-live {
+  from {
+    background-position: -60% 0;
+    opacity: 0;
+  }
+  25%,
+  75% {
+    opacity: 0.7;
+  }
+  to {
+    background-position: 160% 0;
+    opacity: 0;
+  }
+}
+
 /* The Agent Floor's row in the sidebar (components/shell/floor-link.tsx). While
    its bar is lit, packets run down the icon's traces into its core, whose light
    flashes as they land, and the label stands out from the threads behind it: a

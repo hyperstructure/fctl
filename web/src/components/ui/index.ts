@@ -1,6 +1,7 @@
 export * from "./button";
 export * from "./code-input";
 export * from "./danger-zone";
+export * from "./dot-wave";
 export * from "./feedback";
 export * from "./form";
 export * from "./gallery";
