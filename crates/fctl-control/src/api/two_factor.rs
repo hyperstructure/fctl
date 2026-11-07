@@ -472,11 +472,10 @@ async fn apply_reset(ctx: &Ctx, user: &UserRow, row: &ChallengeRow) -> AppResult
 
 // ───────────────────────────── codes ─────────────────────────────
 
+/// An authenticator app, as far as whether its codes wait goes: codes are
+/// checked with what [`take_attempt`] reads.
 #[derive(Deserialize)]
 struct AppRow {
-    secret_enc: String,
-    #[serde(deserialize_with = "crate::db::int")]
-    last_step: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     locked_until: Option<i64>,
 }
@@ -484,7 +483,7 @@ struct AppRow {
 async fn app(ctx: &Ctx, user_id: &str) -> AppResult<Option<AppRow>> {
     q(
         &ctx.db,
-        "SELECT secret_enc, last_step, locked_until FROM authenticator_apps WHERE user_id = ?",
+        "SELECT locked_until FROM authenticator_apps WHERE user_id = ?",
         &[s(user_id)],
     )?
     .first()
@@ -537,22 +536,28 @@ fn locked(until: i64, now: i64) -> AppError {
 /// codes from the app: six digits can be guessed, recovery codes can't, so
 /// whoever has them can always sign in.
 async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<Valid> {
-    let Some(app) = app(ctx, &user.id).await? else {
-        return Err(AppError(ApiError::new(
-            ErrorCode::Conflict,
-            "Two-factor sign-in is off for this account. Start again.",
-        )));
-    };
     if let Some(code) = totp::normalize(typed) {
-        if let Some(until) = app.locked_until.filter(|t| *t > ctx.now) {
-            return Err(locked(until, ctx.now));
-        }
-        let secret = ctx.keys()?.open(&totp_aad(&user.id), &app.secret_enc)?;
-        return match totp::check(&secret, &code, ctx.now, app.last_step) {
+        let Some(attempt) = take_attempt(ctx, &user.id).await? else {
+            // No app, or one that makes codes wait.
+            return Err(match app(ctx, &user.id).await? {
+                None => two_factor_off(),
+                Some(app) => match app.locked_until.filter(|t| *t > ctx.now) {
+                    Some(until) => locked(until, ctx.now),
+                    None => validation("code", "Try that code again."),
+                },
+            });
+        };
+        let secret = ctx.keys()?.open(&totp_aad(&user.id), &attempt.secret_enc)?;
+        return match totp::check(&secret, &code, ctx.now, attempt.last_step) {
             totp::Check::Valid(step) => Ok(Valid::Totp { step }),
             totp::Check::Used => Err(code_used()),
-            totp::Check::Wrong => Err(wrong(ctx, user).await),
+            totp::Check::Wrong => Err(match after_wrong(ctx, user, attempt.failures).await {
+                Result::Ok(e) | Err(e) => e,
+            }),
         };
+    }
+    if app(ctx, &user.id).await?.is_none() {
+        return Err(two_factor_off());
     }
     if let Some(hash) = policy::hash_recovery_code(typed) {
         let unused: Option<Count> = q(
@@ -567,6 +572,47 @@ async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<Valid> 
         }
     }
     Err(wrong(ctx, user).await)
+}
+
+fn two_factor_off() -> AppError {
+    AppError(ApiError::new(
+        ErrorCode::Conflict,
+        "Two-factor sign-in is off for this account. Start again.",
+    ))
+}
+
+/// An attempt at a code from the app, counted ([`take_attempt`]).
+#[derive(Deserialize)]
+struct Attempt {
+    secret_enc: String,
+    #[serde(deserialize_with = "crate::db::int")]
+    last_step: i64,
+    /// Wrong codes in a row, this one counted as one until it checks out.
+    #[serde(deserialize_with = "crate::db::int")]
+    failures: i64,
+}
+
+/// Counts an attempt at a code from `user_id`'s app as a wrong one before
+/// it is checked, and starts the wait that one more brings
+/// (`policy::lockout_sql`), in the statement that checks that codes don't
+/// wait now: so that of codes sent at once, no more get checked than one
+/// at a time would, whatever arrives before any was found wrong. A right
+/// code starts the count over, and ends the wait it started
+/// ([`use_code`]). `None` without an app, or while codes wait.
+async fn take_attempt(ctx: &Ctx, user_id: &str) -> AppResult<Option<Attempt>> {
+    let wait = policy::lockout_sql("failures + 1");
+    q(
+        &ctx.db,
+        &format!(
+            "UPDATE authenticator_apps SET failures = failures + 1, \
+             locked_until = COALESCE(?2 + ({wait}), locked_until) \
+             WHERE user_id = ?1 AND (locked_until IS NULL OR locked_until <= ?2) \
+             RETURNING secret_enc, last_step, failures"
+        ),
+        &[s(user_id), n(ctx.now)],
+    )?
+    .first()
+    .await
 }
 
 /// Uses up a code that checked out; fails when another request used it
@@ -643,7 +689,13 @@ async fn count_wrong(ctx: &Ctx, user: &UserRow) -> AppResult<AppError> {
     )?
     .first()
     .await?;
-    let failures = row.map_or(1, |r| r.failures.clamp(1, i64::from(u32::MAX))) as u32;
+    after_wrong(ctx, user, row.map_or(1, |r| r.failures)).await
+}
+
+/// What a wrong code that brought the count to `failures` answers with:
+/// the wait it starts, once there are too many.
+async fn after_wrong(ctx: &Ctx, user: &UserRow, failures: i64) -> AppResult<AppError> {
+    let failures = failures.clamp(1, i64::from(u32::MAX)) as u32;
     let Some(until) = policy::lockout_ms(failures).map(|ms| ctx.now + ms) else {
         return Ok(validation(
             "code",
