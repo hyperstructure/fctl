@@ -6,7 +6,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
-  ArrowUpRight,
   AtSign,
   Ban,
   Check,
@@ -35,12 +34,14 @@ import {
   Skeleton,
   StatusDot,
   Switch,
+  statusLabel,
   toast,
 } from "@/components/ui";
+import { ROW, ROW_ABOVE, ROW_COVER } from "@/components/ui/list-row";
 import type * as G from "@/gen";
 import { ApiFailure, api, clickConfirmed, linearLinkUrl, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { agoShort, stamp } from "@/lib/format";
+import { ago, agoShort, stamp } from "@/lib/format";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 import { type LinearOutcome, linearOutcome, stateTone, TRACKERS, trackerOf } from "@/lib/tickets";
 import { useWorkspaceIndex } from "@/lib/workspaces";
@@ -1431,19 +1432,19 @@ function Recent({
           No ticket has started a session yet. The first one you delegate shows here.
         </p>
       ) : (
-        <ul className="border-t border-line">
+        <ul>
           {items.map((r) => (
-            <li
-              key={r.session.id}
-              className="group relative isolate flex items-center gap-3 border-b border-line py-2.5 transition-colors hover:bg-hover/30"
-            >
+            <li key={r.session.id} className={cn(ROW, "flex items-center gap-3 py-2.5")}>
               <StatusDot status={r.status} />
               <a
                 href={r.ticket.url}
                 target="_blank"
                 rel="noreferrer"
                 title={r.ticket.title ? `${r.ticket.key}: ${r.ticket.title}` : r.ticket.key}
-                className="relative z-[2] inline-flex w-[5.5rem] shrink-0 items-center gap-1 font-mono text-[12px] text-ink-3 transition-colors hover:text-ink max-sm:w-auto"
+                className={cn(
+                  ROW_ABOVE,
+                  "inline-flex w-[5.5rem] shrink-0 items-center gap-1 font-mono text-[12px] text-ink-3 transition-colors hover:text-ink max-sm:w-auto",
+                )}
               >
                 {r.ticket.tracker === "linear" ? (
                   <LinearIcon className="size-3 shrink-0" />
@@ -1455,22 +1456,30 @@ function Recent({
               <Link
                 to="/s/$id"
                 params={{ id: r.session.id }}
-                className="min-w-0 flex-1 truncate text-[14px] text-ink outline-none after:absolute after:inset-0 after:z-[1] focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-accent"
+                data-cover
+                className={cn(ROW_COVER, "flex min-w-0 flex-1 items-center gap-3")}
               >
-                {r.session.title}
+                <span className="min-w-0 flex-1 truncate text-[14px] leading-[22px] text-ink">
+                  {r.session.title}
+                </span>
+                {/* Over the row's cover, so that each says more where the pointer rests; screen
+                    readers read the sentence after the link instead. */}
+                <span aria-hidden="true" className={cn(ROW_ABOVE, "flex shrink-0 items-center gap-2.5")}>
+                  <span className="font-mono text-[12px] text-ink-4 max-sm:hidden">#{r.session.number}</span>
+                  <time
+                    dateTime={new Date(r.at).toISOString()}
+                    title={`Started ${stamp(r.at)}`}
+                    className="min-w-8 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
+                  >
+                    {agoShort(r.at)}
+                  </time>
+                  {r.by && <Avatar user={r.by} size={18} title={`Delegated by ${r.by.name}`} />}
+                </span>
               </Link>
-              <span className="shrink-0 font-mono text-[12px] text-ink-4 max-sm:hidden">
-                #{r.session.number}
+              <span className="sr-only">
+                {statusLabel(r.status)}. #{r.session.number}
+                {r.by && `, delegated by ${r.by.name}`}, started {ago(r.at)}.
               </span>
-              {r.by && <Avatar user={r.by} size={20} />}
-              <time
-                dateTime={new Date(r.at).toISOString()}
-                title={stamp(r.at)}
-                className="w-10 shrink-0 text-right text-[12px] text-ink-4 tabular-nums"
-              >
-                {agoShort(r.at)}
-              </time>
-              <ArrowUpRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-opacity group-hover:opacity-100 max-sm:hidden" />
             </li>
           ))}
         </ul>
