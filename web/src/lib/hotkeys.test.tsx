@@ -301,6 +301,20 @@ describe("what useHotkey leaves alone", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it("takes a key on the page's body as the open dialog's, where a click on its text leaves the focus", () => {
+    const fn = page("n");
+    const sheet = page("d", { inDialogs: "dialog.sheet" });
+    const dialog = document.createElement("dialog");
+    dialog.className = "sheet";
+    dialog.setAttribute("open", "");
+    document.body.append(dialog);
+    cleanups.push(() => dialog.remove());
+    expect(press("n").defaultPrevented).toBe(false);
+    expect(fn.fn).not.toHaveBeenCalled();
+    press("d");
+    expect(sheet.fn).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves a dialog's keys to it, unless asked", () => {
     const fn = page("n");
     const help = page("?", { inDialogs: true });

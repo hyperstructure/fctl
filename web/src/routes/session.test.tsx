@@ -253,13 +253,21 @@ describe("SessionPage", () => {
     press("d");
     expect(open()).toEqual(["Fix the flaky login test"]);
     // Again in the sheet, it puts the sheet away, as Escape does: the sheet slides away first.
-    vi.useFakeTimers();
-    try {
-      press("d", {}, document.querySelector("dialog.sheet") ?? document.body);
-      act(() => vi.advanceTimersByTime(1000));
-    } finally {
-      vi.useRealTimers();
-    }
+    const away = (target: Element) => {
+      vi.useFakeTimers();
+      try {
+        press("d", {}, target);
+        act(() => vi.advanceTimersByTime(1000));
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+    away(document.querySelector("dialog.sheet") ?? document.body);
+    expect(open()).toEqual([]);
+    // Also where a click on the sheet's text left the focus on the page's body.
+    press("d");
+    expect(open()).toEqual(["Fix the flaky login test"]);
+    away(document.body);
     expect(open()).toEqual([]);
   });
 
@@ -272,6 +280,8 @@ describe("SessionPage", () => {
     expect(press("d", {}, document.querySelector("dialog[open]") ?? document.body).defaultPrevented).toBe(
       false,
     );
+    // Nor from the page's body, where a click on the dialog's text leaves the focus.
+    expect(press("d").defaultPrevented).toBe(false);
     expect(rail()).toBe(true);
     expect(open()).toEqual(["Share this session"]);
   });

@@ -147,7 +147,9 @@ function onKeyDown(e: KeyboardEvent) {
   setPending(undefined);
   const target = e.target instanceof Element ? e.target : null;
   const typing = typingIn(target);
-  const dialog = target?.closest("dialog[open]");
+  // A click on a dialog's text leaves the focus on the page's body, which the dialog covers: a key
+  // pressed then is the dialog's too.
+  const dialog = target?.closest("dialog[open]") ?? [...document.querySelectorAll("dialog[open]")].at(-1);
   const inDialog = (b: Binding) =>
     !dialog || b.inDialogs === true || (typeof b.inDialogs === "string" && dialog.matches(b.inDialogs));
   const takes = (b: Binding, step: Chord) => (!typing || !!b.inInputs || step.mod) && inDialog(b);

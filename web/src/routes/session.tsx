@@ -147,10 +147,10 @@ export function SessionPage() {
   });
   useShortcut(
     "details",
-    (e) => {
+    () => {
       if (!session) return;
-      // In the sheet, it puts the sheet away as Escape does: it slides away first.
-      const sheet = e.target instanceof Element ? e.target.closest("dialog") : null;
+      // With the sheet open, it puts the sheet away as Escape does: it slides away first.
+      const sheet = details && document.querySelector<HTMLDialogElement>("dialog.sheet[open]");
       if (sheet) {
         if (sheet.dispatchEvent(new Event("cancel", { cancelable: true }))) sheet.close();
       } else if (window.matchMedia?.("(min-width: 64rem)").matches ?? true) setRail((r) => !r);
