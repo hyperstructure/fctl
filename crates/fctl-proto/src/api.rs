@@ -458,6 +458,9 @@ pub struct TwoFactor {
     pub authenticator_since: Option<Millis>,
     /// When a code from it last signed you in.
     pub authenticator_used_at: Option<Millis>,
+    /// The name its person gave it, such as "1Password"; absent until they
+    /// name it, and again once they replace the app.
+    pub authenticator_name: Option<String>,
     /// Recovery codes not used yet.
     pub recovery_codes: u32,
     /// Google sign-ins ask for a code too, because you chose that.
@@ -673,6 +676,9 @@ pub struct RecoveryCodes {
 pub struct UpdateTwoFactorRequest {
     /// Google sign-ins ask for a code too.
     pub google: Option<bool>,
+    /// Names the authenticator app (`TwoFactor.authenticator_name`); an
+    /// empty name takes its name away.
+    pub authenticator_name: Option<String>,
 }
 
 // ───────────────────────────── passkeys ─────────────────────────────

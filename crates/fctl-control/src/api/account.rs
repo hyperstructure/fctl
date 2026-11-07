@@ -735,7 +735,7 @@ async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
             "ask_on_google_sign_in": user.two_factor_google,
             "authenticator_app": rows(
                 ctx,
-                "SELECT created_at, last_used_at, failures AS wrong_codes_in_a_row, locked_until FROM authenticator_apps WHERE user_id = ?",
+                "SELECT name, created_at, last_used_at, failures AS wrong_codes_in_a_row, locked_until FROM authenticator_apps WHERE user_id = ?",
                 &me(),
             )
             .await?

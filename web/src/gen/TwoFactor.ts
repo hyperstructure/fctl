@@ -15,6 +15,11 @@ authenticator_since?: number,
  */
 authenticator_used_at?: number, 
 /**
+ * The name its person gave it, such as "1Password"; absent until they
+ * name it, and again once they replace the app.
+ */
+authenticator_name?: string, 
+/**
  * Recovery codes not used yet.
  */
 recovery_codes: number, 

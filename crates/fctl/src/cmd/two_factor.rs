@@ -61,6 +61,12 @@ pub enum TwoFactorCmd {
         #[arg(long)]
         code: Option<String>,
     },
+    /// Name your authenticator app, such as "1Password": fctl can't tell
+    /// which app keeps it. An empty name goes back to "Authenticator app".
+    Rename {
+        /// Its new name.
+        name: String,
+    },
     /// Choose whether Google sign-ins ask you for a code too.
     Google {
         #[arg(value_name = "ON|OFF", action = clap::ArgAction::Set, value_parser = BoolishValueParser::new(), hide_possible_values = true)]
@@ -199,9 +205,42 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
             );
             print_recovery_codes(&codes.codes);
         }
+        TwoFactorCmd::Rename { name } => {
+            // As the control plane reads it: nothing left is no name.
+            let naming = name.chars().any(|c| !c.is_whitespace() && !c.is_control());
+            let me = api
+                .update_two_factor(&UpdateTwoFactorRequest {
+                    authenticator_name: Some(name),
+                    ..Default::default()
+                })
+                .await?;
+            // A control plane from before names leaves out the field it
+            // doesn't know, and answers as if nothing were asked.
+            if me.two_factor.authenticator_name.is_some() != naming {
+                anyhow::bail!(
+                    "This instance can't name authenticator apps yet: it runs an older fctl. Ask its admins to update it."
+                );
+            }
+            if json {
+                return style::print_json(&me.two_factor);
+            }
+            let again = if me.two_factor.authenticator_name.is_some() {
+                "now"
+            } else {
+                "again"
+            };
+            println!(
+                "{} Your authenticator app is called {} {again}.",
+                style::accent("✓"),
+                style::bold(app_name(&me.two_factor))
+            );
+        }
         TwoFactorCmd::Google { on } => {
             let me = api
-                .update_two_factor(&UpdateTwoFactorRequest { google: Some(on) })
+                .update_two_factor(&UpdateTwoFactorRequest {
+                    google: Some(on),
+                    ..Default::default()
+                })
                 .await?;
             if json {
                 return style::print_json(&me.two_factor);
@@ -230,11 +269,21 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// What the authenticator app is called: its name, or "Authenticator app".
+fn app_name(t: &TwoFactor) -> &str {
+    t.authenticator_name
+        .as_deref()
+        .unwrap_or("Authenticator app")
+}
+
 /// What `whoami` and `status` say about two-factor sign-in, one line.
 pub fn summary(t: &TwoFactor) -> String {
     match t.authenticator_since {
         Some(_) => format!(
-            "on (authenticator app, {} recovery code{} left)",
+            "on ({}, {} recovery code{} left)",
+            t.authenticator_name
+                .as_deref()
+                .unwrap_or("authenticator app"),
             t.recovery_codes,
             if t.recovery_codes == 1 { "" } else { "s" }
         ),
@@ -259,7 +308,15 @@ fn print_status(t: &TwoFactor) {
             .authenticator_used_at
             .map(|u| format!(", last used {}", style::ago(u)))
             .unwrap_or_default();
-        println!("Authenticator app   set up {}{used}", style::ago(since));
+        let named = t
+            .authenticator_name
+            .as_deref()
+            .map(|n| format!("{n}, "))
+            .unwrap_or_default();
+        println!(
+            "Authenticator app   {named}set up {}{used}",
+            style::ago(since)
+        );
         let left = format!("{} of 10 left", t.recovery_codes);
         println!(
             "Recovery codes      {}",
@@ -395,6 +452,20 @@ fn read_stdin_line() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_summary_names_the_app_its_person_named() {
+        let mut t = TwoFactor {
+            authenticator_since: Some(1),
+            recovery_codes: 1,
+            ..Default::default()
+        };
+        assert_eq!(summary(&t), "on (authenticator app, 1 recovery code left)");
+        assert_eq!(app_name(&t), "Authenticator app");
+        t.authenticator_name = Some("1Password".into());
+        assert_eq!(summary(&t), "on (1Password, 1 recovery code left)");
+        assert_eq!(app_name(&t), "1Password");
+    }
 
     #[test]
     fn half_blocks_hold_two_rows_of_modules() {

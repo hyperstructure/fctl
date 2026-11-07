@@ -39,6 +39,8 @@ struct StatusRow {
     passkeys: i64,
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     used_at: Option<i64>,
+    #[serde(default)]
+    name: Option<String>,
     #[serde(deserialize_with = "crate::db::int", default)]
     codes: i64,
     #[serde(default)]
@@ -52,6 +54,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
         &format!(
             "SELECT (SELECT created_at FROM authenticator_apps WHERE user_id = ?1) AS since, \
              (SELECT last_used_at FROM authenticator_apps WHERE user_id = ?1) AS used_at, \
+             (SELECT name FROM authenticator_apps WHERE user_id = ?1) AS name, \
              (SELECT COUNT(*) FROM recovery_codes WHERE user_id = ?1 AND used_at IS NULL) AS codes, \
              (SELECT COUNT(*) FROM passkeys WHERE user_id = ?1) AS passkeys, \
              (SELECT value FROM settings WHERE key = '{}') AS settings",
@@ -74,6 +77,7 @@ pub async fn status(ctx: &Ctx, user: &UserRow) -> AppResult<TwoFactor> {
     Ok(TwoFactor {
         authenticator_since: row.since,
         authenticator_used_at: row.used_at,
+        authenticator_name: row.name,
         recovery_codes: row.codes.max(0) as u32,
         google: user.two_factor_google,
         google_required: settings.two_factor_google,
@@ -93,14 +97,38 @@ pub async fn get(ctx: &Ctx) -> AppResult<Response> {
 pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateTwoFactorRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    if let Some(google) = body.google {
-        // No longer asking for a code on Google sign-in lets whoever has the
-        // person's Google account in without one: a stolen session or token
-        // can't turn it off alone, as the instance's own setting can't be.
-        let stops = user.two_factor_google && !google;
-        if stops {
-            ctx.verified(fctl_domain::verify::Sensitive::StopGoogleCodes)?;
+    // No longer asking for a code on Google sign-in lets whoever has the
+    // person's Google account in without one: a stolen session or token
+    // can't turn it off alone, as the instance's own setting can't be.
+    // Checked before anything changes, so that a refused request changes
+    // nothing.
+    let stops = user.two_factor_google && body.google == Some(false);
+    if stops {
+        ctx.verified(fctl_domain::verify::Sensitive::StopGoogleCodes)?;
+    }
+    if let Some(name) = &body.authenticator_name {
+        // Nothing about the secret says which app keeps it, so the person
+        // says; an empty name goes back to "Authenticator app".
+        let name = crate::api::passkeys::clean_name(name);
+        let named = q(
+            &ctx.db,
+            "UPDATE authenticator_apps SET name = ? WHERE user_id = ?",
+            &[os(name.as_deref()), s(&user.id)],
+        )?
+        .run()
+        .await?;
+        if named == 0 {
+            return Err(conflict(
+                "You have no authenticator app to name. Set one up first.",
+            ));
         }
+        ctx.audit(
+            "two_factor.updated",
+            Some(&user.id),
+            Some(serde_json::json!({ "authenticator_name": name })),
+        );
+    }
+    if let Some(google) = body.google {
         q(
             &ctx.db,
             "UPDATE users SET two_factor_google = ?, updated_at = ? WHERE id = ?",
@@ -945,7 +973,7 @@ pub async fn confirm_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResul
         &ctx.db,
         "INSERT INTO authenticator_apps (user_id, secret_enc, last_step, failures, locked_until, created_at, last_used_at) \
          VALUES (?, ?, ?, 0, NULL, ?, NULL) ON CONFLICT (user_id) DO UPDATE SET secret_enc = excluded.secret_enc, \
-         last_step = excluded.last_step, failures = 0, locked_until = NULL, created_at = excluded.created_at, last_used_at = NULL",
+         last_step = excluded.last_step, failures = 0, locked_until = NULL, created_at = excluded.created_at, last_used_at = NULL, name = NULL",
         &[
             s(&user.id),
             s(&keys.seal(&totp_aad(&user.id), &secret)?),
