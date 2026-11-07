@@ -380,6 +380,22 @@ pub fn backfill(s: &mut Session) {
     }
 }
 
+/// Whether `url` is a pull request's on GitHub, and nothing more:
+/// `https://github.com/<owner>/<name>/pull/<number>`.
+pub fn is_github_pull(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://github.com/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let name_ok = |p: &str| {
+        !p.is_empty()
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    };
+    matches!(parts.as_slice(), [owner, name, "pull", number]
+        if name_ok(owner) && name_ok(name) && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// A pull request as the pull requests page and `fctl pulls` list it: as
 /// the session that last heard of it has it, with every session that
 /// lists it, newest first.
@@ -412,7 +428,9 @@ pub fn listed(sessions: &[fctl_proto::session::Session], states: &[&str]) -> Vec
         } else {
             s.pull_requests.iter().collect()
         };
-        for pr in prs {
+        // Only links to GitHub's pull requests, as the web app's list has
+        // them: what runs in a sandbox can pose as its agent.
+        for pr in prs.into_iter().filter(|pr| is_github_pull(&pr.url)) {
             let me = SessionRef {
                 id: s.id.clone(),
                 project_slug: s.project_slug.clone(),
@@ -1099,5 +1117,13 @@ mod tests {
         let mut unknown = pr("acme/web", 1);
         unknown.state = None;
         assert_eq!(listed(&[listing(4, vec![unknown])], &["open"]).len(), 1);
+        // Only GitHub's pull requests: a sandbox can pose as its agent.
+        let mut elsewhere = pr("acme/web", 2);
+        elsewhere.url = "https://evil.example/acme/web/pull/2".into();
+        let mut longer = pr("acme/web", 3);
+        longer.url.push_str("/files");
+        assert!(listed(&[listing(5, vec![elsewhere, longer])], &[]).is_empty());
+        assert!(is_github_pull("https://github.com/acme/web.site/pull/12"));
+        assert!(!is_github_pull("https://github.com/acme/web/issues/12"));
     }
 }

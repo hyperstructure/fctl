@@ -67,8 +67,22 @@ pub async fn run(server: Option<&str>, args: PullsArgs, json: bool) -> Result<()
         )
         .await?;
     let found = listed(&list.sessions, states);
+    // More sessions than it looked at: older pull requests aren't in it.
+    let more = list.next_before.is_some();
     if json {
-        return style::print_json(&serde_json::json!({ "pull_requests": found }));
+        return style::print_json(&serde_json::json!({
+            "pull_requests": found,
+            "next_before": list.next_before,
+        }));
+    }
+    if more {
+        eprintln!(
+            "{}",
+            style::dim(&format!(
+                "From the newest {} sessions with pull requests: narrow it with -p or -w, or raise --limit (at most 200), for older ones.",
+                args.limit
+            ))
+        );
     }
     if found.is_empty() {
         println!(
