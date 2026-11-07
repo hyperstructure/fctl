@@ -1,19 +1,24 @@
-// The signed-in layout: the sidebar (./sidebar.tsx), the page, and the command palette.
+// The signed-in layout: the sidebar (./sidebar.tsx), the page, the command palette, and the
+// shortcuts that work anywhere (lib/shortcuts.ts): the new session dialog and the keyboard
+// shortcuts sheet among them.
 
-import { Outlet, useRouter, useRouterState } from "@tanstack/react-router";
+import { Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { type CSSProperties, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Logo, toast } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { useFeed } from "@/lib/feed";
 import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
-import { useHotkey } from "@/lib/hotkeys";
 import { onPushOpen, syncPush } from "@/lib/push";
 import { useMe } from "@/lib/queries";
-import { FOLD_SHORTCUT, RAIL_WIDTH, useSidebarFolded, useSidebarWidth } from "@/lib/sidebar-layout";
+import { type GroupId, useShortcut } from "@/lib/shortcuts";
+import { RAIL_WIDTH, useSidebarFolded, useSidebarWidth } from "@/lib/sidebar-layout";
+import { focusPageTaskBox, focusTaskBox } from "@/lib/task-box";
 import { useFactorsWatch } from "@/lib/workspaces";
 import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { useDrawerDrag } from "./drawer-drag";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
+import { NewSessionDialog } from "./new-session";
+import { SequenceHint, ShortcutsDialog } from "./shortcuts";
 import { Sidebar } from "./sidebar";
 import { ResizeHandle } from "./sidebar-parts";
 
@@ -62,11 +67,46 @@ export function AppShell() {
   const wide = useWide();
   // Only where it shows: on a narrow screen the sidebar is a drawer, which doesn't fold. ⌘B, as
   // in code editors, takes no Shift or Option on any layout; ⌘\ too, where \ is a key of its own.
-  const fold = useCallback(() => {
+  useShortcut("fold", () => {
     if (wide) setFolded(!folded);
-  }, [wide, folded, setFolded]);
-  useHotkey(FOLD_SHORTCUT, fold);
-  useHotkey("mod+\\", fold);
+  });
+  const navigate = useNavigate();
+  useShortcut("floor", () => {
+    void navigate({ to: "/" });
+    focusTaskBox();
+  });
+  useShortcut("pulls", () => void navigate({ to: "/pulls", search: {} }));
+  useShortcut(
+    "settings",
+    () => void navigate({ to: "/settings", search: { linked: undefined, error: undefined } }),
+  );
+  // N goes to the task box the page shows, or brings the Agent Floor's over it: on a phone, from ⌘K,
+  // the Agent Floor opens instead, whose box has the room.
+  const [starting, setStarting] = useState(false);
+  const newSession = () => {
+    setPalette(false);
+    if (focusPageTaskBox()) return;
+    if (wide) setStarting(true);
+    else {
+      void navigate({ to: "/" });
+      focusTaskBox();
+    }
+  };
+  useShortcut("newSession", newSession);
+  // ? or ⌘/, from a dialog too (the changes'), whose shortcuts it then lists first.
+  const [help, setHelp] = useState<GroupId[]>();
+  const showHelp = () => {
+    setPalette(false);
+    setHelp(here(path));
+  };
+  useShortcut("help", () => (help ? setHelp(undefined) : showHelp()), { inDialogs: true });
+  // They belong to the page they opened on: another page closes them, as a session starting does.
+  const [overlaysOf, setOverlaysOf] = useState(path);
+  if (overlaysOf !== path) {
+    setOverlaysOf(path);
+    setStarting(false);
+    setHelp(undefined);
+  }
   return (
     <div
       ref={root}
@@ -96,6 +136,7 @@ export function AppShell() {
       >
         <Sidebar
           onPalette={openPalette}
+          onShortcuts={showHelp}
           onNavigate={dropDrawer}
           onClose={closeDrawer}
           path={path}
@@ -149,9 +190,33 @@ export function AppShell() {
           </ShellContext>
         </main>
       </div>
-      <CommandPalette open={palette} onClose={() => setPalette(false)} onNavigate={dropDrawer} />
+      <CommandPalette
+        open={palette}
+        onClose={() => setPalette(false)}
+        onNavigate={dropDrawer}
+        onNewSession={() => {
+          dropDrawer();
+          newSession();
+        }}
+        onShortcuts={showHelp}
+      />
+      <NewSessionDialog open={starting} onClose={() => setStarting(false)} />
+      <ShortcutsDialog open={!!help} onClose={() => setHelp(undefined)} here={help ?? []} />
+      <SequenceHint />
     </div>
   );
+}
+
+/**
+ * The groups of shortcuts for what is in front of the reader on the page at `path`, or in the dialog
+ * over it: the keyboard shortcuts sheet lists them first.
+ */
+function here(path: string): GroupId[] {
+  if (document.querySelector("dialog[open][data-shortcuts='changes']")) return ["changes", "find"];
+  if (path.startsWith("/s/")) return ["session", "find"];
+  if (path === "/pulls") return ["pulls"];
+  if (path === "/" || path.startsWith("/p/")) return ["writing"];
+  return [];
 }
 
 /** Says once that their picture is their Gravatar now: where it came from, and where to change it. */

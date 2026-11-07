@@ -82,6 +82,19 @@ const side = workspace("ws_side", "Side");
 const workspaces: G.WorkspaceList = { workspaces: [acme, side], invitations: [], limit: 5 };
 const projects: G.ProjectList = { projects: [project("web", acme, 2), project("api", acme)] };
 
+/** What `el` says, without what it hides from screen readers: the palette's keycaps. */
+function shownText(el: Element): string {
+  return [...el.childNodes]
+    .map((n) =>
+      n instanceof Element
+        ? n.getAttribute("aria-hidden") === "true"
+          ? ""
+          : shownText(n)
+        : (n.textContent ?? ""),
+    )
+    .join("");
+}
+
 /**
  * The sidebar as a reload shows it, for Ada, on the page at `path`: the control plane's lists come
  * when the test says, and `cached` is in the cache already.
@@ -566,7 +579,7 @@ function phone({ wide = false } = {}) {
     search: () =>
       click([...drawer().querySelectorAll("button")].find((b) => b.textContent?.includes("Search"))),
     pick: (name: string) =>
-      click([...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === name)),
+      click([...document.querySelectorAll("button")].find((b) => shownText(b).trim() === name)),
     escape: () =>
       act(() => {
         document

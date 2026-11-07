@@ -88,6 +88,7 @@ import {
 } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote-control";
+import { ariaShortcut, useShortcut, withShortcut } from "@/lib/shortcuts";
 import {
   type DiskShort,
   diskLabel,
@@ -122,6 +123,8 @@ export function SessionPage() {
   // The details sheet, where the rail doesn't fit.
   const [details, setDetails] = useState(false);
   const [share, setShare] = useState(false);
+  // The diffs shown over the page, at the file opened in Changes (or the first, with c).
+  const [diffAt, setDiffAt] = useState<DiffTarget>();
   // They belong to the session they opened on. The router keeps this page when a link (in the
   // sheet, to the review agent's session) or Back leads to another session, so they close as it
   // comes in: in the same render, without sliding away, which the view transition would show
@@ -131,7 +134,22 @@ export function SessionPage() {
     setOverlaysOf(id);
     setDetails(false);
     setShare(false);
+    setDiffAt(undefined);
   }
+  const diffGroups = useDiffGroups(session, s.git);
+  // c opens the changes at the first file; d shows or hides the details: the rail where it fits,
+  // else the sheet.
+  useShortcut("changes", () => {
+    const first = diffGroups.find((g) => g.files.length > 0);
+    const file = first?.files[0];
+    if (first && file) setDiffAt({ repo: first.repo, path: file.path });
+    else if (session) toast(session.review ? "No changes to review yet" : "No changes yet");
+  });
+  useShortcut("details", () => {
+    if (!session) return;
+    if (window.matchMedia?.("(min-width: 64rem)").matches ?? true) setRail((r) => !r);
+    else setDetails((d) => !d);
+  });
   const transcript = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLDivElement>(null);
   const footer = useRef<HTMLDivElement>(null);
@@ -408,6 +426,9 @@ export function SessionPage() {
                 {/* The rail where it fits. */}
                 <IconButton
                   label="Details"
+                  title={withShortcut("Details", "details")}
+                  aria-keyshortcuts={ariaShortcut("details")}
+                  aria-pressed={rail}
                   onClick={() => setRail(!rail)}
                   className={cn("max-lg:hidden", rail && "text-ink")}
                 >
@@ -417,6 +438,8 @@ export function SessionPage() {
                   // Narrower, the details sheet: on phones the title opens it.
                   <IconButton
                     label="Details"
+                    title={withShortcut("Details", "details")}
+                    aria-keyshortcuts={ariaShortcut("details")}
                     aria-haspopup="dialog"
                     aria-expanded={details}
                     onClick={() => setDetails(true)}
@@ -654,9 +677,10 @@ export function SessionPage() {
       {rail && session && (
         <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
-            // Anew for another session: a diff or the retrospectives it showed close.
+            // Anew for another session: the retrospectives it showed close.
             key={session.id}
             session={session}
+            onDiff={setDiffAt}
             role={role}
             review={review}
             me={me?.user.id}
@@ -686,12 +710,64 @@ export function SessionPage() {
             stall={stall}
             disk={disk}
             pullsFirst
+            onDiff={setDiffAt}
           />
         </Sheet>
+      )}
+      {diffAt && session && (
+        <DiffDialog
+          session={session.id}
+          cliRef={`${session.project_slug}#${session.number}`}
+          groups={diffGroups}
+          initial={diffAt}
+          onClose={() => setDiffAt(undefined)}
+        />
       )}
       {session && <ShareDialog open={share} onClose={() => setShare(false)} session={session} />}
     </div>
   );
+}
+
+/** What the details call the session's primary repository. */
+const primaryTitleOf = (project?: G.Project) =>
+  project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace";
+
+/**
+ * The changed files of each of the session's repositories, as the diffs over the page show them:
+ * the primary repository's, then each other's that has changes.
+ */
+function useDiffGroups(session: G.Session | undefined, git: G.GitState | undefined): DiffGroup[] {
+  // The details' own (useProject), once the session says which.
+  const slug = session?.project_slug ?? "";
+  const project = useQuery({
+    queryKey: keys.project(slug),
+    queryFn: () => api.project(slug),
+    enabled: !!slug,
+  }).data;
+  if (!session) return [];
+  const [primary, ...others] = repoChanges(
+    git ?? { ahead: 0, behind: 0, files: [], uncommitted: 0, pushed: false },
+    sessionGithub(session, project) === "push",
+  );
+  const primaryTitle = primaryTitleOf(project);
+  const merged = new Set(
+    pullRequests(session)
+      .filter((p) => p.state === "merged")
+      .map((p) => p.url),
+  );
+  return [
+    {
+      title: primaryTitle,
+      files: primary?.files ?? [],
+      blob: blobLink(project?.repo && primaryTitle, branchOf(git), merged),
+    },
+    ...others.filter(hasChanges).map((r) => ({
+      repo: r.name,
+      title: r.name,
+      files: r.files,
+      blob: blobLink(r.name, branchOf(git, r.name), merged),
+    })),
+  ].filter((g) => g.files.length > 0);
 }
 
 /** The color of the runner's dot: whether it is connected, reaches the agent, and has room on its disk. */
@@ -948,6 +1024,7 @@ function Details({
   stall,
   disk,
   pullsFirst,
+  onDiff,
 }: {
   session: G.Session;
   /** The signed-in person's, in the session. */
@@ -967,6 +1044,8 @@ function Details({
   disk?: DiskShort;
   /** The pull requests before the changes, as the sheet has them: on phones they're what people open. */
   pullsFirst?: boolean;
+  /** Opens the diffs over the page, at a file of the changes. */
+  onDiff: (at: DiffTarget) => void;
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
@@ -978,27 +1057,7 @@ function Details({
   );
   // Several repositories: each under its name, those without changes left out.
   const changed = others.filter(hasChanges);
-  // The diff shown over the page, of the file opened in the lists below.
-  const [diffAt, setDiffAt] = useState<DiffTarget>();
-  const primaryTitle = project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace";
-  const merged = new Set(
-    pullRequests(session)
-      .filter((p) => p.state === "merged")
-      .map((p) => p.url),
-  );
-  const diffGroups: DiffGroup[] = [
-    {
-      title: primaryTitle,
-      files: primary?.files ?? [],
-      blob: blobLink(project?.repo && primaryTitle, branchOf(git), merged),
-    },
-    ...changed.map((r) => ({
-      repo: r.name,
-      title: r.name,
-      files: r.files,
-      blob: blobLink(r.name, branchOf(git, r.name), merged),
-    })),
-  ].filter((g) => g.files.length > 0);
+  const primaryTitle = primaryTitleOf(project);
   const prs = pullRequests(session);
   const rc = session.remote_control;
   const claudeUrl = remoteControlUrl(rc, session.created_by, me);
@@ -1057,7 +1116,7 @@ function Details({
       {pullsFirst && pulls}
       <RailSection title={session.review ? "Changes reviewed" : "Changes"}>
         {primary && others.length === 0 ? (
-          <Changes repo={primary} showTotals={!!git} onOpen={(path) => setDiffAt({ path })} />
+          <Changes repo={primary} showTotals={!!git} onOpen={(path) => onDiff({ path })} />
         ) : (
           <div className="flex flex-col gap-5">
             {primary && (hasChanges(primary) || changed.length === 0) && (
@@ -1065,7 +1124,7 @@ function Details({
                 repo={primary}
                 title={primaryTitle}
                 showTotals={hasChanges(primary)}
-                onOpen={(path) => setDiffAt({ path })}
+                onOpen={(path) => onDiff({ path })}
               />
             )}
             {changed.map((r) => (
@@ -1074,19 +1133,10 @@ function Details({
                 repo={r}
                 title={r.name}
                 showTotals
-                onOpen={(path) => setDiffAt({ repo: r.name, path })}
+                onOpen={(path) => onDiff({ repo: r.name, path })}
               />
             ))}
           </div>
-        )}
-        {diffAt && (
-          <DiffDialog
-            session={session.id}
-            cliRef={`${session.project_slug}#${session.number}`}
-            groups={diffGroups}
-            initial={diffAt}
-            onClose={() => setDiffAt(undefined)}
-          />
         )}
       </RailSection>
       {!pullsFirst && pulls}

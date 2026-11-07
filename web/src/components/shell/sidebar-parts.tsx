@@ -5,6 +5,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronsUpDown,
   Cpu,
+  Keyboard,
   LogOut,
   MessageCircleQuestion,
   Moon,
@@ -21,10 +22,10 @@ import { api } from "@/lib/api";
 import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
-import { apple } from "@/lib/hotkeys";
 import { pullRequests } from "@/lib/pulls";
 import { forgetPush } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
+import { shortcutText } from "@/lib/shortcuts";
 import { forgetSidebar } from "@/lib/sidebar";
 import { draggedTo, RAIL_WIDTH, SIDEBAR_WIDTH } from "@/lib/sidebar-layout";
 import { useTheme } from "@/lib/theme";
@@ -49,7 +50,7 @@ export function SearchButton({ onPalette }: { onPalette: () => void }) {
     >
       <Search className="size-3.5" />
       <span className="flex-1 text-left">Search or jump to…</span>
-      <Kbd>{apple() ? "⌘K" : "Ctrl K"}</Kbd>
+      <Kbd>{shortcutText("palette")}</Kbd>
     </button>
   );
 }
@@ -188,16 +189,22 @@ function FootRow({
   );
 }
 
-/** The person signed in, and their menu: the theme, Claude and tokens, signing out. */
+/**
+ * The person signed in, and their menu: the theme, Claude and tokens, the keyboard shortcuts (on a
+ * computer), signing out.
+ */
 export function UserMenu({
   me,
   instance,
   onNavigate,
+  onShortcuts,
   compact,
 }: {
   me?: G.Me;
   instance?: G.InstanceInfo;
   onNavigate: () => void;
+  /** Keyboard shortcuts: the sheet that lists them. */
+  onShortcuts?: () => void;
   /** Their picture alone, as the rail shows it. */
   compact?: boolean;
 }) {
@@ -256,6 +263,22 @@ export function UserMenu({
           >
             Claude and tokens
           </MenuItem>
+          {onShortcuts && (
+            // A computer's: phones and tablets have no keys for them.
+            <MenuItem
+              icon={<Keyboard />}
+              onClick={() => {
+                close();
+                onShortcuts();
+              }}
+              className="[@media(hover:none)]:hidden"
+            >
+              Keyboard shortcuts
+              <span className="ml-auto pl-3">
+                <Kbd>{shortcutText("help")}</Kbd>
+              </span>
+            </MenuItem>
+          )}
           <MenuSeparator />
           <MenuItem
             icon={<LogOut />}

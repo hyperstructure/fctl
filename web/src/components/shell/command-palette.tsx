@@ -1,10 +1,21 @@
 // ⌘K: jump to workspaces, projects and sessions, or run an action. The Agent Floor
 // comes first, so that ⌘K and Enter open the task box for a new session from anywhere.
 // Past a couple of letters it also searches what all sessions said (lib/search.ts):
-// those open at what it found, with the session's find bar on it.
+// those open at what it found, with the session's find bar on it. Where an entry has a
+// shortcut of its own (lib/shortcuts.ts), a computer shows it beside the entry.
 
 import { useNavigate } from "@tanstack/react-router";
-import { FolderPlus, MessageSquareText, Moon, Plus, Search, Settings, Shield } from "lucide-react";
+import {
+  FolderPlus,
+  Keyboard,
+  MessageSquareText,
+  Moon,
+  Plus,
+  Search,
+  Settings,
+  Shield,
+  SquarePen,
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ProjectMark } from "@/components/project/project-icon";
@@ -12,13 +23,14 @@ import { AgentFloorIcon, PullRequestIcon, Spinner, StatusDot } from "@/component
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
-import { useHotkey } from "@/lib/hotkeys";
 import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoLabel } from "@/lib/repos";
 import { around, landing, marked, said, useSessionSearch } from "@/lib/search";
+import { ariaShortcut, SHORTCUTS, type ShortcutId, useShortcut } from "@/lib/shortcuts";
 import { focusTaskBox } from "@/lib/task-box";
 import { getTheme, setTheme } from "@/lib/theme";
 import { createsProjects } from "@/lib/workspaces";
+import { Combo } from "./shortcuts";
 
 interface Entry {
   id: string;
@@ -28,6 +40,8 @@ interface Entry {
   /** A second line: where a search found what was typed. */
   detail?: ReactNode;
   hint?: string;
+  /** Its shortcut, which a computer shows in place of the hint. */
+  keys?: ShortcutId;
   /** More words it is found by. */
   keywords?: string;
   icon: ReactNode;
@@ -56,20 +70,24 @@ function Marked({ m }: { m: G.SearchMatch }) {
  * code editors (⌘P in place of printing), even while typing. The search button shows ⌘K alone.
  */
 export function usePaletteKeys(open: () => void) {
-  useHotkey("mod+k", open, { inInputs: true });
-  useHotkey("mod+p", open, { inInputs: true });
-  useHotkey("mod+shift+p", open, { inInputs: true });
+  useShortcut("palette", open, { inInputs: true });
 }
 
 export function CommandPalette({
   open,
   onClose,
   onNavigate,
+  onNewSession,
+  onShortcuts,
 }: {
   open: boolean;
   onClose: () => void;
   /** An entry opens a page: on phones, the sidebar the palette was opened from goes too. */
   onNavigate: () => void;
+  /** New session: the task box over the page (app-shell.tsx). */
+  onNewSession?: () => void;
+  /** Keyboard shortcuts: the sheet that lists them. */
+  onShortcuts?: () => void;
 }) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
@@ -101,6 +119,7 @@ export function CommandPalette({
         group: "Go to",
         label: "Agent Floor",
         hint: "new session",
+        keys: "floor",
         // What it was called before.
         keywords: "home",
         icon: <AgentFloorIcon className="size-4" />,
@@ -114,6 +133,7 @@ export function CommandPalette({
         group: "Go to",
         label: "Pull requests",
         hint: "what each needs next",
+        keys: "pulls",
         keywords: "prs review merge checks",
         icon: <PullRequestIcon state="open" className="size-4" />,
         run: go(() => void navigate({ to: "/pulls", search: {} })),
@@ -150,6 +170,19 @@ export function CommandPalette({
         run: go(() => navigate({ to: "/w/$slug", params: { slug: w.slug } })),
       });
     }
+    if (onNewSession)
+      list.push({
+        id: "a-new-session",
+        group: "Actions",
+        label: "New session",
+        keys: "newSession",
+        keywords: "start agent task",
+        icon: <SquarePen className="size-4" />,
+        run: () => {
+          onClose();
+          onNewSession();
+        },
+      });
     // Only where you create projects: in workspaces you are an admin of.
     if (workspaces?.workspaces.some(createsProjects)) {
       list.push({
@@ -172,6 +205,7 @@ export function CommandPalette({
         id: "a-settings",
         group: "Actions",
         label: "Settings",
+        keys: "settings",
         icon: <Settings className="size-4" />,
         run: go(() => navigate({ to: "/settings", search: { linked: undefined, error: undefined } })),
       },
@@ -188,6 +222,19 @@ export function CommandPalette({
         },
       },
     );
+    if (onShortcuts)
+      list.push({
+        id: "a-shortcuts",
+        group: "Actions",
+        label: "Keyboard shortcuts",
+        keys: "help",
+        keywords: "keys hotkeys keybindings help",
+        icon: <Keyboard className="size-4" />,
+        run: () => {
+          onClose();
+          onShortcuts();
+        },
+      });
     if (me?.user.role === "owner" || me?.user.role === "admin") {
       list.push({
         id: "a-admin",
@@ -208,7 +255,7 @@ export function CommandPalette({
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
       .map((x) => x.e);
-  }, [q, sessions, projects, workspaces, me, navigate, onClose, onNavigate]);
+  }, [q, sessions, projects, workspaces, me, navigate, onClose, onNavigate, onNewSession, onShortcuts]);
 
   // The sessions that say what was typed, past those listed already.
   const deep = useMemo<Entry[]>(() => {
@@ -314,6 +361,7 @@ export function CommandPalette({
                 )}
                 <button
                   type="button"
+                  aria-keyshortcuts={e.keys && ariaShortcut(e.keys)}
                   onMouseMove={() => setI(n)}
                   onClick={e.run}
                   className={cn(
@@ -335,9 +383,19 @@ export function CommandPalette({
                   </span>
                   {e.hint && (
                     <span
-                      className={cn("shrink-0 font-mono text-[11.5px] text-ink-4", e.detail && "leading-5")}
+                      className={cn(
+                        "shrink-0 font-mono text-[11.5px] text-ink-4",
+                        e.detail && "leading-5",
+                        e.keys && "[@media(hover:hover)]:hidden",
+                      )}
                     >
                       {e.hint}
+                    </span>
+                  )}
+                  {e.keys && (
+                    // The entry's aria-keyshortcuts says it to screen readers.
+                    <span aria-hidden="true" className="hidden shrink-0 [@media(hover:hover)]:inline-flex">
+                      <Combo combo={firstKeys(e.keys)} size="sm" />
                     </span>
                   )}
                 </button>
@@ -357,6 +415,12 @@ export function CommandPalette({
     </div>,
     document.body,
   );
+}
+
+/** The first way to press `id`, which the palette shows. */
+function firstKeys(id: ShortcutId): string {
+  const first = SHORTCUTS[id].keys[0];
+  return (typeof first === "string" ? first : first?.[0]) ?? "";
 }
 
 /** Subsequence match, rewarding prefixes and word starts. */

@@ -28,6 +28,7 @@ import {
   useStartChoice,
   useStartSession,
 } from "@/components/session/start";
+import { startKeys } from "@/components/session/task-box";
 import {
   Avatar,
   Banner,
@@ -85,6 +86,7 @@ import {
 } from "@/lib/queries";
 import { parseRepo, repoAdditions, repoChoices, repoLabel, repoSummary, repoValue } from "@/lib/repos";
 import { lastMoved, sections } from "@/lib/sessions";
+import { usePageTaskBox } from "@/lib/task-box";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
@@ -473,6 +475,7 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
   const [placeholder] = useState(projectPlaceholder);
   const { choice, picked, pick } = useStartChoice(project, kept);
   const ref = useRef<HTMLTextAreaElement>(null);
+  usePageTaskBox(ref, true);
   const files = useAttachments({ project: project.slug }, { keep });
   const draft = useKeepDraft(keep, {
     kept,
@@ -520,6 +523,9 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               go();
+            } else if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+              // Out of the box, the page's keys work again.
+              e.currentTarget.blur();
             }
           }}
           onPaste={(e) => {
@@ -552,7 +558,7 @@ function StartForm({ project, user }: { project: G.Project; user: string }) {
           />
           {/* Set apart from the pickers, as on the home page. On a phone its room goes to the
               button. */}
-          <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
+          <span className="ml-4 text-[11.5px] text-ink-4 max-sm:hidden">{startKeys()}</span>
           <ScheduleButton
             project={project}
             prompt={prompt}

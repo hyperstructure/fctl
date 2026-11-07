@@ -299,10 +299,14 @@ export function useAttachments(scope: UploadScope | undefined, { keep }: { keep?
   };
 }
 
+/** The forms that take files dropped on the page, newest last: only the newest does. */
+const droppers: symbol[] = [];
+
 /**
  * Files dragged over the page go to `onFiles` when dropped anywhere on it,
  * so a near miss never opens the file in the tab. Returns whether a drag is
- * in progress.
+ * in progress. Where two forms take them, as the page's message box and the
+ * new session dialog over it, the one that came last does.
  */
 export function useFileDrop(onFiles: (files: File[]) => void, enabled = true): boolean {
   const [dragging, setDragging] = useState(false);
@@ -311,23 +315,26 @@ export function useFileDrop(onFiles: (files: File[]) => void, enabled = true): b
   handler.current = onFiles;
   useEffect(() => {
     if (!enabled) return;
+    const me = Symbol("file drop");
+    droppers.push(me);
+    const mine = () => droppers[droppers.length - 1] === me;
     const enter = (e: DragEvent) => {
-      if (!dragHasFiles(e)) return;
+      if (!dragHasFiles(e) || !mine()) return;
       depth.current++;
       setDragging(true);
     };
     const over = (e: DragEvent) => {
-      if (!dragHasFiles(e)) return;
+      if (!dragHasFiles(e) || !mine()) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
     };
     const leave = (e: DragEvent) => {
-      if (!dragHasFiles(e)) return;
+      if (!dragHasFiles(e) || !mine()) return;
       depth.current = Math.max(0, depth.current - 1);
       if (depth.current === 0) setDragging(false);
     };
     const drop = (e: DragEvent) => {
-      if (!dragHasFiles(e)) return;
+      if (!dragHasFiles(e) || !mine()) return;
       e.preventDefault();
       depth.current = 0;
       setDragging(false);
@@ -339,6 +346,7 @@ export function useFileDrop(onFiles: (files: File[]) => void, enabled = true): b
     window.addEventListener("dragleave", leave);
     window.addEventListener("drop", drop);
     return () => {
+      droppers.splice(droppers.indexOf(me), 1);
       window.removeEventListener("dragenter", enter);
       window.removeEventListener("dragover", over);
       window.removeEventListener("dragleave", leave);

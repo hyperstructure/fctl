@@ -48,6 +48,19 @@ const session: G.Session = {
   archived: false,
 };
 
+/** What `el` says, without what it hides from screen readers. */
+function shownText(el: Element): string {
+  return [...el.childNodes]
+    .map((n) =>
+      n instanceof Element
+        ? n.getAttribute("aria-hidden") === "true"
+          ? ""
+          : shownText(n)
+        : (n.textContent ?? ""),
+    )
+    .join("");
+}
+
 /** The task box, as the home page shows it under the palette. */
 function TaskBox() {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -79,8 +92,8 @@ function palette() {
   const input = document.querySelector<HTMLInputElement>('input[placeholder^="Search"]');
   if (!input) throw new Error("no search field");
   input.focus();
-  const entries = () =>
-    [...document.querySelectorAll<HTMLButtonElement>("button")].map((b) => b.textContent ?? "");
+  // What each says, without its keycaps (aria-keyshortcuts says those).
+  const entries = () => [...document.querySelectorAll<HTMLButtonElement>("button")].map(shownText);
   const press = (key: string) => {
     const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     act(() => {
