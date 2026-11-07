@@ -19,6 +19,7 @@
 use fctl_proto::Millis;
 use fctl_proto::event::GitState;
 use fctl_proto::session::{PullRequestChecks, PullRequestRef, RepoRef, Session};
+use serde::Serialize;
 
 /// Most pull requests a session lists: the first its agent found.
 pub const MAX_PULL_REQUESTS: usize = 20;
@@ -377,6 +378,92 @@ pub fn backfill(s: &mut Session) {
     {
         s.pull_requests.push(pr.clone());
     }
+}
+
+/// Whether `url` is a pull request's on GitHub, and nothing more:
+/// `https://github.com/<owner>/<name>/pull/<number>`.
+pub fn is_github_pull(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://github.com/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let name_ok = |p: &str| {
+        !p.is_empty()
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    };
+    matches!(parts.as_slice(), [owner, name, "pull", number]
+        if name_ok(owner) && name_ok(name) && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A pull request as the pull requests page and `fctl pulls` list it: as
+/// the session that last heard of it has it, with every session that
+/// lists it, newest first.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Listed {
+    pub pull_request: PullRequestRef,
+    pub sessions: Vec<SessionRef>,
+}
+
+/// A session, as a listed pull request names it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SessionRef {
+    pub id: fctl_proto::SessionId,
+    pub project_slug: String,
+    pub number: u32,
+    pub title: String,
+    pub status: fctl_proto::session::SessionStatus,
+    pub created_by: fctl_proto::session::UserRef,
+}
+
+/// The pull requests `sessions` list (newest session first), each once:
+/// the freshest of what the sessions say of it, those whose state is in
+/// `states` (empty: any; a pull request nobody looked up counts as open),
+/// the ones that changed last first.
+pub fn listed(sessions: &[fctl_proto::session::Session], states: &[&str]) -> Vec<Listed> {
+    let mut out: Vec<Listed> = Vec::new();
+    for s in sessions {
+        let prs: Vec<&PullRequestRef> = if s.pull_requests.is_empty() {
+            s.pull_request.iter().collect()
+        } else {
+            s.pull_requests.iter().collect()
+        };
+        // Only links to GitHub's pull requests, as the web app's list has
+        // them: what runs in a sandbox can pose as its agent.
+        for pr in prs.into_iter().filter(|pr| is_github_pull(&pr.url)) {
+            let me = SessionRef {
+                id: s.id.clone(),
+                project_slug: s.project_slug.clone(),
+                number: s.number,
+                title: s.title.clone(),
+                status: s.status,
+                created_by: s.created_by.clone(),
+            };
+            match out.iter_mut().find(|l| l.pull_request.url == pr.url) {
+                Some(l) => {
+                    if pr.updated_at.unwrap_or(0) > l.pull_request.updated_at.unwrap_or(0) {
+                        l.pull_request = pr.clone();
+                    }
+                    l.sessions.push(me);
+                }
+                None => out.push(Listed {
+                    pull_request: pr.clone(),
+                    sessions: vec![me],
+                }),
+            }
+        }
+    }
+    out.retain(|l| {
+        states.is_empty() || states.contains(&l.pull_request.state.as_deref().unwrap_or("open"))
+    });
+    let moved = |l: &Listed| {
+        l.pull_request
+            .updated_at
+            .or(l.pull_request.state_changed_at)
+            .unwrap_or(0)
+    };
+    out.sort_by_key(|l| std::cmp::Reverse(moved(l)));
+    out
 }
 
 #[cfg(test)]
@@ -972,5 +1059,71 @@ mod tests {
         ] {
             assert_eq!(github_time(bad), None, "{bad}");
         }
+    }
+
+    /// A session that lists `prs`, as the API sends one.
+    fn listing(n: u32, prs: Vec<PullRequestRef>) -> Session {
+        let mut s: Session = serde_json::from_value(serde_json::json!({
+            "id": format!("ses_{n}"),
+            "project_id": "prj_1",
+            "project_slug": "shop",
+            "number": n,
+            "title": format!("Session {n}"),
+            "status": "stopped",
+            "created_by": { "id": "usr_1", "name": "Noor Haddad" },
+            "created_at": i64::from(n),
+            "updated_at": i64::from(n),
+            "stats": {},
+            "archived": false
+        }))
+        .unwrap_or_else(|e| panic!("a session: {e}"));
+        s.pull_requests = prs;
+        s
+    }
+
+    #[test]
+    fn pull_requests_are_listed_once_with_every_session_that_lists_them() {
+        let mut fresh = pr("acme/shop", 12);
+        fresh.updated_at = Some(30);
+        fresh.state = Some("merged".into());
+        let mut stale = pr("acme/shop", 12);
+        stale.updated_at = Some(10);
+        let mut other = pr("acme/platform", 7);
+        other.updated_at = Some(20);
+        // Newest session first, as the API lists them.
+        let sessions = [
+            listing(3, vec![stale]),
+            listing(2, vec![other]),
+            listing(1, vec![fresh]),
+        ];
+        let all = listed(&sessions, &[]);
+        assert_eq!(all.len(), 2);
+        // The freshest of what the sessions say, the one that changed last first.
+        assert_eq!(all[0].pull_request.number, 12);
+        assert_eq!(all[0].pull_request.state.as_deref(), Some("merged"));
+        assert_eq!(
+            all[0].sessions.iter().map(|s| s.number).collect::<Vec<_>>(),
+            [3, 1]
+        );
+        assert_eq!(all[1].pull_request.number, 7);
+        // Only those in a state; one nobody looked up counts as open.
+        let open = listed(&sessions, &["open", "draft", "queued"]);
+        assert_eq!(
+            open.iter()
+                .map(|l| l.pull_request.number)
+                .collect::<Vec<_>>(),
+            [7]
+        );
+        let mut unknown = pr("acme/web", 1);
+        unknown.state = None;
+        assert_eq!(listed(&[listing(4, vec![unknown])], &["open"]).len(), 1);
+        // Only GitHub's pull requests: a sandbox can pose as its agent.
+        let mut elsewhere = pr("acme/web", 2);
+        elsewhere.url = "https://evil.example/acme/web/pull/2".into();
+        let mut longer = pr("acme/web", 3);
+        longer.url.push_str("/files");
+        assert!(listed(&[listing(5, vec![elsewhere, longer])], &[]).is_empty());
+        assert!(is_github_pull("https://github.com/acme/web.site/pull/12"));
+        assert!(!is_github_pull("https://github.com/acme/web/issues/12"));
     }
 }

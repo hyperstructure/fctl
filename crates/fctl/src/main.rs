@@ -83,6 +83,13 @@ enum Command {
   fctl search \"database migration\" -p my-app
   fctl search --json flaky | jq -r '.sessions[].session.id'")]
     Search(cmd::search::SearchArgs),
+    /// The pull requests agents opened in your projects, each once, with
+    /// the sessions that list it: open ones unless you ask for others.
+    #[command(after_help = "Examples:
+  fctl pulls                           # open ones (drafts and merge queues too), in all your workspaces
+  fctl pulls -p shop --state merged
+  fctl pulls --mine --json")]
+    Pulls(cmd::pulls::PullsArgs),
     /// Show a session's details.
     Show {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -465,6 +472,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
         Command::Publish(args) => cmd::publish::publish(args, json).await,
         Command::Ask(args) => cmd::ask::run(args, json).await,
+        Command::Pulls(args) => cmd::pulls::run(server, args, json).await,
         Command::Unpublish { links } => cmd::publish::unpublish(server, &links, json).await,
         Command::Memory(args) => cmd::memory::run(server, args, json).await,
         Command::Retro(args) => cmd::retro::run(server, args, json).await,

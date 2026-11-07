@@ -330,9 +330,12 @@ export const api = {
       /** Without those that ended before then (ms). */
       activeSince?: number;
       mine?: boolean;
+      /** Only those that list a pull request in this state (the pull requests page). */
+      pulls?: "open" | "merged" | "closed" | "any";
     } = {},
   ) => {
     const p = new URLSearchParams();
+    if (q.pulls) p.set("pulls", q.pulls);
     if (q.project) p.set("project", q.project);
     if (q.workspace) p.set("workspace", q.workspace);
     if (q.status) p.set("status", q.status);
