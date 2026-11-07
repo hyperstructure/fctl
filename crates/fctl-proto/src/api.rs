@@ -7,9 +7,9 @@
 use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, RunnerClaudeToken, SandboxLimits};
 use crate::session::{
-    GithubAccess, InstanceRole, Memory, Project, ProjectRole, ProjectSettings, PullRequestRef,
-    RepoAccess, RepoRef, Retrospective, RetrospectiveOutcome, Session, SessionRef, SessionRole,
-    SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
+    GithubAccess, InstanceRole, Memory, Project, ProjectIcon, ProjectRole, ProjectSettings,
+    PullRequestRef, RepoAccess, RepoRef, Retrospective, RetrospectiveOutcome, Session, SessionRef,
+    SessionRole, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
     AccessRequestId, AllowId, AttachmentId, CredentialId, DeliveryId, EnrollmentTokenId,
@@ -2416,6 +2416,8 @@ pub struct CreateProjectRequest {
     pub create_repo: Option<CreateRepoRequest>,
     pub default_branch: Option<String>,
     pub settings: Option<ProjectSettings>,
+    /// Its icon. Absent: the one that fits its name and description.
+    pub icon: Option<ProjectIcon>,
 }
 
 #[skip_serializing_none]
@@ -2424,6 +2426,9 @@ pub struct CreateProjectRequest {
 pub struct UpdateProjectRequest {
     pub name: Option<String>,
     pub description: Option<String>,
+    /// Its icon; one with an empty name takes it away. Control planes
+    /// before icons ignore it.
+    pub icon: Option<ProjectIcon>,
     /// `owner/name`, or `""` to unlink.
     pub repo: Option<String>,
     pub default_branch: Option<String>,

@@ -262,9 +262,9 @@ shows a tool's request.
 | Request | What it does |
 |---|---|
 | `GET /api/v1/projects` | the caller's projects (`?workspace=`) |
-| `GET /api/v1/projects/{project}` | one, with its primary `repo`, `default_branch`, `settings`, session counts and the caller's `role` |
-| `POST /api/v1/projects` | `{"workspace", "name", "slug", "description", "repo": "owner/name"` or `"create_repo": {"name", "private", "owner"}`, `"settings"}`: workspace admins |
-| `PATCH /api/v1/projects/{project}` | `{"name", "description", "repo", "default_branch", "settings", "archived"}`: maintainers |
+| `GET /api/v1/projects/{project}` | one, with its primary `repo`, `default_branch`, `settings`, its `icon` (when someone chose one), session counts and the caller's `role` |
+| `POST /api/v1/projects` | `{"workspace", "name", "slug", "description", "icon", "repo": "owner/name"` or `"create_repo": {"name", "private", "owner"}`, `"settings"}`: workspace admins |
+| `PATCH /api/v1/projects/{project}` | `{"name", "description", "icon", "repo", "default_branch", "settings", "archived"}`: maintainers. `icon` is `{"name", "color", "style"}`: an [IconMCP](https://iconmcp.com) glyph's name (lowercase letters, digits and dashes), `ink` (the default), `yellow`, `pink` or `blue`, and `outline` (the default), `duotone` or `solid`; `{"name": ""}` takes it away, and the app shows the icon that fits the project's name again |
 | `DELETE /api/v1/projects/{project}` | with its sessions, once none of them is active (`409` until then): owners. It can't be undone |
 | `GET`, `POST /api/v1/projects/{project}/repos`, `DELETE …/repos/{owner}/{name}` | the repositories its agents use: `{"repo": "owner/name" or "owner/*", "access": "read" | "write"}` |
 | `GET`, `POST /api/v1/projects/{project}/members`, `PATCH`, `DELETE …/members/{user}` | its members: `{"email", "role": "owner" | "maintainer" | "editor" | "viewer"}` (maintainers) |

@@ -4,18 +4,10 @@
 // those open at what it found, with the session's find bar on it.
 
 import { useNavigate } from "@tanstack/react-router";
-import {
-  FolderGit2,
-  FolderPlus,
-  MessageSquareText,
-  Moon,
-  Plus,
-  Search,
-  Settings,
-  Shield,
-} from "lucide-react";
+import { FolderPlus, MessageSquareText, Moon, Plus, Search, Settings, Shield } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ProjectMark } from "@/components/project/project-icon";
 import { AgentFloorIcon, PullRequestIcon, Spinner, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
@@ -144,7 +136,7 @@ export function CommandPalette({
         group: "Projects",
         label: several && p.workspace ? `${p.workspace.name} / ${p.name}` : p.name,
         hint: repoLabel(p),
-        icon: <FolderGit2 className="size-4" />,
+        icon: <ProjectMark project={p} size={16} />,
         run: go(() => navigate({ to: "/p/$slug", params: { slug: p.slug }, search: { tab: undefined } })),
       });
     }

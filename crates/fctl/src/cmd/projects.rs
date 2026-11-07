@@ -4,17 +4,115 @@ use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
 use clap::builder::BoolishValueParser;
-use clap::{ArgGroup, Subcommand};
+use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use fctl_proto::api::{
     AddProjectRepoRequest, CreateProjectRequest, CreateRepoRequest, ProjectRepoList,
     UpdateMembershipRequest, UpdateProjectRequest,
 };
 use fctl_proto::session::{
-    DEFAULT_PULL_REQUEST_INSTRUCTIONS, FollowUps, GithubAccess, ImageBuild, Project,
-    ProjectSettings, RepoAccess, Verbosity,
+    DEFAULT_PULL_REQUEST_INSTRUCTIONS, FollowUps, GithubAccess, IconStyle, ImageBuild, Project,
+    ProjectIcon, ProjectSettings, RepoAccess, Verbosity, WorkspaceColor,
 };
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+
+/// A project's icon, which the web app's sidebar and its pages show.
+#[derive(Args, Clone, Default)]
+pub struct IconArgs {
+    /// Its icon: the name of an IconMCP glyph the web app has, like store,
+    /// server-stack or sprout (iconmcp.com shows them all); "" for the one
+    /// that fits its name and description.
+    #[arg(long, value_name = "NAME")]
+    pub icon: Option<String>,
+    /// The icon's color: ink (the default), yellow, pink or blue.
+    #[arg(long, value_enum, value_name = "COLOR")]
+    pub icon_color: Option<IconColorArg>,
+    /// How it's drawn: outline (the default), duotone or solid.
+    #[arg(long, value_enum, value_name = "STYLE")]
+    pub icon_style: Option<IconStyleArg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum IconColorArg {
+    Ink,
+    Yellow,
+    Pink,
+    Blue,
+}
+
+impl From<IconColorArg> for WorkspaceColor {
+    fn from(c: IconColorArg) -> Self {
+        match c {
+            IconColorArg::Ink => Self::Ink,
+            IconColorArg::Yellow => Self::Yellow,
+            IconColorArg::Pink => Self::Pink,
+            IconColorArg::Blue => Self::Blue,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum IconStyleArg {
+    Outline,
+    Duotone,
+    Solid,
+}
+
+impl From<IconStyleArg> for IconStyle {
+    fn from(s: IconStyleArg) -> Self {
+        match s {
+            IconStyleArg::Outline => Self::Outline,
+            IconStyleArg::Duotone => Self::Duotone,
+            IconStyleArg::Solid => Self::Solid,
+        }
+    }
+}
+
+impl IconArgs {
+    fn given(&self) -> bool {
+        self.icon.is_some() || self.icon_color.is_some() || self.icon_style.is_some()
+    }
+
+    /// The icon these ask for, over `current`: a color or a style alone
+    /// changes the current one. An empty name takes it away (an empty name
+    /// in the request). `None`: nothing asked.
+    fn apply(&self, current: Option<&ProjectIcon>) -> Result<Option<ProjectIcon>> {
+        if !self.given() {
+            return Ok(None);
+        }
+        let name = match (&self.icon, current) {
+            (Some(n), _) => n.trim().to_owned(),
+            (None, Some(c)) => c.name.clone(),
+            (None, None) => {
+                bail!("Name the icon too (--icon NAME): the project has none of its own to color")
+            }
+        };
+        if name.is_empty() && (self.icon_color.is_some() || self.icon_style.is_some()) {
+            bail!("An icon of \"\" is none: leave out --icon-color and --icon-style");
+        }
+        Ok(Some(ProjectIcon {
+            name,
+            color: self
+                .icon_color
+                .map(Into::into)
+                .or(current.map(|c| c.color))
+                .unwrap_or(WorkspaceColor::Ink),
+            style: self
+                .icon_style
+                .map(Into::into)
+                .or(current.map(|c| c.style))
+                .unwrap_or_default(),
+        }))
+    }
+}
+
+/// A project's icon, as `fctl projects show` says it.
+fn icon_line(icon: Option<&ProjectIcon>) -> String {
+    match icon {
+        Some(i) => format!("{} ({}, {})", i.name, i.color.as_str(), i.style.as_str()),
+        None => "the one that fits its name".into(),
+    }
+}
 
 #[derive(Subcommand)]
 pub enum ProjectsCmd {
@@ -64,6 +162,8 @@ pub enum ProjectsCmd {
         /// A sentence for people (agents do not see it).
         #[arg(long)]
         description: Option<String>,
+        #[command(flatten)]
+        icon: IconArgs,
         /// Turn on claude.ai connectors in the project's sessions: agents
         /// can then use the connectors (mail, files, docs) of the person
         /// who starts a session without asking. Off by default.
@@ -77,8 +177,8 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -91,6 +191,8 @@ pub enum ProjectsCmd {
         /// A sentence for people (agents do not see it); "" clears it.
         #[arg(long)]
         description: Option<String>,
+        #[command(flatten)]
+        icon: IconArgs,
         /// The branch sessions start from, unless one asks for another
         /// (`fctl run --base`). The repository must have it, unless it has
         /// no commits yet. Sessions that already started keep theirs.
@@ -875,6 +977,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             if let Some(w) = &p.workspace {
                 println!("in:      {} ({})", w.name, w.slug);
             }
+            println!("icon:    {}", icon_line(p.icon.as_ref()));
             println!(
                 "repo:    {}",
                 p.repo
@@ -943,9 +1046,11 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             public,
             slug,
             description,
+            icon,
             connectors,
             no_connectors: _,
         } => {
+            let icon = icon.apply(None)?.filter(|i| !i.name.is_empty());
             let req = CreateProjectRequest {
                 workspace: workspace.or_else(|| config::CliConfig::load().workspace),
                 name,
@@ -965,6 +1070,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     follow_ups: FollowUps::ALL,
                     ..Default::default()
                 }),
+                icon,
             };
             let p = api.create_project(&req).await?;
             if json {
@@ -984,6 +1090,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             project,
             name,
             description,
+            icon,
             default_branch,
             model: new_model,
             effort,
@@ -1024,6 +1131,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
         } => {
             let project = super::sessions::project_or_default(project)?;
             let p = api.project(&project).await?;
+            let new_icon = icon.apply(p.icon.as_ref())?;
             // An update replaces all settings: send the others as they are.
             let mut settings = p.settings.clone();
             if let Some(i) = &new_image {
@@ -1170,6 +1278,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     &UpdateProjectRequest {
                         name: name.clone(),
                         description: description.clone(),
+                        icon: new_icon.clone(),
                         default_branch: default_branch.clone(),
                         settings: settings_changed.then_some(settings),
                         ..Default::default()
@@ -1185,6 +1294,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     style::terminal_safe(&p.name)
+                );
+            }
+            if new_icon.is_some() {
+                println!(
+                    "{} Icon of {}: {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    icon_line(p.icon.as_ref())
                 );
             }
             if description.is_some() {
@@ -1797,6 +1914,56 @@ mod tests {
         Fctl::try_parse_from(["fctl", "set"].iter().chain(args).copied())
             .ok()
             .map(|f| f.projects)
+    }
+
+    #[test]
+    fn icons_are_set_by_name_color_and_style() {
+        let Some(ProjectsCmd::Set { icon, .. }) = set(&[
+            "--icon",
+            "store",
+            "--icon-color",
+            "yellow",
+            "--icon-style",
+            "duotone",
+        ]) else {
+            panic!("fctl projects set takes an icon");
+        };
+        let chosen = icon.apply(None).ok().flatten();
+        assert_eq!(
+            chosen,
+            Some(ProjectIcon {
+                name: "store".into(),
+                color: WorkspaceColor::Yellow,
+                style: IconStyle::Duotone,
+            })
+        );
+        // A color alone recolors the project's icon.
+        let Some(ProjectsCmd::Set { icon, .. }) = set(&["--icon-color", "pink"]) else {
+            panic!("a color is a change");
+        };
+        assert_eq!(
+            icon.apply(chosen.as_ref()).ok().flatten(),
+            Some(ProjectIcon {
+                name: "store".into(),
+                color: WorkspaceColor::Pink,
+                style: IconStyle::Duotone,
+            })
+        );
+        // ...but needs an icon to color.
+        assert!(icon.apply(None).is_err());
+        // "" takes it away, and nothing goes with it.
+        let Some(ProjectsCmd::Set { icon, .. }) = set(&["--icon", ""]) else {
+            panic!("an empty icon is a change");
+        };
+        assert_eq!(
+            icon.apply(chosen.as_ref()).ok().flatten().map(|i| i.name),
+            Some(String::new())
+        );
+        let Some(ProjectsCmd::Set { icon, .. }) = set(&["--icon", "", "--icon-style", "solid"])
+        else {
+            panic!("parses");
+        };
+        assert!(icon.apply(chosen.as_ref()).is_err());
     }
 
     #[test]
