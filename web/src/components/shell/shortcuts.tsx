@@ -56,7 +56,7 @@ export function ShortcutsDialog({
         if (e.target === ref.current && pressedOutside.current) ref.current?.close();
       }}
       className={cn(
-        "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto w-[min(860px,calc(100vw-2rem))] max-w-none overflow-hidden rounded-xl border border-line-strong bg-surface p-0 text-ink outline-none",
+        "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto w-[min(860px,calc(100vw-2rem))] max-w-none overflow-hidden rounded-xl border border-line-strong bg-surface p-0 text-ink outline-none xl:w-[min(1180px,calc(100vw-4rem))]",
         "max-h-[min(760px,calc(100dvh-3rem))] shadow-[0_30px_120px_rgb(0_0_0/0.55)] open:flex open:flex-col",
         "backdrop:bg-black/45 backdrop:backdrop-blur-[3px] open:animate-rise motion-reduce:open:animate-none",
       )}
@@ -150,7 +150,7 @@ function Sheet({
         {groups.length === 0 ? (
           <p className="py-10 text-center text-[13.5px] text-ink-4">No shortcut matches “{q.trim()}”.</p>
         ) : (
-          <div className="gap-x-10 md:columns-2">
+          <div className="gap-x-10 md:columns-2 xl:columns-3">
             {groups.map((g) => (
               <section key={g.id} aria-labelledby={`${titleId}-${g.id}`} className="mb-6 break-inside-avoid">
                 <h3
@@ -167,7 +167,8 @@ function Sheet({
                 </h3>
                 <ul className="divide-y divide-line">
                   {g.rows.map((r) => (
-                    <li key={r.id} className="flex items-center justify-between gap-4 py-2">
+                    <li key={r.id} className="flex items-center justify-between gap-4 py-[7px]">
+                      {/* What it does keeps its line where it can: the keys give way first, and wrap. */}
                       <span className="min-w-0">
                         <span className="block text-[13.5px] text-ink-2">{r.s.label}</span>
                         {r.s.note && <span className="block text-[12px] text-ink-4">{r.s.note}</span>}
@@ -198,12 +199,18 @@ function Between({ children, hidden }: { children: string; hidden?: boolean }) {
   );
 }
 
-/** The ways to press a shortcut: any of them ("or"), each keys for what its label lists ("/"). */
+/**
+ * The ways to press a shortcut: any of them ("or"), each keys for what its label lists ("/").
+ * Where they don't fit beside the label, the next way goes under the first.
+ */
 export function KeyList({ keys }: { keys: readonly Keys[] }) {
   return (
-    <span className="flex shrink-0 flex-wrap items-center justify-end gap-x-1 gap-y-1">
+    <span className="flex shrink-[100] flex-wrap items-center justify-end gap-x-1 gap-y-1.5">
       {keys.map((k, i) => (
-        <Fragment key={typeof k === "string" ? k : k.join()}>
+        <span
+          key={typeof k === "string" ? k : k.join()}
+          className="inline-flex items-center gap-1 whitespace-nowrap"
+        >
           {i > 0 && <Between>or</Between>}
           {typeof k === "string" ? (
             <Combo combo={k} />
@@ -215,7 +222,7 @@ export function KeyList({ keys }: { keys: readonly Keys[] }) {
               </Fragment>
             ))
           )}
-        </Fragment>
+        </span>
       ))}
     </span>
   );
@@ -257,6 +264,10 @@ export function SequenceHint() {
     return () => clearTimeout(t);
   }, [first]);
   if (!sequence || !late || !sequence.next.length) return null;
+  const listed = Object.values(SHORTCUTS).map((x: Shortcut) => x.label);
+  const next = [...sequence.next].sort(
+    (a, b) => listed.indexOf(a.label ?? "") - listed.indexOf(b.label ?? ""),
+  );
   return createPortal(
     <div
       role="status"
@@ -273,7 +284,7 @@ export function SequenceHint() {
           </span>
           then
         </span>
-        {sequence.next.map(({ step, label }) => (
+        {next.map(({ step, label }) => (
           <span key={step.key} className="inline-flex items-center gap-1.5 text-ink-2">
             <span className="inline-flex gap-0.5">
               {chordKeys(step).map((cap) => (

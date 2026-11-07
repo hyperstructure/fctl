@@ -73,10 +73,14 @@ export const SHORTCUTS = {
   nextMatch: {
     label: "Next match / previous",
     group: "find",
-    keys: [
-      ["enter", "shift+enter"],
-      ["mod+g", "mod+shift+g"],
-    ],
+    keys: [["enter", "shift+enter"]],
+    note: "In the bar",
+  },
+  stepMatch: {
+    label: "Next match / previous",
+    group: "find",
+    keys: [["mod+g", "mod+shift+g"]],
+    note: "While the bar is open",
   },
   browserFind: {
     label: "Your browser's own find",
@@ -84,18 +88,16 @@ export const SHORTCUTS = {
     keys: ["mod+f"],
     note: "Again, in the bar",
   },
-  findOptions: {
-    label: "Match case / whole words / regular expressions",
-    group: "find",
-    keys: [["alt+c", "alt+w", "alt+r"]],
-    note: "In the changes",
-  },
   // In the changes.
   nextFile: { label: "Next file / previous", group: "changes", keys: [["j", "k"]] },
   nextChange: { label: "Next change / previous", group: "changes", keys: [["n", "p"]] },
   sideBySide: { label: "Side by side, or one below the other", group: "changes", keys: ["s"] },
   wrap: { label: "Wrap long lines", group: "changes", keys: ["w"] },
   filterFiles: { label: "Filter the files", group: "changes", keys: ["/"] },
+  // The find bar's toggles there, as in code editors.
+  matchCase: { label: "Find: match case", group: "changes", keys: ["alt+c"] },
+  wholeWords: { label: "Find: whole words", group: "changes", keys: ["alt+w"] },
+  regex: { label: "Find: regular expressions", group: "changes", keys: ["alt+r"] },
   // On the pull requests page.
   filterPulls: { label: "Filter", group: "pulls", keys: ["/"] },
   nextPull: { label: "Next / previous", group: "pulls", keys: [["j", "k"]] },

@@ -360,6 +360,16 @@ sessions, projects and workspaces, and finds what sessions said (see
 [Follow along and steer](#8-follow-along-and-steer)), and ⌘P and ⌘⇧P open
 it too, as in code editors.
 
+To start a session without leaving the page you are on, press N: the
+Agent Floor's task box opens over the page, with what you wrote in it
+before, in the project the page is about. While you type in a box, ⌘⇧O
+(Ctrl+Shift+O) does the same, and Esc leaves the box for the other single
+keys. G and then F goes to the Agent Floor, G and then N to the next
+session in **Needs you**, and `?` (or ⌘/) lists every shortcut, those of
+the page first. Shortcuts take the characters your keyboard's layout
+types: on a Swedish or German keyboard, `?` is Shift and the key that
+types it, and letters are wherever your layout has them.
+
 The two lists by the Start button choose the model the session runs on
 (Opus, Sonnet, Haiku or Fable, each the latest of its family) and its
 effort level. They start on what you chose when you last started a session
@@ -398,8 +408,9 @@ session opens, with its repository (`fctl#120`, `design#14`), as does
 `fctl show`. The session page's Changes section shows what the branch
 changed since it left the base, the first ten files of each repository and
 the rest a click away. A file opens the diffs of all of them, one after the
-other, at that file: `j` and `k` go from file to file, `n` and `p` from
-change to change, and ⌘F (Ctrl+F) finds in all of them. They follow the
+other, at that file (`c` on the session's page opens them at the first):
+`j` and `k` go from file to file, `n` and `p` from change to change, and
+⌘F (Ctrl+F) finds in all of them. They follow the
 agent as it works: where you look, the lines it adds open and are written
 in, and the lines you read stay where they are; a button at the top or the
 bottom counts the changes it made out of sight and goes to them. Once its pull request is merged, Changes

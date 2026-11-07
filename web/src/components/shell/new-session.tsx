@@ -5,10 +5,11 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
+import { X } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { startableProjects, TaskBox } from "@/components/session/task-box";
-import { Kbd, Skeleton } from "@/components/ui";
+import { IconButton, Skeleton } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { own } from "@/lib/dialog";
@@ -58,30 +59,48 @@ function Content({ titleId, onClose }: { titleId: string; onClose: () => void })
   const workspaces = useWorkspaces().data?.workspaces;
   const here = useHere(projects, workspaces);
   const none = projects && workspaces && startableProjects(projects, workspaces).length === 0;
-  return (
-    <>
-      <div className="mb-2.5 flex items-baseline justify-between gap-4 px-1 text-[12.5px]">
-        <h2 id={titleId} className="font-medium text-ink-2">
-          New session
-        </h2>
-        <span className="text-ink-4 [@media(hover:none)]:hidden">
-          <Kbd>Esc</Kbd> closes
-        </span>
+  const header = (
+    <div className="flex items-center justify-between gap-4 pt-2 pr-2 pl-5">
+      <h2 id={titleId} className="text-[12.5px] font-medium text-ink-3">
+        New session
+      </h2>
+      <IconButton label="Close" title="Close (Esc)" onClick={onClose}>
+        <X className="size-4" />
+      </IconButton>
+    </div>
+  );
+  const box = "rounded-2xl border border-line-strong bg-surface shadow-[0_30px_120px_rgb(0_0_0/0.55)]";
+  if (!me || !projects || !workspaces)
+    return (
+      <div className={box}>
+        {header}
+        <div className="px-5 pt-3 pb-5">
+          <Skeleton className="h-[88px]" />
+        </div>
       </div>
-      {!me || !projects || !workspaces ? (
-        <Skeleton className="h-[136px] rounded-2xl" />
-      ) : none ? (
-        <div className="rounded-2xl border border-line-strong bg-surface px-5 py-4 text-[14px] leading-relaxed text-ink-2 shadow-[0_30px_120px_rgb(0_0_0/0.55)]">
+    );
+  if (none)
+    return (
+      <div className={box}>
+        {header}
+        <p className="px-5 pt-1.5 pb-5 text-[14px] leading-relaxed text-ink-2">
           There's no project where you can start sessions yet.{" "}
           <Link to="/" onClick={onClose} className="text-ink underline underline-offset-2">
             The Agent Floor
           </Link>{" "}
           says how to set one up.
-        </div>
-      ) : (
-        <TaskBox dialog user={me.user.id} projects={projects} workspaces={workspaces} here={here} />
-      )}
-    </>
+        </p>
+      </div>
+    );
+  return (
+    <TaskBox
+      dialog
+      header={header}
+      user={me.user.id}
+      projects={projects}
+      workspaces={workspaces}
+      here={here}
+    />
   );
 }
 

@@ -2,7 +2,7 @@
 // dialog (N, or ⌘⇧O, from anywhere: components/shell/new-session.tsx). Both are the same box,
 // with the same draft, which stays in this browser until a session starts with it.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { ScheduleButton } from "@/components/project/schedules";
 import {
   AttachButton,
@@ -63,6 +63,7 @@ export function TaskBox({
   workspace,
   here,
   dialog,
+  header,
   className,
 }: {
   user: string;
@@ -77,6 +78,8 @@ export function TaskBox({
    * Agent Floor it takes the focus as the page opens, and Escape leaves it.
    */
   dialog?: boolean;
+  /** A first line in the box, over the task: the dialog's name and its close button. */
+  header?: ReactNode;
   className?: string;
 }) {
   const index = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
@@ -153,12 +156,13 @@ export function TaskBox({
           className,
         )}
       >
+        {header}
         <DraftTray
           drafts={files.drafts}
           onRemove={files.remove}
           onRetry={files.retry}
           readOnly={starting}
-          className="px-4 pt-4"
+          className={cn("px-4", header ? "pt-2" : "pt-4")}
         />
         <Textarea
           ref={ref}
@@ -186,7 +190,10 @@ export function TaskBox({
             attach(pasted, true);
           }}
           placeholder={placeholder}
-          className="block px-5 pt-4 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4"
+          className={cn(
+            "block px-5 font-display text-[18px] leading-[1.5] text-ink placeholder:text-ink-4",
+            header ? "pt-1.5" : "pt-4",
+          )}
           aria-label="Task for a new session"
         />
         {/* On a phone it keeps one line: where the controls run out of room, the project's name and

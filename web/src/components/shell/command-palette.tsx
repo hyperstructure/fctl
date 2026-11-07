@@ -222,7 +222,8 @@ export function CommandPalette({
         },
       },
     );
-    if (onShortcuts)
+    // A computer's: phones and tablets without a keyboard have none of them.
+    if (onShortcuts && !window.matchMedia?.("(hover: none)").matches)
       list.push({
         id: "a-shortcuts",
         group: "Actions",
