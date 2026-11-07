@@ -414,7 +414,8 @@ its VM, and nothing outside it except through these channels:
   authority of the host's own for the API's name alone, whose key never
   leaves the host. Turning it off again takes confirming it's you, where
   the instance asks for that. Hosts of an fctl from before it ignore it and
-  give the agent the token, until they update themselves.
+  give the agent the token, until they update themselves, and so does the
+  `process` driver, which isolates nothing.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also

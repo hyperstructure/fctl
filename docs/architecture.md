@@ -3196,6 +3196,10 @@ change it. Turning it off again is a sensitive action
    `claude-relay-ca.pem` next to `host.toml` (mode 0600). It signs one
    certificate, for `api.anthropic.com` (its name constraints say so too).
    An agent too old to relay fails the session rather than get the token.
+   The `process` driver, which keeps nothing out of the agent's reach (it
+   runs as the host's user, who can read the host's memory), gives Claude
+   the token as without the setting, and says so in the session; debug
+   builds relay there all the same, for `cargo xtask dev`.
 3. **fctl-agent proxies Claude's HTTPS** (`fctl-agent`'s `relay`). It
    listens on a loopback port, which it keeps across restarts in its state,
    and gives Claude `HTTPS_PROXY` and `https_proxy` there, a `NO_PROXY` that

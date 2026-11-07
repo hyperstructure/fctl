@@ -87,6 +87,10 @@ isn't known yet.
 - Hosts older than this ignore the flag and give the agent the token, until
   they update themselves to the control plane's version
   ([ADR 0053](0053-hosts-update-themselves-to-the-control-planes-version.md)).
+- The `process` driver gives Claude the token as before: its agents run as
+  the host's user, who can read the host's memory, and fctl-agent's proxy
+  would listen on the machine's loopback, where its other users reach it.
+  Debug builds relay there all the same, so `cargo xtask dev` can try it.
 - Full logins' Remote Control hasn't been tried with it, and claude.ai
   connectors reach `mcp-proxy.anthropic.com`, whose requests the host
   doesn't see, so they fail. The setting says so.

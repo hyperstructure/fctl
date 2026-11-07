@@ -1350,7 +1350,7 @@ async fn run(
                             match &spec {
                                 Some(spec) if spec.resume && !welcomed => configure_when_welcomed = true,
                                 Some(spec) => {
-                                    let relay = match relay_for(&ctx, spec, agent_relays, &claude_token) {
+                                    let relay = match relay_for(&ctx, spec, agent_relays, &claude_token, &uplink) {
                                         Ok(relay) => relay,
                                         Err(msg) => {
                                             uplink.state(state(SessionStatus::Failed, &msg));
@@ -1462,7 +1462,7 @@ async fn run(
                             && let (Some(spec), Some(_)) = (&spec, &link)
                         {
                             configure_when_welcomed = false;
-                            let relay = match relay_for(&ctx, spec, agent_relays, &claude_token) {
+                            let relay = match relay_for(&ctx, spec, agent_relays, &claude_token, &uplink) {
                                 Ok(relay) => relay,
                                 Err(msg) => {
                                     uplink.state(state(SessionStatus::Failed, &msg));
@@ -1784,21 +1784,36 @@ fn relay_for(
     spec: &SessionSpec,
     agent_relays: bool,
     token: &claude_relay::Token,
+    uplink: &Uplink,
 ) -> Result<Option<ClaudeRelay>, String> {
     let cred = &spec.credentials.claude;
     if !cred.stand_in {
         return Ok(None);
     }
+    // The process driver keeps nothing out of the agent's reach: it runs as
+    // the host's user, who can read the token in the host's memory, and
+    // fctl-agent's proxy would listen where the machine's other users reach
+    // it. Debug builds relay all the same, for `cargo xtask dev`.
+    if matches!(ctx.driver, Driver::Process(_)) && !cfg!(debug_assertions) {
+        host_log(
+            uplink,
+            LogLevel::Info,
+            format!(
+                "Claude gets the Claude token its owner keeps out of sandboxes: {}'s process driver runs it without one",
+                ctx.cfg.name
+            ),
+        );
+        return Ok(None);
+    }
     if !agent_relays {
-        return Err(format!(
-            "The fctl-agent in this sandbox is too old to keep the Claude token out of it, as {} asked in Settings → Claude. Resume the session to start it again.",
-            spec.author.name
-        ));
+        return Err(
+            "The fctl-agent in this sandbox is too old to keep the Claude token out of it, as its owner asked in Settings → Claude. Resume the session to start it again.".to_owned(),
+        );
     }
     let relay = ctx.claude_relay().map_err(|e| {
         format!(
-            "{} couldn't keep the Claude token out of the sandbox, as {} asked in Settings → Claude: {e:#}",
-            ctx.cfg.name, spec.author.name
+            "{} couldn't keep the Claude token out of the sandbox, as its owner asked in Settings → Claude: {e:#}",
+            ctx.cfg.name
         )
     })?;
     token.set(&cred.access_token);

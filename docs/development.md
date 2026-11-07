@@ -83,7 +83,9 @@ cargo run -p fctl -- claude connect --on-runners
 
 To try keeping the token out of sandboxes, turn it on and ask fake-claude
 for its environment: it says it got the stand-in (`sk-ant-oat01-fctl-stand-in-…`),
-and its environment has `HTTPS_PROXY` at fctl-agent's proxy:
+and its environment has `HTTPS_PROXY` at fctl-agent's proxy. (Release builds
+give Claude the token on the `process` driver; debug builds relay there, so
+the dev host does.)
 
 ```sh
 cargo run -p fctl -- claude set --stand-in on
