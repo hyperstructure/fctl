@@ -1037,20 +1037,7 @@ impl FirecrackerDriver {
                         .context("passt is not installed: it gives the VMs their network")?;
                     vm.link_network(&passt).await?;
                 }
-                // Its server of the package caches is gone, or never got
-                // going: another, which the VM mounts in place of the mount
-                // the old one left.
-                if matches!(spec.cache, Some(Spot::Dir(_))) && !vm.sharing() {
-                    log(format!("Serving the package caches of {} again", spec.name));
-                    match self.share_of(spec).await {
-                        Ok(Some(share)) => self.share_caches(&vm, &spec.name, &share, log).await,
-                        Ok(None) => {}
-                        Err(e) => log(format!(
-                            "The package caches couldn't be served to {} ({e:#}), so this session's package managers keep their own downloads",
-                            spec.name
-                        )),
-                    }
-                }
+                self.serve_caches_again(&vm, spec, log).await;
                 return Ok(sb);
             }
             log(format!(
@@ -1068,7 +1055,12 @@ impl FirecrackerDriver {
             && !self.resized(&vm, spec, log)
         {
             match self.resume_saved(&vm, &spec.name, &saved, log).await {
-                Ok(()) => return Ok(sb),
+                Ok(()) => {
+                    // Its server of the caches stopped with the VM, whose
+                    // mount resumed with a connection that is gone.
+                    self.serve_caches_again(&vm, spec, log).await;
+                    return Ok(sb);
+                }
                 Err(e) => log(format!(
                     "{} couldn't resume where it stopped ({e:#}), so it starts again from its disk",
                     spec.name
@@ -1168,6 +1160,25 @@ impl FirecrackerDriver {
             agent,
             dir: dir.clone(),
         }))
+    }
+
+    /// Serves the package caches to a running VM whose server of them is
+    /// gone (it stopped with the VM whose state the VM resumed, say) or
+    /// never got going: another, which the VM mounts in place of the mount
+    /// the old one left.
+    async fn serve_caches_again(&self, vm: &Vm, spec: &SandboxSpec, log: Log<'_>) {
+        if !matches!(spec.cache, Some(Spot::Dir(_))) || vm.sharing() {
+            return;
+        }
+        log(format!("Serving the package caches of {} again", spec.name));
+        match self.share_of(spec).await {
+            Ok(Some(share)) => self.share_caches(vm, &spec.name, &share, log).await,
+            Ok(None) => {}
+            Err(e) => log(format!(
+                "The package caches couldn't be served to {} ({e:#}), so this session's package managers keep their own downloads",
+                spec.name
+            )),
+        }
     }
 
     /// Serves `share` to the VM, which is up, and mounts it there. Without

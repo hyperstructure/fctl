@@ -995,9 +995,10 @@ has, and run `fctl host restart` after changing either.
 For projects that share package caches (`fctl projects set
 --package-caches on`), the host keeps what their sessions' package
 managers download: with Docker in a volume per project,
-`fctl-cache-<project id>`, and with Apple's `container` in a directory of
-its data directory, `caches/<project id>`, that its sandboxes mount at
-`/var/cache/fctl`. The sweep that removes stopped sandboxes, when the host
+`fctl-cache-<project id>`, and with Apple's `container` and Firecracker in
+a directory of its data directory, `caches/<project id>`, that its
+sandboxes mount at `/var/cache/fctl` (Firecracker's over 9P on their
+vsock). The sweep that removes stopped sandboxes, when the host
 starts and every hour, looks after them too:
 
 - It measures the caches that a session used since they were last
