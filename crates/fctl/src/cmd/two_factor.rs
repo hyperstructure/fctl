@@ -215,8 +215,13 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
             if json {
                 return style::print_json(&me.two_factor);
             }
+            let again = if me.two_factor.authenticator_name.is_some() {
+                "now"
+            } else {
+                "again"
+            };
             println!(
-                "{} Your authenticator app is called {} now.",
+                "{} Your authenticator app is called {} {again}.",
                 style::accent("✓"),
                 style::bold(app_name(&me.two_factor))
             );
