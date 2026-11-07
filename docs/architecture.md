@@ -1619,8 +1619,11 @@ posts what it found on GitHub
    changes and what that affects, and nothing else; bugs, security
    problems, breaks of the repository's rules and bad practices, without
    nitpicks; read rather than run, and run nothing of a pull request
-   whose author can't write to the repository (`trusted`: GitHub's
-   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app), apps'
+   whose author can't write to the repository (`trusted`: fctl's own app,
+   or an author whose `author_association` is `OWNER`, `MEMBER` or
+   `COLLABORATOR` and whom GitHub then says may write to it, as for
+   follow-ups below, since a member of its organization or a collaborator
+   may only read it: `crate::reviews::author_trusted`), apps'
    included, and of Dependabot's and Renovate's check the lockfiles and
    new versions instead; split a
    large one among subagents; don't take what the pull request says for

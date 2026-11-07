@@ -743,7 +743,9 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         );
         return Ok(0);
     }
-    let trusted = rv::trusted(&pr, app.as_deref());
+    // Whether its author may write, as GitHub says once asked: what their
+    // association says of them doesn't tell (`rv::may_write`).
+    let mut trusted: Option<bool> = None;
     let sent_by = payload.pointer("/installation/id").and_then(Value::as_u64);
     #[derive(Deserialize)]
     struct Id {
@@ -781,7 +783,8 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
             );
             continue;
         }
-        if !trusted && !rv::by_bot(&pr, &bots(conf.as_ref())) {
+        let by_bot = rv::by_bot(&pr, &bots(conf.as_ref()));
+        if !by_bot && !rv::may_write(&pr) && !rv::trusted(&pr, app.as_deref(), false) {
             worker::console_log!(
                 "not reviewing {}#{} by itself in {}: its owners don't let {} start reviews",
                 pr.repo.full_name(),
@@ -808,7 +811,25 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         if sent_by.is_some_and(|s| s != inst) {
             continue;
         }
-        match start(ctx, &project, &pr, inst, None).await {
+        let trust = match trusted {
+            Some(t) => t,
+            None => {
+                let t = author_trusted(ctx, &pr, inst).await;
+                trusted = Some(t);
+                t
+            }
+        };
+        if !trust && !by_bot {
+            worker::console_log!(
+                "not reviewing {}#{} by itself in {}: GitHub doesn't say {} may write to the repository",
+                pr.repo.full_name(),
+                pr.number,
+                project.slug,
+                pr.author.as_deref().unwrap_or("its author")
+            );
+            continue;
+        }
+        match start(ctx, &project, &pr, inst, None, trust).await {
             Ok(Started::Review(_)) => started += 1,
             Ok(Started::Already) => {}
             Ok(Started::Skipped(why)) => worker::console_log!(
@@ -827,6 +848,48 @@ pub async fn on_delivery(ctx: &Ctx, payload: &Value) -> AppResult<usize> {
         }
     }
     Ok(started)
+}
+
+/// Whether `pr`'s review agent may run its code ([`rv::trusted`]): it is
+/// fctl's own app's, or its author may write to the repository, as GitHub
+/// says when asked through installation `inst`, since a member of its
+/// organization or a collaborator may only read it. When GitHub doesn't
+/// say, it isn't: the review waits for someone to ask for it, and its
+/// agent runs none of it.
+pub async fn author_trusted(ctx: &Ctx, pr: &PullRequest, inst: u64) -> bool {
+    let app = app_login(&ctx.cfg);
+    if !rv::asks_whether_author_writes(pr, app.as_deref()) {
+        return rv::trusted(pr, app.as_deref(), false);
+    }
+    let Some(login) = pr.author.as_deref() else {
+        return false;
+    };
+    let gh = match github::from_config(&ctx.cfg, ctx.now) {
+        Ok(gh) => gh,
+        Err(e) => {
+            worker::console_error!("asking whether @{login} may write: {}", e.0.message);
+            return false;
+        }
+    };
+    let writes = match gh.permission(inst, &pr.repo, login).await {
+        Ok(Ok(answer)) => fctl_domain::follow_ups::can_write(&answer),
+        Ok(Err(why)) => {
+            worker::console_log!(
+                "GitHub didn't say whether @{login} may write to {}: {why}",
+                pr.repo.full_name()
+            );
+            false
+        }
+        Err(e) => {
+            worker::console_error!(
+                "asking whether @{login} may write to {}: {}",
+                pr.repo.full_name(),
+                e.0.message
+            );
+            false
+        }
+    };
+    rv::trusted(pr, app.as_deref(), writes)
 }
 
 /// The installation of the GitHub App through which `project` reaches
@@ -878,13 +941,15 @@ async fn connected(ctx: &Ctx, project: &ProjectRow, repo: &RepoRef) -> AppResult
 /// `reviews`, and on GitHub its check and a reaction. A review of the pull
 /// request still under way stops: the new one takes its place. `asked_by`:
 /// the person who asked for it; a delivery's review of a commit that has
-/// one already isn't repeated.
+/// one already isn't repeated. `trusted`: its agent may run the pull
+/// request's code ([`author_trusted`]).
 pub async fn start(
     ctx: &Ctx,
     project: &ProjectRow,
     pr: &PullRequest,
     inst: u64,
     asked_by: Option<&UserRow>,
+    trusted: bool,
 ) -> AppResult<Started> {
     let Some(conf) = settings(&ctx.db, &project.id).await?.filter(|c| c.enabled) else {
         return Ok(Started::Skipped("its review agents are off".into()));
@@ -1013,7 +1078,7 @@ pub async fn start(
                 os(pr.author.as_deref()),
                 crate::db::b(pr.draft),
                 crate::db::b(pr.fork),
-                crate::db::b(rv::trusted(pr, app_login(&ctx.cfg).as_deref())),
+                crate::db::b(trusted),
                 os(previous.as_deref()),
                 crate::db::on(pr.updated_at),
                 n(inst as i64),
