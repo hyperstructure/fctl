@@ -101,7 +101,7 @@ const bindings: Binding[] = [];
 /** How long the next step of a sequence (G, then F) is awaited. */
 export const SEQUENCE_MS = 2500;
 
-/** The first step of a sequence, pressed: the next is awaited until `at` plus SEQUENCE_MS. */
+/** The first step of a sequence, pressed: its next is awaited for SEQUENCE_MS. */
 let pending: Chord | undefined;
 let pendingTimer: ReturnType<typeof setTimeout> | undefined;
 const watchers = new Set<() => void>();
@@ -155,7 +155,13 @@ function onKeyDown(e: KeyboardEvent) {
   }
   for (const b of newestFirst) {
     const step = b.steps[0];
-    if (!step || !pressed(e, step) || !takes(b, step)) continue;
+    if (!step || !pressed(e, step)) continue;
+    if (!takes(b, step)) {
+      // In a dialog the app's own ⌘ shortcuts do nothing, and neither does the browser's (⌘K,
+      // which Chrome searches with, and ⌘B, Firefox's bookmarks).
+      if (step.mod) e.preventDefault();
+      continue;
+    }
     e.preventDefault();
     if (e.repeat && !b.repeat) return;
     if (b.steps.length > 1) setPending(step);

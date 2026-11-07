@@ -291,6 +291,18 @@ describe("what useHotkey leaves alone", () => {
     expect(help.fn).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the browser's own from a ⌘ shortcut that does nothing in a dialog", () => {
+    const palette = page("mod+k");
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    const field = document.createElement("input");
+    dialog.append(field);
+    document.body.append(dialog);
+    cleanups.push(() => dialog.remove());
+    expect(press("k", { ctrlKey: true }, field).defaultPrevented).toBe(true);
+    expect(palette.fn).not.toHaveBeenCalled();
+  });
+
   it("leaves a key the page handled already", () => {
     const { fn } = page("j");
     const list = document.createElement("div");
