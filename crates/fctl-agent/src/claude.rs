@@ -125,8 +125,12 @@ pub struct LaunchSpec<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub append_system_prompt: &'a str,
-    /// `--setting-sources` (user only when project settings are unsafe).
+    /// `--setting-sources` (user only when project settings are unsafe,
+    /// and for reviews).
     pub setting_sources: &'a str,
+    /// `--strict-mcp-config`: no MCP server from the repository's
+    /// `.mcp.json` or anywhere but the command line, for reviews.
+    pub strict_mcp: bool,
     pub extra_args: &'a [String],
     pub env: BTreeMap<String, String>,
 }
@@ -332,37 +336,45 @@ pub fn conversation_exists(home: &Path, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The arguments Claude Code runs with, for `spec`.
+fn command_line(spec: &LaunchSpec<'_>) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        "--input-format".into(),
+        "stream-json".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+        "--include-partial-messages".into(),
+        "--permission-mode".into(),
+        "bypassPermissions".into(),
+        "--allow-dangerously-skip-permissions".into(),
+        "--setting-sources".into(),
+        spec.setting_sources.into(),
+        "--append-system-prompt".into(),
+        spec.append_system_prompt.into(),
+    ];
+    if spec.resume {
+        args.extend(["--resume".into(), spec.claude_session_id.into()]);
+    } else {
+        args.extend(["--session-id".into(), spec.claude_session_id.into()]);
+    }
+    if let Some(m) = spec.model {
+        args.extend(["--model".into(), m.into()]);
+    }
+    if let Some(e) = spec.effort {
+        args.extend(["--effort".into(), e.into()]);
+    }
+    if spec.strict_mcp {
+        args.push("--strict-mcp-config".into());
+    }
+    args.extend(spec.extra_args.iter().cloned());
+    args
+}
+
 impl Claude {
     pub fn spawn(spec: LaunchSpec<'_>, out: mpsc::UnboundedSender<ClaudeOut>) -> Result<Self> {
-        let mut args: Vec<String> = vec![
-            "-p".into(),
-            "--input-format".into(),
-            "stream-json".into(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-            "--include-partial-messages".into(),
-            "--permission-mode".into(),
-            "bypassPermissions".into(),
-            "--allow-dangerously-skip-permissions".into(),
-            "--setting-sources".into(),
-            spec.setting_sources.into(),
-            "--append-system-prompt".into(),
-            spec.append_system_prompt.into(),
-        ];
-        if spec.resume {
-            args.extend(["--resume".into(), spec.claude_session_id.into()]);
-        } else {
-            args.extend(["--session-id".into(), spec.claude_session_id.into()]);
-        }
-        if let Some(m) = spec.model {
-            args.extend(["--model".into(), m.into()]);
-        }
-        if let Some(e) = spec.effort {
-            args.extend(["--effort".into(), e.into()]);
-        }
-        args.extend(spec.extra_args.iter().cloned());
-
+        let args = command_line(&spec);
         // As the session's user, leading a process group of its own: a
         // supervisor that takes over from this one stops that group
         // (crate::orphan).
@@ -668,6 +680,34 @@ pub(crate) mod tests {
             credit_claude,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn reviews_take_no_mcp_server_of_the_repository() {
+        let dir = Path::new("/work");
+        let launch = |setting_sources, strict_mcp| LaunchSpec {
+            bin: "claude",
+            cwd: dir,
+            home: dir,
+            claude_session_id: "s",
+            resume: false,
+            model: None,
+            effort: None,
+            append_system_prompt: "",
+            setting_sources,
+            strict_mcp,
+            extra_args: &[],
+            env: Default::default(),
+        };
+        let review = command_line(&launch("user", true));
+        let sources = review.iter().position(|a| a == "--setting-sources");
+        assert_eq!(
+            sources.and_then(|i| review.get(i + 1)).map(String::as_str),
+            Some("user")
+        );
+        assert!(review.iter().any(|a| a == "--strict-mcp-config"));
+        let session = command_line(&launch("user,project,local", false));
+        assert!(!session.iter().any(|a| a == "--strict-mcp-config"));
     }
 
     #[test]

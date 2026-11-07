@@ -1495,7 +1495,17 @@ impl Supervisor {
                 "This sandbox has no fctl that can rename the session, so it keeps the title it started with. The default image, ghcr.io/hyperstructure/sandbox, has one; an image of your own needs fctl on the PATH.",
             );
         }
+        // A review's working directory holds the pull request's head, which
+        // anyone may have written: its Claude settings (hooks, a status
+        // line, plugins, MCP servers, and the commands they run) would run
+        // as Claude starts, before its agent reads a word, beside the
+        // operator's Claude token and the project's read token, whatever
+        // its instructions say about running the pull request's code. A
+        // review takes the user's settings alone, and no MCP server of the
+        // repository's (`.mcp.json`).
+        let review = spec.review.is_some();
         let setting_sources = match claude::project_settings_are_unsafe(&paths.workdir) {
+            _ if review => "user",
             Some(why) => {
                 let msg = format!(
                     "Ignoring the repository's Claude settings because {why}: fctl only runs Claude on subscriptions."
@@ -1616,6 +1626,7 @@ impl Supervisor {
                 .or(spec.project.settings.effort.as_deref()),
             append_system_prompt: &system,
             setting_sources,
+            strict_mcp: review,
             extra_args: &config.claude_args,
             env,
         };
@@ -3699,6 +3710,7 @@ mod tests {
                 effort: None,
                 append_system_prompt: "",
                 setting_sources: "user",
+                strict_mcp: false,
                 extra_args: &[],
                 env: Default::default(),
             },
