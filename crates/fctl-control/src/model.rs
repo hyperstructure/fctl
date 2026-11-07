@@ -388,6 +388,9 @@ pub struct ProjectRow {
     pub slug: String,
     pub name: String,
     pub description: Option<String>,
+    /// Its icon, as JSON (`ProjectIcon`).
+    #[serde(default)]
+    pub icon: Option<String>,
     pub repo_owner: Option<String>,
     pub repo_name: Option<String>,
     pub default_branch: String,
@@ -457,6 +460,12 @@ impl ProjectRow {
             slug: self.slug.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
+            // One that doesn't read as an icon reads as none: the web app
+            // draws the one that fits.
+            icon: self
+                .icon
+                .as_deref()
+                .and_then(|i| serde_json::from_str(i).ok()),
             repo: self.repo(),
             other_repos: self.other_repos.max(0) as u32,
             all_repos_of: self.all_repos_of.clone(),
@@ -536,7 +545,7 @@ impl RepoRow {
 /// repositories. Bind: `?1` = caller user id. The counts leave out the
 /// sessions the lists do: review agents', and those of schedules that hide
 /// theirs.
-pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.repo_owner, p.repo_name, \
+pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.icon, p.repo_owner, p.repo_name, \
     p.default_branch, p.settings, p.session_counter, p.created_by, cu.name AS creator_name, \
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping') \

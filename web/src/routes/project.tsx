@@ -2,10 +2,12 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Building2, GitBranch, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
+import { IconPicker } from "@/components/project/icon-picker";
 import { MemoryTab } from "@/components/project/memory";
+import { ProjectIcon, ProjectMark } from "@/components/project/project-icon";
 import { RepoPicker } from "@/components/project/repo-picker";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
@@ -68,6 +70,7 @@ import {
 import { ALIASES, asked, chosenModel, EFFORTS, type ModelChoice, modelChoice } from "@/lib/models";
 import { projectPlaceholder } from "@/lib/placeholders";
 import { areDefaults, shownInstructions } from "@/lib/pr-instructions";
+import { ICON_COLORS, iconDef, iconOf, useSaveIcon } from "@/lib/project-icons";
 import { DAY_CHOICES, DEFAULT_DAYS, lasts } from "@/lib/published";
 import {
   keys,
@@ -107,6 +110,88 @@ const OPEN_TABS: Tab[] = [
   "members",
 ];
 
+/** The project's icon in its settings: saved as it's chosen, apart from the form. */
+function IconField({ project }: { project: G.Project }) {
+  const [picking, setPicking] = useState(false);
+  const icon = iconOf(project);
+  return (
+    <div>
+      <span className="mb-1.5 block text-[12.5px] font-medium text-ink-2">Icon</span>
+      <div className="flex items-center gap-3">
+        <ProjectIcon icon={icon} tile={38} />
+        <span className="min-w-0 flex-1 text-[13px] text-ink-3">
+          {icon.chosen ? (
+            <>
+              <span className="text-ink-2">{iconDef(icon.name)?.label ?? icon.name}</span> ·{" "}
+              {ICON_COLORS[icon.color].label.toLowerCase()}, {icon.style}
+            </>
+          ) : (
+            "The one that fits its name, until someone chooses one"
+          )}
+        </span>
+        <Button type="button" size="field" onClick={() => setPicking(true)}>
+          {icon.chosen ? "Change" : "Choose"}
+        </Button>
+      </div>
+      <ProjectIconPicker project={project} open={picking} onClose={() => setPicking(false)} />
+    </div>
+  );
+}
+
+/** The project's icon beside its name: its maintainers click it to choose another. */
+function HeaderIcon({ project, manage }: { project: G.Project; manage: boolean }) {
+  const [picking, setPicking] = useState(false);
+  const icon = <ProjectMark project={project} tile={48} />;
+  if (!manage) return icon;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setPicking(true)}
+        aria-label={`Change ${project.name}'s icon`}
+        title="Change its icon"
+        className="group relative shrink-0 rounded-[14px] transition-transform duration-150 ease-[var(--ease-out)] hover:scale-[1.04] active:scale-95"
+      >
+        {icon}
+        <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-raised text-ink-3 opacity-0 shadow-[0_0_0_1px_var(--c-line-strong),0_2px_6px_rgb(0_0_0/0.25)] transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
+          <Pencil className="size-2.5" />
+        </span>
+      </button>
+      <ProjectIconPicker project={project} open={picking} onClose={() => setPicking(false)} />
+    </>
+  );
+}
+
+/** The picker for a project's icon, which saves it. */
+function ProjectIconPicker({
+  project,
+  open,
+  onClose,
+}: {
+  project: G.Project;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const save = useSaveIcon(project);
+  return (
+    <IconPicker
+      open={open}
+      onClose={onClose}
+      project={project}
+      saving={save.isPending}
+      onSave={(icon) =>
+        save.mutate(icon, {
+          onSuccess: () => {
+            onClose();
+            toast(icon ? `${project.name} has its icon` : `${project.name} shows the icon that fits it`);
+          },
+          onError: (e) => toast(`The icon wasn't saved: ${e.message}`, "error"),
+        })
+      }
+    />
+  );
+}
+
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
   const { tab = "sessions", schedule, linear } = useSearch({ from: "/app/p/$slug" });
@@ -136,9 +221,12 @@ export function ProjectPage() {
             </Link>
           )}
           {/* A name or a link with no spaces wraps on a phone instead of widening the page. */}
-          <h1 className="font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em] [overflow-wrap:anywhere]">
-            {p.name}
-          </h1>
+          <div className="flex items-center gap-4">
+            <HeaderIcon project={p} manage={manage} />
+            <h1 className="min-w-0 font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em] [overflow-wrap:anywhere]">
+              {p.name}
+            </h1>
+          </div>
           {p.description && (
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3 [overflow-wrap:anywhere]">
               {p.description}
@@ -921,6 +1009,7 @@ function Settings({ project }: { project: G.Project }) {
           <Field label="Description">
             {(id) => <Input id={id} value={description} onChange={(e) => setDescription(e.target.value)} />}
           </Field>
+          <IconField project={project} />
           <Field
             label="Default branch"
             hint="Sessions start from it unless told otherwise."

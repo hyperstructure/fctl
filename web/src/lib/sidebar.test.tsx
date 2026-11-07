@@ -81,7 +81,12 @@ const invitation: G.WorkspaceInvitation = {
   needs_two_factor: false,
 };
 const workspaces: G.WorkspaceList = { workspaces: [acme, side], invitations: [invitation], limit: 5 };
-const projects: G.ProjectList = { projects: [project("web", acme, 2), project("api", acme)] };
+const projects: G.ProjectList = {
+  projects: [
+    { ...project("web", acme, 2), icon: { name: "store", color: "yellow", style: "duotone" } },
+    { ...project("api", acme), description: "Orders and payments" },
+  ],
+};
 
 describe("the sidebar kept in this browser", () => {
   it("keeps only what the sidebar shows, for the person signed in", () => {
@@ -106,14 +111,41 @@ describe("the sidebar kept in this browser", () => {
         limit: 5,
       },
       projects: [
-        { id: "prj_web", slug: "web", name: "web", active_sessions: 2, workspace: { id: "ws_acme" } },
-        { id: "prj_api", slug: "api", name: "api", active_sessions: 0, workspace: { id: "ws_acme" } },
+        {
+          id: "prj_web",
+          slug: "web",
+          name: "web",
+          active_sessions: 2,
+          icon: { name: "store", color: "yellow", style: "duotone" },
+          workspace: { id: "ws_acme" },
+        },
+        {
+          id: "prj_api",
+          slug: "api",
+          name: "api",
+          active_sessions: 0,
+          // What picks the icon of a project nobody chose one for.
+          description: "Orders and payments",
+          workspace: { id: "ws_acme" },
+        },
       ],
     });
     const kept = localStorage.getItem("fctl:sidebar") ?? "";
     for (const left of ["example", "Lovelace", "Hopper", "launch date", "npm ci", "eu-west-1", "total"])
       expect(kept).not.toContain(left);
     expect(keptSidebar("usr_grace")).toBeUndefined();
+  });
+
+  it("reads icons it doesn't know as the ones they can be", () => {
+    keepSidebar("usr_ada", workspaces, projects);
+    const kept = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");
+    kept.projects[0].icon = { name: "store", color: "green", style: "neon" };
+    kept.projects[1].icon = "store";
+    localStorage.setItem("fctl:sidebar", JSON.stringify(kept));
+    const [web, api] = keptSidebar("usr_ada")?.projects ?? [];
+    // A color or a style this version doesn't know draws as ink lines.
+    expect(web?.icon).toEqual({ name: "store", color: undefined, style: undefined });
+    expect(api?.icon).toBeUndefined();
   });
 
   it("keeps that the primary instance owner can be in any number of workspaces", () => {

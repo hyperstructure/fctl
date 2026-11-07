@@ -266,6 +266,14 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         .map(|d| validate::text("description", d, 500))
         .transpose()?
         .filter(|d| !d.is_empty());
+    let icon = body
+        .icon
+        .as_ref()
+        .map(validate::project_icon)
+        .transpose()?
+        .flatten()
+        .map(|i| serde_json::to_string(&i))
+        .transpose()?;
     let slug = match body.slug.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(sl) => slugs::chosen(&ctx.db, Of::Project, sl, None).await?,
         None => slugs::free(&ctx.db, Of::Project, &naming::project_slug(&name)).await?,
@@ -375,14 +383,15 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         vec![
             q(
                 &ctx.db,
-                "INSERT INTO projects (id, workspace_id, slug, name, description, repo_owner, repo_name, default_branch, settings, created_by, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO projects (id, workspace_id, slug, name, description, icon, repo_owner, repo_name, default_branch, settings, created_by, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 &[
                     s(id.as_str()),
                     s(workspace.id()),
                     s(&slug),
                     s(&name),
                     os(description.as_deref()),
+                    os(icon.as_deref()),
                     os(repo.as_ref().map(|r| r.owner.as_str())),
                     os(repo.as_ref().map(|r| r.name.as_str())),
                     s(default_branch.as_deref().unwrap_or("main")),
@@ -428,6 +437,13 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let description = match body.description.as_deref() {
         Some(d) => Some(validate::text("description", d, 500)?).filter(|d| !d.is_empty()),
         None => row.description.clone(),
+    };
+    // Absent: unchanged. An empty name: none.
+    let icon = match &body.icon {
+        Some(i) => validate::project_icon(i)?
+            .map(|i| serde_json::to_string(&i))
+            .transpose()?,
+        None => row.icon.clone(),
     };
     let (mut owner, mut repo_name) = (row.repo_owner.clone(), row.repo_name.clone());
     // The installation that reaches a newly linked repository.
@@ -533,10 +549,11 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let mut statements = vec![
         q(
             &ctx.db,
-            "UPDATE projects SET name = ?, description = ?, repo_owner = ?, repo_name = ?, default_branch = ?, settings = ?, archived_at = ?, updated_at = ? WHERE id = ?",
+            "UPDATE projects SET name = ?, description = ?, icon = ?, repo_owner = ?, repo_name = ?, default_branch = ?, settings = ?, archived_at = ?, updated_at = ? WHERE id = ?",
             &[
                 s(&name),
                 os(description.as_deref()),
+                os(icon.as_deref()),
                 os(owner.as_deref()),
                 os(repo_name.as_deref()),
                 s(&default_branch),

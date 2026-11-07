@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProjectMark } from "@/components/project/project-icon";
 import {
   Avatar,
   Kbd,
@@ -622,8 +623,8 @@ function WorkspaceGroup({
 }
 
 /**
- * A project in the sidebar, which people drag by its row (the sessions under it move with it): a
- * dot lit while its sessions are at work, and how many are.
+ * A project in the sidebar, which people drag by its row (the sessions under it move with it): its
+ * icon, and how many of its sessions are at work.
  */
 function ProjectRow({
   project: p,
@@ -665,16 +666,16 @@ function ProjectRow({
               : "text-ink-3 hover:bg-hover/60 hover:text-ink",
         )}
       >
-        <span className="flex size-4 items-center justify-center">
-          {p.active_sessions > 0 ? (
-            <StatusDot status="running" />
-          ) : (
-            <span className="size-1.5 rounded-full bg-ink-4/60" />
-          )}
-        </span>
+        <ProjectMark project={p} size={16} />
         <span className="min-w-0 flex-1 truncate">{p.name}</span>
         {p.active_sessions > 0 && (
-          <span className="text-[11.5px] text-ink-4 tabular-nums">{p.active_sessions}</span>
+          <span
+            title={p.active_sessions === 1 ? "1 session at work" : `${p.active_sessions} sessions at work`}
+            className="flex items-center gap-1.5 text-[11.5px] text-accent tabular-nums"
+          >
+            <StatusDot status="running" className="scale-75" />
+            {p.active_sessions}
+          </span>
         )}
       </Link>
       {sessions && sessions.length > 0 && (
