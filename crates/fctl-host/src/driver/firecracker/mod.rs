@@ -293,7 +293,6 @@ async fn binary_version(firecracker: &Path) -> Result<String> {
 /// Gives back the disk that the pages of zeros in the first `len` bytes of
 /// the file at `path` take, which most of a VM's saved memory is.
 fn punch_zeros(path: &Path, len: u64) -> Result<()> {
-    use nix::fcntl::{FallocateFlags, fallocate};
     use std::os::unix::fs::FileExt;
     const PAGE: usize = 4096;
     let file = std::fs::OpenOptions::new()
@@ -304,12 +303,7 @@ fn punch_zeros(path: &Path, len: u64) -> Result<()> {
         let (Ok(start), Ok(len)) = (i64::try_from(start), i64::try_from(end - start)) else {
             return Ok(());
         };
-        fallocate(
-            &file,
-            FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
-            start,
-            len,
-        )
+        punch_hole(&file, start, len)
     };
     let mut buf = vec![0u8; 1 << 20];
     let mut offset = 0u64;
@@ -337,6 +331,26 @@ fn punch_zeros(path: &Path, len: u64) -> Result<()> {
     if let Some(start) = zeros {
         punch(start, offset)?;
     }
+    Ok(())
+}
+
+/// Gives back the disk under `len` bytes of `file` from `start`, keeping its
+/// size.
+#[cfg(target_os = "linux")]
+fn punch_hole(file: &std::fs::File, start: i64, len: i64) -> nix::Result<()> {
+    use nix::fcntl::{FallocateFlags, fallocate};
+    fallocate(
+        file,
+        FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
+        start,
+        len,
+    )
+}
+
+/// Firecracker runs only on Linux, which alone has `fallocate`: elsewhere
+/// (fctl for macOS still builds this driver) the zeros stay.
+#[cfg(not(target_os = "linux"))]
+fn punch_hole(_file: &std::fs::File, _start: i64, _len: i64) -> nix::Result<()> {
     Ok(())
 }
 

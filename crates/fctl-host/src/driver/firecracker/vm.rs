@@ -479,7 +479,7 @@ impl Vm {
             loop {
                 let opened = std::fs::OpenOptions::new()
                     .read(true)
-                    .custom_flags(nix::libc::O_PATH | nix::libc::O_NOFOLLOW)
+                    .custom_flags(O_PATH | nix::libc::O_NOFOLLOW)
                     .open(root.join(name));
                 match opened {
                     Ok(file) => {
@@ -1239,9 +1239,7 @@ pub fn jails_problem(jails: &Path) -> Option<String> {
     while !at.exists() {
         at = at.parent()?;
     }
-    if nix::sys::statvfs::statvfs(at)
-        .is_ok_and(|v| v.flags().contains(nix::sys::statvfs::FsFlags::ST_NODEV))
-    {
+    if nodev(at) {
         return Some(format!(
             "the VMs' jails need a filesystem that allows device files, and {} is on one mounted nodev: move data_dir in host.toml, or set jailer = false in its [firecracker]",
             jails.display()
@@ -1249,6 +1247,27 @@ pub fn jails_problem(jails: &Path) -> Option<String> {
     }
     None
 }
+
+/// Whether the filesystem `at` is on is mounted `nodev`.
+#[cfg(target_os = "linux")]
+fn nodev(at: &Path) -> bool {
+    nix::sys::statvfs::statvfs(at)
+        .is_ok_and(|v| v.flags().contains(nix::sys::statvfs::FsFlags::ST_NODEV))
+}
+
+/// Only Linux says (fctl for macOS still builds this driver, which never
+/// runs there).
+#[cfg(not(target_os = "linux"))]
+fn nodev(_at: &Path) -> bool {
+    false
+}
+
+/// `O_PATH`, which only Linux has: elsewhere (fctl for macOS still builds
+/// this driver, which never runs there) the files are opened without it.
+#[cfg(target_os = "linux")]
+const O_PATH: nix::libc::c_int = nix::libc::O_PATH;
+#[cfg(not(target_os = "linux"))]
+const O_PATH: nix::libc::c_int = 0;
 
 /// The jails' lock, under which a jail's uid is picked and taken; other
 /// processes' VMs (`fctl host image pull`'s) take it too.
@@ -1367,7 +1386,7 @@ fn take_out(root: &Path, uid: u32, name: &str, to: &Path) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let file = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(nix::libc::O_PATH | nix::libc::O_NOFOLLOW)
+        .custom_flags(O_PATH | nix::libc::O_NOFOLLOW)
         .open(root.join(name))
         .with_context(|| format!("opening the {name} Firecracker saved in the VM's jail"))?;
     let meta = file.metadata()?;

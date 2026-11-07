@@ -475,6 +475,16 @@ instead: xtask's binary (`.github/actions/xtask`), which the jobs run as
 which runs beside the checks for the deploy. Only `main` saves caches;
 pull requests use `main`'s.
 
+CI also runs Clippy over `fctl` and `fctl-host` on a Mac (the "fctl on
+macOS" job), and `cargo xtask check` waits for it: the release builds fctl
+for macOS, and code that only Linux has (`O_PATH`, `fallocate`, the
+firecracker driver's) needs `#[cfg(target_os = "linux")]` there. To check
+from Linux, `rustup target add aarch64-apple-darwin`, then `cargo clippy
+-p fctl -p fctl-host --target aarch64-apple-darwin`; `ring`'s build script
+needs a C compiler for macOS, such as zig's (`python3 -m ziglang cc -target
+aarch64-macos`, without the `-arch` and `-mmacosx-version-min` flags cc
+passes it) in `CC_aarch64_apple_darwin`.
+
 The Standalone image workflow (`.github/workflows/standalone-image.yml`)
 builds the standalone control plane's image, starts it and runs `cargo
 xtask dev --smoke --server` against it, so the container, its migrations

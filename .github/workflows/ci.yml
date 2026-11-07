@@ -7,7 +7,8 @@
 # that change it and for each release.
 #
 # The parts of `cargo xtask check` run at once, each in a job of its own, and
-# "cargo xtask check" passes once they all have: that check and "cargo xtask
+# "cargo xtask check" passes once they all have, and fctl for macOS has
+# passed Clippy on a Mac: that check and "cargo xtask
 # dev --smoke" are the ones main's ruleset requires (.github/rulesets). The
 # jobs run xtask's binary, which .github/actions/xtask takes from a cache when
 # nothing it is built from changed. On main, the Worker's release build runs
@@ -74,11 +75,23 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: xtask check web
 
+  # fctl for macOS, which only the Release workflow built before: code for
+  # Linux alone (the firecracker driver's fallocate, O_PATH and nodev) broke
+  # v0.30.2's release. Clippy for the host's Mac, its tests included.
+  macos:
+    name: fctl on macOS
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/rust
+      - run: cargo clippy --locked -p fctl -p fctl-host --all-targets -- -D warnings
+
   # A skipped job would count as passed, so this one runs when a part fails
   # too (unless the run was cancelled), and fails unless they all passed.
   check:
     name: cargo xtask check
-    needs: [lint, test, web]
+    needs: [lint, test, web, macos]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -88,9 +101,11 @@ jobs:
           LINT: ${{ needs.lint.result }}
           TEST: ${{ needs.test.result }}
           WEB: ${{ needs.web.result }}
+          MACOS: ${{ needs.macos.result }}
         run: |
-          echo "lint: $LINT, test: $TEST, web: $WEB"
-          [ "$LINT" = success ] && [ "$TEST" = success ] && [ "$WEB" = success ]
+          echo "lint: $LINT, test: $TEST, web: $WEB, macos: $MACOS"
+          [ "$LINT" = success ] && [ "$TEST" = success ] && [ "$WEB" = success ] \
+            && [ "$MACOS" = success ]
 
   # Nothing else runs the control plane before it deploys: this applies the
   # migrations to a fresh local D1, starts the Worker, bootstraps an owner,

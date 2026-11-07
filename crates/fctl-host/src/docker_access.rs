@@ -9,7 +9,7 @@
 //! it ([`regroup`]).
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Where the docker CLI finds the daemon when `DOCKER_HOST` doesn't say.
 pub const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
@@ -362,22 +362,21 @@ pub fn status_groups(status: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Whether the socket at `path` refuses this process.
-#[cfg(unix)]
-fn denied(path: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(path)
-        .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
-}
-
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Facts, REGROUPED, denied, exec_line};
+    use super::{Facts, REGROUPED, exec_line};
     use nix::sys::signal::Signal;
     use nix::unistd::{Gid, Group, User, getegid, getgroups, getppid, getuid};
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
+
+    /// Whether the socket at `path` refuses this process.
+    fn denied(path: &Path) -> bool {
+        std::os::unix::net::UnixStream::connect(path)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+    }
 
     /// How `sg` started this process, from [`REGROUPED`]: in its own place
     /// (`InPlace`), or as its child, which it waits for (`Child`).
