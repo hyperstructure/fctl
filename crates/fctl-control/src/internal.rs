@@ -83,6 +83,10 @@ pub struct ControlState {
     /// said.
     #[serde(default)]
     pub disk: Option<DiskNews>,
+    /// Someone stopped the session, or deleted it: its agent's question
+    /// goes, as nobody will answer it.
+    #[serde(default)]
+    pub drop_question: bool,
 }
 
 /// The question a session's agent asks people now (`/ask`, from `fctl ask`

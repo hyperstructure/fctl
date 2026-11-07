@@ -1520,10 +1520,6 @@ impl SessionObject {
         Ok(())
     }
 
-    /// Its runner drains: the session stops now if it has waited for a
-    /// message for a while and none is on its way to the agent. Checking and
-    /// marking it stopping happen together, so a message that comes after
-    /// waits for the next run (`deliver`), which starts on the same runner.
     /// The agent asks the people who follow the session something (`fctl
     /// ask`), or takes its question back. Viewers and dashboards see it at
     /// once; followers hear of it as the turn ends, or now when it already
@@ -1545,6 +1541,10 @@ impl SessionObject {
         })
     }
 
+    /// Its runner drains: the session stops now if it has waited for a
+    /// message for a while and none is on its way to the agent. Checking and
+    /// marking it stopping happen together, so a message that comes after
+    /// waits for the next run (`deliver`), which starts on the same runner.
     async fn drain_stop(&self, b: DrainStop) -> std::result::Result<DrainStopped, ApiError> {
         let now = now_ms();
         let meta_ms = |key: &str| self.meta(key).and_then(|v| v.parse::<i64>().ok());
@@ -1868,6 +1868,10 @@ impl SessionObject {
         if let Some(a) = b.archived {
             s.archived = a;
         }
+        if b.drop_question {
+            described |= s.question.is_some();
+            s.question = None;
+        }
         if let Some(u) = b.claude_user
             && let Ok(json) = serde_json::to_string(&u)
         {
@@ -1946,6 +1950,13 @@ impl SessionObject {
             self.delete_meta("idle_since");
         } else if s.status != SessionStatus::Idle {
             self.set_meta("idle_since", &now.to_string());
+        }
+        // A question nobody can answer any more goes with a session that
+        // failed. One that stopped after being idle, or for its runner's
+        // drain, still waits: a message resumes it, and answers it. One a
+        // person stopped goes too (`ControlState::drop_question`).
+        if status == SessionStatus::Failed {
+            s.question = None;
         }
         s.status = status;
         s.status_reason = reason.clone();

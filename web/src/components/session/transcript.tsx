@@ -150,11 +150,6 @@ function LongText({ text, findKey }: { text: string; findKey: string }) {
   );
 }
 
-/**
- * A note the agent kept in the project's memory, or marked stale (a
- * duplicate too), as it was then, with a link to it in the project's Memory
- * tab.
- */
 /** What the agent asked people (`fctl ask`), as it asked it: the answers it offered, and the reply that follows. */
 function QuestionNotice({ question, findKey }: { question: G.SessionQuestion; findKey: string }) {
   return (
@@ -186,6 +181,11 @@ function QuestionNotice({ question, findKey }: { question: G.SessionQuestion; fi
   );
 }
 
+/**
+ * A note the agent kept in the project's memory, or marked stale (a
+ * duplicate too), as it was then, with a link to it in the project's Memory
+ * tab.
+ */
 function MemoryNotice({
   memory,
   stale,

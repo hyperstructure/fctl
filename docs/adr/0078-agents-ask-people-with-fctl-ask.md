@@ -30,7 +30,9 @@ agents to say that they need input, shown where people look first.
   takes its place. **A person's next message answers it**: SessionDO drops
   it when it delivers a message with an author, whichever way the message
   came (the page, the CLI, Linear). An answer to click is that message,
-  sent as it is.
+  sent as it is. A session that fails, or that someone stops or deletes,
+  drops it too; one that stops after being idle, or for its runner's
+  drain, keeps it, since a message resumes it.
 - **Followers hear of it as the turn ends**, as a notification of its own
   kind (`notify::Kind::Asking`): "shop#231 asks you" with the question and
   its answers, in place of the last words of an ordinary finished turn. A

@@ -2342,7 +2342,10 @@ up to six answers of at most 120), writes it through to D1's
 viewers and dashboards at once; a newer question takes its place, and
 `fctl ask --withdraw` takes it back. A person's next message answers it:
 SessionDO drops it as it delivers a message with an author, however it
-came, and an answer clicked is that message, sent as it is. Followers hear
+came, and an answer clicked is that message, sent as it is. It goes too
+when the session fails or someone stops or deletes it (FleetDO's stop says
+so: `ControlState::drop_question`), but stays through an idle stop or a
+runner's drain, since a message resumes the session and answers it. Followers hear
 of it as the turn ends ([Notifications](#notifications)), and at once when
 it comes after. fctl-agent writes a `question_asked` notice in the
 transcript, so that the question stays there once answered, and tells
