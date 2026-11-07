@@ -495,7 +495,13 @@ their sessions run on and the GitHub accounts their projects use
 ([ADR 0024](adr/0024-workspaces-hold-people-projects-runners-and-github-accounts.md)).
 It has a name, an address (`/w/<slug>`), a color and an avatar image (at most
 256 KB, which the web app makes 256 px square; `GET
-/api/v1/workspaces/{id}/avatar`, at a URL that changes with it). Someone can
+/api/v1/workspaces/{id}/avatar`, at a URL that changes with it). Its avatar
+is its initials on its color until it has an image. The color is one of the
+brand's four, or one of its own (`#rrggbb`), which the API sends as `hex`
+with the brand color nearest it as `color`, for clients before colors of
+their own; `workspaces.color` keeps either. The web app draws a color of its
+own as it was chosen in both themes, as an image would be, with the initials
+in blackish or whiteish, whichever reads better on it. Someone can
 be in at most five (`fctl_domain::workspace::MAX_WORKSPACES`), and the
 primary instance owner in any number (`workspace_limit`,
 [ADR 0058](adr/0058-the-primary-instance-owner-can-be-in-any-number-of-workspaces.md)):

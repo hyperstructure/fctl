@@ -246,6 +246,7 @@ fctl workspaces remove grace@example.com   # their sessions there stop
 fctl workspaces transfer grace@example.com # the primary admin hands the role to an admin
 
 fctl workspaces set --name "Side project" --avatar logo.png   # or --avatar none
+fctl workspaces set --color '#2a9d8f'     # its avatar's color, of its own (quoted: the shell takes # for a comment), or yellow, pink, blue or ink
 fctl workspaces set --slug side            # its address in URLs (create takes --slug too); old links stop working
 fctl workspaces set --base-role editor     # every member starts sessions in every project
 fctl workspaces set --require-two-factor on   # closed to members without a second factor
