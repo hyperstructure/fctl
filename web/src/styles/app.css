@@ -1084,3 +1084,13 @@ html[data-dragging] * {
   --p-pink: #c800aa;
   --p-blue: #0070e0;
 }
+/* A project icon's color of its own: lib/color.ts gives each theme its
+   shade, which reads there, and this picks the theme's. */
+.pi-own {
+  --pi-ink: var(--pi-ink-dark);
+  --pi-soft: var(--pi-soft-dark);
+}
+:root[data-theme="light"] .pi-own {
+  --pi-ink: var(--pi-ink-light);
+  --pi-soft: var(--pi-soft-light);
+}

@@ -2,14 +2,16 @@
 // the project's page will show it while you choose. Nothing changes until you save. The keyboard
 // does it all: type to search, the arrows move through the icons, Enter picks one, ⌘Enter saves.
 // It fits the screen: on a phone the icons' list gives up its height, so that Save stays in view.
+// Its colors are the workspace's four and one of its own, which icon-color.tsx chooses.
 
 import { Search, X } from "lucide-react";
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, Dialog, Kbd } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { apple } from "@/lib/hotkeys";
 import {
+  BRAND_HEX,
   COLOR_ORDER,
   type Fits,
   ICON_COLORS,
@@ -19,18 +21,27 @@ import {
   type IconChoice,
   iconDef,
   iconOf,
+  iconPaint,
+  ownColors,
   sameIcon,
   searchIcons,
   suggestIcons,
+  toSave,
 } from "@/lib/project-icons";
+import { keys, queryClient } from "@/lib/queries";
+import { ColorPopover, OwnSwatch } from "./icon-color";
 import { Glyph, ProjectIcon } from "./project-icon";
 
 /** The project whose icon is chosen: what suggests one, and what the preview shows. */
 export type PickerProject = Fits & {
   icon?: G.ProjectIcon;
   active_sessions?: number;
-  workspace?: Pick<G.WorkspaceRef, "name">;
+  /** Its `id` finds the colors of their own its other projects have. */
+  workspace?: Pick<G.WorkspaceRef, "name"> & { id?: string };
 };
+
+/** Where a color of its own starts when there's none yet and the icon is in ink: a warm orange. */
+const FIRST_OWN = "#ff8a1f";
 
 export function IconPicker({
   open,
@@ -85,7 +96,19 @@ function Picker({
     name: current.name,
     color: current.color,
     style: current.style,
+    ...(current.hex && { hex: current.hex }),
   });
+  // The color of its own, kept while a workspace color is tried, to go back to.
+  const [own, setOwn] = useState(current.chosen ? current.hex : undefined);
+  const [editing, setEditing] = useState<false | "pointer" | "keyboard">(false);
+  const ownSwatch = useRef<HTMLButtonElement>(null);
+  const popoverId = useId();
+  // The colors of their own the workspace's other projects have, as the sidebar's list knows them.
+  const used = useMemo(() => {
+    const ws = project.workspace?.id;
+    const all = queryClient.getQueryData<G.ProjectList>(keys.projects)?.projects ?? [];
+    return ws ? ownColors(all.filter((p) => p.workspace?.id === ws && p.id !== project.id)).slice(0, 12) : [];
+  }, [project.workspace?.id, project.id]);
   // Back to the icon that fits: saving then takes the project's own away.
   const [fitting, setFitting] = useState(!current.chosen);
   const [query, setQuery] = useState("");
@@ -121,13 +144,24 @@ function Picker({
     if (saving || sent.current) return;
     if (!changed) return onCancel();
     sent.current = true;
-    onSave(fitting ? null : draft);
+    onSave(fitting ? null : toSave(draft));
   };
   const pick = (name: string) => {
     setDraft((d) => ({ ...d, name }));
     setFitting(false);
   };
   const shown = fitting ? iconOf({ ...project, icon: undefined }) : draft;
+  const paint = iconPaint(draft);
+  const ownPaint = own ? iconPaint({ color: "ink", hex: own }) : undefined;
+  const closeEditor = useCallback((refocus: boolean) => {
+    setEditing(false);
+    if (refocus) ownSwatch.current?.focus();
+  }, []);
+  const chooseOwn = (hex: string) => {
+    setOwn(hex);
+    setDraft((d) => ({ ...d, name: fitting ? shown.name : d.name, hex }));
+    setFitting(false);
+  };
   const label = (name?: string) => (name ? iconDef(name)?.label : undefined);
   const about = pointed ?? flat[focus];
 
@@ -231,23 +265,28 @@ function Picker({
         <div className="flex flex-col justify-center gap-3 max-sm:flex-row max-sm:items-center max-sm:justify-between">
           <div className="flex items-center gap-3">
             <span className="w-10 text-[12.5px] text-ink-3 max-sm:hidden">Color</span>
-            <div className="flex gap-1" role="radiogroup" aria-label="Color">
+            <div className="flex gap-1 max-sm:gap-0.5" role="radiogroup" aria-label="Color">
               {COLOR_ORDER.map((c) => (
                 // biome-ignore lint/a11y/useSemanticElements: a swatch, as a radio of the group.
                 <button
                   key={c}
                   type="button"
                   role="radio"
-                  aria-checked={!fitting && draft.color === c}
+                  aria-checked={!fitting && !draft.hex && draft.color === c}
                   aria-label={ICON_COLORS[c].label}
                   title={ICON_COLORS[c].label}
                   onClick={() => {
-                    setDraft((d) => ({ ...d, name: fitting ? shown.name : d.name, color: c }));
+                    setDraft((d) => ({
+                      ...d,
+                      name: fitting ? shown.name : d.name,
+                      color: c,
+                      hex: undefined,
+                    }));
                     setFitting(false);
                   }}
                   className={cn(
-                    "flex size-8 items-center justify-center rounded-lg transition-[box-shadow,background-color] duration-150",
-                    !fitting && draft.color === c
+                    "flex size-8 items-center justify-center rounded-lg transition-[box-shadow,background-color] duration-150 max-sm:size-[30px]",
+                    !fitting && !draft.hex && draft.color === c
                       ? "bg-raised shadow-[inset_0_0_0_1.5px_var(--c-ink-3)]"
                       : "hover:bg-hover",
                   )}
@@ -258,7 +297,36 @@ function Picker({
                   />
                 </button>
               ))}
+              <OwnSwatch
+                ref={ownSwatch}
+                hex={own}
+                ink={
+                  ownPaint && { color: ownPaint.ink, className: ownPaint.className, style: ownPaint.style }
+                }
+                checked={!fitting && !!draft.hex}
+                open={!!editing}
+                popover={popoverId}
+                onClick={(byKeyboard) => {
+                  if (editing) return closeEditor(byKeyboard);
+                  // It starts from the color it has, or the workspace color it's in.
+                  chooseOwn(own ?? (shown.color === "ink" ? FIRST_OWN : BRAND_HEX[shown.color]));
+                  setEditing(byKeyboard ? "keyboard" : "pointer");
+                }}
+                onEscape={() => closeEditor(true)}
+              />
             </div>
+            <ColorPopover
+              id={popoverId}
+              open={!!editing}
+              anchor={ownSwatch}
+              hex={draft.hex ?? own ?? FIRST_OWN}
+              glyph={{ name: shown.name, style: shown.style }}
+              used={used}
+              workspace={project.workspace?.name}
+              focusHex={editing === "keyboard"}
+              onChange={chooseOwn}
+              onClose={closeEditor}
+            />
           </div>
           <div className="flex items-center gap-3">
             <span className="w-10 text-[12.5px] text-ink-3 max-sm:hidden">Style</span>
@@ -286,7 +354,7 @@ function Picker({
                       : "text-ink-3 hover:text-ink",
                   )}
                 >
-                  <Glyph name={shown.name} style={style} color={shown.color} size={14} />
+                  <Glyph name={shown.name} style={style} color={shown.color} hex={shown.hex} size={14} />
                   <span className="max-sm:sr-only">{name}</span>
                 </button>
               ))}
@@ -386,15 +454,15 @@ function Picker({
                             pick(name);
                             if (saving || sent.current) return;
                             sent.current = true;
-                            onSave({ ...draft, name });
+                            onSave(toSave({ ...draft, name }));
                           }}
                           className={cn(
                             "group/i relative flex aspect-square items-center justify-center rounded-lg outline-offset-0 transition-[background-color,box-shadow,color,transform] duration-150 active:scale-90",
                             on
-                              ? "bg-raised shadow-[inset_0_0_0_1.5px_var(--c-accent)]"
+                              ? cn("bg-raised shadow-[inset_0_0_0_1.5px_var(--c-accent)]", paint.className)
                               : "text-ink-3 hover:bg-hover hover:text-ink focus-visible:text-ink",
                           )}
-                          style={on ? { color: ICON_COLORS[draft.color].ink } : undefined}
+                          style={on ? { ...paint.style, color: paint.ink } : undefined}
                         >
                           <Glyph name={name} style={draft.style} size={20} />
                         </button>

@@ -24,30 +24,32 @@ pub struct IconArgs {
     /// that fits its name and description.
     #[arg(long, value_name = "NAME")]
     pub icon: Option<String>,
-    /// The icon's color: ink (the default), yellow, pink or blue.
-    #[arg(long, value_enum, value_name = "COLOR")]
+    /// The icon's color: ink (the default), yellow, pink or blue, or one of
+    /// its own as #rrggbb (quoted, as the shell takes # for a comment:
+    /// '#ff8800'), which the web app makes lighter or darker where a theme
+    /// needs it to read.
+    #[arg(long, value_name = "COLOR", value_parser = icon_color)]
     pub icon_color: Option<IconColorArg>,
     /// How it's drawn: outline (the default), duotone or solid.
     #[arg(long, value_enum, value_name = "STYLE")]
     pub icon_style: Option<IconStyleArg>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+/// An icon's color: a workspace color, or one of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IconColorArg {
-    Ink,
-    Yellow,
-    Pink,
-    Blue,
+    Workspace(WorkspaceColor),
+    /// `#rrggbb`.
+    Own(String),
 }
 
-impl From<IconColorArg> for WorkspaceColor {
-    fn from(c: IconColorArg) -> Self {
-        match c {
-            IconColorArg::Ink => Self::Ink,
-            IconColorArg::Yellow => Self::Yellow,
-            IconColorArg::Pink => Self::Pink,
-            IconColorArg::Blue => Self::Blue,
-        }
+fn icon_color(s: &str) -> Result<IconColorArg, String> {
+    if let Some(c) = WorkspaceColor::parse(&s.trim().to_lowercase()) {
+        return Ok(IconColorArg::Workspace(c));
+    }
+    match fctl_domain::validate::icon_hex(s) {
+        Ok(Some(hex)) => Ok(IconColorArg::Own(hex)),
+        _ => Err("use ink, yellow, pink, blue or a color of its own as #rrggbb".into()),
     }
 }
 
@@ -90,18 +92,25 @@ impl IconArgs {
         if name.is_empty() && (self.icon_color.is_some() || self.icon_style.is_some()) {
             bail!("An icon of \"\" is none: leave out --icon-color and --icon-style");
         }
+        // A workspace color takes the place of one of its own, and the other way round.
+        let (color, hex) = match &self.icon_color {
+            Some(IconColorArg::Workspace(c)) => (*c, None),
+            Some(IconColorArg::Own(hex)) => (
+                // For control planes before colors of their own, which keep only this.
+                fctl_domain::validate::nearest_color(hex).unwrap_or(WorkspaceColor::Ink),
+                Some(hex.clone()),
+            ),
+            None => current.map_or((WorkspaceColor::Ink, None), |c| (c.color, c.hex.clone())),
+        };
         Ok(Some(ProjectIcon {
             name,
-            color: self
-                .icon_color
-                .map(Into::into)
-                .or(current.map(|c| c.color))
-                .unwrap_or(WorkspaceColor::Ink),
+            color,
             style: self
                 .icon_style
                 .map(Into::into)
                 .or(current.map(|c| c.style))
                 .unwrap_or_default(),
+            hex,
         }))
     }
 }
@@ -109,7 +118,14 @@ impl IconArgs {
 /// A project's icon, as `fctl projects show` says it.
 fn icon_line(icon: Option<&ProjectIcon>) -> String {
     match icon {
-        Some(i) => format!("{} ({}, {})", i.name, i.color.as_str(), i.style.as_str()),
+        Some(i) => format!(
+            "{} ({}, {})",
+            i.name,
+            i.hex
+                .as_deref()
+                .map_or(i.color.as_str().into(), style::terminal_safe),
+            i.style.as_str()
+        ),
         None => "the one that fits its name".into(),
     }
 }
@@ -178,7 +194,7 @@ pub enum ProjectsCmd {
     /// start or resume.
     #[command(
         group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -1935,6 +1951,7 @@ mod tests {
                 name: "store".into(),
                 color: WorkspaceColor::Yellow,
                 style: IconStyle::Duotone,
+                hex: None,
             })
         );
         // A color alone recolors the project's icon.
@@ -1947,6 +1964,7 @@ mod tests {
                 name: "store".into(),
                 color: WorkspaceColor::Pink,
                 style: IconStyle::Duotone,
+                hex: None,
             })
         );
         // ...but needs an icon to color.
@@ -1964,6 +1982,46 @@ mod tests {
             panic!("parses");
         };
         assert!(icon.apply(chosen.as_ref()).is_err());
+    }
+
+    #[test]
+    fn icons_take_colors_of_their_own() {
+        let icon_of = |args: &[&str], current: Option<&ProjectIcon>| match set(args) {
+            Some(ProjectsCmd::Set { icon, .. }) => icon.apply(current).ok().flatten(),
+            _ => None,
+        };
+        // With the # or without it, as the shell leaves it when it isn't quoted.
+        let own = icon_of(&["--icon", "rocket", "--icon-color", "#FF8800"], None);
+        assert_eq!(
+            own,
+            Some(ProjectIcon {
+                name: "rocket".into(),
+                color: WorkspaceColor::Yellow,
+                style: IconStyle::Outline,
+                hex: Some("#ff8800".into()),
+            })
+        );
+        assert_eq!(
+            icon_of(&["--icon", "rocket", "--icon-color", "2a9d8f"], None).and_then(|i| i.hex),
+            Some("#2a9d8f".into())
+        );
+        // A style or a name alone keeps it...
+        let solid = icon_of(&["--icon-style", "solid"], own.as_ref());
+        assert_eq!(
+            solid.as_ref().and_then(|i| i.hex.as_deref()),
+            Some("#ff8800")
+        );
+        assert_eq!(solid.as_ref().map(|i| i.style), Some(IconStyle::Solid));
+        // ...and a workspace color takes its place.
+        let blue = icon_of(&["--icon-color", "Blue"], own.as_ref());
+        assert_eq!(
+            blue.as_ref().map(|i| (i.color, i.hex.clone())),
+            Some((WorkspaceColor::Blue, None))
+        );
+        assert!(set(&["--icon-color", "orange"]).is_none());
+        assert!(set(&["--icon-color", "#ff88"]).is_none());
+        assert_eq!(icon_line(own.as_ref()), "rocket (#ff8800, outline)");
+        assert_eq!(icon_line(blue.as_ref()), "rocket (blue, outline)");
     }
 
     #[test]

@@ -148,6 +148,17 @@ describe("the sidebar kept in this browser", () => {
     expect(api?.icon).toBeUndefined();
   });
 
+  it("keeps an icon's color of its own, and drops one that isn't a color", () => {
+    keepSidebar("usr_ada", workspaces, projects);
+    const kept = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");
+    kept.projects[0].icon = { name: "store", color: "blue", style: "solid", hex: "#2A9D8F" };
+    kept.projects[1].icon = { name: "api", hex: "teal" };
+    localStorage.setItem("fctl:sidebar", JSON.stringify(kept));
+    const [web, api] = keptSidebar("usr_ada")?.projects ?? [];
+    expect(web?.icon).toEqual({ name: "store", color: "blue", style: "solid", hex: "#2a9d8f" });
+    expect(api?.icon).toEqual({ name: "api", color: undefined, style: undefined });
+  });
+
   it("keeps that the primary instance owner can be in any number of workspaces", () => {
     keepSidebar("usr_ada", { ...workspaces, unlimited: true }, projects);
     expect(keptSidebar("usr_ada")?.workspaces).toMatchObject({ limit: 5, unlimited: true });
