@@ -12,6 +12,7 @@ export function Dialog({
   description,
   children,
   wide,
+  fit,
 }: {
   open: boolean;
   onClose: () => void;
@@ -19,6 +20,13 @@ export function Dialog({
   description?: ReactNode;
   children: ReactNode;
   wide?: boolean;
+  /**
+   * Fits the screen: the dialog is a column no taller than the screen allows, where a child with
+   * `min-h-0 flex-1` takes what's left and its own parts that can shrink give way, rather than
+   * the whole dialog scrolling. The rest stays in view, a footer's buttons too: on a short screen,
+   * the description gives up its room as well.
+   */
+  fit?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -39,15 +47,24 @@ export function Dialog({
         "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto w-[calc(100vw-2rem)] rounded-xl border border-line-strong bg-surface p-0 text-ink shadow-[0_30px_120px_rgb(0_0_0/0.55)]",
         "backdrop:bg-black/45 backdrop:backdrop-blur-[3px] open:animate-rise",
         wide ? "max-w-2xl" : "max-w-md",
+        // The modal's own max-height (the screen, less a margin) bounds the column.
+        fit && "open:flex open:flex-col",
       )}
     >
       {open && (
-        <div className="p-6">
+        <div className={cn("p-6", fit && "flex min-h-0 flex-1 flex-col")}>
           <div className="mb-5 flex items-start justify-between gap-4">
             <div className="min-w-0 [overflow-wrap:anywhere]">
               <h2 className="font-display text-[22px] leading-tight tracking-[-0.01em]">{title}</h2>
               {description && (
-                <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-3">{description}</p>
+                <p
+                  className={cn(
+                    "mt-1.5 text-[13.5px] leading-relaxed text-ink-3",
+                    fit && "[@media(max-height:600px)]:hidden",
+                  )}
+                >
+                  {description}
+                </p>
               )}
             </div>
             <button

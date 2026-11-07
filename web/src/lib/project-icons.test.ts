@@ -55,6 +55,39 @@ describe("project icons", () => {
     expect(suggestIcons({ name: "Rocket" })).toContain("rocket");
   });
 
+  it("suggests messaging, library and animal icons from what a service is built with", () => {
+    const broker = suggestIcons(
+      {
+        name: "dynamoxy",
+        description:
+          "SNS + SQS messaging for Python with a Rust core. Consume with routing, retries, DLQs, heartbeats and graceful shutdown.",
+      },
+      12,
+    );
+    expect(broker[0]).toBe("pub-sub");
+    expect(broker).toEqual(expect.arrayContaining(["message-queue", "snake", "crab", "activity"]));
+    const lib = suggestIcons(
+      {
+        name: "tomodachi",
+        description:
+          "Microservice lib for Python and asyncio: HTTP, AWS SNS+SQS, RabbitMQ / AMQP, middlewares.",
+      },
+      12,
+    );
+    expect(lib[0]).toBe("topology-mesh");
+    expect(lib).toEqual(
+      expect.arrayContaining(["pub-sub", "message-queue", "library", "snake", "integration-plug"]),
+    );
+    // Words that only sound like messaging don't suggest it.
+    expect(suggestIcons({ name: "Buyer", description: "A consumer mobile app" })[0]).toBe("smartphone");
+    expect(suggestIcons({ name: "Leads", description: "Mortgage broker CRM" }, 12)).not.toContain(
+      "message-queue",
+    );
+    expect(suggestIcons({ name: "Radio", description: "Our podcast broadcasts" })[0]).toBe("music-note");
+    // An animal's emoji.
+    expect(suggestIcons({ name: "zoo", description: "🦊 Foxes" })[0]).toBe("fox");
+  });
+
   it("falls back on a generic icon that stays the same for a project", () => {
     const one = fittingIcon({ id: "prj_1", name: "Zxq" });
     expect(fittingIcon({ id: "prj_1", name: "Zxq" })).toEqual(one);
@@ -96,6 +129,12 @@ describe("project icons", () => {
     expect(names).toContain("cloud-server");
     expect(searchIcons("van").map((i) => i.name)).toContain("delivery-van");
     expect(searchIcons("no such icon at all")).toEqual([]);
+    // Tags of our own, beside IconMCP's.
+    expect(searchIcons("fanout").map((i) => i.name)).toContain("pub-sub");
+    expect(searchIcons("python")[0]?.name).toBe("snake");
+    expect(searchIcons("rabbitmq").map((i) => i.name)).toEqual(
+      expect.arrayContaining(["message-queue", "rabbit"]),
+    );
     expect(searchIcons("  ")).toHaveLength(ICONS.length);
   });
 

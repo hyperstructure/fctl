@@ -1,6 +1,7 @@
 // Choosing a project's icon: an IconMCP glyph, its color and its style, shown as the sidebar and
 // the project's page will show it while you choose. Nothing changes until you save. The keyboard
 // does it all: type to search, the arrows move through the icons, Enter picks one, ⌘Enter saves.
+// It fits the screen: on a phone the icons' list gives up its height, so that Save stays in view.
 
 import { Search, X } from "lucide-react";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -50,6 +51,7 @@ export function IconPicker({
       open={open}
       onClose={onClose}
       wide
+      fit
       title={project.name ? `Icon for ${project.name}` : "Project icon"}
       description={
         project.workspace
@@ -200,7 +202,7 @@ function Picker({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: ⌘Enter saves from anywhere in the picker.
     <div
-      className="flex flex-col gap-5"
+      className="flex min-h-0 flex-1 flex-col gap-5 max-sm:gap-4"
       onKeyDown={(e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
@@ -225,9 +227,10 @@ function Picker({
             </p>
           </div>
         </div>
-        <div className="flex flex-col justify-center gap-3">
+        {/* On a phone, color and style share a row, without their names. */}
+        <div className="flex flex-col justify-center gap-3 max-sm:flex-row max-sm:items-center max-sm:justify-between">
           <div className="flex items-center gap-3">
-            <span className="w-10 text-[12.5px] text-ink-3">Color</span>
+            <span className="w-10 text-[12.5px] text-ink-3 max-sm:hidden">Color</span>
             <div className="flex gap-1" role="radiogroup" aria-label="Color">
               {COLOR_ORDER.map((c) => (
                 // biome-ignore lint/a11y/useSemanticElements: a swatch, as a radio of the group.
@@ -258,7 +261,7 @@ function Picker({
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <span className="w-10 text-[12.5px] text-ink-3">Style</span>
+            <span className="w-10 text-[12.5px] text-ink-3 max-sm:hidden">Style</span>
             <div
               className="flex rounded-lg border border-line bg-sunken/60 p-0.5"
               role="radiogroup"
@@ -277,14 +280,14 @@ function Picker({
                     setFitting(false);
                   }}
                   className={cn(
-                    "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors duration-150",
+                    "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors duration-150 max-sm:h-8 max-sm:px-3",
                     !fitting && draft.style === style
                       ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
                       : "text-ink-3 hover:text-ink",
                   )}
                 >
                   <Glyph name={shown.name} style={style} color={shown.color} size={14} />
-                  {name}
+                  <span className="max-sm:sr-only">{name}</span>
                 </button>
               ))}
             </div>
@@ -341,7 +344,8 @@ function Picker({
         tabIndex={-1}
         onKeyDown={onGridKey}
         onPointerLeave={() => setPointed(undefined)}
-        className="-mx-2 -mt-2 h-[min(44vh,340px)] overflow-y-auto overscroll-contain px-2 [scrollbar-gutter:stable]"
+        // As tall as it can be up to its height, but no shorter than about two rows of icons.
+        className="-mx-2 -mt-2 h-[min(44vh,340px)] min-h-28 overflow-y-auto overscroll-contain px-2 [scrollbar-gutter:stable]"
       >
         {flat.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 text-center">
@@ -404,8 +408,11 @@ function Picker({
         )}
       </div>
 
-      {/* What the icon under the pointer, or in focus, is. */}
-      <p className="-mt-3 flex h-4 items-center gap-2 truncate text-[12px] text-ink-4" aria-live="polite">
+      {/* What the icon under the pointer, or in focus, is. A touch screen has neither: the preview names it. */}
+      <p
+        className="-mt-3 flex h-4 items-center gap-2 truncate text-[12px] text-ink-4 pointer-coarse:hidden"
+        aria-live="polite"
+      >
         {about && (
           <>
             <span className="text-ink-2">{label(about)}</span>
@@ -414,8 +421,9 @@ function Picker({
         )}
       </p>
 
-      <div className="-mx-6 -mb-6 flex flex-wrap items-center gap-2 border-t border-line px-6 py-4">
-        <p className="min-w-0 flex-1 text-[12px] text-ink-4">
+      {/* On a phone, the credit takes a line of its own and the buttons the one under it. */}
+      <div className="-mx-6 -mb-6 flex flex-wrap items-center gap-x-2 gap-y-3 border-t border-line px-6 py-4">
+        <p className="min-w-0 flex-1 text-[12px] text-ink-4 max-sm:basis-full">
           Icons from{" "}
           <a
             href="https://iconmcp.com"
@@ -427,23 +435,31 @@ function Picker({
           </a>
           , MIT licence.
         </p>
-        {!fitting && (
-          <Button variant="ghost" onClick={() => setFitting(true)}>
-            Use the one that fits
+        <div className="ml-auto flex items-center gap-2">
+          {!fitting && (
+            <Button variant="ghost" onClick={() => setFitting(true)}>
+              Use the one that fits
+            </Button>
+          )}
+          {/* On a phone, the dialog's × closes it: three buttons don't fit a row. */}
+          <Button variant="ghost" onClick={onCancel} className="max-sm:hidden">
+            Cancel
           </Button>
-        )}
-        <Button variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button
-          variant="primary"
-          onClick={save}
-          loading={saving}
-          disabled={!changed}
-          trailing={<Kbd>{apple() ? "⌘" : "Ctrl"}↵</Kbd>}
-        >
-          Save
-        </Button>
+          <Button
+            variant="primary"
+            onClick={save}
+            loading={saving}
+            disabled={!changed}
+            // Phones have no keys to press.
+            trailing={
+              <span className="max-sm:hidden">
+                <Kbd>{apple() ? "⌘" : "Ctrl"}↵</Kbd>
+              </span>
+            }
+          >
+            Save
+          </Button>
+        </div>
       </div>
     </div>
   );

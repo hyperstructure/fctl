@@ -93,13 +93,66 @@ const EMOJI: [string, string][] = [
   ["📈", "line-chart"],
   ["📊", "bar-chart"],
   ["🧗", "climbing"],
+  ["🐍", "snake"],
+  ["🦀", "crab"],
+  ["🐙", "octopus"],
+  ["🦊", "fox"],
+  ["🦉", "owl"],
+  ["🐢", "turtle"],
+  ["🐳", "whale"],
+  ["🐋", "whale"],
+  ["🐰", "rabbit"],
+  ["🐇", "rabbit"],
+  ["🐧", "penguin"],
+  ["🐘", "elephant"],
+  ["🐻", "bear"],
+  ["🐼", "panda"],
+  ["🐨", "koala"],
+  ["🦦", "otter"],
+  ["🦔", "hedgehog"],
+  ["🦥", "sloth"],
+  ["🦝", "raccoon"],
+  ["🐬", "dolphin"],
+  ["🦙", "llama"],
+  ["🐒", "monkey"],
+  ["🐵", "monkey"],
+  ["🦁", "lion"],
+  ["🐯", "tiger"],
+  ["🦒", "giraffe"],
+  ["🦜", "parrot"],
+  ["🦆", "duck"],
+  ["🐺", "wolf"],
+  ["🐿", "squirrel"],
+  ["🐌", "snail"],
+  ["🐜", "ant"],
+  ["🪼", "jellyfish"],
+  ["📨", "mail"],
+  ["✉", "mail"],
+  ["📥", "inbox"],
+  ["📡", "broadcast"],
+  ["📦", "package-open"],
+  ["🧰", "toolbox"],
+  ["🧱", "building-bricks"],
+  ["🔌", "integration-plug"],
 ];
 
-// Words in a project's name or description, and the icons they suggest, best first.
+// Words in a project's name or description, and the icons they suggest, best first. Where several
+// match, each one's best icon comes before any one's second, and the earlier word first.
 const WORDS: [RegExp, string[]][] = [
   [/\b(shop|store|storefront|checkout|e-?commerce)\b/, ["store", "bag", "cart"]],
   [/\b(cart|basket|subscriptions?)\b/, ["cart", "bag"]],
   [/\b(payments?|billing|stripe|invoices?)\b/, ["credit-card", "wallet"]],
+  [/\b(microservices?|service mesh|gateways?)\b/, ["topology-mesh", "api-gateway", "server-stack"]],
+  [/\b(pub ?\/ ?sub|pub-?sub|sns|fan[- ]?outs?)\b/, ["pub-sub", "parallel-tasks", "broadcast"]],
+  [
+    /\b(queues?|sqs|messaging|message brokers?|rabbitmq|amqp|kafka|nats|dlqs?)\b/,
+    ["message-queue", "event-bus", "task-queue"],
+  ],
+  [/\b(event[- ]driven|event ?bus|cloudevents|eventbridge)\b/, ["event-bus"]],
+  [
+    /\b(lib|libs|library|libraries|sdks?|frameworks?|toolkit)\b/,
+    ["library", "package-manager", "building-bricks", "toolbox"],
+  ],
   [/\b(platform|backend|services?|orders)\b/, ["server-stack", "database", "api"]],
   [/\b(postgres|database|sql|sqlite|d1)\b/, ["database"]],
   [/\b(api|graphql|rest)\b/, ["api"]],
@@ -139,7 +192,16 @@ const WORDS: [RegExp, string[]][] = [
   [/\b(travel|trips?|flights?)\b/, ["plane", "earth"]],
   [/\b(food|recipes?|kitchen|restaurant)\b/, ["ramen", "pizza", "coffee"]],
   [/\b(farms?|vegetables?|produce)\b/, ["wheat", "sprout", "carrot"]],
-  [/\b(bot|bots|automation)\b/, ["robot", "automation-bolt"]],
+  [/\b(bot|bots|automation)\b/, ["robot", "bot", "automation-bolt"]],
+  // What it's built with and what it does along the way, after what it is.
+  [/\b(python|asyncio|django|fastapi|pypi)\b/, ["snake"]],
+  [/\b(rust)\b/, ["crab"]],
+  [
+    /\b(heartbeats?|health ?checks?|uptime|monitoring|observability|opentelemetry)\b/,
+    ["activity", "health-check"],
+  ],
+  [/\b(cache|caching|redis|memcached)\b/, ["cache"]],
+  [/\b(middlewares?|plugins?|extensions?|integrations?)\b/, ["integration-plug"]],
 ];
 
 /** Generic icons for a project nothing in its name or description suggests one for. */
@@ -149,6 +211,18 @@ function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return Math.abs(h);
+}
+
+/** The icons `text`'s words suggest: the best of each word's, then the second of each, and so on. */
+function wordsIn(text: string): string[] {
+  const lists = WORDS.filter(([re]) => re.test(text)).map(([, icons]) => icons);
+  const out: string[] = [];
+  for (let rank = 0; lists.some((l) => rank < l.length); rank++)
+    for (const icons of lists) {
+      const icon = icons[rank];
+      if (icon) out.push(icon);
+    }
+  return out;
 }
 
 /** What a project's icon is suggested from. */
@@ -167,9 +241,9 @@ export function suggestIcons(p: Fits, n = 8): string[] {
     if (byName.has(name) && !out.includes(name)) out.push(name);
   };
   const name = p.name.toLowerCase();
-  for (const [re, icons] of WORDS) if (re.test(name)) icons.forEach(add);
+  wordsIn(name).forEach(add);
   for (const [emoji, icon] of EMOJI) if (text.includes(emoji)) add(icon);
-  for (const [re, icons] of WORDS) if (re.test(text.toLowerCase())) icons.forEach(add);
+  wordsIn(text.toLowerCase()).forEach(add);
   // Icons named like the name's first word: "Rocket" finds rocket.
   const [word = ""] = name.split(/\s+/);
   if (word.length > 2) for (const i of searchIcons(word).slice(0, 3)) add(i.name);
