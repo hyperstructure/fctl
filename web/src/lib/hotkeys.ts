@@ -5,6 +5,23 @@ import { useEffect } from "react";
 // still works on a Mac whose browser says it is another system.
 export const apple = () => /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent);
 
+/** ⌘ (Ctrl elsewhere) and a key, as shortcuts say it. */
+export const modKey = (key: string) => (apple() ? `⌘${key}` : `Ctrl+${key}`);
+
+/**
+ * Whether `e` presses `key`: the key the layout gives, or, for a letter on a layout of another
+ * script (Greek, Cyrillic), the key in its place on a US keyboard, as browsers' own shortcuts do.
+ */
+function presses(e: KeyboardEvent, key: string) {
+  const pressed = e.key.toLowerCase();
+  if (pressed === key) return true;
+  return (
+    /^[a-z]$/.test(key) &&
+    /^(?!\p{Script=Latin})\p{L}$/u.test(pressed) &&
+    e.code === `Key${key.toUpperCase()}`
+  );
+}
+
 /**
  * Registers a keyboard shortcut like "mod+k" or "n" (ignored while typing, unless `inInputs`).
  * "mod" is ⌘, or Ctrl except on Apple's systems.
@@ -12,7 +29,7 @@ export const apple = () => /Macintosh|iPhone|iPad|iPod/.test(navigator.userAgent
 export function useHotkey(combo: string, fn: (e: KeyboardEvent) => void, opts: { inInputs?: boolean } = {}) {
   useEffect(() => {
     const parts = combo.toLowerCase().split("+");
-    const key = parts[parts.length - 1];
+    const key = parts[parts.length - 1] ?? "";
     const mod = parts.includes("mod");
     const shift = parts.includes("shift");
     const ctrl = !apple();
@@ -27,7 +44,7 @@ export function useHotkey(combo: string, fn: (e: KeyboardEvent) => void, opts: {
       if (typing && !opts.inInputs && !mod) return;
       if (mod ? !(e.metaKey || (ctrl && e.ctrlKey)) : e.metaKey || e.ctrlKey) return;
       if (shift !== e.shiftKey) return;
-      if (e.key.toLowerCase() !== key) return;
+      if (!presses(e, key)) return;
       e.preventDefault();
       fn(e);
     };

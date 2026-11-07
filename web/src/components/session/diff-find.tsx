@@ -47,8 +47,6 @@ export const TOGGLES = [
 
 /** Alt (⌥ on Apple's systems) and a letter, as shortcuts say it. */
 export const altKey = (letter: string) => (apple() ? `⌥${letter}` : `Alt+${letter}`);
-/** ⌘ (Ctrl elsewhere) and a key. */
-export const modKey = (key: string) => (apple() ? `⌘${key}` : `Ctrl+${key}`);
 
 /** The text of a line's code (`.diff-code`), and where each of its text nodes starts in it. */
 function codeText(code: Element): { node: Text; at: number }[] {

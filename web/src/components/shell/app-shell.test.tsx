@@ -631,18 +631,29 @@ function phone({ wide = false } = {}) {
 }
 
 describe("folding the sidebar", () => {
-  const fold = () =>
+  const fold = (key = "b") =>
     act(() => {
       document.body.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "\\", metaKey: true, ctrlKey: true, bubbles: true }),
+        new KeyboardEvent("keydown", { key, metaKey: true, ctrlKey: true, bubbles: true }),
       );
     });
 
-  it("folds and unfolds it with ⌘\\ beside the page", () => {
+  it("folds and unfolds it with ⌘B beside the page, and says so", () => {
     phone({ wide: true });
+    expect(document.querySelector("button[aria-label='Fold the sidebar']")?.getAttribute("title")).toBe(
+      "Fold the sidebar (Ctrl+B)",
+    );
     fold();
     expect(localStorage.getItem("fctl:sidebar-folded")).toBe("1");
     fold();
+    expect(localStorage.getItem("fctl:sidebar-folded")).toBeNull();
+  });
+
+  it("folds and unfolds it with ⌘\\ too, where \\ is a key of its own", () => {
+    phone({ wide: true });
+    fold("\\");
+    expect(localStorage.getItem("fctl:sidebar-folded")).toBe("1");
+    fold("\\");
     expect(localStorage.getItem("fctl:sidebar-folded")).toBeNull();
   });
 
