@@ -438,7 +438,8 @@ started.
   to another. Above them, **Needs you** gathers what waits on you in the
   sessions you started or follow, most pressing first: what an agent asks
   you, a failure, failed checks, a pull request an agent finished, a reply
-  it waits for. Its count shows in the browser's tab, and on fctl's icon
+  it waits for (not once its pull requests are all merged or closed: its
+  work is done). Its count shows in the browser's tab, and on fctl's icon
   where you installed it. **Pull requests** opens every pull request agents
   opened, sorted by what each needs next. On a phone, tap the session's title for its
   details: its pull requests, the files changed, its branch and who else is

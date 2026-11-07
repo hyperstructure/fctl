@@ -63,6 +63,33 @@ describe("what needs you", () => {
     ]);
   });
 
+  it("waits for no reply once its pull requests are all merged or closed", () => {
+    const idle = { status: "idle", status_reason: "Waiting for a message" } as const;
+    const merged = session({ ...idle, pull_requests: [pr(452, { state: "merged" })] });
+    const closed = session({
+      ...idle,
+      pull_requests: [pr(3, { state: "merged" }), pr(4, { state: "closed" })],
+    });
+    const draft = session({
+      ...idle,
+      pull_requests: [pr(5, { state: "merged" }), pr(6, { state: "draft" })],
+    });
+    const unknown = session({
+      ...idle,
+      pull_requests: [pr(7, { state: "merged" }), pr(8, { state: undefined })],
+    });
+    const open = session({ ...idle, pull_requests: [pr(9, { state: "merged" }), pr(10)] });
+    const none = session(idle);
+    expect(
+      needsOf("usr_noor", [merged, closed, draft, unknown, open, none], NOW).map((x) => [x.s.id, x.kind]),
+    ).toEqual([
+      [open.id, "ready"],
+      [draft.id, "waiting"],
+      [unknown.id, "waiting"],
+      [none.id, "waiting"],
+    ]);
+  });
+
   it("is about their sessions and those they follow, once each, as they are now", () => {
     const grace = { id: "usr_grace", name: "Grace" };
     const theirs = session({ status: "idle", status_reason: "Waiting for a message", created_by: grace });

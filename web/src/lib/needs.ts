@@ -25,7 +25,9 @@ export const FAILED_FOR = 24 * 3_600_000;
  * What needs `me` in `sessions` (any lists, in any order; each session once, its newest summary):
  * a question its agent asks, a failure in the last day, a pull request whose checks failed, a pull
  * request its agent finished (it waits for a reply, or ended, and the pull request is open and
- * not a draft), a reply it waits for, a pause on a usage limit. Nothing until it is known who
+ * not a draft), a reply it waits for, a pause on a usage limit. A session whose pull requests are
+ * all merged or closed waits for no reply: its work is done, and its agent waits for a message
+ * until the session stops only in case someone has more for it. Nothing until it is known who
  * `me` is: the lists hold other people's sessions too.
  */
 export function needsOf(me: string | undefined, sessions: readonly G.Session[], now: number): Need[] {
@@ -49,15 +51,21 @@ function needOf(s: G.Session, now: number): Need | undefined {
   if (s.question) return { kind: "asking", s, at: s.question.asked_at };
   if (s.status === "failed")
     return (s.ended_at ?? 0) > now - FAILED_FOR ? { kind: "failed", s, at: s.ended_at } : undefined;
-  const open = pullRequests(s).filter((pr) => ["open", "unknown"].includes(prState(pr)));
+  const pulls = pullRequests(s);
+  const open = pulls.filter((pr) => ["open", "unknown"].includes(prState(pr)));
   const failing = open.find((pr) => checksMark(pr) === "failed");
   if (failing) return { kind: "checks", s, at: failing.updated_at ?? s.last_activity_at, pr: failing };
   const done = s.status === "stopped" || waitsForYou(s);
   const ready = done ? open.find((pr) => prState(pr) === "open") : undefined;
   if (ready) return { kind: "ready", s, at: s.ended_at ?? s.last_activity_at, pr: ready };
-  if (waitsForYou(s)) return { kind: "waiting", s, at: s.last_activity_at };
+  if (waitsForYou(s) && !landed(pulls)) return { kind: "waiting", s, at: s.last_activity_at };
   if (s.status === "paused") return { kind: "paused", s, at: s.last_activity_at };
   return undefined;
+}
+
+/** Whether a session's pull requests are all merged or closed: it has some, and none is under way. */
+function landed(pulls: readonly G.PullRequestRef[]): boolean {
+  return pulls.length > 0 && pulls.every((pr) => ["merged", "closed"].includes(prState(pr)));
 }
 
 /** What a need says, after its session's title. */
