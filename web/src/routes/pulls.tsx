@@ -467,10 +467,17 @@ function Nothing({ state, filtered }: { state: PullState; filtered: boolean }) {
  */
 function useListKeys(list: React.RefObject<HTMLDivElement | null>) {
   const rows = () => [...(list.current?.querySelectorAll<HTMLElement>("[data-row]") ?? [])];
+  // The row the focus is on: its link, or the GitHub arrow beside it.
+  const focused = () => {
+    const row = (document.activeElement as HTMLElement | null)
+      ?.closest("li")
+      ?.querySelector<HTMLElement>("[data-row]");
+    return row && rows().includes(row) ? row : undefined;
+  };
   const move = (by: number) => {
     const all = rows();
     if (!all.length) return;
-    const at = all.indexOf(document.activeElement as HTMLElement);
+    const at = all.indexOf(focused() as HTMLElement);
     const next = all[Math.max(0, Math.min(all.length - 1, at < 0 ? 0 : at + by))];
     next?.focus();
     next?.scrollIntoView({ block: "nearest" });
@@ -478,13 +485,13 @@ function useListKeys(list: React.RefObject<HTMLDivElement | null>) {
   useHotkey("j", () => move(1));
   useHotkey("k", () => move(-1));
   useHotkey("o", () => {
-    const url = (document.activeElement as HTMLElement | null)?.dataset.github;
+    const url = focused()?.dataset.github;
     if (url) window.open(url, "_blank", "noopener,noreferrer");
   });
   // The arrows move only within the list, so that they scroll the page everywhere else.
   return (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    if (!rows().includes(document.activeElement as HTMLElement)) return;
+    if (!focused()) return;
     e.preventDefault();
     move(e.key === "ArrowDown" ? 1 : -1);
   };

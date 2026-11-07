@@ -12,7 +12,17 @@ const search = vi.hoisted(() => ({ value: {} as { scope?: string } }));
 vi.mock("@tanstack/react-router", () => ({
   useSearch: () => search.value,
   useNavigate: () => vi.fn(),
-  Link: ({ children }: { children: ReactNode }) => <a href="/s/ses_1">{children}</a>,
+  Link: ({
+    children,
+    to: _to,
+    params: _params,
+    search: _search,
+    ...rest
+  }: { children: ReactNode; to?: string; params?: unknown; search?: unknown } & Record<string, unknown>) => (
+    <a href="/s/ses_1" {...rest}>
+      {children}
+    </a>
+  ),
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -37,33 +47,30 @@ afterEach(() => {
   search.value = {};
 });
 
-const listing = (): Response =>
-  Response.json({
-    sessions: [
-      {
-        id: "ses_1",
-        project_id: "prj_shop",
-        project_slug: "shop",
-        number: 231,
-        title: "Add Danish to the shop",
-        status: "stopped",
-        created_by: { id: "usr_noor", name: "Noor Haddad" },
-        created_at: 0,
-        updated_at: 0,
-        stats: {} as G.SessionStats,
-        archived: false,
-        pull_requests: [
-          {
-            number: 1291,
-            url: "https://github.com/romanesco/shop/pull/1291",
-            title: "Danish for the shop",
-            state: "open",
-            repo: { owner: "romanesco", name: "shop" },
-          },
-        ],
-      } satisfies G.Session,
-    ],
-  });
+/** A session that finished, with its open pull request. */
+const finished = (n: number, number: number, title: string): G.Session => ({
+  id: `ses_${n}`,
+  project_id: "prj_shop",
+  project_slug: "shop",
+  number: n,
+  title: `Session ${n}`,
+  status: "stopped",
+  created_by: { id: "usr_noor", name: "Noor Haddad" },
+  created_at: n,
+  updated_at: n,
+  stats: {} as G.SessionStats,
+  archived: false,
+  pull_requests: [
+    {
+      number,
+      url: `https://github.com/romanesco/shop/pull/${number}`,
+      title,
+      state: "open",
+      repo: { owner: "romanesco", name: "shop" },
+    },
+  ],
+});
+const listing = (): Response => Response.json({ sessions: [finished(231, 1291, "Danish for the shop")] });
 const failure = (): Response =>
   Response.json({ code: "internal", message: "The database is busy" }, { status: 500 });
 
@@ -86,6 +93,34 @@ async function render() {
 }
 
 describe("the pull requests page", () => {
+  it("moves from the row the focus is in, from its link or from its GitHub arrow", async () => {
+    answer = () =>
+      Response.json({
+        sessions: [
+          finished(232, 1292, "Danish for the box builder"),
+          finished(231, 1291, "Danish for the shop"),
+        ],
+      });
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.querySelectorAll("[data-row]")).toHaveLength(2)));
+    const [first, second] = [...page.querySelectorAll<HTMLElement>("[data-row]")];
+    const arrow = first?.closest("li")?.querySelector<HTMLElement>('a[aria-label$="on GitHub"]');
+    const press = (key: string) =>
+      act(() => {
+        document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    arrow?.focus();
+    press("o");
+    expect(open).toHaveBeenCalledWith(first?.dataset.github, "_blank", "noopener,noreferrer");
+    press("j");
+    expect(document.activeElement).toBe(second);
+    second?.closest("li")?.querySelector<HTMLElement>('a[aria-label$="on GitHub"]')?.focus();
+    press("k");
+    expect(document.activeElement).toBe(first);
+    open.mockRestore();
+  });
+
   it("says what it lists by name", async () => {
     answer = listing;
     queryClient.setQueryData(keys.workspaces, {
