@@ -796,6 +796,7 @@ function NextSessionPage() {
                     cwd,
                     earlier: s.hasMoreBefore,
                     looking: s.loadingOlder,
+                    failed: s.olderFailed,
                     onLookBack:
                       s.hasMoreBefore && lookedBack < LOOK_BACK_PAGES
                         ? () => {

@@ -382,6 +382,8 @@ export function NowLine({
     earlier: boolean;
     /** It loads some now. */
     looking: boolean;
+    /** The last load of it brought nothing, though there is more. */
+    failed: boolean;
     /** Loads more of it, for tasks that started before; unset once it has looked far enough. */
     onLookBack?: () => void;
     /** Goes to the call that started a task. */
@@ -586,6 +588,7 @@ export function NowLine({
           cwd={waiting.cwd}
           earlier={waiting.earlier}
           looking={waiting.looking}
+          failed={waiting.failed}
           onLookBack={waiting.onLookBack}
           onGo={(call) => {
             setOpen(false);

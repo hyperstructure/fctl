@@ -3,7 +3,7 @@
 // it is and does, and for how long, which takes the reader to the call that started it.
 
 import { Bot, Hourglass, SquareTerminal } from "lucide-react";
-import { type CSSProperties, useEffect } from "react";
+import { type CSSProperties, useEffect, useRef } from "react";
 import { DotWave } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { type Awaited, doing, taskKind, taskLabel, type Waiting } from "@/lib/now";
@@ -122,6 +122,21 @@ function TaskRow({
 }
 
 /**
+ * What the list says of the tasks its session's status counts that the transcript doesn't show:
+ * it looks for them earlier in the session, or they started there, or nothing names them.
+ */
+function whereFrom(known: number, more: number, looking: boolean, earlier: boolean): string {
+  const them = known ? `${more} more` : more === 1 ? "it" : "them";
+  if (looking) return `Looking for ${them} earlier in the session`;
+  if (known)
+    return earlier
+      ? `${more} more started earlier in the session`
+      : `${more} more the transcript doesn't name`;
+  if (earlier) return `${more === 1 ? "It" : "They"} started earlier in the session`;
+  return `The transcript doesn't name ${them}`;
+}
+
+/**
  * The list the line opens into: the tasks the agent waits for, oldest first, each going to the
  * call that started it; and those its status counts that started before the activity loaded
  * here, which it looks for further back by itself.
@@ -133,6 +148,7 @@ export function BackgroundList({
   cwd,
   earlier,
   looking,
+  failed,
   onLookBack,
   onGo,
 }: {
@@ -145,15 +161,21 @@ export function BackgroundList({
   earlier: boolean;
   /** It loads some now. */
   looking: boolean;
+  /** The last load of it brought nothing, though there is more (the reader may be offline). */
+  failed: boolean;
   /** Loads more of it, while the list looks for tasks; unset once it has looked far enough. */
   onLookBack?: () => void;
   onGo: (call: string) => void;
 }) {
   const { tasks, more } = waiting;
-  // Tasks it misses started further back: it looks for them there while it shows.
-  const look = more > 0 && earlier && !looking ? onLookBack : undefined;
+  // Tasks it misses started earlier in the session: it looks for them there while it shows. After a load
+  // that failed, once more each time it opens, not again by itself.
+  const tried = useRef(false);
+  const look = more > 0 && earlier && !looking && !(failed && tried.current) ? onLookBack : undefined;
   useEffect(() => {
-    look?.();
+    if (!look) return;
+    tried.current = true;
+    look();
   }, [look]);
   const total = tasks.length + more;
   return (
@@ -183,13 +205,7 @@ export function BackgroundList({
                 <Hourglass className="size-3.5 text-ink-4" />
               )}
             </span>
-            <span className="min-w-0">
-              {looking || look
-                ? `Looking further back for ${tasks.length ? `${more} more` : more === 1 ? "it" : "them"}`
-                : earlier
-                  ? `${more} ${tasks.length ? "more " : ""}started further back`
-                  : `${more} ${tasks.length ? "more " : ""}the transcript doesn't show`}
-            </span>
+            <span className="min-w-0">{whereFrom(tasks.length, more, looking || !!look, earlier)}</span>
           </li>
         )}
       </ul>

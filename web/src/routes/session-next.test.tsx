@@ -548,8 +548,52 @@ describe("the new session page", () => {
     expect(line?.textContent).toContain("Waiting for a background task");
     act(() => line?.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click());
     expect(p.container.querySelector('[aria-label="In the background"]')?.textContent).toContain(
-      "Looking further back for it",
+      "Looking for it earlier in the session",
     );
+  });
+
+  it("after a look further back that failed, looks again only when the list opens again", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (!u.includes("/events")) return new Promise(() => {});
+      asked.push(u);
+      return Promise.reject(new TypeError("offline"));
+    });
+    const p = page();
+    p.hear({
+      type: "snapshot",
+      session: { ...session("idle"), status_reason: "Waiting for a background task" },
+      role: "owner",
+      events: turn("Watch the deploy"),
+      has_more_before: true,
+      next_seq: seq + 1,
+      live: [],
+      viewers: [],
+      runner_connected: true,
+    });
+    // A load fails, and the page shows what the store says then.
+    const settle = async () => {
+      await act(() => new Promise((r) => setTimeout(r, 30)));
+      p.hear({ type: "presence", viewers: [] });
+    };
+    await settle();
+    // The page's own load of earlier activity failed: it doesn't ask again by itself.
+    expect(asked).toHaveLength(1);
+    const toggle = () => p.container.querySelector<HTMLButtonElement>(".now-line button[aria-expanded]");
+    act(() => toggle()?.click());
+    await settle();
+    await settle();
+    expect(asked).toHaveLength(2);
+    expect(p.container.querySelector('[aria-label="In the background"]')?.textContent).toContain(
+      "It started earlier in the session",
+    );
+    // Opened again: once more.
+    act(() => toggle()?.click());
+    act(() => toggle()?.click());
+    await settle();
+    await settle();
+    expect(asked).toHaveLength(3);
   });
 
   it("shows a thought streaming in once, above the message box, where its tokens count up in place", async () => {

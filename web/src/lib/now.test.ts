@@ -141,6 +141,9 @@ describe("what it waits for in the background", () => {
     const done = task("d", { ended: "completed", endSeq: end.seq + 1 });
     const one = "Waiting for a background task";
     expect(waitingOf([done], [end], one)).toEqual({ tasks: [{ task: done }], more: 0 });
+    // Where the status counts no more than run, one that ended never takes a running one's place.
+    const server = task("s", { seq: 0 });
+    expect(waitingOf([server, done], [end], one)?.tasks.map((a) => a.task.id)).toEqual(["s"]);
     // Once a turn took up what came of it, it is done with.
     const next: Item = { ...base(), kind: "turn", durationMs: 1, ok: true };
     expect(waitingOf([{ ...done, endSeq: end.seq + 1 }], [end, next], one)).toEqual({ tasks: [], more: 1 });

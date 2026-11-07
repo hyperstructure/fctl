@@ -179,10 +179,10 @@ export function waitingOf(
   if (count === undefined) return undefined;
   const lastTurn = items.findLast((it) => it.kind === "turn")?.seq ?? 0;
   const running = tasks.filter((t) => !t.ended);
-  const lagging = tasks.filter((t) => t.ended && (t.endSeq ?? 0) > lastTurn);
-  const awaited = [...running, ...lagging.slice(-Math.max(0, count - running.length))]
-    .sort((a, b) => a.seq - b.seq)
-    .slice(-count);
+  // Only where the status counts more than run: one that ended never takes a running one's place.
+  const room = count - running.length;
+  const lagging = room > 0 ? tasks.filter((t) => t.ended && (t.endSeq ?? 0) > lastTurn).slice(-room) : [];
+  const awaited = [...running, ...lagging].sort((a, b) => a.seq - b.seq).slice(-count);
   return {
     tasks: awaited.map((task) => ({ task, call: task.call ? callOf(items, task.call) : undefined })),
     more: count - awaited.length,
