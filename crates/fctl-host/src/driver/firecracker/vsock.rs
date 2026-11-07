@@ -347,16 +347,16 @@ pub struct Unpacked {
     pub diff_ids: Option<Vec<String>>,
 }
 
-/// Asks a VM booted to unpack an image to unpack `layers`, whose bytes are
-/// the files `blobs`, and sends them, within `within`; what it unpacked.
-/// With `overlay`, the layers' whiteouts stay as overlayfs reads
-/// them, for an image that lies over another's. A VM that fails stops
-/// reading and says why, which is the error rather than the write that
-/// failed after it.
+/// Asks a VM booted to unpack an image to unpack `layers`, and sends it
+/// their bytes, one layer after the other, as they come from `bytes`
+/// (downloads, as they arrive), within `within`; what it unpacked. With
+/// `overlay`, the layers' whiteouts stay as overlayfs reads them, for an
+/// image that lies over another's. A VM that fails stops reading and says
+/// why, which is the error rather than the write that failed after it.
 pub async fn unpack(
     socket: &Path,
     layers: &[fctl_proto::vm::Layer],
-    blobs: &[std::path::PathBuf],
+    bytes: impl AsyncRead + Unpin,
     overlay: bool,
     within: Duration,
 ) -> Result<Unpacked> {
@@ -364,25 +364,33 @@ pub async fn unpack(
         layers: layers.to_vec(),
         overlay,
     };
-    let (mut r, mut w) = request(socket, &unpacking).await?;
+    let total: u64 = layers.iter().map(|l| l.size).sum();
+    // Kept until this returns, so that what writes the layers can't fail
+    // for want of a reader before the VM has said why it stopped reading.
+    let mut bytes = BufReader::with_capacity(1024 * 1024, bytes.take(total));
     let work = async {
+        let (mut r, mut w) = request(socket, &unpacking).await?;
         let sent = async {
-            for blob in blobs {
-                let mut file = tokio::fs::File::open(blob).await?;
-                tokio::io::copy(&mut file, &mut w).await?;
-            }
-            w.flush().await
+            let n = tokio::io::copy_buf(&mut bytes, &mut w).await?;
+            w.flush().await?;
+            Ok::<_, std::io::Error>(n)
         }
         .await;
+        // The VM waits for the rest, and says nothing.
+        if let Ok(n) = sent
+            && n < total
+        {
+            bail!("the layers ended after {n} bytes, short of the {total} their manifest says");
+        }
         match (sent, read_reply(&mut r).await) {
             (_, Ok(Reply { error: Some(e), .. })) => bail!("{e}"),
             (Err(e), _) => Err(anyhow::Error::from(e).context("sending a layer to the VM")),
-            (Ok(()), Ok(reply)) => Ok(Unpacked {
+            (Ok(_), Ok(reply)) => Ok(Unpacked {
                 files: reply.files.unwrap_or(0),
                 bytes: reply.bytes.unwrap_or(0),
                 diff_ids: reply.diff_ids,
             }),
-            (Ok(()), Err(e)) => Err(e),
+            (Ok(_), Err(e)) => Err(e),
         }
     };
     tokio::time::timeout(within, work).await.map_err(|_| {
@@ -391,6 +399,49 @@ pub async fn unpack(
             within.as_secs() / 60
         )
     })?
+}
+
+/// How much of an image's layers waits for the VM that unpacks them, which
+/// reads them as it unpacks them: what downloads as it boots, say.
+pub const LAYER_BUFFER: usize = 16 * 1024 * 1024;
+
+/// Unpacks `layers` in the VM whose socket is `socket`, as [`unpack`] does,
+/// once `booted` says it is up, from what `send` writes into the pipe it is
+/// given, one layer after the other: `send` starts at once, as the VM
+/// boots, and the VM reads the pipe as it unpacks. Whichever fails first
+/// stops the other, and is the error, the VM's with what `console` says
+/// its console said last; the layers are unpacked only once both are done,
+/// so that `send` can still fail what the VM unpacked (a layer whose
+/// digest it finds wrong once it has sent it, say).
+pub async fn unpack_sent<S, Fut>(
+    socket: &Path,
+    layers: &[fctl_proto::vm::Layer],
+    overlay: bool,
+    within: Duration,
+    booted: impl Future<Output = Result<String>>,
+    console: impl Fn() -> String,
+    send: S,
+) -> Result<Unpacked>
+where
+    S: FnOnce(DuplexStream) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let (to_vm, from_host) = tokio::io::duplex(LAYER_BUFFER);
+    let unpacking = async {
+        booted.await?;
+        unpack(socket, layers, from_host, overlay, within)
+            .await
+            .map_err(|e| {
+                let tail = console();
+                if tail.is_empty() {
+                    e
+                } else {
+                    e.context(format!("the VM's console said:\n{tail}"))
+                }
+            })
+    };
+    // Each returns as soon as it fails, without polling the other again.
+    tokio::try_join!(send(to_vm), unpacking).map(|((), unpacked)| unpacked)
 }
 
 /// Asks the init to stop the VM.
@@ -539,44 +590,80 @@ mod tests {
         Ok(())
     }
 
-    /// A VM that unpacks: one that takes it all and says what it wrote,
-    /// and one that fails halfway, says why and hangs up.
-    #[tokio::test]
-    async fn unpacking_says_why_the_vm_stopped() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let blob = dir.path().join("layer");
-        std::fs::write(&blob, vec![7u8; 8 * 1024 * 1024])?;
-        let layers = [fctl_proto::vm::Layer {
-            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
-            size: 8 * 1024 * 1024,
-        }];
-        let ok_dir = dir.path().join("ok");
-        std::fs::create_dir_all(&ok_dir)?;
-        let ok = fake_vm(&ok_dir, |request, mut r, mut w| async move {
-            let Request::Unpack { layers, .. } = request else {
-                return;
-            };
-            reply(&mut w, &Reply::default()).await;
-            let mut rest = vec![0u8; layers.iter().map(|l| l.size as usize).sum()];
-            if r.read_exact(&mut rest).await.is_ok() {
+    const TAR: &str = "application/vnd.oci.image.layer.v1.tar";
+
+    fn layer(size: usize) -> fctl_proto::vm::Layer {
+        fctl_proto::vm::Layer {
+            media_type: TAR.into(),
+            size: size as u64,
+        }
+    }
+
+    /// A VM that unpacks: it says it took the request, reads the layers'
+    /// bytes, telling `read` how many it has so far, and says it wrote
+    /// three files once it has them all.
+    async fn unpacking_vm(
+        dir: &Path,
+        read: tokio::sync::watch::Sender<usize>,
+    ) -> Result<std::path::PathBuf> {
+        let read = Arc::new(read);
+        fake_vm(dir, move |request, mut r, mut w| {
+            let read = read.clone();
+            async move {
+                let Request::Unpack { layers, .. } = request else {
+                    return;
+                };
+                reply(&mut w, &Reply::default()).await;
+                let total: usize = layers.iter().map(|l| l.size as usize).sum();
+                let mut got = 0;
+                let mut buf = vec![0u8; 64 * 1024];
+                while got < total {
+                    let want = buf.len().min(total - got);
+                    match r.read(&mut buf[..want]).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => got += n,
+                    }
+                    read.send_replace(got);
+                }
                 let done = Reply {
                     files: Some(3),
                     bytes: Some(10),
-                    diff_ids: Some(vec!["sha256:1".into()]),
+                    diff_ids: Some(vec!["sha256:1".into(); layers.len()]),
                     ..Reply::default()
                 };
                 reply(&mut w, &done).await;
             }
         })
-        .await?;
-        let blobs = [blob.clone()];
+        .await
+    }
+
+    /// A VM that unpacks: one that takes it all and says what it wrote,
+    /// one that fails halfway, says why and hangs up, and layers that end
+    /// short of what their manifest says, which the VM waits for.
+    #[tokio::test]
+    async fn unpacking_says_why_the_vm_stopped() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bytes = vec![7u8; 8 * 1024 * 1024];
+        let layers = [layer(bytes.len())];
+        let ok_dir = dir.path().join("ok");
+        std::fs::create_dir_all(&ok_dir)?;
+        let (read, _) = tokio::sync::watch::channel(0);
+        let ok = unpacking_vm(&ok_dir, read).await?;
         assert_eq!(
-            unpack(&ok, &layers, &blobs, false, Duration::from_secs(30)).await?,
+            unpack(&ok, &layers, &bytes[..], false, Duration::from_secs(30)).await?,
             Unpacked {
                 files: 3,
                 bytes: 10,
                 diff_ids: Some(vec!["sha256:1".into()])
             }
+        );
+        let short = unpack(&ok, &layers, &bytes[..100], false, Duration::from_secs(30)).await;
+        assert_eq!(
+            short.err().map(|e| e.to_string()),
+            Some(format!(
+                "the layers ended after 100 bytes, short of the {} their manifest says",
+                bytes.len()
+            ))
         );
         let failing_dir = dir.path().join("failing");
         std::fs::create_dir_all(&failing_dir)?;
@@ -591,10 +678,175 @@ mod tests {
             .await;
         })
         .await?;
-        let e = unpack(&failing, &layers, &blobs, false, Duration::from_secs(30)).await;
+        let e = unpack(
+            &failing,
+            &layers,
+            &bytes[..],
+            false,
+            Duration::from_secs(30),
+        )
+        .await;
         assert_eq!(
             e.err().map(|e| e.to_string()).as_deref(),
             Some("unpacking layer 1 of 1: No space left on device")
+        );
+        // Sent as they come, its error is still the one said, not the
+        // sender's, which would fail once nothing read what it writes: here
+        // the VM takes no more, so that the host's writes fail, and says
+        // why only after a while.
+        let refusing_dir = dir.path().join("refusing");
+        std::fs::create_dir_all(&refusing_dir)?;
+        let refusing = fake_vm(&refusing_dir, |_, r, mut w| async move {
+            reply(&mut w, &Reply::default()).await;
+            let Ok(Ok(stream)) = r.into_inner().reunite(w).map(UnixStream::into_std) else {
+                return;
+            };
+            let _ = stream.shutdown(std::net::Shutdown::Read);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let Ok(stream) = UnixStream::from_std(stream) else {
+                return;
+            };
+            let (_, mut w) = stream.into_split();
+            reply(
+                &mut w,
+                &Reply::failed("unpacking layer 1 of 1: No space left on device"),
+            )
+            .await;
+        })
+        .await?;
+        let sent = unpack_sent(
+            &refusing,
+            &layers,
+            false,
+            Duration::from_secs(30),
+            async { Ok(String::new()) },
+            || "unpacked layer 0 of 1".to_owned(),
+            |mut to_vm| async move {
+                loop {
+                    to_vm.write_all(&[7u8; 64 * 1024]).await?;
+                }
+            },
+        )
+        .await;
+        assert_eq!(
+            sent.err().map(|e| format!("{e:#}")).as_deref(),
+            Some(
+                "the VM's console said:\nunpacked layer 0 of 1: unpacking layer 1 of 1: No space left on device"
+            )
+        );
+        Ok(())
+    }
+
+    /// The VM reads each layer as it comes, before the rest has: here the
+    /// second half comes only once the VM has read the first.
+    #[tokio::test]
+    async fn layers_unpack_as_they_come() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (read, mut seen) = tokio::sync::watch::channel(0);
+        let socket = unpacking_vm(dir.path(), read).await?;
+        let half = 4 * 1024 * 1024;
+        let layers = [layer(half), layer(half)];
+        let send = |mut to_vm: DuplexStream| async move {
+            to_vm.write_all(&vec![1u8; half]).await?;
+            seen.wait_for(|n| *n == half).await?;
+            to_vm.write_all(&vec![2u8; half]).await?;
+            Ok(())
+        };
+        let unpacked = tokio::time::timeout(
+            Duration::from_secs(20),
+            unpack_sent(
+                &socket,
+                &layers,
+                false,
+                Duration::from_secs(30),
+                async { Ok(String::new()) },
+                String::new,
+                send,
+            ),
+        )
+        .await
+        .context("the VM waited for all the layers before it read them")??;
+        assert_eq!(unpacked.files, 3);
+        Ok(())
+    }
+
+    /// What the VM unpacked counts only once the sender is done: a layer
+    /// it finds isn't what the manifest says, once the VM has unpacked it,
+    /// fails it, and a sender that fails halfway stops the unpacking at
+    /// once, as does a VM that doesn't boot, without waiting for the other.
+    #[tokio::test]
+    async fn unpacking_fails_with_what_sends_the_layers() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (read, seen) = tokio::sync::watch::channel(0);
+        let socket = unpacking_vm(dir.path(), read).await?;
+        let size = 1024 * 1024;
+        let layers = [layer(size)];
+        let booted = || async { Ok(String::new()) };
+        let wrong = unpack_sent(
+            &socket,
+            &layers,
+            false,
+            Duration::from_secs(30),
+            booted(),
+            String::new,
+            |mut to_vm: DuplexStream| {
+                let mut seen = seen.clone();
+                async move {
+                    to_vm.write_all(&vec![1u8; size]).await?;
+                    seen.wait_for(|n| *n == size).await?;
+                    // Its reply comes as it read the last byte.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    bail!("sha256:abc doesn't match its digest")
+                }
+            },
+        )
+        .await;
+        assert_eq!(
+            wrong.err().map(|e| e.to_string()).as_deref(),
+            Some("sha256:abc doesn't match its digest")
+        );
+        let halfway = tokio::time::timeout(
+            Duration::from_secs(10),
+            unpack_sent(
+                &socket,
+                &layers,
+                false,
+                Duration::from_secs(600),
+                booted(),
+                String::new,
+                |mut to_vm: DuplexStream| async move {
+                    to_vm.write_all(&vec![1u8; size / 2]).await?;
+                    bail!("downloading sha256:abc: connection reset")
+                },
+            ),
+        )
+        .await
+        .context("the unpacking waited for the VM after the sender failed")?;
+        assert_eq!(
+            halfway.err().map(|e| e.to_string()).as_deref(),
+            Some("downloading sha256:abc: connection reset")
+        );
+        let unbooted = tokio::time::timeout(
+            Duration::from_secs(10),
+            unpack_sent(
+                &socket,
+                &layers,
+                false,
+                Duration::from_secs(600),
+                async { bail!("the VM stopped while it booted") },
+                String::new,
+                |mut to_vm: DuplexStream| async move {
+                    loop {
+                        to_vm.write_all(&[1u8; 64 * 1024]).await?;
+                    }
+                },
+            ),
+        )
+        .await
+        .context("the sender went on after the VM failed to boot")?;
+        assert_eq!(
+            unbooted.err().map(|e| e.to_string()).as_deref(),
+            Some("the VM stopped while it booted")
         );
         Ok(())
     }
