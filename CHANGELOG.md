@@ -2,6 +2,20 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.30.2 (2026-11-07)
+
+### Features
+
+- **host:** Run Firecracker VMs through the jailer on root hosts ([#434](https://github.com/hyperstructure/fctl/pull/434))
+- **host:** Build projects' images with BuildKit in Firecracker VMs ([#432](https://github.com/hyperstructure/fctl/pull/432))
+- **host:** Keep Firecracker images over the images they're built on ([#433](https://github.com/hyperstructure/fctl/pull/433))
+- **host:** Resume stopped Firecracker sandboxes where they were ([#431](https://github.com/hyperstructure/fctl/pull/431))
+- **host:** Share package caches with Firecracker sandboxes ([#430](https://github.com/hyperstructure/fctl/pull/430))
+
+### Fixes
+
+- **host:** Give Firecracker VMs a network on Ubuntu, and boot them in CI ([#429](https://github.com/hyperstructure/fctl/pull/429))
+
 ## 0.30.1 (2026-11-06)
 
 ### Features
