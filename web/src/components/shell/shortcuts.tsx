@@ -146,7 +146,9 @@ function Sheet({
           </button>
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pt-5 pb-2">
+      {/* flex-auto, not flex-1: the dialog is as tall as its contents, and Safari 26 takes
+          flex-1's 0% basis for 0 there (WebKit bug 289876), which left the list no height. */}
+      <div className="min-h-0 flex-auto overflow-y-auto overscroll-contain px-6 pt-5 pb-2">
         {groups.length === 0 ? (
           <p className="py-10 text-center text-[13.5px] text-ink-4">No shortcut matches “{q.trim()}”.</p>
         ) : (

@@ -146,4 +146,17 @@ describe("Dialog", () => {
     const d = dialog(<input aria-label="Name" autoFocus />);
     expect(document.activeElement).toBe(d.querySelector('input[aria-label="Name"]'));
   });
+
+  // happy-dom lays nothing out: this checks the classes. Safari 26 takes flex-1's 0% basis for 0
+  // in a dialog as tall as its contents, and showed the icon picker as a strip of its padding.
+  it("fits the screen with a column that starts from what it holds", () => {
+    render(
+      <Dialog open fit title="Icon" onClose={() => {}}>
+        <div className="min-h-0 flex-auto">Icons</div>
+      </Dialog>,
+    );
+    const column = document.querySelector("dialog")?.firstElementChild;
+    expect(column?.className).toMatch(/\bflex-auto\b/);
+    expect(column?.className).not.toMatch(/\bflex-1\b/);
+  });
 });

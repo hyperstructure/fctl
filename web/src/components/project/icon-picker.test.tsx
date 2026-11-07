@@ -86,9 +86,11 @@ describe("choosing a project's icon", () => {
     expect(p.dialog().className.split(" ")).toEqual(expect.arrayContaining(["open:flex", "open:flex-col"]));
     const list = p.dialog().querySelector('[role="listbox"]');
     expect(list?.className.split(" ")).toEqual(expect.arrayContaining(["h-[min(44vh,340px)]", "min-h-28"]));
-    expect(list?.parentElement?.className.split(" ")).toEqual(
-      expect.arrayContaining(["min-h-0", "flex-1", "flex-col"]),
-    );
+    // Starting from what it holds: Safari 26 takes flex-1's 0% basis for 0 there, which left the
+    // dialog as tall as its padding.
+    const column = list?.parentElement?.className.split(" ");
+    expect(column).toEqual(expect.arrayContaining(["min-h-0", "flex-auto", "flex-col"]));
+    expect(column).not.toContain("flex-1");
     // On a phone, the dialog's × closes it in Cancel's place.
     expect(p.button("Cancel")?.className).toContain("max-sm:hidden");
     expect(p.dialog().querySelector('button[aria-label="Close"]')).not.toBeNull();

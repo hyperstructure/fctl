@@ -239,7 +239,7 @@ function Picker({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: ⌘Enter saves from anywhere in the picker.
     <div
-      className="flex min-h-0 flex-1 flex-col gap-5 max-sm:gap-4"
+      className="flex min-h-0 flex-auto flex-col gap-5 max-sm:gap-4"
       onKeyDown={(e) => {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();

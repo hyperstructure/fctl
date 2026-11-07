@@ -22,9 +22,11 @@ export function Dialog({
   wide?: boolean;
   /**
    * Fits the screen: the dialog is a column no taller than the screen allows, where a child with
-   * `min-h-0 flex-1` takes what's left and its own parts that can shrink give way, rather than
+   * `min-h-0 flex-auto` takes what's left and its own parts that can shrink give way, rather than
    * the whole dialog scrolling. The rest stays in view, a footer's buttons too: on a short screen,
-   * the description gives up its room as well.
+   * the description gives up its room as well. Not `flex-1`: the dialog is as tall as its contents,
+   * and Safari 26 takes flex-1's 0% basis for 0 there (WebKit bug 289876), which left the icon
+   * picker as tall as its padding.
    */
   fit?: boolean;
 }) {
@@ -71,7 +73,7 @@ export function Dialog({
       )}
     >
       {open && shown && (
-        <div className={cn("p-6", fit && "flex min-h-0 flex-1 flex-col")}>
+        <div className={cn("p-6", fit && "flex min-h-0 flex-auto flex-col")}>
           <div className="mb-5 flex items-start justify-between gap-4">
             <div className="min-w-0 [overflow-wrap:anywhere]">
               <h2 id={titleId} className="font-display text-[22px] leading-tight tracking-[-0.01em]">
