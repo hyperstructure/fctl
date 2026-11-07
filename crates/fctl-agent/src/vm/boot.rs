@@ -221,15 +221,28 @@ fn switch_root(lowers: u32) -> Result<()> {
 fn install_self(to: &str) -> Result<()> {
     let to = Path::new(to);
     if let Some(dir) = to.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
         use std::os::unix::fs::PermissionsExt;
-        for dir in [Some(dir), dir.parent()].into_iter().flatten() {
-            std::os::unix::fs::chown(dir, Some(0), Some(0))
+        // The outer one first, each root's real directory: a link the
+        // image's user left there in an earlier boot leads root's `chown`
+        // and `chmod` nowhere else.
+        for dir in [dir.parent(), Some(dir)].into_iter().flatten() {
+            if std::fs::symlink_metadata(dir).is_ok_and(|m| !m.is_dir()) {
+                std::fs::remove_file(dir).with_context(|| format!("removing {}", dir.display()))?;
+            }
+            std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+            std::os::unix::fs::lchown(dir, Some(0), Some(0))
                 .with_context(|| format!("giving {} to root", dir.display()))?;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
         }
     }
     let new = to.with_extension("new");
+    // Nor one in place of the copy.
+    match std::fs::remove_file(&new) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("removing {}", new.display()));
+        }
+        _ => {}
+    }
     std::fs::copy("/init", &new).with_context(|| format!("copying /init to {}", new.display()))?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;

@@ -2265,7 +2265,7 @@ esac
             cli.calls(),
             [
                 // Root's, as fctl-agent runs as root from there.
-                "exec -u 0 fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; mkdir -p /opt/fctl/bin && chown 0:0 /opt/fctl /opt/fctl/bin && chmod 755 /opt/fctl /opt/fctl/bin",
+                format!("exec -u 0 fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; {AGENT_DIR_SCRIPT}").as_str(),
                 // Beside the one that may run, then in its place.
                 "cp fctl-agent fctl-ses-1:/opt/fctl/bin/fctl-agent.new",
                 "exec -u 0 fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; chown 0:0 /opt/fctl/bin/fctl-agent.new && chmod 755 /opt/fctl/bin/fctl-agent.new && mv -f /opt/fctl/bin/fctl-agent.new /opt/fctl/bin/fctl-agent",
