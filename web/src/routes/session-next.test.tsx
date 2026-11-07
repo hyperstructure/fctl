@@ -240,6 +240,24 @@ describe("the new session page", () => {
     expect(parts()).toBe(all);
   });
 
+  it("asked for the conversation alone while finding, puts the find bar away and shows it", () => {
+    const p = page();
+    p.snapshot(turn("Fix the flaky login test"));
+    const parts = () => p.container.querySelectorAll("[data-part]").length;
+    const all = parts();
+    p.click('button[aria-label="Show only the conversation"]');
+    expect(parts()).toBe(2);
+    // Finding shows all of it, and the button says so.
+    p.click('button[aria-label^="Find in this session"]');
+    expect(parts()).toBe(all);
+    expect(p.container.querySelector("input[type=search], input[aria-label]")).not.toBeNull();
+    p.click('button[aria-label="Show only the conversation"]');
+    expect(parts()).toBe(2);
+    expect(
+      p.container.querySelector('button[aria-label^="Find in this session"]')?.getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
   it("marks where what came while the reader was away starts, until they leave again", () => {
     const p = page();
     p.snapshot(turn("Fix the flaky login test"));

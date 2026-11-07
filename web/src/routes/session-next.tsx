@@ -26,7 +26,7 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
-import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ReviewFooter, useSessionReview } from "@/components/review";
 import { Composer } from "@/components/session/composer";
 import { DiffDialog, type DiffTarget } from "@/components/session/diff-dialog";
@@ -81,6 +81,7 @@ import { statusNotes } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import type { Item } from "@/lib/transcript";
 import { factsOf, type Turn, type TurnFacts, turnsOf, turnTitle } from "@/lib/turns";
+import { cameAfter, newestSeq } from "@/lib/unseen";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 import {
   Details,
@@ -246,7 +247,7 @@ function NextSessionPage() {
   // Coming back to the page: where what came meanwhile starts, and back up to it.
   const away = useAway(s.items, id);
   const atBottom = useAtBottom();
-  const newSince = useNewSince(s.items.length, atBottom);
+  const newSince = useNewSince(s.items, atBottom);
   const coverTitle = useRef<HTMLDivElement>(null);
   const coverShows = useShows(coverTitle, bar, !s.hasMoreBefore && !!session);
 
@@ -277,8 +278,17 @@ function NextSessionPage() {
     thinking: thinkingNow,
   });
   const live = !!status && BUSY.has(status) && !stall;
-  // With the find bar open, all of the transcript shows, for it to go to what it finds.
+  // With the find bar open, all of the transcript shows, for it to go to what it finds: asking for
+  // the conversation alone then puts the bar away.
   const quietNow = quiet && !finder.open;
+  const toggleQuiet = () => {
+    if (quietNow) {
+      setQuiet(false);
+      return;
+    }
+    setQuiet(true);
+    if (finder.open) finder.close();
+  };
   const outline = turns.length > 0 && (
     <TurnOutline
       turns={turns}
@@ -399,7 +409,7 @@ function NextSessionPage() {
                   <IconButton
                     label={quietNow ? "Show the agent's work" : "Show only the conversation"}
                     aria-pressed={quietNow}
-                    onClick={() => setQuiet(!quiet)}
+                    onClick={toggleQuiet}
                     className={cn("max-md:hidden", quietNow && "bg-accent-soft text-accent")}
                   >
                     <MessagesSquare className="size-4" />
@@ -533,7 +543,7 @@ function NextSessionPage() {
                           icon={<MessagesSquare />}
                           onClick={() => {
                             close();
-                            setQuiet(!quiet);
+                            toggleQuiet();
                           }}
                           className="md:hidden"
                         >
@@ -941,17 +951,21 @@ function useShows(
  * since. Nothing came: nothing to mark.
  */
 function useAway(items: Item[], session: string): { from?: string; count: number } {
-  // When the page went out of sight: how many items there were, the last part then, and whether
-  // the reader is back, after which what comes isn't what came while they were away.
-  const left = useRef<{ items: number; part?: string; back: boolean } | undefined>(undefined);
+  // When the page went out of sight: the newest event then, the last part, and whether the reader
+  // is back, after which what comes isn't what came while they were away. Earlier activity that
+  // loads meanwhile came before.
+  const left = useRef<{ seq: number; part?: string; back: boolean } | undefined>(undefined);
   const [away, setAway] = useState<{ from?: string; count: number }>({ count: 0 });
   const latest = useRef(items);
   latest.current = items;
   useEffect(() => {
     const seen = () => {
       if (document.visibilityState === "hidden") {
-        const ps = parts(latest.current);
-        left.current = { items: latest.current.length, part: ps[ps.length - 1]?.key, back: false };
+        // A message on its way gets another key once it is stored: the part before it.
+        const ps = parts(latest.current).filter(
+          (p) => !(p.kind === "item" && p.item.kind === "user" && p.item.pending),
+        );
+        left.current = { seq: newestSeq(latest.current), part: ps[ps.length - 1]?.key, back: false };
         setAway({ count: 0 });
       } else if (left.current) left.current.back = true;
     };
@@ -960,13 +974,12 @@ function useAway(items: Item[], session: string): { from?: string; count: number
   }, []);
   useEffect(() => {
     const l = left.current;
-    if (!l || l.back || items.length <= l.items) return;
+    const count = l && !l.back ? cameAfter(items, l.seq) : 0;
+    if (!l || !count) return;
     const ps = parts(items);
     const i = ps.findIndex((p) => p.key === l.part);
     const from = i >= 0 ? ps[i + 1]?.key : undefined;
-    setAway((a) =>
-      a.from === from && a.count === items.length - l.items ? a : { from, count: items.length - l.items },
-    );
+    setAway((a) => (a.from === from && a.count === count ? a : { from, count }));
   }, [items]);
   // Another session: nothing came while away from it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: another session starts it over
@@ -977,12 +990,15 @@ function useAway(items: Item[], session: string): { from?: string; count: number
   return away;
 }
 
-/** How many of the transcript's items came since the reader scrolled up from the bottom. */
-function useNewSince(count: number, atBottom: boolean): number {
+/**
+ * How many of the transcript's items came since the reader scrolled up from the bottom: after the
+ * newest event then, not the earlier activity that loads as they scroll up.
+ */
+function useNewSince(items: Item[], atBottom: boolean): number {
   const [left, setLeft] = useState<number>();
   if (atBottom && left !== undefined) setLeft(undefined);
-  if (!atBottom && left === undefined) setLeft(count);
-  return left === undefined ? 0 : Math.max(0, count - left);
+  if (!atBottom && left === undefined) setLeft(newestSeq(items));
+  return left === undefined ? 0 : cameAfter(items, left);
 }
 
 /**
@@ -1002,25 +1018,38 @@ function Pill({
   letGo: () => void;
   header: RefObject<HTMLElement | null>;
 }) {
-  const [, rerender] = useState(0);
-  // Whether the line that marks what came while away is above the reader.
-  const line = away.from ? document.querySelector<HTMLElement>(".new-line") : null;
-  const top = header.current?.getBoundingClientRect().bottom ?? 0;
-  const above = !!line && line.getBoundingClientRect().bottom < top;
-  useEffect(() => {
-    if (!away.from) return;
-    const on = () => rerender((n) => n + 1);
-    window.addEventListener("scroll", on, { passive: true });
-    return () => window.removeEventListener("scroll", on);
-  }, [away.from]);
-  if (above && line) {
+  // Whether the line that marks what came while away is above the reader: measured once the page
+  // has it, and again as the reader scrolls.
+  const [above, setAbove] = useState(false);
+  useLayoutEffect(() => {
+    if (!away.from) {
+      setAbove(false);
+      return;
+    }
+    const measure = () => {
+      const line = document.querySelector<HTMLElement>(".new-line");
+      const top = header.current?.getBoundingClientRect().bottom ?? 0;
+      setAbove(!!line && line.getBoundingClientRect().bottom < top);
+    };
+    measure();
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [away.from, header]);
+  if (above) {
     return (
       <JumpPill
         up
         count={away.count}
         onClick={() => {
+          const line = document.querySelector<HTMLElement>(".new-line");
+          if (!line) return;
           letGo();
           const reduce = matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+          const top = header.current?.getBoundingClientRect().bottom ?? 0;
           const y = line.getBoundingClientRect().top + window.scrollY - top - 16;
           window.scrollTo({ top: Math.max(0, y), behavior: reduce ? "instant" : "smooth" });
         }}
