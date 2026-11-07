@@ -546,12 +546,17 @@ impl<'a> World<'a> {
             if let Some(i) = &p.instructions {
                 settings["instructions"] = json!(i);
             }
-            let made = self.api(
-                &p.by,
-                "POST",
-                "/projects",
-                Some(json!({ "workspace": p.workspace, "name": p.name, "slug": p.slug, "description": p.description, "settings": settings })),
-            )?;
+            let mut body = json!({ "workspace": p.workspace, "name": p.name, "slug": p.slug, "description": p.description, "settings": settings });
+            if let Some(icon) = &p.icon {
+                body["icon"] = json!({ "name": icon.name, "style": icon.style });
+                if let Some(color) = &icon.color {
+                    body["icon"]["color"] = json!(color);
+                }
+                if let Some(hex) = &icon.hex {
+                    body["icon"]["hex"] = json!(hex);
+                }
+            }
+            let made = self.api(&p.by, "POST", "/projects", Some(body))?;
             let id = made["id"]
                 .as_str()
                 .context("no id for a project")?

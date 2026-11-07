@@ -125,6 +125,12 @@ async function openDiff(page, file, { phone = false } = {}) {
   await page.waitForTimeout(400);
 }
 
+/** Opens the sidebar on a phone, as its menu button does. */
+async function openMenu(page) {
+  await page.getByRole("button", { name: "Open menu" }).first().click();
+  await page.waitForTimeout(600);
+}
+
 /** Opens the transcript's setup row. */
 async function openSetup(page) {
   await page.locator('button:has-text("Sandbox ready in")').first().click();
@@ -147,10 +153,14 @@ async function newToken(page) {
 }
 
 // The shots of fctl.sh's feature pages (`--features`), by page: what to
-// show and how to get there. `act` runs once the page has settled.
+// show and how to get there. `act` runs once the page has settled, and
+// `size` gives a shot a window of its own size. `card` is the part of a
+// shot that the features overview shows in its page's tile, [x, y, width,
+// height] in CSS pixels, which it writes as `<page>/card-<theme>.webp` at
+// twice that size; a `cardOnly` shot is taken for its card alone.
 const pages = {
   sessions: [
-    { name: "floor", path: "/", settle: 3000, thumb: true },
+    { name: "floor", path: "/", settle: 3000 },
     { name: "session", path: session("shop#231"), settle: 2500 },
     {
       name: "follow-up",
@@ -158,6 +168,8 @@ const pages = {
       act: (page) => scrollTo(page, "A check failed", 140),
     },
     { name: "phone-floor", path: "/", phone: true, settle: 3000 },
+    // What needs Noor, and her workspaces' projects, in the sidebar a phone opens.
+    { name: "phone-needs", path: "/", phone: true, settle: 3000, act: openMenu },
     { name: "phone-session", path: session("shop#231"), phone: true, settle: 2500 },
     // Asha's agent's fix for the double charge, a file of it over the page.
     { name: "diff", path: session("platform#437"), act: (page) => openDiff(page, "src/billing/charge.rs") },
@@ -171,7 +183,7 @@ const pages = {
     },
   ],
   workspaces: [
-    { name: "workspace", path: "/w/romanesco", thumb: true },
+    { name: "workspace", path: "/w/romanesco" },
     { name: "project", path: "/p/shop" },
     { name: "settings", path: "/p/shop?tab=settings" },
     { name: "people", path: "/w/romanesco?tab=people" },
@@ -179,9 +191,11 @@ const pages = {
     { name: "workspace-settings", path: "/w/romanesco?tab=settings" },
     { name: "phone-workspace", path: "/w/romanesco", phone: true },
     { name: "phone-project", path: "/p/shop", phone: true },
+    // The sidebar's workspaces and their projects' icons, in a window tall enough for all four.
+    { name: "sidebar", path: "/", size: "1440x1400", settle: 3000, card: [0, 370, 287, 920], cardOnly: true },
   ],
   sandboxes: [
-    { name: "setup", path: session("shop#231"), act: openSetup, thumb: true },
+    { name: "setup", path: session("shop#231"), act: openSetup, card: [328, 386, 760, 390] },
     { name: "build", path: session("milkfloat#89"), act: openSetup },
     {
       name: "settings",
@@ -192,7 +206,12 @@ const pages = {
     { name: "phone-setup", path: session("shop#231"), phone: true, act: openSetup },
   ],
   linear: [
-    { name: "delegated", path: session("shop#231"), act: (page) => page.evaluate(() => window.scrollTo(0, 0)), thumb: true },
+    {
+      name: "delegated",
+      path: session("shop#231"),
+      act: (page) => page.evaluate(() => window.scrollTo(0, 0)),
+      card: [318, 146, 620, 270],
+    },
     {
       name: "exploration",
       path: session("shop#212"),
@@ -200,6 +219,8 @@ const pages = {
     },
     { name: "tickets", path: "/p/shop?tab=tickets" },
     { name: "workspace", path: "/w/romanesco?tab=linear" },
+    // Romanesco's Linear on a phone, where its admin connected it.
+    { name: "phone-linear", path: "/w/romanesco?tab=linear", phone: true },
     {
       name: "phone-delegated",
       path: session("driver-app#75"),
@@ -208,7 +229,7 @@ const pages = {
     },
   ],
   "review-agents": [
-    { name: "reviews", path: "/p/platform?tab=reviews", thumb: true },
+    { name: "reviews", path: "/p/platform?tab=reviews", card: [418, 506, 640, 390] },
     { name: "off", path: "/p/driver-app?tab=reviews" },
     { name: "review", path: session("platform#438"), settle: 2000 },
     {
@@ -217,6 +238,8 @@ const pages = {
       act: (page) => scrollTo(page, "Two workers can still both charge the card", 260),
     },
     { name: "outside", path: session("milkfloat#94"), settle: 2000 },
+    // The shop's reviews, on Tomás's subscription: shop#1291's under way.
+    { name: "shop-reviews", path: "/p/shop?tab=reviews" },
     { name: "phone-reviews", path: "/p/platform?tab=reviews", phone: true },
     // What the review read: a file of the pull request it reviewed.
     {
@@ -233,18 +256,34 @@ const pages = {
       act: (page) => scrollTo(page, "Remembered for later agents", 200),
     },
     { name: "retro", path: session("shop#224"), act: (page) => scrollTo(page, "Retrospective", 140) },
-    { name: "memory", path: "/p/platform?tab=memory", thumb: true },
+    { name: "memory", path: "/p/platform?tab=memory" },
     { name: "retrospectives", path: "/p/shop?tab=retrospectives" },
     { name: "phone-memory", path: "/p/platform?tab=memory", phone: true },
     { name: "phone-retrospectives", path: "/p/shop?tab=retrospectives", phone: true },
+    // Platform's notes on a phone, as the features overview shows them in a phone of its own.
+    {
+      name: "card",
+      path: "/p/platform?tab=memory",
+      phone: true,
+      act: (page) => scrollTo(page, "Answer Stripe", 104),
+      card: [0, 0, 390, 788],
+      cardOnly: true,
+    },
   ],
   runners: [
-    { name: "runners", path: "/w/romanesco?tab=runners", thumb: true },
+    { name: "runners", path: "/w/romanesco?tab=runners", card: [418, 462, 720, 400] },
     { name: "milkfloat", path: "/w/milkfloat?tab=runners" },
     { name: "phone-runners", path: "/w/romanesco?tab=runners", phone: true },
+    // Noor's MacBook and fika, the runners of hers that milkfloat's sessions run on.
+    {
+      name: "phone-milkfloat",
+      path: "/w/milkfloat?tab=runners",
+      phone: true,
+      act: (page) => scrollTo(page, "Register a machine", 70),
+    },
   ],
   schedules: [
-    { name: "schedules", path: "/p/shop?tab=schedules", thumb: true },
+    { name: "schedules", path: "/p/shop?tab=schedules" },
     { name: "empty", path: "/p/driver-app?tab=schedules" },
     {
       name: "editor",
@@ -253,14 +292,15 @@ const pages = {
         await page.getByRole("button", { name: /Update dependencies/ }).click();
         await page.waitForTimeout(600);
       },
+      card: [438, 446, 620, 280],
     },
     { name: "scheduled", path: session("shop#227"), act: (page) => page.evaluate(() => window.scrollTo(0, 0)) },
     { name: "phone-schedules", path: "/p/shop?tab=schedules", phone: true },
     { name: "phone-empty", path: "/p/driver-app?tab=schedules", phone: true },
   ],
   "access-tokens": [
-    { name: "tokens", path: "/settings", act: (page) => scrollTo(page, "Devices", 120), thumb: true },
-    { name: "new", path: "/settings", act: newToken },
+    { name: "tokens", path: "/settings", act: (page) => scrollTo(page, "Devices", 120) },
+    { name: "new", path: "/settings", act: newToken, card: [394, 210, 500, 320] },
     {
       name: "confirm",
       path: "/settings",
@@ -274,7 +314,7 @@ const pages = {
     { name: "phone-tokens", path: "/settings", phone: true, act: (page) => scrollTo(page, "Devices", 80) },
   ],
   team: [
-    { name: "people", path: "/w/romanesco?tab=people", thumb: true },
+    { name: "people", path: "/w/romanesco?tab=people", card: [418, 350, 560, 470] },
     { name: "members", path: "/p/shop?tab=members" },
     { name: "project", path: "/p/shop" },
     { name: "watching", path: session("shop#231"), settle: 2500, act: (page) => railTo(page, "Watching (") },
@@ -283,7 +323,7 @@ const pages = {
     { name: "phone-members", path: "/p/shop?tab=members", phone: true, act: showTab },
   ],
   "sign-in": [
-    { name: "login", path: "/login", signedOut: true, thumb: true },
+    { name: "login", path: "/login", signedOut: true, card: [500, 150, 560, 440] },
     {
       name: "two-factor",
       path: "/login",
@@ -490,9 +530,13 @@ if (open) {
         if (mine.length === 0) continue;
         const { context, page } = await noor(browser, { theme, phone, flowing: false, signedOut });
         for (const shot of mine) {
-          // A page of its own for each shot that changes what it shows.
-          const tab = shot.act ? await context.newPage() : page;
+          // A page of its own for each shot that changes what it shows, or the window's size.
+          const tab = shot.act || shot.size ? await context.newPage() : page;
           if (tab !== page) await ready(context, tab);
+          if (shot.size) {
+            const [w, h] = shot.size.split("x").map(Number);
+            await tab.setViewportSize({ width: w, height: h });
+          }
           // A page whose requests never go quiet still gets its shot, after a while.
           const url = new URL(shot.path, manifest.app).href;
           await tab.goto(url, { waitUntil: "networkidle", timeout: 20_000 }).catch(async () => {
@@ -509,17 +553,23 @@ if (open) {
           await dress(tab);
           const png = await tab.screenshot();
           if (features) {
-            const file = path.join(out, `${shot.name}-${theme}.webp`);
-            mkdirSync(path.dirname(file), { recursive: true });
-            const w = await webp(converter, png, phone ? 780 : 2200);
-            writeFileSync(file, w.bytes);
-            console.log(`${file} ${w.width}×${w.height}`);
-            // The features page's card for it: the app's content, without
-            // the sidebar where it has one, small.
-            if (shot.thumb) {
-              const crop = shot.signedOut ? [0.1, 0.06, 0.8, 0.8] : [0.17, 0, 0.8, 0.8];
-              const t = await webp(converter, png, 720, crop);
-              writeFileSync(path.join(out, shot.page, `thumb-${theme}.webp`), t.bytes);
+            mkdirSync(path.join(out, shot.page), { recursive: true });
+            if (!shot.cardOnly) {
+              const file = path.join(out, `${shot.name}-${theme}.webp`);
+              const w = await webp(converter, png, phone ? 780 : 2200);
+              writeFileSync(file, w.bytes);
+              console.log(`${file} ${w.width}×${w.height}`);
+            }
+            // Its page's tile on the features page: the part of it that `card`
+            // says, [x, y, width, height] in CSS pixels, at twice that size.
+            if (shot.card) {
+              const view = tab.viewportSize();
+              const [x, y, w, h] = shot.card;
+              const crop = [x / view.width, y / view.height, w / view.width, h / view.height];
+              const c = await webp(converter, png, w * 2, crop);
+              const file = path.join(out, shot.page, `card-${theme}.webp`);
+              writeFileSync(file, c.bytes);
+              console.log(`${file} ${c.width}×${c.height}`);
             }
           } else {
             const file = path.join(out, `${shot.name}-${theme}.png`);

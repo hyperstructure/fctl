@@ -740,6 +740,38 @@ steps = [{ edit = "b.txt", old = "x", new = "y", replace_all = true }]
                 assert!(data.join("avatars").join(file).exists(), "no avatar {file}");
             }
         }
+        // Projects' icons are glyphs the web app draws, in its colors and
+        // styles: one it lacks would show the icon that fits instead.
+        let glyphs = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/lib/project-icon-data.ts"),
+        )?;
+        for p in &cast.projects {
+            let Some(icon) = &p.icon else { continue };
+            let slug = &p.slug;
+            assert!(
+                glyphs.contains(&format!("{{\"name\":\"{}\",", icon.name)),
+                "{slug}'s icon {} isn't in the web app's set",
+                icon.name
+            );
+            assert!(
+                ["outline", "duotone", "solid"].contains(&icon.style.as_str()),
+                "{slug}'s icon has no style the app draws: {}",
+                icon.style
+            );
+            match (&icon.color, &icon.hex) {
+                (Some(color), None) => assert!(
+                    ["ink", "yellow", "pink", "blue"].contains(&color.as_str()),
+                    "{slug}'s icon has no workspace color: {color}"
+                ),
+                (None, Some(hex)) => assert!(
+                    hex.len() == 7
+                        && hex.starts_with('#')
+                        && hex[1..].bytes().all(|b| b.is_ascii_hexdigit()),
+                    "{slug}'s icon's color isn't #rrggbb: {hex}"
+                ),
+                _ => panic!("{slug}'s icon needs a color or a hex, and not both"),
+            }
+        }
         Ok(())
     }
 
