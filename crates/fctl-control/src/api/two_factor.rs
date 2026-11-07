@@ -97,6 +97,15 @@ pub async fn get(ctx: &Ctx) -> AppResult<Response> {
 pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: UpdateTwoFactorRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
+    // No longer asking for a code on Google sign-in lets whoever has the
+    // person's Google account in without one: a stolen session or token
+    // can't turn it off alone, as the instance's own setting can't be.
+    // Checked before anything changes, so that a refused request changes
+    // nothing.
+    let stops = user.two_factor_google && body.google == Some(false);
+    if stops {
+        ctx.verified(fctl_domain::verify::Sensitive::StopGoogleCodes)?;
+    }
     if let Some(name) = &body.authenticator_name {
         // Nothing about the secret says which app keeps it, so the person
         // says; an empty name goes back to "Authenticator app".
@@ -120,13 +129,6 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         );
     }
     if let Some(google) = body.google {
-        // No longer asking for a code on Google sign-in lets whoever has the
-        // person's Google account in without one: a stolen session or token
-        // can't turn it off alone, as the instance's own setting can't be.
-        let stops = user.two_factor_google && !google;
-        if stops {
-            ctx.verified(fctl_domain::verify::Sensitive::StopGoogleCodes)?;
-        }
         q(
             &ctx.db,
             "UPDATE users SET two_factor_google = ?, updated_at = ? WHERE id = ?",

@@ -206,12 +206,21 @@ pub async fn run(api: &Api, cmd: TwoFactorCmd, json: bool) -> Result<()> {
             print_recovery_codes(&codes.codes);
         }
         TwoFactorCmd::Rename { name } => {
+            // As the control plane reads it: nothing left is no name.
+            let naming = name.chars().any(|c| !c.is_whitespace() && !c.is_control());
             let me = api
                 .update_two_factor(&UpdateTwoFactorRequest {
                     authenticator_name: Some(name),
                     ..Default::default()
                 })
                 .await?;
+            // A control plane from before names leaves out the field it
+            // doesn't know, and answers as if nothing were asked.
+            if me.two_factor.authenticator_name.is_some() != naming {
+                anyhow::bail!(
+                    "This instance can't name authenticator apps yet: it runs an older fctl. Ask its admins to update it."
+                );
+            }
             if json {
                 return style::print_json(&me.two_factor);
             }
