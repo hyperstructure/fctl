@@ -595,10 +595,11 @@ them). Use the semantic colors (`canvas`, `surface`, `ink`, `accent`,
 is the one red, for destructive actions, errors and failures only. Hovered
 rows and buttons fill with `hover` (`hover:bg-hover`, fainter on some large
 rows), not `raised`, which is white in the light theme, as `surface` is.
-The rows of a list that each open something (a session, a project, a
-review) come from `src/components/ui/list-row.ts`: the whole row is the
-link, and it fills as a rounded tile a little wider than the list while
-the lines beside it give way, so it needs no arrow to say it opens.
+The rows of a list that each open a session or a project come from
+`src/components/ui/list-row.ts`: the whole row is the link, and it fills as
+a rounded tile a little wider than the list while the lines beside it give
+way, so it needs no arrow to say it opens. (The pull requests page's rows
+are its own, each with a button that opens its pull request on GitHub.)
 The scenes render dithered to the brand palette; they pause when hidden
 and render one still frame for people who prefer reduced motion.
 
