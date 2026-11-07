@@ -2,17 +2,19 @@
 // the project's page will show it while you choose. Nothing changes until you save. The keyboard
 // does it all: type to search, the arrows move through the icons, Enter picks one, ⌘Enter saves.
 // It fits the screen: on a phone the icons' list gives up its height, so that Save stays in view.
-// Its colors are the workspace's four and one of its own, which icon-color.tsx chooses.
+// Its colors are the workspace's four and one of its own, which ui/color-popover.tsx chooses.
 
 import { Search, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, Dialog, Kbd } from "@/components/ui";
+import { ColorPopover } from "@/components/ui/color-popover";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { apple } from "@/lib/hotkeys";
 import {
   BRAND_HEX,
   COLOR_ORDER,
+  FIRST_OWN,
   type Fits,
   ICON_COLORS,
   ICON_GROUPS,
@@ -30,7 +32,7 @@ import {
 } from "@/lib/project-icons";
 import { keys, queryClient } from "@/lib/queries";
 import { touchDevice } from "@/lib/two-factor";
-import { ColorPopover, OwnSwatch } from "./icon-color";
+import { IconThemes, OwnSwatch } from "./icon-color";
 import { Glyph, ProjectIcon } from "./project-icon";
 
 /** The project whose icon is chosen: what suggests one, and what the preview shows. */
@@ -40,9 +42,6 @@ export type PickerProject = Fits & {
   /** Its `id` finds the colors of their own its other projects have. */
   workspace?: Pick<G.WorkspaceRef, "name"> & { id?: string };
 };
-
-/** Where a color of its own starts when there's none yet and the icon is in ink: a warm orange. */
-const FIRST_OWN = "#ff8a1f";
 
 export function IconPicker({
   open,
@@ -323,7 +322,12 @@ function Picker({
               open={!!editing}
               anchor={ownSwatch}
               hex={draft.hex ?? own ?? FIRST_OWN}
-              glyph={{ name: shown.name, style: shown.style }}
+              preview={
+                <IconThemes
+                  hex={draft.hex ?? own ?? FIRST_OWN}
+                  glyph={{ name: shown.name, style: shown.style }}
+                />
+              }
               used={used}
               workspace={project.workspace?.name}
               focusHex={editing === "keyboard"}

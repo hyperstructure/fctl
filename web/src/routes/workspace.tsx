@@ -46,7 +46,8 @@ import {
   toast,
 } from "@/components/ui";
 import { ROW, ROW_COVER } from "@/components/ui/list-row";
-import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
+import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import { WorkspaceColorField } from "@/components/workspace/color-field";
 import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
 import { EnrollmentTokens, ManageRunner, WaitingRunners } from "@/components/workspace/runners";
@@ -1942,9 +1943,15 @@ function General({ w }: { w: G.Workspace }) {
   const [name, setName] = useState(w.name);
   const [slug, setSlug] = useState(w.slug);
   const file = useRef<HTMLInputElement>(null);
+  // A color of its own being chosen, which the avatar shows before it's saved.
+  const [preview, setPreview] = useState<string>();
   const save = useMutation({
     mutationFn: (b: G.UpdateWorkspaceRequest) => workspaces.update(w.id, b),
     onSuccess: (x) => {
+      // This page has it at once, so that a color just chosen doesn't go back to the last one first.
+      queryClient.setQueriesData<G.Workspace>({ queryKey: ["workspace"] }, (old) =>
+        old?.id === x.id ? x : old,
+      );
       refresh();
       toast("Saved");
       if (x.slug !== w.slug)
@@ -1975,7 +1982,7 @@ function General({ w }: { w: G.Workspace }) {
     <Section title="General" description="What everyone sees: in the sidebar, on the home page and in lists.">
       <div className="flex flex-col gap-6">
         <div className="flex items-center gap-5">
-          <WorkspaceAvatar workspace={w} size={64} />
+          <WorkspaceAvatar workspace={preview ? { ...w, hex: preview } : w} size={64} />
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap gap-2">
               <Button
@@ -2013,33 +2020,7 @@ function General({ w }: { w: G.Workspace }) {
             />
           </div>
         </div>
-        <fieldset>
-          <legend className="text-[12.5px] font-medium text-ink-2">Color</legend>
-          <div className="mt-2 flex gap-2">
-            {(Object.keys(WORKSPACE_COLORS) as G.WorkspaceColor[]).map((c) => (
-              <button
-                key={c}
-                type="button"
-                aria-pressed={w.color === c}
-                aria-label={WORKSPACE_COLORS[c].label}
-                onClick={() => save.mutate({ color: c })}
-                className={cn(
-                  "rounded-lg p-1 transition-shadow duration-150",
-                  w.color === c
-                    ? "shadow-[0_0_0_2px_var(--c-accent)]"
-                    : "hover:shadow-[0_0_0_1px_var(--c-line-strong)]",
-                )}
-              >
-                <WorkspaceAvatar workspace={{ name: w.name, color: c }} size={26} title={false} />
-              </button>
-            ))}
-          </div>
-          {w.avatar_url && (
-            <p className="mt-2 text-[12px] text-ink-4">
-              Its image shows instead, until you use its initials again.
-            </p>
-          )}
-        </fieldset>
+        <WorkspaceColorField w={w} save={save.mutateAsync} onPreview={setPreview} />
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => {

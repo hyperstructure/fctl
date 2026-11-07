@@ -9,8 +9,19 @@ export type WorkspaceRef = { id: WorkspaceId,
 /**
  * URL-safe, unique per instance.
  */
-slug: string, name: string, color: WorkspaceColor, 
+slug: string, name: string, 
 /**
- * Its avatar image, a path in the app; absent: its initial on `color`.
+ * With `hex`, the workspace color nearest it, which apps before
+ * colors of their own show.
+ */
+color: WorkspaceColor, 
+/**
+ * A color of its own, `#rrggbb`, in place of `color`. Absent: `color`;
+ * from control planes before colors of their own too.
+ */
+hex?: string, 
+/**
+ * Its avatar image, a path in the app; absent: its initials on its
+ * color.
  */
 avatar_url?: string, };

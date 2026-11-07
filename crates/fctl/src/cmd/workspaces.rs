@@ -15,23 +15,45 @@ use fctl_proto::api::{
 use fctl_proto::session::{WorkspaceColor, WorkspaceRole};
 use std::io::{BufRead, IsTerminal, Write};
 
-#[derive(Clone, Copy, ValueEnum)]
+/// A workspace's color: one of the brand's, or one of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Color {
-    Yellow,
-    Pink,
-    Blue,
-    Ink,
+    Workspace(WorkspaceColor),
+    /// `#rrggbb`.
+    Own(String),
 }
 
-impl From<Color> for WorkspaceColor {
-    fn from(c: Color) -> Self {
-        match c {
-            Color::Yellow => Self::Yellow,
-            Color::Pink => Self::Pink,
-            Color::Blue => Self::Blue,
-            Color::Ink => Self::Ink,
+impl Color {
+    /// The request's `color` and `hex`: with a color of its own, the
+    /// workspace color nearest it too, which control planes before colors
+    /// of their own keep in its place.
+    fn request(&self) -> (WorkspaceColor, Option<String>) {
+        match self {
+            Self::Workspace(c) => (*c, None),
+            Self::Own(hex) => (
+                fctl_domain::validate::nearest_color(hex).unwrap_or(WorkspaceColor::Ink),
+                Some(hex.clone()),
+            ),
         }
     }
+}
+
+fn color(s: &str) -> Result<Color, String> {
+    if let Some(c) = WorkspaceColor::parse(&s.trim().to_lowercase()) {
+        return Ok(Color::Workspace(c));
+    }
+    match fctl_domain::validate::own_color("color", s) {
+        Ok(Some(hex)) => Ok(Color::Own(hex)),
+        _ => Err("use yellow, pink, blue, ink or a color of its own as #rrggbb".into()),
+    }
+}
+
+/// How a workspace's color reads: its name, or its own `#rrggbb`.
+fn color_text(w: &Workspace) -> String {
+    w.hex.as_deref().map_or_else(
+        || w.color.as_str().to_owned(),
+        |hex| style::terminal_safe(hex).into_owned(),
+    )
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -104,7 +126,7 @@ pub enum WorkspacesCmd {
     },
     /// Create a workspace: you are its primary admin.
     #[command(
-        after_help = "Examples:\n  fctl workspaces create \"Side project\" --color pink\n  fctl workspaces create Acme --as ada.lovelace@company.example"
+        after_help = "Examples:\n  fctl workspaces create \"Side project\" --color pink\n  fctl workspaces create Acme --color '#2a9d8f'\n  fctl workspaces create Acme --as ada.lovelace@company.example"
     )]
     Create {
         /// Its name.
@@ -112,8 +134,11 @@ pub enum WorkspacesCmd {
         /// Its address in URLs (default: from the name).
         #[arg(long)]
         slug: Option<String>,
-        /// Its avatar's color, until you upload an image.
-        #[arg(long, value_enum)]
+        /// Its avatar's color, until you upload an image: yellow, pink,
+        /// blue or ink (default: one your other workspaces don't have), or
+        /// one of its own as #rrggbb (quoted, as the shell takes # for a
+        /// comment: '#ff8800').
+        #[arg(long, value_name = "COLOR", value_parser = color)]
         color: Option<Color>,
         /// The address you are a member as, one of yours (default: your
         /// primary one). Its people see it, and your commits in its
@@ -124,7 +149,7 @@ pub enum WorkspacesCmd {
     /// Change a workspace's name, address, avatar, rules or setup (admins).
     #[command(
         group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites"])),
-        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on"
+        after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on"
     )]
     Set {
         /// The workspace (slug or id); default from `fctl workspaces use`,
@@ -137,8 +162,9 @@ pub enum WorkspacesCmd {
         /// Its address in URLs; links with the old one stop working.
         #[arg(long)]
         slug: Option<String>,
-        /// Its avatar's color, when it has no image.
-        #[arg(long, value_enum)]
+        /// Its avatar's color, when it has no image: yellow, pink, blue or
+        /// ink, or one of its own as #rrggbb (quoted: '#ff8800').
+        #[arg(long, value_name = "COLOR", value_parser = color)]
         color: Option<Color>,
         /// An image for its avatar (PNG, JPEG, GIF or WebP, square works
         /// best), or `none` for its initial on its color.
@@ -544,6 +570,15 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             if let Some(p) = &w.primary {
                 println!("primary:  {}", p.name);
             }
+            println!(
+                "color:    {}{}",
+                color_text(&w),
+                if w.avatar_url.is_some() {
+                    style::dim(" — its image shows instead")
+                } else {
+                    String::new()
+                }
+            );
             println!("members:  {} — they {}", w.members, base(w.base_role));
             println!("projects: {}", w.projects);
             println!(
@@ -590,11 +625,13 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             color,
             email,
         } => {
+            let (color, hex) = color.as_ref().map(Color::request).unzip();
             let w = api
                 .create_workspace(&CreateWorkspaceRequest {
                     name,
                     slug,
-                    color: color.map(Into::into),
+                    color,
+                    hex: hex.flatten(),
                     email,
                 })
                 .await?;
@@ -633,13 +670,15 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 || require_two_factor.is_some()
                 || skip_invites.is_some()
             {
+                let (color, hex) = color.as_ref().map(Color::request).unzip();
                 out = api
                     .update_workspace(
                         w.id.as_str(),
                         &UpdateWorkspaceRequest {
                             name,
                             slug,
-                            color: color.map(Into::into),
+                            color,
+                            hex: hex.flatten(),
                             base_role: base_role.map(Into::into),
                             require_two_factor,
                             skip_invites,
@@ -1576,7 +1615,44 @@ fn review_app_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use fctl_proto::api::GithubAppRef;
+
+    #[derive(Parser)]
+    struct Fctl {
+        #[command(subcommand)]
+        workspaces: WorkspacesCmd,
+    }
+
+    fn set_color(color: &str) -> Option<Color> {
+        match Fctl::try_parse_from(["fctl", "set", "--color", color])
+            .ok()?
+            .workspaces
+        {
+            WorkspacesCmd::Set { color, .. } => color,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_color_is_one_of_the_brand_or_one_of_its_own() {
+        assert_eq!(
+            set_color("Pink"),
+            Some(Color::Workspace(WorkspaceColor::Pink))
+        );
+        assert_eq!(set_color("#2A9D8F"), Some(Color::Own("#2a9d8f".into())));
+        assert_eq!(set_color("0af"), Some(Color::Own("#00aaff".into())));
+        assert_eq!(set_color("teal"), None);
+        // Control planes before colors of their own keep the workspace color nearest it.
+        assert_eq!(
+            Color::Own("#2a9d8f".into()).request(),
+            (WorkspaceColor::Blue, Some("#2a9d8f".into()))
+        );
+        assert_eq!(
+            Color::Workspace(WorkspaceColor::Ink).request(),
+            (WorkspaceColor::Ink, None)
+        );
+    }
 
     fn review_app(states: &[(&str, ReviewAppState)]) -> WorkspaceReviewApp {
         let app = |slug: &str| GithubAppRef {
