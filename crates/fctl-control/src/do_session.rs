@@ -97,6 +97,8 @@ const CLOSE_RECHECK: u16 = 4000;
 const UPLINK_CHECK_MS: i64 = 60_000;
 /// Close code for an uplink whose runner no longer runs the session.
 const CLOSE_NOT_RUNNER: u16 = 4003;
+/// How soon an uplink's check is tried again when D1 didn't answer it.
+const UPLINK_RETRY_MS: i64 = 5_000;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct SocketInfo {
@@ -755,12 +757,10 @@ impl SessionObject {
     /// agent goes only to a runner that still runs the session.
     async fn send_checked_uplink(&self, msg: &UplinkDown, now: i64) {
         let Some(ws) = self.uplink() else { return };
-        let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() else {
+        let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>() else {
             return;
         };
-        if now - info.checked() >= UPLINK_CHECK_MS
-            && !self.recheck_uplink(&ws, &mut info, now).await
-        {
+        if now - info.checked() >= UPLINK_CHECK_MS && !self.recheck_uplink(&ws, &info, now).await {
             return;
         }
         if let Ok(text) = serde_json::to_string(msg) {
@@ -2475,7 +2475,7 @@ impl SessionObject {
     /// says nothing more for its agent through an uplink it opened before,
     /// a stopped session's too, which no assignment closes. A check D1
     /// didn't answer leaves it open until the next one.
-    async fn recheck_uplink(&self, ws: &WebSocket, info: &mut SocketInfo, now: i64) -> bool {
+    async fn recheck_uplink(&self, ws: &WebSocket, info: &SocketInfo, now: i64) -> bool {
         let (Some(runner_id), Some(token)) = (info.runner_id.clone(), info.runner_token.clone())
         else {
             // Opened through an older Worker: its host connects again, and
@@ -2486,15 +2486,14 @@ impl SessionObject {
         let Some(summary) = self.summary() else {
             return true;
         };
-        let Ok(db) = self.env.d1("DB") else {
-            return true;
+        // What the host sends while D1 answers doesn't check again.
+        Self::checked_at(ws, now);
+        let holds = match self.env.d1("DB") {
+            Ok(db) => crate::spec::uplink_holds(&db, &runner_id, &token, summary.id.as_str()).await,
+            Err(e) => Err(crate::error::internal(e)),
         };
-        match crate::spec::uplink_holds(&db, &runner_id, &token, summary.id.as_str()).await {
-            Ok(true) => {
-                info.checked_at = Some(now);
-                let _ = ws.serialize_attachment(&*info);
-                true
-            }
+        match holds {
+            Ok(true) => true,
             Ok(false) => {
                 let _ = ws.close(
                     Some(CLOSE_NOT_RUNNER),
@@ -2504,17 +2503,29 @@ impl SessionObject {
                 false
             }
             Err(e) => {
+                // Again in a few seconds, not with each of the dozen
+                // messages a second a stream brings.
                 worker::console_error!("checking an uplink's runner again: {}", e.0.message);
+                Self::checked_at(ws, now - UPLINK_CHECK_MS + UPLINK_RETRY_MS);
                 true
             }
         }
     }
 
+    /// Notes that the runner of uplink `ws` was checked at `at`, on its
+    /// attachment as it is now: what its host said meanwhile stays.
+    fn checked_at(ws: &WebSocket, at: i64) {
+        if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>() {
+            info.checked_at = Some(at);
+            let _ = ws.serialize_attachment(&info);
+        }
+    }
+
     async fn on_uplink(&self, ws: &WebSocket, msg: UplinkUp) {
         let now = now_ms();
-        if let Ok(Some(mut info)) = ws.deserialize_attachment::<SocketInfo>()
+        if let Ok(Some(info)) = ws.deserialize_attachment::<SocketInfo>()
             && now - info.checked() >= UPLINK_CHECK_MS
-            && !self.recheck_uplink(ws, &mut info, now).await
+            && !self.recheck_uplink(ws, &info, now).await
         {
             return;
         }

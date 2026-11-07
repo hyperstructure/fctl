@@ -993,11 +993,6 @@ impl FleetObject {
         self.forget_removed(&offline).await
     }
 
-    /// Writes what a runner's connection says to its row in D1, and says
-    /// whether the row is there: `Some(false)` once the runner was removed,
-    /// so that a connection that got in as it went (its token checked just
-    /// before its row was deleted), or that FleetObject wasn't told of,
-    /// doesn't stay. `None` when D1 doesn't answer, which proves nothing.
     /// Whether D1 still has runner `id`; `None` when it didn't answer.
     async fn runner_in_d1(&self, id: &str) -> Option<bool> {
         let db = self.env.d1("DB").ok()?;
@@ -1013,6 +1008,11 @@ impl FleetObject {
         Some(found.is_some_and(|c| c.n > 0))
     }
 
+    /// Writes what a runner's connection says to its row in D1, and says
+    /// whether the row is there: `Some(false)` once the runner was removed,
+    /// so that a connection that got in as it went (its token checked just
+    /// before its row was deleted), or that FleetObject wasn't told of,
+    /// doesn't stay. `None` when D1 doesn't answer, which proves nothing.
     async fn in_d1(&self, sql: &str, params: &[crate::db::Val]) -> Option<bool> {
         let db = self.env.d1("DB").ok()?;
         let changed = crate::db::q(&db, sql, params).ok()?.run().await;
