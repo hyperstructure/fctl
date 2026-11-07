@@ -454,16 +454,35 @@ fn hold_back(text: &str, secrets: &[String]) -> (String, String) {
 /// prefix.
 fn shaped_wait(text: &str) -> usize {
     let bytes = text.as_bytes();
-    // Every shape's prefix and body are base64url characters, and a token
-    // starts a word (after a space, `=`, a quote): only the word at the
-    // end may be one still coming, not the `s` of `tokens`.
+    // Every shape's prefix and body are base64url characters.
     let run = bytes.iter().rev().take_while(|b| base64url(**b)).count();
     let tail = text.get(text.len() - run..).unwrap_or_default();
-    let coming = !tail.is_empty()
-        && SHAPES
-            .iter()
-            .any(|shape| tail.starts_with(shape.prefix) || shape.prefix.starts_with(tail));
-    if coming { run } else { 0 }
+    SHAPES
+        .iter()
+        .map(|shape| {
+            // One that runs to the end, wherever in the word it starts
+            // (`key_sk-ant-oat01-…`).
+            if let Some(at) = tail.find(shape.prefix) {
+                return run - at;
+            }
+            // The start of one, where a token may start: not the `s` of
+            // `tokens`, which would hold back most words.
+            (1..shape.prefix.len())
+                .rev()
+                .find(|&k| {
+                    tail.ends_with(&shape.prefix[..k]) && token_may_start(bytes, bytes.len() - k)
+                })
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether a token may start at `at` in `text`: at its start, or after a
+/// character that is neither a letter nor a digit (a space, `=`, a quote,
+/// and the `-` and `_` that join words, as in `key_sk-ant-oat01-…`).
+fn token_may_start(text: &[u8], at: usize) -> bool {
+    at == 0 || text.get(at - 1).is_none_or(|b| !b.is_ascii_alphanumeric())
 }
 
 /// `value` with every token of a [`Shape`] in its strings replaced.
@@ -484,14 +503,10 @@ fn redact_shapes_in(value: &mut Value) {
 fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
     let text = redact(text, secrets).into_owned();
     let bytes = text.as_bytes();
-    // What starts a secret at the start of a word: a token comes after a
-    // space, `=` or a quote, not inside a word that ends like its start.
-    let starts_word = |k: usize| {
-        bytes.len() == k
-            || bytes
-                .get(bytes.len() - k - 1)
-                .is_none_or(|b| !base64url(*b))
-    };
+    // What starts a secret where a token may start, not inside a word
+    // that ends like its start ([`token_may_start`]); one that runs to the
+    // end inside a word, its whole prefix there, waits by its shape
+    // ([`shaped_wait`]).
     let wait = secrets
         .iter()
         .filter(|s| s.len() >= MIN_REDACTED)
@@ -499,7 +514,9 @@ fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
             let s = s.as_bytes();
             (1..s.len().min(bytes.len() + 1))
                 .rev()
-                .find(|&k| bytes[bytes.len() - k..] == s[..k] && starts_word(k))
+                .find(|&k| {
+                    bytes[bytes.len() - k..] == s[..k] && token_may_start(bytes, bytes.len() - k)
+                })
                 .unwrap_or(0)
         })
         .max()
@@ -770,6 +787,19 @@ mod tests {
                 .iter()
                 .all(|e| { e["event"]["delta"]["text"].as_str() == Some("GH_TOKEN=") })
         );
+        // Also one that a `-` or `_` joins to a word.
+        for (index, text, now) in [
+            (3, "key_sk-a", "key_"),
+            (4, "x-ghs_ab", "x-"),
+            (5, "key_s", "key_"),
+        ] {
+            assert!(
+                r.apply(&secrets, delta(None, index, "text", text))
+                    .iter()
+                    .all(|e| e["event"]["delta"]["text"].as_str() == Some(now)),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -799,7 +829,7 @@ mod tests {
     #[test]
     fn redacts_a_token_it_never_knew_streamed_in_pieces() {
         let secrets = Secrets::default();
-        let said = format!("Here: {UNKNOWN}, and {GITHUB}");
+        let said = format!("Here: {UNKNOWN}, and {GITHUB}, key_{UNKNOWN} and x-{GITHUB}.");
         for size in [1, 2, 3, 5, 7, 13, 40, 200] {
             let chars: Vec<char> = said.chars().collect();
             let mut events: Vec<Value> = chars
@@ -811,7 +841,9 @@ mod tests {
             let out = streamed(&mut r, &secrets, events);
             assert_eq!(
                 shown(&out, "text"),
-                format!("Here: {REDACTED}, and {REDACTED_GITHUB}"),
+                format!(
+                    "Here: {REDACTED}, and {REDACTED_GITHUB}, key_{REDACTED} and x-{REDACTED_GITHUB}."
+                ),
                 "{size}"
             );
             // No piece of either shows on its way.
