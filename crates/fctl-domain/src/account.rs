@@ -224,6 +224,7 @@ mod tests {
         assert_eq!(parse_export_interval("Off"), Ok(0));
         assert_eq!(parse_export_interval("none"), Ok(0));
         assert!(parse_export_interval("2y").is_err_and(|e| e.contains("a year at most")));
+        assert!(parse_export_interval("35096545041305y").is_err());
         // A number alone could mean anything, and never means nothing here.
         assert!(parse_export_interval("7").is_err());
         assert!(parse_export_interval("never").is_err());

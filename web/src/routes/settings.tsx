@@ -66,6 +66,7 @@ import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/
 import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
+import { useTickAt } from "@/lib/tick";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
 import { planOf } from "@/lib/usage";
@@ -1495,19 +1496,6 @@ function YourData({ me }: { me: G.Me }) {
       </div>
     </Section>
   );
-}
-
-/** Renders again once `at` has passed, so that what depends on the time shows anew. */
-function useTickAt(at: number | undefined) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (at === undefined) return;
-    const left = at - Date.now();
-    if (left <= 0) return;
-    // setTimeout takes at most 2^31 - 1 ms, about 24 days.
-    const id = setTimeout(() => tick((n) => n + 1), Math.min(left + 250, 2 ** 31 - 1));
-    return () => clearTimeout(id);
-  }, [at]);
 }
 
 const EXPORT = "/api/v1/me/export";
