@@ -38,6 +38,7 @@ import { apple } from "@/lib/hotkeys";
 import { type Need, needSays, needsOf } from "@/lib/needs";
 import { iconOf, useSaveIcon } from "@/lib/project-icons";
 import { listPulls, PULLS_QUERY, needOf as pullNeed, stateOf } from "@/lib/pull-list";
+import { usePullsMine } from "@/lib/pulls-view";
 import {
   keys,
   queryClient,
@@ -109,8 +110,12 @@ function useSidebarData(path: string, scope?: string) {
   const active = useSessions({ status: "active", limit: 50 }).data?.sessions;
   const ended = useSessions({ status: "ended", limit: 12 }).data?.sessions;
   const listed = useSidebarSessions().data?.sessions;
-  // The pull requests page's own list, unnarrowed, so that the counts here are the page's.
+  // The pull requests page's own list, unnarrowed, which what needs you looks through too.
   const open = useSessions(PULLS_QUERY).data?.sessions;
+  // The counts are the page's, from its own request: with Mine on there, the one for the sessions you
+  // started, which the server narrows before its limit.
+  const [mine] = usePullsMine();
+  const yourPulls = useSessions({ ...PULLS_QUERY, mine: true }, { enabled: mine }).data?.sessions;
   // Every session they started or follow from the last day, which the others may not reach.
   const yours = useYourSessions(!!me).data?.sessions;
   const recent = useMemo(() => byProject(recentSessions(listed ?? [], now)), [listed, now]);
@@ -124,7 +129,10 @@ function useSidebarData(path: string, scope?: string) {
     [me?.user.id, yours, listed, active, ended, open, now],
   );
   // The open pull requests, each once: those ready for review, and each project's.
-  const pulls = useMemo(() => listPulls(open ?? []).filter((l) => stateOf(l) === "open"), [open]);
+  const pulls = useMemo(
+    () => listPulls((mine ? yourPulls : open) ?? []).filter((l) => stateOf(l) === "open"),
+    [open, yourPulls, mine],
+  );
   const full = useMemo(() => new Map((projectList?.projects ?? []).map((p) => [p.id, p])), [projectList]);
   const isAdmin = me?.user.role === "owner" || me?.user.role === "admin";
   // Who waits for an invitation, where the instance takes requests for early access.
@@ -166,6 +174,8 @@ function useSidebarData(path: string, scope?: string) {
     needs,
     pulls,
     ready: pulls.filter((l) => pullNeed(l) === "ready"),
+    /** Whether `pulls` are only those of sessions you started (Mine, on the pull requests page). */
+    mine,
     isAdmin,
     asking,
     working,
@@ -259,11 +269,11 @@ function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: Sideb
           search={{}}
           onClick={onNavigate}
           aria-current={allPulls ? "page" : undefined}
-          title={
+          title={`${
             data.ready.length
               ? `${data.ready.length} ready for review, of ${data.pulls.length} open`
               : `${data.pulls.length} open`
-          }
+          }${data.mine ? " from your sessions" : ""}`}
           className={cn(
             "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
             allPulls ? HERE : "text-ink-3 hover:bg-hover hover:text-ink",

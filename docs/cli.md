@@ -305,6 +305,7 @@ fctl projects create "New thing" --new-repo new-thing --owner my-org --public
 fctl projects create "Site" --repo my-org/site --connectors   # claude.ai connectors in its sessions (off by default)
 fctl projects set -p my-app --name "Web app" --description "The storefront"   # how people find it; its slug stays (--description "" clears it)
 fctl projects set -p my-app --icon store --icon-color yellow --icon-style duotone   # its icon in the sidebar and on its page: an IconMCP glyph (--icon "" for the one that fits its name)
+fctl projects set -p my-app --icon-color '#2a9d8f'   # a color of its own (quoted: the shell takes # for a comment), made lighter or darker where a theme needs it to read
 fctl projects set -p my-app --default-branch develop   # sessions start from develop unless they ask for another (fctl run --base); the repository must have it
 fctl projects set -p my-app --model opus --effort high   # its agents' model and effort ("default" for Claude's own)
 fctl projects set -p my-app --instructions-file agents.md   # what its agents are told in every session (--instructions "" for nothing)
@@ -702,9 +703,9 @@ or with `fctl attach`) aren't notified about it.
 ## Claude
 
 ```sh
-fctl claude connect --login      # full sign-in, on one of your runners (Remote Control)
-fctl claude connect              # paste a token from `claude setup-token`
+fctl claude connect              # paste a token from `claude setup-token`: it lasts a year (recommended)
 fctl claude connect --token sk-ant-oat01-…
+fctl claude connect --login      # full sign-in, on one of your runners (Remote Control), until Claude ends it
 fctl claude connect --on-runners # run on the token your runners keep, which you never give to fctl
 fctl claude status               # your connections, their ids, how much of each plan is used, and which runners keep your token
 ```

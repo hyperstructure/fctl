@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import { ICONS } from "./project-icon-data";
-import { fittingIcon, iconDef, iconOf, sameIcon, searchIcons, suggestIcons } from "./project-icons";
+import {
+  fittingIcon,
+  iconDef,
+  iconOf,
+  iconPaint,
+  ownColors,
+  sameIcon,
+  searchIcons,
+  suggestIcons,
+  toSave,
+} from "./project-icons";
 
 describe("project icons", () => {
   it("has every icon in all three styles, with a label and a group", () => {
@@ -192,5 +202,70 @@ describe("project icons", () => {
     expect(sameIcon({ name: "cube" }, { name: "cube", color: "ink", style: "outline" })).toBe(true);
     expect(sameIcon({ name: "cube", color: "pink" }, { name: "cube" })).toBe(false);
     expect(sameIcon(undefined, undefined)).toBe(true);
+    // A color of its own draws in the workspace color's place, whichever the control plane kept.
+    expect(sameIcon({ name: "cube", hex: "#2A9D8F" }, { name: "cube", color: "blue", hex: "#2a9d8f" })).toBe(
+      true,
+    );
+    expect(sameIcon({ name: "cube", color: "blue", hex: "#2a9d8f" }, { name: "cube", color: "blue" })).toBe(
+      false,
+    );
+    expect(sameIcon({ name: "cube", hex: "#2a9d8f" }, { name: "cube", hex: "#2a9d90" })).toBe(false);
+  });
+
+  it("shows an icon's color of its own, and the workspace color in place of one that isn't a color", () => {
+    const icon = { name: "rocket", color: "blue", style: "solid", hex: "#2A9D8F" } as const;
+    expect(iconOf({ name: "Shop", icon })).toEqual({ ...icon, hex: "#2a9d8f", chosen: true });
+    expect(iconOf({ name: "Shop", icon: { ...icon, hex: "teal" } })).toEqual({
+      name: "rocket",
+      color: "blue",
+      style: "solid",
+      chosen: true,
+    });
+  });
+
+  it("saves a color of its own without a workspace color, which the control plane picks", () => {
+    expect(toSave({ name: "rocket", color: "pink", style: "solid", hex: "#2a9d8f" })).toEqual({
+      name: "rocket",
+      style: "solid",
+      hex: "#2a9d8f",
+    });
+    expect(toSave({ name: "rocket", color: "pink", style: "solid" })).toEqual({
+      name: "rocket",
+      color: "pink",
+      style: "solid",
+    });
+  });
+
+  it("paints a workspace color with its tokens, and a color of its own in each theme's shade", () => {
+    expect(iconPaint({ color: "pink" })).toEqual({
+      ink: "var(--p-pink)",
+      soft: "var(--c-pink-soft)",
+      hairline: false,
+    });
+    // Gray tiles keep their square with a hairline, ink's and a gray of one's own.
+    expect(iconPaint({ color: "ink" }).hairline).toBe(true);
+    expect(iconPaint({ color: "ink", hex: "#ffffff" }).hairline).toBe(true);
+    const own = iconPaint({ color: "ink", hex: "#ffff5d" });
+    expect(own).toMatchObject({
+      ink: "var(--pi-ink)",
+      soft: "var(--pi-soft)",
+      className: "pi-own",
+      hairline: false,
+    });
+    // Bright on dark as it is; on light, darker, as the workspace yellow is there.
+    expect(own.style).toMatchObject({ "--pi-ink-dark": "#ffff5d", "--pi-ink-light": "#787700" });
+  });
+
+  it("finds the colors of their own that projects have, the most used first", () => {
+    const p = (name: string, hex?: string): { name: string; icon?: G.ProjectIcon } => ({
+      name,
+      icon: hex ? { name: "cube", hex } : undefined,
+    });
+    expect(
+      ownColors([p("Web", "#ff8a1f"), p("API", "#2A9D8F"), p("Docs"), p("App", "#2a9d8f"), p("Odd", "x")]),
+    ).toEqual([
+      { hex: "#2a9d8f", names: ["API", "App"] },
+      { hex: "#ff8a1f", names: ["Web"] },
+    ]);
   });
 });

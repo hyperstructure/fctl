@@ -3,14 +3,15 @@
 
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Check, ChevronDown, ShieldCheck } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
+import { useState } from "react";
 import { Button, CodeBox, Skeleton, toast } from "@/components/ui";
 import { api } from "@/lib/api";
 import { type RunnerToken, yourRunnerTokens } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
 import { keys, queryClient, useRunners, useWorkspaces } from "@/lib/queries";
+import { Mono, Step } from "./guide";
 
 /** Where `fctl host claude set-token` keeps the token, unless `host.toml` says otherwise. */
 export const TOKEN_FILE = "~/.config/fctl/claude-token";
@@ -20,45 +21,6 @@ export const SETUP_TOKEN = "claude setup-token";
 export const SET_TOKEN = "fctl host claude set-token";
 /** The same on a machine nobody signs in on, from a file its secret store put there. */
 export const SET_TOKEN_FROM_FILE = "fctl host claude set-token < /run/secrets/claude-token";
-
-/** A step of a guide: its number, or a check once it is done. */
-function Step({
-  n,
-  done,
-  title,
-  aside,
-  children,
-}: {
-  n: number;
-  done: boolean;
-  title: ReactNode;
-  aside?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <li className="group relative flex gap-4 pb-7 last:pb-0">
-      {/* The line to the next step, behind the numbers. */}
-      <span aria-hidden="true" className="absolute top-8 bottom-1.5 left-3 w-px bg-line group-last:hidden" />
-      <span
-        className={cn(
-          "relative mt-px flex size-6 shrink-0 items-center justify-center rounded-full border font-mono text-[11.5px] transition-colors duration-300 motion-reduce:transition-none",
-          done ? "border-accent bg-accent text-accent-ink" : "border-line-strong bg-canvas text-ink-3",
-        )}
-      >
-        {done ? <Check className="size-3.5" aria-label="Done" /> : n}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <div className="text-[14px] font-medium text-ink">{title}</div>
-          {aside}
-        </div>
-        <div className="mt-1.5 flex max-w-2xl flex-col gap-2.5 text-[13px] leading-relaxed text-ink-3">
-          {children}
-        </div>
-      </div>
-    </li>
-  );
-}
 
 /** Steps 1 and 2: making a token and keeping it on a runner. */
 function TokenSteps({ done, start = 1 }: { done: boolean; start?: number }) {
@@ -84,15 +46,6 @@ function TokenSteps({ done, start = 1 }: { done: boolean; start?: number }) {
         </p>
       </Step>
     </>
-  );
-}
-
-/** A command or path in a sentence, kept on one line: they are short, and a hyphen mustn't break them. */
-function Mono({ children }: { children: ReactNode }) {
-  return (
-    <code className="rounded bg-raised px-1 py-px font-mono text-[11.5px] whitespace-nowrap text-ink-2">
-      {children}
-    </code>
   );
 }
 
@@ -202,11 +155,10 @@ function Live() {
 }
 
 /**
- * Settings → Claude, before you connect it: what keeping the token on your runners means, and once
- * asked, the steps that set it up, with where your runners stand as they go.
+ * Settings → Claude, when you choose to keep a long-lived token on your runners: the steps that set
+ * it up, with where your runners stand as they go, and connecting it.
  */
-export function OnRunnersSetup() {
-  const [open, setOpen] = useState(false);
+export function OnRunnersSteps({ onConnected }: { onConnected?: () => void }) {
   const runners = useRunners();
   const kept = yourRunnerTokens(runners.data?.runners ?? []).filter((r) => r.state === "kept");
   const connect = useMutation({
@@ -214,61 +166,33 @@ export function OnRunnersSetup() {
     onSuccess: (m) => {
       queryClient.setQueryData(keys.me, m);
       toast("New sessions run on the token your runners keep");
+      onConnected?.();
     },
   });
   return (
-    <div className="border-t border-line pt-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="flex items-center gap-2 text-[13.5px] font-medium text-ink">
-            <ShieldCheck className="size-3.5 text-accent" /> Or keep the token on your runners
-          </h3>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
-            A token from <Mono>{SETUP_TOKEN}</Mono> that stays on machines you run, never given to fctl: your
-            sessions on it run only on your runners that keep it. Valid for a year; no Remote Control.
+    <ol>
+      <TokenSteps done={kept.length > 0} />
+      <Step n={3} done={kept.length > 0} title="Check your runners" aside={<Live />}>
+        <RunnerTokens />
+      </Step>
+      <Step n={4} done={false} title="Run your sessions on it">
+        <p>
+          New sessions run on it from then on, in every workspace where you didn't choose another connection:
+          only on your runners that keep the token, and they wait while none of those is online.
+        </p>
+        {kept.length === 0 && runners.data && (
+          <p className="text-[12.5px] text-amber">
+            None of your runners keeps it yet: sessions you start wait until one does.
           </p>
-        </div>
-        {!open && (
-          <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
-            Set up
-          </Button>
         )}
-      </div>
-      {open && (
-        <ol className="mt-5 animate-rise">
-          <TokenSteps done={kept.length > 0} />
-          <Step n={3} done={kept.length > 0} title="Check your runners" aside={<Live />}>
-            <RunnerTokens />
-          </Step>
-          <Step n={4} done={false} title="Run your sessions on it">
-            <p>
-              New sessions run on it from then on, in every workspace where you didn't choose another
-              connection: only on your runners that keep the token, and they wait while none of those is
-              online.
-            </p>
-            {kept.length === 0 && runners.data && (
-              <p className="text-[12.5px] text-amber">
-                None of your runners keeps it yet: sessions you start wait until one does.
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="primary"
-                size="sm"
-                loading={connect.isPending}
-                onClick={() => connect.mutate()}
-              >
-                Use the token on my runners
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
-                Not now
-              </Button>
-            </div>
-            {connect.error && <p className="text-[12.5px] text-danger">{connect.error.message}</p>}
-          </Step>
-        </ol>
-      )}
-    </div>
+        <div>
+          <Button variant="primary" size="sm" loading={connect.isPending} onClick={() => connect.mutate()}>
+            Use the token on my runners
+          </Button>
+        </div>
+        {connect.error && <p className="text-[12.5px] text-danger">{connect.error.message}</p>}
+      </Step>
+    </ol>
   );
 }
 

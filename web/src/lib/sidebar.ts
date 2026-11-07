@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo } from "react";
 import type * as G from "@/gen";
+import { parseHex } from "./color";
 
 const KEY = "fctl:sidebar";
 // The shape of what is kept (`Kept`): a copy in another one is not read.
@@ -127,6 +128,7 @@ function readIcon(v: unknown): G.ProjectIcon | undefined {
     name: v.name,
     color: color as G.WorkspaceColor | undefined,
     style: style as G.IconStyle | undefined,
+    ...(isText(v.hex) && parseHex(v.hex) && { hex: parseHex(v.hex) }),
   };
 }
 
