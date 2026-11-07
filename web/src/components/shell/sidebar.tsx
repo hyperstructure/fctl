@@ -426,7 +426,10 @@ const NEED_LOOKS: Record<Need["kind"], { text: string; icon: ReactNode }> = {
   paused: { text: "text-pink", icon: <CirclePause className="size-3" /> },
 };
 
-/** Something that needs you, on two lines: its session, and what it needs, where and since when. */
+/**
+ * Something that needs you: its session and since when, then what it needs. A question gets two
+ * lines, since it is what you answer; the rest one.
+ */
 function NeedLink({
   need,
   here,
@@ -450,26 +453,32 @@ function NeedLink({
       onClick={onNavigate}
       title={`${s.title}\n${says}`}
       className={cn(
-        "group flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors duration-150",
+        "group flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors duration-150",
         here ? HERE : "hover:bg-hover",
       )}
     >
-      <ProjectMark project={project ?? { id: s.project_id, name: s.project_slug }} tile={26} />
+      <ProjectMark
+        project={project ?? { id: s.project_id, name: s.project_slug }}
+        tile={26}
+        className="mt-[5px]"
+      />
       <span className="min-w-0 flex-1">
-        <span
-          className={cn(
-            "block truncate text-[13px] leading-5",
-            here ? "text-ink" : "text-ink-2 group-hover:text-ink",
-          )}
-        >
-          {s.title}
-        </span>
-        <span className="flex min-w-0 items-center gap-1 text-[11.5px] leading-4">
-          <span className={cn("flex min-w-0 shrink items-center gap-1", look.text)}>
-            <span className="shrink-0">{look.icon}</span>
-            <span className="truncate">{says}</span>
+        <span className="flex items-baseline gap-2">
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-[13px] leading-5",
+              here ? "text-ink" : "text-ink-2 group-hover:text-ink",
+            )}
+          >
+            {s.title}
           </span>
-          <span className="shrink-0 text-ink-4">{need.at ? `· ${agoShort(need.at, now)}` : ""}</span>
+          {need.at !== undefined && (
+            <span className="shrink-0 text-[11px] text-ink-4 tabular-nums">{agoShort(need.at, now)}</span>
+          )}
+        </span>
+        <span className={cn("flex min-w-0 items-start gap-1 text-[11.5px] leading-4", look.text)}>
+          <span className="mt-0.5 shrink-0">{look.icon}</span>
+          <span className={need.kind === "asking" ? "line-clamp-2 break-words" : "truncate"}>{says}</span>
         </span>
       </span>
     </Link>
