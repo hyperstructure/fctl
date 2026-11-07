@@ -115,8 +115,9 @@ It answers with the session, `queued`. A session is:
   `?archived=1`, `?hidden=1`, `?pulls=open|merged|closed|any` (those that
   list a pull request in that state in their `pull_requests`, as their
   agents and GitHub last said; one nobody looked up counts as open: the
-  app's pull requests page and `fctl pulls` ask for `any` and group them,
-  each pull request as the session that heard of it last says), `?limit=` (50 unless set, at most 200), `?before=` (a
+  app's pull requests page and `fctl pulls` ask for `any`, with `archived=1`
+  and `hidden=1`, and group them, each pull request as the session that
+  heard of it last says), `?limit=` (50 unless set, at most 200), `?before=` (a
   `created_at`). Answers `{"sessions": […], "next_before": …}`.
 - `GET /api/v1/sessions/{id}`: one session.
 - `GET /api/v1/search?q=…`: the sessions whose title, description,

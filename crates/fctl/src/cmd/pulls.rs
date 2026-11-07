@@ -5,7 +5,7 @@
 use crate::{config, style};
 use anyhow::Result;
 use clap::{Args, ValueEnum};
-use fctl_domain::pulls::{Listed, listed};
+use fctl_domain::pulls::{Listed, SessionRef, listed};
 
 #[derive(Args)]
 pub struct PullsArgs {
@@ -112,11 +112,7 @@ fn print_line(l: &Listed, now: i64) {
         .map(|r| r.full_name())
         .unwrap_or_default();
     let title = style::plain(pr.title.as_deref().unwrap_or_default());
-    let sessions: Vec<String> = l
-        .sessions
-        .iter()
-        .map(|s| format!("{}#{}", s.project_slug, s.number))
-        .collect();
+    let sessions: Vec<String> = l.sessions.iter().map(session_ref).collect();
     println!(
         "{} {}",
         style::bold(&format!("{repo}#{}", pr.number)),
@@ -131,6 +127,23 @@ fn print_line(l: &Listed, now: i64) {
             style::terminal_safe(&pr.url)
         ))
     );
+}
+
+/// A session that lists it, as `fctl pulls` names it: "shop#231", and what
+/// tells it apart: its agent waits for an answer, or it was archived.
+fn session_ref(s: &SessionRef) -> String {
+    let marks: Vec<&str> = [
+        s.question.is_some().then_some("asks you"),
+        s.archived.then_some("archived"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if marks.is_empty() {
+        format!("{}#{}", s.project_slug, s.number)
+    } else {
+        format!("{}#{} ({})", s.project_slug, s.number, marks.join(", "))
+    }
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -160,5 +173,41 @@ mod tests {
         assert_eq!(all.ok(), Some(("any", &[][..])));
         assert!(Fctl::try_parse_from(["fctl", "-p", "shop", "-w", "romanesco"]).is_err());
         assert!(Fctl::try_parse_from(["fctl", "--limit", "500"]).is_err());
+    }
+
+    #[test]
+    fn sessions_say_when_their_agent_asks_or_they_were_archived() {
+        let session = |archived: bool, question: Option<&str>| SessionRef {
+            id: fctl_proto::SessionId("ses_1".into()),
+            project_slug: "shop".into(),
+            number: 231,
+            title: "Add Danish".into(),
+            status: fctl_proto::session::SessionStatus::Idle,
+            created_by: fctl_proto::session::UserRef {
+                id: fctl_proto::UserId("usr_1".into()),
+                name: "Noor".into(),
+                avatar_url: None,
+            },
+            archived,
+            question: question.map(str::to_owned),
+        };
+        let refs: Vec<String> = [
+            session(false, None),
+            session(false, Some("Øre?")),
+            session(true, None),
+            session(true, Some("Øre?")),
+        ]
+        .iter()
+        .map(session_ref)
+        .collect();
+        assert_eq!(
+            refs,
+            [
+                "shop#231",
+                "shop#231 (asks you)",
+                "shop#231 (archived)",
+                "shop#231 (asks you, archived)"
+            ]
+        );
     }
 }

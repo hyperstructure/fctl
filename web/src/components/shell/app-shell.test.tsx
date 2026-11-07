@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
+import { PULLS_QUERY } from "@/lib/pull-list";
 import { keys } from "@/lib/queries";
 import { keepSidebar } from "@/lib/sidebar";
 import { AppShell, Sidebar } from "./app-shell";
@@ -365,10 +366,35 @@ describe("what needs you", () => {
       workspaces,
       projects,
       sessions: [
-        { pulls: "open", limit: 200 },
+        PULLS_QUERY,
         [
           session(3, "Ready", "stopped", "prj_web", { pull_requests: [pr(3)] }),
           session(4, "At work", "running", "prj_web", { pull_requests: [pr(4)] }),
+        ],
+      ],
+    });
+    const link = sidebar.container.querySelector('a[href="/pulls"]');
+    expect(link?.textContent).toBe("Pull requests1");
+    expect(link?.getAttribute("title")).toBe("1 ready for review, of 2 open");
+  });
+
+  it("counts as the pull requests page does: not those whose agent asks, nor those a newer session says merged", async () => {
+    const sidebar = reload("/");
+    const merged = { ...pr(5), state: "merged", updated_at: 20 };
+    await sidebar.come({
+      workspaces,
+      projects,
+      sessions: [
+        PULLS_QUERY,
+        [
+          // Newest first, as the API lists them.
+          session(8, "Merged since", "stopped", "prj_web", { pull_requests: [merged] }),
+          session(7, "Asks", "idle", "prj_web", {
+            pull_requests: [pr(6)],
+            question: { text: "Keep øre?", asked_at: NOW },
+          }),
+          session(6, "Ready", "stopped", "prj_web", { pull_requests: [pr(7)] }),
+          session(5, "Said open", "stopped", "prj_web", { pull_requests: [{ ...pr(5), updated_at: 10 }] }),
         ],
       ],
     });

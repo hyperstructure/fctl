@@ -414,6 +414,15 @@ pub struct SessionRef {
     pub title: String,
     pub status: fctl_proto::session::SessionStatus,
     pub created_by: fctl_proto::session::UserRef,
+    /// Someone archived it: its pull requests stay open until GitHub says
+    /// otherwise, so they stay listed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    /// What its agent asks the people who follow it (`fctl ask`), while it
+    /// waits for an answer: not once someone archived it, which leaves the
+    /// question but says they are done with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
 }
 
 /// The pull requests `sessions` list (newest session first), each once:
@@ -438,6 +447,12 @@ pub fn listed(sessions: &[fctl_proto::session::Session], states: &[&str]) -> Vec
                 title: s.title.clone(),
                 status: s.status,
                 created_by: s.created_by.clone(),
+                archived: s.archived,
+                question: s
+                    .question
+                    .as_ref()
+                    .filter(|_| !s.archived)
+                    .map(|q| q.text.clone()),
             };
             match out.iter_mut().find(|l| l.pull_request.url == pr.url) {
                 Some(l) => {
@@ -1125,5 +1140,37 @@ mod tests {
         assert!(listed(&[listing(5, vec![elsewhere, longer])], &[]).is_empty());
         assert!(is_github_pull("https://github.com/acme/web.site/pull/12"));
         assert!(!is_github_pull("https://github.com/acme/web/issues/12"));
+    }
+
+    #[test]
+    fn listed_sessions_say_whether_they_were_archived_and_what_their_agent_asks() {
+        let mut archived = listing(1, vec![pr("acme/shop", 12)]);
+        archived.archived = true;
+        let mut asking = listing(2, vec![pr("acme/shop", 13)]);
+        asking.question = Some(fctl_proto::session::SessionQuestion {
+            text: "Keep øre?".into(),
+            options: vec![],
+            asked_at: 2,
+        });
+        // Archived, a session's question is left, but nobody waits on it.
+        let mut asked_then_archived = listing(3, vec![pr("acme/shop", 14)]);
+        asked_then_archived.archived = true;
+        asked_then_archived.question = asking.question.clone();
+        let all = listed(&[asked_then_archived, asking, archived], &[]);
+        let by = |n: u64| all.iter().find(|l| l.pull_request.number == n);
+        let (Some(asks), Some(gone), Some(left)) = (by(13), by(12), by(14)) else {
+            panic!("all listed: {all:?}");
+        };
+        assert_eq!(asks.sessions[0].question.as_deref(), Some("Keep øre?"));
+        assert!(!asks.sessions[0].archived);
+        assert!(gone.sessions[0].archived);
+        assert!(left.sessions[0].archived);
+        assert_eq!(left.sessions[0].question, None);
+        // In the JSON, only when there is something to say.
+        let json = serde_json::to_value(&gone.sessions[0]).unwrap_or_default();
+        assert_eq!(json["archived"], true);
+        assert!(json.get("question").is_none());
+        let json = serde_json::to_value(&asks.sessions[0]).unwrap_or_default();
+        assert!(json.get("archived").is_none());
     }
 }

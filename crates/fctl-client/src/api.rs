@@ -621,7 +621,8 @@ impl Api {
 
     /// The sessions that list a pull request in `state` (`open`, `merged`,
     /// `closed` or `any`), newest first: the pull requests page's, and
-    /// `fctl pulls`'.
+    /// `fctl pulls`'. Archived sessions and those of schedules that hide
+    /// theirs too: neither closes the pull requests they opened.
     pub async fn sessions_with_pulls(
         &self,
         workspace: Option<&str>,
@@ -630,7 +631,10 @@ impl Api {
         mine: bool,
         limit: u32,
     ) -> Result<SessionList> {
-        let mut q = format!("/sessions?limit={limit}&pulls={}", enc(state));
+        let mut q = format!(
+            "/sessions?limit={limit}&pulls={}&archived=1&hidden=1",
+            enc(state)
+        );
         if let Some(w) = workspace {
             q.push_str(&format!("&workspace={}", enc(w)));
         }
