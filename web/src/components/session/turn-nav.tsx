@@ -223,30 +223,43 @@ export function TurnOutline({
         </button>
       )}
     >
-      {(close) => (
-        <div className="turn-outline -m-1 max-h-[min(30rem,calc(100dvh-10rem))] w-[min(26rem,calc(100vw-1.5rem))] overflow-y-auto overscroll-contain p-1">
-          {hasMoreBefore && (
-            <p className="px-2.5 pt-1.5 pb-2 text-[12px] text-ink-4">Earlier turns load as you scroll up.</p>
-          )}
-          {turns.map((turn, i) => (
-            <TurnRow
-              key={turn.key}
-              turn={turn}
-              facts={facts(turn)}
-              title={turnTitle(turn, i === 0, hasMoreBefore)}
-              current={i === at}
-              live={live && i === turns.length - 1}
-              role="menuitem"
-              onClick={() => {
-                close();
-                onGo(i);
-              }}
-            />
-          ))}
-        </div>
-      )}
+      {(close) => {
+        const shares = sharesOf(turns, facts);
+        return (
+          <div className="turn-outline -m-1 max-h-[min(30rem,calc(100dvh-10rem))] w-[min(26rem,calc(100vw-1.5rem))] overflow-y-auto overscroll-contain p-1">
+            {hasMoreBefore && (
+              <p className="px-2.5 pt-1.5 pb-2 text-[12px] text-ink-4">
+                Earlier turns load as you scroll up.
+              </p>
+            )}
+            {turns.map((turn, i) => (
+              <TurnRow
+                key={turn.key}
+                turn={turn}
+                facts={facts(turn)}
+                title={turnTitle(turn, i === 0, hasMoreBefore)}
+                current={i === at}
+                live={live && i === turns.length - 1}
+                share={shares[i]}
+                role="menuitem"
+                onClick={() => {
+                  close();
+                  onGo(i);
+                }}
+              />
+            ))}
+          </div>
+        );
+      }}
     </Menu>
   );
+}
+
+/** Each turn's time as a share of the longest's, for the hairlines under them. */
+function sharesOf(turns: Turn[], facts: (turn: Turn) => TurnFacts): number[] {
+  const took = turns.map((t) => turnTook(t, facts(t)));
+  const longest = Math.max(1, ...took);
+  return took.map((ms) => ms / longest);
 }
 
 /**
@@ -262,6 +275,7 @@ function TurnRow({
   role,
   compact,
   onClick,
+  share,
 }: {
   turn: Turn;
   facts: TurnFacts;
@@ -272,6 +286,8 @@ function TurnRow({
   role?: "menuitem";
   /** In the rail: a line of its title, less room. */
   compact?: boolean;
+  /** Its time, as a share of the longest turn's: a hairline that long under it. */
+  share?: number;
   onClick: () => void;
 }) {
   const took = turnTook(turn, f);
@@ -289,6 +305,16 @@ function TurnRow({
     >
       {current && (
         <span aria-hidden="true" className="absolute top-2 bottom-2 left-0 w-0.5 rounded-full bg-accent" />
+      )}
+      {share !== undefined && (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute bottom-0.5 left-[38px] h-px rounded-full",
+            current ? "bg-accent/50" : "bg-line-strong",
+          )}
+          style={{ width: `calc((100% - 46px) * ${Math.max(0.02, share)})` }}
+        />
       )}
       <span className="mt-px flex size-[18px] shrink-0 items-center justify-center">
         <Starter turn={turn} />
@@ -348,6 +374,7 @@ export function TurnList({
   onGo: (i: number) => void;
 }) {
   const list = useRef<HTMLDivElement>(null);
+  const shares = sharesOf(turns, facts);
   // The list scrolls itself, not the rail or the page, to keep the turn the reader is in in view.
   useEffect(() => {
     const el = list.current;
@@ -371,6 +398,7 @@ export function TurnList({
           title={turnTitle(turn, i === 0, hasMoreBefore)}
           current={i === at}
           live={live && i === turns.length - 1}
+          share={shares[i]}
           compact
           onClick={() => onGo(i)}
         />

@@ -14,7 +14,9 @@ import {
   CircleCheck,
   CircleSlash,
   Copy,
+  Ellipsis,
   FilePenLine,
+  Link2,
   OctagonX,
   Sparkle,
   TriangleAlert,
@@ -30,7 +32,7 @@ import {
   useState,
 } from "react";
 import { ImageSizes } from "@/components/markdown";
-import { Avatar, DotWave, Gallery, Logo } from "@/components/ui";
+import { Avatar, DotWave, Gallery, Logo, Menu, MenuItem, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { duration, stamp, when } from "@/lib/format";
@@ -47,7 +49,10 @@ import {
   type Turn,
   type TurnEnd,
   type TurnFacts,
+  turnMarkdown,
+  turnSeq,
   turnsOf,
+  turnTitle,
   turnTook,
 } from "@/lib/turns";
 import { MessageFiles } from "./attachments";
@@ -66,6 +71,10 @@ import {
 } from "./transcript";
 
 type Ask = Extract<Item, { kind: "user" }>;
+
+/** How many stretches of a turn's thread its light runs down as it ends, and for how long it may. */
+const SWEPT = 10;
+const SWEEP_MS = 2500;
 
 /** What the parts of the transcript need to know of the session and the reader. */
 interface Ctx {
@@ -184,6 +193,14 @@ export const TurnTranscript = memo(function TurnTranscript({
   const t = transcriptParts(items, live, status, stall);
   // What came after the page first showed the session is new to the reader: its thread draws.
   const shownUpTo = useShownUpTo(sessionId, items);
+  // When the page saw each turn end that came while it showed: its light runs for a moment.
+  const endsSeen = useRef(new Map<string, number>());
+  const justEnded = (end: TurnEnd) => {
+    if (end.seq <= shownUpTo) return false;
+    const seen = endsSeen.current.get(end.key) ?? Date.now();
+    endsSeen.current.set(end.key, seen);
+    return Date.now() - seen < SWEEP_MS;
+  };
   const turns = turnsOf(t.ps);
   const list = useRef<HTMLDivElement>(null);
   // Earlier activity goes in above the reader, who stays where they are.
@@ -213,7 +230,7 @@ export const TurnTranscript = memo(function TurnTranscript({
     rows.push(<NewLine key="new-line" thread={thread} />);
   };
   const arrived = (seq: number | undefined) => seq !== undefined && seq > shownUpTo;
-  const part = (p: Part<Item>, thread: boolean) => {
+  const part = (p: Part<Item>, thread: boolean, sweep?: CSSProperties) => {
     reached(p.key);
     if (quiet && !inConversation(p)) return;
     lineBefore(thread);
@@ -224,7 +241,8 @@ export const TurnTranscript = memo(function TurnTranscript({
         key={p.key}
         data-item
         data-part={p.key}
-        className={cn(thread && "thread", thread && arrived(seq) && "arrive")}
+        className={cn(thread && "thread", thread && arrived(seq) && "arrive", sweep && "sweep")}
+        style={sweep}
       >
         <Unreadable>
           {beside ? (
@@ -286,7 +304,14 @@ export const TurnTranscript = memo(function TurnTranscript({
         </div>,
       );
     }
-    for (const p of turn.body) part(p, true);
+    // A turn that ends while the reader watches: a light runs down the last of its thread.
+    const shownBody = quiet ? turn.body.filter(inConversation) : turn.body;
+    const sweeping = !!turn.end && justEnded(turn.end);
+    const n = Math.min(SWEPT, shownBody.length + 1);
+    const sweepOf = (k: number): CSSProperties | undefined =>
+      sweeping && k < n ? ({ "--k": k, "--n": n } as CSSProperties) : undefined;
+    const fromEnd = new Map(shownBody.map((p, j) => [p.key, shownBody.length - j]));
+    for (const p of turn.body) part(p, true, sweepOf(fromEnd.get(p.key) ?? SWEPT));
     const isLast = i === turns.length - 1;
     if (isLast && open) {
       lineBefore(true);
@@ -318,9 +343,17 @@ export const TurnTranscript = memo(function TurnTranscript({
       rows.push(
         <div
           key={`end-${turn.end.key}`}
-          className={cn("thread thread-end", arrived(turn.end.seq) && "arrive")}
+          className={cn("thread thread-end", arrived(turn.end.seq) && "arrive", sweeping && "sweep")}
+          style={sweepOf(0)}
         >
-          <Outcome turn={turn} facts={factsOf(turn, t.cwd)} groups={diffGroups} onDiff={onDiff} />
+          <Outcome
+            turn={turn}
+            facts={factsOf(turn, t.cwd)}
+            title={turnTitle(turn, i === 0, hasMoreBefore)}
+            sessionId={sessionId}
+            groups={diffGroups}
+            onDiff={onDiff}
+          />
         </div>,
       );
     }
@@ -502,18 +535,24 @@ function LinesChanged({ added, removed }: { added: number; removed: number }) {
 function Outcome({
   turn,
   facts,
+  title,
+  sessionId,
   groups,
   onDiff,
 }: {
   turn: Turn;
   facts: TurnFacts;
+  /** What the turn is about, in a line. */
+  title: string;
+  sessionId: string;
   groups: readonly DiffGroup[];
   onDiff: (at: DiffTarget) => void;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   if (!turn.end) return null;
-  const { icon, text, tone } = endText(turn.end, turnTook(turn, facts));
+  const took = turnTook(turn, facts);
+  const { icon, text, tone } = endText(turn.end, took);
   const files = facts.files;
   return (
     <div className="py-1.5">
@@ -542,6 +581,7 @@ function Outcome({
             </button>
           )}
         </div>
+        <TurnMenu turn={turn} facts={facts} title={title} took={took} sessionId={sessionId} />
       </div>
       {open && (
         <ul id={id} className="mt-1 ml-[34px] flex animate-rise flex-col py-0.5">
@@ -551,6 +591,77 @@ function Outcome({
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * What a turn can be taken away as, from its end: in Markdown, to paste where people talk about
+ * it, or as a link that opens the session at it.
+ */
+function TurnMenu({
+  turn,
+  facts,
+  title,
+  took,
+  sessionId,
+}: {
+  turn: Turn;
+  facts: TurnFacts;
+  title: string;
+  took: number;
+  sessionId: string;
+}) {
+  const seq = turnSeq(turn);
+  return (
+    <Menu
+      // Up, over the turn: each part of a thread stacks on its own, and the next would cover it.
+      side="top"
+      className="-my-1 ml-auto shrink-0"
+      trigger={(toggle, open) => (
+        <button
+          type="button"
+          aria-label="This turn"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={toggle}
+          className={cn(
+            "flex size-7 items-center justify-center rounded-md text-ink-4 transition-colors hover:bg-hover hover:text-ink",
+            open && "bg-hover text-ink",
+          )}
+        >
+          <Ellipsis className="size-4" />
+        </button>
+      )}
+    >
+      {(close) => (
+        <>
+          <MenuItem
+            icon={<Copy />}
+            onClick={() => {
+              close();
+              void navigator.clipboard.writeText(
+                turnMarkdown(turn, facts, { title, when, took: duration(took) }),
+              );
+              toast("Turn copied as Markdown");
+            }}
+          >
+            Copy as Markdown
+          </MenuItem>
+          {seq !== undefined && (
+            <MenuItem
+              icon={<Link2 />}
+              onClick={() => {
+                close();
+                void navigator.clipboard.writeText(`${location.origin}/s/${sessionId}?turn=${seq}`);
+                toast("Link to the turn copied");
+              }}
+            >
+              Copy link to this turn
+            </MenuItem>
+          )}
+        </>
+      )}
+    </Menu>
   );
 }
 

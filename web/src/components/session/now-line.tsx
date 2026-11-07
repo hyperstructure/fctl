@@ -2,14 +2,26 @@
 // this moment, as it changes, and for how long; and beside it, the way back to the newest work,
 // with how much came since the reader left it, or up to what came while they were away.
 
-import { ArrowDown, ArrowUp, Box, CirclePause, Hourglass, PenLine, Square, Unplug } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Box,
+  CirclePause,
+  Hourglass,
+  MessageSquareReply,
+  PenLine,
+  Square,
+  Unplug,
+} from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DotWave, ThoughtIcon } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { duration } from "@/lib/format";
 import type { Now } from "@/lib/now";
+import type { Plan } from "@/lib/plan";
 import { NEAR_BOTTOM } from "@/lib/stick-to-bottom";
 import { Rolling } from "./diff-live";
+import { PlanRing } from "./plan";
 import { toolIcon } from "./tool";
 
 /** How long a step shows at least, so that quick ones don't flicker past unread (ms). */
@@ -92,12 +104,15 @@ const BUSY = new Set<Now["kind"]>(["thinking", "writing", "preparing", "tool", "
  * What the agent does now, in a line that stays put above the message box: the step it is at and
  * what it does it to, for how long, the words rolling in as it moves on. Nothing while it waits.
  */
-export function NowLine({ now }: { now?: Now }) {
+export function NowLine({ now, plan }: { now?: Now; plan?: Plan }) {
   const shown = useSteady(now, (n) => (n ? `${n.kind}\u0000${n.text}\u0000${n.target?.text ?? ""}` : ""));
   const ticking = !!shown?.since && shown.kind !== "paused";
   const time = useSeconds(ticking);
   if (!shown) return null;
   const busy = BUSY.has(shown.kind);
+  // The step of its plan the agent is at, in the words it says while it does it, leads the line.
+  const step = busy ? plan?.current : undefined;
+  const doing = step && (step.doing ?? step.text);
   const took =
     shown.seconds !== undefined && shown.seconds > 1
       ? ran(shown.seconds * 1000)
@@ -118,15 +133,30 @@ export function NowLine({ now }: { now?: Now }) {
       >
         {icon(shown)}
       </span>
+      {doing && (
+        <span key={doing} className="min-w-0 shrink-[0.6] animate-roll-in truncate font-medium text-shimmer">
+          {doing}
+        </span>
+      )}
       <span
         key={`${shown.kind}\u0000${shown.text}\u0000${target?.text ?? ""}`}
-        className="flex min-w-0 animate-roll-in items-baseline gap-1.5"
+        className={cn(
+          "flex min-w-0 animate-roll-in items-baseline gap-1.5",
+          // Beside the plan's step, the call at hand: where there's room.
+          doing && "border-l border-line pl-2 max-sm:hidden",
+        )}
       >
         <span
           className={cn(
             "min-w-0 truncate",
             target && "shrink-0 max-w-[60%]",
-            busy ? "text-shimmer" : shown.kind === "stalled" ? "text-amber" : "text-ink-2",
+            doing
+              ? "text-ink-3"
+              : busy
+                ? "text-shimmer"
+                : shown.kind === "stalled"
+                  ? "text-amber"
+                  : "text-ink-2",
           )}
         >
           {shown.text}
@@ -150,7 +180,34 @@ export function NowLine({ now }: { now?: Now }) {
           {took}
         </span>
       )}
+      {busy && plan && plan.done < plan.steps.length && (
+        <PlanRing
+          done={plan.done}
+          total={plan.steps.length}
+          className="-mr-0.5 shrink-0 border-l border-line pl-2"
+        />
+      )}
     </output>
+  );
+}
+
+/**
+ * Above the message box once the agent has ended its turn and waits for someone to write: whose
+ * turn it is, which takes them to the message box.
+ */
+export function YourTurn({ onReply }: { onReply: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onReply}
+      className="now-line your-turn pointer-events-auto flex h-8 max-w-full min-w-0 animate-rise items-center gap-2 rounded-full border border-blue/30 bg-surface/85 py-1 pr-3 pl-1 text-[12.5px] shadow-[0_6px_24px_rgb(0_0_0/0.18)] backdrop-blur-xl transition-[border-color] duration-150 hover:border-blue/60"
+    >
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-blue-soft text-blue">
+        <MessageSquareReply className="size-3.5" />
+      </span>
+      <span className="shrink-0 font-medium text-ink">Your turn</span>
+      <span className="min-w-0 truncate text-ink-3 max-sm:hidden">The agent waits for your reply</span>
+    </button>
   );
 }
 
