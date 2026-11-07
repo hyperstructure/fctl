@@ -3541,8 +3541,9 @@ and a filesystem that allows device files (it makes `/dev/kvm` in the
 chroot): without either, the driver isn't ready and says what to change.
 `passt` runs outside the jail and drops to `nobody` itself; its pid's
 file goes in `/tmp` under a name with a random part. A jailed VM's cache
-server listens in its chroot, where Firecracker connects for the VM, on a
-socket given to the jail's user.
+server listens in the VM's socket directory, whose path stays short, and
+the host links that socket, given to the jail's user, into the chroot,
+where Firecracker connects for the VM.
 
 ### Package caches
 

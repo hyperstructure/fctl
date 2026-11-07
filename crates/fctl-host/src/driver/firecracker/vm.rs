@@ -194,15 +194,12 @@ impl Vm {
 
     /// Where `fctl-agent share` serves the VM's [`Share`]: what Firecracker
     /// connects to when the VM connects to the host's [`SHARE_PORT`].
-    /// Where the VM's connections to [`SHARE_PORT`] come: beside its vsock
-    /// socket, or in its chroot for a jailed VM, whose Firecracker connects
-    /// there.
+    /// Where the cache server listens for the VM's connections to
+    /// [`SHARE_PORT`]: beside its vsock socket, under `run`, short as
+    /// sockets' paths must be. A jailed VM's Firecracker connects in its
+    /// chroot, where the host links the socket ([`serve_share`](Self::serve_share)).
     pub fn share(&self) -> PathBuf {
-        let name = format!("v.sock_{SHARE_PORT}");
-        match self.jail() {
-            Some((root, _)) => root.join(name),
-            None => self.run.join(name),
-        }
+        self.run.join(format!("v.sock_{SHARE_PORT}"))
     }
 
     /// The chroot of this VM's jail and the jail's uid, when it runs in one.
@@ -526,11 +523,23 @@ impl Vm {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        // A jailed Firecracker connects as the jail's user, which needs the
-        // socket to be its own; not following a link the jail put there.
-        if let Some((_, uid)) = self.jail() {
-            std::os::unix::fs::lchown(self.share(), Some(uid), Some(uid))
-                .context("giving the cache server's socket to the VM's jail")?;
+        // A jailed Firecracker connects in its chroot, as the jail's user:
+        // the socket, given to that user, is linked there (`run` is on the
+        // chroot's filesystem, beside it), in place of what the jail put
+        // there, which a link replaces without following.
+        if let Some((root, uid)) = self.jail() {
+            let given = async {
+                std::os::unix::fs::lchown(self.share(), Some(uid), Some(uid))?;
+                let inside = root.join(format!("v.sock_{SHARE_PORT}"));
+                let _ = std::fs::remove_file(&inside);
+                std::fs::hard_link(self.share(), &inside)?;
+                Ok::<_, std::io::Error>(())
+            }
+            .await;
+            if let Err(e) = given {
+                self.stop_share().await;
+                return Err(e).context("giving the cache server's socket to the VM's jail");
+            }
         }
         Ok(())
     }
@@ -1464,44 +1473,56 @@ mod tests {
         Ok(())
     }
 
-    /// A jailed VM's Firecracker connects to the cache server from its
-    /// chroot, as the jail's user: the server listens there, on a socket
-    /// of that user's.
+    /// A jailed VM's Firecracker connects to the cache server in its chroot,
+    /// as the jail's user: the server listens under `run`, whose path is
+    /// short whatever the data directory's, and the host links its socket
+    /// into the chroot, given to that user.
     #[tokio::test]
     async fn a_jailed_vms_caches_are_served_in_its_jail() -> Result<()> {
         use crate::driver::fake::write_script;
+        use std::os::unix::fs::MetadataExt;
         let dir = tempfile::tempdir()?;
         let agent = dir.path().join("fctl-agent");
         write_script(
             &agent,
             "#!/bin/sh\nfor a; do [ \"$prev\" = --socket ] && touch \"$a\"; prev=$a; done\nsleep 60\n",
         )?;
-        let jails = dir.path().join("jail");
+        // A data directory with a long path, as a jail's sockets can't have.
+        let jails = dir.path().join("a".repeat(60)).join("jail");
         let vm = Vm::new(dir.path().join("fctl-ses-j"))?.with_jails(jails.clone());
         std::fs::create_dir_all(&vm.dir)?;
-        assert_eq!(vm.share(), vm.run.join(format!("v.sock_{SHARE_PORT}")));
-        // The jail `make_jail` leaves, here with this user's uid, which only
-        // root could make another's.
+        // The jail `make_jail` and `start_jailed` leave, here with this
+        // user's uid, which only root could make another's.
         let jail = jails.join("firecracker-v1.17.0").join(&vm.key);
         std::fs::create_dir_all(jail.join("root"))?;
+        std::fs::create_dir_all(jail.join("run"))?;
+        std::fs::create_dir_all(vm.run.parent().context("no parent")?)?;
+        let _ = std::fs::remove_file(&vm.run);
+        std::os::unix::fs::symlink(jail.join("run"), &vm.run)?;
         let uid = nix::unistd::geteuid().as_raw();
         let lent = Lent {
             uid,
             writable: Vec::new(),
         };
         std::fs::write(jail.join("jail.json"), serde_json::to_vec(&lent)?)?;
+        // What the jail put where the link goes.
+        let inside = jail.join("root").join(format!("v.sock_{SHARE_PORT}"));
+        std::os::unix::fs::symlink("/etc/passwd", &inside)?;
         let share = Share {
             agent,
             dir: dir.path().to_owned(),
         };
         vm.serve_share(&share).await?;
-        assert_eq!(
-            vm.share(),
-            jail.join("root").join(format!("v.sock_{SHARE_PORT}"))
-        );
-        assert!(vm.sharing() && vm.share().exists());
+        assert!(vm.share().starts_with(&vm.run));
+        assert!(vm.share().as_os_str().len() < 100);
+        assert!(vm.sharing());
+        let linked = std::fs::symlink_metadata(&inside)?;
+        assert!(linked.is_file());
+        assert_eq!(linked.ino(), std::fs::metadata(vm.share())?.ino());
+        assert_eq!(linked.uid(), uid);
         vm.stop_share().await;
         assert!(!vm.sharing());
+        std::fs::remove_file(&vm.run)?;
         Ok(())
     }
 

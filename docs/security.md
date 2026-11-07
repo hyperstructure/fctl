@@ -488,7 +488,9 @@ its VM, and nothing outside it except through these channels:
 - **Package caches.** In a project that shares them (`fctl projects set
   --package-caches on`), its sessions on a runner share what their package
   managers download, in a Docker volume or, with Apple's `container`, a
-  directory on the Mac that each sandbox mounts. Anything a session runs
+  directory on the Mac that each sandbox mounts, or, with Firecracker, a
+  directory on the runner that the host serves to each VM over 9P.
+  Anything a session runs
   can change what they hold, and the project's later sessions on that
   runner build with it: package managers check a download against a
   lockfile's hashes as they fetch it, but most don't check again what is
