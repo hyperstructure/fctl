@@ -59,6 +59,13 @@ export const SHORTCUTS = {
   reply: { label: "Message the agent", group: "session", keys: ["r"] },
   changes: { label: "Open the changes", group: "session", keys: ["c"] },
   details: { label: "Show or hide the details", group: "session", keys: ["d"] },
+  nextTurn: {
+    label: "Next turn / previous",
+    group: "session",
+    keys: [["j", "k"]],
+    note: "In the new view",
+  },
+  view: { label: "Switch between the classic and the new view", group: "session", keys: ["v"] },
   // Writing.
   start: { label: "Start the session", group: "writing", keys: ["mod+enter"], note: "In a task box" },
   send: {

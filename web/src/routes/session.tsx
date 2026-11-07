@@ -45,6 +45,7 @@ import { QuestionCard } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
 import { Transcript } from "@/components/session/transcript";
+import { useViewShortcut, ViewSwitch } from "@/components/session/view-switch";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
 import {
   Avatar,
@@ -58,6 +59,7 @@ import {
   Input,
   Menu,
   MenuItem,
+  MenuSeparator,
   Select,
   type SelectOption,
   Sheet,
@@ -158,6 +160,7 @@ export function SessionPage() {
     },
     { inDialogs: "dialog.sheet" },
   );
+  useViewShortcut();
   const transcript = useRef<HTMLDivElement>(null);
   const header = useRef<HTMLDivElement>(null);
   const footer = useRef<HTMLDivElement>(null);
@@ -570,6 +573,8 @@ export function SessionPage() {
                       >
                         Copy link
                       </MenuItem>
+                      <MenuSeparator />
+                      <ViewSwitch onClick={close} />
                     </>
                   )}
                 </Menu>
@@ -744,7 +749,7 @@ const primaryTitleOf = (project?: G.Project) =>
  * The changed files of each of the session's repositories, as the diffs over the page show them:
  * the primary repository's, then each other's that has changes.
  */
-function useDiffGroups(session: G.Session | undefined, git: G.GitState | undefined): DiffGroup[] {
+export function useDiffGroups(session: G.Session | undefined, git: G.GitState | undefined): DiffGroup[] {
   // The details' own (useProject), once the session says which.
   const slug = session?.project_slug ?? "";
   const project = useQuery({
@@ -787,14 +792,14 @@ function runnerDot(connected: boolean, stall?: Stall, disk?: DiskShort): string 
 }
 
 /** The color of a note beside the status pill. */
-const noteTone = (n: StatusNote) => (n.danger ? "text-danger" : n.warn ? "text-amber" : "text-ink-3");
+export const noteTone = (n: StatusNote) => (n.danger ? "text-danger" : n.warn ? "text-amber" : "text-ink-3");
 
 /** A review agent's session waits for nobody: once its turn ends, it finishes and stops. */
-const reviewLabel = (session: G.Session) =>
+export const reviewLabel = (session: G.Session) =>
   session.review && session.status === "idle" ? "Finishing" : undefined;
 
 /** What the session's agent may do on GitHub, beside its status, when that is less than push. */
-function SessionGithub({ session }: { session: G.Session }) {
+export function SessionGithub({ session }: { session: G.Session }) {
   const project = useProject(session.project_slug).data;
   return <GithubAccessChip access={sessionGithub(session, project)} />;
 }
@@ -963,7 +968,7 @@ function PullRequests({
  * What the header has no room for on phones: the status with all it says,
  * where the session is and its branch. The details sheet starts with it.
  */
-function Overview({
+export function Overview({
   session,
   workspace,
   notes,
@@ -1019,7 +1024,7 @@ function Overview({
 }
 
 /** What the rail shows beside the transcript, and the details sheet where the rail doesn't fit. */
-function Details({
+export function Details({
   session,
   role,
   review,
@@ -1246,7 +1251,15 @@ const SHARE_ROLES: SelectOption<G.SessionRole>[] = [
   { value: "editor", label: "Can message", description: "Also messages and interrupts the agent" },
 ];
 
-function ShareDialog({ open, onClose, session }: { open: boolean; onClose: () => void; session: G.Session }) {
+export function ShareDialog({
+  open,
+  onClose,
+  session,
+}: {
+  open: boolean;
+  onClose: () => void;
+  session: G.Session;
+}) {
   const shares = useQuery({
     queryKey: keys.shares(session.id),
     queryFn: () => api.shares(session.id),

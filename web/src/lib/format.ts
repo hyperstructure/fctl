@@ -108,6 +108,20 @@ export function clock(ms: number): string {
   return dateTimeFormat(timeOptions()).format(ms);
 }
 
+/**
+ * When something happened, as the new session page says it of a message: the time today
+ * ("08:52"), "Yesterday at 22:40", the day this year ("27 Oct at 09:12"), else in full.
+ */
+export function when(ms: number, now = Date.now()): string {
+  const midnight = (t: number) => new Date(t).setHours(0, 0, 0, 0);
+  const days = Math.round((midnight(now) - midnight(ms)) / 86_400_000);
+  if (days === 0) return clock(ms);
+  if (days === 1) return `Yesterday at ${clock(ms)}`;
+  if (new Date(ms).getFullYear() === new Date(now).getFullYear() && days > 0)
+    return `${day(ms)} at ${clock(ms)}`;
+  return stamp(ms);
+}
+
 export function until(ms: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((ms - now) / 1000));
   if (s < 60) return `${s}s`;
