@@ -5,11 +5,15 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowRight, FolderGit2, Lock, Plus, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { IconPicker } from "@/components/project/icon-picker";
+import { ProjectIcon } from "@/components/project/project-icon";
 import { Banner, Button, Empty, Field, GithubIcon, Input, Select, Switch, Textarea } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import type * as G from "@/gen";
 import { api, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
+import { iconOf } from "@/lib/project-icons";
 import { keys, queryClient, useInstance, useWorkspaces } from "@/lib/queries";
 import { createsProjects } from "@/lib/workspaces";
 
@@ -42,6 +46,8 @@ export function NewProject() {
   const [priv, setPriv] = useState(true);
   const [setup, setSetup] = useState("");
   const [connectors, setConnectors] = useState(false);
+  const [icon, setIcon] = useState<G.ProjectIcon>();
+  const [picking, setPicking] = useState(false);
   const repos = useQuery({
     queryKey: keys.repos(ws?.id ?? ""),
     queryFn: () => api.githubRepos(ws?.id ?? ""),
@@ -64,12 +70,15 @@ export function NewProject() {
         .slice(0, 60),
     [repos.data, filter],
   );
+  // The name it gets: the one typed, or its repository's.
+  const shownName = name.trim() || (mode === "create" ? newRepo : (repo.split("/")[1] ?? ""));
   const create = useMutation({
     mutationFn: () =>
       api.createProject({
         workspace: ws?.id,
-        name: name.trim() || (mode === "create" ? newRepo : (repo.split("/")[1] ?? "")) || "Untitled",
+        name: shownName || "Untitled",
         description: description || undefined,
+        icon,
         repo: mode === "link" ? repo : undefined,
         create_repo:
           mode === "create"
@@ -330,14 +339,35 @@ export function NewProject() {
         )}
         <Field label="Name" error={field === "name" ? create.error?.message : undefined}>
           {(id) => (
-            <Input
-              id={id}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={mode === "link" ? repo.split("/")[1] || "My app" : "My app"}
-            />
+            <div className="flex gap-2">
+              {/* Its icon, which follows the name until someone chooses one. */}
+              <button
+                type="button"
+                onClick={() => setPicking(true)}
+                aria-label="Choose its icon"
+                title="Choose its icon"
+                className="shrink-0 rounded-[11px] transition-transform duration-150 ease-[var(--ease-out)] hover:scale-[1.05] active:scale-95"
+              >
+                <ProjectIcon icon={iconOf({ name: shownName, description, icon })} tile={38} />
+              </button>
+              <Input
+                id={id}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={mode === "link" ? repo.split("/")[1] || "My app" : "My app"}
+              />
+            </div>
           )}
         </Field>
+        <IconPicker
+          open={picking}
+          onClose={() => setPicking(false)}
+          project={{ name: shownName, description, icon, workspace: ws }}
+          onSave={(chosen) => {
+            setIcon(chosen ?? undefined);
+            setPicking(false);
+          }}
+        />
         <Field label="Description" hint="Optional. Shown to people, not to agents.">
           {(id) => <Input id={id} value={description} onChange={(e) => setDescription(e.target.value)} />}
         </Field>

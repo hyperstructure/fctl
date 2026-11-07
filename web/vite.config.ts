@@ -81,6 +81,8 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("node_modules/react") || id.includes("scheduler")) return "react";
           if (id.includes("@tanstack")) return "tanstack";
+          // Projects' icons change with the set, not with each release: a chunk of their own stays cached.
+          if (id.includes("src/lib/project-icon-data")) return "project-icons";
           return undefined;
         },
       },

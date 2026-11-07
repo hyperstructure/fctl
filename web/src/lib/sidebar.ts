@@ -1,7 +1,8 @@
 // The sidebar's workspaces and projects, kept in this browser as it last
 // showed them: when the app opens, the sidebar shows them at once, and the
 // lists the control plane sends take their place once both have come. Only
-// what the sidebar shows is kept (names, colors and avatars, your role, how
+// what the sidebar shows is kept (names, colors and avatars, projects'
+// icons and the descriptions that pick the ones nobody chose, your role, how
 // many sessions each project has going), for the person signed in; signing
 // out forgets it.
 
@@ -17,8 +18,11 @@ export type SidebarWorkspace = Pick<
   G.Workspace,
   "id" | "slug" | "name" | "color" | "avatar_url" | "role" | "blocked"
 >;
-/** A project as the sidebar shows it, under its workspace. */
-export type SidebarProject = Pick<G.Project, "id" | "slug" | "name" | "active_sessions"> & {
+/** A project as the sidebar shows it, under its workspace, with what picks its icon. */
+export type SidebarProject = Pick<
+  G.Project,
+  "id" | "slug" | "name" | "active_sessions" | "icon" | "description"
+> & {
   workspace?: Pick<G.WorkspaceRef, "id">;
 };
 /** An invitation to a workspace, as the sidebar shows it. */
@@ -69,6 +73,8 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
       slug: p.slug,
       name: p.name,
       active_sessions: p.active_sessions,
+      icon: p.icon,
+      description: p.description,
       workspace: p.workspace && { id: p.workspace.id },
     })),
   };
@@ -112,6 +118,18 @@ function readInvitation(v: unknown): SidebarInvitation | undefined {
   return workspace && { id: v.id, workspace };
 }
 
+/** A kept icon: one that doesn't read as one is none (the one that fits shows). */
+function readIcon(v: unknown): G.ProjectIcon | undefined {
+  if (!isObject(v) || !isText(v.name)) return;
+  const color = isText(v.color) && ["ink", "yellow", "pink", "blue"].includes(v.color) ? v.color : undefined;
+  const style = isText(v.style) && ["outline", "duotone", "solid"].includes(v.style) ? v.style : undefined;
+  return {
+    name: v.name,
+    color: color as G.WorkspaceColor | undefined,
+    style: style as G.IconStyle | undefined,
+  };
+}
+
 function readProject(v: unknown): SidebarProject | undefined {
   if (!isObject(v) || !isText(v.id) || !isText(v.slug) || !isText(v.name)) return;
   if (typeof v.active_sessions !== "number") return;
@@ -122,6 +140,9 @@ function readProject(v: unknown): SidebarProject | undefined {
     slug: v.slug,
     name: v.name,
     active_sessions: v.active_sessions,
+    // Lists kept before icons have neither.
+    icon: readIcon(v.icon),
+    description: isText(v.description) ? v.description : undefined,
     workspace: isObject(w) && isText(w.id) ? { id: w.id } : undefined,
   };
 }

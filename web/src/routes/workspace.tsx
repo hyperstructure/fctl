@@ -23,6 +23,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
+import { ProjectMark } from "@/components/project/project-icon";
 import { DriverLine } from "@/components/runner-driver";
 import { SessionRow } from "@/components/session/row";
 import {
@@ -321,11 +322,12 @@ function Projects({ w }: { w: G.Workspace }) {
                   search={{ tab: undefined }}
                   className="group flex items-center gap-3.5 border-b border-line px-3 py-3.5 transition-colors hover:bg-hover/30"
                 >
-                  <span className="flex size-4 items-center justify-center">
-                    {p.active_sessions > 0 ? (
-                      <StatusDot status="running" />
-                    ) : (
-                      <span className="size-1.5 rounded-full bg-ink-4/60" />
+                  <span className="relative">
+                    <ProjectMark project={p} tile={34} />
+                    {p.active_sessions > 0 && (
+                      <span className="absolute -top-0.5 -right-0.5 flex size-2.5 items-center justify-center rounded-full bg-canvas">
+                        <StatusDot status="running" className="scale-75" />
+                      </span>
                     )}
                   </span>
                   <div className="min-w-0 flex-1">
