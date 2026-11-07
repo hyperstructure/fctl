@@ -249,7 +249,6 @@ export function PullsPage() {
   );
 }
 
-/** "your projects", or the workspace's or project's name as the scope says. */
 /** What the page lists, by name: "your projects", "Romanesco's projects", "Shop". */
 function scopeName(
   scope: string | undefined,
