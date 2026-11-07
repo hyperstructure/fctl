@@ -188,6 +188,57 @@ impl WorkspaceColor {
     }
 }
 
+/// How a project's icon is drawn: in lines, in lines over a soft fill of
+/// its color, or filled with its details cut out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum IconStyle {
+    #[default]
+    Outline,
+    Duotone,
+    Solid,
+}
+
+impl IconStyle {
+    pub const ALL: [Self; 3] = [Self::Outline, Self::Duotone, Self::Solid];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Outline => "outline",
+            Self::Duotone => "duotone",
+            Self::Solid => "solid",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
+/// A project's icon, which people choose for it: one of the glyphs of
+/// [IconMCP](https://iconmcp.com) that the web app has, by its name there,
+/// in a workspace color and a style. A project without one shows the glyph
+/// that fits its name and description best, in ink lines.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectIcon {
+    /// The glyph's name in IconMCP (`store`, `server-stack`): lowercase
+    /// letters, digits and dashes. In an update, an empty name takes the
+    /// project's icon away.
+    pub name: String,
+    #[serde(default = "ink")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<WorkspaceColor>", optional))]
+    pub color: WorkspaceColor,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(as = "Option<IconStyle>", optional))]
+    pub style: IconStyle,
+}
+
+fn ink() -> WorkspaceColor {
+    WorkspaceColor::Ink
+}
+
 /// A workspace as projects, sessions and runners name it.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1036,6 +1087,9 @@ pub struct Project {
     pub slug: String,
     pub name: String,
     pub description: Option<String>,
+    /// The icon people chose for it. Absent: none yet, and from control
+    /// planes before icons.
+    pub icon: Option<ProjectIcon>,
     pub repo: Option<RepoRef>,
     /// How many repositories its agents may use besides `repo`, named one
     /// by one (`GET /api/v1/projects/{id}/repos` lists them). Absent from

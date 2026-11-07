@@ -78,9 +78,13 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
+        // Licence notices (/*! … */, @license) stay with what they cover: IconMCP's glyphs, say.
+        comments: { legal: true },
         manualChunks(id) {
           if (id.includes("node_modules/react") || id.includes("scheduler")) return "react";
           if (id.includes("@tanstack")) return "tanstack";
+          // Projects' icons change with the set, not with each release: a chunk of their own stays cached.
+          if (id.includes("src/lib/project-icon-data")) return "project-icons";
           return undefined;
         },
       },

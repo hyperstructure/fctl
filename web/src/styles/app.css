@@ -1052,3 +1052,21 @@ html[data-dragging] * {
   font-size: 0.86em;
   overflow-wrap: anywhere;
 }
+
+/* Projects' icons (lib/project-icons.ts): the workspace colors as glyphs. On
+   light backgrounds, yellow is the lime's olive, as text has it, and pink and
+   blue their text-safe shades; on dark ones, blue a little lighter than the
+   brand's, so that a glyph's thin lines read on the sidebar. */
+:root,
+:root[data-theme="dark"] {
+  --p-yellow: #ffff5d;
+  --p-yellow-soft: rgb(255 255 93 / 0.12);
+  --p-pink: #ff3ddf;
+  --p-blue: #3d97ff;
+}
+:root[data-theme="light"] {
+  --p-yellow: #6b6b00;
+  --p-yellow-soft: rgb(234 255 129 / 0.7);
+  --p-pink: #c800aa;
+  --p-blue: #0070e0;
+}

@@ -556,9 +556,22 @@ five or more. Anyone on the instance creates one, as its primary admin.
   nothing moves unless they move it. Which workspaces they fold in the
   sidebar stays in their browser, and so does a copy of what the sidebar
   last showed them (names, colors and avatars, their role, each project's
-  active sessions; `web/src/lib/sidebar.ts`): when the app opens, the
+  icon, description and active sessions; `web/src/lib/sidebar.ts`): when the app opens, the
   sidebar shows it at once, until the lists of workspaces and projects
   have both come. Signing out forgets it.
+- **Projects' icons.** A project's maintainers choose its icon (the
+  project's page and settings, `fctl projects set --icon`), which everyone
+  in the workspace sees in the sidebar, the project's page and search: a
+  glyph of [IconMCP](https://iconmcp.com) (an MIT-licensed set of 6,800
+  icons on a 16-unit grid) by its name, in a workspace color and outline,
+  duotone or solid (`ProjectIcon`, `projects.icon` as JSON). The web app
+  carries the glyphs it offers, about 150 of them, in three styles
+  (`web/src/lib/project-icon-data.ts`, in a chunk of its own), and draws
+  them as React elements, not markup it inserts. The control plane checks
+  a name's shape only, so the set can grow with the web app; a name the
+  app doesn't have, like a project without an icon, shows the glyph that
+  fits the project best: the words of its name, its description's emoji,
+  then its words (`web/src/lib/project-icons.ts`), in ink lines.
 - **Audit log.** What happens in a workspace (people, roles, runners, GitHub
   accounts, settings, projects, sessions) goes in its log
   (`audit_log.workspace_id`), which its admins read; the rest is the
@@ -905,9 +918,9 @@ it's its person), device codes, workspaces
 (with their avatar images), their members,
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
-and runners, with their enrollment tokens, projects, their members and
-repositories, sessions (summary rows with their agents' open questions,
-and whether the search index has all of each), which sessions list which pull
+and runners, with their enrollment tokens, projects (with their icons),
+their members and repositories, sessions (summary rows with their agents'
+open questions, and whether the search index has all of each), which sessions list which pull
 request, projects' review agents and their reviews, shares, who follows
 which session,
 notification settings and browsers (push subscriptions), runners, encrypted

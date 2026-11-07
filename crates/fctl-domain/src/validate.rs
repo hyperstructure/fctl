@@ -2,7 +2,7 @@
 //! [`ApiError`] naming the field, so handlers can return it as is.
 
 use crate::webpush;
-use fctl_proto::session::ImageBuild;
+use fctl_proto::session::{ImageBuild, ProjectIcon};
 use fctl_proto::{ApiError, AttachmentId};
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -289,6 +289,37 @@ pub fn slug_shape(input: &str) -> Result<String> {
         return Err(bad("Dashes go between words"));
     }
     Ok(s)
+}
+
+/// A project's icon: the name of an IconMCP glyph, 1–64 of `a-z 0-9 -`
+/// with dashes between words. An empty name means no icon (`None`). The
+/// name isn't checked against the glyphs the web app has: it draws the one
+/// that fits the project in place of one it doesn't know.
+pub fn project_icon(icon: &ProjectIcon) -> Result<Option<ProjectIcon>> {
+    let name = icon.name.trim().to_lowercase();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let bad = |m: &str| ApiError::validation("icon", m);
+    if name.len() > 64 {
+        return Err(bad("Use an icon's name of at most 64 characters"));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || name.contains("--")
+    {
+        return Err(bad(
+            "Use an icon's name: lowercase letters, digits and dashes between words",
+        ));
+    }
+    Ok(Some(ProjectIcon {
+        name,
+        color: icon.color,
+        style: icon.style,
+    }))
 }
 
 /// The most answers a question offers.
@@ -1027,6 +1058,40 @@ mod tests {
     fn efforts() {
         assert_eq!(effort("MAX").ok().as_deref(), Some("max"));
         assert!(effort("extreme").is_err());
+    }
+
+    #[test]
+    fn project_icons() {
+        use fctl_proto::session::{IconStyle, WorkspaceColor};
+        let icon = |name: &str| ProjectIcon {
+            name: name.into(),
+            color: WorkspaceColor::Pink,
+            style: IconStyle::Duotone,
+        };
+        assert_eq!(
+            project_icon(&icon(" Server-Stack ")).ok().flatten(),
+            Some(ProjectIcon {
+                name: "server-stack".into(),
+                color: WorkspaceColor::Pink,
+                style: IconStyle::Duotone,
+            })
+        );
+        assert_eq!(project_icon(&icon("")).ok(), Some(None));
+        assert_eq!(project_icon(&icon("  ")).ok(), Some(None));
+        for bad in [
+            "-store",
+            "store-",
+            "two--dashes",
+            "sl/ash",
+            "store icon",
+            &"a".repeat(65),
+        ] {
+            assert!(project_icon(&icon(bad)).is_err(), "{bad}");
+        }
+        // Old clients leave out the color and the style: ink lines.
+        let plain: ProjectIcon = serde_json::from_str(r#"{"name":"cube"}"#).unwrap_or(icon("x"));
+        assert_eq!(plain.color, WorkspaceColor::Ink);
+        assert_eq!(plain.style, IconStyle::Outline);
     }
 
     #[test]
