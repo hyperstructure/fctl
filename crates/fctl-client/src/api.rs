@@ -619,6 +619,30 @@ impl Api {
         self.get(&q).await
     }
 
+    /// The sessions that list a pull request in `state` (`open`, `merged`,
+    /// `closed` or `any`), newest first: the pull requests page's, and
+    /// `fctl pulls`'.
+    pub async fn sessions_with_pulls(
+        &self,
+        workspace: Option<&str>,
+        project: Option<&str>,
+        state: &str,
+        mine: bool,
+        limit: u32,
+    ) -> Result<SessionList> {
+        let mut q = format!("/sessions?limit={limit}&pulls={}", enc(state));
+        if let Some(w) = workspace {
+            q.push_str(&format!("&workspace={}", enc(w)));
+        }
+        if let Some(p) = project {
+            q.push_str(&format!("&project={}", enc(p)));
+        }
+        if mine {
+            q.push_str("&mine=1");
+        }
+        self.get(&q).await
+    }
+
     /// A project's sessions with its review agents', its archived ones and
     /// those its schedules hide among them, which the other lists leave
     /// out: to find one by its number.

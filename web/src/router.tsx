@@ -16,6 +16,7 @@ import { NewProject } from "@/routes/new-project";
 import { NewWorkspace } from "@/routes/new-workspace";
 import { NotFound } from "@/routes/not-found";
 import { ProjectPage } from "@/routes/project";
+import { PullsPage, type PullsSearch } from "@/routes/pulls";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
 import { SignedInLayout } from "@/routes/two-factor";
@@ -162,6 +163,17 @@ const session = createRoute({
     at: typeof s.at === "number" && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : undefined,
   }),
 });
+const pulls = createRoute({
+  getParentRoute: () => app,
+  path: "/pulls",
+  component: PullsPage,
+  validateSearch: (s: Record<string, unknown>): PullsSearch => ({
+    state: oneOf(s.state, ["open", "merged", "closed"] as const),
+    scope: typeof s.scope === "string" && /^[wp]:[a-z0-9-]+$/.test(s.scope) ? s.scope : undefined,
+    mine: flag(s.mine),
+    q: str(s.q),
+  }),
+});
 const settings = createRoute({
   getParentRoute: () => app,
   path: "/settings",
@@ -204,7 +216,18 @@ const tree = root.addChildren([
   invite,
   reset,
   twoFactor,
-  app.addChildren([home, device, newProject, newWorkspace, workspace, project, session, settings, admin]),
+  app.addChildren([
+    home,
+    device,
+    newProject,
+    newWorkspace,
+    workspace,
+    project,
+    session,
+    pulls,
+    settings,
+    admin,
+  ]),
 ]);
 
 export const router = createRouter({
