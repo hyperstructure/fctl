@@ -7,7 +7,8 @@ import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type * as G from "@/gen";
 
 const KEY = "fctl:hidden-sessions";
-// How long a hidden session is remembered: long after it left the sidebar on its own.
+// How long a hidden session is remembered: long after it left the sidebar on its own. The privacy
+// policy (hyperstructure/fctl-site's legal/privacy.md) says so.
 const KEPT_MS = 7 * 24 * 3_600_000;
 
 /** A hidden session: how many turns it had ended when it was hidden, and when (this browser's time). */
@@ -114,12 +115,15 @@ export function useHiddenSessions(sessions: readonly Session[] | undefined): {
     () => (sessions ?? []).filter((s) => store[s.id] && !hidden.has(s.id)).map((s) => s.id),
     [sessions, store, hidden],
   );
+  // Those, and those hidden longer ago than anyone needs, go.
   useEffect(() => {
-    if (!back.length) return;
+    const now = Date.now();
+    const old = Object.values(store).some((h) => now - h.at >= KEPT_MS);
+    if (!back.length && !old) return;
     const next = parse(snapshot());
     for (const id of back) delete next[id];
-    write(next);
-  }, [back]);
+    write(next, now);
+  }, [back, store]);
   const hide = useCallback((s: Session) => {
     write({ ...parse(snapshot()), [s.id]: { turns: s.stats.turns, at: Date.now() } });
   }, []);

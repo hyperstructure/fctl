@@ -564,7 +564,11 @@ five or more. Anyone on the instance creates one, as its primary admin.
   last showed them (names, colors and avatars, their role, each project's
   icon, description and active sessions; `web/src/lib/sidebar.ts`): when the app opens, the
   sidebar shows it at once, until the lists of workspaces and projects
-  have both come. Signing out forgets it.
+  have both come. The sessions they hide from it stay there too, each with
+  how many turns it had ended (`web/src/lib/hidden-sessions.ts`): one stays
+  hidden while it rests (it waits for a message, is stopping, stopped or
+  failed) and asks nothing, and is forgotten once its agent works again or
+  has ended another turn, or after a week. Signing out forgets them all.
 - **Projects' icons.** A project's maintainers choose its icon (the
   project's page and settings, `fctl projects set --icon`), which everyone
   in the workspace sees in the sidebar, the project's page and search: a

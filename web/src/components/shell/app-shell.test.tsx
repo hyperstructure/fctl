@@ -448,6 +448,20 @@ describe("hiding a session from the sidebar", () => {
     expect(focusAndHide("Fix the build")).toBe("/p/web");
   });
 
+  it("is forgotten after a week", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [waiting]] });
+    act(() => hideButton(sidebar.container, "Add dark mode").click());
+    vi.setSystemTime(NOW + 7 * 24 * HOUR - MINUTE);
+    await reload("/").come({ workspaces, projects, sessions: [recent, [waiting]] });
+    expect(localStorage.getItem("fctl:hidden-sessions")).toContain("ses_5");
+    vi.setSystemTime(NOW + 7 * 24 * HOUR);
+    const later = reload("/");
+    await later.come({ workspaces, projects, sessions: [recent, [waiting]] });
+    expect(localStorage.getItem("fctl:hidden-sessions")).toBe("{}");
+    expect(titles(later)).toEqual(["Add dark mode"]);
+  });
+
   it("is forgotten as Ada signs out", async () => {
     const sidebar = reload("/");
     await sidebar.come({ workspaces, projects, sessions: [recent, [waiting]] });
