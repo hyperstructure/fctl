@@ -29,6 +29,7 @@ import {
   toSave,
 } from "@/lib/project-icons";
 import { keys, queryClient } from "@/lib/queries";
+import { touchDevice } from "@/lib/two-factor";
 import { ColorPopover, OwnSwatch } from "./icon-color";
 import { Glyph, ProjectIcon } from "./project-icon";
 
@@ -115,6 +116,8 @@ function Picker({
   const [focus, setFocus] = useState(0);
   const [pointed, setPointed] = useState<string>();
   const search = useRef<HTMLInputElement>(null);
+  // On a touch screen, a focused search would bring up the keyboard over the icons.
+  const [touch] = useState(touchDevice);
   const grid = useRef<HTMLDivElement>(null);
   const suggested = useMemo(() => suggestIcons(project, 12), [project]);
   const sections: Section[] = useMemo(() => {
@@ -368,7 +371,7 @@ function Picker({
           <Search className="size-4 shrink-0 text-ink-4" />
           <input
             ref={search}
-            autoFocus
+            autoFocus={!touch}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
