@@ -27,4 +27,13 @@ subscription_type?: string, account?: ClaudeAccount,
  * ([`HostHello::claude_token`]) get such sessions, and only for the
  * sessions of the person who registered them.
  */
-on_runners?: boolean, };
+on_runners?: boolean, 
+/**
+ * Its owner keeps their Claude token out of sandboxes
+ * ([`crate::api::Me::claude_stand_in`]): the host gives the agent
+ * [`CLAUDE_STAND_IN`] in its place, and puts the token in as Claude's
+ * requests leave for the Anthropic API
+ * ([`crate::agent::AgentConfig::claude_relay`]). Hosts that don't know
+ * it give the agent the token.
+ */
+stand_in?: boolean, };

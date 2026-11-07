@@ -72,6 +72,10 @@ pub enum Sensitive {
     /// so a stolen session or token could otherwise have their sessions run
     /// where it watches, for good.
     ConnectClaude,
+    /// Giving sandboxes one's Claude token again, after keeping it out of
+    /// them: their agents can then hand it over, so a stolen session or
+    /// token could otherwise have one send it where it waits.
+    GiveClaudeTokenToSandboxes,
     /// Linking a Linear account: what it delegates to fctl or mentions it
     /// in then starts sessions as the person, on their subscription, and
     /// its replies reach their sessions' agents, so a stolen session or
@@ -113,6 +117,7 @@ impl Sensitive {
             DeleteProject => "delete a project",
             NewToken => "make an access token",
             ConnectClaude => "connect a Claude subscription",
+            GiveClaudeTokenToSandboxes => "give sandboxes your Claude token again",
             LinkLinear => "link a Linear account",
             ApproveCli => "approve the CLI",
             RemovePasskey => "remove a passkey",

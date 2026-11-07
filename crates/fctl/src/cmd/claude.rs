@@ -7,7 +7,7 @@ use clap::Subcommand;
 use fctl_domain::usage::{self as plan, Standing};
 use fctl_proto::api::{
     ClaudeCredentialInfo, ClaudeLoginRunner, ClaudeLoginState, CredentialStatus, PlanLimit, Runner,
-    RunnerStatus,
+    RunnerStatus, UpdateMeRequest,
 };
 
 use std::time::Duration;
@@ -37,6 +37,31 @@ pub enum ClaudeCmd {
     },
     /// Show connected subscriptions and how much of each plan's limits is used.
     Status,
+    /// Change how your sessions use your Claude subscription.
+    #[command(
+        after_help = "Examples:\n  fctl claude set --stand-in on\n  fctl claude set --stand-in off"
+    )]
+    Set {
+        /// Keep your Claude token out of sandboxes (experimental): Claude
+        /// gets a stand-in that Anthropic refuses, and the runner puts your
+        /// token in as each of Claude's requests leaves for the Anthropic
+        /// API, so agents can neither read it nor send it anywhere. It
+        /// applies to sessions that start after you change it. Remote
+        /// Control and claude.ai connectors may not work while it's on.
+        /// Turning it off may ask you to confirm it's you.
+        #[arg(long, value_name = "ON|OFF", value_parser = clap::builder::BoolishValueParser::new(), hide_possible_values = true, required = true)]
+        stand_in: Option<bool>,
+    },
+}
+
+/// What `fctl claude status` says of the stand-in, which `fctl claude set
+/// --stand-in` changes.
+fn stand_in_line(on: bool) -> String {
+    if on {
+        "Your token stays out of sandboxes: Claude gets a stand-in, and the runner puts your token in as Claude's requests leave for the Anthropic API (experimental).".into()
+    } else {
+        "Your sessions' sandboxes get your token, where their agents can read it: `fctl claude set --stand-in on` keeps it out (experimental).".into()
+    }
 }
 
 /// What names the connection you keep on your runners, wherever a
@@ -282,6 +307,27 @@ pub async fn run(server: Option<&str>, cmd: ClaudeCmd, json: bool) -> Result<()>
                 }
                 print_usage(&c.usage);
             }
+            if !me.claude.is_empty() {
+                println!();
+                println!("{}", style::dim(&stand_in_line(me.claude_stand_in)));
+            }
+            Ok(())
+        }
+        ClaudeCmd::Set { stand_in } => {
+            let me = api
+                .update_me(&UpdateMeRequest {
+                    claude_stand_in: stand_in,
+                    ..Default::default()
+                })
+                .await?;
+            if json {
+                return style::print_json(&me);
+            }
+            println!(
+                "{} {}",
+                style::accent("✓"),
+                stand_in_line(me.claude_stand_in)
+            );
             Ok(())
         }
         ClaudeCmd::Connect {

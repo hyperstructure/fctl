@@ -245,6 +245,15 @@ pub struct Me {
     /// once a day. Absent where the instance's admins turned Gravatar off
     /// ([`InstanceSettings::gravatar`]).
     pub gravatar: Option<bool>,
+    /// Whether you keep your Claude token out of sandboxes (off unless you
+    /// turn it on: [`UpdateMeRequest::claude_stand_in`]). Claude then gets
+    /// a stand-in that Anthropic refuses
+    /// ([`crate::runner::CLAUDE_STAND_IN`]), and the host of the runner a
+    /// session runs on puts your token in as Claude's requests leave for the
+    /// Anthropic API, so that agents can neither read your token nor send it
+    /// anywhere. It applies to the sessions that start after you change it.
+    #[serde(default)]
+    pub claude_stand_in: bool,
     /// The access token of the request, when it is one. A limited one sees
     /// only `user` and this here: the rest stays empty.
     pub token: Option<TokenInfo>,
@@ -344,6 +353,10 @@ pub struct UpdateMeRequest {
     /// removes the picture if it is your Gravatar. Removing your picture
     /// (`DELETE /api/v1/me/avatar`) turns it off too.
     pub gravatar: Option<bool>,
+    /// `true` keeps your Claude token out of sandboxes (`Me.claude_stand_in`);
+    /// `false` gives it to them again, which takes confirming it's you where
+    /// the instance asks for that.
+    pub claude_stand_in: Option<bool>,
 }
 
 #[skip_serializing_none]

@@ -42,6 +42,9 @@ pub struct UserRow {
     /// When fctl last looked up their Gravatar.
     #[serde(deserialize_with = "opt_int", default)]
     pub gravatar_checked_at: Option<i64>,
+    /// They keep their Claude token out of sandboxes (`Me.claude_stand_in`).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub claude_stand_in: bool,
     pub password_hash: Option<String>,
     pub role: String,
     pub status: String,
@@ -224,6 +227,7 @@ pub fn user_columns(alias: &str) -> String {
         "two_factor_google",
         "gravatar",
         "gravatar_checked_at",
+        "claude_stand_in",
     ]
     .iter()
     .map(|c| format!("{alias}.{c} AS {c}"))

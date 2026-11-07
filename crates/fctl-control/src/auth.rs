@@ -427,6 +427,7 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
         token: None,
         avatar_source: user.picture().source.filter(|_| user.avatar_url.is_some()),
         gravatar: ctx.settings().gravatar.then_some(user.gravatar),
+        claude_stand_in: user.claude_stand_in,
     })
 }
 

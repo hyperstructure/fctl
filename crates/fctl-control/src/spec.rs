@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::crypto::Keys;
-use crate::db::{n, on, q, s};
+use crate::db::{Count, n, on, q, s};
 use crate::error::{AppError, AppResult, internal};
 use crate::github;
 use crate::model::{
@@ -895,6 +895,15 @@ pub async fn claude_credential(
             "The Claude credential is no longer valid. Connect Claude again in Settings.",
         )));
     }
+    // Whether its owner keeps it out of sandboxes, which the host sees to.
+    let stand_in = q(
+        db,
+        "SELECT claude_stand_in AS n FROM users WHERE id = ?",
+        &[s(&row.user_id)],
+    )?
+    .first::<Count>()
+    .await?
+    .is_some_and(|c| c.n > 0);
     if row.on_runners {
         // Its owner keeps the token on their runners: the runner the
         // session runs on, one of theirs, puts its own in.
@@ -914,6 +923,7 @@ pub async fn claude_credential(
             subscription_type: row.subscription_type.clone(),
             account: None,
             on_runners: true,
+            stand_in,
         });
     }
     let aad = CredentialRow::aad(&row.id, &row.user_id);
@@ -942,6 +952,7 @@ pub async fn claude_credential(
         subscription_type: row.subscription_type.clone(),
         account: row.account(),
         on_runners: false,
+        stand_in,
     })
 }
 

@@ -27,6 +27,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
 import { OnRunnersDetails } from "@/components/claude/on-runners";
+import { KeepTokenOut } from "@/components/claude/stand-in";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
 import { AccessTokens } from "@/components/tokens";
@@ -696,6 +697,7 @@ function Claude({ me }: { me: G.Me }) {
             ))}
           </ul>
         )}
+        <KeepTokenOut me={me} />
         <ConnectClaude me={me} way={way} onWay={setWay} />
       </div>
     </Section>
