@@ -57,14 +57,16 @@ import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
+import { exported, exportHint, nextExport } from "@/lib/data-export";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
 import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
-import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
+import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
+import { useTickAt } from "@/lib/tick";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
 import { planOf } from "@/lib/usage";
@@ -109,7 +111,7 @@ export function SettingsPage() {
         <Devices />
         <AccessTokens />
         <Appearance />
-        <YourData />
+        <YourData me={me} />
       </div>
       <AccountDangerZone me={me} />
     </div>
@@ -1461,7 +1463,11 @@ function Appearance() {
   );
 }
 
-function YourData() {
+function YourData({ me }: { me: G.Me }) {
+  useTickAt(me.export?.next_at);
+  const now = Date.now();
+  const waiting = nextExport(me.export, now) !== undefined;
+  const hint = exportHint(me.export, now);
   return (
     <Section
       title="Your data"
@@ -1474,10 +1480,19 @@ function YourData() {
           set up, the sessions you started with their full transcripts, the sessions you follow, and your
           activity log.
         </p>
-        <ExportLink className="inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium text-ink transition-colors hover:border-ink-4">
-          <Download className="size-3.5" />
-          Export your data
-        </ExportLink>
+        <div className="flex flex-col items-start gap-2">
+          <ExportLink
+            waiting={waiting}
+            className={cn(
+              "inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium transition-colors",
+              waiting ? "cursor-not-allowed text-ink-4" : "text-ink hover:border-ink-4",
+            )}
+          >
+            <Download className="size-3.5" />
+            Export your data
+          </ExportLink>
+          {hint && <p className="max-w-xl text-[12.5px] leading-relaxed text-ink-4">{hint}</p>}
+        </div>
       </div>
     </Section>
   );
@@ -1488,26 +1503,42 @@ const EXPORT = "/api/v1/me/export";
 /**
  * Downloads your data. Where sensitive actions ask you to confirm it's you,
  * it asks first: the browser makes the download, so it can't ask itself.
+ * While you wait for your next export (`waiting`), it does nothing.
  */
-function ExportLink({ className, children }: { className: string; children: ReactNode }) {
+function ExportLink({
+  className,
+  children,
+  waiting,
+}: {
+  className: string;
+  children: ReactNode;
+  waiting?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   return (
     <a
-      href={EXPORT}
-      download
+      href={waiting ? undefined : EXPORT}
+      download={waiting ? undefined : true}
+      aria-disabled={waiting || undefined}
       aria-busy={busy || undefined}
       className={className}
       onClick={(e) => {
         e.preventDefault();
-        if (busy) return;
+        if (busy || waiting) return;
         setBusy(true);
-        confirmFirst()
+        // As the instance has it now: the browser would save a refusal as the file.
+        queryClient
+          .fetchQuery({ queryKey: keys.me, queryFn: fetchMe, staleTime: 0 })
+          .then((me) => (me && nextExport(me.export) !== undefined ? false : confirmFirst()))
           .then((confirmed) => {
             if (!confirmed) return;
             const a = document.createElement("a");
             a.href = EXPORT;
             a.download = "";
             a.click();
+            queryClient.setQueryData<G.Me | null>(keys.me, (m) => m && exported(m));
+            // Then as the instance has it: it gives back an export that fails on its side.
+            setTimeout(() => void queryClient.invalidateQueries({ queryKey: keys.me }), 5_000);
           })
           .catch((err: Error) => toast(err.message, "error"))
           .finally(() => setBusy(false));
@@ -1620,11 +1651,17 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
             <li>Repositories on GitHub are not touched.</li>
           </ul>
           <p className="text-[13px] leading-relaxed text-ink-3">
-            Want a copy first?{" "}
-            <ExportLink className="text-ink underline decoration-accent underline-offset-2">
-              Export your data
-            </ExportLink>
-            .
+            {nextExport(me.export) === undefined ? (
+              <>
+                Want a copy first?{" "}
+                <ExportLink className="text-ink underline decoration-accent underline-offset-2">
+                  Export your data
+                </ExportLink>
+                .
+              </>
+            ) : (
+              <>Want a copy first? {exportHint(me.export)}</>
+            )}
           </p>
           <Field
             label={

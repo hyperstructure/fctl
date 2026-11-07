@@ -104,7 +104,9 @@ pub enum AccountCmd {
     /// and two-factor sign-in, devices and tokens, Claude connections
     /// (without secrets), notification settings and browsers, projects, the
     /// sessions you started with their transcripts, the sessions you follow,
-    /// and your activity.
+    /// and your activity. The instance allows one export a week, unless its
+    /// admins chose another wait, and `fctl whoami` says when you can export
+    /// again; one that fails on the instance's side doesn't count.
     Export {
         /// Where to write it (default: fctl-export-<date>.json here; `-` prints it).
         #[arg(short, long)]
@@ -377,7 +379,7 @@ pub async fn run(server: Option<&str>, cmd: AccountCmd, json: bool) -> Result<()
                     .map_or(0, |d| d.as_millis() as i64);
                 PathBuf::from(fctl_domain::account::export_filename(now))
             });
-            std::fs::write(&path, &data)?;
+            write_private(&path, &data)?;
             if json {
                 return style::print_json(&serde_json::json!({
                     "path": path,
@@ -571,4 +573,51 @@ async fn linear(api: &fctl_client::Api, cmd: LinearAccountCmd, json: bool) -> Re
         }
     }
     Ok(())
+}
+
+/// Writes `data` to `path` for its owner alone to read (mode 0600 on
+/// Unix): an export holds the account's addresses, sign-in methods and
+/// sessions' transcripts, which other people on the machine mustn't read.
+fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    // Also a file that was there, with another mode.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(data)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn exports_are_their_owners_alone() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("export.json");
+        std::fs::write(&path, "old")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+        write_private(&path, b"{}")?;
+        assert_eq!(std::fs::read(&path)?, b"{}");
+        assert_eq!(
+            std::fs::metadata(&path)?.permissions().mode() & 0o777,
+            0o600
+        );
+        let new = dir.path().join("new.json");
+        write_private(&new, b"{}")?;
+        assert_eq!(std::fs::metadata(&new)?.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
 }

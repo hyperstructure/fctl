@@ -52,6 +52,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { exportEvery } from "@/lib/data-export";
 import { invitationMail, ordered, requestState } from "@/lib/early-access";
 import {
   ago,
@@ -1723,6 +1724,28 @@ function InstanceSettings() {
           />
         </div>
       </Section>
+      <Section
+        title="Data exports"
+        description="How often people can download everything this instance keeps about them, in Settings or with fctl account export."
+      >
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Each person exports their data
+            <span className="block text-[12.5px] text-ink-4">
+              An export reads all of it, every transcript too. The wait counts from when one starts; one that
+              fails on the instance's side doesn't count.
+            </span>
+          </span>
+          <Select
+            size="sm"
+            aria-label="How often each person exports their data"
+            className="shrink-0"
+            value={s && String(s.export_interval_hours)}
+            options={exportIntervals(s?.export_interval_hours)}
+            onChange={(v) => save.mutate({ export_interval_hours: Number(v) })}
+          />
+        </div>
+      </Section>
       <ReservedSlugs />
     </>
   );
@@ -1839,8 +1862,26 @@ function ReservedSlugs() {
   );
 }
 
+/** The waits between two exports admins choose from, in hours, with the one set now if it isn't one of them. */
+function exportIntervals(current: number | undefined): SelectOption[] {
+  const hours = [0, 1, 24, 168, 720];
+  if (current !== undefined && !hours.includes(current)) hours.push(current);
+  return hours
+    .sort((a, b) => a - b)
+    .map((h) => {
+      const every = exportEvery(h);
+      return {
+        value: String(h),
+        label: every.charAt(0).toUpperCase() + every.slice(1),
+        description: h === 168 ? "The default" : undefined,
+      };
+    });
+}
+
 /** What changed, for the toast. */
 function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest): string {
+  if (b.export_interval_hours !== undefined)
+    return `People can export their data ${exportEvery(s.export_interval_hours)}`;
   if (b.verify_sensitive_actions !== undefined)
     return s.verify_sensitive_actions
       ? "Sensitive actions now ask people to confirm it's them"
@@ -1884,6 +1925,7 @@ function SignInSettings({
     two_factor_google: false,
     verify_sensitive_actions: false,
     gravatar: true,
+    export_interval_hours: 168,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

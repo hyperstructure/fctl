@@ -248,6 +248,23 @@ pub struct Me {
     /// The access token of the request, when it is one. A limited one sees
     /// only `user` and this here: the rest stays empty.
     pub token: Option<TokenInfo>,
+    /// How often you can export your data, and when you can next. Absent
+    /// for limited tokens, and from control planes before it.
+    pub export: Option<DataExport>,
+}
+
+/// Exporting your data (`GET /api/v1/me/export`), which the instance allows
+/// once in each [`InstanceSettings::export_interval_hours`].
+#[skip_serializing_none]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct DataExport {
+    /// The hours between two exports: 0 when there is no wait.
+    pub interval_hours: u32,
+    /// When you last exported your data: when the download started.
+    pub last_at: Option<Millis>,
+    /// When you can export it again; absent when you can now.
+    pub next_at: Option<Millis>,
 }
 
 /// One of your email addresses. Each was invited to the instance on its
@@ -1391,6 +1408,12 @@ pub struct InstanceSettings {
     /// day, and keeps a copy. On by default. Turning it off removes those
     /// copies, and fctl looks nothing up.
     pub gravatar: bool,
+    /// The hours people wait between two exports of their data
+    /// (`GET /api/v1/me/export`), which reads everything they have, every
+    /// transcript too: a week (168) by default, at most a year (8760); 0
+    /// lets them export at any time. An export that fails on the control
+    /// plane's side doesn't count.
+    pub export_interval_hours: u32,
 }
 
 impl Default for InstanceSettings {
@@ -1401,6 +1424,7 @@ impl Default for InstanceSettings {
             two_factor_google: false,
             verify_sensitive_actions: false,
             gravatar: true,
+            export_interval_hours: 168,
         }
     }
 }
@@ -1416,6 +1440,8 @@ pub struct UpdateInstanceSettingsRequest {
     /// Only the primary instance owner changes it.
     pub verify_sensitive_actions: Option<bool>,
     pub gravatar: Option<bool>,
+    /// 0 to 8760.
+    pub export_interval_hours: Option<u32>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -3939,6 +3965,30 @@ pub struct ClaudeLoginJob {
     pub state: ClaudeLoginState,
     pub created_at: Millis,
     pub updated_at: Millis,
+    /// The runner it runs on, once one took it. Absent from older control
+    /// planes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub runner: Option<ClaudeLoginRunner>,
+}
+
+/// The runner a Claude sign-in runs on, whose host sees the login's
+/// long-lived tokens as they pass to fctl: one of the person's own, or,
+/// when none of theirs is online, one of someone else's that runs their
+/// sessions, whose host could keep the tokens, or answer with a Claude
+/// login of its own in their place (docs/security.md).
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ClaudeLoginRunner {
+    pub id: RunnerId,
+    pub name: String,
+    /// One of the person's own runners.
+    #[serde(default)]
+    pub yours: bool,
+    /// Whose it is, when it isn't theirs: the person who registered it, or
+    /// the workspace it enrolled in.
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

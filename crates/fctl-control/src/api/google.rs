@@ -46,6 +46,9 @@ struct Claims {
     nonce: Option<String>,
     email: Option<String>,
     email_verified: Option<bool>,
+    /// The domain of the Google Workspace (or Cloud Identity) account, for
+    /// one: Google hosts its address (`fctl_domain::google`).
+    hd: Option<String>,
     name: Option<String>,
     given_name: Option<String>,
     family_name: Option<String>,
@@ -303,6 +306,14 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     let Some(email) = email.filter(|_| verified) else {
         return fail(ctx, "/login", "google_unverified");
     };
+    // Google vouches for an address only where it hosts it, Gmail's or a
+    // Google Workspace account's: any other a Google account shows was
+    // verified once, when the account was made, and may be someone else's
+    // now (a former employee's, a recycled one). Signing up with one takes
+    // the invitation sent to it, which only its mailbox gets.
+    if !fctl_domain::google::vouches_for(&email, verified, claims.hd.as_deref()) {
+        return fail(ctx, "/login", "google_not_authoritative");
+    }
     if auth::user_by_email(ctx, &email).await?.is_some() {
         // Linking by email silently would let a Google account take over a
         // password account; the owner links it from Settings instead.
@@ -330,30 +341,34 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
     )
     .or_else(|_| fctl_domain::validate::person_name(None, None, Some(&fallback)))
     .or_else(|_| fctl_domain::validate::person_name(None, None, Some("New user")))?;
-    q(
+    // At once, and failing whole: an address another account took since
+    // it was looked up (connecting it, say) makes no second account for it.
+    crate::db::batch(
         &ctx.db,
-        "INSERT INTO users (id, email, name, given_name, family_name, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-        &[
-            s(id.as_str()),
-            s(&email),
-            s(&person.full),
-            os(person.given.as_deref()),
-            os(person.family.as_deref()),
-            s(role),
-            n(ctx.now),
-            n(ctx.now),
+        vec![
+            q(
+                &ctx.db,
+                "INSERT INTO users (id, email, name, given_name, family_name, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+                &[
+                    s(id.as_str()),
+                    s(&email),
+                    s(&person.full),
+                    os(person.given.as_deref()),
+                    os(person.family.as_deref()),
+                    s(role),
+                    n(ctx.now),
+                    n(ctx.now),
+                ],
+            )?,
+            q(
+                &ctx.db,
+                "INSERT INTO user_emails (email, user_id, created_at) VALUES (?, ?, ?)",
+                &[s(&email), s(id.as_str()), n(ctx.now)],
+            )?,
+            identity_insert(ctx, id.as_str(), &claims, Some(&email))?,
         ],
-    )?
-    .run()
+    )
     .await?;
-    q(
-        &ctx.db,
-        "INSERT OR IGNORE INTO user_emails (email, user_id, created_at) VALUES (?, ?, ?)",
-        &[s(&email), s(id.as_str()), n(ctx.now)],
-    )?
-    .run()
-    .await?;
-    insert_identity(ctx, id.as_str(), &claims, Some(&email)).await?;
     let user = auth::user_by_id(ctx, id.as_str())
         .await?
         .ok_or_else(|| not_found("User"))?;
@@ -390,6 +405,17 @@ async fn insert_identity(
     c: &Claims,
     email: Option<&str>,
 ) -> AppResult<()> {
+    identity_insert(ctx, user_id, c, email)?.run().await?;
+    Ok(())
+}
+
+/// The statement that links the Google account of `c` to `user_id`.
+fn identity_insert(
+    ctx: &Ctx,
+    user_id: &str,
+    c: &Claims,
+    email: Option<&str>,
+) -> AppResult<crate::db::Query> {
     q(
         &ctx.db,
         "INSERT INTO identities (id, user_id, provider, subject, email, name, avatar_url, created_at) VALUES (?, ?, 'google', ?, ?, ?, ?, ?)",
@@ -402,10 +428,7 @@ async fn insert_identity(
             os(c.picture.as_deref()),
             n(ctx.now),
         ],
-    )?
-    .run()
-    .await?;
-    Ok(())
+    )
 }
 
 pub async fn unlink(ctx: &mut Ctx, id: &str) -> AppResult<Response> {

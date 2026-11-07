@@ -453,7 +453,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             owner = None;
             repo_name = None;
         } else {
-            let parsed = RepoRef::parse(r).ok_or_else(|| validation("repo", "Use owner/name"))?;
+            let mut parsed =
+                RepoRef::parse(r).ok_or_else(|| validation("repo", "Use owner/name"))?;
             // The project's other repositories share its account.
             let grants = crate::spec::grants(&ctx.db, &row.id).await?;
             fctl_domain::repos::check_primary(&parsed, &grants)?;
@@ -461,7 +462,21 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
                 let gh = github::from_config(&ctx.cfg, ctx.now)?;
                 let connections = ws::connections(&ctx.db, p.workspace_id()).await?;
                 inst = Some(check_repo(ctx, &gh, &connections, &parsed).await?);
-                gh.get_repo(&parsed).await?;
+                let found = gh.get_repo(&parsed).await?;
+                // GitHub answers for a repository by its old name too, once
+                // it was renamed or moved to another account: the one it
+                // names must be the workspace's to use as well, as when a
+                // project is created.
+                fctl_domain::repos::check_scope(
+                    ws::scope(&connections, &found.owner).as_ref(),
+                    &found.owner,
+                    Some(&found.name),
+                )?;
+                parsed = RepoRef {
+                    owner: found.owner,
+                    name: found.name,
+                };
+                fctl_domain::repos::check_primary(&parsed, &grants)?;
             }
             owner = Some(parsed.owner);
             repo_name = Some(parsed.name);

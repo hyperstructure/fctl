@@ -440,8 +440,9 @@ fn encode_path(path: &str) -> String {
 /// Unpacks the parts of a GitHub archive (`.tar.gz`, one directory at the
 /// top) that a build reads, the files under `context`, `dockerfile` and its
 /// `.dockerignore`, into `dest`, as they are in the repository. Only files,
-/// directories and symbolic links; nothing outside `dest`, and nothing
-/// through a link.
+/// directories and symbolic links that lead to a place in the repository
+/// ([`drop_links_out`]); nothing outside `dest`, and nothing through a
+/// link.
 pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> Result<()> {
     let file =
         std::fs::File::open(archive).with_context(|| format!("Opening {}", archive.display()))?;
@@ -485,6 +486,30 @@ pub fn unpack(archive: &Path, dest: &Path, context: &str, dockerfile: &str) -> R
         entry
             .unpack(&out)
             .with_context(|| format!("Unpacking {}", rel.display()))?;
+    }
+    drop_links_out(dest, &root)
+}
+
+/// Removes the symbolic links under `dir` that lead out of `root`, the
+/// repository's directory, or to nothing there. Docker's builders send a
+/// link in a build's context as a link, but a builder that followed one
+/// would read the host's files (its runner token, the Claude token it
+/// keeps, the CLI's credentials) into an image, which anyone who can push
+/// to the repository's default branch could ask for with a link to them.
+fn drop_links_out(dir: &Path, root: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            let inside = std::fs::canonicalize(&path).is_ok_and(|to| to.starts_with(root));
+            if !inside {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("Removing the link {}", path.display()))?;
+            }
+        } else if kind.is_dir() {
+            drop_links_out(&path, root)?;
+        }
     }
     Ok(())
 }
@@ -1109,8 +1134,49 @@ mod tests {
         tar.into_inner()?.finish()?;
         let dest = tmp.path().join("src");
         unpack(&path, &dest, "app", "Dockerfile")?;
-        assert!(std::fs::symlink_metadata(dest.join("app/out"))?.is_symlink());
         assert!(!outside.join("sub").exists());
+        // A link out of the repository goes, so that no builder reads the
+        // host's files through it.
+        assert!(std::fs::symlink_metadata(dest.join("app/out")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_only_links_that_stay_in_the_repository() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let secret = tmp.path().join("host-token");
+        std::fs::write(&secret, "fctl_rt_secret\n")?;
+        let path = tmp.path().join("repo.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            std::fs::File::create(&path)?,
+            flate2::Compression::fast(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        let mut file = tar::Header::new_gnu();
+        file.set_mode(0o644);
+        file.set_size(2);
+        tar.append_data(&mut file, "acme-app-1234567/app/run.sh", &b"x\n"[..])?;
+        for (name, to) in [
+            ("app/same", PathBuf::from("run.sh")),
+            ("app/up", PathBuf::from("../app/run.sh")),
+            ("app/absolute", secret.clone()),
+            ("app/relative", PathBuf::from("../../../host-token")),
+            ("app/nowhere", PathBuf::from("missing")),
+            ("app/through", PathBuf::from("up/../../..")),
+        ] {
+            let mut sym = tar::Header::new_gnu();
+            sym.set_entry_type(tar::EntryType::Symlink);
+            sym.set_size(0);
+            tar.append_link(&mut sym, format!("acme-app-1234567/{name}"), &to)?;
+        }
+        tar.into_inner()?.finish()?;
+        let dest = tmp.path().join("src");
+        unpack(&path, &dest, "app", "Dockerfile")?;
+        let link = |name: &str| std::fs::symlink_metadata(dest.join(name)).is_ok();
+        assert!(link("app/same") && link("app/up"));
+        for gone in ["app/absolute", "app/relative", "app/nowhere", "app/through"] {
+            assert!(!link(gone), "{gone}");
+        }
         Ok(())
     }
 

@@ -175,6 +175,16 @@ pub fn maker_gone(workspace: &str) -> ApiError {
     ))
 }
 
+/// Why a token for everyone's sessions enrolls nothing, whatever its
+/// state: the admin who made it is no longer an active admin of its
+/// workspace (removed, demoted, disabled or deleted), so it no longer
+/// speaks for the workspace, as their invitations no longer do.
+pub fn maker_no_admin(workspace: &str) -> ApiError {
+    ApiError::forbidden(format!(
+        "This enrollment token was made by someone who is no longer an admin of {workspace}: it enrolls no runner. Ask one of its admins for another."
+    ))
+}
+
 /// `2026-11-05`, in UTC: messages from the control plane don't know the
 /// reader's time zone.
 fn day(ms: i64) -> String {
@@ -330,12 +340,12 @@ pub fn parse_minutes(input: &str) -> std::result::Result<Option<u32>, String> {
     let digits = s.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     let unit = s[digits.len()..].trim();
     let n: u64 = digits.trim().parse().map_err(|_| bad())?;
-    let minutes = match unit {
-        "m" | "min" | "mins" | "minute" | "minutes" => n,
-        "h" | "hr" | "hrs" | "hour" | "hours" => n * 60,
-        "d" | "day" | "days" => n * 1440,
-        "w" | "week" | "weeks" => n * 10080,
-        "y" | "year" | "years" => n * 525_600,
+    let per: u64 = match unit {
+        "m" | "min" | "mins" | "minute" | "minutes" => 1,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 60,
+        "d" | "day" | "days" => 1440,
+        "w" | "week" | "weeks" => 10080,
+        "y" | "year" | "years" => 525_600,
         "" => {
             return Err(format!(
                 "{input:?} needs a unit: 5m, 1h, 7d or 1y, for instance"
@@ -343,6 +353,8 @@ pub fn parse_minutes(input: &str) -> std::result::Result<Option<u32>, String> {
         }
         _ => return Err(bad()),
     };
+    // Too long to count, as too long to keep below.
+    let minutes = n.checked_mul(per).ok_or_else(bad)?;
     if minutes == 0 {
         return Err(format!("{input:?} is no time at all"));
     }
@@ -643,6 +655,10 @@ mod tests {
             maker_gone("Acme").message,
             "This enrollment token was made by someone who is no longer a member of Acme, for their own sessions: it enrolls no runner."
         );
+        assert_eq!(
+            maker_no_admin("Acme").message,
+            "This enrollment token was made by someone who is no longer an admin of Acme: it enrolls no runner. Ask one of its admins for another."
+        );
     }
 
     #[test]
@@ -729,6 +745,9 @@ mod tests {
         assert!(parse_minutes("soon").is_err());
         assert!(parse_minutes("3 fortnights").is_err());
         assert!(parse_minutes("99999999y").is_err());
+        // Past what a u64 holds, rather than wrapping round to a short one.
+        assert!(parse_minutes("35096545041305y").is_err());
+        assert!(parse_hours("18446744073709551615h").is_err());
         // Expiries are whole hours.
         assert_eq!(parse_hours("90m"), Ok(Some(2)));
         assert_eq!(parse_hours("90d"), Ok(Some(2160)));

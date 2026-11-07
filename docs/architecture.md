@@ -372,10 +372,11 @@ token can't do them alone
   confirmation itself; resetting someone's two-factor
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
-  everyone's sessions there, registering a new one for a workspace (as
-  `fctl host install` does, which asks in the terminal), replacing the
-  token of one that serves a workspace, making a workspace's enrollment
-  token, and approving a runner that enrolled with one;
+  everyone's sessions there, registering a new one (as `fctl host
+  install` does, which asks in the terminal), replacing a runner's token,
+  making a workspace's enrollment token, and approving a runner that
+  enrolled with one: your own runners, in a workspace or not, run your
+  Claude sign-ins first, with a full login's long-lived tokens;
 - making someone a workspace's admin, or inviting them as one, and
   handing over or giving a workspace's primary admin role;
 - making an access token, approving a CLI's sign-in, and connecting a
@@ -795,7 +796,15 @@ replacing its token closes its control connection and its sessions'
 uplinks. A Claude sign-in runs on one of the person's own runners when one
 is online, else on a runner that runs their sessions in one of their
 workspaces: the first of those whose driver is ready, as its host last
-said (`fctl_domain::schedule::login_runner`). When the host can't make the
+said (`fctl_domain::schedule::login_runner`). The job says which runner
+it is on, whether it is the person's own, and whose it is otherwise
+(`ClaudeLoginJob.runner`, from `claude_login_jobs.runner_id`, which
+FleetDO's answer to `/login/start` fills in at once): another person's
+runner sees the full login's long-lived tokens, and could answer with a
+login of its owner's own Claude account, which fctl can't tell from the
+person's ([Security](security.md#hosts)), so Settings and `fctl claude
+connect --login` say so before the person approves the sign-in, and the
+CLI asks whether to go on. When the host can't make the
 sign-in's sandbox, it probes its driver again (Docker may have stopped
 since it last did), and when that isn't ready it sends a heartbeat that
 says so at once, then fails the sign-in saying why it was
@@ -839,6 +848,12 @@ or as a member's own runners with a token they made for their own sessions
    theirs does. D1 keeps its hash (`enrollment_tokens`). Admins see and
    revoke every token of the workspace, members their own. Revoking it
    stops enrollments and leaves the runners it enrolled, waiting ones too.
+   A token for everyone's sessions enrolls only while the admin who made
+   it is still an active admin of the workspace, as an invitation counts
+   only while the admin who sent it is one: an admin who is removed,
+   demoted or disabled can't come back with a machine of theirs through a
+   token they kept, and autoscaling that used it needs a token from an
+   admin who stays.
 2. **Enrolling.** `fctl host install --enroll fctl_et_…` (or
    `FCTL_ENROLL_TOKEN`), signed in or not, asks what the token enrolls in
    (`GET /api/v1/runner/enroll`) before anything else, so that an expired,
@@ -849,8 +864,9 @@ or as a member's own runners with a token they made for their own sessions
    own, kept in `host-token` as any is: the enrollment token goes no
    further. The statement that inserts the runner checks the token again
    and counts its runners, so that machines that enroll at once can't take
-   more than its limit, and that a token for its maker's own sessions
-   enrolls only while they are an active member of its workspace. Run again
+   more than its limit, that a token for its maker's own sessions
+   enrolls only while they are an active member of its workspace, and one
+   for everyone's only while its maker is an active admin there. Run again
    on a machine whose runner belongs to the same workspace, and to the same
    person or nobody, it keeps that runner. A token the control plane doesn't
    know counts towards the caller's rate limit.
@@ -1619,8 +1635,11 @@ posts what it found on GitHub
    changes and what that affects, and nothing else; bugs, security
    problems, breaks of the repository's rules and bad practices, without
    nitpicks; read rather than run, and run nothing of a pull request
-   whose author can't write to the repository (`trusted`: GitHub's
-   `OWNER`, `MEMBER` and `COLLABORATOR`, and fctl's own app), apps'
+   whose author can't write to the repository (`trusted`: fctl's own app,
+   or an author whose `author_association` is `OWNER`, `MEMBER` or
+   `COLLABORATOR` and whom GitHub then says may write to it, as for
+   follow-ups below, since a member of its organization or a collaborator
+   may only read it: `crate::reviews::author_trusted`), apps'
    included, and of Dependabot's and Renovate's check the lockfiles and
    new versions instead; split a
    large one among subagents; don't take what the pull request says for
@@ -3130,10 +3149,15 @@ every session: the token a session started with, those it got since and
 the one the host keeps become `[Claude token, redacted by fctl]` in every
 frame from the agent (`claude_token::Secrets`), so that neither a
 transcript nor what viewers see live shows one an agent printed or
-repeated. Claude's streamed deltas split what it writes anywhere, so of
-each content block the end that could start a token waits for the next
-delta, and goes out before the block ends if it doesn't
-(`claude_token::StreamRedactor`). The agent has the token in its
+repeated. So does anything shaped like a Claude access token
+(`sk-ant-oat…`, 40 characters or more), and anything shaped like a GitHub
+installation token (`ghs_…`) becomes `[GitHub token, redacted by fctl]`
+(`claude_token::redact_shapes`): a session found running after its host
+restarted started with a token the host no longer knows, which it then
+asks the control plane for. Claude's streamed deltas split what it writes
+anywhere, so of each content block the end that could start a token, or
+be one that goes on, waits for the next delta, and goes out before the
+block ends if it doesn't (`claude_token::StreamRedactor`). The agent has the token in its
 environment all the same, so whoever directs it can still have it send
 the token elsewhere, or write it in a form the redaction doesn't know
 ([Security](security.md#sandboxes)).

@@ -33,9 +33,9 @@ pub mod vm;
 pub mod vsock;
 
 use super::{
-    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, RAN_AS_ROOT_SCRIPT, Running, Sandbox,
+    AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, RAN_AS_ROOT_SCRIPT, Running, SH, Sandbox,
     SandboxInfo, SandboxSpec, attach_as_root, attach_script, ran_as_root, serve_as_root,
-    serve_script,
+    serve_script, system_script,
 };
 use crate::caches::{self, Spot};
 use crate::config::{FirecrackerConfig, HostConfig};
@@ -1349,8 +1349,10 @@ impl FirecrackerDriver {
         }
     }
 
+    /// `script` for the system's shell, by its path ([`SH`]), not the
+    /// first `sh` on the image's PATH, whose user may have put one there.
     fn sh(&self, name: &str, script: &str) -> Exec {
-        self.exec_for(name, vec!["sh".into(), "-c".into(), script.into()])
+        self.exec_for(name, vec![SH.into(), "-c".into(), script.into()])
     }
 
     pub async fn install_agent(&self, sb: &Sandbox, binary: &Path) -> Result<()> {
@@ -1364,11 +1366,11 @@ impl FirecrackerDriver {
         let vm = self.vm(&sb.name)?;
         let exec = Exec {
             argv: vec![
-                "sh".into(),
+                SH.into(),
                 "-c".into(),
-                format!(
+                system_script(&format!(
                     "{AGENT_DIR_SCRIPT} && cat > {AGENT_PATH}.new && chmod 755 {AGENT_PATH}.new && mv -f {AGENT_PATH}.new {AGENT_PATH}"
-                ),
+                )),
             ],
             user: Some("root".into()),
             cwd: Some("/".into()),
@@ -1414,7 +1416,7 @@ impl FirecrackerDriver {
             return Ok(true);
         }
         let said = self
-            .exec(sb, RAN_AS_ROOT_SCRIPT)
+            .exec(sb, &system_script(RAN_AS_ROOT_SCRIPT))
             .await
             .context("asking whether fctl-agent ran as root in the sandbox")?;
         ran_as_root(&said)
@@ -1574,7 +1576,7 @@ impl FirecrackerDriver {
         }
         let firecracker = vm.firecracker_version().await?;
         let sync = Exec {
-            argv: vec!["sync".into()],
+            argv: vec!["/bin/sync".into()],
             user: Some("root".into()),
             cwd: Some("/".into()),
             ..Exec::default()
@@ -1933,7 +1935,8 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].running);
         let exec = d.sh("fctl-ses-01abc", "true");
-        assert_eq!(exec.argv, ["sh", "-c", "true"]);
+        // The system's shell, not the first `sh` on the image's PATH.
+        assert_eq!(exec.argv, ["/bin/sh", "-c", "true"]);
         Ok(())
     }
 

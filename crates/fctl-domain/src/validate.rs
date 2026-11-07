@@ -691,9 +691,31 @@ pub fn push_endpoint(input: &str, local: bool) -> Result<String> {
     Ok(s.to_owned())
 }
 
+/// Top-level domains that name no host on the internet: special-use ones
+/// (RFC 6761, 6762, 7686, 8375) and those networks use for their own
+/// hosts. A control plane outside Cloudflare (`deploy/standalone`) could
+/// reach those of its own network.
+const PRIVATE_TLDS: [&str; 14] = [
+    "local",
+    "localhost",
+    "localdomain",
+    "internal",
+    "intranet",
+    "lan",
+    "home",
+    "corp",
+    "private",
+    "svc",
+    "test",
+    "invalid",
+    "onion",
+    "arpa",
+];
+
 /// A host name on the internet: dot-separated labels of letters, digits and
-/// hyphens, ending in a top-level domain that starts with a letter. That
-/// leaves out IP addresses in every notation (`127.1`, `0x7f.0.0.1`, `[::1]`),
+/// hyphens, ending in a top-level domain that starts with a letter, and
+/// isn't one of a private network ([`PRIVATE_TLDS`]). That leaves out IP
+/// addresses in every notation (`127.1`, `0x7f.0.0.1`, `[::1]`),
 /// `localhost`, and names with a trailing dot.
 fn public_name(host: &str) -> bool {
     let labels: Vec<&str> = host.split('.').collect();
@@ -706,9 +728,10 @@ fn public_name(host: &str) -> bool {
     };
     labels.len() >= 2
         && labels.iter().all(ok)
-        && labels
-            .last()
-            .is_some_and(|tld| tld.starts_with(|c: char| c.is_ascii_alphabetic()))
+        && labels.last().is_some_and(|tld| {
+            tld.starts_with(|c: char| c.is_ascii_alphabetic())
+                && !PRIVATE_TLDS.iter().any(|p| tld.eq_ignore_ascii_case(p))
+        })
         && !host.eq_ignore_ascii_case("localhost")
         && !host.to_ascii_lowercase().ends_with(".localhost")
 }
@@ -824,6 +847,18 @@ mod tests {
         assert!(push_endpoint("https://10.0.0.8/push", false).is_err());
         assert!(push_endpoint("https://[::1]/push", false).is_err());
         assert!(push_endpoint("https://push.localhost/x", false).is_err());
+        // Names a network gives its own hosts: a control plane of one's own
+        // would reach them.
+        for internal in [
+            "https://metadata.google.internal/computeMetadata/v1/",
+            "https://db.corp/x",
+            "https://printer.local/x",
+            "https://router.home.arpa/x",
+            "https://api.default.svc/x",
+            "https://grafana.LAN/x",
+        ] {
+            assert!(push_endpoint(internal, false).is_err(), "{internal}");
+        }
         // IPv4 in other notations, and names that resolve here.
         for host in [
             "127.1",

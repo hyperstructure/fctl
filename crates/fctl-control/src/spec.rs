@@ -153,6 +153,33 @@ pub async fn check_runs(db: &D1Database, runner_id: &str, session_id: &str) -> A
     Ok(())
 }
 
+/// Whether an uplink runner `runner_id` opened to session `session_id`
+/// with the token whose SHA-256 is `token_hash` may stay open: the runner
+/// is enabled, still with that token, and still runs the session
+/// ([`check_runs`]). `Err` only when D1 didn't answer.
+pub async fn uplink_holds(
+    db: &D1Database,
+    runner_id: &str,
+    token_hash: &str,
+    session_id: &str,
+) -> AppResult<bool> {
+    let same: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM runners WHERE id = ? AND token_hash = ? AND enabled = 1",
+        &[s(runner_id), s(token_hash)],
+    )?
+    .first()
+    .await?;
+    if same.is_none_or(|c| c.n == 0) {
+        return Ok(false);
+    }
+    match check_runs(db, runner_id, session_id).await {
+        Ok(()) => Ok(true),
+        Err(e) if e.0.code == ErrorCode::Internal => Err(e),
+        Err(_) => Ok(false),
+    }
+}
+
 /// The error for a session whose Claude connection was removed
 /// ([`check_runs`]).
 fn connection_gone() -> AppError {

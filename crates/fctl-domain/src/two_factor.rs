@@ -195,6 +195,23 @@ pub fn lockout_ms(failures: u32) -> Option<i64> {
     Some((60_000_i64 << over.min(6)).min(MAX_LOCKOUT_MS))
 }
 
+/// [`lockout_ms`] as an SQL expression of `failures` (an SQL expression
+/// itself), `NULL` where sign-ins don't wait: for the statement that counts
+/// an attempt at a code as it starts the wait it brings, before the code
+/// is checked, so that codes sent at once don't all get checked before
+/// any of them makes the others wait.
+pub fn lockout_sql(failures: &str) -> String {
+    let mut sql = format!("CASE WHEN {failures} < {FREE_FAILURES} THEN NULL");
+    let longest = FREE_FAILURES + 6;
+    for f in FREE_FAILURES..longest {
+        let ms = lockout_ms(f).unwrap_or(MAX_LOCKOUT_MS);
+        sql.push_str(&format!(" WHEN {failures} = {f} THEN {ms}"));
+    }
+    let ms = lockout_ms(longest).unwrap_or(MAX_LOCKOUT_MS);
+    sql.push_str(&format!(" ELSE {ms} END"));
+    sql
+}
+
 /// A new recovery code: ten characters without vowels or look-alikes, in
 /// two groups (`KFTWQ-XPDMB`), about 43 bits.
 pub fn new_recovery_code() -> String {
@@ -240,8 +257,9 @@ pub fn normalize_recovery_code(typed: &str) -> Option<String> {
         .then_some(chars)
 }
 
-/// What the database keeps of a recovery code: the SHA-256 of its
-/// normalized form, so it is found however it was typed.
+/// What the database kept of a recovery code before codes were keyed by
+/// the instance's master key: the SHA-256 of its normalized form, so it is
+/// found however it was typed. Such codes still count until used.
 pub fn hash_recovery_code(code: &str) -> Option<String> {
     normalize_recovery_code(code).map(|c| hash_secret(&c))
 }
@@ -410,6 +428,13 @@ mod tests {
         assert_eq!(lockout_ms(11), Some(3_600_000));
         assert_eq!(lockout_ms(500), Some(3_600_000));
         assert_eq!(lockout_ms(u32::MAX), Some(3_600_000));
+        // As SQL, the same waits.
+        assert_eq!(
+            lockout_sql("f"),
+            "CASE WHEN f < 5 THEN NULL WHEN f = 5 THEN 60000 WHEN f = 6 THEN 120000 \
+             WHEN f = 7 THEN 240000 WHEN f = 8 THEN 480000 WHEN f = 9 THEN 960000 \
+             WHEN f = 10 THEN 1920000 ELSE 3600000 END"
+        );
     }
 
     #[test]

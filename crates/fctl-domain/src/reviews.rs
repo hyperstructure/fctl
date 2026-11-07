@@ -155,16 +155,33 @@ pub fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
-/// Whether the review agent may run the pull request's code: its author
-/// may write to the repository, as GitHub says of an owner, a member of
-/// its organization or a collaborator, or it is fctl's own GitHub App
-/// (`app_login`), whose pull requests come from the sessions of the
-/// workspaces that use it. Anyone else's code would run with the review
-/// session's access.
-pub fn trusted(pr: &PullRequest, app_login: Option<&str>) -> bool {
-    let association = pr.association.as_deref().unwrap_or_default();
-    ["OWNER", "MEMBER", "COLLABORATOR"].contains(&association)
-        || by_app(pr.author.as_deref(), app_login)
+/// Whether what GitHub says of `pr`'s author and the repository
+/// (`author_association`) can come with write access: they own it, or are
+/// a member of its organization or a collaborator, either of whom may
+/// also only read it. Only GitHub's answer about their permission on the
+/// repository tells ([`crate::follow_ups::can_write`]), which fctl asks
+/// for these alone.
+pub fn may_write(pr: &PullRequest) -> bool {
+    crate::follow_ups::may_write(pr.association.as_deref())
+}
+
+/// Whether the review agent may run the pull request's code: it is fctl's
+/// own GitHub App's (`app_login`), whose pull requests come from the
+/// sessions of the workspaces that use it, or its author may write to the
+/// repository: they [`may_write`], and GitHub, asked, says they do
+/// (`writes`). A member of its organization or a collaborator who may
+/// only read it is an outsider here: anyone else's code would run with the
+/// review session's access, the operator's Claude token and the read token
+/// for the project's repositories.
+pub fn trusted(pr: &PullRequest, app_login: Option<&str>, writes: bool) -> bool {
+    (may_write(pr) && writes) || by_app(pr.author.as_deref(), app_login)
+}
+
+/// Whether [`trusted`] takes asking GitHub whether `pr`'s author may write
+/// to the repository: they may, as far as their association tells, and it
+/// isn't fctl's own app's pull request.
+pub fn asks_whether_author_writes(pr: &PullRequest, app_login: Option<&str>) -> bool {
+    may_write(pr) && !by_app(pr.author.as_deref(), app_login)
 }
 
 // ───────────────────────────── whose subscription ─────────────────────────────
@@ -386,18 +403,26 @@ pub fn by_bot(pr: &PullRequest, bots: &[String]) -> bool {
 }
 
 /// Whether a delivery about `pr` starts a review by itself in a project
-/// that lets `bots` start them: its author may write to the repository or
-/// is fctl's own app ([`trusted`]), or is one of those apps ([`by_bot`]),
-/// whose code the agent doesn't run all the same. Anyone else's waits
-/// until someone in the project asks for its review.
-pub fn starts_by_itself(pr: &PullRequest, app_login: Option<&str>, bots: &[String]) -> bool {
-    trusted(pr, app_login) || by_bot(pr, bots)
+/// that lets `bots` start them: its author may write to the repository, as
+/// GitHub says (`writes`), or is fctl's own app ([`trusted`]), or is one of
+/// those apps ([`by_bot`]), whose code the agent doesn't run all the same.
+/// Anyone else's waits until someone in the project asks for its review.
+pub fn starts_by_itself(
+    pr: &PullRequest,
+    app_login: Option<&str>,
+    bots: &[String],
+    writes: bool,
+) -> bool {
+    trusted(pr, app_login, writes) || by_bot(pr, bots)
 }
 
 /// Whether a delivery about `pr` could start a review by itself in some
-/// project, before asking which projects let which apps start them.
+/// project, before asking GitHub whether its author may write and which
+/// projects let which apps start them.
 pub fn could_start_by_itself(pr: &PullRequest, app_login: Option<&str>) -> bool {
-    trusted(pr, app_login) || (!pr.fork && pr.author.as_deref().is_some_and(is_bot))
+    may_write(pr)
+        || by_app(pr.author.as_deref(), app_login)
+        || (!pr.fork && pr.author.as_deref().is_some_and(is_bot))
 }
 
 /// The name of the app that updates dependencies whose bot `login` is
@@ -3349,21 +3374,30 @@ mod tests {
         let mut p = pr();
         for a in ["OWNER", "MEMBER", "COLLABORATOR"] {
             p.association = Some(a.into());
-            assert!(trusted(&p, Some("fctl[bot]")), "{a}");
+            // As GitHub says when asked: a member of the organization, or
+            // a collaborator, may only read the repository.
+            assert!(asks_whether_author_writes(&p, Some("fctl[bot]")), "{a}");
+            assert!(trusted(&p, Some("fctl[bot]"), true), "{a}");
+            assert!(!trusted(&p, Some("fctl[bot]"), false), "{a}");
+            assert!(could_start_by_itself(&p, Some("fctl[bot]")), "{a}");
+            assert!(!starts_by_itself(&p, Some("fctl[bot]"), &[], false), "{a}");
         }
         for a in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE"] {
             p.association = Some(a.into());
-            assert!(!trusted(&p, Some("fctl[bot]")), "{a}");
+            // Nobody asks GitHub about them, and nothing it would say counts.
+            assert!(!asks_whether_author_writes(&p, Some("fctl[bot]")), "{a}");
+            assert!(!trusted(&p, Some("fctl[bot]"), true), "{a}");
         }
         // fctl's own agents open pull requests as its app, a contributor.
         p.author = Some("fctl[bot]".into());
-        assert!(trusted(&p, Some("fctl[bot]")));
-        assert!(trusted(&p, Some("FCTL")));
-        assert!(!trusted(&p, Some("other[bot]")));
-        assert!(!trusted(&p, None));
+        assert!(trusted(&p, Some("fctl[bot]"), false));
+        assert!(trusted(&p, Some("FCTL"), false));
+        assert!(!trusted(&p, Some("other[bot]"), false));
+        assert!(!trusted(&p, None, false));
+        assert!(!asks_whether_author_writes(&p, Some("fctl[bot]")));
         // A person named like the app is a person.
         p.author = Some("fctl".into());
-        assert!(!trusted(&p, Some("fctl[bot]")));
+        assert!(!trusted(&p, Some("fctl[bot]"), false));
     }
 
     #[test]
@@ -3378,40 +3412,51 @@ mod tests {
         delivery["pull_request"]["head"]["repo"]["full_name"] = json!("acme/web");
         let (_, mut p) = delivered(&delivery).unwrap_or_else(|| panic!("parsed"));
         assert_eq!(p.author.as_deref(), Some(DEPENDABOT));
-        assert!(by_bot(&p, &bots) && starts_by_itself(&p, app, &bots));
+        assert!(by_bot(&p, &bots) && starts_by_itself(&p, app, &bots, false));
         assert!(could_start_by_itself(&p, app));
         // Its agent runs none of it all the same.
-        assert!(!trusted(&p, app));
+        assert!(!trusted(&p, app, false));
+        assert!(!asks_whether_author_writes(&p, app));
         // Only where the project lets it: by default Dependabot alone.
-        assert!(starts_by_itself(&p, app, &default_bots()));
-        assert!(!starts_by_itself(&p, app, &[]));
-        assert!(!starts_by_itself(&p, app, &["renovate[bot]".to_owned()]));
+        assert!(starts_by_itself(&p, app, &default_bots(), false));
+        assert!(!starts_by_itself(&p, app, &[], false));
+        assert!(!starts_by_itself(
+            &p,
+            app,
+            &["renovate[bot]".to_owned()],
+            false
+        ));
         p.author = Some("Dependabot[bot]".into());
-        assert!(starts_by_itself(&p, None, &bots));
+        assert!(starts_by_itself(&p, None, &bots, false));
         p.author = Some("renovate[bot]".into());
-        assert!(starts_by_itself(&p, app, &bots));
-        assert!(!starts_by_itself(&p, app, &default_bots()));
+        assert!(starts_by_itself(&p, app, &bots, false));
+        assert!(!starts_by_itself(&p, app, &default_bots(), false));
         // A person named like an app is a person, and other apps' wait.
         for author in ["dependabot", "renovate", "dependabot-preview[bot]", "[bot]"] {
             p.author = Some(author.into());
-            assert!(!starts_by_itself(&p, app, &bots), "{author}");
+            assert!(!starts_by_itself(&p, app, &bots, false), "{author}");
         }
         let person = vec!["dependabot".to_owned()];
         p.author = Some("dependabot".into());
         assert!(!by_bot(&p, &person) && !could_start_by_itself(&p, app));
         p.author = None;
-        assert!(!starts_by_itself(&p, app, &bots) && !could_start_by_itself(&p, app));
+        assert!(!starts_by_itself(&p, app, &bots, false) && !could_start_by_itself(&p, app));
         // Apps open their pull requests from the repository's branches.
         p.author = Some(DEPENDABOT.into());
         p.fork = true;
-        assert!(!starts_by_itself(&p, app, &bots) && !could_start_by_itself(&p, app));
-        // The people's and fctl's own still start theirs, wherever.
-        assert!(starts_by_itself(&pr(), app, &[]));
+        assert!(!starts_by_itself(&p, app, &bots, false) && !could_start_by_itself(&p, app));
+        // The people's who may write and fctl's own still start theirs,
+        // wherever; a member who may only read waits.
+        assert!(starts_by_itself(&pr(), app, &[], true));
+        assert!(!starts_by_itself(&pr(), app, &[], false));
         let outsider = PullRequest {
             association: Some("CONTRIBUTOR".into()),
             ..pr()
         };
-        assert!(!starts_by_itself(&outsider, app, &bots) && !could_start_by_itself(&outsider, app));
+        assert!(
+            !starts_by_itself(&outsider, app, &bots, true)
+                && !could_start_by_itself(&outsider, app)
+        );
         // GraphQL names it without `[bot]`.
         let answer = json!({ "data": { "repository": { "nameWithOwner": "acme/web", "pullRequest": {
             "number": 12, "url": "https://github.com/acme/web/pull/12",
@@ -3421,7 +3466,7 @@ mod tests {
             "author": { "login": "dependabot", "__typename": "Bot" }
         } } } });
         let looked = looked_up(&answer).unwrap_or_else(|| panic!("found"));
-        assert!(by_bot(&looked, &bots) && !trusted(&looked, app));
+        assert!(by_bot(&looked, &bots) && !trusted(&looked, app, false));
     }
 
     #[test]
@@ -3763,7 +3808,7 @@ mod tests {
         let pr = looked_up(&answer).unwrap_or_else(|| panic!("found"));
         assert_eq!(pr.author.as_deref(), Some("fctl[bot]"));
         assert!(pr.open && !pr.fork);
-        assert!(trusted(&pr, Some("fctl[bot]")));
+        assert!(trusted(&pr, Some("fctl[bot]"), false));
         assert_eq!(
             looked_up(&json!({ "data": { "repository": { "pullRequest": null } } })),
             None

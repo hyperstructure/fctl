@@ -242,6 +242,12 @@ pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
             two_factor
         }
     );
+    if let Some(next) = me.export.as_ref().and_then(|e| e.next_at) {
+        println!(
+            "You can export your data again {}",
+            fctl_domain::account::until(next, style::now_ms())
+        );
+    }
     if me.claude.is_empty() {
         println!(
             "{}",

@@ -12,8 +12,8 @@
 
 use crate::auth;
 use crate::ctx::Ctx;
-use crate::db::{Count, Val, all_paged, batch, n, q, s};
-use crate::error::{AppResult, conflict, internal, validation};
+use crate::db::{Count, Val, all_paged, batch, n, on, q, s};
+use crate::error::{AppError, AppResult, conflict, internal, validation};
 use crate::http;
 use crate::internal as dobj;
 use crate::model::{PROJECT_SELECT, PROJECT_VISIBLE, UserRow, WORKSPACE_ORDER, workspace_ref};
@@ -23,11 +23,12 @@ use fctl_proto::api::{
     AccountDeletion, DeleteAccountRequest, DeletedProject, Handover, Ok as Done,
 };
 use fctl_proto::session::{InstanceRole, UserRef};
+use fctl_proto::{ApiError, ErrorCode};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
-use worker::{Env, Request, Response};
+use worker::{D1Database, Env, Request, Response};
 
 const ACTIVE: &str = "('queued','provisioning','preparing','running','idle','paused','stopping')";
 
@@ -340,7 +341,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
     statements.push(q(
         db,
         "UPDATE users SET email = ?, name = ?, given_name = NULL, family_name = NULL, preferred_name = NULL, avatar_url = NULL, commit_email = NULL, password_hash = NULL, role = 'member', \
-         status = 'disabled', default_credential_id = NULL, last_login_at = NULL, last_active_at = NULL, two_factor_google = 0, updated_at = ? \
+         status = 'disabled', default_credential_id = NULL, last_login_at = NULL, last_active_at = NULL, exported_at = NULL, two_factor_google = 0, updated_at = ? \
          WHERE id = ? AND (EXISTS (SELECT 1 FROM sessions WHERE created_by = ?) OR EXISTS (SELECT 1 FROM projects WHERE created_by = ?))",
         &[
             s(&acct::tombstone_email(id)),
@@ -464,10 +465,49 @@ struct Seq {
     seq: i64,
 }
 
+/// An export under way, which counts as the person's last one
+/// (`users.exported_at`) unless it fails on our side.
+#[derive(Clone)]
+struct Slot {
+    user_id: String,
+    /// When it started.
+    at: i64,
+    /// Their export before it.
+    before: Option<i64>,
+}
+
+impl Slot {
+    /// Gives the export back: it failed on our side, so it doesn't count.
+    async fn release(&self, db: &D1Database) {
+        let undo = async {
+            q(
+                db,
+                "UPDATE users SET exported_at = ?1 WHERE id = ?2 AND exported_at = ?3",
+                &[on(self.before), s(&self.user_id), n(self.at)],
+            )?
+            .run()
+            .await
+        };
+        if let Err(e) = undo.await {
+            worker::console_error!("export: giving it back: {}", e.0.message);
+        }
+    }
+}
+
+/// Why an export must wait until `next`.
+fn too_soon(hours: u32, next: i64, now: i64) -> AppError {
+    let seconds = u32::try_from((next - now + 999) / 1000).unwrap_or(u32::MAX);
+    AppError(
+        ApiError::new(ErrorCode::RateLimited, acct::export_wait(hours, next, now))
+            .with_retry_after(seconds),
+    )
+}
+
 /// The export, as a stream: the document head, then each session with its
 /// transcript paged out of its Durable Object, so memory stays flat.
 struct Export {
     env: Env,
+    slot: Slot,
     head: Option<String>,
     /// (session id, its object without the closing brace)
     sessions: VecDeque<(String, String)>,
@@ -512,6 +552,9 @@ async fn next_chunk(mut st: Export) -> Option<(worker::Result<Vec<u8>>, Export)>
             Err(e) => {
                 st.sessions.clear();
                 st.done = true;
+                if let Ok(db) = st.env.d1("DB") {
+                    st.slot.release(&db).await;
+                }
                 (Err(worker::Error::RustError(e.0.message)), st)
             }
         });
@@ -541,11 +584,66 @@ fn opened(json: &str) -> AppResult<String> {
         .ok_or_else(|| internal("export: not a JSON object"))
 }
 
-/// `GET /me/export`: a JSON file with the account's personal data.
+/// `GET /me/export`: a JSON file with the account's personal data, once
+/// in each of the instance's `export_interval_hours`: it reads everything
+/// they have, every transcript too.
 pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     let user = ctx.user()?.clone();
+    let hours = ctx.settings().export_interval_hours;
+    // Before they confirm it's them, which would be for nothing.
+    if let Some(next) = acct::next_export_at(user.exported_at, hours, ctx.now) {
+        return Err(too_soon(hours, next, ctx.now));
+    }
     ctx.verified(Sensitive::Export)?;
     ctx.rate_limit(&format!("export:{}", user.id)).await?;
+    // Taken before it reads anything, so that two at once don't both go.
+    let wait_ms = i64::from(hours) * 3_600_000;
+    let taken = q(
+        &ctx.db,
+        "UPDATE users SET exported_at = ?1 WHERE id = ?2 \
+         AND (?3 = 0 OR exported_at IS NULL OR exported_at <= ?1 - ?3)",
+        &[n(ctx.now), s(&user.id), n(wait_ms)],
+    )?
+    .run()
+    .await?;
+    if taken == 0 {
+        return Err(too_soon(hours, ctx.now + wait_ms, ctx.now));
+    }
+    let slot = Slot {
+        user_id: user.id.clone(),
+        at: ctx.now,
+        before: user.exported_at,
+    };
+    let res = match start(ctx, &user, slot.clone())
+        .await
+        .and_then(|export| download(export, ctx.now))
+    {
+        Ok(res) => res,
+        Err(e) => {
+            slot.release(&ctx.db).await;
+            return Err(e);
+        }
+    };
+    ctx.audit("user.exported", Some(&user.id), None);
+    Ok(res)
+}
+
+/// The response that streams `export`, started at `now`.
+fn download(export: Export, now: i64) -> AppResult<Response> {
+    let mut res = Response::from_stream(futures::stream::unfold(export, next_chunk))?;
+    let h = res.headers_mut();
+    h.set("Content-Type", "application/json; charset=utf-8")?;
+    h.set(
+        "Content-Disposition",
+        &format!("attachment; filename=\"{}\"", acct::export_filename(now)),
+    )?;
+    h.set("Cache-Control", "no-store")?;
+    Ok(res)
+}
+
+/// Everything the export reads before its transcripts, and the sessions
+/// whose transcripts follow.
+async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
     let me = || [s(&user.id)];
     // What they made in workspaces is theirs to export while those are
     // open to them, as it is theirs to see: not once they left one, or
@@ -570,7 +668,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     .all::<crate::model::ProjectRow>()
     .await?
     .into_iter()
-    .filter(|r| crate::access::project_role(&user, &settings, None, r).is_some())
+    .filter(|r| crate::access::project_role(user, &settings, None, r).is_some())
     .map(|r| r.id)
     .collect();
     let mine_seen =
@@ -586,7 +684,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     )
     .await?
     .into_iter()
-    .filter(|r| crate::access::session_role(&user, &settings, None, r).is_some())
+    .filter(|r| crate::access::session_role(user, &settings, None, r).is_some())
     .map(|r| r.id)
     .collect();
     let mut doc = Map::new();
@@ -863,7 +961,7 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
     )
     .await?
     .into_iter()
-    .filter(|r| crate::access::session_role(&user, &settings, None, r).is_some())
+    .filter(|r| crate::access::session_role(user, &settings, None, r).is_some())
     .map(|r| r.id)
     .collect();
     let mut queue = VecDeque::new();
@@ -882,29 +980,14 @@ pub async fn export(ctx: &mut Ctx) -> AppResult<Response> {
         "{},\"sessions\":[",
         opened(&serde_json::to_string(&Value::Object(doc))?)?
     );
-    let stream = futures::stream::unfold(
-        Export {
-            env: ctx.env.clone(),
-            head: Some(head),
-            sessions: queue,
-            current: None,
-            first_session: true,
-            first_event: true,
-            done: false,
-        },
-        next_chunk,
-    );
-    let mut res = Response::from_stream(stream)?;
-    let h = res.headers_mut();
-    h.set("Content-Type", "application/json; charset=utf-8")?;
-    h.set(
-        "Content-Disposition",
-        &format!(
-            "attachment; filename=\"{}\"",
-            acct::export_filename(ctx.now)
-        ),
-    )?;
-    h.set("Cache-Control", "no-store")?;
-    ctx.audit("user.exported", Some(&user.id), None);
-    Ok(res)
+    Ok(Export {
+        env: ctx.env.clone(),
+        slot,
+        head: Some(head),
+        sessions: queue,
+        current: None,
+        first_session: true,
+        first_event: true,
+        done: false,
+    })
 }
