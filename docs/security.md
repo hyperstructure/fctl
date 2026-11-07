@@ -390,10 +390,13 @@ its VM, and nothing outside it except through these channels:
   the project's secrets: a full Claude login's token lasts hours, one from
   `claude setup-token` a year. Run sessions on a token from `claude
   setup-token` only where you would trust those people with it. Hosts
-  replace every Claude token they know of with `[Claude token, redacted by
-  fctl]` in what agents send to the control plane, so a token an agent
-  prints by mistake (`printenv`), or repeats in its reply, stays out of the
-  transcript and of what viewers see live; one it is asked to send
+  replace every Claude token they know of, and anything shaped like a
+  Claude access token (`sk-ant-oat…`), with `[Claude token, redacted by
+  fctl]`, and anything shaped like a GitHub installation token (`ghs_…`)
+  with `[GitHub token, redacted by fctl]`, in what agents send to the
+  control plane, so a token an agent prints by mistake (`printenv`), or
+  repeats in its reply, stays out of the transcript and of what viewers
+  see live, also after the host restarted; one it is asked to send
   elsewhere, or to write in another form (spaced out, encoded), doesn't.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),

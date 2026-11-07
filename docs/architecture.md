@@ -3125,10 +3125,15 @@ every session: the token a session started with, those it got since and
 the one the host keeps become `[Claude token, redacted by fctl]` in every
 frame from the agent (`claude_token::Secrets`), so that neither a
 transcript nor what viewers see live shows one an agent printed or
-repeated. Claude's streamed deltas split what it writes anywhere, so of
-each content block the end that could start a token waits for the next
-delta, and goes out before the block ends if it doesn't
-(`claude_token::StreamRedactor`). The agent has the token in its
+repeated. So does anything shaped like a Claude access token
+(`sk-ant-oat…`, 40 characters or more), and anything shaped like a GitHub
+installation token (`ghs_…`) becomes `[GitHub token, redacted by fctl]`
+(`claude_token::redact_shapes`): a session found running after its host
+restarted started with a token the host no longer knows, which it then
+asks the control plane for. Claude's streamed deltas split what it writes
+anywhere, so of each content block the end that could start a token, or
+be one that goes on, waits for the next delta, and goes out before the
+block ends if it doesn't (`claude_token::StreamRedactor`). The agent has the token in its
 environment all the same, so whoever directs it can still have it send
 the token elsewhere, or write it in a form the redaction doesn't know
 ([Security](security.md#sandboxes)).
