@@ -2,6 +2,37 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.32.0 (2026-11-07)
+
+### Features
+
+- **web:** Beer, factory, voting and cooking icons for projects ([#451](https://github.com/hyperstructure/fctl/pull/451))
+- **web:** Hide the tickets link under the project in the sidebar ([#452](https://github.com/hyperstructure/fctl/pull/452))
+- **web:** Choose a color of a project icon's own ([#453](https://github.com/hyperstructure/fctl/pull/453))
+- **web:** Recommend a long-lived token when connecting Claude ([#454](https://github.com/hyperstructure/fctl/pull/454))
+- **web:** Keep the pull requests page's Mine, tab and filter ([#456](https://github.com/hyperstructure/fctl/pull/456))
+- **web:** Drag the folded sidebar out of its rail by its edge ([#459](https://github.com/hyperstructure/fctl/pull/459))
+- **control:** Allow one data export a week, or as admins choose ([#460](https://github.com/hyperstructure/fctl/pull/460))
+- **web:** Fold the sidebar with ⌘B, which European keyboards type ([#461](https://github.com/hyperstructure/fctl/pull/461))
+- Let people keep their Claude token out of sandboxes ([#462](https://github.com/hyperstructure/fctl/pull/462))
+- **web:** List every keyboard shortcut and start sessions from anywhere ([#463](https://github.com/hyperstructure/fctl/pull/463))
+- Let people name their authenticator app ([#466](https://github.com/hyperstructure/fctl/pull/466))
+
+### Fixes
+
+- **web:** Focus a dialog itself as it opens, not its X ([#457](https://github.com/hyperstructure/fctl/pull/457))
+- Leave sessions whose pull requests merged out of Needs you ([#455](https://github.com/hyperstructure/fctl/pull/455))
+- Close the access gaps a security review found ([#458](https://github.com/hyperstructure/fctl/pull/458))
+- **web:** Serve fctl's icon at /favicon.ico instead of the app's page ([#465](https://github.com/hyperstructure/fctl/pull/465))
+
+### Documentation
+
+- Show the web app as it looks now in the README ([#467](https://github.com/hyperstructure/fctl/pull/467))
+
+### Other changes
+
+- **xtask:** Give the demo's projects icons, shoot fctl.sh's tiles ([#464](https://github.com/hyperstructure/fctl/pull/464))
+
 ## 0.31.0 (2026-11-07)
 
 ### Features
