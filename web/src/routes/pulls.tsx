@@ -969,8 +969,9 @@ function useListKeys(list: React.RefObject<HTMLDivElement | null>) {
     next?.focus();
     next?.scrollIntoView({ block: "nearest" });
   };
-  useHotkey("j", () => move(1));
-  useHotkey("k", () => move(-1));
+  // Held down, they go on moving.
+  useHotkey("j", () => move(1), { repeat: true });
+  useHotkey("k", () => move(-1), { repeat: true });
   useHotkey("o", () => {
     const url = focused()?.dataset.github;
     if (url) window.open(url, "_blank", "noopener,noreferrer");

@@ -649,6 +649,8 @@ export function DiffDialog({
     <dialog
       ref={ref}
       aria-labelledby={titleId}
+      // Its keys are first in the keyboard shortcuts sheet (? or ⌘/) opened over it.
+      data-shortcuts="changes"
       onClose={own(onClose)}
       onKeyDown={onKeyDown}
       onMouseDown={(e) => {

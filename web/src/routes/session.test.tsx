@@ -119,6 +119,15 @@ function page() {
   };
 }
 
+/** A key pressed on the page, or in `target`. */
+function press(key: string, mods: KeyboardEventInit = {}, target: Element = document.body) {
+  const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...mods });
+  act(() => {
+    target.dispatchEvent(e);
+  });
+  return e;
+}
+
 /** The dialogs open over the page, by their titles. */
 const open = () =>
   [...document.querySelectorAll("dialog")]
@@ -189,6 +198,105 @@ describe("SessionPage", () => {
     p.hear({ type: "runner_connected", connected: true });
     expect(p.text()).not.toContain("disk");
     expect(p.working()).toBe(true);
+  });
+
+  it("opens the changes at the first file with c, and says when there are none", () => {
+    const p = page();
+    press("c");
+    expect(open()).toEqual([]);
+    expect(document.body.textContent).toContain("No changes yet");
+    p.hear({
+      type: "snapshot",
+      session: session("ses_a", 12, "Fix the flaky login test"),
+      role: "owner",
+      events: [
+        {
+          seq: 1,
+          ts: 0,
+          kind: "git",
+          data: {
+            ahead: 1,
+            behind: 0,
+            uncommitted: 0,
+            pushed: true,
+            files: [
+              { path: "src/login.ts", status: "modified", additions: 3, deletions: 1 },
+              { path: "src/login.test.ts", status: "added", additions: 20, deletions: 0 },
+            ],
+          },
+        },
+      ],
+      has_more_before: false,
+      next_seq: 2,
+      live: [],
+      viewers: [],
+      runner_connected: true,
+    });
+    press("c");
+    expect(open()).toEqual(["Changes"]);
+    expect(document.querySelector("dialog[open] [aria-current=true]")?.textContent).toContain("login.ts");
+    // Its own keys are its own: c there is no shortcut of the page's.
+    press("c", {}, document.querySelector("dialog[open]") ?? document.body);
+    expect(open()).toEqual(["Changes"]);
+  });
+
+  it("shows or hides the details with d: the rail where it fits, else the sheet", () => {
+    page();
+    const rail = () => !!document.querySelector("aside.lg\\:block");
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("64rem"), media: q }));
+    expect(rail()).toBe(true);
+    press("d");
+    expect(rail()).toBe(false);
+    press("d");
+    expect(rail()).toBe(true);
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q }));
+    press("d");
+    expect(open()).toEqual(["Fix the flaky login test"]);
+    // Again in the sheet, it puts the sheet away, as Escape does: the sheet slides away first.
+    const away = (target: Element) => {
+      vi.useFakeTimers();
+      try {
+        press("d", {}, target);
+        act(() => vi.advanceTimersByTime(1000));
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+    away(document.querySelector("dialog.sheet") ?? document.body);
+    expect(open()).toEqual([]);
+    // Also where a click on the sheet's text left the focus on the page's body.
+    press("d");
+    expect(open()).toEqual(["Fix the flaky login test"]);
+    away(document.body);
+    expect(open()).toEqual([]);
+  });
+
+  it("leaves d to another dialog over the page", () => {
+    const p = page();
+    p.click('button[aria-label="Share"]');
+    expect(open()).toEqual(["Share this session"]);
+    const rail = () => !!document.querySelector("aside.lg\\:block");
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("64rem"), media: q }));
+    expect(press("d", {}, document.querySelector("dialog[open]") ?? document.body).defaultPrevented).toBe(
+      false,
+    );
+    // Nor from the page's body, where a click on the dialog's text leaves the focus.
+    expect(press("d").defaultPrevented).toBe(false);
+    expect(rail()).toBe(true);
+    expect(open()).toEqual(["Share this session"]);
+  });
+
+  it("goes to the message box with r, and Escape leaves it for the page's keys", () => {
+    page();
+    const box = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]');
+    expect(box).not.toBeNull();
+    box?.blur();
+    press("r");
+    expect(document.activeElement).toBe(box);
+    // Typed there, r is a letter.
+    expect(press("r", {}, box ?? document.body).defaultPrevented).toBe(false);
+    press("Escape", {}, box ?? document.body);
+    expect(document.activeElement).not.toBe(box);
   });
 
   it("keeps the details sheet open while the page shows the same session", () => {

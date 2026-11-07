@@ -2,10 +2,10 @@
 // at the top; then each workspace with its projects, each with its icon, its sessions at work and
 // those that ended in the last hour; for the project a page is about, its own pull requests too.
 // People drag workspaces and projects into their order, drag the sidebar wider, and fold it into a
-// rail of icons (⌘B).
+// rail of icons (⌘B). G then N goes from one thing that needs you to the next.
 
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   CircleAlert,
@@ -34,7 +34,6 @@ import { api } from "@/lib/api";
 import { useAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { agoShort } from "@/lib/format";
-import { apple } from "@/lib/hotkeys";
 import { type Need, needSays, needsOf } from "@/lib/needs";
 import { iconOf, useSaveIcon } from "@/lib/project-icons";
 import { listPulls, PULLS_QUERY, needOf as pullNeed, stateOf } from "@/lib/pull-list";
@@ -51,6 +50,7 @@ import {
   useWorkspaces,
   useYourSessions,
 } from "@/lib/queries";
+import { useShortcut, withShortcut } from "@/lib/shortcuts";
 import { type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
 import { foldKeys } from "@/lib/sidebar-layout";
 import { type Sortable, useSortable } from "@/lib/sortable";
@@ -75,6 +75,8 @@ import {
 
 export interface SidebarProps {
   onPalette: () => void;
+  /** Keyboard shortcuts, in the person's menu: the sheet that lists them. */
+  onShortcuts?: () => void;
   /** A link or menu item in it opens a page. */
   onNavigate: () => void;
   /** Its close button, which phones show, was pressed. */
@@ -92,10 +94,28 @@ export interface SidebarProps {
 export function Sidebar(props: SidebarProps) {
   const data = useSidebarData(props.path, props.scope);
   useAttention(data.needs.length);
+  useNextNeed(data.needs, data.session);
   return props.folded ? <Rail {...props} data={data} /> : <Tree {...props} data={data} />;
 }
 
 type Data = ReturnType<typeof useSidebarData>;
+
+/**
+ * G then N: the next session that needs you, after the one the page shows, most pressing first, and
+ * round again; with nothing needing you, it says so.
+ */
+function useNextNeed(needs: Need[], session?: string) {
+  const navigate = useNavigate();
+  useShortcut("needs", () => {
+    if (!needs.length) {
+      toast("Nothing needs you");
+      return;
+    }
+    const at = needs.findIndex((n) => n.s.id === session);
+    const next = needs[(at + 1) % needs.length];
+    if (next) void navigate({ to: "/s/$id", params: { id: next.s.id } });
+  });
+}
 
 function useSidebarData(path: string, scope?: string) {
   const { data: me } = useMe();
@@ -212,7 +232,16 @@ const HERE = "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]";
 // The text that says how to move workspaces and projects, for screen readers.
 const ORDER_HELP = "sidebar-order-help";
 
-function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: SidebarProps & { data: Data }) {
+function Tree({
+  onPalette,
+  onShortcuts,
+  onNavigate,
+  onClose,
+  onFold,
+  path,
+  tab,
+  data,
+}: SidebarProps & { data: Data }) {
   const [folded, toggleFold] = useFolded();
   const [needsOpen, setNeedsOpen] = useNeedsOpen();
   // The page lists every pull request, not one project's (whose own link lights up then).
@@ -348,7 +377,7 @@ function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: Sideb
       <div className="flex flex-col gap-0.5 border-t border-line px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <SettingsRows isAdmin={data.isAdmin} asking={data.asking} path={path} onNavigate={onNavigate} />
         <div className="mt-1">
-          <UserMenu me={data.me} instance={data.instance} onNavigate={onNavigate} />
+          <UserMenu me={data.me} instance={data.instance} onNavigate={onNavigate} onShortcuts={onShortcuts} />
         </div>
       </div>
     </div>
@@ -863,7 +892,7 @@ function SubLink({
 }
 
 /** Folded: a rail of the workspaces' avatars and their projects' icons, each lit by its work. */
-function Rail({ onPalette, onNavigate, onFold, path, data }: SidebarProps & { data: Data }) {
+function Rail({ onPalette, onShortcuts, onNavigate, onFold, path, data }: SidebarProps & { data: Data }) {
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex h-14 shrink-0 items-center">
@@ -871,7 +900,7 @@ function Rail({ onPalette, onNavigate, onFold, path, data }: SidebarProps & { da
           <Logo withWord={false} />
         </Link>
       </div>
-      <RailButton label={`Search or jump to… (${apple() ? "⌘" : "Ctrl+"}K)`} onClick={onPalette}>
+      <RailButton label={withShortcut("Search or jump to…", "palette")} onClick={onPalette}>
         <Search className="size-4" />
       </RailButton>
       <RailLink
@@ -972,7 +1001,13 @@ function Rail({ onPalette, onNavigate, onFold, path, data }: SidebarProps & { da
             <PanelLeftOpen className="size-4" />
           </RailButton>
         )}
-        <UserMenu me={data.me} instance={data.instance} onNavigate={onNavigate} compact />
+        <UserMenu
+          me={data.me}
+          instance={data.instance}
+          onNavigate={onNavigate}
+          onShortcuts={onShortcuts}
+          compact
+        />
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
-// Writing to the agent. Enter sends, Shift+Enter breaks the line. Files come
+// Writing to the agent. Enter sends, Shift+Enter breaks the line, Escape leaves
+// the box for the page's keys, and r, on the page, comes back to it. Files come
 // along with the paperclip, a paste, or a drop anywhere on the page.
 
 import { ArrowUp, Square } from "lucide-react";
@@ -7,6 +8,7 @@ import { Spinner, Textarea, TextareaControls, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
+import { useShortcut } from "@/lib/shortcuts";
 import {
   AttachButton,
   DraftTray,
@@ -56,6 +58,7 @@ export function Composer({
     ref.current?.focus();
   }, canSend);
   const ready = !!text.trim() || files.drafts.length > 0;
+  useShortcut("reply", () => ref.current?.focus());
 
   const submit = async () => {
     const t = text.trim();
@@ -80,9 +83,13 @@ export function Composer({
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void submit();
+    } else if (e.key === "Escape") {
+      // Out of the box, the page's keys work again.
+      e.currentTarget.blur();
     }
   };
 

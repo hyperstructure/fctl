@@ -129,9 +129,17 @@ export function AvatarStack({
   );
 }
 
-export function Kbd({ children }: { children: ReactNode }) {
+/** A key, as a keycap: small in hints, larger (`md`) where shortcuts are listed. */
+export function Kbd({ children, size = "sm" }: { children: ReactNode; size?: "sm" | "md" }) {
   return (
-    <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-line-strong bg-raised px-1 font-sans text-[10.5px] font-medium text-ink-3">
+    <kbd
+      className={cn(
+        "inline-flex items-center justify-center rounded border border-line-strong bg-raised font-sans font-medium",
+        size === "sm"
+          ? "h-[18px] min-w-[18px] px-1 text-[10.5px] text-ink-3"
+          : "h-[22px] min-w-[22px] px-1.5 text-[11.5px] text-ink-2 shadow-[inset_0_-1px_0_var(--c-line-strong)]",
+      )}
+    >
       {children}
     </kbd>
   );

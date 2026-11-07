@@ -1,7 +1,9 @@
 // The Agent Floor's task box takes the focus as the page opens, so that a task
 // can be typed right away, and whenever ⌘K's Agent Floor asks for it. Phones and
 // tablets keep their keyboard down until the box is tapped. On a Mac, ⌘← and ⌘→
-// still go back and forward from the box while it is empty.
+// still go back and forward from the box while it is empty. N (New session) goes
+// to the task box the page shows, the Agent Floor's or a project's, and opens one
+// over the page where there is none.
 
 import { type RefObject, useEffect } from "react";
 import { apple } from "./hotkeys";
@@ -17,12 +19,38 @@ export function focusTaskBox() {
   else asked = true;
 }
 
+/** Focuses, and brings into view, the task box the page shows, while it shows one. */
+let focusOnPage: (() => void) | undefined;
+
+/** Focuses the task box the page shows, the Agent Floor's or a project's: whether it shows one. */
+export function focusPageTaskBox(): boolean {
+  focusOnPage?.();
+  return !!focusOnPage;
+}
+
+/** Makes `ref` the task box of the page while `shown`, which `focusPageTaskBox` focuses. */
+export function usePageTaskBox(ref: RefObject<HTMLTextAreaElement | null>, shown: boolean) {
+  useEffect(() => {
+    if (!shown) return;
+    const focus = () => {
+      ref.current?.focus({ preventScroll: true });
+      const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      ref.current?.scrollIntoView?.({ block: "nearest", behavior: still ? "instant" : "smooth" });
+    };
+    focusOnPage = focus;
+    return () => {
+      if (focusOnPage === focus) focusOnPage = undefined;
+    };
+  }, [ref, shown]);
+}
+
 /**
  * Makes `ref` the task box while `shown`: it takes the focus as it shows, unless the
  * keyboard is on the screen or you are typing in another field, and when ⌘K asks. While
  * it is empty, ⌘← and ⌘→ in it go back and forward (`historyKey`).
  */
 export function useTaskBoxFocus(ref: RefObject<HTMLTextAreaElement | null>, shown: boolean) {
+  usePageTaskBox(ref, shown);
   useEffect(() => {
     if (!shown) return;
     const focus = () => ref.current?.focus({ preventScroll: true });
