@@ -79,6 +79,11 @@ struct Saved {
     /// The Firecracker release that saved it: only the same one loads it.
     firecracker: String,
     at_ms: i64,
+    /// Whether the VM ran in Firecracker's jailer, whose chroot has its
+    /// disks and sockets at other paths than the host: it resumes in one
+    /// then, and only then.
+    #[serde(default)]
+    jailed: bool,
 }
 
 /// What a VM's saved state may leave free, at least: below it, the VM stops
@@ -245,9 +250,9 @@ async fn binary_version(firecracker: &Path) -> Result<String> {
         .with_context(|| format!("{} didn't say its version", firecracker.display()))
 }
 
-/// Gives back the disk that the pages of zeros in the file at `path` take,
-/// which most of a VM's saved memory is.
-fn punch_zeros(path: &Path) -> Result<()> {
+/// Gives back the disk that the pages of zeros in the first `len` bytes of
+/// the file at `path` take, which most of a VM's saved memory is.
+fn punch_zeros(path: &Path, len: u64) -> Result<()> {
     use nix::fcntl::{FallocateFlags, fallocate};
     use std::os::unix::fs::FileExt;
     const PAGE: usize = 4096;
@@ -270,8 +275,9 @@ fn punch_zeros(path: &Path) -> Result<()> {
     let mut offset = 0u64;
     // Where the run of zero pages this is in started.
     let mut zeros: Option<u64> = None;
-    loop {
-        let n = file.read_at(&mut buf, offset)?;
+    while offset < len {
+        let want = usize::try_from(len - offset).map_or(buf.len(), |left| left.min(buf.len()));
+        let n = file.read_at(&mut buf[..want], offset)?;
         if n == 0 {
             break;
         }
@@ -1047,11 +1053,9 @@ impl FirecrackerDriver {
             vm.kill().await;
         }
         // A host that keeps no states (`snapshots = false`) resumes none it
-        // kept before, nor does a jailed VM ([`stop`](Self::stop)) one saved
-        // before the host ran as root: they go.
+        // kept before: they go.
         if let Some(saved) = self.record(&spec.name).and_then(|r| r.saved)
             && self.cfg().snapshots
-            && vm.jails.is_none()
             && !self.resized(&vm, spec, log)
         {
             match self.resume_saved(&vm, &spec.name, &saved, log).await {
@@ -1462,15 +1466,13 @@ impl FirecrackerDriver {
     /// Stops the sandbox's VM, saving its state first where the host
     /// keeps them (`snapshots`) and the disk has room for its memory, so
     /// that it resumes where it was. A VM paused while the disk was nearly
-    /// full stops without, as does one in the jailer's chroot, which
-    /// Firecracker would write its state into and which goes as it stops,
-    /// and an image builder, which boots afresh for each build.
+    /// full stops without, as does an image builder, which boots afresh
+    /// for each build.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
         let lock = self.lock(&format!("sandbox {}", sb.name));
         let _held = lock.lock().await;
         let vm = self.vm(&sb.name)?;
         if self.cfg().snapshots
-            && vm.jails.is_none()
             && !crate::driver::is_builder(&sb.name)
             && vm.running()
             && !vm.paused().await
@@ -1529,11 +1531,15 @@ impl FirecrackerDriver {
         let (dir, new) = (vm.dir.join("saved"), vm.dir.join("saved.new"));
         let _ = std::fs::remove_dir_all(&new);
         let _ = std::fs::remove_dir_all(&dir);
+        let jailed = vm.jailed();
         let saved = async {
             vm.snapshot(&new).await?;
             // The memory the VM never touched, or gave back, takes no disk.
+            // No more than the VM's is read: a jailed VM's Firecracker made
+            // the file, and could make it longer.
             let memory = new.join("memory");
-            if let Err(e) = tokio::task::spawn_blocking(move || punch_zeros(&memory)).await? {
+            let len = memory_mb.saturating_mul(1 << 20);
+            if let Err(e) = tokio::task::spawn_blocking(move || punch_zeros(&memory, len)).await? {
                 tracing::warn!("giving back the disk {name}'s memory doesn't use: {e:#}");
             }
             std::fs::rename(&new, &dir)?;
@@ -1543,6 +1549,7 @@ impl FirecrackerDriver {
             record.saved = Some(Saved {
                 firecracker,
                 at_ms: vsock::now_ms(),
+                jailed,
             });
             self.save_record(name, &record)
         }
@@ -1559,12 +1566,22 @@ impl FirecrackerDriver {
     /// stopped, with its programs running on, then links its network and
     /// lets the state go: the VM's disk is past it once the VM runs.
     /// Fails, letting it go too, when the state can't come back: another
-    /// Firecracker saved it, say.
+    /// Firecracker saved it, say, or it was saved in the jailer and the
+    /// host runs VMs without it now, or the other way round.
     async fn resume_saved(&self, vm: &Vm, name: &str, saved: &Saved, log: Log<'_>) -> Result<()> {
         let dir = vm.dir.join("saved");
         let restored = async {
             if !dir.join("vmstate").is_file() || !dir.join("memory").is_file() {
                 bail!("its saved state is incomplete");
+            }
+            match (saved.jailed, vm.jails.is_some()) {
+                (true, false) => bail!(
+                    "it was saved in Firecracker's jailer, which this host doesn't run VMs in now"
+                ),
+                (false, true) => bail!(
+                    "it was saved outside Firecracker's jailer, which this host runs VMs in now"
+                ),
+                _ => {}
             }
             let firecracker = self.firecracker(log).await?;
             let version = binary_version(&firecracker).await?;
@@ -1574,8 +1591,9 @@ impl FirecrackerDriver {
                     saved.firecracker
                 );
             }
+            let jail = self.jail_for(vm, &firecracker)?;
             log(format!("Resuming the sandbox {name} where it stopped"));
-            vm.restore(&dir, &firecracker, name).await
+            vm.restore(&dir, &firecracker, jail.as_ref(), name).await
         }
         .await;
         // Firecracker maps the memory it loaded, which stays while it runs.
@@ -1995,7 +2013,13 @@ mod tests {
         file.write_all_at(b"its stack", (6 << 20) + 17)?;
         file.sync_all()?;
         let before = std::fs::metadata(&memory)?.blocks() * 512;
-        punch_zeros(&memory)?;
+        // Only as much as the VM's memory: the half past it stays.
+        punch_zeros(&memory, 4 << 20)?;
+        let half = std::fs::metadata(&memory)?.blocks() * 512;
+        if before >= 8 << 20 {
+            assert!((4 << 20..before).contains(&half), "{half} bytes");
+        }
+        punch_zeros(&memory, 8 << 20)?;
         let after = std::fs::metadata(&memory)?;
         assert_eq!(after.len(), 8 << 20);
         let mut page = [0u8; 16];
@@ -2031,6 +2055,7 @@ mod tests {
                 saved: Some(Saved {
                     firecracker: firecracker.into(),
                     at_ms: 2,
+                    jailed: vm.jails.is_some(),
                 }),
             },
         )?;
