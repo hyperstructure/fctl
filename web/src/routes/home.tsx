@@ -552,13 +552,13 @@ export function Home() {
                       : "No agents are working. Give one a task above."}
                   </p>
                 ) : (
-                  <div className="border-t border-line">{activeList.map(row)}</div>
+                  <div>{activeList.map(row)}</div>
                 )}
               </section>
               {recentList.length > 0 && (
                 <section>
                   <h2 className="mb-2 text-[13px] font-semibold text-ink">Recently</h2>
-                  <div className="border-t border-line">{recentList.map(row)}</div>
+                  <div>{recentList.map(row)}</div>
                 </section>
               )}
             </>

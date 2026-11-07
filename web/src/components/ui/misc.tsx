@@ -63,10 +63,13 @@ export function Avatar({
   user,
   size = 24,
   ring,
+  title = user.name,
 }: {
   user: Pick<G.UserRef, "id" | "name" | "avatar_url">;
   size?: number;
   ring?: boolean;
+  /** What it says where the pointer rests: the person's name, unless it says more. */
+  title?: string;
 }) {
   const [broken, setBroken] = useState<string>();
   const h = hue(user.id);
@@ -80,7 +83,7 @@ export function Avatar({
       <img
         src={user.avatar_url}
         alt={user.name}
-        title={user.name}
+        title={title}
         className={cn(cls, "object-cover")}
         style={style}
         onError={() => setBroken(user.avatar_url)}
@@ -91,7 +94,7 @@ export function Avatar({
   return (
     <span
       className={cls}
-      title={user.name}
+      title={title}
       style={{ ...style, background: AVATAR_FILLS[h % AVATAR_FILLS.length], color: "#171717" }}
     >
       {initials(user.name)}

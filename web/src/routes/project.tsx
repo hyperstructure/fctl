@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { ArrowRight, Building2, GitBranch, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
+import { Building2, GitBranch, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { IconPicker } from "@/components/project/icon-picker";
@@ -20,7 +20,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "@/components/session/attachments";
-import { PullRequestLinks, ScheduledMark, SessionLink, TicketMark } from "@/components/session/row";
+import { SessionRow } from "@/components/session/row";
 import {
   StartButton,
   StartChoices,
@@ -45,7 +45,6 @@ import {
   Select,
   type SelectOption,
   Skeleton,
-  StatusDot,
   Switch,
   Textarea,
   TextareaControls,
@@ -59,7 +58,7 @@ import { filesFromPaste } from "@/lib/attachments";
 import { cn } from "@/lib/cn";
 import { showHex } from "@/lib/color";
 import { draftId, forgetDraft, loadText } from "@/lib/draft";
-import { ago, agoShort, cpus, memory, stamp } from "@/lib/format";
+import { ago, cpus, memory } from "@/lib/format";
 import { GITHUB_ACCESS } from "@/lib/github-access";
 import {
   type ImageSource,
@@ -85,7 +84,7 @@ import {
   useSessions,
 } from "@/lib/queries";
 import { parseRepo, repoAdditions, repoChoices, repoLabel, repoSummary, repoValue } from "@/lib/repos";
-import { lastMoved, sections } from "@/lib/sessions";
+import { sections } from "@/lib/sessions";
 import { usePageTaskBox } from "@/lib/task-box";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
@@ -425,39 +424,12 @@ function SessionSection({ title, note, children }: { title: string; note?: strin
   );
 }
 
-/**
- * Sessions in their project's list: each one's number, branch and pull requests, who started it and
- * when it last moved.
- */
+/** Sessions in their project's list: each one's number, branch and pull requests. */
 function SessionList({ sessions }: { sessions: G.Session[] }) {
   return (
-    <div className="border-t border-line">
+    <div>
       {sessions.map((s) => (
-        <div
-          key={s.id}
-          className="group relative isolate flex items-center gap-3.5 border-b border-line p-3 transition-colors last:border-b-0 hover:bg-hover/30"
-        >
-          <span className="w-9 shrink-0 text-right font-mono text-[12px] text-ink-4">#{s.number}</span>
-          <StatusDot status={s.status} />
-          <div className="min-w-0 flex-1">
-            <SessionLink s={s} />
-            <div className="mt-0.5 flex gap-2 text-[12px] text-ink-4">
-              <ScheduledMark s={s} />
-              <TicketMark s={s} />
-              {s.branch && <span className="truncate font-mono">{s.branch}</span>}
-              <PullRequestLinks s={s} />
-            </div>
-          </div>
-          <Avatar user={s.created_by} size={20} />
-          <time
-            dateTime={new Date(lastMoved(s)).toISOString()}
-            title={stamp(lastMoved(s))}
-            className="w-10 shrink-0 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
-          >
-            {agoShort(lastMoved(s))}
-          </time>
-          <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all group-hover:opacity-100 max-sm:hidden" />
-        </div>
+        <SessionRow key={s.id} s={s} inProject />
       ))}
     </div>
   );

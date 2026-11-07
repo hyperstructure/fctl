@@ -41,11 +41,12 @@ import {
   Textarea,
   toast,
 } from "@/components/ui";
+import { ROW, ROW_ABOVE, ROW_COVER } from "@/components/ui/list-row";
 import { AppAvatar, someNames, useReviewApp } from "@/components/workspace/review-app";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { agoShort, duration, stamp } from "@/lib/format";
+import { ago, agoShort, duration, stamp } from "@/lib/format";
 import {
   ALIASES,
   chosenModel,
@@ -113,7 +114,7 @@ export function ReviewsTab({ project }: { project: G.Project }) {
               `The next commit pushed to a pull request in ${repoList(a.repos)}${a.drafts ? " starts one" : " that isn't a draft starts one, as does marking a draft ready for review"}. Its check shows on the commit, and its findings on the pull request.`}
           </Empty>
         ) : (
-          <ul className="border-t border-line">
+          <ul>
             {items.map((r) => (
               <ReviewRow key={r.session_id} r={r} />
             ))}
@@ -1005,17 +1006,37 @@ function ReviewRow({ r }: { r: G.Review }) {
   const earlier = earlierFindings(r);
   const ended = look === "superseded" || look === "stopped" || look === "failed";
   return (
-    <li className="group relative isolate flex items-start gap-3.5 border-b border-line px-3 py-3.5 transition-colors hover:bg-hover/30">
+    <li className={cn(ROW, "flex items-start gap-3.5 py-3.5")}>
       <ReviewStateIcon look={look} className="mt-[3px] size-4" />
       <div className="min-w-0 flex-1">
         <Link
           to="/s/$id"
           params={{ id: r.session_id }}
-          className="block truncate text-[14.5px] text-ink outline-none after:absolute after:inset-0 after:z-[1] after:rounded focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-accent"
+          data-cover
+          className={cn(ROW_COVER, "flex min-w-0 items-center gap-3")}
         >
-          {r.title || `Pull request #${r.number}`}
-          {r.draft && <span className="ml-2 align-[1px] text-[11.5px] text-ink-4">Draft</span>}
+          <span className="min-w-0 flex-1 truncate text-[14.5px] leading-[22px] text-ink">
+            {r.title || `Pull request #${r.number}`}
+            {r.draft && <span className="ml-2 align-[1px] text-[11.5px] text-ink-4">Draft</span>}
+          </span>
+          {/* Over the row's cover, so that each says more where the pointer rests; screen readers
+              read the sentence after the link instead. */}
+          <span aria-hidden="true" className={cn(ROW_ABOVE, "flex shrink-0 items-center gap-2.5")}>
+            <time
+              dateTime={new Date(r.created_at).toISOString()}
+              title={`Started ${stamp(r.created_at)}`}
+              className="min-w-8 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
+            >
+              {agoShort(r.created_at)}
+            </time>
+            <span className="flex max-sm:hidden">
+              <Avatar user={r.operator} size={18} title={`On ${r.operator.name}'s Claude subscription`} />
+            </span>
+          </span>
         </Link>
+        <span className="sr-only">
+          Started {ago(r.created_at)}, on {r.operator.name}'s Claude subscription.
+        </span>
         <Meta
           parts={[
             {
@@ -1093,17 +1114,6 @@ function ReviewRow({ r }: { r: G.Review }) {
         )}
         {r.unsent && <p className="mt-1 text-[12.5px] leading-relaxed text-amber">{UNSENT}</p>}
       </div>
-      <span className="mt-0.5 max-sm:hidden" title={`On ${r.operator.name}'s Claude subscription`}>
-        <Avatar user={r.operator} size={20} />
-      </span>
-      <time
-        dateTime={new Date(r.created_at).toISOString()}
-        title={stamp(r.created_at)}
-        className="mt-[3px] w-10 shrink-0 text-right text-[12px] whitespace-nowrap text-ink-4 tabular-nums"
-      >
-        {agoShort(r.created_at)}
-      </time>
-      <ArrowRight className="mt-[5px] size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
     </li>
   );
 }

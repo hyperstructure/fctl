@@ -5,7 +5,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
-  ArrowRight,
   Check,
   Cpu,
   ExternalLink,
@@ -46,6 +45,7 @@ import {
   Switch,
   toast,
 } from "@/components/ui";
+import { ROW, ROW_COVER } from "@/components/ui/list-row";
 import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
 import { LinearTab } from "@/components/workspace/linear";
 import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/review-app";
@@ -313,14 +313,15 @@ function Projects({ w }: { w: G.Workspace }) {
               : "Its admins create its projects, and add you to the ones you work in."}
           </Empty>
         ) : (
-          <ul className="border-t border-line">
+          <ul>
             {mine.map((p) => (
-              <li key={p.id}>
+              <li key={p.id} className={ROW}>
                 <Link
                   to="/p/$slug"
                   params={{ slug: p.slug }}
                   search={{ tab: undefined }}
-                  className="group flex items-center gap-3.5 border-b border-line px-3 py-3.5 transition-colors hover:bg-hover/30"
+                  data-cover
+                  className={cn(ROW_COVER, "flex items-center gap-3.5 py-3.5")}
                 >
                   <span className="relative">
                     <ProjectMark project={p} tile={34} />
@@ -344,22 +345,19 @@ function Projects({ w }: { w: G.Workspace }) {
                   <span className="shrink-0 text-[12px] text-ink-4 tabular-nums">
                     {agoShort(p.last_activity_at ?? p.created_at)}
                   </span>
-                  <ArrowRight className="size-3.5 shrink-0 text-ink-4 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 max-sm:hidden" />
                 </Link>
               </li>
             ))}
           </ul>
         )}
         {mine.length > 0 && hidden > 0 && (
-          <p className="mt-3 px-3 text-[12.5px] text-ink-4">
-            And {closed}: its admins add people to projects.
-          </p>
+          <p className="mt-3 text-[12.5px] text-ink-4">And {closed}: its admins add people to projects.</p>
         )}
       </section>
       {(sessions.data?.sessions.length ?? 0) > 0 && (
         <section>
           <h2 className="mb-2 text-[13px] font-semibold text-ink">Recently</h2>
-          <div className="border-t border-line">
+          <div>
             {sessions.data?.sessions.map((s) => (
               <SessionRow key={s.id} s={s} />
             ))}
