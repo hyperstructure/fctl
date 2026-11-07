@@ -483,7 +483,7 @@ describe("the project a page is about", () => {
     expect(pulls).toHaveLength(2);
     expect(pulls[0]?.getAttribute("aria-current")).toBeNull();
     expect(links(sidebar.container)).toEqual(["Pull requests"]);
-    expect(sidebar.container.textContent).toContain("Tickets");
+    expect(sidebar.container.textContent).not.toContain("Tickets");
   });
 
   it("lights the pull requests at the top when the page lists every one", async () => {
@@ -498,7 +498,6 @@ describe("the project a page is about", () => {
     const old = session(40, "Last month's", "stopped", "prj_api", { ended_at: NOW - 30 * 24 * HOUR });
     const sidebar = reload(`/s/${old.id}`);
     await sidebar.come({ workspaces, projects, session: old });
-    expect(sidebar.container.textContent).toContain("Tickets");
     const open = [...sidebar.container.querySelectorAll('a[href="/pulls"]')];
     expect(open).toHaveLength(2);
   });

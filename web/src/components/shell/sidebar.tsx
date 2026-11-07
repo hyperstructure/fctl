@@ -1,8 +1,8 @@
 // The sidebar, as a tree: the Agent Floor, what needs you and the pull requests ready for review
 // at the top; then each workspace with its projects, each with its icon, its sessions at work and
-// those that ended in the last hour; for the project a page is about, its own pull requests and
-// tickets too. People drag workspaces and projects into their order, drag the sidebar wider, and fold
-// it into a rail of icons (⌘\).
+// those that ended in the last hour; for the project a page is about, its own pull requests too.
+// People drag workspaces and projects into their order, drag the sidebar wider, and fold it into a
+// rail of icons (⌘\).
 
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -12,7 +12,6 @@ import {
   CirclePause,
   FolderPlus,
   Inbox,
-  ListTodo,
   Lock,
   MessageCircleQuestion,
   MessageSquareReply,
@@ -672,8 +671,8 @@ function WorkspaceGroup({
 
 /**
  * A project, which people drag by its row (its sessions move with it): its icon, its name and its
- * sessions at work. The one the page is about opens into its own links, its pull requests and its
- * tickets, above its sessions. Its maintainers change its icon from the row.
+ * sessions at work. The one the page is about opens into its own links, its pull requests, above its
+ * sessions. Its maintainers change its icon from the row.
  */
 function ProjectRow({
   project: p,
@@ -764,14 +763,6 @@ function ProjectRow({
                 icon={<PullRequestIcon state="open" className="size-3.5" />}
                 label="Pull requests"
                 n={pulls}
-                onNavigate={onNavigate}
-              />
-              <SubLink
-                to={`/p/${p.slug}`}
-                search={{ tab: "tickets" }}
-                active={page && tab === "tickets"}
-                icon={<ListTodo className="size-3.5" />}
-                label="Tickets"
                 onNavigate={onNavigate}
               />
               {sessions.length > 0 && <div className="mx-2 my-1 h-px bg-line" />}
