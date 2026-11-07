@@ -61,6 +61,11 @@ describe("a project's icon", () => {
     expect(tile.style.getPropertyValue("--pi-ink-light")).toBe("#787700");
     expect(tile.style.color).toBe("var(--pi-ink)");
     expect(tile.style.background).toBe("var(--pi-soft)");
+    expect(tile.style.boxShadow).toBe("");
+    // A white one's tile is a faint gray, whose square a hairline keeps, as ink's does.
+    const white = render(<ProjectIcon icon={{ ...icon, hex: "#ffffff" }} tile={24} />)
+      .firstElementChild as HTMLElement;
+    expect(white.style.boxShadow).toBe("inset 0 0 0 1px var(--c-line)");
     // Alone, the glyph carries them itself; muted, it's in the faint ink.
     const glyph = render(<ProjectIcon icon={icon} size={16} />).querySelector("svg");
     expect(glyph?.classList).toContain("pi-own");

@@ -181,6 +181,14 @@ describe("a color of the icon's own", () => {
     expect(p.popover()?.dataset.state).toBe("closed");
     expect(p.radio("Custom color")?.getAttribute("aria-label")).toBe("Custom color: magenta, #FF00AA");
     expect(p.onClose).not.toHaveBeenCalled();
+    // A press on its padding gives the popover itself the focus, so that Escape still closes it alone.
+    act(() => p.radio("Custom color")?.click());
+    expect(p.popover()?.tabIndex).toBe(-1);
+    act(() => p.popover()?.focus());
+    expect(document.activeElement).toBe(p.popover());
+    p.key(p.popover(), "Escape");
+    expect(p.popover()?.dataset.state).toBe("closed");
+    expect(p.onClose).not.toHaveBeenCalled();
   });
 
   it("goes back to the color it had when a hex isn't one", () => {

@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   colorName,
   contrast,
+  distance,
+  grayish,
   hexToHsv,
   hsvToHex,
   hueOf,
+  over,
   parseHex,
   READABLE,
   readableOn,
+  rgbToHex,
+  SEEN,
   shades,
   THEME_BACKGROUNDS,
 } from "./color";
@@ -71,6 +76,29 @@ describe("colors of one's own", () => {
     // A pale color's fill is a little stronger on light, where it would hardly show.
     const pale = shades("#ffff5d").light.soft;
     expect(Number(pale.match(/\/ ([\d.]+)\)/)?.[1])).toBeGreaterThan(0.25);
+  });
+
+  it("gives every color a tile fill that shows on the light theme, the palest too", () => {
+    const bg = THEME_BACKGROUNDS.light;
+    const fill = (soft: string) => {
+      const [r, g, b, a] = (soft.match(/[\d.]+/g) ?? []).map(Number);
+      return over(rgbToHex({ r: r ?? 0, g: g ?? 0, b: b ?? 0 }), a ?? 0, bg);
+    };
+    for (const hex of [
+      "#ffffff",
+      "#fffdf5",
+      "#f4f1ec",
+      "#fafafa",
+      "#ffff5d",
+      "#f4c2c2",
+      "#2a9d8f",
+      "#000080",
+    ])
+      expect(distance(fill(shades(hex).light.soft), bg), hex).toBeGreaterThanOrEqual(SEEN);
+    // Too near white to show as it is, white's fill is its shade's, a faint gray as ink's is.
+    expect(shades("#ffffff").light.soft).toBe("rgb(115 115 115 / 0.1)");
+    expect(grayish("#ffffff")).toBe(true);
+    expect(grayish("#2a9d8f")).toBe(false);
   });
 
   it("names colors plainly", () => {

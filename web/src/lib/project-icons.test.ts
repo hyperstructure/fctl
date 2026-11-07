@@ -237,9 +237,21 @@ describe("project icons", () => {
   });
 
   it("paints a workspace color with its tokens, and a color of its own in each theme's shade", () => {
-    expect(iconPaint({ color: "pink" })).toEqual({ ink: "var(--p-pink)", soft: "var(--c-pink-soft)" });
+    expect(iconPaint({ color: "pink" })).toEqual({
+      ink: "var(--p-pink)",
+      soft: "var(--c-pink-soft)",
+      hairline: false,
+    });
+    // Gray tiles keep their square with a hairline, ink's and a gray of one's own.
+    expect(iconPaint({ color: "ink" }).hairline).toBe(true);
+    expect(iconPaint({ color: "ink", hex: "#ffffff" }).hairline).toBe(true);
     const own = iconPaint({ color: "ink", hex: "#ffff5d" });
-    expect(own).toMatchObject({ ink: "var(--pi-ink)", soft: "var(--pi-soft)", className: "pi-own" });
+    expect(own).toMatchObject({
+      ink: "var(--pi-ink)",
+      soft: "var(--pi-soft)",
+      className: "pi-own",
+      hairline: false,
+    });
     // Bright on dark as it is; on light, darker, as the workspace yellow is there.
     expect(own.style).toMatchObject({ "--pi-ink-dark": "#ffff5d", "--pi-ink-light": "#787700" });
   });

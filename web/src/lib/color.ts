@@ -101,6 +101,11 @@ function toOklch({ r, g, b }: Rgb): Lch {
   return { l: L, c: Math.hypot(a, bb), h: Math.atan2(bb, a) };
 }
 
+/** Whether a hex color has hardly any hue: a gray, near enough, whose tile needs an edge as ink's does. */
+export function grayish(hex: string): boolean {
+  return toOklch(hexToRgb(hex)).c < 0.04;
+}
+
 /** A hex color's perceived hue (OKLCH's), in degrees. */
 export function hueOf(hex: string): number {
   const h = (toOklch(hexToRgb(hex)).h * 180) / Math.PI;
@@ -186,12 +191,24 @@ export interface Shade {
   soft: string;
 }
 
+/** How far a tile's fill must look from the background to show: about as far as the ink tile's does. */
+export const SEEN = 0.025;
+
+/** `hex` at `alpha` over `bg`, as one color. */
+export function over(hex: string, alpha: number, bg: string): string {
+  const [f, b] = [hexToRgb(hex), hexToRgb(bg)];
+  const mix = (x: number, y: number) => x * alpha + y * (1 - alpha);
+  return rgbToHex({ r: mix(f.r, b.r), g: mix(f.g, b.g), b: mix(f.b, b.b) });
+}
+
 const cache = new Map<string, Record<Theme, Shade>>();
 
 /**
  * A color of one's own in each theme. The tile's fill is the color itself, faint, as the
  * workspace colors' are: on dark, the shade that reads, so that a dark color still shows; on
- * light, the color as chosen, a little stronger the paler it is, as the lime is there.
+ * light, the color as chosen, a little stronger the paler it is, as the lime is there, unless
+ * it's too near white to show at all (white itself, a cream): then the shade that reads, as the
+ * ink tile's fill is a faint gray.
  */
 export function shades(hex: string): Record<Theme, Shade> {
   const color = parseHex(hex) ?? "#000000";
@@ -200,9 +217,12 @@ export function shades(hex: string): Record<Theme, Shade> {
   const dark = readableOn(color, THEME_BACKGROUNDS.dark);
   const light = readableOn(color, THEME_BACKGROUNDS.light);
   const pale = Math.max(0, toOklch(hexToRgb(color)).l - 0.6) / 0.4;
+  const alpha = 0.1 + 0.25 * pale;
+  const bg = THEME_BACKGROUNDS.light;
+  const shows = distance(over(color, alpha, bg), bg) >= SEEN;
   const out = {
     dark: { ink: dark, soft: withAlpha(dark, 0.15) },
-    light: { ink: light, soft: withAlpha(color, 0.1 + 0.25 * pale) },
+    light: { ink: light, soft: shows ? withAlpha(color, alpha) : withAlpha(light, 0.1) },
   };
   if (cache.size > 500) cache.clear();
   cache.set(color, out);

@@ -6,7 +6,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { CSSProperties } from "react";
 import type * as G from "@/gen";
 import { api } from "./api";
-import { parseHex, shades } from "./color";
+import { grayish, parseHex, shades } from "./color";
 import { ICONS, type IconDef } from "./project-icon-data";
 import { keys, queryClient } from "./queries";
 
@@ -49,18 +49,22 @@ export const BRAND_HEX: Record<G.WorkspaceColor, string> = {
 export function iconPaint(icon: Pick<IconChoice, "color" | "hex">): {
   ink: string;
   soft: string;
+  /** Whether a tile needs a hairline to keep its square: its fill is a faint gray, as ink's is. */
+  hairline: boolean;
   className?: string;
   style?: CSSProperties;
 } {
   const hex = icon.hex && parseHex(icon.hex);
   if (!hex) {
-    const c = ICON_COLORS[knownColor(icon.color)];
-    return { ink: c.ink, soft: c.soft };
+    const color = knownColor(icon.color);
+    const c = ICON_COLORS[color];
+    return { ink: c.ink, soft: c.soft, hairline: color === "ink" };
   }
   const { dark, light } = shades(hex);
   return {
     ink: "var(--pi-ink)",
     soft: "var(--pi-soft)",
+    hairline: grayish(hex),
     className: "pi-own",
     style: {
       "--pi-ink-dark": dark.ink,

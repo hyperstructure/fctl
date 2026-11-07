@@ -227,6 +227,9 @@ export function ColorPopover({
       role="dialog"
       aria-label="Custom color"
       popover="manual"
+      // A press on what can't take the focus gives it to the popover rather than the page, so
+      // that Escape still comes here and closes it, not the picker.
+      tabIndex={-1}
       data-state={open ? "open" : "closed"}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -244,7 +247,7 @@ export function ColorPopover({
         if (e.target === e.currentTarget && !open) setMounted(false);
       }}
       className={cn(
-        "fixed inset-auto m-0 w-[248px] overflow-y-auto overscroll-contain p-3 text-ink pointer-coarse:w-[272px]",
+        "fixed inset-auto m-0 w-[248px] overflow-y-auto overscroll-contain p-3 text-ink outline-none pointer-coarse:w-[272px]",
         "rounded-xl border border-line-strong bg-raised/95 backdrop-blur-xl",
         "shadow-[0_18px_50px_-12px_rgb(0_0_0/0.5),0_2px_8px_-2px_rgb(0_0_0/0.18)]",
         "data-[state=closed]:pointer-events-none data-[state=closed]:animate-listbox-out data-[state=open]:animate-listbox-in",

@@ -101,8 +101,8 @@ export function ProjectIcon({
         borderRadius: Math.max(5, Math.round(tile * 0.28)),
         background: paint.soft,
         color: paint.ink,
-        // A hairline keeps the ink tile's square on both themes.
-        boxShadow: icon.color === "ink" && !icon.hex ? "inset 0 0 0 1px var(--c-line)" : undefined,
+        // A hairline keeps a gray tile's square, ink's or one of its own, on both themes.
+        boxShadow: paint.hairline ? "inset 0 0 0 1px var(--c-line)" : undefined,
       }}
     >
       <Glyph name={icon.name} style={icon.style} size={Math.round(tile * 0.6)} />
