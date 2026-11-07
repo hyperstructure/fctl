@@ -80,13 +80,29 @@ describe("what needs you", () => {
     });
     const open = session({ ...idle, pull_requests: [pr(9, { state: "merged" }), pr(10)] });
     const none = session(idle);
-    expect(
-      needsOf("usr_noor", [merged, closed, draft, unknown, open, none], NOW).map((x) => [x.s.id, x.kind]),
-    ).toEqual([
+    const needs = needsOf("usr_noor", [merged, closed, draft, unknown, open, none], NOW);
+    expect(needs.map((x) => [x.s.id, x.kind])).toEqual([
       [open.id, "ready"],
       [draft.id, "waiting"],
       [unknown.id, "waiting"],
       [none.id, "waiting"],
+    ]);
+  });
+
+  it("waits for a reply to a message sent after its pull requests merged", () => {
+    const idle = { status: "idle", status_reason: "Waiting for a message" } as const;
+    const at = NOW - 3_600_000;
+    const landed = [
+      pr(1, { state: "merged", state_changed_at: at - 60_000 }),
+      pr(2, { state: "closed", state_changed_at: at }),
+    ];
+    const before = session({ ...idle, pull_requests: landed, messaged_at: at - 1 });
+    const after = session({ ...idle, pull_requests: landed, messaged_at: at + 1 });
+    // A pull request merged at a time nobody knows: a message may have come after it.
+    const untimed = session({ ...idle, pull_requests: [pr(3, { state: "merged" })], messaged_at: at });
+    expect(needsOf("usr_noor", [before, after, untimed], NOW).map((x) => [x.s.id, x.kind])).toEqual([
+      [after.id, "waiting"],
+      [untimed.id, "waiting"],
     ]);
   });
 

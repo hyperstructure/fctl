@@ -93,7 +93,7 @@ It answers with the session, `queued`. A session is:
 | `id`, `number`, `project_id`, `project_slug`, `workspace` | who it is: `my-app#12` is `project_slug#number` |
 | `title`, `description` | what it works on, as its agent or people say |
 | `status`, `status_reason`, `resume_at` | `queued`, `provisioning`, `preparing`, `running`, `idle`, `paused`, `stopping`, `stopped` or `failed`, and why |
-| `created_by`, `created_at`, `started_at`, `ended_at`, `last_activity_at`, `updated_at` | who and when |
+| `created_by`, `created_at`, `started_at`, `ended_at`, `last_activity_at`, `messaged_at`, `updated_at` | who and when (`messaged_at`: when a person last sent it a message) |
 | `branch`, `base_branch` | its branch and where it started from |
 | `pull_requests` | every pull request its agent opened or found: `url`, `number`, `repo`, `title`, `state` (`open`, `draft`, `queued`, `merged`, `closed`), `checks` (`passed`, `failed`, `pending`, and `review`: fctl's review of the newest commit, which the counts leave out, with its `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), `waiting` for a runner, `findings`, `still_open` from earlier reviews, `session_id`, its summary's `url` and the `project_id` whose review agents reviewed it, where `POST /api/v1/projects/{id}/reviews` reviews it again; and `held_after` where fctl held its findings back from this session's agent, which got those of that many reviews in a row with no message from a person; and `unsent` where its findings went to no session, as no session listed the pull request when it posted) |
 | `model`, `effort`, `github_access`, `github_issues` | what it runs with |
