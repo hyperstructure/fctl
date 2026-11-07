@@ -10,8 +10,8 @@ use fctl_proto::runner::{ClaudeAccount, ClaudeCredentialKind, HostHello};
 use fctl_proto::session::{
     GithubAccess, InstanceRole, Project, ProjectRole, ProjectSettings, PullRequestRef,
     RemoteControlState, RepoAccess, RepoGrant, RepoRef, RunnerRef, Session, SessionReview,
-    SessionRole, SessionSchedule, SessionStats, SessionStatus, UserRef, WorkspaceColor,
-    WorkspaceRef, WorkspaceRole,
+    SessionRole, SessionSchedule, SessionStats, SessionStatus, UserRef, WorkspaceRef,
+    WorkspaceRole,
 };
 use fctl_proto::{
     AllowId, CredentialId, IdentityId, ProjectId, RunnerId, ScheduleId, SessionId, UserId,
@@ -374,6 +374,8 @@ pub fn avatar_url(id: &str, updated_at: Option<i64>) -> Option<String> {
     updated_at.map(|v| format!("/api/v1/workspaces/{id}/avatar?v={v}"))
 }
 
+/// `color`: as the workspace's `color` column keeps it, a workspace color's
+/// name or a color of its own (`fctl_domain::workspace::color`).
 pub fn workspace_ref(
     id: &str,
     slug: &str,
@@ -381,11 +383,13 @@ pub fn workspace_ref(
     color: Option<&str>,
     avatar_at: Option<i64>,
 ) -> WorkspaceRef {
+    let (color, hex) = fctl_domain::workspace::color(color);
     WorkspaceRef {
         id: WorkspaceId(id.to_owned()),
         slug: slug.to_owned(),
         name: name.to_owned(),
-        color: color.and_then(WorkspaceColor::parse).unwrap_or_default(),
+        color,
+        hex,
         avatar_url: avatar_url(id, avatar_at),
     }
 }

@@ -325,9 +325,15 @@ pub fn project_icon(icon: &ProjectIcon) -> Result<Option<ProjectIcon>> {
     }))
 }
 
-/// An icon's color of its own, as `#rrggbb` in lowercase: six hex digits,
-/// or three for `#rgb`, with or without the `#`. Empty: none.
+/// An icon's color of its own, as `#rrggbb` in lowercase ([`own_color`]).
 pub fn icon_hex(input: &str) -> Result<Option<String>> {
+    own_color("icon", input)
+}
+
+/// A color of one's own (a project icon's, a workspace's), as `#rrggbb` in
+/// lowercase: six hex digits, or three for `#rgb`, with or without the `#`.
+/// Empty: none.
+pub fn own_color(field: &str, input: &str) -> Result<Option<String>> {
     let s = input.trim();
     let digits = s.strip_prefix('#').unwrap_or(s);
     if digits.is_empty() {
@@ -335,7 +341,7 @@ pub fn icon_hex(input: &str) -> Result<Option<String>> {
     }
     if !digits.bytes().all(|b| b.is_ascii_hexdigit()) || !matches!(digits.len(), 3 | 6) {
         return Err(ApiError::validation(
-            "icon",
+            field,
             "Use a color as #rrggbb, like #ff8800",
         ));
     }

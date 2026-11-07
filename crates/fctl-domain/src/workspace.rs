@@ -7,7 +7,7 @@ use crate::naming;
 use crate::validate::{self, Result};
 use fctl_proto::ApiError;
 use fctl_proto::api::{BaseRole, InstanceSettings};
-use fctl_proto::session::{InstanceRole, ProjectRole, WorkspaceRole};
+use fctl_proto::session::{InstanceRole, ProjectRole, WorkspaceColor, WorkspaceRole};
 
 /// The most workspaces one person can be a member of, but the primary
 /// instance owner ([`workspace_limit`]).
@@ -202,6 +202,40 @@ pub fn slug_from_name(name: &str) -> String {
     }
 }
 
+/// A workspace's color as its `color` column keeps it: a workspace color by
+/// name, or one of its own as `#rrggbb`, which comes with the workspace
+/// color nearest it for apps before colors of their own. Anything else
+/// reads as yellow, the default.
+pub fn color(stored: Option<&str>) -> (WorkspaceColor, Option<String>) {
+    let Some(s) = stored else {
+        return (WorkspaceColor::default(), None);
+    };
+    if let Some(c) = WorkspaceColor::parse(s) {
+        return (c, None);
+    }
+    match s
+        .starts_with('#')
+        .then(|| validate::own_color("color", s).ok().flatten())
+        .flatten()
+    {
+        Some(hex) => (
+            validate::nearest_color(&hex).unwrap_or(WorkspaceColor::Ink),
+            Some(hex),
+        ),
+        None => (WorkspaceColor::default(), None),
+    }
+}
+
+/// What a workspace's `color` column keeps for a request's `color` and
+/// `hex`: the color of its own when there is one, else the workspace
+/// color's name. None: neither, so it stays as it is.
+pub fn stored_color(color: Option<WorkspaceColor>, hex: Option<&str>) -> Result<Option<String>> {
+    let hex = hex.map(|h| validate::own_color("hex", h)).transpose()?;
+    Ok(hex
+        .flatten()
+        .or_else(|| color.map(|c| c.as_str().to_owned())))
+}
+
 /// Whether someone whose role in a workspace is `role` may create a project
 /// in it: only its admins. A project's owners choose its repositories among
 /// those of the workspace's GitHub accounts, and its sessions get write
@@ -325,6 +359,47 @@ pub fn can_remove_runner(
 mod tests {
     use super::*;
     use WorkspaceRole::*;
+
+    #[test]
+    fn colors_of_their_own_read_with_the_workspace_color_nearest_them() {
+        assert_eq!(color(None), (WorkspaceColor::Yellow, None));
+        assert_eq!(color(Some("pink")), (WorkspaceColor::Pink, None));
+        assert_eq!(
+            color(Some("#2a9d8f")),
+            (WorkspaceColor::Blue, Some("#2a9d8f".into()))
+        );
+        assert_eq!(
+            color(Some("#ffffff")),
+            (WorkspaceColor::Ink, Some("#ffffff".into()))
+        );
+        // Only a `#` makes a color of its own: "bad" is no color.
+        for odd in ["bad", "#12", "purple", ""] {
+            assert_eq!(color(Some(odd)), (WorkspaceColor::Yellow, None), "{odd}");
+        }
+    }
+
+    #[test]
+    fn a_color_of_its_own_is_kept_in_place_of_a_workspace_color() {
+        let stored = |c, h| stored_color(c, h).ok().flatten();
+        assert_eq!(
+            stored(Some(WorkspaceColor::Pink), None).as_deref(),
+            Some("pink")
+        );
+        assert_eq!(
+            stored(Some(WorkspaceColor::Blue), Some("#0AF")).as_deref(),
+            Some("#00aaff")
+        );
+        assert_eq!(stored(None, Some("2A9D8F")).as_deref(), Some("#2a9d8f"));
+        // An empty one leaves it to the workspace color, or as it is.
+        assert_eq!(
+            stored(Some(WorkspaceColor::Ink), Some(" ")).as_deref(),
+            Some("ink")
+        );
+        assert_eq!(stored(None, Some("")), None);
+        assert_eq!(stored(None, None), None);
+        let bad = stored_color(None, Some("#ff88")).err();
+        assert_eq!(bad.and_then(|e| e.field).as_deref(), Some("hex"));
+    }
 
     fn member(role: WorkspaceRole, base_role: BaseRole) -> Option<Membership> {
         Some(Membership {

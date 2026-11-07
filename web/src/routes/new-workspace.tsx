@@ -1,14 +1,19 @@
-// Creating a workspace: its name, its color, and the address you join it as.
+// Creating a workspace: its name, its color (one of the brand's or one of its own), and the address
+// you join it as.
 
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
 import { Banner, Button, Field, Input, Select } from "@/components/ui";
+import { ColorPopover } from "@/components/ui/color-popover";
 import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
+import { AvatarThemes, Wheel } from "@/components/workspace/color-field";
 import type * as G from "@/gen";
 import { workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { colorName, showHex } from "@/lib/color";
+import { BRAND_HEX, FIRST_OWN } from "@/lib/project-icons";
 import { keys, queryClient, useMe, useWorkspaces } from "@/lib/queries";
 import { limitReached, workspaceCount } from "@/lib/workspaces";
 
@@ -66,6 +71,11 @@ export function beforeEnding(slug: string): string {
   return slug.slice(0, 41).replace(/-+$/, "");
 }
 
+const PILL =
+  "flex items-center gap-2 rounded-lg border px-2.5 py-2 text-[12.5px] transition-all duration-150";
+const PILL_ON = "border-accent/50 bg-accent-soft text-ink shadow-[0_0_0_3px_var(--c-accent-soft)]";
+const PILL_OFF = "border-line-strong text-ink-3 hover:border-ink-4 hover:text-ink";
+
 export function NewWorkspace() {
   const navigate = useNavigate();
   const { data: me } = useMe();
@@ -74,13 +84,24 @@ export function NewWorkspace() {
   const [name, setName] = useState("");
   const address = slugOf(name, new Set(list.data?.workspaces.map((w) => w.slug)));
   const [color, setColor] = useState<G.WorkspaceColor>();
+  // A color of its own, kept while a brand color is tried, and whether it's the one chosen.
+  const [own, setOwn] = useState<string>();
+  const [custom, setCustom] = useState(false);
+  const [editing, setEditing] = useState<false | "pointer" | "keyboard">(false);
+  const swatch = useRef<HTMLButtonElement>(null);
+  const popoverId = useId();
   const [email, setEmail] = useState<string>();
   // A color the person's other workspaces don't have, until they pick one.
   const shown = color ?? (["yellow", "pink", "blue", "ink"] as const).find((c) => !taken.has(c)) ?? "yellow";
+  const hex = custom ? own : undefined;
+  const closeEditor = useCallback((refocus: boolean) => {
+    setEditing(false);
+    if (refocus) swatch.current?.focus();
+  }, []);
   const full = list.data && limitReached(list.data);
   const addresses = me?.emails ?? [];
   const create = useMutation({
-    mutationFn: () => workspaces.create({ name: name.trim(), color: shown, email }),
+    mutationFn: () => workspaces.create({ name: name.trim(), color: shown, hex, email }),
     onSuccess: (w) => {
       void queryClient.invalidateQueries({ queryKey: keys.workspaces });
       void navigate({ to: "/w/$slug", params: { slug: w.slug }, search: {} });
@@ -111,7 +132,7 @@ export function NewWorkspace() {
         {/* Level with the input rather than centred on the field, which grows when its hint wraps. */}
         <div className="flex items-start gap-5">
           <WorkspaceAvatar
-            workspace={{ name: name.trim() || "New workspace", color: shown }}
+            workspace={{ name: name.trim() || "New workspace", color: shown, hex }}
             size={72}
             className="mt-2.75 transition-colors duration-300"
           />
@@ -157,20 +178,70 @@ export function NewWorkspace() {
               <button
                 key={c}
                 type="button"
-                aria-pressed={shown === c}
+                aria-pressed={!hex && shown === c}
                 aria-label={WORKSPACE_COLORS[c].label}
-                onClick={() => setColor(c)}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg border px-2.5 py-2 text-[12.5px] transition-all duration-150",
-                  shown === c
-                    ? "border-accent/50 bg-accent-soft text-ink shadow-[0_0_0_3px_var(--c-accent-soft)]"
-                    : "border-line-strong text-ink-3 hover:border-ink-4 hover:text-ink",
-                )}
+                onClick={() => {
+                  setColor(c);
+                  setCustom(false);
+                }}
+                className={cn(PILL, !hex && shown === c ? PILL_ON : PILL_OFF)}
               >
                 <WorkspaceAvatar workspace={{ name: name.trim() || "W", color: c }} size={20} title={false} />
                 {WORKSPACE_COLORS[c].label}
               </button>
             ))}
+            <button
+              ref={swatch}
+              type="button"
+              aria-pressed={!!hex}
+              aria-expanded={!!editing}
+              aria-haspopup="dialog"
+              aria-controls={editing ? popoverId : undefined}
+              aria-label={own ? `Custom color: ${colorName(own)}, ${showHex(own)}` : "Custom color"}
+              title={own ? `${showHex(own)}: change it` : undefined}
+              // Enter and Space click with no detail; a pointer's click counts its presses.
+              onClick={(e) => {
+                const byKeyboard = e.detail === 0;
+                if (editing) return closeEditor(byKeyboard);
+                // It starts from the color of its own it had, else from the brand color it has.
+                if (!own) setOwn(shown === "ink" ? FIRST_OWN : BRAND_HEX[shown]);
+                setCustom(true);
+                setEditing(byKeyboard ? "keyboard" : "pointer");
+              }}
+              onKeyDown={(e) => {
+                // With the focus still here, Escape closes the popover.
+                if (e.key === "Escape" && editing) {
+                  e.preventDefault();
+                  closeEditor(true);
+                }
+              }}
+              className={cn(PILL, hex || editing ? PILL_ON : PILL_OFF)}
+            >
+              {own ? (
+                <WorkspaceAvatar
+                  workspace={{ name: name.trim() || "W", color: shown, hex: own }}
+                  size={20}
+                  title={false}
+                />
+              ) : (
+                <Wheel size={20} />
+              )}
+              Custom
+            </button>
+            <ColorPopover
+              id={popoverId}
+              open={!!editing}
+              anchor={swatch}
+              hex={own ?? FIRST_OWN}
+              preview={<AvatarThemes name={name.trim() || "New workspace"} hex={own ?? FIRST_OWN} />}
+              used={[]}
+              focusHex={editing === "keyboard"}
+              onChange={(h) => {
+                setOwn(h);
+                setCustom(true);
+              }}
+              onClose={closeEditor}
+            />
           </div>
         </fieldset>
         {addresses.length > 1 && (

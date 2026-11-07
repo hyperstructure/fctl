@@ -156,15 +156,13 @@ impl WorkspaceRow {
         online: &[String],
     ) -> Workspace {
         let runners = self.runner_ids();
+        let (color, hex) = fctl_domain::workspace::color(self.color.as_deref());
         Workspace {
             id: fctl_proto::WorkspaceId(self.id.clone()),
             slug: self.slug.clone(),
             name: self.name.clone(),
-            color: self
-                .color
-                .as_deref()
-                .and_then(fctl_proto::session::WorkspaceColor::parse)
-                .unwrap_or_default(),
+            color,
+            hex,
             avatar_url: crate::model::avatar_url(&self.id, self.avatar_updated_at),
             role: self.role().unwrap_or(WorkspaceRole::Member),
             email: self.email.clone().unwrap_or_default(),
