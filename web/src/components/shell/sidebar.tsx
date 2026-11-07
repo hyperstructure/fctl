@@ -38,7 +38,7 @@ import { agoShort } from "@/lib/format";
 import { apple } from "@/lib/hotkeys";
 import { type Need, needSays, needsOf } from "@/lib/needs";
 import { iconOf, useSaveIcon } from "@/lib/project-icons";
-import { listPulls, needOf as pullNeed, stateOf } from "@/lib/pull-list";
+import { listPulls, PULLS_QUERY, needOf as pullNeed, stateOf } from "@/lib/pull-list";
 import {
   keys,
   queryClient,
@@ -88,9 +88,6 @@ export interface SidebarProps {
   onFold?: (folded: boolean) => void;
 }
 
-/** The open pull requests the sidebar counts, as the pull requests page asks for them. */
-export const OPEN_PULLS = { pulls: "open" as const, limit: 200 };
-
 export function Sidebar(props: SidebarProps) {
   const data = useSidebarData(props.path, props.scope);
   useAttention(data.needs.length);
@@ -113,7 +110,8 @@ function useSidebarData(path: string, scope?: string) {
   const active = useSessions({ status: "active", limit: 50 }).data?.sessions;
   const ended = useSessions({ status: "ended", limit: 12 }).data?.sessions;
   const listed = useSidebarSessions().data?.sessions;
-  const open = useSessions(OPEN_PULLS).data?.sessions;
+  // The pull requests page's own list, unnarrowed, so that the counts here are the page's.
+  const open = useSessions(PULLS_QUERY).data?.sessions;
   // Every session they started or follow from the last day, which the others may not reach.
   const yours = useYourSessions(!!me).data?.sessions;
   const recent = useMemo(() => byProject(recentSessions(listed ?? [], now)), [listed, now]);

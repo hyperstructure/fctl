@@ -334,10 +334,16 @@ export const api = {
       yours?: boolean;
       /** Only those that list a pull request in this state (the pull requests page). */
       pulls?: "open" | "merged" | "closed" | "any";
+      /** Archived ones too. */
+      archived?: boolean;
+      /** Those of schedules that hide theirs too. */
+      hidden?: boolean;
     } = {},
   ) => {
     const p = new URLSearchParams();
     if (q.pulls) p.set("pulls", q.pulls);
+    if (q.archived) p.set("archived", "1");
+    if (q.hidden) p.set("hidden", "1");
     if (q.project) p.set("project", q.project);
     if (q.workspace) p.set("workspace", q.workspace);
     if (q.status) p.set("status", q.status);

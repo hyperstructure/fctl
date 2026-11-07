@@ -7,11 +7,17 @@ import { keys, queryClient } from "@/lib/queries";
 import { PullsPage } from "./pulls";
 
 /** The page's search: what it lists. */
-const search = vi.hoisted(() => ({ value: {} as { scope?: string } }));
+const search = vi.hoisted(() => ({
+  value: {} as { scope?: string; state?: "open" | "merged" | "closed"; q?: string; mine?: boolean },
+}));
+/** Where the page went: each search it asked for, worked out from the one before. */
+const went = vi.hoisted(() => [] as object[]);
 
 vi.mock("@tanstack/react-router", () => ({
   useSearch: () => search.value,
-  useNavigate: () => vi.fn(),
+  useNavigate: () => (to: { search: (s: object) => object }) => {
+    went.push(to.search(search.value));
+  },
   Link: ({
     children,
     to: _to,
@@ -29,13 +35,22 @@ vi.mock("@tanstack/react-router", () => ({
 
 /** What the sessions endpoint answers next: a list, or a failure. */
 let answer: () => Response;
+/** What the page asked for, and what it sent. */
+const asked: { url: string; method: string; body?: unknown }[] = [];
 
 beforeEach(() => {
   // Without retries, a failed request fails the query at once.
   queryClient.setQueryDefaults(["sessions"], { retry: false });
-  vi.stubGlobal("fetch", (url: string) =>
-    url.startsWith("/api/v1/sessions?") ? Promise.resolve(answer()) : new Promise(() => {}),
-  );
+  vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+    asked.push({
+      url,
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    });
+    if (url.startsWith("/api/v1/sessions?")) return Promise.resolve(answer());
+    if (url.endsWith("/messages")) return Promise.resolve(Response.json({ delivered: true }));
+    return new Promise(() => {});
+  });
 });
 
 const roots: (() => void)[] = [];
@@ -45,6 +60,8 @@ afterEach(() => {
   queryClient.setQueryDefaults(["sessions"], {});
   vi.unstubAllGlobals();
   search.value = {};
+  went.length = 0;
+  asked.length = 0;
 });
 
 /** A session that finished, with its open pull request. */
@@ -92,7 +109,136 @@ async function render() {
   return host;
 }
 
+/** A list of `sessions` to answer with. */
+const listOf =
+  (...sessions: G.Session[]) =>
+  (): Response =>
+    Response.json({ sessions });
+
 describe("the pull requests page", () => {
+  it("asks for archived sessions' pull requests and those of schedules that hide theirs", async () => {
+    answer = listing;
+    await render();
+    const url = asked.find((a) => a.url.startsWith("/api/v1/sessions?"))?.url ?? "";
+    const params = new URLSearchParams(url.split("?")[1]);
+    expect(Object.fromEntries(params)).toEqual({ pulls: "any", limit: "200", archived: "1", hidden: "1" });
+  });
+
+  it("shows what an agent asks first, and sends the answer picked as the reply", async () => {
+    const question = {
+      text: "Keep øre, or round to whole kroner?",
+      options: ["Keep øre", "Round"],
+      asked_at: 1,
+    };
+    answer = listOf(
+      { ...finished(231, 1291, "Danish for the shop"), status: "idle", role: "owner", question },
+      finished(232, 1292, "Danish for the box builder"),
+    );
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.textContent).toContain("Keep øre, or round")));
+    const groups = [...page.querySelectorAll("section h2")].map((h) => h.textContent);
+    expect(groups[0]).toContain("Waiting for your answer");
+    expect(groups[1]).toContain("Ready for review");
+    const round = [...page.querySelectorAll("button")].find((b) => b.textContent === "Round");
+    await act(async () => round?.click());
+    await act(() => vi.waitFor(() => expect(asked.some((a) => a.url.endsWith("/messages"))).toBe(true)));
+    const sent = asked.find((a) => a.url.endsWith("/messages"));
+    expect(sent?.method).toBe("POST");
+    expect(sent?.url).toBe("/api/v1/sessions/ses_231/messages");
+    expect(sent?.body).toMatchObject({ text: "Round" });
+    // Once sent, no second answer goes.
+    await act(() => vi.waitFor(() => expect(round?.disabled).toBe(true)));
+  });
+
+  it("offers no answers to someone who can't message the agent", async () => {
+    const question = { text: "Keep øre?", options: ["Keep øre", "Round"], asked_at: 1 };
+    answer = listOf({ ...finished(231, 1291, "Danish for the shop"), role: "viewer", question });
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.textContent).toContain("Keep øre?")));
+    expect([...page.querySelectorAll("button")].some((b) => b.textContent === "Round")).toBe(false);
+    expect(page.textContent).toContain("Open the session");
+  });
+
+  it("marks a pull request whose session was archived", async () => {
+    search.value = { state: "merged" };
+    const merged = finished(231, 1291, "Danish for the shop");
+    merged.archived = true;
+    merged.pull_requests = merged.pull_requests?.map((pr) => ({
+      ...pr,
+      state: "merged",
+      state_changed_at: 1,
+    }));
+    answer = listOf(merged);
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.textContent).toContain("Danish for the shop")));
+    expect(page.textContent).toContain("Archived");
+  });
+
+  it("marks the filter's words, and counts what it finds in each tab", async () => {
+    search.value = { q: "danish" };
+    const merged = finished(233, 1293, "Danish for the newsletter");
+    merged.pull_requests = merged.pull_requests?.map((pr) => ({ ...pr, state: "merged" }));
+    answer = listOf(
+      finished(231, 1291, "Danish for the shop"),
+      finished(232, 1292, "Swedish for the box"),
+      merged,
+    );
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.querySelectorAll("[data-row]")).toHaveLength(1)));
+    expect([...page.querySelectorAll("mark")].map((m) => m.textContent)).toContain("Danish");
+    const tabs = [...page.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
+    expect(tabs).toEqual(["Open1", "Merged1", "Closed0"]);
+  });
+
+  it("says what narrows an empty list, and where the rest of what it finds is", async () => {
+    search.value = { q: "newsletter" };
+    const merged = finished(233, 1293, "Danish for the newsletter");
+    merged.pull_requests = merged.pull_requests?.map((pr) => ({ ...pr, state: "merged" }));
+    answer = listOf(finished(231, 1291, "Danish for the shop"), merged);
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.textContent).toContain("None here")));
+    expect(page.textContent).toContain("Nothing open matches “newsletter”.");
+    const see = [...page.querySelectorAll("button")].find((b) => b.textContent === "See 1 merged");
+    await act(async () => see?.click());
+    expect(went.at(-1)).toMatchObject({ state: "merged", q: "newsletter" });
+  });
+
+  it("moves between its tabs with the arrows", async () => {
+    answer = listing;
+    const page = await render();
+    const open = page.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    expect(open?.textContent).toContain("Open");
+    await act(async () => {
+      open?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    expect(went.at(-1)).toMatchObject({ state: "merged" });
+    await act(async () => {
+      open?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    });
+    expect(went.at(-1)).toMatchObject({ state: "closed" });
+  });
+
+  it("lights a row up as what it shows changes, not as the list first comes", async () => {
+    const before = finished(231, 1291, "Danish for the shop");
+    answer = listOf(before);
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.querySelectorAll("[data-row]")).toHaveLength(1)));
+    const lit = () => page.querySelector("li.animate-row-moved");
+    expect(lit()).toBeNull();
+    // Its checks fail, as the feed says.
+    const failing = {
+      ...before,
+      pull_requests: before.pull_requests?.map((pr) => ({
+        ...pr,
+        checks: { passed: 2, failed: 1, pending: 0, at: 2 } as G.PullRequestChecks,
+      })),
+    };
+    answer = listOf(failing);
+    await act(() => queryClient.refetchQueries({ queryKey: ["sessions"] }));
+    await act(() => vi.waitFor(() => expect(lit()).not.toBeNull()));
+    expect(page.textContent).toContain("Checks failing");
+  });
+
   it("moves from the row the focus is in, from its link or from its GitHub arrow", async () => {
     answer = () =>
       Response.json({

@@ -3,7 +3,15 @@
 // are in each state. fctl_domain::pulls::listed is its twin for `fctl pulls`.
 
 import type * as G from "@/gen";
-import { checksMark, prFullRef, prState, pullRequests } from "./pulls";
+import { checksMark, prFullRef, prReview, prReviewLook, prState, pullRequests } from "./pulls";
+
+/**
+ * The sessions the page and the sidebar's count look through, newest first: every one that lists a
+ * pull request, archived ones and those of schedules that hide theirs too, since neither closes the
+ * pull requests they opened. The page adds its workspace or project and Mine; unnarrowed, it asks
+ * what the sidebar asks, once.
+ */
+export const PULLS_QUERY = { pulls: "any", limit: 200, archived: true, hidden: true } as const;
 
 export interface ListedPull {
   pr: G.PullRequestRef;
@@ -16,9 +24,10 @@ export type PullState = "open" | "merged" | "closed";
 export const PULL_STATES: PullState[] = ["open", "merged", "closed"];
 
 /** What an open pull request needs next, in the order the page shows them. */
-export type Need = "ready" | "failing" | "working" | "queued" | "draft";
+export type Need = "asking" | "ready" | "failing" | "working" | "queued" | "draft";
 
 export const NEEDS: { need: Need; title: string; hint: string }[] = [
+  { need: "asking", title: "Waiting for your answer", hint: "Their agents asked something, and wait" },
   { need: "ready", title: "Ready for review", hint: "Their agents finished, and nothing failed" },
   { need: "failing", title: "Checks failing", hint: "What the agent pushed last didn't pass" },
   { need: "working", title: "Agents at work", hint: "Their sessions are still going" },
@@ -53,8 +62,12 @@ export function stateOf(l: ListedPull): PullState {
 
 const AT_WORK: G.SessionStatus[] = ["queued", "provisioning", "preparing", "running", "stopping"];
 
-/** What an open pull request needs next. */
+/** The newest of its sessions whose agent asked something (`fctl ask`) and waits for an answer. */
+export const askingOf = (l: ListedPull): G.Session | undefined => l.sessions.find((s) => s.question);
+
+/** What an open pull request needs next: an answer its agent waits for comes before the rest. */
 export function needOf(l: ListedPull): Need {
+  if (askingOf(l)) return "asking";
   const s = prState(l.pr);
   if (s === "queued") return "queued";
   if (s === "draft") return "draft";
@@ -70,20 +83,68 @@ export function countStates(list: readonly ListedPull[]): Record<PullState, numb
   return n;
 }
 
+/** The words of a filter, as `pullMatches` looks for them. */
+export const filterWords = (query: string) => query.toLowerCase().split(/\s+/).filter(Boolean);
+
 /**
  * Whether `l` has every word of `query` in its title, its reference as its row shows it
- * ("acme/shop#12", which "shop#12" and "#12" find too), its link or its sessions.
+ * ("acme/shop#12", which "shop#12" and "#12" find too), its link, its sessions or what their
+ * agents ask.
  */
 export function pullMatches(l: ListedPull, query: string): boolean {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = filterWords(query);
   if (!words.length) return true;
   const text = [
     l.pr.title ?? "",
     prFullRef(l.pr),
     l.pr.url,
-    ...l.sessions.flatMap((s) => [s.title, `${s.project_slug}#${s.number}`, s.created_by.name]),
+    ...l.sessions.flatMap((s) => [
+      s.title,
+      `${s.project_slug}#${s.number}`,
+      s.created_by.name,
+      s.question?.text ?? "",
+    ]),
   ]
     .join(" ")
     .toLowerCase();
   return words.every((w) => text.includes(w));
+}
+
+/** How much a pull request changes, for its reviewer. */
+export interface PullSize {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+/**
+ * Its size, from the newest session whose branch it is: one that lists it alone, since a session's
+ * counts are those of all its repositories' changes. None where no session says.
+ */
+export function sizeOf(l: ListedPull): PullSize | undefined {
+  const s = l.sessions.find((s) => pullRequests(s).length === 1 && s.stats.files_changed > 0);
+  return s && { files: s.stats.files_changed, additions: s.stats.additions, deletions: s.stats.deletions };
+}
+
+/** Who started its sessions, each once, newest first. */
+export function peopleOf(l: ListedPull): G.UserRef[] {
+  const seen = new Map<string, G.UserRef>();
+  for (const s of l.sessions)
+    if (s.created_by && !seen.has(s.created_by.id)) seen.set(s.created_by.id, s.created_by);
+  return [...seen.values()];
+}
+
+/**
+ * What the page shows of where it stands, to tell when that changes as it watches: its tab, what it
+ * needs, its checks and fctl's review.
+ */
+export function standing(l: ListedPull): string {
+  const state = stateOf(l);
+  const review = prReview(l.pr);
+  return [
+    state,
+    state === "open" ? needOf(l) : "",
+    checksMark(l.pr) ?? "",
+    review ? prReviewLook(review) : "",
+  ].join("|");
 }

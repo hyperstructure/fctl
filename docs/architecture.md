@@ -1409,14 +1409,20 @@ how, where the sandbox's fctl has the command.
 
 The web app's pull requests page (`/pulls`) and `fctl pulls` list the pull
 requests agents opened or worked on, each once, from the sessions that
-list one (`GET /api/v1/sessions?pulls=…`, by `pull_request_sessions`):
-each as the session that heard of it last has it, with every session that
-lists it (`web/src/lib/pull-list.ts`, `fctl_domain::pulls::listed`). The
-page counts them by state, and sorts the open ones by what each needs
-next: those whose agents finished and whose checks didn't fail are ready
-for review, then those whose checks failed, those whose sessions are still
-at work, those in a merge queue, and drafts. The feed patches the sessions
-it came from, so states, checks and reviews change there as GitHub says.
+list one (`GET /api/v1/sessions?pulls=…`, by `pull_request_sessions`),
+archived sessions and those of schedules that hide theirs included, since
+neither closes a pull request: each as the session that heard of it last
+has it, with every session that lists it (`web/src/lib/pull-list.ts`,
+`fctl_domain::pulls::listed`). The page counts them by state, and sorts
+the open ones by what each needs next: first those whose agent asked a
+question (`fctl ask`) and waits for an answer, which the page offers to
+send, then those whose agents finished and whose checks didn't fail,
+ready for review, then those whose checks failed, those whose sessions
+are still at work, those in a merge queue, and drafts. The sidebar counts
+the ones ready for review from the same list, unnarrowed, in one request
+with the page's. The feed patches the sessions it came from, so states,
+checks, reviews and questions change there as GitHub and agents say, and
+a row whose standing changes lights up for a moment.
 
 Session lists, the session page and `fctl show` give each pull request its
 state, `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`,
