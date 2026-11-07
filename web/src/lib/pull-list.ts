@@ -62,8 +62,13 @@ export function stateOf(l: ListedPull): PullState {
 
 const AT_WORK: G.SessionStatus[] = ["queued", "provisioning", "preparing", "running", "stopping"];
 
-/** The newest of its sessions whose agent asked something (`fctl ask`) and waits for an answer. */
-export const askingOf = (l: ListedPull): G.Session | undefined => l.sessions.find((s) => s.question);
+/**
+ * The newest of its sessions whose agent asked something (`fctl ask`) and waits for an answer. Not an
+ * archived one's: archiving it leaves its question, but whoever archived it is done with it, and
+ * Needs you leaves it out too.
+ */
+export const askingOf = (l: ListedPull): G.Session | undefined =>
+  l.sessions.find((s) => s.question && !s.archived);
 
 /** What an open pull request needs next: an answer its agent waits for comes before the rest. */
 export function needOf(l: ListedPull): Need {

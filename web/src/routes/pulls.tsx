@@ -542,14 +542,21 @@ function useChangedRows(list: ListedPull[], asked: string): ReadonlySet<string> 
     const before = seen.current?.asked === asked ? seen.current.standing : undefined;
     seen.current = { asked, standing: now };
     if (!before) return;
-    const these = new Set([...now].filter(([url, s]) => before.get(url) !== s).map(([url]) => url));
-    if (!these.size) return;
-    setChanged(these);
-    const done = setTimeout(() => setChanged(new Set()), 2000);
-    return () => clearTimeout(done);
+    const these = [...now].filter(([url, s]) => before.get(url) !== s).map(([url]) => url);
+    if (these.length) setChanged((lit) => new Set([...lit, ...these]));
   }, [list, asked]);
+  // They go dark once the last of them has had its moment, whatever else comes meanwhile: a timer of
+  // their own, which only a change among them starts again.
+  useEffect(() => {
+    if (!changed.size) return;
+    const done = setTimeout(() => setChanged(new Set()), LIT_MS);
+    return () => clearTimeout(done);
+  }, [changed]);
   return changed;
 }
+
+/** How long a row that changed stays lit: its animation's length (`--animate-row-moved`). */
+const LIT_MS = 2000;
 
 /**
  * A pull request: its state, title and repository, the sessions that list it, its checks, fctl's

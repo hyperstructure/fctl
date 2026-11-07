@@ -218,6 +218,42 @@ describe("the pull requests page", () => {
     expect(went.at(-1)).toMatchObject({ state: "closed" });
   });
 
+  it("lets a lit row go dark after its moment, whatever else the feed brings meanwhile", async () => {
+    const before = finished(231, 1291, "Danish for the shop");
+    const other = finished(232, 1292, "Danish for the box builder");
+    answer = listOf(before, other);
+    const page = await render();
+    await act(() => vi.waitFor(() => expect(page.querySelectorAll("[data-row]")).toHaveLength(2)));
+    const lit = () => page.querySelector("li.animate-row-moved");
+    const refetch = () =>
+      act(async () => {
+        await queryClient.refetchQueries({ queryKey: ["sessions"] });
+        await vi.advanceTimersByTimeAsync(10);
+      });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const failing = {
+        ...before,
+        pull_requests: before.pull_requests?.map((pr) => ({
+          ...pr,
+          checks: { passed: 2, failed: 1, pending: 0, at: 2 } as G.PullRequestChecks,
+        })),
+      };
+      answer = listOf(failing, other);
+      await refetch();
+      expect(lit()).not.toBeNull();
+      // A second later, another session moves on in a way the page doesn't show.
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      answer = listOf(failing, { ...other, updated_at: 99, last_activity_at: 99 });
+      await refetch();
+      expect(lit()).not.toBeNull();
+      await act(() => vi.advanceTimersByTimeAsync(1100));
+      expect(lit()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lights a row up as what it shows changes, not as the list first comes", async () => {
     const before = finished(231, 1291, "Danish for the shop");
     answer = listOf(before);

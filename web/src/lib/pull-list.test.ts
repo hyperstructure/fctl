@@ -83,6 +83,11 @@ describe("the pull requests page's list", () => {
     expect(askingOf(answered)).toBeUndefined();
     // What its agent asks finds it too.
     expect(pullMatches(asks, "øre")).toBe(true);
+    // Archived, its question is left, but whoever archived it is done with it.
+    const [archived] = listPulls([session([failing], { status: "idle", question, archived: true })]);
+    if (!archived) throw new Error("listed");
+    expect(askingOf(archived)).toBeUndefined();
+    expect(needOf(archived)).toBe("failing");
   });
 
   it("knows its size where one session's branch is all of it", () => {
