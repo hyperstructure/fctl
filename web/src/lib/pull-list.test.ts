@@ -75,6 +75,11 @@ describe("the pull requests page's list", () => {
     expect(pullMatches(l, "routes")).toBe(true);
     expect(pullMatches(l, "acme/shop")).toBe(true);
     expect(pullMatches(l, "#843")).toBe(true);
+    // As its row shows it, and as its link says it.
+    expect(pullMatches(l, "acme/shop#843")).toBe(true);
+    expect(pullMatches(l, "shop#843")).toBe(true);
+    expect(pullMatches(l, "https://github.com/acme/shop/pull/843")).toBe(true);
+    expect(pullMatches(l, "acme/shop#844")).toBe(false);
     expect(pullMatches(l, "Noor")).toBe(true);
     expect(pullMatches(l, "routes payments")).toBe(false);
     expect(pullMatches(l, "  ")).toBe(true);

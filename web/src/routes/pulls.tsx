@@ -8,7 +8,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowUpRight, FolderGit2, Layers, Search, X } from "lucide-react";
+import { ArrowUpRight, CircleAlert, FolderGit2, Layers, Search, X } from "lucide-react";
 import { type ReactNode, useMemo, useRef } from "react";
 import {
   PullRequestChecksIcon,
@@ -178,7 +178,24 @@ export function PullsPage() {
 
       {/* biome-ignore lint/a11y/noStaticElementInteractions: the arrows move between the rows' links. */}
       <div ref={list} className="mt-6" onKeyDown={onListKey}>
-        {sessions.isError ? (
+        {sessions.isError && sessions.data && (
+          // A refresh that failed keeps what loaded on screen, and says it may be behind.
+          <p
+            role="status"
+            className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-ink-3"
+          >
+            <CircleAlert className="size-3.5 shrink-0 text-danger" />
+            <span>This list didn't refresh: {sessions.error.message}</span>
+            <button
+              type="button"
+              onClick={() => void sessions.refetch()}
+              className="rounded text-ink-2 underline decoration-line-strong underline-offset-2 transition-colors hover:text-ink hover:decoration-ink-3"
+            >
+              Try again
+            </button>
+          </p>
+        )}
+        {sessions.isError && !sessions.data ? (
           <Banner tone="error" className="mt-2">
             <span className="flex flex-wrap items-center justify-between gap-3">
               The pull requests didn't load: {sessions.error.message}

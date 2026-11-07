@@ -3,7 +3,7 @@
 // are in each state. fctl_domain::pulls::listed is its twin for `fctl pulls`.
 
 import type * as G from "@/gen";
-import { checksMark, prState, pullRequests } from "./pulls";
+import { checksMark, prFullRef, prState, pullRequests } from "./pulls";
 
 export interface ListedPull {
   pr: G.PullRequestRef;
@@ -70,18 +70,20 @@ export function countStates(list: readonly ListedPull[]): Record<PullState, numb
   return n;
 }
 
-/** Whether `l` has every word of `query` in its title, repository, number or sessions. */
+/**
+ * Whether `l` has every word of `query` in its title, its reference as its row shows it
+ * ("acme/shop#12", which "shop#12" and "#12" find too), its link or its sessions.
+ */
 export function pullMatches(l: ListedPull, query: string): boolean {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return true;
-  const repo = l.pr.repo ? `${l.pr.repo.owner}/${l.pr.repo.name}` : l.pr.url;
   const text = [
     l.pr.title ?? "",
-    repo,
-    `#${l.pr.number}`,
+    prFullRef(l.pr),
+    l.pr.url,
     ...l.sessions.flatMap((s) => [s.title, `${s.project_slug}#${s.number}`, s.created_by.name]),
   ]
     .join(" ")
     .toLowerCase();
-  return words.every((w) => text.includes(w.replace(/^#/, "#")));
+  return words.every((w) => text.includes(w));
 }
