@@ -5,6 +5,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronsUpDown,
   Cpu,
+  EyeOff,
   Keyboard,
   LogOut,
   MessageCircleQuestion,
@@ -22,6 +23,7 @@ import { api } from "@/lib/api";
 import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
+import { hideable } from "@/lib/hidden-sessions";
 import { pullRequests } from "@/lib/pulls";
 import { forgetPush } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
@@ -68,53 +70,83 @@ export function Count({ n, label }: { n: number; label: string }) {
 /**
  * A session under its project: its status, its title, and what it waits on: its question, or its
  * pull request's state and checks. Those that ended are dimmer, the one whose page shows marked.
+ * One whose agent rests has a button, on hover, that hides it from the sidebar (`onHide`).
  */
 export function SessionLine({
   s,
   here,
   lifted,
   onNavigate,
+  onHide,
 }: {
   s: G.Session;
   here: boolean;
   /** Its project is being dragged, with it. */
   lifted?: boolean;
   onNavigate: () => void;
+  /** Hide it from the sidebar; its button, which had the focus, is `from`. */
+  onHide?: (s: G.Session, from: HTMLElement) => void;
 }) {
   const ended = s.status === "stopped" || s.status === "failed";
   const [pr] = pullRequests(s);
+  const canHide = !!onHide && !lifted && hideable(s);
   return (
-    <Link
-      to="/s/$id"
-      params={{ id: s.id }}
-      onClick={onNavigate}
-      title={s.question ? `${s.title}\nAsks: ${s.question.text}` : `${s.title} · ${statusLabel(s.status)}`}
-      className={cn(
-        "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
-        here
-          ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
-          : s.question
-            ? "text-ink-2"
-            : ended
-              ? "text-ink-4"
-              : "text-ink-3",
-        !here && !lifted && "hover:bg-hover hover:text-ink",
+    <div className="group/line relative flex items-center">
+      <Link
+        to="/s/$id"
+        params={{ id: s.id }}
+        onClick={onNavigate}
+        title={s.question ? `${s.title}\nAsks: ${s.question.text}` : `${s.title} · ${statusLabel(s.status)}`}
+        className={cn(
+          "flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
+          here
+            ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+            : s.question
+              ? "text-ink-2"
+              : ended
+                ? "text-ink-4"
+                : "text-ink-3",
+          // The row stays lit while the pointer is on its button.
+          !here && !lifted && "group-hover/line:bg-hover group-hover/line:text-ink",
+          // Its title makes room for the button where nothing else sits at its end.
+          canHide && !pr && "group-hover/line:pr-7 group-has-[:focus-visible]/line:pr-7",
+        )}
+      >
+        <StatusDot status={s.status} className="scale-75" />
+        <span className="min-w-0 flex-1 truncate">{s.title}</span>
+        <span className="sr-only">: {s.question ? "asks you something" : statusLabel(s.status)}</span>
+        {s.question ? (
+          <MessageCircleQuestion className="size-3.5 shrink-0 text-blue" aria-hidden="true" />
+        ) : (
+          pr && (
+            <span
+              className={cn(
+                "flex shrink-0 items-center gap-0.5",
+                canHide &&
+                  "transition-opacity duration-150 group-hover/line:opacity-0 group-has-[:focus-visible]/line:opacity-0",
+              )}
+              aria-hidden="true"
+            >
+              <PullRequestStateIcon pr={pr} className="size-3" />
+              <PullRequestChecksIcon pr={pr} className="size-3" />
+            </span>
+          )
+        )}
+      </Link>
+      {canHide && (
+        // Not on a phone or tablet: a finger has no hover to find it by, and would hide what it meant
+        // to open.
+        <button
+          type="button"
+          onClick={(e) => onHide(s, e.currentTarget)}
+          aria-label={`Hide ${s.title} from the sidebar`}
+          title="Hide from the sidebar until its agent works again"
+          className="absolute right-1 flex size-5 items-center justify-center rounded text-ink-4 opacity-0 transition-[opacity,color] duration-150 group-hover/line:opacity-100 group-has-[:focus-visible]/line:opacity-100 hover:text-ink [@media(hover:none)]:hidden"
+        >
+          <EyeOff className="size-3.5" />
+        </button>
       )}
-    >
-      <StatusDot status={s.status} className="scale-75" />
-      <span className="min-w-0 flex-1 truncate">{s.title}</span>
-      <span className="sr-only">: {s.question ? "asks you something" : statusLabel(s.status)}</span>
-      {s.question ? (
-        <MessageCircleQuestion className="size-3.5 shrink-0 text-blue" aria-hidden="true" />
-      ) : (
-        pr && (
-          <span className="flex shrink-0 items-center gap-0.5" aria-hidden="true">
-            <PullRequestStateIcon pr={pr} className="size-3" />
-            <PullRequestChecksIcon pr={pr} className="size-3" />
-          </span>
-        )
-      )}
-    </Link>
+    </div>
   );
 }
 

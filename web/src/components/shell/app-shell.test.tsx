@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { PULLS_QUERY } from "@/lib/pull-list";
 import { keys } from "@/lib/queries";
-import { keepSidebar } from "@/lib/sidebar";
+import { forgetSidebar, keepSidebar } from "@/lib/sidebar";
 import { AppShell, Sidebar } from "./app-shell";
 
 // No request is answered: the sidebar shows what the cache holds, and what this browser kept. What
@@ -318,6 +318,144 @@ describe("the sidebar's sessions", () => {
     const sidebar = reload("/");
     await sidebar.come({ workspaces, projects, sessions: [recent, [building]] });
     expect(sidebar.sessions()).toEqual({});
+  });
+});
+
+describe("hiding a session from the sidebar", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const turns = (n: number) => ({ stats: { turns: n } as G.SessionStats });
+  const building = session(6, "Fix the build", "running", "prj_web", turns(1));
+  const waiting = session(5, "Add dark mode", "idle", "prj_web", turns(2));
+  const asking = session(4, "Pick a font", "idle", "prj_web", {
+    ...turns(1),
+    question: { text: "Inter or system fonts?" } as G.SessionQuestion,
+  });
+  const retried = session(3, "Retry uploads", "stopped", "prj_web", {
+    ...turns(4),
+    ended_at: NOW - 20 * MINUTE,
+  });
+  const docs = session(2, "Write the docs", "paused", "prj_api", turns(1));
+  const broke = session(1, "Bump the SDK", "failed", "prj_api", { ...turns(0), ended_at: NOW - 5 * MINUTE });
+
+  /** The sidebar's hide buttons, by what they say. */
+  const hideButtons = (container: Element) =>
+    [...container.querySelectorAll<HTMLButtonElement>("button")].filter((b) =>
+      b.getAttribute("aria-label")?.endsWith(" from the sidebar"),
+    );
+  const hideButton = (container: Element, title: string) => {
+    const b = hideButtons(container).find(
+      (b) => b.getAttribute("aria-label") === `Hide ${title} from the sidebar`,
+    );
+    if (!b) throw new Error(`No button hides ${title}`);
+    return b;
+  };
+  /** The titles of the sessions the sidebar lists. */
+  const titles = (sidebar: ReturnType<typeof reload>) =>
+    [...sidebar.container.querySelectorAll('section ul[aria-label] a[href^="/s/"]')].map(
+      (a) => a.textContent?.split(":")[0],
+    );
+
+  it("is offered for those whose agents rest and ask nothing: waiting for a message, stopped or failed", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({
+      workspaces,
+      projects,
+      sessions: [recent, [building, waiting, asking, retried, docs, broke]],
+    });
+    expect(hideButtons(sidebar.container).map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Hide Add dark mode from the sidebar",
+      "Hide Retry uploads from the sidebar",
+      "Hide Bump the SDK from the sidebar",
+    ]);
+  });
+
+  it("takes it out of the sidebar, in this browser, and leaves the others", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [building, waiting, retried, broke]] });
+    act(() => hideButton(sidebar.container, "Retry uploads").click());
+    act(() => hideButton(sidebar.container, "Bump the SDK").click());
+    expect(sidebar.sessions()).toEqual({
+      "web's recent sessions": [
+        ["/s/ses_6", "Fix the build: Working"],
+        ["/s/ses_5", "Add dark mode: Waiting"],
+      ],
+    });
+    // Coming back, the sidebar still leaves them out.
+    const again = reload("/");
+    await again.come({ workspaces, projects, sessions: [recent, [building, waiting, retried, broke]] });
+    expect(titles(again)).toEqual(["Fix the build", "Add dark mode"]);
+  });
+
+  it("keeps it out while it rests, as it stops after waiting for a message too", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [building, waiting]] });
+    act(() => hideButton(sidebar.container, "Add dark mode").click());
+    await sidebar.come({ sessions: [recent, [building, { ...waiting, status: "stopping" }]] });
+    expect(titles(sidebar)).toEqual(["Fix the build"]);
+    await sidebar.come({ sessions: [recent, [building, { ...waiting, status: "stopped", ended_at: NOW }]] });
+    expect(titles(sidebar)).toEqual(["Fix the build"]);
+  });
+
+  it("brings it back once its agent works again, and again when it rests after", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [waiting]] });
+    act(() => hideButton(sidebar.container, "Add dark mode").click());
+    expect(titles(sidebar)).toEqual([]);
+    await sidebar.come({ sessions: [recent, [{ ...waiting, status: "running" }]] });
+    expect(titles(sidebar)).toEqual(["Add dark mode"]);
+    // Seeing it work forgot that it was hidden: resting again, it shows, whatever its turns.
+    await sidebar.come({ sessions: [recent, [waiting]] });
+    expect(titles(sidebar)).toEqual(["Add dark mode"]);
+  });
+
+  it("brings it back when it has ended another turn while nobody looked, or asks something", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [waiting, retried]] });
+    act(() => hideButton(sidebar.container, "Add dark mode").click());
+    act(() => hideButton(sidebar.container, "Retry uploads").click());
+    expect(titles(sidebar)).toEqual([]);
+    await sidebar.come({
+      sessions: [
+        recent,
+        [
+          { ...waiting, question: { text: "Which shade?" } as G.SessionQuestion },
+          { ...retried, ...turns(5), ended_at: NOW },
+        ],
+      ],
+    });
+    expect(titles(sidebar)).toEqual(["Add dark mode", "Retry uploads"]);
+  });
+
+  it("leaves the focus on the session after it, or before it, or on the project", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [building, waiting, retried]] });
+    const focusAndHide = (title: string) => {
+      const b = hideButton(sidebar.container, title);
+      act(() => {
+        b.focus();
+        b.click();
+      });
+      return document.activeElement?.getAttribute("href");
+    };
+    expect(focusAndHide("Add dark mode")).toBe("/s/ses_3");
+    expect(focusAndHide("Retry uploads")).toBe("/s/ses_6");
+    await sidebar.come({ sessions: [recent, [{ ...building, status: "idle", ...turns(2) }]] });
+    expect(focusAndHide("Fix the build")).toBe("/p/web");
+  });
+
+  it("is forgotten as Ada signs out", async () => {
+    const sidebar = reload("/");
+    await sidebar.come({ workspaces, projects, sessions: [recent, [waiting]] });
+    act(() => hideButton(sidebar.container, "Add dark mode").click());
+    expect(localStorage.getItem("fctl:hidden-sessions")).toContain("ses_5");
+    act(() => forgetSidebar());
+    expect(localStorage.getItem("fctl:hidden-sessions")).toBeNull();
+    expect(titles(sidebar)).toEqual(["Add dark mode"]);
   });
 });
 

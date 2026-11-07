@@ -9,6 +9,7 @@
 import { useEffect, useMemo } from "react";
 import type * as G from "@/gen";
 import { parseHex } from "./color";
+import { forgetHiddenSessions } from "./hidden-sessions";
 
 const KEY = "fctl:sidebar";
 // The shape of what is kept (`Kept`): a copy in another one is not read.
@@ -86,11 +87,12 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
   }
 }
 
-/** Forgets the lists kept (signing out). */
+/** Forgets the lists kept, and the sessions hidden from it (signing out). */
 export function forgetSidebar() {
   try {
     localStorage.removeItem(KEY);
   } catch {}
+  forgetHiddenSessions();
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
