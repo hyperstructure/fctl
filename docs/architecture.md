@@ -834,6 +834,12 @@ or as a member's own runners with a token they made for their own sessions
    theirs does. D1 keeps its hash (`enrollment_tokens`). Admins see and
    revoke every token of the workspace, members their own. Revoking it
    stops enrollments and leaves the runners it enrolled, waiting ones too.
+   A token for everyone's sessions enrolls only while the admin who made
+   it is still an active admin of the workspace, as an invitation counts
+   only while the admin who sent it is one: an admin who is removed,
+   demoted or disabled can't come back with a machine of theirs through a
+   token they kept, and autoscaling that used it needs a token from an
+   admin who stays.
 2. **Enrolling.** `fctl host install --enroll fctl_et_…` (or
    `FCTL_ENROLL_TOKEN`), signed in or not, asks what the token enrolls in
    (`GET /api/v1/runner/enroll`) before anything else, so that an expired,
@@ -844,8 +850,9 @@ or as a member's own runners with a token they made for their own sessions
    own, kept in `host-token` as any is: the enrollment token goes no
    further. The statement that inserts the runner checks the token again
    and counts its runners, so that machines that enroll at once can't take
-   more than its limit, and that a token for its maker's own sessions
-   enrolls only while they are an active member of its workspace. Run again
+   more than its limit, that a token for its maker's own sessions
+   enrolls only while they are an active member of its workspace, and one
+   for everyone's only while its maker is an active admin there. Run again
    on a machine whose runner belongs to the same workspace, and to the same
    person or nobody, it keeps that runner. A token the control plane doesn't
    know counts towards the caller's rate limit.

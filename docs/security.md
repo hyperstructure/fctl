@@ -587,8 +587,11 @@ their code, secrets and tokens, so making one takes the same as adding a
 runner for everyone's sessions: an admin of the workspace, open to them
 under its two-factor requirement, who confirms it's them where the
 instance asks for that. A token is limited by its expiry, the most runners
-it keeps enrolled at once and its admins' revoking it, and, with approval,
-enrolls only machines an admin then lets in: a runner that waits gets
+it keeps enrolled at once and its admins' revoking it, and enrolls only
+while the admin who made it is still one, as an invitation counts only
+while the admin who sent it is: an admin who is removed, demoted or
+disabled can't enroll a machine of theirs with a token they kept. With
+approval, it enrolls only machines an admin then lets in: a runner that waits gets
 nothing of any session, nor a Claude sign-in, and approving it takes
 confirming it's you too. The control plane keeps only the token's hash, a
 token it doesn't know counts towards its caller's rate limit, and the token
