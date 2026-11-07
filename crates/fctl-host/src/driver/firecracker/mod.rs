@@ -1502,7 +1502,14 @@ impl FirecrackerDriver {
         // would each find room for their memory, and all write it at once.
         let lock = self.lock("saving");
         let _held = lock.lock().await;
-        let memory_mb = vm.memory_mb().unwrap_or(u64::MAX / 2);
+        // A VM that an earlier fctl started in a jail has no configuration
+        // in its directory, which a resume needs.
+        let Some(memory_mb) = vm.memory_mb() else {
+            tracing::info!(
+                "{name} stops without saving its state: the host has no record of its VM's configuration"
+            );
+            return Ok(false);
+        };
         let floor = self
             .host
             .min_free_disk_mb()
