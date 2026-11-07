@@ -52,6 +52,7 @@ import {
   useYourSessions,
 } from "@/lib/queries";
 import { type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
+import { foldKeys } from "@/lib/sidebar-layout";
 import { type Sortable, useSortable } from "@/lib/sortable";
 import {
   createsProjects,
@@ -234,7 +235,7 @@ function Tree({ onPalette, onNavigate, onClose, onFold, path, tab, data }: Sideb
           <button
             type="button"
             aria-label="Fold the sidebar"
-            title={`Fold the sidebar (${apple() ? "⌘" : "Ctrl+"}\\)`}
+            title={`Fold the sidebar (${foldKeys()})`}
             onClick={() => onFold(true)}
             className="flex size-8 items-center justify-center rounded-md text-ink-4 transition-colors hover:bg-hover hover:text-ink max-md:hidden"
           >
@@ -967,10 +968,7 @@ function Rail({ onPalette, onNavigate, onFold, path, data }: SidebarProps & { da
           <Settings className="size-4" />
         </RailLink>
         {onFold && (
-          <RailButton
-            label={`Unfold the sidebar (${apple() ? "⌘" : "Ctrl+"}\\)`}
-            onClick={() => onFold(false)}
-          >
+          <RailButton label={`Unfold the sidebar (${foldKeys()})`} onClick={() => onFold(false)}>
             <PanelLeftOpen className="size-4" />
           </RailButton>
         )}

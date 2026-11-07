@@ -9,7 +9,13 @@ import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { useHotkey } from "@/lib/hotkeys";
 import { onPushOpen, syncPush } from "@/lib/push";
 import { useMe } from "@/lib/queries";
-import { RAIL_WIDTH, SIDEBAR_WIDTH, useSidebarFolded, useSidebarWidth } from "@/lib/sidebar-layout";
+import {
+  FOLD_SHORTCUT,
+  RAIL_WIDTH,
+  SIDEBAR_WIDTH,
+  useSidebarFolded,
+  useSidebarWidth,
+} from "@/lib/sidebar-layout";
 import { useFactorsWatch } from "@/lib/workspaces";
 import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { useDrawerDrag } from "./drawer-drag";
@@ -60,13 +66,13 @@ export function AppShell() {
   const [folded, setFolded] = useSidebarFolded();
   const [resizing, setResizing] = useState(false);
   const wide = useWide();
-  // Only where it shows: on a narrow screen the sidebar is a drawer, which doesn't fold.
-  useHotkey(
-    "mod+\\",
-    useCallback(() => {
-      if (wide) setFolded(!folded);
-    }, [wide, folded, setFolded]),
-  );
+  // Only where it shows: on a narrow screen the sidebar is a drawer, which doesn't fold. ⌘B, as
+  // in code editors, takes no Shift or Option on any layout; ⌘\ too, where \ is a key of its own.
+  const fold = useCallback(() => {
+    if (wide) setFolded(!folded);
+  }, [wide, folded, setFolded]);
+  useHotkey(FOLD_SHORTCUT, fold);
+  useHotkey("mod+\\", fold);
   return (
     <div
       ref={root}

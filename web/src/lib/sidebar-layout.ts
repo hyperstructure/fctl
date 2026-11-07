@@ -2,11 +2,15 @@
 // in this browser.
 
 import { useCallback, useSyncExternalStore } from "react";
+import { modKey } from "./hotkeys";
 
 /** Its width at first, and at least and at most when dragged (CSS pixels). */
 export const SIDEBAR_WIDTH = { initial: 288, min: 240, max: 420 } as const;
 /** The rail it folds into. */
 export const RAIL_WIDTH = 60;
+/** What folds and unfolds it (`useHotkey`'s combo), and how its tooltips say it. */
+export const FOLD_SHORTCUT = "mod+b";
+export const foldKeys = () => modKey("B");
 
 const WIDTH = "fctl:sidebar-width";
 const FOLDED = "fctl:sidebar-folded";

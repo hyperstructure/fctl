@@ -48,7 +48,7 @@ import { own } from "@/lib/dialog";
 import { changeStarts, firstLine, type PatchLine, parsePatch, patchLines } from "@/lib/diff";
 import { compare, type DiffMatch, type DiffPlace, type FindOptions } from "@/lib/diff-find";
 import { useHoldPage } from "@/lib/hold-page";
-import { apple } from "@/lib/hotkeys";
+import { apple, modKey } from "@/lib/hotkeys";
 import { languageOf } from "@/lib/languages";
 import { fileDiffQuery, useFileDiff, useSessionDiffs } from "@/lib/queries";
 import { diffCommand } from "@/lib/shell";
@@ -61,7 +61,7 @@ import {
   FileList,
   splitPath,
 } from "./diff-files";
-import { DiffFindBar, matchRanges, modKey, sectionOf, TOGGLES, useDiffFind } from "./diff-find";
+import { DiffFindBar, matchRanges, sectionOf, TOGGLES, useDiffFind } from "./diff-find";
 import { Rolling, UnseenChanges, useChanged, useLive } from "./diff-live";
 
 export { byDirectory, changeOf, type DiffGroup, type DiffTarget };
