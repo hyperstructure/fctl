@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{Env, Headers, Method, Request, RequestInit, Response, Stub};
 
 pub const HDR_RUNNER: &str = "X-Fctl-Runner";
+/// The SHA-256 of the runner token an uplink opened with, which SessionDO
+/// checks again while it stays open.
+pub const HDR_RUNNER_TOKEN: &str = "X-Fctl-Runner-Token";
 pub const HDR_VIEWER: &str = "X-Fctl-Viewer";
 
 // ───────────────────────────── SessionObject ─────────────────────────────
@@ -363,6 +366,12 @@ pub struct RunnerIdent {
     /// Its enrollment token removes it once it has been offline this long.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_after_ms: Option<i64>,
+    /// The SHA-256 of the runner token it connected with, which its
+    /// heartbeats check again: once the runner is disabled or its token
+    /// replaced, the connection closes, also when the call that says so
+    /// failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_hash: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]

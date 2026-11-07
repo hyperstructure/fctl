@@ -130,6 +130,11 @@ struct RunnerSocket {
     /// welcome says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending: Option<fctl_proto::runner::PendingApproval>,
+    /// The SHA-256 of the runner token it connected with, which its
+    /// heartbeats check again (`RunnerIdent::token_hash`). Absent from
+    /// connections an older Worker accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -627,6 +632,7 @@ impl FleetObject {
             name: ident.name.clone(),
             since: now_ms(),
             pending: ident.pending.clone(),
+            token_hash: ident.token_hash.clone(),
         })?;
         let _ = self.sql.exec(
             "INSERT INTO runners (id, name, connected, last_seen, remove_after_ms) VALUES (?, ?, 1, ?, ?) \
@@ -992,6 +998,21 @@ impl FleetObject {
     /// so that a connection that got in as it went (its token checked just
     /// before its row was deleted), or that FleetObject wasn't told of,
     /// doesn't stay. `None` when D1 doesn't answer, which proves nothing.
+    /// Whether D1 still has runner `id`; `None` when it didn't answer.
+    async fn runner_in_d1(&self, id: &str) -> Option<bool> {
+        let db = self.env.d1("DB").ok()?;
+        let found: Option<crate::db::Count> = crate::db::q(
+            &db,
+            "SELECT COUNT(*) AS n FROM runners WHERE id = ?",
+            &[crate::db::s(id)],
+        )
+        .ok()?
+        .first()
+        .await
+        .ok()?;
+        Some(found.is_some_and(|c| c.n > 0))
+    }
+
     async fn in_d1(&self, sql: &str, params: &[crate::db::Val]) -> Option<bool> {
         let db = self.env.d1("DB").ok()?;
         let changed = crate::db::q(&db, sql, params).ok()?.run().await;
@@ -1041,15 +1062,35 @@ impl FleetObject {
                         sv(&rs.id),
                     ]),
                 );
-                // Persist liveness in D1 now and then (every heartbeat is fine: one write per 15 s).
-                let kept = self
-                    .in_d1(
-                        "UPDATE runners SET last_seen_at = ? WHERE id = ?",
-                        &[crate::db::n(now), crate::db::s(&rs.id)],
-                    )
-                    .await;
+                // Persist liveness in D1 now and then (every heartbeat is fine: one write per 15 s),
+                // while the runner is enabled, with the token it connected with.
+                let kept = match rs.token_hash.as_deref() {
+                    Some(hash) => {
+                        self.in_d1(
+                            "UPDATE runners SET last_seen_at = ? WHERE id = ? AND enabled = 1 AND token_hash = ?",
+                            &[crate::db::n(now), crate::db::s(&rs.id), crate::db::s(hash)],
+                        )
+                        .await
+                    }
+                    None => {
+                        self.in_d1(
+                            "UPDATE runners SET last_seen_at = ? WHERE id = ? AND enabled = 1",
+                            &[crate::db::n(now), crate::db::s(&rs.id)],
+                        )
+                        .await
+                    }
+                };
                 if kept == Some(false) {
-                    self.removed(&rs.id, "Its runner was removed.").await;
+                    if self.runner_in_d1(&rs.id).await == Some(false) {
+                        self.removed(&rs.id, "Its runner was removed.").await;
+                    } else {
+                        // Disabled, or given a new token, since it
+                        // connected, also when the call that says so
+                        // (`/runner-disabled`) didn't come: this connection
+                        // gets nothing more. Its sessions' uplinks close at
+                        // their next check (`SessionObject::recheck_uplink`).
+                        let _ = ws.close(Some(4003), Some("runner disabled or token rotated"));
+                    }
                     return;
                 }
                 self.stop_idle_if_draining(&rs.id, &hb.sessions).await;
@@ -1125,17 +1166,34 @@ impl FleetObject {
                     }),
                 );
                 let queued_again = self.queued(session_id.as_str());
-                // Unassigned, it ends only a run of this runner's: another
-                // runner's report about it changes nothing.
+                // Unassigned, it ends only a run of this runner's, while
+                // the runner still runs the session's workspace: another
+                // runner's report about it, or one from a runner taken out
+                // of the workspace since, changes nothing.
                 let theirs = current.is_some()
                     || match self.env.d1("DB") {
-                        Ok(db) => spec::session_row(&db, session_id.as_str())
-                            .await
-                            .ok()
-                            .flatten()
-                            .is_some_and(|row| row.runner_id.as_deref() == Some(rs.id.as_str())),
+                        Ok(db) => {
+                            spec::session_row(&db, session_id.as_str())
+                                .await
+                                .ok()
+                                .flatten()
+                                .is_some_and(|row| row.runner_id.as_deref() == Some(rs.id.as_str()))
+                                && matches!(
+                                    spec::runner_serves(&db, &rs.id, session_id.as_str()).await,
+                                    Ok(true)
+                                )
+                        }
                         Err(_) => false,
                     };
+                // A run that ended stopped or failed, whatever else its
+                // host says: what an agent says as it exits comes from its
+                // sandbox, and a session a run of it no longer runs isn't
+                // running, nor idle.
+                let status = if status.is_terminal() {
+                    status
+                } else {
+                    SessionStatus::Stopped
+                };
                 if stale || !theirs {
                     worker::console_log!("ignoring the end of an earlier run of {session_id}");
                 } else {
@@ -2700,6 +2758,16 @@ impl FleetObject {
             .d1("DB")
             .map_err(|e| ApiError::internal(e.to_string()))?;
         let cfg = crate::config::Config::from_env(&self.env);
+        // Only while it runs there: a stopped session stays with the runner
+        // it last ran on (`sessions.runner_id`), whose host would otherwise
+        // get its person's Claude token and new GitHub tokens whenever it
+        // asked. Every run is assigned from its dispatch until it ends
+        // (or carries on after its runner was away: `carry_on`).
+        if !self.assigned_to(session_id.as_str(), runner_id) {
+            return Err(ApiError::forbidden(
+                "This session doesn't run on this runner now",
+            ));
+        }
         let row = spec::session_row(&db, session_id.as_str())
             .await
             .map_err(|e| e.0)?
@@ -3290,7 +3358,7 @@ impl FleetObject {
             db,
             concat!(
                 "SELECT rw.runner_id, rw.workspace_id, rw.personal, r.created_by AS owner \
-                 FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id WHERE ",
+                 FROM runner_workspaces rw JOIN runners r ON r.id = rw.runner_id WHERE r.enabled = 1 AND ",
                 crate::serves!()
             ),
             &[],

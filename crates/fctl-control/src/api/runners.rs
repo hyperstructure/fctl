@@ -695,6 +695,11 @@ pub(crate) struct RunnerAuth {
     /// Its enrollment token removes it once offline this long.
     #[serde(deserialize_with = "crate::db::opt_int", default)]
     pub remove_offline_after_minutes: Option<i64>,
+    /// The SHA-256 of the token it presented, which the sockets it opens
+    /// check again while they stay open: once the runner is disabled or
+    /// its token replaced, they close.
+    #[serde(skip)]
+    pub token_hash: String,
 }
 
 /// Authenticates a host by its runner token.
@@ -703,6 +708,7 @@ pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAut
         .and_then(|h| h.strip_prefix("Bearer ").map(str::to_owned))
         .filter(|t| t.starts_with(SecretKind::Runner.prefix()))
         .ok_or_else(|| AppError(ApiError::unauthorized()))?;
+    let token_hash = hash_secret(&token);
     let row: Option<RunnerAuth> = q(
         &ctx.db,
         "SELECT r.id, r.name, r.workspace_id, w.name AS workspace_name, \
@@ -710,16 +716,18 @@ pub(crate) async fn runner_auth(ctx: &Ctx, req: &Request) -> AppResult<RunnerAut
          r.remove_offline_after_minutes FROM runners r LEFT JOIN workspaces w ON w.id = r.workspace_id \
          LEFT JOIN users u ON u.id = r.created_by \
          WHERE r.token_hash = ? AND r.enabled = 1",
-        &[s(&hash_secret(&token))],
+        &[s(&token_hash)],
     )?
     .first()
     .await?;
-    row.ok_or_else(|| {
+    let mut row = row.ok_or_else(|| {
         AppError(ApiError::new(
             fctl_proto::ErrorCode::Unauthorized,
             "Unknown or disabled runner token: the runner was removed, rejected or disabled, or its token replaced",
         ))
-    })
+    })?;
+    row.token_hash = token_hash;
+    Ok(row)
 }
 
 /// `GET /api/v1/runner/connect`: the host's control connection. A runner
@@ -746,6 +754,7 @@ pub async fn connect(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         remove_after_ms: r
             .remove_offline_after_minutes
             .map(|m| m.saturating_mul(fctl_domain::enrollment::MINUTE_MS)),
+        token_hash: Some(r.token_hash.clone()),
     })?;
     internal::upgrade(&stub, "/runner", &[(internal::HDR_RUNNER, &ident)]).await
 }
@@ -760,7 +769,17 @@ pub async fn uplink(ctx: &Ctx, req: &Request, session_id: &str) -> AppResult<Res
     let r = runner_auth(ctx, req).await?;
     crate::spec::check_runs(&ctx.db, &r.id, session_id).await?;
     let stub = internal::session_stub(&ctx.env, session_id)?;
-    internal::upgrade(&stub, "/uplink", &[(internal::HDR_RUNNER, &r.id)]).await
+    // SessionDO checks both again while the uplink stays open
+    // (`SessionObject::recheck_uplink`).
+    internal::upgrade(
+        &stub,
+        "/uplink",
+        &[
+            (internal::HDR_RUNNER, &r.id),
+            (internal::HDR_RUNNER_TOKEN, &r.token_hash),
+        ],
+    )
+    .await
 }
 
 /// `GET /api/v1/feed/ws`: live updates for dashboards.
