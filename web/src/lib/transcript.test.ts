@@ -371,6 +371,89 @@ describe("TranscriptBuilder", () => {
     expect(call(items).agent).toBeUndefined();
   });
 
+  it("follows every task Claude Code runs on its own, from its start to its end, as fctl-agent counts them", () => {
+    const b = new TranscriptBuilder();
+    const started = (id: string, call: string, type: string, more: Record<string, unknown> = {}) =>
+      task("task_started", {
+        task_id: id,
+        tool_use_id: call,
+        task_type: type,
+        is_backgrounded: true,
+        ...more,
+      });
+    b.add([
+      assistant("m1", [
+        {
+          type: "tool_use",
+          id: "bg",
+          name: "Bash",
+          input: { command: "npm run dev", run_in_background: true },
+        },
+      ]),
+      started("b1", "bg", "local_bash", { description: " Start the dev server " }),
+      toolResult("bg", "Command running in background with ID: b1"),
+      // Reported twice, kept once.
+      started("b1", "bg", "local_bash", { description: "Start the dev server" }),
+      // Claude Code's own housekeeping isn't the agent's work.
+      started("d1", "dream", "local_agent", { ambient: true, description: "Consolidate memory" }),
+      // A task whose call didn't load.
+      started("m1", "elsewhere", "monitor_mcp"),
+      ...delegate("ag", true),
+    ]);
+    expect(b.tasks.map((t) => [t.id, t.description, t.type, !!t.call, t.ended])).toEqual([
+      ["b1", "Start the dev server", "local_bash", true, undefined],
+      ["m1", "", "monitor_mcp", false, undefined],
+      ["task-ag", "Count lines in cn.ts", "local_agent", true, undefined],
+    ]);
+    const before = b.tasks;
+    // The end of one that didn't start here changes nothing.
+    b.add([task("task_notification", { task_id: "gone", status: "stopped" })]);
+    expect(b.tasks).toBe(before);
+    b.add([
+      task("task_notification", { task_id: "b1", tool_use_id: "bg", status: "failed" }),
+      ended("ag", "3"),
+    ]);
+    expect(b.tasks.map((t) => t.ended)).toEqual(["failed", undefined, "completed"]);
+    expect(b.tasks).not.toBe(before);
+    // The session stops, and what still ran with it.
+    b.add([ev("status", { status: "stopped" })]);
+    expect(b.tasks.map((t) => t.ended)).toEqual(["failed", "stopped", "completed"]);
+  });
+
+  it("ends the tasks of a Claude Code that restarted, crashed or was stopped", () => {
+    for (const code of ["claude_restarted", "claude_crashed", "turn_cut_off", "background_tasks_stopped"]) {
+      const b = new TranscriptBuilder();
+      b.add([
+        assistant("m1", [{ type: "tool_use", id: "bg", name: "Bash", input: { command: "sleep 99" } }]),
+        task("task_started", { task_id: "b1", tool_use_id: "bg", task_type: "local_bash" }),
+        ev("notice", { level: "warn", code, message: "…" }),
+      ]);
+      expect([code, b.tasks[0]?.ended]).toEqual([code, "stopped"]);
+    }
+    // Other notices leave them running.
+    const b = new TranscriptBuilder();
+    b.add([
+      task("task_started", { task_id: "b1", task_type: "local_bash" }),
+      ev("notice", { level: "info", code: "memory_saved", message: "…" }),
+    ]);
+    expect(b.tasks[0]?.ended).toBeUndefined();
+  });
+
+  it("knows a task's call in a subagent's work", () => {
+    const b = new TranscriptBuilder();
+    b.add([
+      ...delegate("outer"),
+      assistant(
+        "s1",
+        [{ type: "tool_use", id: "w", name: "Bash", input: { command: "make watch" } }],
+        "outer",
+      ),
+      task("task_started", { task_id: "w1", tool_use_id: "w", task_type: "local_bash" }),
+    ]);
+    const inner = (b.items[0] as Tool).agent?.steps.find((s) => s.kind === "tool") as Tool;
+    expect(b.tasks.find((t) => t.id === "w1")?.call).toBe(inner.key);
+  });
+
   it("shows a state when a branch changes, and keeps the newest", () => {
     const b = new TranscriptBuilder();
     const git = (head: string, ahead: number, files: number, pushed = false): G.GitState => ({

@@ -396,6 +396,113 @@ describe("the new session page", () => {
     expect(p.container.querySelector(".your-turn")).not.toBeNull();
   });
 
+  it("names the background task it waits for, and opens into a list of them that goes to each", async () => {
+    const scrolled = vi.fn();
+    vi.stubGlobal("scrollTo", scrolled);
+    const p = page();
+    p.snapshot(
+      [
+        ev("user_message", { text: "Start the dev stack, then wait for it", source: "web" }),
+        assistant("m-bg", [
+          {
+            type: "tool_use",
+            id: "bg1",
+            name: "Bash",
+            input: { command: "npm run dev", description: "Start the dev stack", run_in_background: true },
+          },
+        ]),
+        ev("claude", {
+          type: "system",
+          subtype: "task_started",
+          task_id: "t1",
+          tool_use_id: "bg1",
+          description: "Start the dev stack",
+          task_type: "local_bash",
+          is_backgrounded: true,
+        }),
+        result("bg1", "Command running in background with ID: t1"),
+        assistant("m-said", [{ type: "text", text: "It runs: I'll wait for it." }]),
+        ev("claude", { type: "result", subtype: "success", duration_ms: 9_000, is_error: false, result: "" }),
+      ],
+      { ...session("idle"), status_reason: "Waiting for a background task" },
+    );
+    const line = p.container.querySelector(".now-line");
+    expect(line?.textContent).toContain("Waiting for");
+    expect(line?.textContent).toContain("Start the dev stack");
+    const toggle = line?.querySelector<HTMLButtonElement>("button[aria-expanded]");
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    act(() => toggle?.click());
+    const list = () => p.container.querySelector('[role="dialog"][aria-label="In the background"]');
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+    expect(list()?.textContent).toContain("1 running");
+    expect(list()?.textContent).toContain("npm run dev");
+    // Escape puts it away, and the focus goes back to the line.
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(list()).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+    // A task goes to the call that started it, which opens to what it ran.
+    act(() => toggle?.click());
+    expect(p.container.querySelector('[data-find^="cmd:"]')).toBeNull();
+    act(() => list()?.querySelector<HTMLButtonElement>("li button")?.click());
+    expect(list()).toBeNull();
+    await act(() => new Promise((r) => setTimeout(r, 100)));
+    expect(p.container.querySelector('[data-find^="cmd:"]')?.textContent).toContain("npm run dev");
+    expect(scrolled).toHaveBeenCalled();
+  });
+
+  it("looks further back for the background tasks it waits for that started before what loaded", () => {
+    const p = page();
+    p.hear({
+      type: "snapshot",
+      session: { ...session("idle"), status_reason: "Waiting for a background task" },
+      role: "owner",
+      events: turn("Watch the deploy"),
+      has_more_before: true,
+      next_seq: seq + 1,
+      live: [],
+      viewers: [],
+      runner_connected: true,
+    });
+    // It doesn't know which: its status says.
+    const line = p.container.querySelector(".now-line");
+    expect(line?.textContent).toContain("Waiting for a background task");
+    act(() => line?.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click());
+    expect(p.container.querySelector('[aria-label="In the background"]')?.textContent).toContain(
+      "Looking further back for it",
+    );
+  });
+
+  it("shows a thought streaming in once, above the message box, where its tokens count up in place", async () => {
+    const p = page();
+    p.snapshot([ev("user_message", { text: "Think it through", source: "web" })], session("running"));
+    const stream = (event: unknown) => p.hear({ type: "stream", event } as unknown as G.ViewerServer);
+    stream({ type: "stream_event", event: { type: "message_start", message: { id: "m-think" } } });
+    stream({
+      type: "stream_event",
+      event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+    });
+    stream({ type: "system", subtype: "thinking_tokens", estimated_tokens: 4180 });
+    await act(() => new Promise((r) => setTimeout(r, 700)));
+    const line = () => p.container.querySelector(".now-line");
+    // What shows once what rolls away has gone.
+    const shown = () => {
+      const copy = line()?.cloneNode(true) as HTMLElement | undefined;
+      for (const gone of copy?.querySelectorAll(".animate-now-out, .animate-digit-out") ?? []) gone.remove();
+      return copy?.textContent ?? "";
+    };
+    expect(shown()).toContain("Thinking");
+    expect(shown()).toContain("4.2K tokens");
+    // Not in the transcript as well.
+    expect(p.container.querySelector(".turns")?.textContent).not.toContain("Thinking");
+    // As it goes on, its figures roll where they are: the step stays.
+    const step = line()?.querySelector(".now-row > span:nth-child(2) > span");
+    stream({ type: "system", subtype: "thinking_tokens", estimated_tokens: 4310 });
+    expect(shown()).toContain("4.3K tokens");
+    expect(line()?.querySelector(".now-row > span:nth-child(2) > span")).toBe(step);
+  });
+
   it("shows only the conversation when asked: people's messages and the agent's words", () => {
     const p = page();
     p.snapshot(turn("Fix the flaky login test"));

@@ -703,7 +703,7 @@ export function LiveTurnView({
   disk,
   inRun,
   textClassName,
-  showWorking = true,
+  nowLine = false,
 }: {
   live: LiveTurn;
   status?: G.SessionStatus;
@@ -715,8 +715,12 @@ export function LiveTurnView({
   inRun?: boolean;
   /** For the words it writes as they come, which the new session page sets in from its thread. */
   textClassName?: string;
-  /** The line that says the agent works, between its steps: the new session page says so elsewhere. */
-  showWorking?: boolean;
+  /**
+   * The page says what the agent does at this moment in a line of its own (the new session page's,
+   * now-line.tsx): the thoughts and calls that stream in, and that it works between its steps,
+   * show there and not here. Its words as it writes them show here still.
+   */
+  nowLine?: boolean;
 }) {
   const blocks = live.blocks;
   const working = status === "running" && !stall;
@@ -725,7 +729,7 @@ export function LiveTurnView({
       {blocks.map((b) =>
         b.type === "text" ? (
           <LiveText key={`live-${b.index}`} text={b.text} writing={!stall} className={textClassName} />
-        ) : inRun ? null : b.type === "thinking" ? (
+        ) : inRun || nowLine ? null : b.type === "thinking" ? (
           <div key={`live-${b.index}`} className="flex min-h-8 items-center gap-2.5 py-1 text-[13.5px]">
             <RailIcon className="text-violet/80">
               <ThoughtIcon />
@@ -744,7 +748,7 @@ export function LiveTurnView({
       )}
       {stall && <StallNotice stall={stall} />}
       {disk && <DiskNotice disk={disk} />}
-      {showWorking && working && !blocks.some((b) => !b.done) && (
+      {!nowLine && working && !blocks.some((b) => !b.done) && (
         <div className="flex items-center gap-2.5 py-2 text-[12.5px] text-ink-3">
           <RailIcon>
             <span className="relative flex size-2">

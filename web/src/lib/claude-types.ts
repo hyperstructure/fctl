@@ -117,7 +117,11 @@ export interface TaskMessage extends ClaudeMessage {
   tool_use_id?: string;
   /** `local_agent` for a subagent, `local_bash` for a shell command, … */
   task_type?: string;
+  /** What it does, in Claude Code's words: the command's description, or the subagent's. */
+  description?: string;
   is_backgrounded?: boolean;
+  /** Claude Code's own housekeeping (consolidating its memory), not the agent's work. */
+  ambient?: boolean;
   /** How it ended: `completed`, `failed`, `stopped`. */
   status?: string;
   /** A subagent's last words, as it ended. */

@@ -6,8 +6,11 @@ import { CircleCheck, CircleSlash, ListTree, OctagonX, Sparkle, TriangleAlert } 
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { Avatar, Logo, Menu } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { findables } from "@/lib/find";
 import { agoShort, duration, stamp } from "@/lib/format";
+import type { Item } from "@/lib/transcript";
 import { type Turn, type TurnFacts, turnTitle, turnTook } from "@/lib/turns";
+import type { Revealer } from "./find";
 
 /** Where the reader is among the turns: the one they are in, and whether its start is out of sight above. */
 export interface TurnPlace {
@@ -89,6 +92,73 @@ export function useGoToTurn(
       window.scrollTo({ top: Math.max(0, top), behavior: reduce ? "instant" : "smooth" });
     },
     [root, header, letGo],
+  );
+}
+
+/** Lights a line up for a moment, as a row that moved does: where the page went. */
+function light(el: HTMLElement) {
+  const done = (e: AnimationEvent) => {
+    if (e.target !== el) return;
+    el.classList.remove("animate-row-moved");
+    el.removeEventListener("animationend", done);
+  };
+  el.classList.remove("animate-row-moved");
+  void el.offsetWidth;
+  el.classList.add("animate-row-moved");
+  el.addEventListener("animationend", done);
+}
+
+/** How many frames the page waits for a line to show once what folds it opens. */
+const FRAMES = 30;
+
+/**
+ * Goes to the call `key` in the transcript of `root`: what folds it opens (its run, the subagent
+ * whose work it is), and so does the call, to what it ran and what came of it; then its line comes
+ * in under the header, a little of what came before above it, and lights up for a moment. `letGo`
+ * lets go of the page's bottom first, which it keeps in view while the agent works.
+ */
+export function useGoToCall(
+  root: RefObject<HTMLElement | null>,
+  header: RefObject<HTMLElement | null>,
+  letGo: () => void,
+  reveal: Revealer,
+  items: Item[],
+  cwd?: string,
+) {
+  const latest = useRef({ items, cwd });
+  useEffect(() => {
+    latest.current = { items, cwd };
+  });
+  return useCallback(
+    (key: string) => {
+      const { items, cwd } = latest.current;
+      const line = `line:${key}`;
+      const found = findables(items, cwd).find((f) => f.id === line);
+      const before = reveal.all;
+      const wanted = new Map(before);
+      for (const [k, how] of found?.reveal ?? []) if (wanted.get(k) !== "open") wanted.set(k, how);
+      wanted.set(key, "open");
+      reveal.set(wanted);
+      let frames = 0;
+      const go = () => {
+        const el = root.current?.querySelector<HTMLElement>(`[data-find="${CSS.escape(line)}"]`);
+        if (!el && frames++ < FRAMES) {
+          requestAnimationFrame(go);
+          return;
+        }
+        // Opened, the lines keep what they show: finding can have the reveals back.
+        if (reveal.all === wanted) reveal.set(before);
+        if (!el) return;
+        const row = el.closest<HTMLElement>("button") ?? el;
+        letGo();
+        const reduce = matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        const top = row.getBoundingClientRect().top + window.scrollY - viewTop(header.current) - 40;
+        window.scrollTo({ top: Math.max(0, top), behavior: reduce ? "instant" : "smooth" });
+        light(row);
+      };
+      requestAnimationFrame(go);
+    },
+    [root, header, letGo, reveal],
   );
 }
 
