@@ -383,13 +383,15 @@ its VM, and nothing outside it except through these channels:
   that run on their subscription stop, get no more Claude or GitHub tokens,
   and a message to one doesn't start it on their subscription again (nor
   on their runners, with the project's secrets); resuming it runs it on the
-  resumer's. The token is in the sandbox, where the agent can read it, so
+  resumer's. Unless its owner keeps it out of sandboxes (below), the token
+  is in the sandbox, where the agent can read it, so
   whoever can message a session's agent (the project's editors, and people
   it is shared with to message) can have it hand over the token of the
   person the session runs as, as they can the session's GitHub tokens and
   the project's secrets: a full Claude login's token lasts hours, one from
   `claude setup-token` a year. Run sessions on a token from `claude
-  setup-token` only where you would trust those people with it. Hosts
+  setup-token` only where you would trust those people with it, or keep it
+  out of sandboxes. Hosts
   replace every Claude token they know of, and anything shaped like a
   Claude access token (`sk-ant-oat…`), with `[Claude token, redacted by
   fctl]`, and anything shaped like a GitHub installation token (`ghs_…`)
@@ -398,6 +400,21 @@ its VM, and nothing outside it except through these channels:
   repeats in its reply, stays out of the transcript and of what viewers
   see live, also after the host restarted; one it is asked to send
   elsewhere, or to write in another form (spaced out, encoded), doesn't.
+- **Keeping the Claude token out of sandboxes** (Settings → Claude, `fctl
+  claude set --stand-in on`; experimental, off by default): Claude gets a
+  stand-in that Anthropic refuses, and the host of the runner keeps the
+  token and puts it in as Claude's requests leave for `api.anthropic.com`,
+  on a channel that only that session's sandbox has
+  ([Architecture](architecture.md#keeping-the-token-out-of-sandboxes)).
+  Nothing in the sandbox has the token then, so an agent, root in its
+  sandbox or not, can neither read it nor send it anywhere, whoever directs
+  it. While the session runs, it can still use the token through the host
+  for requests to the Anthropic API, as Claude does: its plan's usage, and
+  whatever the token's scopes allow there. Claude trusts a certificate
+  authority of the host's own for the API's name alone, whose key never
+  leaves the host. Turning it off again takes confirming it's you, where
+  the instance asks for that. Hosts of an fctl from before it ignore it and
+  give the agent the token, until they update themselves.
 - **claude.ai connectors.** A session on a full Claude login gets the
   connectors its owner has connected on claude.ai (mail, files, docs, chat),
   and the agent can use them with that person's access without asking, also
@@ -556,9 +573,12 @@ gets no runner token. Registering a runner for a workspace and replacing a
 runner's token take confirming it's you, where the instance asks for
 that, as adding one to a workspace does. Hosts receive a
 session's credentials only while it runs, and keep nothing secret on disk
-but their runner token (`~/.config/fctl/host-token`, mode 0600) and, when
+but their runner token (`~/.config/fctl/host-token`, mode 0600), when
 their owner keeps it there, their owner's Claude token
-(`~/.config/fctl/claude-token`, mode 0600).
+(`~/.config/fctl/claude-token`, mode 0600), and, once a session keeps its
+Claude token out of its sandbox, the key of the certificate authority whose
+certificate for `api.anthropic.com` that sandbox's Claude trusts
+(`~/.config/fctl/claude-relay-ca.pem`, mode 0600).
 
 **Claude tokens on runners.** Someone who would rather not give fctl their
 Claude token keeps it on their runners (`fctl host claude set-token`) and
@@ -575,7 +595,8 @@ token, in every workspace, whatever **Only on my runners** says, and each
 of those hosts puts in the token it keeps, so no one else's machine ever
 has it. Without one of those runners online, the sessions wait. What it
 doesn't change: the agent has the token in its environment, as above, so
-the people who may direct it can still have it handed over; and the
+the people who may direct it can still have it handed over, unless its
+owner also keeps it out of sandboxes; and the
 control plane decides what runs on a runner, so one taken over could start
 a session there to the same end. The token is safe at rest and from other
 people's machines, not from the sessions that run on it. Removing it from

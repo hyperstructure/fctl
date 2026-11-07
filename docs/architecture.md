@@ -3060,7 +3060,9 @@ supported:
 | Token on your runners | `claude setup-token`, then `fctl host claude set-token` on each of your runners | your runners only | no (inference-only scope) |
 
 Sandboxes receive only an access token (`CLAUDE_CODE_OAUTH_TOKEN`, plus the
-granted scopes in `CLAUDE_CODE_OAUTH_SCOPES`). When it expires, Claude asks its
+granted scopes in `CLAUDE_CODE_OAUTH_SCOPES`), or a stand-in for it where its
+owner keeps it out of sandboxes
+([Keeping the token out of sandboxes](#keeping-the-token-out-of-sandboxes)). When it expires, Claude asks its
 host with the `oauth_token_refresh` control request; fctl-agent forwards it to
 the control plane, which refreshes once per user and answers. With a full
 login, fctl-agent enables Remote Control with the `remote_control` control
@@ -3160,13 +3162,76 @@ be one that goes on, waits for the next delta, and goes out before the
 block ends if it doesn't (`claude_token::StreamRedactor`). The agent has the token in its
 environment all the same, so whoever directs it can still have it send
 the token elsewhere, or write it in a form the redaction doesn't know
-([Security](security.md#sandboxes)).
+([Security](security.md#sandboxes)), unless its owner keeps it out of
+sandboxes (below).
 
 Guards against API billing: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `ANTHROPIC_BASE_URL`, Bedrock/Vertex/Foundry switches and `apiKeyHelper` never
 reach Claude; the `system/init` message must report no API key source; a
 `rate_limit_event` showing overage use interrupts the session and pauses it
 until the limit resets.
+
+### Keeping the token out of sandboxes
+
+People who would rather their agents never had their Claude token turn on
+**Keep my token out of sandboxes** (Settings → Claude, `fctl claude set
+--stand-in on`, `PATCH /api/v1/auth/me` with `claude_stand_in`), which is
+experimental and off by default
+([ADR 0079](adr/0079-people-can-keep-their-claude-token-out-of-sandboxes.md)).
+It applies to all their connections, for the sessions that start after they
+change it. Turning it off again is a sensitive action
+([Confirming it's you](#confirming-its-you)).
+
+1. **The control plane flags the credential.** `spec::claude_credential`
+   sets `ClaudeCredential.stand_in` from the owner's `users.claude_stand_in`,
+   in the spec and in the fresh credentials FleetDO answers with. It still
+   sends the token (for one kept on the person's runners, the host fills it
+   in), since the host needs it.
+2. **The host keeps the token, and the agent gets a stand-in.** To an agent
+   that can relay (`FEATURE_CLAUDE_RELAY` in its hello), the host gives
+   `CLAUDE_STAND_IN`, a fixed token that Anthropic refuses, in place of the
+   token in the spec and in every credential it passes on, with
+   `AgentConfig.claude_relay`: the certificate of the host's own
+   certificate authority (`claude_relay::Authority`), whose key stays in
+   `claude-relay-ca.pem` next to `host.toml` (mode 0600). It signs one
+   certificate, for `api.anthropic.com` (its name constraints say so too).
+   An agent too old to relay fails the session rather than get the token.
+3. **fctl-agent proxies Claude's HTTPS** (`fctl-agent`'s `relay`). It
+   listens on a loopback port, which it keeps across restarts in its state,
+   and gives Claude `HTTPS_PROXY` and `https_proxy` there, a `NO_PROXY` that
+   never covers `api.anthropic.com`, `NODE_EXTRA_CA_CERTS` with the host's
+   certificate after any the session gave Claude, and the stand-in as
+   `CLAUDE_CODE_OAUTH_TOKEN`, whatever came. A `CONNECT api.anthropic.com:443`
+   waits for the host: fctl-agent sends `AgentToHost::ClaudeConnection`,
+   the host opens a channel to `agent.relay.sock` beside its own socket, as
+   it attaches (`fctl-agent attach` over the driver's exec channel,
+   `driver::Socket::Relay`), and names the connection on its first line,
+   and fctl-agent joins the two. Everything else Claude and its commands
+   reach goes straight out, or through the proxy the session's own
+   `https_proxy` names, except the hosts its `no_proxy` lists
+   (`relay::Upstream`).
+4. **The host puts the token in** (`claude_relay::serve`). On the channel
+   it answers Claude's TLS as `api.anthropic.com`, reads each HTTP/1.1
+   request, replaces `Authorization: Bearer <stand-in>` with the session's
+   token, and sends the request to `https://api.anthropic.com` over TLS
+   that checks the API's certificate against the roots the host trusts.
+   Requests without the stand-in go on as they are, and upgrades are
+   refused. A fresh token the session gets replaces the one it had. A host
+   that restarts learns from the agent's hello that it relays
+   (`AgentHello.claude_relay`) and asks the control plane for the session's
+   token again; requests wait for it up to a minute.
+
+Nothing in the sandbox has the token then: not Claude's environment or
+memory, nor fctl-agent's. An agent, root in its sandbox or not, has only
+the stand-in to hand over, and can use the token only through the host,
+for requests to the Anthropic API, while its session runs. Claude reaches
+the API only while the host runs, and retries while it restarts; each of
+Claude's connections takes an exec of the driver's. Remote Control hasn't
+been tried with it, and claude.ai connectors reach
+`mcp-proxy.anthropic.com`, whose requests get no token. Hosts from before
+it give the agent the token until they update themselves. Debug builds of
+the host send Claude's requests to `FCTL_DEV_CLAUDE_API` where it is set
+([Development](development.md)); release builds always reach the API.
 
 ### Plan usage
 

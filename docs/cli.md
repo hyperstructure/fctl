@@ -725,6 +725,17 @@ fctl host claude remove-token    # sessions running here keep it until they stop
 `claude_token_file` in `host.toml` keeps it somewhere else, such as a file
 your secrets manager writes.
 
+To keep your token out of sandboxes, so that agents can neither read it nor
+send it anywhere (experimental, for the sessions that start after you change
+it):
+
+```sh
+fctl claude set --stand-in on    # Claude gets a stand-in; the runner puts your token in on its requests to the Anthropic API
+fctl claude set --stand-in off   # sandboxes get your token again (may ask you to confirm it's you)
+```
+
+Remote Control and claude.ai connectors may not work while it's on.
+
 ## Hosts
 
 `fctl host` turns the machine you run it on into a [runner](#runners),

@@ -84,3 +84,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0076](0076-sessions-hear-when-their-runner-runs-short-of-disk-and-vm-sandboxes-pause-before-it-fills.md) | Sessions hear when their runner runs short of disk, and VM sandboxes pause before it fills |
 | [0077](0077-sessions-wait-for-a-runner-whose-driver-is-ready.md) | Sessions wait for a runner whose driver is ready |
 | [0078](0078-agents-ask-people-with-fctl-ask.md) | Agents ask people with `fctl ask` |
+| [0079](0079-people-can-keep-their-claude-token-out-of-sandboxes.md) | People can keep their Claude token out of sandboxes |
