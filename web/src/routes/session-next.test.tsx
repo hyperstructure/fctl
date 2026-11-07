@@ -240,6 +240,32 @@ describe("the new session page", () => {
     expect(parts()).toBe(all);
   });
 
+  it("marks where what came while the reader was away starts, until they leave again", () => {
+    const p = page();
+    p.snapshot(turn("Fix the flaky login test"));
+    const visibility = (v: "hidden" | "visible") =>
+      act(() => {
+        Object.defineProperty(document, "visibilityState", { value: v, configurable: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    visibility("hidden");
+    const later = turn("Now the signup test");
+    p.hear({ type: "events", events: later });
+    visibility("visible");
+    const line = p.container.querySelector(".new-line");
+    expect(line).not.toBeNull();
+    // Just above the card of the turn that came meanwhile.
+    expect(line?.closest("[data-turn]")?.textContent).toContain("Now the signup test");
+    // What comes once the reader is back isn't marked as new.
+    p.hear({ type: "events", events: turn("And the reset test") });
+    expect(p.container.querySelectorAll(".new-line")).toHaveLength(1);
+    expect(line?.closest("[data-turn]")?.textContent).toContain("Now the signup test");
+    // Leaving again starts over: nothing came yet.
+    visibility("hidden");
+    expect(p.container.querySelector(".new-line")).toBeNull();
+    visibility("visible");
+  });
+
   it("marks the parts that come after it first showed, whose thread draws as they come", () => {
     const p = page();
     const first = turn("Fix the flaky login test");

@@ -941,8 +941,9 @@ function useShows(
  * since. Nothing came: nothing to mark.
  */
 function useAway(items: Item[], session: string): { from?: string; count: number } {
-  // When the page went out of sight: how many items there were, and the last part then.
-  const left = useRef<{ items: number; part?: string } | undefined>(undefined);
+  // When the page went out of sight: how many items there were, the last part then, and whether
+  // the reader is back, after which what comes isn't what came while they were away.
+  const left = useRef<{ items: number; part?: string; back: boolean } | undefined>(undefined);
   const [away, setAway] = useState<{ from?: string; count: number }>({ count: 0 });
   const latest = useRef(items);
   latest.current = items;
@@ -950,16 +951,16 @@ function useAway(items: Item[], session: string): { from?: string; count: number
     const seen = () => {
       if (document.visibilityState === "hidden") {
         const ps = parts(latest.current);
-        left.current = { items: latest.current.length, part: ps[ps.length - 1]?.key };
+        left.current = { items: latest.current.length, part: ps[ps.length - 1]?.key, back: false };
         setAway({ count: 0 });
-      }
+      } else if (left.current) left.current.back = true;
     };
     document.addEventListener("visibilitychange", seen);
     return () => document.removeEventListener("visibilitychange", seen);
   }, []);
   useEffect(() => {
     const l = left.current;
-    if (!l || items.length <= l.items) return;
+    if (!l || l.back || items.length <= l.items) return;
     const ps = parts(items);
     const i = ps.findIndex((p) => p.key === l.part);
     const from = i >= 0 ? ps[i + 1]?.key : undefined;
