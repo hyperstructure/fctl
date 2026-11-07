@@ -194,11 +194,19 @@ export function iconOf(p: Fits & { icon?: G.ProjectIcon }): IconChoice & { chose
   if (!own) return { ...fits, chosen: false };
   return {
     name: byName.has(own.name) ? own.name : fits.name,
-    color: own.color ?? "ink",
-    style: own.style ?? "outline",
+    // A color or a style from a newer control plane draws as ink lines.
+    color: knownColor(own.color),
+    style: knownStyle(own.style),
     chosen: true,
   };
 }
+
+/** `c` when this version of the app draws it, else ink. */
+export const knownColor = (c: string | undefined): G.WorkspaceColor =>
+  COLOR_ORDER.includes(c as G.WorkspaceColor) ? (c as G.WorkspaceColor) : "ink";
+/** `s` when this version of the app draws it, else outline. */
+export const knownStyle = (s: string | undefined): G.IconStyle =>
+  ICON_STYLES.some((x) => x.style === s) ? (s as G.IconStyle) : "outline";
 
 /** Whether two icons draw the same. */
 export const sameIcon = (a: G.ProjectIcon | undefined, b: G.ProjectIcon | undefined) =>

@@ -98,10 +98,10 @@ describe("choosing a project's icon", () => {
     expect(document.activeElement).toBe(second);
     p.key(listbox, "Enter");
     expect(second?.getAttribute("aria-selected")).toBe("true");
-    // ⌘Enter saves from the grid.
+    // ⌘Enter saves from the grid, once.
     p.key(listbox, "Enter", { metaKey: true });
-    expect(p.onSave).toHaveBeenCalledWith(
-      expect.objectContaining({ name: second?.getAttribute("aria-label") ? expect.any(String) : "" }),
-    );
+    expect(p.onSave).toHaveBeenCalledTimes(1);
+    // The second icon that fits a shop.
+    expect(p.onSave).toHaveBeenCalledWith({ name: "bag", color: "ink", style: "outline" });
   });
 });

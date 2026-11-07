@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type * as G from "@/gen";
 import { ICONS } from "./project-icon-data";
 import { fittingIcon, iconDef, iconOf, sameIcon, searchIcons, suggestIcons } from "./project-icons";
 
@@ -76,6 +77,17 @@ describe("project icons", () => {
       chosen: true,
     });
     expect(iconOf({ name: "Shop" })).toMatchObject({ name: "store", chosen: false });
+  });
+
+  it("draws a color or a style it doesn't know as ink lines", () => {
+    // From a control plane newer than the page.
+    const icon = { name: "rocket", color: "teal", style: "neon" } as unknown as G.ProjectIcon;
+    expect(iconOf({ name: "Shop", icon })).toEqual({
+      name: "rocket",
+      color: "ink",
+      style: "outline",
+      chosen: true,
+    });
   });
 
   it("finds icons by name, label and tags, the best matches first", () => {

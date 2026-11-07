@@ -78,6 +78,8 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
+        // Licence notices (/*! … */, @license) stay with what they cover: IconMCP's glyphs, say.
+        comments: { legal: true },
         manualChunks(id) {
           if (id.includes("node_modules/react") || id.includes("scheduler")) return "react";
           if (id.includes("@tanstack")) return "tanstack";

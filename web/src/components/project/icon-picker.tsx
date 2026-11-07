@@ -3,7 +3,7 @@
 // does it all: type to search, the arrows move through the icons, Enter picks one, ⌘Enter saves.
 
 import { Search, X } from "lucide-react";
-import { type KeyboardEvent, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Dialog, Kbd } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
@@ -110,9 +110,15 @@ function Picker({
     setFocus(0);
   }
   const changed = fitting ? current.chosen : !current.chosen || !sameIcon(draft, current);
+  // Once until the save settles: two keys in one tick would otherwise both save.
+  const sent = useRef(false);
+  useEffect(() => {
+    if (!saving) sent.current = false;
+  }, [saving]);
   const save = () => {
-    if (saving) return;
+    if (saving || sent.current) return;
     if (!changed) return onCancel();
+    sent.current = true;
     onSave(fitting ? null : draft);
   };
   const pick = (name: string) => {
@@ -178,7 +184,8 @@ function Picker({
       else moveTo(up);
     } else if (e.key === "Home") moveTo(0);
     else if (e.key === "End") moveTo(flat.length - 1);
-    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) save();
+    // ⌘Enter goes on to the picker, which saves.
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) return;
     else if (e.key === "Enter" || e.key === " ") {
       const name = flat[i];
       if (name) pick(name);
@@ -373,6 +380,8 @@ function Picker({
                           onClick={() => pick(name)}
                           onDoubleClick={() => {
                             pick(name);
+                            if (saving || sent.current) return;
+                            sent.current = true;
                             onSave({ ...draft, name });
                           }}
                           className={cn(

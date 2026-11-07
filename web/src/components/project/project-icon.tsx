@@ -5,7 +5,15 @@ import { createElement, type ReactNode, useId } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import type { IconElement } from "@/lib/project-icon-data";
-import { type Fits, ICON_COLORS, type IconChoice, iconDef, iconOf } from "@/lib/project-icons";
+import {
+  type Fits,
+  ICON_COLORS,
+  type IconChoice,
+  iconDef,
+  iconOf,
+  knownColor,
+  knownStyle,
+} from "@/lib/project-icons";
 
 function draw(els: IconElement[], mask: string, prefix = ""): ReactNode[] {
   return els.map(([tag, attrs, ...kids], i) => {
@@ -47,9 +55,9 @@ export function Glyph({
       strokeLinejoin="round"
       aria-hidden="true"
       className={cn("shrink-0", className)}
-      style={color ? { color: ICON_COLORS[color].ink } : undefined}
+      style={color ? { color: ICON_COLORS[knownColor(color)].ink } : undefined}
     >
-      {def && draw(def[style], mask)}
+      {def && draw(def[knownStyle(style)], mask)}
     </svg>
   );
 }
@@ -82,7 +90,7 @@ export function ProjectIcon({
         className={cn(muted && "text-ink-4", className)}
       />
     );
-  const c = ICON_COLORS[icon.color];
+  const c = ICON_COLORS[knownColor(icon.color)];
   return (
     <span
       className={cn("inline-flex shrink-0 items-center justify-center", className)}

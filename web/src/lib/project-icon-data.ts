@@ -1,29 +1,32 @@
-// Project icons: a curated part of IconMCP (https://iconmcp.com), 6,800 icons drawn on a
-// 16-unit grid in outline, solid and duotone. Generated from its MCP server's get_icon (16 px,
-// its default 1.25 stroke and 2 corner radius): each style's shapes, without the <svg> around
-// them, for ProjectIcon to draw. The mask of a solid icon is named "$m", which ProjectIcon
-// makes unique on the page. Don't edit by hand.
-//
-// IconMCP's icons are under the MIT licence:
-//
-// Copyright (c) 2026 UI8
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software
-// and associated documentation files (the "Software"), to deal in the Software without
-// restriction, including without limitation the rights to use, copy, modify, merge, publish,
-// distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or
-// substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
-// BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-//
-// A few of its hand icons follow shapes from Phosphor and Tabler (MIT) and Lucide (ISC).
+/*!
+ * Projects' icons: a curated part of IconMCP (https://iconmcp.com), 6,800 icons drawn on a 16-unit
+ * grid in outline, solid and duotone. Generated from its MCP server's get_icon (16 px, its default
+ * 1.25 stroke and 2 corner radius): each style's shapes, without the <svg> around them, for
+ * ProjectIcon to draw. The mask of a solid icon is named "$m", which ProjectIcon makes unique on the
+ * page. Don't edit by hand. This comment stays in the built app (/*!), with the glyphs it covers.
+ *
+ * IconMCP's icons are under the MIT licence:
+ *
+ * Copyright (c) 2026 UI8
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+ * associated documentation files (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge, publish, distribute,
+ * sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all copies or
+ * substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+ * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+ * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+ * OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * IconMCP's licence adds that a few of its hand icons follow shapes from Phosphor and Tabler (MIT)
+ * and Lucide (ISC); none of those is among the glyphs here.
+ */
 
 /** An SVG element: its tag, its attributes (as React names them) and its children. */
 export type IconElement = [tag: string, attrs: Record<string, string | number>, ...children: IconElement[]];
