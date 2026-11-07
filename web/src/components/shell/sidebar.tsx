@@ -1,7 +1,7 @@
 // The sidebar, as a tree: the Agent Floor, what needs you and the pull requests ready for review
 // at the top; then each workspace with its projects, each with its icon, its sessions at work and
 // those that ended in the last hour; for the project a page is about, its own pull requests and
-// tasks too. People drag workspaces and projects into their order, drag the sidebar wider, and fold
+// tickets too. People drag workspaces and projects into their order, drag the sidebar wider, and fold
 // it into a rail of icons (⌘\).
 
 import { useQuery } from "@tanstack/react-query";
@@ -639,7 +639,7 @@ function WorkspaceGroup({
 /**
  * A project, which people drag by its row (its sessions move with it): its icon, its name and its
  * sessions at work. The one the page is about opens into its own links, its pull requests and its
- * tasks, above its sessions. Its maintainers change its icon from the row.
+ * tickets, above its sessions. Its maintainers change its icon from the row.
  */
 function ProjectRow({
   project: p,
@@ -737,7 +737,7 @@ function ProjectRow({
                 search={{ tab: "tickets" }}
                 active={page && tab === "tickets"}
                 icon={<ListTodo className="size-3.5" />}
-                label="Tasks"
+                label="Tickets"
                 onNavigate={onNavigate}
               />
               {sessions.length > 0 && <div className="mx-2 my-1 h-px bg-line" />}
