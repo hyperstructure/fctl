@@ -550,7 +550,10 @@ async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<Valid> 
         let secret = ctx.keys()?.open(&totp_aad(&user.id), &attempt.secret_enc)?;
         return match totp::check(&secret, &code, ctx.now, attempt.last_step) {
             totp::Check::Valid(step) => Ok(Valid::Totp { step }),
-            totp::Check::Used => Err(code_used()),
+            totp::Check::Used => {
+                forgive_attempt(ctx, &user.id, Some(attempt.failures)).await;
+                Err(code_used())
+            }
             totp::Check::Wrong => Err(match after_wrong(ctx, user, attempt.failures).await {
                 Result::Ok(e) | Err(e) => e,
             }),
@@ -622,6 +625,30 @@ async fn take_attempt(ctx: &Ctx, user_id: &str) -> AppResult<Option<Attempt>> {
     .await
 }
 
+/// Takes back the attempt [`take_attempt`] counted for a code that was
+/// right but used already (sent twice, or used by another request first),
+/// and the wait that attempt started, when it brought the count to
+/// `failures`: only wrong codes count towards a wait.
+async fn forgive_attempt(ctx: &Ctx, user_id: &str, failures: Option<i64>) {
+    let started = failures
+        .and_then(|f| policy::lockout_ms(f.clamp(0, i64::from(u32::MAX)) as u32))
+        .map(|ms| ctx.now + ms);
+    let forgiven = q(
+        &ctx.db,
+        "UPDATE authenticator_apps SET failures = MAX(failures - 1, 0), \
+         locked_until = CASE WHEN locked_until = ?2 THEN NULL ELSE locked_until END \
+         WHERE user_id = ?1",
+        &[s(user_id), crate::db::on(started)],
+    );
+    let done = match forgiven {
+        Ok(q) => q.run().await.map(|_| ()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = done {
+        worker::console_error!("taking back a used code's attempt: {}", e.0.message);
+    }
+}
+
 /// Uses up a code that checked out; fails when another request used it
 /// first.
 async fn use_code(ctx: &Ctx, user: &UserRow, valid: Valid) -> AppResult<CodeUse> {
@@ -637,6 +664,8 @@ async fn use_code(ctx: &Ctx, user: &UserRow, valid: Valid) -> AppResult<CodeUse>
             .run()
             .await?;
             if changed == 0 {
+                // Another request used it first: right all the same.
+                forgive_attempt(ctx, &user.id, None).await;
                 return Err(code_used());
             }
             Ok(CodeUse::Totp)
