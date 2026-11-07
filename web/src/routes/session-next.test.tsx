@@ -316,6 +316,34 @@ describe("the new session page", () => {
     );
   });
 
+  it("marks what came while away when it starts with the turn's end, once", () => {
+    const p = page();
+    p.snapshot(
+      [
+        ev("user_message", { text: "Run the tests", source: "web" }),
+        assistant("m1", [{ type: "text", text: "They pass." }]),
+      ],
+      session("running"),
+    );
+    visibility("hidden");
+    p.hear({
+      type: "events",
+      events: [ev("claude", { type: "result", subtype: "success", duration_ms: 4000, is_error: false })],
+    });
+    visibility("visible");
+    expect(p.container.querySelectorAll(".new-line")).toHaveLength(1);
+    expect(p.container.querySelector(".new-line")?.nextElementSibling?.classList).toContain("thread-end");
+    // A turn that stopped ends with its stop, which also shows as a line of its own: one line still.
+    visibility("hidden");
+    p.hear({ type: "events", events: [ev("user_message", { text: "Again", source: "web" })] });
+    visibility("visible");
+    expect(p.container.querySelectorAll(".new-line")).toHaveLength(1);
+    visibility("hidden");
+    p.hear({ type: "events", events: [ev("status", { status: "stopped", reason: "Stopped by Ada" })] });
+    visibility("visible");
+    expect(p.container.querySelectorAll(".new-line")).toHaveLength(1);
+  });
+
   it("marks the parts that come after it first showed, whose thread draws as they come", () => {
     const p = page();
     const first = turn("Fix the flaky login test");

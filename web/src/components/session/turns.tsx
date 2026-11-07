@@ -201,12 +201,15 @@ export const TurnTranscript = memo(function TurnTranscript({
   // Where what came while the reader was away starts: the line goes before the first row from
   // there on that shows (the conversation alone leaves the agent's work out).
   let lineDue = false;
+  // Once: a stop's key is the turn's end's and a part after it.
+  let lined = false;
   const reached = (key: string) => {
-    if (key === newFrom) lineDue = true;
+    if (key === newFrom && !lined) lineDue = true;
   };
   const lineBefore = (thread: boolean) => {
     if (!lineDue) return;
     lineDue = false;
+    lined = true;
     rows.push(<NewLine key="new-line" thread={thread} />);
   };
   const arrived = (seq: number | undefined) => seq !== undefined && seq > shownUpTo;
@@ -253,6 +256,7 @@ export const TurnTranscript = memo(function TurnTranscript({
       reached(turn.askPart.key);
       const isNew = lineDue;
       lineDue = false;
+      if (isNew) lined = true;
       rows.push(
         <div
           key={turn.askPart.key}
@@ -308,6 +312,8 @@ export const TurnTranscript = memo(function TurnTranscript({
       );
     }
     if (turn.end) {
+      // The turn's result is no part of it, but what came while away may start there.
+      reached(turn.end.key);
       lineBefore(true);
       rows.push(
         <div
