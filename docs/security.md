@@ -10,7 +10,7 @@ trusts.
 |---|---|---|
 | Passwords | argon2id hashes in D1 | nobody can read them back |
 | Authenticator app secrets (two-factor) | encrypted (AES-256-GCM) in D1 | the control plane, to check codes |
-| Recovery codes | SHA-256 hashes in D1 | nobody can read them back |
+| Recovery codes | HMAC-SHA256 hashes in D1, keyed by the master key (older ones SHA-256 hashes, until used or replaced) | nobody can read them back |
 | Passkeys | public keys in D1; the private key never leaves the person's device or password manager | the person, with their fingerprint, face or screen lock |
 | Sessions and tokens | SHA-256 hashes in D1; the secret only with its holder | the holder |
 | Claude credentials | encrypted (AES-256-GCM) in D1, or, for tokens people keep on their runners, only in a file on those runners (mode 0600) | sessions their owner starts |

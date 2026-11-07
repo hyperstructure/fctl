@@ -559,16 +559,23 @@ async fn check_code(ctx: &Ctx, user: &UserRow, typed: &str) -> AppResult<Valid> 
     if app(ctx, &user.id).await?.is_none() {
         return Err(two_factor_off());
     }
-    if let Some(hash) = policy::hash_recovery_code(typed) {
-        let unused: Option<Count> = q(
+    if let Some(code) = policy::normalize_recovery_code(typed) {
+        // Keyed by the master key, or a plain hash from before that.
+        #[derive(Deserialize)]
+        struct Unused {
+            code_hash: String,
+        }
+        let keyed = ctx.keys()?.recovery_hash(&user.id, &code);
+        let plain = fctl_domain::tokens::hash_secret(&code);
+        let unused: Option<Unused> = q(
             &ctx.db,
-            "SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND code_hash = ? AND used_at IS NULL",
-            &[s(&user.id), s(&hash)],
+            "SELECT code_hash FROM recovery_codes WHERE user_id = ? AND code_hash IN (?, ?) AND used_at IS NULL LIMIT 1",
+            &[s(&user.id), s(&keyed), s(&plain)],
         )?
         .first()
         .await?;
-        if unused.is_some_and(|c| c.n > 0) {
-            return Ok(Valid::Recovery { hash });
+        if let Some(u) = unused {
+            return Ok(Valid::Recovery { hash: u.code_hash });
         }
     }
     Err(wrong(ctx, user).await)
@@ -756,8 +763,11 @@ fn recovery_statements(ctx: &Ctx, user_id: &str, codes: &[String]) -> AppResult<
         "DELETE FROM recovery_codes WHERE user_id = ?",
         &[s(user_id)],
     )?];
+    let keys = ctx.keys()?;
     for code in codes {
-        let hash = policy::hash_recovery_code(code).ok_or_else(|| internal("recovery code"))?;
+        let code =
+            policy::normalize_recovery_code(code).ok_or_else(|| internal("recovery code"))?;
+        let hash = keys.recovery_hash(user_id, &code);
         statements.push(q(
             &ctx.db,
             "INSERT INTO recovery_codes (user_id, code_hash, created_at) VALUES (?, ?, ?)",

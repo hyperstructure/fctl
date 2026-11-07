@@ -257,8 +257,9 @@ pub fn normalize_recovery_code(typed: &str) -> Option<String> {
         .then_some(chars)
 }
 
-/// What the database keeps of a recovery code: the SHA-256 of its
-/// normalized form, so it is found however it was typed.
+/// What the database kept of a recovery code before codes were keyed by
+/// the instance's master key: the SHA-256 of its normalized form, so it is
+/// found however it was typed. Such codes still count until used.
 pub fn hash_recovery_code(code: &str) -> Option<String> {
     normalize_recovery_code(code).map(|c| hash_secret(&c))
 }
