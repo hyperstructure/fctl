@@ -31,6 +31,17 @@ interface FeedState {
 export const movesLists = (before: G.Session | undefined, after: G.Session) =>
   !before || before.status !== after.status || before.archived !== after.archived;
 
+/**
+ * Whether a session lists a pull request it didn't: the lists of sessions by their pull requests
+ * (`?pulls=`), which it may not be in yet, come again.
+ */
+export const findsPulls = (before: G.Session | undefined, after: G.Session) => {
+  const urls = (s: G.Session | undefined) =>
+    new Set((s?.pull_requests ?? (s?.pull_request ? [s.pull_request] : [])).map((pr) => pr.url));
+  const had = urls(before);
+  return [...urls(after)].some((u) => !had.has(u));
+};
+
 class Feed {
   state: FeedState = { connected: false, runners: [], sessions: new Map() };
   private listeners = new Set<() => void>();
@@ -126,6 +137,15 @@ class Feed {
           // New sessions and status changes may move lists and change projects' counts; refresh
           // them lazily. Patching them has the rest, as an agent's every step changes its session's
           // summary, and the sidebar's list shows on every page.
+          if (findsPulls(before, msg.session))
+            void queryClient.invalidateQueries({
+              predicate: (q) =>
+                q.queryKey[0] === "sessions" &&
+                typeof q.queryKey[1] === "object" &&
+                q.queryKey[1] !== null &&
+                "pulls" in q.queryKey[1],
+              refetchType: "active",
+            });
           if (movesLists(before, msg.session)) {
             void queryClient.invalidateQueries({ queryKey: ["sessions"], refetchType: "active" });
             void queryClient.invalidateQueries({ queryKey: keys.projects, refetchType: "active" });

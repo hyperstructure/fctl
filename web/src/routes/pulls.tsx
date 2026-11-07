@@ -17,6 +17,8 @@ import {
 } from "@/components/session/pull-request";
 import {
   Avatar,
+  Banner,
+  Button,
   Empty,
   Kbd,
   PullRequestIcon,
@@ -176,7 +178,16 @@ export function PullsPage() {
 
       {/* biome-ignore lint/a11y/noStaticElementInteractions: the arrows move between the rows' links. */}
       <div ref={list} className="mt-6" onKeyDown={onListKey}>
-        {sessions.isPending ? (
+        {sessions.isError ? (
+          <Banner tone="error" className="mt-2">
+            <span className="flex flex-wrap items-center justify-between gap-3">
+              The pull requests didn't load: {sessions.error.message}
+              <Button size="sm" onClick={() => void sessions.refetch()}>
+                Try again
+              </Button>
+            </span>
+          </Banner>
+        ) : sessions.isPending ? (
           <div className="flex flex-col gap-3 pt-2">
             {[0, 1, 2].map((i) => (
               <Skeleton key={i} className="h-14" />
@@ -294,7 +305,10 @@ function Section({
   );
 }
 
-/** Merged and closed ones by when that happened: today, yesterday, this week, earlier. */
+/** When a merged or closed one was merged or closed; an open one, when it last moved. */
+const when = (l: ListedPull) => (stateOf(l) === "open" ? moved(l) : (l.pr.state_changed_at ?? moved(l)));
+
+/** Merged and closed ones by when that happened, newest first: today, yesterday, this week, earlier. */
 function byWhen(list: ListedPull[]): [string, ListedPull[]][] {
   const day = 86_400_000;
   const start = new Date();
@@ -306,13 +320,12 @@ function byWhen(list: ListedPull[]): [string, ListedPull[]][] {
     ["This week", (t) => t >= today - 6 * day],
     ["Earlier", () => true],
   ];
-  const out = new Map<string, ListedPull[]>();
-  for (const l of list) {
-    const t = l.pr.state_changed_at ?? moved(l);
-    const [name] = buckets.find(([, fits]) => fits(t)) ?? ["Earlier"];
-    out.set(name, [...(out.get(name) ?? []), l]);
+  const out = new Map<string, ListedPull[]>(buckets.map(([name]) => [name, []]));
+  for (const l of [...list].sort((a, b) => when(b) - when(a))) {
+    const [name] = buckets.find(([, fits]) => fits(when(l))) ?? ["Earlier"];
+    out.get(name)?.push(l);
   }
-  return [...out.entries()];
+  return [...out.entries()].filter(([, these]) => these.length > 0);
 }
 
 /**
@@ -325,7 +338,7 @@ function PullRow({ l }: { l: ListedPull }) {
   const [s, ...others] = sessions;
   const checks = checksText(pr);
   const review = prReview(pr);
-  const when = moved(l);
+  const at = when(l);
   if (!s) return null;
   return (
     <li className="group flex items-start border-b border-line last:border-b-0">
@@ -372,11 +385,11 @@ function PullRow({ l }: { l: ListedPull }) {
         </div>
         <Avatar user={s.created_by} size={20} />
         <time
-          dateTime={new Date(when).toISOString()}
-          title={stamp(when)}
+          dateTime={new Date(at).toISOString()}
+          title={stamp(at)}
           className="w-9 shrink-0 pt-0.5 text-right text-[12px] text-ink-4 tabular-nums"
         >
-          {agoShort(when)}
+          {agoShort(at)}
         </time>
       </Link>
       <a
