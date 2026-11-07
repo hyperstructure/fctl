@@ -9,6 +9,7 @@ import {
   FolderPlus,
   Lock,
   LogOut,
+  MessageCircleQuestion,
   Moon,
   Plus,
   Search,
@@ -722,7 +723,9 @@ function ProjectSessions({
               to="/s/$id"
               params={{ id: s.id }}
               onClick={onNavigate}
-              title={`${s.title} · ${statusLabel(s.status)}`}
+              title={
+                s.question ? `${s.title} · Asks: ${s.question.text}` : `${s.title} · ${statusLabel(s.status)}`
+              }
               className={cn(
                 "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
                 here
@@ -735,7 +738,10 @@ function ProjectSessions({
             >
               <StatusDot status={s.status} className="scale-75" />
               <span className="min-w-0 flex-1 truncate">{s.title}</span>
-              <span className="sr-only">: {statusLabel(s.status)}</span>
+              <span className="sr-only">: {s.question ? "asks you something" : statusLabel(s.status)}</span>
+              {s.question && (
+                <MessageCircleQuestion className="size-3.5 shrink-0 text-blue" aria-hidden="true" />
+              )}
             </Link>
           </li>
         );

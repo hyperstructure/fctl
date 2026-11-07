@@ -28,7 +28,9 @@ use fctl_proto::event::{
     UserMessage,
 };
 use fctl_proto::runner::RunnerDisk;
-use fctl_proto::session::{PullRequestRef, RepoRef, Session, SessionRole, SessionStatus, UserRef};
+use fctl_proto::session::{
+    PullRequestRef, RepoRef, Session, SessionQuestion, SessionRole, SessionStatus, UserRef,
+};
 use fctl_proto::uplink::{
     AgentUnreachable, Delivery, DeliveryKind, FEATURE_ATTACHMENTS, FEATURE_SETTINGS, SandboxPaused,
     SessionState, UplinkDown, UplinkUp,
@@ -343,6 +345,10 @@ impl DurableObject for SessionObject {
                     Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
                 }
             }
+            (worker::Method::Post, "/ask") => match req.json::<internal::Ask>().await {
+                Ok(b) => self.ask(b).await.map(|a| serde_json::json!(a)),
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
             (worker::Method::Post, "/drain-stop") => match req.json::<DrainStop>().await {
                 Ok(b) => self.drain_stop(b).await.map(|d| serde_json::json!(d)),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
@@ -894,6 +900,11 @@ impl SessionObject {
             self.end_reviews_in_a_row(now).await;
             self.delete_meta(CHECKS_IN_A_ROW);
             self.delete_meta(CONFLICTS_IN_A_ROW);
+            // It answers the agent's question.
+            if let Some(mut s) = self.summary().filter(|s| s.question.is_some()) {
+                s.question = None;
+                self.publish(&mut s, now).await;
+            }
         }
         if let Some(json) = self.append(now, &b.event, None) {
             self.broadcast_events(&[json]);
@@ -1013,6 +1024,7 @@ impl SessionObject {
                 review: None,
                 summarized: None,
                 follow_up: None,
+                question: None,
             };
             if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                 self.broadcast_events(&[json]);
@@ -1142,6 +1154,7 @@ impl SessionObject {
                 review: None,
                 summarized: None,
                 follow_up: None,
+                question: None,
             };
             if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                 self.broadcast_events(&[json]);
@@ -1409,6 +1422,7 @@ impl SessionObject {
                             events: f.events.iter().filter(|e| kind.of(e)).cloned().collect(),
                             ..f.clone()
                         }),
+                        question: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);
@@ -1510,6 +1524,27 @@ impl SessionObject {
     /// message for a while and none is on its way to the agent. Checking and
     /// marking it stopping happen together, so a message that comes after
     /// waits for the next run (`deliver`), which starts on the same runner.
+    /// The agent asks the people who follow the session something (`fctl
+    /// ask`), or takes its question back. Viewers and dashboards see it at
+    /// once; followers hear of it as the turn ends, or now when it already
+    /// has. A person's next message answers it (`deliver`).
+    async fn ask(&self, b: internal::Ask) -> std::result::Result<internal::Ask, ApiError> {
+        let now = now_ms();
+        let Some(mut s) = self.summary() else {
+            return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
+        };
+        if s.question != b.question {
+            s.question = b.question;
+            self.publish(&mut s, now).await;
+            if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {
+                self.notify(&s, notify::Kind::Asking, now);
+            }
+        }
+        Ok(internal::Ask {
+            question: s.question,
+        })
+    }
+
     async fn drain_stop(&self, b: DrainStop) -> std::result::Result<DrainStopped, ApiError> {
         let now = now_ms();
         let meta_ms = |key: &str| self.meta(key).and_then(|v| v.parse::<i64>().ok());
@@ -1618,6 +1653,7 @@ impl SessionObject {
             review: None,
             summarized: None,
             follow_up: None,
+            question: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1687,6 +1723,7 @@ impl SessionObject {
             review: None,
             summarized: None,
             follow_up: None,
+            question: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1804,6 +1841,7 @@ impl SessionObject {
             review: None,
             summarized: None,
             follow_up: None,
+            question: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -2628,6 +2666,7 @@ impl SessionObject {
                         review: None,
                         summarized: None,
                         follow_up: None,
+                        question: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);
@@ -3406,6 +3445,8 @@ impl SessionObject {
                     }
                 });
             }
+            // Asked once the turn ended, whose end Linear heard of.
+            notify::Kind::Asking => {}
             notify::Kind::Paused | notify::Kind::Failed => {
                 let status = s.status;
                 let reason = s.status_reason.clone();
@@ -3480,15 +3521,21 @@ impl SessionObject {
     fn notify(&self, s: &Session, kind: notify::Kind, now: i64) {
         self.report_to_linear(s, kind);
         let mut except = self.watching();
-        let detail = match kind {
+        let asked = |q: &SessionQuestion| notify::question_detail(&q.text, &q.options);
+        let (kind, detail) = match kind {
             notify::Kind::Waiting => {
                 // Whoever interrupted the turn knows that it ended.
                 except.extend(self.meta("interrupted_by"));
                 self.delete_meta("interrupted_by");
-                self.meta("last_reply")
+                // A turn that ends with a question open asks it.
+                match &s.question {
+                    Some(q) => (notify::Kind::Asking, Some(asked(q))),
+                    None => (kind, self.meta("last_reply")),
+                }
             }
-            notify::Kind::Paused => None,
-            notify::Kind::Failed => s.status_reason.clone(),
+            notify::Kind::Asking => (kind, s.question.as_ref().map(asked)),
+            notify::Kind::Paused => (kind, None),
+            notify::Kind::Failed => (kind, s.status_reason.clone()),
         };
         let event = notify::Event {
             session_id: s.id.clone(),
@@ -4126,11 +4173,15 @@ impl SessionObject {
         let prs = (!s.pull_requests.is_empty())
             .then(|| serde_json::to_string(&s.pull_requests).ok())
             .flatten();
+        let question = s
+            .question
+            .as_ref()
+            .and_then(|q| serde_json::to_string(q).ok());
         let res = crate::db::q(
             &db,
             "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
              claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-             pull_requests = ?, updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+             pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
                 crate::db::s(&s.title),
                 crate::db::os(s.description.as_deref()),
@@ -4147,6 +4198,7 @@ impl SessionObject {
                 crate::db::os(pr.as_ref().and_then(|p| p.title.as_deref())),
                 crate::db::os(pr.as_ref().and_then(|p| p.state.as_deref())),
                 crate::db::os(prs.as_deref()),
+                crate::db::os(question.as_deref()),
                 crate::db::n(s.updated_at),
                 crate::db::on(s.last_activity_at),
                 crate::db::on(s.started_at),

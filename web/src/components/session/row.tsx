@@ -3,7 +3,7 @@
 // last moved.
 
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, Repeat } from "lucide-react";
+import { ArrowRight, MessageCircleQuestion, Repeat } from "lucide-react";
 import { Fragment } from "react";
 import { Avatar, GithubIcon, LinearIcon, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
@@ -21,6 +21,14 @@ export function SessionRow({ s, workspace }: { s: G.Session; workspace?: G.Works
       <StatusDot status={s.status} />
       <div className="min-w-0 flex-1">
         <SessionLink s={s} />
+        {s.question && (
+          // What its agent asks: it waits on someone.
+          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] text-blue">
+            <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="sr-only">Asks:</span>
+            <span className="truncate">{s.question.text}</span>
+          </p>
+        )}
         <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-4">
           {workspace && (
             // On a phone its avatar says which one, and the reference keeps the room.

@@ -28,6 +28,10 @@ const DIGEST_REPLACES: usize = 20;
 pub enum Kind {
     /// The agent finished its turn and waits for a reply.
     Waiting,
+    /// The agent asked a question (`fctl ask`) and waits for its answer:
+    /// a finished turn with a question open, or a question asked once the
+    /// turn ended. People who want to hear when it waits hear of it.
+    Asking,
     /// It paused on a Claude usage limit and continues when it resets.
     Paused,
     /// It failed.
@@ -51,7 +55,7 @@ impl Kind {
     /// Whether `settings` ask for it.
     pub fn wanted(self, settings: &NotificationSettings) -> bool {
         match self {
-            Self::Waiting => settings.waiting,
+            Self::Waiting | Self::Asking => settings.waiting,
             Self::Paused => settings.paused,
             Self::Failed => settings.failed,
         }
@@ -62,7 +66,7 @@ impl Kind {
     pub fn still(self, status: SessionStatus) -> bool {
         status
             == match self {
-                Self::Waiting => SessionStatus::Idle,
+                Self::Waiting | Self::Asking => SessionStatus::Idle,
                 Self::Paused => SessionStatus::Paused,
                 Self::Failed => SessionStatus::Failed,
             }
@@ -169,9 +173,44 @@ pub fn excerpt(text: &str, max: usize) -> Option<String> {
     Some(out)
 }
 
+/// A question as a notification shows it: its text on one line, cut at a
+/// word after [`QUESTION_CHARS`], and its answers to click on the next.
+fn question_lines(detail: &str) -> String {
+    let (text, options) = detail
+        .split_once(QUESTION_OPTIONS_MARK)
+        .unwrap_or((detail, ""));
+    let text = excerpt(text, QUESTION_CHARS).unwrap_or_default();
+    let options: Vec<&str> = options
+        .split('\n')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .collect();
+    if options.is_empty() {
+        text
+    } else {
+        format!("{text}\n{}", options.join(" · "))
+    }
+}
+
+/// An agent's question in a notification, at most: more than its last words.
+pub const QUESTION_CHARS: usize = 300;
+/// Where a question's text ends and its answers to click begin, one a line,
+/// in an [`Event`]'s detail ([`question_detail`]).
+const QUESTION_OPTIONS_MARK: &str = "\n\u{1f}\n";
+
+/// The detail of an [`Kind::Asking`] event: the question, then its answers.
+pub fn question_detail(text: &str, options: &[String]) -> String {
+    if options.is_empty() {
+        text.to_owned()
+    } else {
+        format!("{text}{QUESTION_OPTIONS_MARK}{}", options.join("\n"))
+    }
+}
+
 fn says(kind: Kind) -> &'static str {
     match kind {
         Kind::Waiting => "waits for your reply",
+        Kind::Asking => "asks you",
         Kind::Paused => "paused on a usage limit",
         Kind::Failed => "failed",
     }
@@ -191,6 +230,17 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
     let body = match (only.kind, detail) {
         (Kind::Waiting, Some(words)) => format!("{} waits for your reply\n{words}", only.reference),
         (Kind::Waiting, None) => format!("{} waits for your reply", only.reference),
+        // The question whole, as far as a notification shows it: it's what
+        // they answer.
+        (Kind::Asking, _) => match only
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            Some(q) => format!("{} asks you\n{}", only.reference, question_lines(q)),
+            None => format!("{} asks you", only.reference),
+        },
         (Kind::Paused, _) => format!(
             "{} paused on a Claude usage limit and continues when it resets",
             only.reference
@@ -214,6 +264,7 @@ fn digest(events: &[Event], at: Millis) -> PushMessage {
     let same = events.iter().all(|e| Some(e.kind) == kind);
     let title = match kind {
         Some(Kind::Waiting) if same => format!("{n} sessions wait for your reply"),
+        Some(Kind::Asking) if same => format!("{n} sessions ask you"),
         Some(Kind::Paused) if same => format!("{n} sessions paused on a usage limit"),
         Some(Kind::Failed) if same => format!("{n} sessions failed"),
         _ => format!("{n} sessions need you"),
@@ -295,6 +346,13 @@ mod tests {
 
         assert!(Kind::Waiting.still(Idle));
         assert!(!Kind::Waiting.still(Running));
+        assert!(Kind::Asking.still(Idle));
+        assert!(!Kind::Asking.still(Running));
+        assert!(Kind::Asking.wanted(&NotificationSettings::default()));
+        assert!(!Kind::Asking.wanted(&NotificationSettings {
+            waiting: false,
+            ..Default::default()
+        }));
         assert!(Kind::Failed.still(Failed));
         assert!(!Kind::Paused.still(Queued));
     }
@@ -448,5 +506,36 @@ mod tests {
             assert!(serde_json::to_vec(&m)?.len() < crate::webpush::MAX_PLAINTEXT / 2);
         }
         Ok(())
+    }
+
+    #[test]
+    fn questions_say_what_they_ask_and_the_answers_to_click() {
+        let detail = question_detail(
+            "Round Danish prices to whole kroner, or keep øre?",
+            &["Round to whole kroner".into(), "Keep øre".into()],
+        );
+        let asking = compose(&[event(231, Kind::Asking, Some(&detail))]);
+        assert_eq!(
+            asking.map(|m| m.body),
+            Some(
+                "my-app#231 asks you\nRound Danish prices to whole kroner, or keep øre?\nRound to whole kroner · Keep øre"
+                    .into()
+            )
+        );
+        let plain = compose(&[event(7, Kind::Asking, Some("Which region?"))]);
+        assert_eq!(
+            plain.map(|m| m.body),
+            Some("my-app#7 asks you\nWhich region?".into())
+        );
+        let digest = compose(&[
+            event(1, Kind::Asking, Some("A?")),
+            event(2, Kind::Asking, Some("B?")),
+        ]);
+        assert_eq!(digest.map(|m| m.title), Some("2 sessions ask you".into()));
+        let mixed = compose(&[
+            event(1, Kind::Asking, Some("A?")),
+            event(2, Kind::Failed, None),
+        ]);
+        assert!(mixed.is_some_and(|m| m.body.contains("my-app#1 asks you · Task 1")));
     }
 }

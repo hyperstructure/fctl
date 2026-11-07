@@ -113,7 +113,10 @@ small PNG it draws, or each image at the paths after the word, one call
 after another: `look /tmp/before.png /tmp/after.png`), which the session
 keeps and its page shows under the calls,
 `remember <text>` adds the rest of its line to the project's memory with
-`fctl memory add`, `recall` lists the memory with `fctl memory`, a line
+`fctl memory add`, `ask <question>` asks the people who follow the session
+the rest of its line with `fctl ask`, offering the answers after each ` / `
+to click (`ask Ship it today? / Yes / Not yet`), as agents do when they
+need someone's input, `recall` lists the memory with `fctl memory`, a line
 that starts with `fctl ticket` runs as it is (`fctl ticket view ENG-1`), as
 agents reach their project's tracker,
 `printenv` shows the `CLAUDE_CODE_…` variables it got and says the token

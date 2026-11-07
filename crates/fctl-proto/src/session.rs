@@ -1328,6 +1328,26 @@ pub struct Session {
     /// Absent for other sessions, and from control planes before ticket
     /// trackers.
     pub ticket: Option<SessionTicket>,
+    /// What its agent asked the people who follow it (`fctl ask`), until
+    /// someone answers: a person's next message does. Absent while it
+    /// asks nothing, and from control planes before questions.
+    pub question: Option<SessionQuestion>,
+}
+
+/// A question a session's agent asks people, when it needs their input to
+/// go on: a decision only they can make, access, an answer.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct SessionQuestion {
+    /// The question, in a sentence or two.
+    pub text: String,
+    /// Answers people can give with a click, each sent as their reply as
+    /// it is; they can always write their own instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub options: Vec<String>,
+    pub asked_at: Millis,
 }
 
 /// The schedule a session started from.

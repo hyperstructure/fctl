@@ -260,6 +260,7 @@ export type { SessionEvent } from "./SessionEvent";
 export type { SessionId } from "./SessionId";
 export type { SessionList } from "./SessionList";
 export type { SessionMatches } from "./SessionMatches";
+export type { SessionQuestion } from "./SessionQuestion";
 export type { SessionRef } from "./SessionRef";
 export type { SessionRepo } from "./SessionRepo";
 export type { SessionReview } from "./SessionReview";

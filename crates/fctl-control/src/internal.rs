@@ -85,6 +85,14 @@ pub struct ControlState {
     pub disk: Option<DiskNews>,
 }
 
+/// The question a session's agent asks people now (`/ask`, from `fctl ask`
+/// through `crate::api::calls`): none takes back the one it asked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Ask {
+    #[serde(default)]
+    pub question: Option<fctl_proto::session::SessionQuestion>,
+}
+
 /// What the session's page shows of its runner's disk from now on.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DiskNews {

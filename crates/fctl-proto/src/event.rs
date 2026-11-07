@@ -548,7 +548,8 @@ pub struct Notice {
     /// `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
     /// `pull_request_summarized`, `follow_up_held`, `ticket_created`,
     /// `ticket_commented`, `ticket_updated`, `ticket_replied`,
-    /// `ticket_moved`, `ticket_failed`.
+    /// `ticket_moved`, `ticket_failed`, `question_asked`,
+    /// `question_withdrawn`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -576,6 +577,9 @@ pub struct Notice {
     /// What the agent, or fctl for it, did in the project's ticket tracker,
     /// in a `ticket_*` notice. Clients from before it show the message.
     pub ticket: Option<crate::tickets::TicketNotice>,
+    /// The question a `question_asked` notice is about (`fctl ask`), as the
+    /// agent asked it. Clients from before it show the message.
+    pub question: Option<crate::session::SessionQuestion>,
 }
 
 impl Notice {
@@ -593,6 +597,7 @@ impl Notice {
             summarized: None,
             follow_up: None,
             ticket: None,
+            question: None,
         }
     }
 }
@@ -746,6 +751,7 @@ mod tests {
             review: None,
             summarized: None,
             follow_up: None,
+            question: None,
         };
         let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;
         assert_eq!(json["kind"], "notice");

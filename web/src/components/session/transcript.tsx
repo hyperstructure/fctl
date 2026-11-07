@@ -14,6 +14,7 @@ import {
   Hourglass,
   ImageUp,
   Info,
+  MessageCircleQuestion,
   Radio,
   Repeat,
   ScrollText,
@@ -154,6 +155,37 @@ function LongText({ text, findKey }: { text: string; findKey: string }) {
  * duplicate too), as it was then, with a link to it in the project's Memory
  * tab.
  */
+/** What the agent asked people (`fctl ask`), as it asked it: the answers it offered, and the reply that follows. */
+function QuestionNotice({ question, findKey }: { question: G.SessionQuestion; findKey: string }) {
+  return (
+    <div className="animate-rise py-1.5">
+      <Milestone icon={<MessageCircleQuestion />} tone="info">
+        Asked you
+      </Milestone>
+      <Thread className="text-[13.5px] text-ink-2">
+        <p
+          className="leading-relaxed whitespace-pre-line [overflow-wrap:anywhere]"
+          data-find={`notice:${findKey}`}
+        >
+          {question.text}
+        </p>
+        {(question.options?.length ?? 0) > 0 && (
+          <ul className="mt-2 flex flex-wrap gap-1.5" aria-label="Answers it offered">
+            {question.options?.map((o) => (
+              <li
+                key={o}
+                className="rounded-full border border-line px-2.5 py-0.5 text-[12px] text-ink-3 [overflow-wrap:anywhere]"
+              >
+                {o}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Thread>
+    </div>
+  );
+}
+
 function MemoryNotice({
   memory,
   stale,
@@ -553,6 +585,7 @@ const ItemView = memo(function ItemView({
       if (item.notice.summarized) return <PullRequestSummarizedNotice summarized={item.notice.summarized} />;
       if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
       if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
+      if (item.notice.question) return <QuestionNotice question={item.notice.question} findKey={item.key} />;
       if (item.notice.memory)
         return (
           <MemoryNotice

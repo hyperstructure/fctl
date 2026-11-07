@@ -291,6 +291,62 @@ pub fn slug_shape(input: &str) -> Result<String> {
     Ok(s)
 }
 
+/// The most answers a question offers.
+pub const QUESTION_OPTIONS: usize = 6;
+
+/// A question an agent asks people (`fctl ask`): at most 500 characters,
+/// and at most [`QUESTION_OPTIONS`] answers to click of at most 120 on one
+/// line each, none twice. An empty question takes one back (`None`). It
+/// comes from the sandbox, and shows in people's notifications.
+pub fn question(text: &str, options: &[String]) -> Result<Option<(String, Vec<String>)>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.chars().count() > 500 {
+        return Err(ApiError::validation(
+            "question",
+            "Ask in at most 500 characters: put the details in your message",
+        ));
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(ApiError::validation(
+            "question",
+            "Remove control characters",
+        ));
+    }
+    if options.len() > QUESTION_OPTIONS {
+        return Err(ApiError::validation(
+            "options",
+            format!("Offer at most {QUESTION_OPTIONS} answers"),
+        ));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(options.len());
+    for o in options {
+        let o = collapse_spaces(o);
+        if o.is_empty() {
+            return Err(ApiError::validation("options", "An answer can't be empty"));
+        }
+        if o.chars().count() > 120 {
+            return Err(ApiError::validation(
+                "options",
+                "Keep each answer to at most 120 characters",
+            ));
+        }
+        if o.chars().any(char::is_control) {
+            return Err(ApiError::validation("options", "Remove control characters"));
+        }
+        if out.iter().any(|x| x.eq_ignore_ascii_case(&o)) {
+            return Err(ApiError::validation("options", "Offer each answer once"));
+        }
+        out.push(o);
+    }
+    Ok(Some((text.to_owned(), out)))
+}
+
 /// A git branch name, following `git check-ref-format --branch`.
 pub fn branch(field: &str, input: &str) -> Result<String> {
     let s = input.trim();
@@ -971,5 +1027,40 @@ mod tests {
     fn efforts() {
         assert_eq!(effort("MAX").ok().as_deref(), Some("max"));
         assert!(effort("extreme").is_err());
+    }
+
+    #[test]
+    fn questions() {
+        let ok = question(
+            " Round prices to whole kroner? ",
+            &["Yes, round".into(), " Keep  øre ".into()],
+        );
+        assert_eq!(
+            ok.ok().flatten(),
+            Some((
+                "Round prices to whole kroner?".into(),
+                vec!["Yes, round".into(), "Keep øre".into()]
+            ))
+        );
+        // Empty takes the question back.
+        assert_eq!(question("  ", &[]).ok(), Some(None));
+        assert!(question(&"a".repeat(501), &[]).is_err());
+        assert!(question("Which one?", &["A".into(), "a".into()]).is_err());
+        assert!(question("Which one?", &["".into()]).is_err());
+        assert!(
+            question(
+                "Which one?",
+                &vec!["x".to_owned(); 7]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| format!("{x}{i}"))
+                    .collect::<Vec<_>>()
+            )
+            .is_err()
+        );
+        assert!(question("Which one?", &["a".repeat(121)]).is_err());
+        assert!(question("Which\u{7} one?", &[]).is_err());
+        // Lines are fine in the question itself.
+        assert!(question("Which one?\nThe first is faster.", &[]).is_ok());
     }
 }
