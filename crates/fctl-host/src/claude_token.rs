@@ -327,7 +327,19 @@ impl StreamRedactor {
     /// them live (`AgentToHost::Stream`): none, while all of a delta waits;
     /// the delta without what waits; or, at a block's end, what waited and
     /// then the end. Other messages pass as they are.
-    pub fn apply(&mut self, secrets: &Secrets, mut event: Value) -> Vec<Value> {
+    pub fn apply(&mut self, secrets: &Secrets, event: Value) -> Vec<Value> {
+        let mut out = self.held_back(secrets, event);
+        // Tokens of a shape whole in any message, held back or not: a
+        // block's start, a delta without a text, a tool's progress.
+        for event in &mut out {
+            redact_shapes_in(event);
+        }
+        out
+    }
+
+    /// [`Self::apply`] for the known secrets, and the tokens of a
+    /// [`Shape`] a delta's text may cut in two.
+    fn held_back(&mut self, secrets: &Secrets, mut event: Value) -> Vec<Value> {
         if event.get("type").and_then(Value::as_str) != Some("stream_event") {
             return vec![event];
         }
@@ -442,28 +454,44 @@ fn hold_back(text: &str, secrets: &[String]) -> (String, String) {
 /// prefix.
 fn shaped_wait(text: &str) -> usize {
     let bytes = text.as_bytes();
-    // Every shape's prefix and body are base64url characters.
+    // Every shape's prefix and body are base64url characters, and a token
+    // starts a word (after a space, `=`, a quote): only the word at the
+    // end may be one still coming, not the `s` of `tokens`.
     let run = bytes.iter().rev().take_while(|b| base64url(**b)).count();
     let tail = text.get(text.len() - run..).unwrap_or_default();
-    SHAPES
-        .iter()
-        .map(|shape| {
-            if let Some(at) = tail.find(shape.prefix) {
-                return run - at;
+    let coming = !tail.is_empty()
+        && SHAPES
+            .iter()
+            .any(|shape| tail.starts_with(shape.prefix) || shape.prefix.starts_with(tail));
+    if coming { run } else { 0 }
+}
+
+/// `value` with every token of a [`Shape`] in its strings replaced.
+fn redact_shapes_in(value: &mut Value) {
+    match value {
+        Value::String(s) => {
+            if let Cow::Owned(redacted) = redact_shapes(s) {
+                *s = redacted;
             }
-            (1..shape.prefix.len())
-                .rev()
-                .find(|&k| tail.ends_with(&shape.prefix[..k]))
-                .unwrap_or(0)
-        })
-        .max()
-        .unwrap_or(0)
+        }
+        Value::Array(items) => items.iter_mut().for_each(redact_shapes_in),
+        Value::Object(fields) => fields.values_mut().for_each(redact_shapes_in),
+        _ => {}
+    }
 }
 
 /// [`hold_back`] for the known `secrets` alone.
 fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
     let text = redact(text, secrets).into_owned();
     let bytes = text.as_bytes();
+    // What starts a secret at the start of a word: a token comes after a
+    // space, `=` or a quote, not inside a word that ends like its start.
+    let starts_word = |k: usize| {
+        bytes.len() == k
+            || bytes
+                .get(bytes.len() - k - 1)
+                .is_none_or(|b| !base64url(*b))
+    };
     let wait = secrets
         .iter()
         .filter(|s| s.len() >= MIN_REDACTED)
@@ -471,7 +499,7 @@ fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
             let s = s.as_bytes();
             (1..s.len().min(bytes.len() + 1))
                 .rev()
-                .find(|&k| bytes[bytes.len() - k..] == s[..k])
+                .find(|&k| bytes[bytes.len() - k..] == s[..k] && starts_word(k))
                 .unwrap_or(0)
         })
         .max()
@@ -720,6 +748,52 @@ mod tests {
         let stream = format!(r#"{{"type":"stream","event":{{"text":"{UNKNOWN}"}}}}"#);
         assert_eq!(secrets.redact_frame(&stream), stream);
         assert!(is_stream_frame(&stream) && !is_stream_frame(&events));
+    }
+
+    #[test]
+    fn words_that_end_like_a_token_starts_go_out_at_once() {
+        let secrets = Secrets::default();
+        secrets.add(TOKEN);
+        let mut r = StreamRedactor::default();
+        for text in ["two tokens", "a string", "the hosts", "a long thing"] {
+            let plain = delta(None, 0, "text", text);
+            assert_eq!(r.apply(&secrets, plain.clone()), [plain], "{text}");
+        }
+        // A word that could still be one waits.
+        assert!(
+            r.apply(&secrets, delta(None, 1, "text", "see sk"))
+                .iter()
+                .all(|e| { e["event"]["delta"]["text"].as_str() == Some("see ") })
+        );
+        assert!(
+            r.apply(&secrets, delta(None, 2, "text", "GH_TOKEN=ghs_ab"))
+                .iter()
+                .all(|e| { e["event"]["delta"]["text"].as_str() == Some("GH_TOKEN=") })
+        );
+    }
+
+    #[test]
+    fn redacts_tokens_by_their_shape_in_any_streamed_message() {
+        let secrets = Secrets::default();
+        let mut r = StreamRedactor::default();
+        // A block that starts with text, a delta without one, and a
+        // message of another kind.
+        let start = serde_json::json!({"type": "stream_event", "parent_tool_use_id": null,
+            "event": {"type": "content_block_start", "index": 0,
+                "content_block": {"type": "text", "text": format!("Here: {UNKNOWN}")}}});
+        let out = r.apply(&secrets, start);
+        assert_eq!(
+            out[0]["event"]["content_block"]["text"],
+            format!("Here: {REDACTED}")
+        );
+        let no_index = serde_json::json!({"type": "stream_event", "parent_tool_use_id": null,
+            "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": GITHUB}}});
+        assert_eq!(
+            r.apply(&secrets, no_index)[0]["event"]["delta"]["text"],
+            REDACTED_GITHUB
+        );
+        let progress = serde_json::json!({"type": "tool_progress", "output": [UNKNOWN]});
+        assert_eq!(r.apply(&secrets, progress)[0]["output"][0], REDACTED);
     }
 
     #[test]
