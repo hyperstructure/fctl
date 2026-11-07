@@ -309,7 +309,7 @@ and belongs to the host name of `FCTL_PUBLIC_URL` (its relying party id).
 decoder, `fctl_domain::cbor`), and WebCrypto checks the signatures
 (`crypto::verify_passkey`).
 
-- **Making one** (Settings → Passkeys, the page that requires two-factor,
+- **Making one** (Settings → Security, the page that requires two-factor,
   or the card after a sign-in without one): `POST /api/v1/me/passkeys/options`
   returns WebAuthn's creation options, with a challenge of 256 random bits
   that works once, for ten minutes (`passkey_challenges`, by its SHA-256).

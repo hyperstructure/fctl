@@ -967,6 +967,17 @@ html[data-dragging] * {
   animation-timing-function: var(--ease-out);
 }
 
+/* Settings' list of pages stays as it is while the page beside it fades
+   from one to the next: its highlight slides from the page open to the one
+   chosen (routes/settings.tsx), which a cross-fade would hide. */
+::view-transition-old(settings-pages) {
+  display: none;
+}
+::view-transition-group(settings-pages),
+::view-transition-new(settings-pages) {
+  animation: none;
+}
+
 /* The not-found and error pages (components/stream-screen.tsx). The code
    stands in .stream-screen-code; the stream draws it over that box and the
    text stays hidden unless WebGL is missing. */

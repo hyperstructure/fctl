@@ -305,7 +305,7 @@ pub fn test_message(now: Millis) -> PushMessage {
         title: "Notifications work".into(),
         body: "This browser shows a notification when a session you follow waits for your reply, pauses on a usage limit or fails.".into(),
         tag: "test".into(),
-        url: "/settings".into(),
+        url: "/settings?tab=notifications".into(),
         replaces: Vec::new(),
         at: now,
     }

@@ -1,6 +1,8 @@
 // "Did you mean …?" on the not-found page: the app's page that an address
 // which doesn't exist most likely meant.
 
+import { settingsPageFor } from "./settings";
+
 /** The app's pages with fixed addresses (router.tsx), besides the home page. */
 const PAGES = ["/new", "/settings", "/admin", "/device", "/login"];
 
@@ -36,6 +38,11 @@ export function suggest(path: string): string | null {
   const [first, second] = parts;
   if (!first) return null;
   const head = first.toLowerCase();
+  // A page of Settings by its name, or by what it holds: /settings/passkeys is Security.
+  if (head === "settings" && second) {
+    const tab = settingsPageFor(second);
+    return tab ? `/settings?tab=${tab}` : "/settings";
+  }
   if ((head === "session" || head === "sessions") && second) return `/s/${second}`;
   if ((head === "project" || head === "projects") && second) return `/p/${second}`;
   // A project or session page with more after it.

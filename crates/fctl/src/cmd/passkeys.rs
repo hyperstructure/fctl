@@ -43,7 +43,7 @@ pub async fn run(api: &Api, cmd: PasskeysCmd, json: bool) -> Result<()> {
             println!(
                 "{}",
                 style::dim(&format!(
-                    "Add passkeys in your browser, with your fingerprint, face or screen lock: {}/settings",
+                    "Add passkeys in your browser, with your fingerprint, face or screen lock: {}/settings?tab=security",
                     api.base()
                 ))
             );

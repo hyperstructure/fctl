@@ -398,7 +398,7 @@ pub async fn connect(ctx: &Ctx, user: &UserRow, email: &str) -> AppResult<Vec<Wo
         format!(
             "{email} now signs in to your {instance} account ({}), and password reset links can go to it.\n\nIf you didn't connect it, disconnect it in Settings now and change your password: {}",
             user.email,
-            ctx.cfg.url("/settings")
+            ctx.cfg.url("/settings?tab=emails")
         ),
     );
     crate::api::workspaces::joined_after_sign_up(ctx, user, email).await

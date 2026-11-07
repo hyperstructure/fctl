@@ -1255,7 +1255,7 @@ fctl account verify --code 123456          # a code from your authenticator app,
 ```
 
 Passkeys sign you in with your fingerprint, face or screen lock. Your
-browser makes them, in Settings → Passkeys; the CLI lists and manages them:
+browser makes them, in Settings → Security; the CLI lists and manages them:
 
 ```sh
 fctl account passkeys list

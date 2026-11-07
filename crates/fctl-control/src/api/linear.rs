@@ -366,7 +366,7 @@ pub async fn link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
         return sign_in_first(req);
     };
     let Ok(keys) = keys_for(ctx) else {
-        return http::redirect("/settings");
+        return http::redirect("/settings?tab=linear");
     };
     let thread = http::query(req, "thread").filter(|t| {
         !t.is_empty() && t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -421,7 +421,7 @@ impl Back {
             } => {
                 format!("/w/{slug}?tab=linear&linear={outcome}")
             }
-            Self::Person { project: None } => format!("/settings?linear={outcome}#linear"),
+            Self::Person { project: None } => format!("/settings?tab=linear&linear={outcome}"),
         }
     }
 }
@@ -660,7 +660,7 @@ fn linked_notice(
         format!(
             "{who}, in the Linear workspace {}, is now linked to your {instance} account ({email}): what it delegates to fctl there, or mentions fctl in, starts sessions as you, on your Claude subscription, and its replies reach your sessions' agents.\n\nIf you didn't link it, unlink it in Settings now, sign out your other devices there and change your password: {}",
             viewer.organization_name,
-            cfg.url("/settings#linear")
+            cfg.url("/settings?tab=linear")
         ),
     )
 }

@@ -1,4 +1,4 @@
-// ⌘K: jump to workspaces, projects and sessions, or run an action. The Agent Floor
+// ⌘K: jump to workspaces, projects, sessions and Settings' pages, or run an action. The Agent Floor
 // comes first, so that ⌘K and Enter open the task box for a new session from anywhere.
 // Past a couple of letters it also searches what all sessions said (lib/search.ts):
 // those open at what it found, with the session's find bar on it. Where an entry has a
@@ -19,13 +19,15 @@ import {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ProjectMark } from "@/components/project/project-icon";
+import { SettingsIcon } from "@/components/settings/icon";
 import { AgentFloorIcon, PullRequestIcon, Spinner, StatusDot } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
-import { useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
+import { useInstance, useMe, useProjects, useSessions, useWorkspaces } from "@/lib/queries";
 import { repoLabel } from "@/lib/repos";
 import { around, landing, marked, said, useSessionSearch } from "@/lib/search";
+import { SETTINGS_PAGES } from "@/lib/settings";
 import { ariaShortcut, SHORTCUTS, type ShortcutId, useShortcut } from "@/lib/shortcuts";
 import { focusTaskBox } from "@/lib/task-box";
 import { getTheme, setTheme } from "@/lib/theme";
@@ -44,6 +46,8 @@ interface Entry {
   keys?: ShortcutId;
   /** More words it is found by. */
   keywords?: string;
+  /** Found only by a search its words hold, not by its letters in order: it's one of many. */
+  exact?: boolean;
   icon: ReactNode;
   run: () => void;
   group: string;
@@ -97,6 +101,7 @@ export function CommandPalette({
   const { data: projects } = useProjects();
   const { data: sessions } = useSessions({ limit: 50 });
   const { data: workspaces } = useWorkspaces();
+  const { data: instance } = useInstance();
   const found = useSessionSearch(q, { enabled: open });
 
   useEffect(() => {
@@ -207,7 +212,7 @@ export function CommandPalette({
         label: "Settings",
         keys: "settings",
         icon: <Settings className="size-4" />,
-        run: go(() => navigate({ to: "/settings", search: { linked: undefined, error: undefined } })),
+        run: go(() => navigate({ to: "/settings", search: {} })),
       },
       {
         id: "a-theme",
@@ -247,16 +252,42 @@ export function CommandPalette({
     }
     const needle = q.trim().toLowerCase();
     if (!needle) return list.slice(0, 40);
+    // Settings' pages, by what they hold: "passkeys" finds Security. Only for a search, which
+    // they don't crowd.
+    for (const p of SETTINGS_PAGES) {
+      if (p.tab === "linear" && !instance?.features.linear) continue;
+      list.push({
+        id: `settings-${p.tab}`,
+        group: "Settings",
+        label: p.label,
+        keywords: `settings ${p.keywords}`,
+        exact: true,
+        icon: <SettingsIcon tab={p.tab} className="size-4" />,
+        run: go(() => void navigate({ to: "/settings", search: { tab: p.tab } })),
+      });
+    }
     return list
-      .map((e) => ({
-        e,
-        score: score(`${e.label} ${e.hint ?? ""} ${e.keywords ?? ""}`.toLowerCase(), needle),
-      }))
+      .map((e) => {
+        const hay = `${e.label} ${e.hint ?? ""} ${e.keywords ?? ""}`.toLowerCase();
+        return { e, score: e.exact && !hay.includes(needle) ? 0 : score(hay, needle) };
+      })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 40)
       .map((x) => x.e);
-  }, [q, sessions, projects, workspaces, me, navigate, onClose, onNavigate, onNewSession, onShortcuts]);
+  }, [
+    q,
+    sessions,
+    projects,
+    workspaces,
+    me,
+    instance,
+    navigate,
+    onClose,
+    onNavigate,
+    onNewSession,
+    onShortcuts,
+  ]);
 
   // The sessions that say what was typed, past those listed already.
   const deep = useMemo<Entry[]>(() => {

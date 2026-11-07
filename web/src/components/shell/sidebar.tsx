@@ -680,7 +680,7 @@ function WorkspaceGroup({
           {workspace.blocked ? (
             <Link
               to="/settings"
-              search={{ linked: undefined, error: undefined }}
+              search={{ tab: "security" }}
               onClick={onNavigate}
               className="rounded-md px-2.5 py-1.5 pl-[38px] text-[12.5px] leading-snug text-ink-3 hover:text-ink"
             >

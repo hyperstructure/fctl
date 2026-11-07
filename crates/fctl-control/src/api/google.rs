@@ -251,7 +251,7 @@ pub async fn callback(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
                 "The Google account {} now signs in to your {instance} account ({}).\n\nIf you didn't link it, unlink it in Settings now and change your password: {}",
                 email.as_deref().unwrap_or("without an email address"),
                 user.email,
-                ctx.cfg.url("/settings")
+                ctx.cfg.url("/settings?tab=security")
             ),
         );
         if user.avatar_url.is_none() {

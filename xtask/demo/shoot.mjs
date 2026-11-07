@@ -139,7 +139,6 @@ async function openSetup(page) {
 
 /** Settings' new access token, filled in as Noor makes one for the team's chat bot. */
 async function newToken(page) {
-  await scrollTo(page, "Access tokens", 120);
   await page.getByRole("button", { name: "New access token" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByPlaceholder("PR reviews").fill("Team chat");
@@ -299,11 +298,11 @@ const pages = {
     { name: "phone-empty", path: "/p/driver-app?tab=schedules", phone: true },
   ],
   "access-tokens": [
-    { name: "tokens", path: "/settings", act: (page) => scrollTo(page, "Devices", 120) },
-    { name: "new", path: "/settings", act: newToken, card: [394, 210, 500, 320] },
+    { name: "tokens", path: "/settings?tab=tokens" },
+    { name: "new", path: "/settings?tab=tokens", act: newToken, card: [394, 210, 500, 320] },
     {
       name: "confirm",
-      path: "/settings",
+      path: "/settings?tab=tokens",
       act: async (page) => {
         const dialog = await newToken(page);
         await dialog.getByRole("button", { name: "Create token" }).click();
@@ -311,7 +310,7 @@ const pages = {
         await page.waitForTimeout(600);
       },
     },
-    { name: "phone-tokens", path: "/settings", phone: true, act: (page) => scrollTo(page, "Devices", 80) },
+    { name: "phone-tokens", path: "/settings?tab=tokens", phone: true },
   ],
   team: [
     { name: "people", path: "/w/romanesco?tab=people", card: [418, 350, 560, 470] },
@@ -336,12 +335,11 @@ const pages = {
         await page.waitForTimeout(500);
       },
     },
-    { name: "security", path: "/settings", act: (page) => scrollTo(page, "Passkeys", 120) },
+    { name: "security", path: "/settings?tab=security", act: (page) => scrollTo(page, "Passkeys", 120) },
     {
       name: "confirm",
-      path: "/settings",
+      path: "/settings?tab=data",
       act: async (page) => {
-        await scrollTo(page, "Your data", 160);
         await page.getByRole("link", { name: /Export your data/ }).click();
         await page.getByText("Confirm it's you").first().waitFor();
         await page.getByRole("button", { name: "Use your authenticator app" }).click();
@@ -349,7 +347,12 @@ const pages = {
       },
     },
     { name: "phone-login", path: "/login", phone: true, signedOut: true },
-    { name: "phone-security", path: "/settings", phone: true, act: (page) => scrollTo(page, "Passkeys", 80) },
+    {
+      name: "phone-security",
+      path: "/settings?tab=security",
+      phone: true,
+      act: (page) => scrollTo(page, "Passkeys", 80),
+    },
   ],
 };
 

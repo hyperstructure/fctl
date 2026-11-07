@@ -786,7 +786,7 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   a member's own, when they leave the workspace or delete their account. Revoked and
   expired enrollment tokens are deleted 90 days on, once no runner they
   enrolled is left.
-- People delete their own account in Settings (Danger zone) or with
+- People delete their own account in Settings → Your data or with
   `fctl account delete`; admins delete members' accounts, and the primary
   instance owner admins' too. Both delete the account's addresses, sign-in methods, passkeys
   and two-factor sign-in, tokens, Claude connections, memberships, shares,
