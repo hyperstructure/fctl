@@ -266,17 +266,28 @@ function cachedSessions(qc: QueryClient): G.Session[] {
   return [...byId.values()].sort((a, b) => b.created_at - a.created_at);
 }
 
+/**
+ * A cached summary with a newer one over it. The newer one leaves out what is empty (the server
+ * skips `None`), and the feed's the caller's role too, so the cached one fills those in, except a
+ * question: one the newer summary doesn't have was answered or taken back, maybe with no change of
+ * status that would refetch the lists.
+ */
+function merged(old: G.Session, s: G.Session): G.Session {
+  const next = { ...old, ...s, role: old.role ?? s.role };
+  if (s.question === undefined) delete next.question;
+  return next;
+}
+
 /** After a session summary changes, patch every cached list that holds it. */
 export function patchSession(qc: QueryClient, s: G.Session) {
-  qc.setQueryData<G.Session>(keys.session(s.id), (old) =>
-    old ? { ...old, ...s, role: old.role ?? s.role } : old,
-  );
+  qc.setQueryData<G.Session>(keys.session(s.id), (old) => (old ? merged(old, s) : old));
   qc.setQueriesData<G.SessionList>({ queryKey: ["sessions"] }, (old) => {
     if (!old) return old;
     const i = old.sessions.findIndex((x) => x.id === s.id);
-    if (i === -1) return old;
+    const was = old.sessions[i];
+    if (!was) return old;
     const sessions = old.sessions.slice();
-    sessions[i] = { ...sessions[i], ...s, role: sessions[i]?.role ?? s.role } as G.Session;
+    sessions[i] = merged(was, s);
     return { ...old, sessions };
   });
 }
