@@ -141,8 +141,9 @@ enum CacheDone {
 /// What background work on sandboxes that no session runs in reports.
 enum Chore {
     /// The sweep listed this host's sandboxes, and the projects whose
-    /// package caches are here.
-    Listed(Result<Vec<SandboxInfo>>, Vec<String>),
+    /// package caches are here; and the disk's free MiB, when it measured
+    /// it again after letting saved states go.
+    Listed(Result<Vec<SandboxInfo>>, Vec<String>, Option<u64>),
     /// The sweep removed a sandbox, or failed to, and measured the disk
     /// again.
     Removed {
@@ -365,7 +366,35 @@ impl Daemon {
         }
         self.sweeping = true;
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
+        // While the disk is low, the VMs' saved states go first: their
+        // sandboxes boot again from their disks, and lose no more. A host
+        // that keeps none (`snapshots = false`) lets go of those it kept.
+        let low = self.low_on_disk();
+        let keeps_states = self.ctx.cfg.firecracker.snapshots;
+        let in_use: HashSet<String> = self
+            .sessions
+            .keys()
+            .chain(self.pending_starts.keys())
+            .map(|id| sandbox_name(id.as_str()))
+            .collect();
         tokio::spawn(async move {
+            // What that freed counts before any sandbox goes for room.
+            let mut measured = None;
+            if low || !keeps_states {
+                let freed = ctx.driver.drop_saved_states(&in_use).await;
+                if freed > 0 {
+                    if low {
+                        tracing::info!(
+                            "let go of the saved states of stopped sandboxes for room on the disk: {freed} MiB"
+                        );
+                    } else {
+                        tracing::info!(
+                            "let go of the saved states of stopped sandboxes, which snapshots = false keeps none of: {freed} MiB"
+                        );
+                    }
+                    measured = ctx.disk_free_mb().await;
+                }
+            }
             let listed = ctx.driver.list().await;
             let caches = match &listed {
                 Ok(_) => ctx
@@ -378,7 +407,7 @@ impl Daemon {
                     }),
                 Err(_) => Vec::new(),
             };
-            let _ = chores.send(Chore::Listed(listed, caches));
+            let _ = chores.send(Chore::Listed(listed, caches, measured));
         });
     }
 
@@ -657,8 +686,17 @@ impl Daemon {
 
     fn on_chore(&mut self, chore: Chore) {
         match chore {
-            Chore::Listed(Ok(list), caches) => self.sweep_listed(list, caches),
-            Chore::Listed(Err(e), _) => {
+            Chore::Listed(Ok(list), caches, measured) => {
+                if measured.is_some() {
+                    self.note_disk(measured);
+                }
+                self.sweep_listed(list, caches);
+            }
+            Chore::Listed(Err(e), _, measured) => {
+                // What letting saved states go freed counts all the same.
+                if measured.is_some() {
+                    self.note_disk(measured);
+                }
                 tracing::warn!("listing sandboxes: {e:#}");
                 self.sweeping = false;
             }
@@ -1528,10 +1566,11 @@ impl Daemon {
         let (ctx, chores) = (self.ctx.clone(), self.chores_tx.clone());
         tokio::spawn(async move {
             let sb = ctx.driver.handle(&name);
-            if let Err(e) = ctx.driver.stop(&sb).await {
+            let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
+            if let Err(e) = stopped {
                 tracing::warn!("stopping {name}: {e:#}");
             }
-            if destroy && let Err(e) = ctx.driver.remove(&sb).await {
+            if let Err(e) = removed {
                 tracing::warn!("removing {name}: {e:#}");
             }
             let ended = HostToFleet::SessionEnded {

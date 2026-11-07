@@ -67,7 +67,23 @@ struct Record {
     /// The fctl-agent its VM last booted with (the start of its SHA-256).
     #[serde(default)]
     agent: Option<String>,
+    /// The VM's state, saved as it stopped (in `saved/`), which it resumes
+    /// from.
+    #[serde(default)]
+    saved: Option<Saved>,
 }
+
+/// A VM's state that the host saved as the VM stopped.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Saved {
+    /// The Firecracker release that saved it: only the same one loads it.
+    firecracker: String,
+    at_ms: i64,
+}
+
+/// What a VM's saved state may leave free, at least: below it, the VM stops
+/// without saving it.
+const SAVE_MARGIN_MB: u64 = 2048;
 
 type Log<'a> = &'a (dyn Fn(String) + Send + Sync);
 
@@ -211,6 +227,70 @@ async fn make_fs(path: &Path, gb: u64, label: &str, journal: bool) -> Result<()>
     )
     .await
     .with_context(|| format!("making a filesystem in {}", path.display()))?;
+    Ok(())
+}
+
+/// The release of the Firecracker binary `firecracker` (`1.17.0`).
+async fn binary_version(firecracker: &Path) -> Result<String> {
+    let out = super::run_cmd(&firecracker.display().to_string(), &["--version"]).await?;
+    out.lines()
+        .next()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches("Firecracker ")
+                .trim_start_matches('v')
+                .to_owned()
+        })
+        .filter(|v| !v.is_empty())
+        .with_context(|| format!("{} didn't say its version", firecracker.display()))
+}
+
+/// Gives back the disk that the pages of zeros in the file at `path` take,
+/// which most of a VM's saved memory is.
+fn punch_zeros(path: &Path) -> Result<()> {
+    use nix::fcntl::{FallocateFlags, fallocate};
+    use std::os::unix::fs::FileExt;
+    const PAGE: usize = 4096;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let punch = |start: u64, end: u64| {
+        let (Ok(start), Ok(len)) = (i64::try_from(start), i64::try_from(end - start)) else {
+            return Ok(());
+        };
+        fallocate(
+            &file,
+            FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
+            start,
+            len,
+        )
+    };
+    let mut buf = vec![0u8; 1 << 20];
+    let mut offset = 0u64;
+    // Where the run of zero pages this is in started.
+    let mut zeros: Option<u64> = None;
+    loop {
+        let n = file.read_at(&mut buf, offset)?;
+        if n == 0 {
+            break;
+        }
+        for (i, page) in buf[..n].chunks(PAGE).enumerate() {
+            let at = offset + (i * PAGE) as u64;
+            match (page.iter().all(|b| *b == 0), zeros) {
+                (true, None) => zeros = Some(at),
+                (false, Some(start)) => {
+                    punch(start, at)?;
+                    zeros = None;
+                }
+                _ => {}
+            }
+        }
+        offset += n as u64;
+    }
+    if let Some(start) = zeros {
+        punch(start, offset)?;
+    }
     Ok(())
 }
 
@@ -947,6 +1027,8 @@ impl FirecrackerDriver {
             let socket = vm.vsock();
             let answers = tokio::time::timeout(Duration::from_secs(10), vsock::hello(&socket));
             if matches!(answers.await, Ok(Ok(_))) {
+                // Running, its disk is past any state saved before.
+                self.drop_saved(&vm, &spec.name)?;
                 // Its passt exited, or was stopped: the VM gets another.
                 if !vm.linked() {
                     log(format!("Linking the network of {} again", spec.name));
@@ -977,6 +1059,24 @@ impl FirecrackerDriver {
             ));
             vm.kill().await;
         }
+        // A host that keeps no states (`snapshots = false`) resumes none it
+        // kept before, nor does a jailed VM ([`stop`](Self::stop)) one saved
+        // before the host ran as root: they go.
+        if let Some(saved) = self.record(&spec.name).and_then(|r| r.saved)
+            && self.cfg().snapshots
+            && vm.jails.is_none()
+            && !self.resized(&vm, spec, log)
+        {
+            match self.resume_saved(&vm, &spec.name, &saved, log).await {
+                Ok(()) => return Ok(sb),
+                Err(e) => log(format!(
+                    "{} couldn't resume where it stopped ({e:#}), so it starts again from its disk",
+                    spec.name
+                )),
+            }
+        }
+        // A state saved as the host stopped, before it could record it.
+        self.drop_saved(&vm, &spec.name)?;
         let mut record = match self.record(&spec.name) {
             Some(record) => {
                 log(format!("Starting the existing sandbox {}", spec.name));
@@ -1146,6 +1246,7 @@ impl FirecrackerDriver {
             reference: image.reference.clone(),
             created_ms: vsock::now_ms(),
             agent: None,
+            saved: None,
         };
         self.save_record(&spec.name, &record)?;
         Ok(record)
@@ -1347,11 +1448,200 @@ impl FirecrackerDriver {
         }
     }
 
+    /// Stops the sandbox's VM, saving its state first where the host
+    /// keeps them (`snapshots`) and the disk has room for its memory, so
+    /// that it resumes where it was. A VM paused while the disk was nearly
+    /// full stops without, as does one in the jailer's chroot, which
+    /// Firecracker would write its state into and which goes as it stops,
+    /// and an image builder, which boots afresh for each build.
     pub async fn stop(&self, sb: &Sandbox) -> Result<()> {
         let lock = self.lock(&format!("sandbox {}", sb.name));
         let _held = lock.lock().await;
-        self.vm(&sb.name)?.stop().await;
+        let vm = self.vm(&sb.name)?;
+        if self.cfg().snapshots
+            && vm.jails.is_none()
+            && !crate::driver::is_builder(&sb.name)
+            && vm.running()
+            && !vm.paused().await
+        {
+            match self.save(&vm, &sb.name).await {
+                Ok(true) => {
+                    vm.kill().await;
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!(
+                    "saving the state of {} failed, so it stops without it: {e:#}",
+                    sb.name
+                ),
+            }
+        }
+        vm.stop().await;
         Ok(())
+    }
+
+    /// Saves the state of `vm`, which runs, in its `saved/`, unless the disk
+    /// lacks room for its memory; whether it did. What the VM has yet to
+    /// write goes to its disk first, so that one whose state doesn't come
+    /// back boots from a disk as whole as a clean stop leaves it.
+    async fn save(&self, vm: &Vm, name: &str) -> Result<bool> {
+        // One at a time: sandboxes that stop together (a host that drains)
+        // would each find room for their memory, and all write it at once.
+        let lock = self.lock("saving");
+        let _held = lock.lock().await;
+        let memory_mb = vm.memory_mb().unwrap_or(u64::MAX / 2);
+        let floor = self
+            .host
+            .min_free_disk_mb()
+            .unwrap_or(0)
+            .max(SAVE_MARGIN_MB);
+        let free = crate::sysinfo::disk_available_mb(&vm.dir).await;
+        if free.is_none_or(|free| free < memory_mb.saturating_add(floor)) {
+            tracing::info!(
+                "{name} stops without saving its state: the disk lacks room for its {memory_mb} MiB of memory"
+            );
+            return Ok(false);
+        }
+        let firecracker = vm.firecracker_version().await?;
+        let sync = Exec {
+            argv: vec!["sync".into()],
+            user: Some("root".into()),
+            cwd: Some("/".into()),
+            ..Exec::default()
+        };
+        let synced =
+            tokio::time::timeout(Duration::from_secs(60), vsock::run(&vm.vsock(), sync, None))
+                .await;
+        if !matches!(synced, Ok(Ok(vsock::Output { code: 0, .. }))) {
+            tracing::warn!("{name}'s disk wasn't written out before its state was saved");
+        }
+        let (dir, new) = (vm.dir.join("saved"), vm.dir.join("saved.new"));
+        let _ = std::fs::remove_dir_all(&new);
+        let _ = std::fs::remove_dir_all(&dir);
+        let saved = async {
+            vm.snapshot(&new).await?;
+            // The memory the VM never touched, or gave back, takes no disk.
+            let memory = new.join("memory");
+            if let Err(e) = tokio::task::spawn_blocking(move || punch_zeros(&memory)).await? {
+                tracing::warn!("giving back the disk {name}'s memory doesn't use: {e:#}");
+            }
+            std::fs::rename(&new, &dir)?;
+            let Some(mut record) = self.record(name) else {
+                bail!("{name} has no record to keep its saved state in");
+            };
+            record.saved = Some(Saved {
+                firecracker,
+                at_ms: vsock::now_ms(),
+            });
+            self.save_record(name, &record)
+        }
+        .await;
+        // What a save that failed left takes as much disk as the VM's memory.
+        if saved.is_err() {
+            let _ = std::fs::remove_dir_all(&new);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        saved.map(|()| true)
+    }
+
+    /// Starts the VM of the sandbox `name` from the state it saved as it
+    /// stopped, with its programs running on, then links its network and
+    /// lets the state go: the VM's disk is past it once the VM runs.
+    /// Fails, letting it go too, when the state can't come back: another
+    /// Firecracker saved it, say.
+    async fn resume_saved(&self, vm: &Vm, name: &str, saved: &Saved, log: Log<'_>) -> Result<()> {
+        let dir = vm.dir.join("saved");
+        let restored = async {
+            if !dir.join("vmstate").is_file() || !dir.join("memory").is_file() {
+                bail!("its saved state is incomplete");
+            }
+            let firecracker = self.firecracker(log).await?;
+            let version = binary_version(&firecracker).await?;
+            if version != saved.firecracker {
+                bail!(
+                    "Firecracker {} saved its state, and this host runs {version}",
+                    saved.firecracker
+                );
+            }
+            log(format!("Resuming the sandbox {name} where it stopped"));
+            vm.restore(&dir, &firecracker, name).await
+        }
+        .await;
+        // Firecracker maps the memory it loaded, which stays while it runs.
+        self.drop_saved(vm, name)?;
+        restored?;
+        vm.wait_ready().await?;
+        let passt = self
+            .passt()
+            .context("passt is not installed: it gives the VMs their network")?;
+        if let Err(e) = vm.link_network(&passt).await {
+            vm.kill().await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Whether the session asks `vm`, stopped, for another size than it
+    /// had: its saved state, which has the old one, then won't do.
+    fn resized(&self, vm: &Vm, spec: &SandboxSpec, log: Log<'_>) -> bool {
+        let (cpus, memory_mb) = vm::size(spec.cpus, spec.memory_mb);
+        let had = (vm.cpus(), vm.memory_mb());
+        if had == (Some(u64::from(cpus)), Some(u64::from(memory_mb))) {
+            return false;
+        }
+        log(format!(
+            "{} asks for {cpus} CPUs and {memory_mb} MiB now, so it starts again from its disk rather than where it stopped",
+            spec.name
+        ));
+        true
+    }
+
+    /// Lets the state `name` saved go, files and record.
+    fn drop_saved(&self, vm: &Vm, name: &str) -> Result<()> {
+        // Saved, or half saved as a save failed or the host stopped.
+        for dir in [vm.dir.join("saved"), vm.dir.join("saved.new")] {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)
+                    .with_context(|| format!("removing {}", dir.display()))?;
+            }
+        }
+        if let Some(mut record) = self.record(name)
+            && record.saved.take().is_some()
+        {
+            self.save_record(name, &record)?;
+        }
+        Ok(())
+    }
+
+    /// Lets the states that stopped sandboxes saved go, but those of `keep`,
+    /// to make room on the disk: their sandboxes start again from their
+    /// disks. What that freed, in MiB.
+    pub async fn drop_saved_states(&self, keep: &std::collections::HashSet<String>) -> u64 {
+        let Ok(entries) = std::fs::read_dir(self.sandboxes()) else {
+            return 0;
+        };
+        let mut freed = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let saved = entry.path().join("saved");
+            let half = entry.path().join("saved.new");
+            if keep.contains(&name) || !(saved.is_dir() || half.is_dir()) {
+                continue;
+            }
+            let lock = self.lock(&format!("sandbox {name}"));
+            let _held = lock.lock().await;
+            let Ok(vm) = self.vm(&name) else { continue };
+            if vm.running() {
+                continue;
+            }
+            let size = crate::caches::dir_size_mb(&saved).unwrap_or(0)
+                + crate::caches::dir_size_mb(&half).unwrap_or(0);
+            match self.drop_saved(&vm, &name) {
+                Ok(()) => freed += size,
+                Err(e) => tracing::warn!("letting {name}'s saved state go: {e:#}"),
+            }
+        }
+        freed
     }
 
     pub async fn remove(&self, sb: &Sandbox) -> Result<()> {
@@ -1541,6 +1831,7 @@ mod tests {
                 reference: image.reference.clone(),
                 created_ms: 1,
                 agent: None,
+                saved: None,
             },
         )?;
         d.remove_image("ghcr.io/hyperstructure/sandbox:0.26.0-replaced-222222222222")
@@ -1629,6 +1920,7 @@ mod tests {
             reference: "x".into(),
             created_ms: 1,
             agent: None,
+            saved: None,
         };
         d.save_record("fctl-ses-01abc", &record)?;
         assert_eq!(d.record("fctl-ses-01abc"), Some(record));
@@ -1673,6 +1965,218 @@ mod tests {
         d.remove_image("fctl-build-prj_1:abc").await?;
         assert!(d.store.image(&project.id).is_none());
         assert!(d.store.image(&debian.id).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn saved_memory_takes_no_disk_for_its_zero_pages() -> Result<()> {
+        use std::os::unix::fs::{FileExt, MetadataExt};
+        let dir = tempfile::tempdir()?;
+        let memory = dir.path().join("memory");
+        // 8 MiB of written zeros, but for two pages of something else.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&memory)?;
+        file.write_all_at(&vec![0u8; 8 << 20], 0)?;
+        file.write_all_at(b"the agent's heap", 4096)?;
+        file.write_all_at(b"its stack", (6 << 20) + 17)?;
+        file.sync_all()?;
+        let before = std::fs::metadata(&memory)?.blocks() * 512;
+        punch_zeros(&memory)?;
+        let after = std::fs::metadata(&memory)?;
+        assert_eq!(after.len(), 8 << 20);
+        let mut page = [0u8; 16];
+        file.read_exact_at(&mut page, 4096)?;
+        assert_eq!(&page, b"the agent's heap");
+        let mut tail = [0u8; 9];
+        file.read_exact_at(&mut tail, (6 << 20) + 17)?;
+        assert_eq!(&tail, b"its stack");
+        // Where the filesystem gives back what holes don't take.
+        if before >= 8 << 20 {
+            assert!(
+                after.blocks() * 512 <= 64 * 1024,
+                "{} bytes",
+                after.blocks() * 512
+            );
+        }
+        Ok(())
+    }
+
+    /// A sandbox with a saved state, as a stop leaves it.
+    fn with_saved(d: &FirecrackerDriver, name: &str, firecracker: &str) -> Result<Vm> {
+        let vm = d.vm(name)?;
+        std::fs::create_dir_all(vm.dir.join("saved"))?;
+        std::fs::write(vm.dir.join("saved/vmstate"), b"state")?;
+        std::fs::write(vm.dir.join("saved/memory"), vec![1u8; 64 * 1024])?;
+        d.save_record(
+            name,
+            &Record {
+                image: "sha256:1".into(),
+                reference: "x".into(),
+                created_ms: 1,
+                agent: None,
+                saved: Some(Saved {
+                    firecracker: firecracker.into(),
+                    at_ms: 2,
+                }),
+            },
+        )?;
+        Ok(vm)
+    }
+
+    /// A state that another Firecracker saved goes, and the sandbox boots
+    /// from its disk instead; one that never came about goes too.
+    #[tokio::test]
+    async fn lets_go_of_saved_states_it_cant_resume() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bin = tempfile::tempdir()?;
+        let firecracker = bin.path().join("firecracker");
+        crate::driver::fake::write_script(
+            &firecracker,
+            "#!/bin/sh\necho 'Firecracker v1.18.0'\necho\necho 'Supported snapshot data format versions: v8.0.0'\n",
+        )?;
+        let mut host = HostConfig {
+            data_dir: Some(dir.path().to_owned()),
+            ..HostConfig::default()
+        };
+        host.firecracker.firecracker = Some(firecracker);
+        let d = FirecrackerDriver::new(&host);
+        let vm = with_saved(&d, "fctl-ses-01old", "1.17.0")?;
+        let log = |_: String| {};
+        let saved = d
+            .record("fctl-ses-01old")
+            .and_then(|r| r.saved)
+            .context("saved")?;
+        let e = d
+            .resume_saved(&vm, "fctl-ses-01old", &saved, &log)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert_eq!(
+            e.as_deref(),
+            Some("Firecracker 1.17.0 saved its state, and this host runs 1.18.0")
+        );
+        assert!(!vm.dir.join("saved").exists());
+        assert_eq!(d.record("fctl-ses-01old").and_then(|r| r.saved), None);
+        // Its memory never written out.
+        let vm = with_saved(&d, "fctl-ses-01half", "1.18.0")?;
+        std::fs::remove_file(vm.dir.join("saved/memory"))?;
+        let saved = d
+            .record("fctl-ses-01half")
+            .and_then(|r| r.saved)
+            .context("saved")?;
+        let e = d.resume_saved(&vm, "fctl-ses-01half", &saved, &log).await;
+        assert!(e.is_err_and(|e| e.to_string() == "its saved state is incomplete"));
+        assert!(!vm.dir.join("saved").exists());
+        Ok(())
+    }
+
+    /// A VM asked for another size boots from its disk rather than resume
+    /// as it was; what a save that stopped halfway left goes with the rest.
+    #[tokio::test]
+    async fn saved_states_go_when_the_size_changes_or_they_were_never_done() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let vm = with_saved(&d, "fctl-ses-01size", "1.17.0")?;
+        let spec = |cpus, memory_mb| SandboxSpec {
+            name: "fctl-ses-01size".into(),
+            image: "x".into(),
+            fallback_image: None,
+            cpus,
+            memory_mb,
+            cache: None,
+        };
+        let boot = vm::unpack_spec("/k".into(), "/i".into(), "fctl-ses-01size", Path::new("/r"));
+        std::fs::write(
+            vm.dir.join("firecracker.json"),
+            serde_json::to_vec(&vm.config(&vm::Spec {
+                cpus: 2,
+                memory_mb: 4096,
+                ..boot
+            }))?,
+        )?;
+        let log = |_: String| {};
+        assert!(!d.resized(&vm, &spec(2, 4096), &log));
+        assert!(d.resized(&vm, &spec(4, 4096), &log));
+        assert!(d.resized(&vm, &spec(2, 8192), &log));
+        // Half saved, as the host stopped.
+        std::fs::create_dir_all(vm.dir.join("saved.new"))?;
+        std::fs::write(vm.dir.join("saved.new/memory"), vec![1u8; 4096])?;
+        d.drop_saved(&vm, "fctl-ses-01size")?;
+        assert!(!vm.dir.join("saved").exists() && !vm.dir.join("saved.new").exists());
+        assert_eq!(d.record("fctl-ses-01size").and_then(|r| r.saved), None);
+        Ok(())
+    }
+
+    /// For room on the disk, the states of stopped sandboxes go, but those
+    /// of the sessions here.
+    #[tokio::test]
+    async fn lets_saved_states_go_for_room_on_the_disk() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let d = driver(dir.path());
+        let stopped = with_saved(&d, "fctl-ses-01stopped", "1.17.0")?;
+        let starting = with_saved(&d, "fctl-ses-01starting", "1.17.0")?;
+        let keep = std::collections::HashSet::from(["fctl-ses-01starting".to_owned()]);
+        assert!(d.drop_saved_states(&keep).await >= 1);
+        assert!(!stopped.dir.join("saved").exists());
+        assert_eq!(d.record("fctl-ses-01stopped").and_then(|r| r.saved), None);
+        assert!(starting.dir.join("saved").is_dir());
+        assert!(
+            d.record("fctl-ses-01starting")
+                .and_then(|r| r.saved)
+                .is_some()
+        );
+        Ok(())
+    }
+
+    /// A host that keeps no states resumes none it kept before: a start
+    /// lets the state go without trying it.
+    #[tokio::test]
+    async fn keeping_no_states_resumes_none() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bin = tempfile::tempdir()?;
+        // Another release than the one that saved: a resume would fail at
+        // once, and say so.
+        let firecracker = bin.path().join("firecracker");
+        crate::driver::fake::write_script(
+            &firecracker,
+            "#!/bin/sh\necho 'Firecracker v1.18.0'\necho\necho 'Supported snapshot data format versions: v8.0.0'\n",
+        )?;
+        let mut host = HostConfig {
+            data_dir: Some(dir.path().to_owned()),
+            ..HostConfig::default()
+        };
+        host.firecracker.firecracker = Some(firecracker);
+        host.firecracker.snapshots = false;
+        let d = FirecrackerDriver::new(&host);
+        let vm = with_saved(&d, "fctl-ses-01cold", "1.17.0")?;
+        // The size it saved with, which the start asks for again.
+        std::fs::write(
+            vm.dir.join("firecracker.json"),
+            br#"{"machine-config": {"vcpu_count": 1, "mem_size_mib": 512}}"#,
+        )?;
+        let spec = SandboxSpec {
+            name: "fctl-ses-01cold".into(),
+            image: "127.0.0.1:9/fctl-test/none:1".into(),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: None,
+        };
+        let said = std::sync::Mutex::new(Vec::new());
+        let log = |line: String| {
+            said.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line)
+        };
+        // No KVM here, nor that image: it can't boot, but its state goes first.
+        let _ = d.ensure(&spec, &log).await;
+        assert!(!vm.dir.join("saved").exists());
+        assert_eq!(d.record("fctl-ses-01cold").and_then(|r| r.saved), None);
+        let said = said.into_inner().unwrap_or_else(PoisonError::into_inner);
+        assert!(!said.iter().any(|l| l.contains("resume")), "{said:?}");
         Ok(())
     }
 
@@ -1854,6 +2358,9 @@ mod tests {
                     let owner = std::fs::symlink_metadata(&path)?.uid();
                     assert!(owner < vm::JAIL_ID_BASE, "{path:?} is {owner}'s");
                 }
+                // A jailed VM saves no state yet.
+                let saved = firecracker.join("sandboxes").join(&name).join("saved");
+                assert!(!saved.exists(), "the jailed VM saved its state");
             }
             let listed = d.list().await?;
             assert!(listed.iter().any(|s| s.name == name && !s.running), "{listed:?}");
@@ -2028,10 +2535,17 @@ mod tests {
         d.build(&job, &log).await?;
         eprintln!("built in {:?}", started.elapsed());
         assert!(d.has_image(&tag).await);
-        // The builder stopped, and the sweep counts its time from now.
+        // The builder stopped, and the sweep counts its time from now. It
+        // saved no state: it boots afresh for each build.
         let builder = super::builds::builder_name(&tag);
         let stopped = crate::expiry::load(&crate::expiry::path(&cfg.data_dir()));
         assert!(stopped.contains_key(&builder), "{stopped:?}");
+        let saved = cfg
+            .data_dir()
+            .join("firecracker/sandboxes")
+            .join(&builder)
+            .join("saved");
+        assert!(!saved.exists(), "the builder saved its state");
         // It keeps only its own layers, over Debian's.
         let Driver::Firecracker(fd) = &d else {
             bail!("not the firecracker driver");
@@ -2070,6 +2584,93 @@ mod tests {
         d.remove(&d.handle(&super::builds::builder_name(&tag)))
             .await?;
         d.remove_image(&tag).await?;
+        result
+    }
+
+    /// A sandbox stopped with its state saved resumes with its programs
+    /// running and its network linked again; without it, it boots from its
+    /// disk. As [`boots_a_sandbox`] says.
+    #[tokio::test]
+    #[ignore = "needs KVM, passt and a static fctl-agent"]
+    async fn stopped_sandboxes_resume_where_they_were() -> Result<()> {
+        use super::super::Driver;
+        let temp = tempfile::tempdir()?;
+        let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| temp.path().to_owned());
+        let mut cfg = HostConfig {
+            data_dir: Some(data.clone()),
+            agent_bin: Some(
+                std::env::var("FCTL_TEST_FIRECRACKER_AGENT")
+                    .context("FCTL_TEST_FIRECRACKER_AGENT isn't set")?
+                    .into(),
+            ),
+            ..HostConfig::default()
+        };
+        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
+        cfg.firecracker.disk_gb = 4;
+        // Jailed VMs save no state yet: as root, this tests saving without
+        // the jailer.
+        cfg.firecracker.jailer = false;
+        let d = Driver::select("firecracker", &cfg).await?;
+        let log = |line: String| eprintln!("{line}");
+        let name = format!(
+            "fctl-test-{}",
+            hex::encode(fctl_domain::random_bytes::<4>())
+        );
+        let spec = SandboxSpec {
+            name: name.clone(),
+            image: std::env::var("FCTL_TEST_FIRECRACKER_IMAGE")
+                .unwrap_or_else(|_| "docker.io/library/debian:trixie-slim".into()),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: None,
+        };
+        let sb = d.ensure(&spec, &log).await?;
+        let dir = data.join("firecracker/sandboxes").join(&name);
+        let result = async {
+            // A program of its own, and a file in memory (/run is a tmpfs).
+            d.exec(
+                &sb,
+                "setsid sh -c 'while :; do sleep 1; done' </dev/null >/dev/null 2>&1 & echo $! > /run/held",
+            )
+            .await?;
+            let held = d.exec(&sb, "cat /run/held").await?;
+            let started = std::time::Instant::now();
+            d.stop(&sb).await?;
+            eprintln!(
+                "saved in {:?}: {} MiB of memory on disk",
+                started.elapsed(),
+                crate::caches::dir_size_mb(&dir.join("saved"))?
+            );
+            assert!(dir.join("saved/memory").is_file());
+            assert!(!d.list().await?.iter().any(|s| s.name == name && s.running));
+            let started = std::time::Instant::now();
+            d.ensure(&spec, &log).await?;
+            eprintln!("resumed in {:?}", started.elapsed());
+            assert!(!dir.join("saved").exists());
+            assert_eq!(d.exec(&sb, "cat /run/held").await?, held);
+            let alive = d
+                .exec(&sb, "kill -0 \"$(cat /run/held)\" && echo alive")
+                .await?;
+            assert_eq!(alive.trim(), "alive");
+            let resolved = d.exec(&sb, "getent hosts example.com").await?;
+            assert!(!resolved.trim().is_empty());
+            // Without saving its state, it boots again from its disk.
+            d.exec(&sb, "echo kept > /root/note").await?;
+            let mut cold = cfg.clone();
+            cold.firecracker.snapshots = false;
+            let d = Driver::select("firecracker", &cold).await?;
+            d.stop(&sb).await?;
+            assert!(!dir.join("saved").exists());
+            d.ensure(&spec, &log).await?;
+            assert_eq!(d.exec(&sb, "cat /root/note").await?, "kept\n");
+            assert!(d.exec(&sb, "cat /run/held").await.is_err());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        d.remove(&sb).await?;
         result
     }
 }

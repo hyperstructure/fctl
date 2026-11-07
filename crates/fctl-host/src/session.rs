@@ -1063,10 +1063,11 @@ async fn run(
                 }
                 Err(destroy) => {
                     let sb = ctx.driver.handle(&sandbox_name(session_id.as_str()));
-                    if let Err(e) = ctx.driver.stop(&sb).await {
+                    let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
+                    if let Err(e) = stopped {
                         tracing::warn!("stopping {}: {e:#}", sb.name);
                     }
-                    if destroy && let Err(e) = ctx.driver.remove(&sb).await {
+                    if let Err(e) = removed {
                         tracing::warn!("removing {}: {e:#}", sb.name);
                     }
                     let msg = "Stopped before it started".to_owned();
@@ -1579,10 +1580,11 @@ async fn run(
     // Give the uplink a moment to deliver the agent's last events.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let destroy = stop.map(|(d, _)| d).unwrap_or(false);
-    if let Err(e) = ctx.driver.stop(&sb).await {
+    let (stopped, removed) = ctx.driver.finish(&sb, destroy).await;
+    if let Err(e) = stopped {
         tracing::warn!("stopping {}: {e:#}", sb.name);
     }
-    if destroy && let Err(e) = ctx.driver.remove(&sb).await {
+    if let Err(e) = removed {
         tracing::warn!("removing {}: {e:#}", sb.name);
     }
     let (status, reason) = outcome;
