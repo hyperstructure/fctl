@@ -440,7 +440,9 @@ where
                 }
             })
     };
-    // Each returns as soon as it fails, without polling the other again.
+    // Done at the first error, without polling the other again. `unpack`
+    // holds its end of the pipe until it returns, so a `send` that fails
+    // for want of a reader never comes before the VM's own error.
     tokio::try_join!(send(to_vm), unpacking).map(|((), unpacked)| unpacked)
 }
 
