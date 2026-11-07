@@ -474,7 +474,7 @@ pub async fn add(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         format!(
             "A passkey, \"{name}\", now signs in to your {instance} account ({}) without a password or code.\n\nIf you didn't add it, remove it in Settings now and change your password: {}",
             user.email,
-            ctx.cfg.url("/settings")
+            ctx.cfg.url("/settings?tab=security")
         ),
     );
     me(ctx, &user.id).await

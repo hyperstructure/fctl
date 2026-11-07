@@ -115,7 +115,7 @@ fn print(n: &Notifications, base: &str) {
     }
     if n.devices.is_empty() {
         println!(
-            "No browser gets your notifications yet. Turn them on in Settings: {base}/settings"
+            "No browser gets your notifications yet. Turn them on in Settings: {base}/settings?tab=notifications"
         );
         return;
     }

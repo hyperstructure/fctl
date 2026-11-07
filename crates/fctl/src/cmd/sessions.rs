@@ -1028,7 +1028,7 @@ pub async fn follow(server: Option<&str>, reference: &str, follow: bool, json: b
             println!(
                 "{}",
                 style::dim(&format!(
-                    "No browser gets your notifications yet. Turn them on in Settings: {}/settings",
+                    "No browser gets your notifications yet. Turn them on in Settings: {}/settings?tab=notifications",
                     api.base()
                 ))
             );

@@ -1,6 +1,6 @@
 import { mark } from "@hyperstructure/design/brand";
 import { Check, Copy } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { createContext, type ReactNode, use, useEffect, useRef, useState } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { hue, initials } from "@/lib/format";
@@ -267,6 +267,13 @@ export function CodeBox({ value, className }: { value: string; className?: strin
   );
 }
 
+/**
+ * How the Sections in it lay out. `beside`, the default: the title and description in a column
+ * beside what the section holds, from 768 px. Settings' pages stack them instead: `page`, a
+ * section that is a page of its own, under the page's title; `part`, one of several on a page.
+ */
+export const SectionLayout = createContext<"beside" | "page" | "part">("beside");
+
 export function Section({
   id,
   title,
@@ -281,17 +288,49 @@ export function Section({
   children: ReactNode;
   actions?: ReactNode;
 }) {
+  const layout = use(SectionLayout);
+  if (layout === "beside")
+    return (
+      <section
+        id={id}
+        className="grid scroll-mt-6 gap-x-10 gap-y-4 border-t border-line py-8 first:border-t-0 md:grid-cols-[260px_1fr]"
+      >
+        <div>
+          <h2 className="text-[14px] font-semibold text-ink">{title}</h2>
+          {description && <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>}
+          {actions && <div className="mt-3">{actions}</div>}
+        </div>
+        <div className="min-w-0">{children}</div>
+      </section>
+    );
+  const page = layout === "page";
   return (
-    <section
-      id={id}
-      className="grid scroll-mt-6 gap-x-10 gap-y-4 border-t border-line py-8 first:border-t-0 md:grid-cols-[260px_1fr]"
-    >
-      <div>
-        <h2 className="text-[14px] font-semibold text-ink">{title}</h2>
-        {description && <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>}
-        {actions && <div className="mt-3">{actions}</div>}
+    <section id={id} className={cn("scroll-mt-6", !page && "not-first:mt-14")}>
+      {/* Its actions beside the title, or under the description where they don't fit. */}
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="min-w-[min(100%,18rem)] flex-1">
+          {page ? (
+            // The page's heading: larger where it heads the screen, as on a phone (routes/settings.tsx).
+            <h2 className="font-display text-[22px] leading-[1.15] font-medium tracking-[-0.018em] text-ink @max-2xl:text-[28px]">
+              {title}
+            </h2>
+          ) : (
+            <h3 className="text-[15px] font-semibold tracking-[-0.005em] text-ink">{title}</h3>
+          )}
+          {description && (
+            <p
+              className={cn(
+                "max-w-[64ch] leading-relaxed text-pretty text-ink-3",
+                page ? "mt-2 text-[14px]" : "mt-1 text-[13px]",
+              )}
+            >
+              {description}
+            </p>
+          )}
+        </div>
+        {actions && <div className="shrink-0">{actions}</div>}
       </div>
-      <div className="min-w-0">{children}</div>
+      <div className={cn("min-w-0", page ? "mt-7" : "mt-5")}>{children}</div>
     </section>
   );
 }

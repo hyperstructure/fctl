@@ -150,7 +150,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 format!(
                     "Signing in to your {instance} account ({}) with Google no longer asks for a code from your authenticator app.\n\nIf you didn't turn that off, turn it on again in Settings now and change your password: {}",
                     user.email,
-                    ctx.cfg.url("/settings")
+                    ctx.cfg.url("/settings?tab=security")
                 ),
             );
         }
@@ -794,7 +794,7 @@ async fn after_wrong(ctx: &Ctx, user: &UserRow, failures: i64) -> AppResult<AppE
             format!(
                 "Someone signed in to {name} as {}{place} with your password, then entered {failures} wrong codes from an authenticator app. Sign-ins now wait before they take codes from the app again; recovery codes still work.\n\nIf it wasn't you, change your password now: whoever it was knows it. {}",
                 user.email,
-                ctx.cfg.url("/settings")
+                ctx.cfg.url("/settings?tab=security")
             ),
         );
     }
@@ -1060,7 +1060,7 @@ pub async fn remove_authenticator(ctx: &mut Ctx, req: &mut Request) -> AppResult
         format!(
             "Signing in to your {name} account ({}) with your password no longer asks for a code.\n\nIf you didn't turn it off, change your password and turn it on again in Settings: {}",
             user.email,
-            ctx.cfg.url("/settings")
+            ctx.cfg.url("/settings?tab=security")
         ),
     );
     me(ctx, &user.id).await
@@ -1168,7 +1168,7 @@ pub async fn admin_reset(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     } else {
         format!(
             "To use it again, set it up in Settings: {}",
-            ctx.cfg.url("/settings")
+            ctx.cfg.url("/settings?tab=security")
         )
     };
     let gone = if remove_passkeys {
@@ -1211,7 +1211,7 @@ fn recovery_code_notice(ctx: &Ctx, user: &UserRow, instance: &str, left: u32) {
         format!(
             "Someone signed in to {instance} as {}{place} with one of your recovery codes. {left}\n\nIf it wasn't you, change your password and get new recovery codes in Settings: {}",
             user.email,
-            ctx.cfg.url("/settings")
+            ctx.cfg.url("/settings?tab=security")
         ),
     );
 }

@@ -967,6 +967,20 @@ html[data-dragging] * {
   animation-timing-function: var(--ease-out);
 }
 
+/* Settings' list of pages: the highlight moves from the page open to the
+   one chosen (routes/settings.tsx), as the page changes under it. */
+::view-transition-group(settings-page) {
+  animation-duration: 260ms;
+  animation-timing-function: var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(settings-page),
+  ::view-transition-old(settings-page),
+  ::view-transition-new(settings-page) {
+    animation: none;
+  }
+}
+
 /* The not-found and error pages (components/stream-screen.tsx). The code
    stands in .stream-screen-code; the stream draws it over that box and the
    text stays hidden unless WebGL is missing. */

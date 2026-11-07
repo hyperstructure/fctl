@@ -116,7 +116,7 @@ pub fn connected_notice(
         "A Claude subscription was connected to your account".to_owned(),
         format!(
             "{what}\n\nIf you didn't connect it, remove it in Settings now, sign out your other devices there and change your password: {}",
-            cfg.url("/settings#claude")
+            cfg.url("/settings?tab=claude")
         ),
     )
 }

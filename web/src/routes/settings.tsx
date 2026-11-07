@@ -1,12 +1,18 @@
-// Settings: profile, email addresses, workspaces, Claude, notifications,
-// sign-in methods, passkeys, two-factor sign-in, devices, access tokens,
-// appearance, your data (export) and the danger zone (deleting the account).
+// Settings: one page at a time, with the list of pages beside it where both fit, else the list
+// alone (a phone), which opens one. Profile, email addresses, workspaces, Claude, Linear,
+// notifications, appearance, security (sign-in methods, passkeys, two-factor sign-in, devices),
+// access tokens and your data (the export, deleting the account). Which pages there are, and what
+// the list says about each, is lib/settings.ts.
 
+import { palette } from "@hyperstructure/design/brand";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useSearch } from "@tanstack/react-router";
+import { Link, useLocation, useSearch } from "@tanstack/react-router";
 import {
   Bell,
   BellOff,
+  Check,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ImageUp,
   KeyRound,
@@ -19,6 +25,7 @@ import {
   Pencil,
   Plus,
   Radio,
+  RectangleEllipsis,
   Shield,
   ShieldCheck,
   Sun,
@@ -31,6 +38,7 @@ import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { KeepTokenOut } from "@/components/claude/stand-in";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
+import { SettingsIcon } from "@/components/settings/icon";
 import { AccessTokens } from "@/components/tokens";
 import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
 import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
@@ -39,6 +47,7 @@ import {
   Avatar,
   Banner,
   Button,
+  buttonClass,
   DangerZone,
   Dialog,
   Field,
@@ -47,6 +56,7 @@ import {
   NameFields,
   nameParts,
   Section,
+  SectionLayout,
   Select,
   Skeleton,
   Spinner,
@@ -59,6 +69,7 @@ import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
+import { withAlpha } from "@/lib/color";
 import { exported, exportHint, nextExport } from "@/lib/data-export";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
@@ -66,6 +77,19 @@ import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
+import {
+  askedTab,
+  claudeGist,
+  emailsGist,
+  type Gist,
+  linearGist,
+  SETTINGS_GROUPS,
+  type SettingsSearch,
+  type SettingsTab,
+  securityGist,
+  tokensGist,
+  workspacesGist,
+} from "@/lib/settings";
 import { forgetSidebar } from "@/lib/sidebar";
 import { useTheme } from "@/lib/theme";
 import { useTickAt } from "@/lib/tick";
@@ -86,38 +110,256 @@ const LINK_ERRORS: Record<string, string> = {
 export function SettingsPage() {
   const { data: me } = useMe();
   const search = useSearch({ from: "/app/settings" });
+  const hash = useLocation({ select: (l) => l.hash });
+  const { data: instance } = useInstance();
   if (!me) return null;
+  // Linear's page, where the instance has a Linear app.
+  const has = (t: SettingsTab) => t !== "linear" || !!instance?.features.linear;
+  const asked = askedTab(search, hash);
+  const tab = asked && has(asked) ? asked : undefined;
   return (
-    <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
-      <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Settings</h1>
-      {search.linked === "google" && (
-        <Banner tone="ok" className="mt-6">
-          Google is linked. You can sign in with it from now on.
-        </Banner>
+    // Its own width (a container query) decides how it shows: the list of pages beside the page
+    // open, Profile until one is chosen, where both fit; else the list, or the page it opened
+    // with the way back to it.
+    <div className="@container mx-auto max-w-[1000px] px-6 pt-12 pb-24">
+      <h1
+        className={cn(
+          "font-display text-[34px] leading-tight font-medium tracking-[-0.02em]",
+          tab && "@max-2xl:sr-only",
+        )}
+      >
+        Settings
+      </h1>
+      {tab && (
+        <Link
+          to="/settings"
+          className="-ml-1.5 inline-flex h-8 items-center gap-0.5 rounded-md pr-2 text-[14px] text-ink-3 transition-colors hover:text-ink @2xl:hidden"
+        >
+          <ChevronLeft className="size-[18px]" />
+          Settings
+        </Link>
       )}
-      {search.error && (
-        <Banner tone="error" className="mt-6">
-          {LINK_ERRORS[search.error] ?? "That did not work. Try again."}
-        </Banner>
-      )}
-      <div className="mt-6">
-        <Profile me={me} />
-        <Addresses me={me} />
-        <Workspaces me={me} />
-        <Claude me={me} />
-        <LinearAccounts returned={search.linear} />
-        <Notifications me={me} />
-        <SignIn me={me} />
-        <PasskeySettings me={me} />
-        <TwoFactorSettings me={me} />
-        <Devices />
-        <AccessTokens />
-        <Appearance />
-        <YourData me={me} />
+      <div
+        className={cn(
+          "@2xl:mt-9 @2xl:grid @2xl:grid-cols-[180px_minmax(0,1fr)] @2xl:items-start @2xl:gap-10 @4xl:grid-cols-[200px_minmax(0,1fr)] @4xl:gap-14",
+          tab ? "mt-4" : "mt-7",
+        )}
+      >
+        <Pages me={me} tab={tab ?? "profile"} has={has} className="@max-2xl:hidden" />
+        {!tab && <PageList me={me} has={has} className="@2xl:hidden" />}
+        <div className={cn("min-w-0", !tab && "@max-2xl:hidden")}>
+          <SectionLayout value="page">
+            <SettingsBody key={tab ?? "profile"} tab={tab ?? "profile"} me={me} search={search} />
+          </SectionLayout>
+        </div>
       </div>
-      <AccountDangerZone me={me} />
     </div>
   );
+}
+
+function SettingsBody({ tab, me, search }: { tab: SettingsTab; me: G.Me; search: SettingsSearch }) {
+  switch (tab) {
+    case "profile":
+      return <Profile me={me} />;
+    case "emails":
+      return <Addresses me={me} />;
+    case "workspaces":
+      return <Workspaces me={me} />;
+    case "claude":
+      return <Claude me={me} />;
+    case "linear":
+      return <LinearAccounts returned={search.linear as LinearOutcome | undefined} />;
+    case "notifications":
+      return <Notifications me={me} />;
+    case "appearance":
+      return <Appearance />;
+    case "security":
+      return <Security me={me} search={search} />;
+    case "tokens":
+      return <AccessTokens />;
+    case "data":
+      return <YourData me={me} />;
+  }
+}
+
+/**
+ * What needs the person on each page, which the navigation marks: a Claude connection missing or
+ * ended, a workspace closed to them until they set up two-factor sign-in, recovery codes running
+ * out.
+ */
+function useAttention(me: G.Me): Partial<Record<SettingsTab, Gist>> {
+  const blocked = useWorkspaces().data?.workspaces.filter((w) => w.blocked).length ?? 0;
+  const claude = claudeGist(me.claude);
+  const security = securityGist(me, blocked);
+  return {
+    claude: claude.attention ? claude : undefined,
+    security: security.attention ? security : undefined,
+  };
+}
+
+/** The pages beside the one open: each with its icon, and a mark on what needs the person. */
+function Pages({
+  me,
+  tab,
+  has,
+  className,
+}: {
+  me: G.Me;
+  tab: SettingsTab;
+  has: (t: SettingsTab) => boolean;
+  className?: string;
+}) {
+  const attention = useAttention(me);
+  return (
+    // Its icons line up with the page's title, their highlight in the margin beside it.
+    <nav aria-label="Settings" className={cn("sticky top-8 -ml-2.5 max-md:top-20", className)}>
+      {SETTINGS_GROUPS.map((group, i) => (
+        <ul
+          key={group[0]?.tab}
+          className={cn("flex flex-col gap-0.5", i > 0 && "mt-3 border-t border-line pt-3")}
+        >
+          {group
+            .filter((p) => has(p.tab))
+            .map((p) => {
+              const here = p.tab === tab;
+              const needs = attention[p.tab];
+              return (
+                <li key={p.tab}>
+                  <Link
+                    to="/settings"
+                    search={{ tab: p.tab }}
+                    aria-current={here ? "page" : undefined}
+                    className={cn(
+                      "group relative flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
+                      here ? "text-ink" : "text-ink-3 hover:bg-hover hover:text-ink",
+                    )}
+                  >
+                    {/* Moves to the page chosen, with the router's view transition (styles/app.css). */}
+                    {here && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-0 rounded-md bg-raised shadow-[inset_0_0_0_1px_var(--c-line)] [view-transition-name:settings-page]"
+                      />
+                    )}
+                    <SettingsIcon
+                      tab={p.tab}
+                      className={cn(
+                        "relative size-4 shrink-0",
+                        here ? "text-accent" : "text-ink-4 transition-colors group-hover:text-ink-3",
+                      )}
+                    />
+                    <span className="relative min-w-0 flex-1 truncate">{p.label}</span>
+                    {needs && (
+                      <span
+                        title={needs.text}
+                        className="relative size-1.5 shrink-0 rounded-full bg-amber shadow-[0_0_6px_var(--c-amber)]"
+                      >
+                        <span className="sr-only">: {needs.text}</span>
+                      </span>
+                    )}
+                  </Link>
+                </li>
+              );
+            })}
+        </ul>
+      ))}
+    </nav>
+  );
+}
+
+/**
+ * Settings on a phone: who you are, then the pages in their groups, each with what it says now,
+ * in amber where it needs you. Each opens on its own.
+ */
+function PageList({
+  me,
+  has,
+  className,
+}: {
+  me: G.Me;
+  has: (t: SettingsTab) => boolean;
+  className?: string;
+}) {
+  const gists = useGists(me, has);
+  return (
+    <nav aria-label="Settings" className={cn("flex flex-col gap-5", className)}>
+      <Link
+        to="/settings"
+        search={{ tab: "profile" }}
+        className="flex items-center gap-3.5 rounded-xl border border-line bg-surface px-4 py-3.5 transition-colors hover:bg-hover active:bg-hover"
+      >
+        <Avatar user={me.user} size={44} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[15.5px] font-medium text-ink">{me.user.name}</span>
+          <span className="block truncate text-[12.5px] text-ink-3">Profile · {me.user.email}</span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-ink-4" />
+      </Link>
+      {SETTINGS_GROUPS.map((group) => (
+        <ul
+          key={group[0]?.tab}
+          className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface"
+        >
+          {group
+            .filter((p) => p.tab !== "profile" && has(p.tab))
+            .map((p) => {
+              const gist = gists[p.tab];
+              return (
+                <li key={p.tab}>
+                  <Link
+                    to="/settings"
+                    search={{ tab: p.tab }}
+                    className="flex min-h-[58px] items-center gap-3 py-2.5 pr-3.5 pl-3 transition-colors hover:bg-hover active:bg-hover"
+                  >
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised text-ink-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
+                      <SettingsIcon tab={p.tab} className="size-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14.5px] text-ink">{p.label}</span>
+                      {gist && (
+                        <span
+                          className={cn(
+                            "block truncate text-[12.5px]",
+                            gist.attention ? "text-amber" : "text-ink-4",
+                          )}
+                        >
+                          {gist.text}
+                        </span>
+                      )}
+                    </span>
+                    <ChevronRight className="size-4 shrink-0 text-ink-4" />
+                  </Link>
+                </li>
+              );
+            })}
+        </ul>
+      ))}
+    </nav>
+  );
+}
+
+/** What the list of pages says about each, as the instance and this browser have it now. */
+function useGists(me: G.Me, has: (t: SettingsTab) => boolean): Partial<Record<SettingsTab, Gist>> {
+  const workspaces = useWorkspaces().data?.workspaces;
+  const linear = useQuery({ queryKey: keys.myLinear, queryFn: api.myLinear, enabled: has("linear") });
+  const tokens = useQuery({ queryKey: keys.tokens, queryFn: api.tokens });
+  const notifications = useQuery({ queryKey: keys.notifications, queryFn: api.notifications });
+  const [theme] = useTheme();
+  const [hours] = useHourCycle();
+  const here = permission() === "granted" ? notifications.data?.devices.find((d) => d.current) : undefined;
+  return {
+    emails: emailsGist(me),
+    workspaces: workspacesGist(workspaces),
+    claude: claudeGist(me.claude),
+    linear: linearGist(linear.data?.accounts),
+    notifications: notifications.data && {
+      text: here ? "On in this browser" : "Off in this browser",
+    },
+    appearance: { text: `${theme === "dark" ? "Dark" : "Light"} · ${hours}-hour clock` },
+    security: securityGist(me, workspaces?.filter((w) => w.blocked).length),
+    tokens: tokensGist(tokens.data?.tokens),
+    data: { text: "Export it, or delete your account" },
+  };
 }
 
 function Profile({ me }: { me: G.Me }) {
@@ -379,10 +621,26 @@ function Addresses({ me }: { me: G.Me }) {
           </li>
         ))}
       </ul>
-      <p className="mt-3 text-[12.5px] leading-relaxed text-ink-4">
-        To add another address, ask an instance admin to invite it. Open the invitation while you are signed
-        in here, and connect it to this account.
-      </p>
+      <div className="mt-4 flex max-w-[64ch] flex-col gap-2 text-[12.5px] leading-relaxed text-ink-4">
+        {/* Once for every address, rather than under each. */}
+        <p>
+          Commits credit you as a co-author with it, which anyone who can read the repository sees. Use one
+          your GitHub account has, like your{" "}
+          <a
+            href="https://github.com/settings/emails"
+            target="_blank"
+            rel="noreferrer"
+            className="text-ink-2 underline decoration-accent underline-offset-2 hover:text-ink"
+          >
+            noreply address
+          </a>
+          , so GitHub links the commits to you.
+        </p>
+        <p>
+          To add another address, ask an instance admin to invite it. Open the invitation while you are signed
+          in here, and connect it to this account.
+        </p>
+      </div>
       <Dialog
         open={!!disconnecting}
         onClose={() => setDisconnecting(null)}
@@ -431,27 +689,7 @@ function CommitEmail({ address, onSaved }: { address: G.EmailAddress; onSaved: (
         if (changed) save.mutate();
       }}
     >
-      <Field
-        label="Commit email"
-        error={save.error?.message}
-        hint={
-          <>
-            Commits in the sessions you start
-            {address.workspaces.length ? ` in ${address.workspaces.map((w) => w.name).join(", ")}` : ""}{" "}
-            credit you as a co-author with it, which anyone who can read the repository sees. Use one your
-            GitHub account has, like your{" "}
-            <a
-              href="https://github.com/settings/emails"
-              target="_blank"
-              rel="noreferrer"
-              className="text-ink underline decoration-accent underline-offset-2"
-            >
-              noreply address
-            </a>
-            , so GitHub links the commits to you.
-          </>
-        }
-      >
+      <Field label="Commit email" error={save.error?.message}>
         {(id) => (
           <div className="flex gap-2">
             <Input
@@ -516,9 +754,10 @@ function Workspaces({ me }: { me: G.Me }) {
       ) : data.workspaces.length === 0 ? (
         <p className="text-[13.5px] text-ink-3">You aren't in a workspace yet.</p>
       ) : (
-        <ul className="flex flex-col divide-y divide-line rounded-xl border border-line">
+        // Its rows put their Claude connection beside the workspace where they have the room.
+        <ul className="@container flex flex-col divide-y divide-line rounded-xl border border-line">
           {data.workspaces.map((w) => (
-            <li key={w.id} className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center">
+            <li key={w.id} className="flex flex-col gap-3 px-4 py-3.5 @xl:flex-row @xl:items-center">
               <Link
                 to="/w/$slug"
                 params={{ slug: w.slug }}
@@ -616,8 +855,7 @@ function Claude({ me }: { me: G.Me }) {
       description={
         <>
           Sessions you start run on your own Claude subscription. fctl refuses API keys and stops a session
-          before it would draw on paid extra usage. Each connection shows how much of its plan's limits is
-          used, as sessions last reported it. Removing a connection stops the sessions that run on it.
+          before it would draw on paid extra usage. Removing a connection stops the sessions that run on it.
         </>
       }
     >
@@ -943,75 +1181,67 @@ function LinearAccounts({ returned }: { returned?: LinearOutcome }) {
     },
     onError: (e) => toast(e.message, "error"),
   });
-  // Back from linking, or sent here for it: the browser's own jump to #linear came before this did.
-  const ref = useRef<HTMLElement>(null);
-  const loaded = !mine.isPending;
-  useEffect(() => {
-    if (loaded && (returned || location.hash === "#linear"))
-      ref.current?.scrollIntoView({ block: "start", behavior: "instant" });
-  }, [loaded, returned]);
   if (!instance?.features.linear) return null;
   const accounts = mine.data?.accounts ?? [];
   const outcome = returned && linearOutcome(returned);
   return (
-    <section id="linear" ref={ref} className="scroll-mt-6">
-      <Section
-        title="Linear"
-        description="Who fctl knows you as in Linear: issues you delegate to fctl there start sessions as you, on your Claude subscription, and your replies there reach its agents."
-      >
-        <div className="flex flex-col gap-4">
-          {outcome && <Banner tone={outcome.tone}>{outcome.text}</Banner>}
-          {mine.isPending ? (
-            <Skeleton className="h-14" />
-          ) : (
-            <ul className="border-y border-line">
-              {accounts.map((a) => (
-                <li
-                  key={a.organization}
-                  className="flex items-center gap-3 border-b border-line py-3 last:border-b-0"
-                >
-                  <Avatar user={{ id: a.linear_user, name: a.name, avatar_url: a.avatar_url }} size={28} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13.5px] text-ink">
-                      {a.name}
-                      <span className="text-ink-4"> in {a.organization_name}</span>
-                    </div>
-                    <div className="truncate text-[12px] text-ink-4">
-                      {[a.email, a.url_key && `linear.app/${a.url_key}`].filter(Boolean).join(" · ")} · linked{" "}
-                      {ago(a.linked_at)}
-                    </div>
+    <Section
+      id="linear"
+      title="Linear"
+      description="Who fctl knows you as in Linear: issues you delegate to fctl there start sessions as you, on your Claude subscription, and your replies there reach its agents."
+    >
+      <div className="flex flex-col gap-4">
+        {outcome && <Banner tone={outcome.tone}>{outcome.text}</Banner>}
+        {mine.isPending ? (
+          <Skeleton className="h-14" />
+        ) : (
+          <ul className="border-y border-line">
+            {accounts.map((a) => (
+              <li
+                key={a.organization}
+                className="flex items-center gap-3 border-b border-line py-3 last:border-b-0"
+              >
+                <Avatar user={{ id: a.linear_user, name: a.name, avatar_url: a.avatar_url }} size={28} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13.5px] text-ink">
+                    {a.name}
+                    <span className="text-ink-4"> in {a.organization_name}</span>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => setDropping(a)}>
-                    Unlink
-                  </Button>
-                </li>
-              ))}
-              {accounts.length === 0 && (
-                <li className="flex items-center gap-3 py-3">
-                  <LinearIcon className="size-5 text-ink-3" />
-                  <span className="text-[13.5px] text-ink-3">
-                    fctl doesn't know your Linear account yet, so what you delegate to fctl there starts
-                    nothing.
-                  </span>
-                </li>
-              )}
-            </ul>
-          )}
-          <div>
-            <a
-              href={linearLinkUrl()}
-              className="inline-block"
-              onClick={(e) =>
-                clickConfirmed(e, linearLinkUrl())?.catch((err: Error) => toast(err.message, "error"))
-              }
-            >
-              <Button icon={<LinearIcon className="size-3.5" />}>
-                {accounts.length > 0 ? "Link another Linear account" : "Link your Linear account"}
-              </Button>
-            </a>
-          </div>
+                  <div className="truncate text-[12px] text-ink-4">
+                    {[a.email, a.url_key && `linear.app/${a.url_key}`].filter(Boolean).join(" · ")} · linked{" "}
+                    {ago(a.linked_at)}
+                  </div>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setDropping(a)}>
+                  Unlink
+                </Button>
+              </li>
+            ))}
+            {accounts.length === 0 && (
+              <li className="flex items-center gap-3 py-3">
+                <LinearIcon className="size-5 text-ink-3" />
+                <span className="text-[13.5px] text-ink-3">
+                  fctl doesn't know your Linear account yet, so what you delegate to fctl there starts
+                  nothing.
+                </span>
+              </li>
+            )}
+          </ul>
+        )}
+        <div>
+          <a
+            href={linearLinkUrl()}
+            className="inline-block"
+            onClick={(e) =>
+              clickConfirmed(e, linearLinkUrl())?.catch((err: Error) => toast(err.message, "error"))
+            }
+          >
+            <Button icon={<LinearIcon className="size-3.5" />}>
+              {accounts.length > 0 ? "Link another Linear account" : "Link your Linear account"}
+            </Button>
+          </a>
         </div>
-      </Section>
+      </div>
       <Dialog
         open={!!dropping}
         onClose={() => setDropping(null)}
@@ -1031,57 +1261,101 @@ function LinearAccounts({ returned }: { returned?: LinearOutcome }) {
           </Button>
         </div>
       </Dialog>
-    </section>
+    </Section>
+  );
+}
+
+/** Everything about signing in, and where you are signed in: a page of several sections. */
+function Security({ me, search }: { me: G.Me; search: SettingsSearch }) {
+  return (
+    <Section title="Security" description="How you sign in, and everywhere you are signed in.">
+      {/* Back from linking Google (api::google). */}
+      {search.linked === "google" && (
+        <Banner tone="ok" className="mb-7">
+          Google is linked. You can sign in with it from now on.
+        </Banner>
+      )}
+      {search.error && (
+        <Banner tone="error" className="mb-7">
+          {LINK_ERRORS[search.error] ?? "That did not work. Try again."}
+        </Banner>
+      )}
+      <div className="border-t border-line pt-8">
+        <SectionLayout value="part">
+          <SignIn me={me} />
+          <PasskeySettings me={me} />
+          <TwoFactorSettings me={me} />
+          <Devices />
+        </SectionLayout>
+      </div>
+    </Section>
+  );
+}
+
+/** A row's icon, in a tile: lit (`on`) where what it stands for is set up. */
+function Tile({ on, children }: { on?: boolean; children: ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "flex size-8 shrink-0 items-center justify-center rounded-md border transition-colors [&_svg]:size-4",
+        on ? "border-accent/30 bg-accent-soft text-accent" : "border-line bg-raised text-ink-3",
+      )}
+    >
+      {children}
+    </span>
   );
 }
 
 function SignIn({ me }: { me: G.Me }) {
   const { data: instance } = useInstance();
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const change = useMutation({
-    mutationFn: () =>
-      api.changePassword({
-        current_password: me.user.has_password ? current : undefined,
-        new_password: next,
-      }),
-    onSuccess: () => {
-      setCurrent("");
-      setNext("");
-      void queryClient.invalidateQueries({ queryKey: keys.me });
-      toast("Password changed. Other sessions were signed out.");
-    },
-  });
+  const [changing, setChanging] = useState(false);
   const unlink = useMutation({
     mutationFn: (id: string) => api.unlinkIdentity(id),
     onSuccess: (m) => queryClient.setQueryData(keys.me, m),
     onError: (e) => toast(e.message, "error"),
   });
   const google = me.identities.find((i) => i.provider === "google");
-  const err = (f: string) =>
-    (change.error as { field?: string } | null)?.field === f ? change.error?.message : undefined;
+  const password = me.user.has_password;
   return (
     <Section title="Sign-in methods" description="Keep at least one way in.">
-      <div className="flex flex-col gap-6">
-        <div className="flex items-center gap-3 border-y border-line py-3">
-          <svg viewBox="0 0 24 24" className="size-5" aria-hidden="true">
-            <path
-              fill="#4285F4"
-              d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.7z"
-            />
-            <path
-              fill="#34A853"
-              d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24z"
-            />
-            <path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.3a12 12 0 0 0 0 10.8l4-3.1z" />
-            <path
-              fill="#EA4335"
-              d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9z"
-            />
-          </svg>
+      <ul className="divide-y divide-line border-y border-line">
+        <li className="flex items-center gap-3 py-3">
+          <Tile>
+            <RectangleEllipsis />
+          </Tile>
+          <div className="min-w-0 flex-1">
+            <div className="text-[13.5px] text-ink">Password</div>
+            <div className="text-[12px] text-ink-4">
+              {password
+                ? "Signs you in with any of your email addresses"
+                : "None yet: set one to sign in with your email address"}
+            </div>
+          </div>
+          <Button size="sm" variant={password ? "ghost" : "secondary"} onClick={() => setChanging(true)}>
+            {password ? "Change password" : "Set a password"}
+          </Button>
+        </li>
+        <li className="flex items-center gap-3 py-3">
+          <Tile>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="#4285F4"
+                d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.4h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.7z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.2 0 6-1.1 8-2.9l-3.9-3c-1.1.7-2.5 1.2-4.1 1.2-3.1 0-5.8-2.1-6.7-5H1.3v3.1A12 12 0 0 0 12 24z"
+              />
+              <path fill="#FBBC05" d="M5.3 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.3a12 12 0 0 0 0 10.8l4-3.1z" />
+              <path
+                fill="#EA4335"
+                d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.3 6.6l4 3.1c.9-2.9 3.6-4.9 6.7-4.9z"
+              />
+            </svg>
+          </Tile>
           <div className="min-w-0 flex-1">
             <div className="text-[13.5px] text-ink">Google</div>
-            <div className="text-[12px] text-ink-4">
+            <div className="truncate text-[12px] text-ink-4">
               {google
                 ? `Linked as ${google.email}`
                 : instance?.features.google
@@ -1101,57 +1375,114 @@ function SignIn({ me }: { me: G.Me }) {
           ) : (
             instance?.features.google && (
               <a
+                // Back at /settings?linked=google, or ?error=…: Settings opens this page for either.
                 href="/api/v1/auth/google/start?intent=link&return_to=/settings"
-                className="rounded-md border border-line-strong px-3 py-1.5 text-[12.5px] font-medium text-ink hover:border-ink-4"
+                className={buttonClass({ size: "sm" })}
               >
                 Link Google
               </a>
             )
           )}
-        </div>
-        <form
-          className="flex flex-col gap-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            change.mutate();
-          }}
-        >
-          {me.user.has_password && (
-            <Field label="Current password" error={err("current_password")}>
-              {(id) => (
-                <Input
-                  id={id}
-                  type="password"
-                  autoComplete="current-password"
-                  value={current}
-                  onChange={(e) => setCurrent(e.target.value)}
-                />
-              )}
-            </Field>
-          )}
-          <Field
-            label={me.user.has_password ? "New password" : "Set a password"}
-            hint="At least 10 characters."
-            error={err("password") ?? err("new_password")}
-          >
+        </li>
+      </ul>
+      <PasswordDialog me={me} open={changing} onClose={() => setChanging(false)} />
+    </Section>
+  );
+}
+
+/** Changing your password, or setting one: it signs out your other devices. */
+function PasswordDialog({ me, open, onClose }: { me: G.Me; open: boolean; onClose: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const had = me.user.has_password;
+  const change = useMutation({
+    mutationFn: () =>
+      api.changePassword({
+        current_password: had ? current : undefined,
+        new_password: next,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: keys.me });
+      toast(had ? "Password changed. Other sessions were signed out." : "Password set");
+      onClose();
+    },
+  });
+  useEffect(() => {
+    if (!open) {
+      setCurrent("");
+      setNext("");
+      change.reset();
+    }
+  }, [open, change.reset]);
+  const err = (f: string) =>
+    (change.error as { field?: string } | null)?.field === f ? change.error?.message : undefined;
+  const other = change.error && !err("current_password") && !err("password") && !err("new_password");
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={had ? "Change your password" : "Set a password"}
+      description={
+        had
+          ? "Your other devices are signed out, and sign in with the new one."
+          : "Then you can also sign in with your email address and this password."
+      }
+    >
+      <form
+        className="flex flex-col gap-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          change.mutate();
+        }}
+      >
+        {/* For password managers: the account the password is for. */}
+        <input type="email" autoComplete="username" value={me.user.email} readOnly hidden />
+        {had && (
+          <Field label="Current password" error={err("current_password")}>
             {(id) => (
               <Input
                 id={id}
                 type="password"
-                autoComplete="new-password"
-                value={next}
-                onChange={(e) => setNext(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
               />
             )}
           </Field>
-          <div>
-            <Button type="submit" variant="secondary" loading={change.isPending} disabled={!next}>
-              {me.user.has_password ? "Change password" : "Set password"}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </Section>
+        )}
+        <Field
+          label={had ? "New password" : "Password"}
+          hint="At least 10 characters."
+          error={err("password") ?? err("new_password")}
+        >
+          {(id) => (
+            <Input
+              id={id}
+              type="password"
+              autoComplete="new-password"
+              autoFocus={!had}
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+            />
+          )}
+        </Field>
+        {other && <Banner tone="error">{change.error?.message}</Banner>}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={change.isPending}
+            disabled={!next || (had && !current)}
+          >
+            {had ? "Change password" : "Set password"}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -1466,16 +1797,14 @@ function Devices() {
       <div className="flex flex-col gap-5">
         <ul className="divide-y divide-line border-y border-line">
           {devices.map((t) => (
-            <li key={t.id} className="flex items-center gap-3 py-2.5">
-              <span className="text-ink-4">
-                {t.kind === "web" ? <Monitor className="size-4" /> : <Terminal className="size-4" />}
-              </span>
+            <li key={t.id} className="flex items-center gap-3 py-3">
+              <Tile on={t.current}>{t.kind === "web" ? <Monitor /> : <Terminal />}</Tile>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[13px] text-ink">
+                <div className="truncate text-[13.5px] text-ink">
                   {t.name ?? (t.kind === "web" ? browserName(t.user_agent) : "CLI")}
                   {t.current && <span className="ml-2 text-[11.5px] text-accent">this device</span>}
                 </div>
-                <div className="text-[11.5px] text-ink-4">
+                <div className="text-[12px] text-ink-4">
                   {t.kind === "cli" ? "fctl" : "Browser"} · active {ago(t.last_used_at ?? t.created_at)}
                 </div>
               </div>
@@ -1488,7 +1817,10 @@ function Devices() {
           ))}
         </ul>
         <div className="flex items-center gap-3 text-[12.5px] text-ink-3">
-          <Laptop className="size-4 text-ink-4" />
+          {/* Under the rows' icons. */}
+          <span className="flex w-8 shrink-0 justify-center">
+            <Laptop className="size-4 text-ink-4" />
+          </span>
           <span className="flex-1">
             Sign in the CLI with{" "}
             <code className="rounded bg-raised px-1 font-mono text-[11.5px]">
@@ -1505,38 +1837,126 @@ function Appearance() {
   const [theme, setTheme] = useTheme();
   const [hours, setHours] = useHourCycle();
   return (
-    <Section title="Appearance">
-      <div className="flex flex-col gap-6">
-        <div className="flex gap-2">
-          {(["dark", "light"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTheme(t)}
-              className={cn(
-                "flex items-center gap-2 rounded-lg border px-4 py-2.5 text-[13px] capitalize transition-colors",
-                theme === t
-                  ? "border-accent/50 bg-accent-soft text-ink"
-                  : "border-line-strong text-ink-3 hover:text-ink",
-              )}
-            >
-              {t === "dark" ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
-              {t}
-            </button>
-          ))}
+    <Section title="Appearance" description="How fctl looks in this browser.">
+      <fieldset>
+        <legend className="text-[13.5px] font-medium text-ink">Theme</legend>
+        <div className="mt-3 grid max-w-[460px] grid-cols-2 gap-3">
+          {(["dark", "light"] as const).map((t) => {
+            const chosen = theme === t;
+            return (
+              <label
+                key={t}
+                className={cn(
+                  "group cursor-pointer rounded-xl border p-1.5 transition-[border-color,box-shadow] duration-150",
+                  chosen
+                    ? "border-accent/60 shadow-[0_0_0_3px_var(--c-accent-soft)]"
+                    : "border-line-strong hover:border-ink-4",
+                  "has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent",
+                )}
+              >
+                <input
+                  type="radio"
+                  name="theme"
+                  value={t}
+                  checked={chosen}
+                  onChange={() => setTheme(t)}
+                  className="sr-only"
+                />
+                <ThemePicture theme={t} />
+                <span className="flex items-center gap-2 px-1.5 pt-2.5 pb-1 text-[13px] text-ink">
+                  <span
+                    className={cn(
+                      "flex size-3.5 items-center justify-center rounded-full border transition-colors",
+                      chosen ? "border-accent" : "border-line-strong group-hover:border-ink-4",
+                    )}
+                  >
+                    {chosen && <span className="size-1.5 rounded-full bg-accent" />}
+                  </span>
+                  {t === "dark" ? "Dark" : "Light"}
+                  {t === "dark" ? (
+                    <Moon className="ml-auto size-3.5 text-ink-4" />
+                  ) : (
+                    <Sun className="ml-auto size-3.5 text-ink-4" />
+                  )}
+                </span>
+              </label>
+            );
+          })}
         </div>
-        <ul className="divide-y divide-line border-y border-line">
-          <SwitchRow
-            label="24-hour clock"
-            hint={`Times read ${sampleTime(24)} rather than ${sampleTime(12)}. Until you change it here, it follows this browser's language.`}
-            checked={hours === 24}
-            onChange={(on) => setHours(on ? 24 : 12)}
-          />
-        </ul>
-      </div>
+      </fieldset>
+      <ul className="mt-8 divide-y divide-line border-y border-line">
+        <SwitchRow
+          label="24-hour clock"
+          hint={`Times read ${sampleTime(24)} rather than ${sampleTime(12)}. Until you change it here, it follows this browser's language.`}
+          checked={hours === 24}
+          onChange={(on) => setHours(on ? 24 : 12)}
+        />
+      </ul>
     </Section>
   );
 }
+
+/**
+ * A small picture of fctl in a theme: a sidebar, a page and its primary button, in the theme's own
+ * colors (the brand's, from the design package) whichever theme the page around it has.
+ */
+function ThemePicture({ theme }: { theme: "dark" | "light" }) {
+  const dark = theme === "dark";
+  const ink = dark ? palette.whiteish : palette.blackish;
+  const canvas = dark ? palette.blackish : palette.whiteish;
+  const line = withAlpha(ink, dark ? 0.08 : 0.09);
+  const faint = withAlpha(ink, dark ? 0.16 : 0.13);
+  const accent = dark ? palette.yellow : palette.lime;
+  const bar = (width: string, color = faint, height = 4) => (
+    <span className="block rounded-full" style={{ width, height, background: color }} />
+  );
+  return (
+    <span
+      aria-hidden="true"
+      className="flex aspect-[16/10] overflow-hidden rounded-lg"
+      style={{ background: canvas, boxShadow: `inset 0 0 0 1px ${line}` }}
+    >
+      <span
+        className="flex w-[32%] flex-col gap-[7px] px-2.5 py-3"
+        style={{ background: withAlpha(ink, dark ? 0.03 : 0.02), borderRight: `1px solid ${line}` }}
+      >
+        <span className="mb-1 flex items-center gap-1">
+          <span className="size-2 rounded-[3px]" style={{ background: palette.yellow }} />
+          {bar("50%", withAlpha(ink, 0.5))}
+        </span>
+        {bar("80%")}
+        <span className="-mx-1 rounded-[4px] px-1 py-[3px]" style={{ background: withAlpha(ink, 0.07) }}>
+          {bar("70%", withAlpha(ink, 0.4))}
+        </span>
+        {bar("60%")}
+        {bar("75%")}
+      </span>
+      <span className="flex flex-1 flex-col gap-[7px] p-3">
+        {bar("55%", withAlpha(ink, 0.85), 7)}
+        <span className="mt-1 block" />
+        {bar("90%")}
+        {bar("75%")}
+        {bar("82%")}
+        <span className="mt-auto block h-[11px] w-9 rounded-[3px]" style={{ background: accent }} />
+      </span>
+    </span>
+  );
+}
+
+/** What the export holds. */
+const EXPORT_HOLDS = [
+  "Your account",
+  "Sign-in methods and passkeys",
+  "Two-factor sign-in",
+  "Devices and tokens",
+  "Claude connections, without their secrets",
+  "Notification settings and browsers",
+  "Projects",
+  "Schedules you set up",
+  "Sessions you started, with full transcripts",
+  "Sessions you follow",
+  "Your activity log",
+];
 
 function YourData({ me }: { me: G.Me }) {
   useTickAt(me.export?.next_at);
@@ -1548,26 +1968,30 @@ function YourData({ me }: { me: G.Me }) {
       title="Your data"
       description="A copy of everything this instance keeps about you, as one JSON file."
     >
-      <div className="flex flex-col items-start gap-4">
-        <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
-          Your account, sign-in methods, passkeys and two-factor sign-in, devices and tokens, Claude
-          connections (without their secrets), notification settings and browsers, projects, the schedules you
-          set up, the sessions you started with their full transcripts, the sessions you follow, and your
-          activity log.
-        </p>
-        <div className="flex flex-col items-start gap-2">
-          <ExportLink
-            waiting={waiting}
-            className={cn(
-              "inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium transition-colors",
-              waiting ? "cursor-not-allowed text-ink-4" : "text-ink hover:border-ink-4",
-            )}
-          >
-            <Download className="size-3.5" />
-            Export your data
-          </ExportLink>
-          {hint && <p className="max-w-xl text-[12.5px] leading-relaxed text-ink-4">{hint}</p>}
-        </div>
+      {/* Down one column, then the next. */}
+      <ul className="gap-x-8 text-[13px] leading-snug text-ink-2 @xl:columns-2">
+        {EXPORT_HOLDS.map((what) => (
+          <li key={what} className="flex break-inside-avoid items-start gap-2 pb-2">
+            <Check className="mt-px size-3.5 shrink-0 text-accent" />
+            {what}
+          </li>
+        ))}
+      </ul>
+      <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <ExportLink
+          waiting={waiting}
+          className={cn(
+            "inline-flex h-8.5 items-center gap-2 rounded-md border border-line-strong bg-raised px-3.5 text-[13.5px] font-medium transition-colors",
+            waiting ? "cursor-not-allowed text-ink-4" : "text-ink hover:border-ink-4",
+          )}
+        >
+          <Download className="size-3.5" />
+          Export your data
+        </ExportLink>
+        {hint && <p className="max-w-xl text-[12.5px] leading-relaxed text-ink-4">{hint}</p>}
+      </div>
+      <div className="mt-5">
+        <AccountDangerZone me={me} />
       </div>
     </Section>
   );

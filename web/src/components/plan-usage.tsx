@@ -116,7 +116,7 @@ export function PlanUsageStrip({
     <div className={cn("flex flex-col gap-1.5 px-1 text-[12px]", className)}>
       <Link
         to="/settings"
-        search={{ linked: undefined, error: undefined }}
+        search={{ tab: "claude" }}
         title={`As a session reported it ${ago(reportedAt(usage))}`}
         className="flex flex-wrap items-center gap-x-4 gap-y-1.5 self-start rounded-md text-ink-3 transition-colors hover:text-ink-2 sm:gap-x-5"
       >

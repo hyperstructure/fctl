@@ -251,11 +251,7 @@ function OnError({ error, className = "mt-6 max-w-xl" }: { error: Error; classNa
       {claude && (
         <>
           {" "}
-          <Link
-            to="/settings"
-            search={{ linked: undefined, error: undefined }}
-            className="underline underline-offset-2"
-          >
+          <Link to="/settings" search={{ tab: "claude" }} className="underline underline-offset-2">
             Connect Claude
           </Link>
         </>

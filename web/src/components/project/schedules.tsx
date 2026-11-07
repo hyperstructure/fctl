@@ -1663,11 +1663,7 @@ function Editor({
       {failure?.field === "claude" && (
         <Banner tone="error">
           {failure.message}{" "}
-          <Link
-            to="/settings"
-            search={{ linked: undefined, error: undefined }}
-            className="underline underline-offset-2"
-          >
+          <Link to="/settings" search={{ tab: "claude" }} className="underline underline-offset-2">
             Connect Claude
           </Link>
         </Banner>

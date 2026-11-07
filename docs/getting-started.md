@@ -20,12 +20,12 @@ sign in to the same account, each with its own commit email (**Settings →
 Email addresses**), and the workspaces you join as one of them see only
 that one.
 
-Add a passkey in **Settings → Passkeys**, and your fingerprint, face or
+Add a passkey in **Settings → Security**, and your fingerprint, face or
 screen lock signs you in from then on, without a password: the browser
-offers it in the email field. Turn on two-factor sign-in in **Settings →
-Two-factor sign-in**, so that a password alone can't sign anyone in: scan
-the QR code with an authenticator app (1Password, Google Authenticator, the
-passwords app on your phone) and keep the recovery codes it gives you.
+offers it in the email field. Turn on **Two-factor sign-in** on the same
+page, so that a password alone can't sign anyone in: scan the QR code with
+an authenticator app (1Password, Google Authenticator, the passwords app on
+your phone) and keep the recovery codes it gives you.
 Click **Authenticator app** there to name it after the app that keeps it,
 such as 1Password. If
 your instance requires two-factor, it asks you to add a passkey or set up

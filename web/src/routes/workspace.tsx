@@ -180,11 +180,7 @@ export function WorkspacePage() {
           <Banner tone="warn" className="self-stretch">
             {w.name} requires two-factor sign-in of its members, and you haven't set it up. Until you do, its
             projects and sessions are closed to you.{" "}
-            <Link
-              to="/settings"
-              search={{ linked: undefined, error: undefined }}
-              className="underline underline-offset-2"
-            >
+            <Link to="/settings" search={{ tab: "security" }} className="underline underline-offset-2">
               Set it up in Settings
             </Link>
             .
@@ -853,12 +849,7 @@ function Runners({ w }: { w: G.Workspace }) {
             {" "}
             Your sessions here run on the Claude token you keep on your runners, so only on yours that keep it
             (
-            <Link
-              to="/settings"
-              search={{ linked: undefined, error: undefined }}
-              hash="claude"
-              className="underline underline-offset-2"
-            >
+            <Link to="/settings" search={{ tab: "claude" }} className="underline underline-offset-2">
               Settings → Claude
             </Link>
             ).
@@ -1887,11 +1878,7 @@ function You({ w }: { w: G.Workspace }) {
           <span className="block text-[12.5px] leading-relaxed text-ink-4">
             Its people see this address. Your commits in its projects credit the commit email you chose for it
             in{" "}
-            <Link
-              to="/settings"
-              search={{ linked: undefined, error: undefined }}
-              className="underline underline-offset-2"
-            >
+            <Link to="/settings" search={{ tab: "emails" }} className="underline underline-offset-2">
               Settings → Email addresses
             </Link>
             .

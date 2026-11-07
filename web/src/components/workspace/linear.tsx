@@ -308,12 +308,7 @@ function OnceConnected() {
       text: (
         <>
           People link their Linear account once, in{" "}
-          <Link
-            to="/settings"
-            search={{ linked: undefined, error: undefined }}
-            hash="linear"
-            className="text-ink underline underline-offset-2"
-          >
+          <Link to="/settings" search={{ tab: "linear" }} className="text-ink underline underline-offset-2">
             Settings
           </Link>
           : what they delegate then starts sessions as them, on their Claude subscription.

@@ -15,9 +15,16 @@ describe("suggest", () => {
   });
 
   it("drops what comes after a page", () => {
-    expect(suggest("/settings/tokens")).toBe("/settings");
+    expect(suggest("/settings/billing")).toBe("/settings");
     expect(suggest("/p/my-app/sessions")).toBe("/p/my-app");
     expect(suggest("/s/ses_01M57J6NKJK3VJ0Y8NN0208YEJ/events")).toBe("/s/ses_01M57J6NKJK3VJ0Y8NN0208YEJ");
+  });
+
+  it("opens the page of Settings an address names", () => {
+    expect(suggest("/settings/tokens")).toBe("/settings?tab=tokens");
+    expect(suggest("/settings/Access-tokens")).toBe("/settings?tab=tokens");
+    expect(suggest("/settings/passkeys")).toBe("/settings?tab=security");
+    expect(suggest("/settings/profile/")).toBe("/settings?tab=profile");
   });
 
   it("knows the long names of sessions and projects", () => {

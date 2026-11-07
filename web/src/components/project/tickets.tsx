@@ -1219,12 +1219,7 @@ function YourAccount({ project, status }: { project: G.Project; status?: G.Proje
         <Check className="mt-[3px] size-3.5 shrink-0 text-accent" />
         <span>
           fctl knows your Linear account in {name}: issues you delegate there start sessions as you.{" "}
-          <Link
-            to="/settings"
-            search={{ linked: undefined, error: undefined }}
-            hash="linear"
-            className="text-ink-2 underline underline-offset-2"
-          >
+          <Link to="/settings" search={{ tab: "linear" }} className="text-ink-2 underline underline-offset-2">
             Settings
           </Link>
         </span>

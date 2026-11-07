@@ -190,7 +190,7 @@ function FootRow({
 }
 
 /**
- * The person signed in, and their menu: the theme, Claude and tokens, the keyboard shortcuts (on a
+ * The person signed in, and their menu: the theme, Claude connections, the keyboard shortcuts (on a
  * computer), signing out.
  */
 export function UserMenu({
@@ -258,10 +258,10 @@ export function UserMenu({
             onClick={() => {
               close();
               onNavigate();
-              void navigate({ to: "/settings", search: { linked: undefined, error: undefined } });
+              void navigate({ to: "/settings", search: { tab: "claude" } });
             }}
           >
-            Claude and tokens
+            Claude connections
           </MenuItem>
           {onShortcuts && (
             // A computer's: phones and tablets have no keys for them.

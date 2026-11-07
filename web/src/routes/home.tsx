@@ -184,7 +184,7 @@ function GettingStarted({
           done={claude}
           title="Connect your Claude subscription"
           action={
-            <Link to="/settings" search={{ linked: undefined, error: undefined }}>
+            <Link to="/settings" search={{ tab: "claude" }}>
               <Button size="sm" icon={<KeyRound className="size-3.5" />}>
                 Connect
               </Button>
@@ -278,7 +278,7 @@ function Invitations({ invitations }: { invitations: G.WorkspaceInvitation[] }) 
                       · it requires two-factor sign-in:{" "}
                       <Link
                         to="/settings"
-                        search={{ linked: undefined, error: undefined }}
+                        search={{ tab: "security" }}
                         className="underline underline-offset-2"
                       >
                         set it up
@@ -505,7 +505,7 @@ export function Home() {
                 {w.name} requires two-factor sign-in. Until you set it up, its projects and sessions are
                 closed to you.
               </span>
-              <Link to="/settings" search={{ linked: undefined, error: undefined }}>
+              <Link to="/settings" search={{ tab: "security" }}>
                 <Button size="sm" icon={<ShieldCheck className="size-3.5" />}>
                   Set it up
                 </Button>

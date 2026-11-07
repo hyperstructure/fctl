@@ -5,6 +5,7 @@
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
 import { api } from "@/lib/api";
 import { fetchMe, keys, queryClient } from "@/lib/queries";
+import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings";
 import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
@@ -179,7 +180,10 @@ const settings = createRoute({
   component: SettingsPage,
   validateSearch: (
     s: Record<string, unknown>,
-  ): { linked: string | undefined; error: string | undefined; linear?: LinearOutcome } => ({
+  ): { tab?: SettingsTab; linked?: string; error?: string; linear?: LinearOutcome } => ({
+    // The page open; none: the list of pages on a phone, Profile beside it (lib/settings.ts).
+    tab: oneOf(s.tab, SETTINGS_TABS),
+    // Back from Google: linking it, which worked or didn't (api::google).
     linked: str(s.linked),
     error: str(s.error),
     // Back from Linear: linking your account (api::linear).

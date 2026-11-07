@@ -68,7 +68,7 @@ says:
   the command returns, and without `--json`, with which it prints neither
   link nor code. It shows the person the link and the code: they open the
   link, check that the page shows the same code, and approve. The sign-in
-  shows in the person's Settings → Devices, where revoking it signs the
+  shows in the person's Settings → Security, where revoking it signs the
   agent out at once.
 - **A token for one project**: the agent can do in that project what an
   editor does: start sessions and steer their agents, run its schedules,

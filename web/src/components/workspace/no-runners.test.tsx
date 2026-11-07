@@ -208,7 +208,7 @@ describe("the note under a start form", () => {
       expect(text.textContent).toBe(
         "None of your runners in Side project keeps your Claude token yet: sessions you start here wait until one does. Keep it on a runner",
       );
-      expect(text.querySelector("a")?.getAttribute("href")).toBe("/settings#claude");
+      expect(text.querySelector("a")?.getAttribute("href")).toBe("/settings?tab=claude");
     });
 
     it("says when the ones that keep it are offline, and nothing once one is online", () => {

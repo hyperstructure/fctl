@@ -76,10 +76,7 @@ export function AppShell() {
     focusTaskBox();
   });
   useShortcut("pulls", () => void navigate({ to: "/pulls", search: {} }));
-  useShortcut(
-    "settings",
-    () => void navigate({ to: "/settings", search: { linked: undefined, error: undefined } }),
-  );
+  useShortcut("settings", () => void navigate({ to: "/settings", search: {} }));
   // N goes to the task box the page shows, or brings the Agent Floor's over it: on a phone, from ⌘K,
   // the Agent Floor opens instead, whose box has the room.
   const [starting, setStarting] = useState(false);

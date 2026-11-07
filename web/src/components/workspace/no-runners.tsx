@@ -140,12 +140,7 @@ function NoTokenRunnerNote({
           <>
             None of your runners in {w.name} keeps your Claude token yet: sessions you start here wait until
             one does.{" "}
-            <Link
-              to="/settings"
-              search={{ linked: undefined, error: undefined }}
-              hash="claude"
-              className={linkClass}
-            >
+            <Link to="/settings" search={{ tab: "claude" }} className={linkClass}>
               Keep it on a runner
             </Link>
           </>
