@@ -104,11 +104,22 @@ const BUSY = new Set<Now["kind"]>(["thinking", "writing", "preparing", "tool", "
  * What the agent does now, in a line that stays put above the message box: the step it is at and
  * what it does it to, for how long, the words rolling in as it moves on. Nothing while it waits.
  */
-export function NowLine({ now, plan }: { now?: Now; plan?: Plan }) {
+export function NowLine({
+  now,
+  plan,
+  idle,
+}: {
+  now?: Now;
+  /** The plan of the turn the agent works on. */
+  plan?: Plan;
+  /** What the line says while the agent does nothing: that it's the reader's turn. */
+  idle?: ReactNode;
+}) {
+  // Mounted whether the agent works or not, so that its last step holds as long as a step does.
   const shown = useSteady(now, (n) => (n ? `${n.kind}\u0000${n.text}\u0000${n.target?.text ?? ""}` : ""));
   const ticking = !!shown?.since && shown.kind !== "paused";
   const time = useSeconds(ticking);
-  if (!shown) return null;
+  if (!shown) return idle ?? null;
   const busy = BUSY.has(shown.kind);
   // The step of its plan the agent is at, in the words it says while it does it, leads the line.
   const step = busy ? plan?.current : undefined;

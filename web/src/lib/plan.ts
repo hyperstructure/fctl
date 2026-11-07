@@ -22,8 +22,9 @@ export interface Plan {
   done: number;
   /** The step the agent is at, if it says. */
   current?: PlanStep;
-  /** The call that wrote it, and when. */
+  /** The call that wrote it: its key, its event, and when. */
   key: string;
+  seq: number;
   ts: number;
 }
 
@@ -43,18 +44,22 @@ export function stepsOf(input: Record<string, Json>): PlanStep[] {
   });
 }
 
-/** The agent's newest plan in the transcript, as it last wrote it: none before it writes one. */
+/**
+ * The agent's newest plan in the transcript, as it last wrote it: none before it writes one, nor
+ * once it clears the list (an empty one).
+ */
 export function planOf(items: readonly Item[]): Plan | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it?.kind !== "tool" || it.name !== "TodoWrite") continue;
     const steps = stepsOf(it.input);
-    if (!steps.length) continue;
+    if (!steps.length) return undefined;
     return {
       steps,
       done: steps.filter((s) => s.status === "completed").length,
       current: steps.find((s) => s.status === "in_progress"),
       key: it.key,
+      seq: it.seq,
       ts: it.ts,
     };
   }

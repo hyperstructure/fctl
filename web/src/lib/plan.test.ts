@@ -37,6 +37,8 @@ describe("the agent's plan", () => {
   it("is nothing until the agent writes one, and leaves out what it can't read", () => {
     expect(planOf([{ kind: "prose", key: "p", seq: 1, ts: 1, text: "Hi" }])).toBeUndefined();
     expect(planOf([todo([])])).toBeUndefined();
+    // An empty list clears the plan: an older one doesn't come back.
+    expect(planOf([todo([{ content: "Read the ticket", status: "pending" }]), todo([])])).toBeUndefined();
     expect(
       stepsOf({ todos: [null, "x", { content: " " }, { content: "Ship", status: "odd" }] as never }),
     ).toEqual([{ text: "Ship", status: "pending" }]);

@@ -37,14 +37,26 @@ function Figure({ value, label, children }: { value?: number; label: string; chi
   );
 }
 
-/** How a turn went, as its stretch of the ribbon shows it. */
+/** How a turn went, as its stretch of the ribbon shows it, brighter under a pointer. */
 function tone(turn: Turn, live: boolean): string {
   const end = turn.end;
   if (!end) return live ? "ribbon-live bg-accent" : "bg-line-strong";
-  if (end.kind === "result") return end.ok ? "bg-ink-4/70 hover:bg-ink-3" : "bg-amber/70 hover:bg-amber";
-  if (end.kind === "failed") return "bg-danger/70 hover:bg-danger";
-  if (end.kind === "cut") return "bg-amber/70 hover:bg-amber";
-  return "bg-line-strong hover:bg-ink-4";
+  if (end.kind === "result")
+    return end.ok ? "bg-ink-4/70 group-hover/turn:bg-ink-3" : "bg-amber/70 group-hover/turn:bg-amber";
+  if (end.kind === "failed") return "bg-danger/70 group-hover/turn:bg-danger";
+  if (end.kind === "cut") return "bg-amber/70 group-hover/turn:bg-amber";
+  return "bg-line-strong group-hover/turn:bg-ink-4";
+}
+
+/** How a turn went, in words, for what its stretch of the ribbon says: its color says it too. */
+function went(turn: Turn, took: number, live: boolean): string {
+  const d = duration(took);
+  const end = turn.end;
+  if (!end) return live ? `at work for ${d}` : `${d} so far`;
+  if (end.kind === "result") return end.ok ? `finished in ${d}` : `ended after ${d}`;
+  if (end.kind === "failed") return `failed after ${d}`;
+  if (end.kind === "cut") return `cut off after ${d}`;
+  return `stopped after ${d}`;
 }
 
 export function Glance({
@@ -86,21 +98,36 @@ export function Glance({
         </Figure>
       </div>
       {turns.length > 0 && !hasMoreBefore && (
-        <nav className="flex h-1.5 items-stretch gap-1" aria-label="Turns">
-          {turns.map((turn, i) => (
-            <button
-              key={turn.key}
-              type="button"
-              onClick={() => onGo(i)}
-              title={`${turnTitle(turn, i === 0, hasMoreBefore)} · ${duration(took[i] ?? 0)}`}
-              aria-label={`${turnTitle(turn, i === 0, hasMoreBefore)}, ${duration(took[i] ?? 0)}`}
-              className={cn(
-                "ribbon-turn min-w-1.5 rounded-full transition-[background-color,transform] duration-150 hover:scale-y-150",
-                tone(turn, live && i === turns.length - 1),
-              )}
-              style={{ flex: `${weights[i]} 1 0` } as CSSProperties}
-            />
-          ))}
+        // As many turns as the session has fit its width: past a couple of dozen, closer together,
+        // down to a pixel each. Each stretch takes a finger or a pointer across the ribbon's height.
+        <nav
+          className={cn(
+            "-my-2 flex max-w-full items-stretch overflow-hidden",
+            turns.length > 24 ? "gap-px" : "gap-1",
+          )}
+          aria-label="Turns"
+        >
+          {turns.map((turn, i) => {
+            const label = `${turnTitle(turn, i === 0, hasMoreBefore)}: ${went(turn, took[i] ?? 0, live && i === turns.length - 1)}`;
+            return (
+              <button
+                key={turn.key}
+                type="button"
+                onClick={() => onGo(i)}
+                title={label}
+                aria-label={label}
+                className="group/turn flex h-6 min-w-px items-center"
+                style={{ flex: `${weights[i]} 1 0` } as CSSProperties}
+              >
+                <span
+                  className={cn(
+                    "h-1.5 w-full rounded-full transition-[background-color,scale] duration-150 group-hover/turn:scale-y-150",
+                    tone(turn, live && i === turns.length - 1),
+                  )}
+                />
+              </button>
+            );
+          })}
         </nav>
       )}
       {prs.length > 0 && (

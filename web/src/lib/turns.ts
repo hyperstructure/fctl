@@ -318,3 +318,16 @@ export function turnMarkdown(
   out.push(`_${how}${steps}${files}_`);
   return out.join("\n\n");
 }
+
+/**
+ * The turn an event is in: the last that starts at it or before, as a link to a turn finds it even
+ * when the turn's start has loaded since the link was made. -1 before the first.
+ */
+export function turnOfSeq(turns: readonly Turn[], seq: number): number {
+  let at = -1;
+  for (const [i, t] of turns.entries()) {
+    const start = turnSeq(t);
+    if (start !== undefined && start <= seq) at = i;
+  }
+  return at;
+}

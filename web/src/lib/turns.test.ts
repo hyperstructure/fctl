@@ -9,6 +9,7 @@ import {
   laterBy,
   turnAt,
   turnMarkdown,
+  turnOfSeq,
   turnSeq,
   turnsOf,
   turnTitle,
@@ -257,5 +258,16 @@ describe("a turn as Markdown", () => {
       ].join("\n\n"),
     );
     expect(turnSeq(t)).toBe(t.ask?.seq);
+  });
+});
+
+describe("turnOfSeq", () => {
+  it("finds the turn an event is in, by where turns start", () => {
+    const t = turns([ask("One"), prose("a"), result(1), ask("Two"), prose("b"), result(1)]);
+    const second = t[1]?.ask?.seq ?? 0;
+    expect(turnOfSeq(t, second)).toBe(1);
+    expect(turnOfSeq(t, second + 1)).toBe(1);
+    expect(turnOfSeq(t, second - 1)).toBe(0);
+    expect(turnOfSeq(t, 0)).toBe(-1);
   });
 });

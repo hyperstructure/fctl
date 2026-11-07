@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
+import type { LiveSession } from "@/lib/live";
 import { keys, queryClient } from "@/lib/queries";
 import { setSessionView } from "@/lib/session-view";
 import { SessionRoute } from "./session-next";
@@ -252,23 +253,90 @@ describe("the new session page", () => {
     expect(glance).toContain("+2");
     const ribbon = p.container.querySelectorAll("nav[aria-label='Turns'] button");
     expect(ribbon).toHaveLength(2);
-    expect(ribbon[1]?.getAttribute("aria-label")).toContain("Now the signup test");
+    expect(ribbon[1]?.getAttribute("aria-label")).toBe("Now the signup test: finished in 1m 5s");
   });
 
-  it("opens a link to a turn at that turn", () => {
+  it("opens a link to a turn at that turn, and the address forgets it", async () => {
     const scrolled = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-    const events = [...turn("Fix the flaky login test"), ...turn("Now the signup test")];
-    route.search = { turn: events.find((e) => e.kind === "user_message" && e.seq > 1)?.seq };
+    try {
+      const events = [...turn("Fix the flaky login test"), ...turn("Now the signup test")];
+      const second = events.filter((e) => e.kind === "user_message")[1]?.seq;
+      route.search = { turn: second };
+      const p = page();
+      p.snapshot(events);
+      // Where each turn starts on the page, which happy-dom doesn't lay out: the second 2000 px down.
+      for (const [i, el] of p.container.querySelectorAll("[data-turn]").entries())
+        el.getBoundingClientRect = () => ({ top: 1000 * (i + 1), bottom: 1000 * (i + 1) + 100 }) as DOMRect;
+      // It goes there on the next frame, past the header (here at 0) and a little room.
+      await act(() => new Promise((r) => requestAnimationFrame(r)));
+      expect(scrolled).toHaveBeenLastCalledWith({ top: 1992, behavior: "smooth" });
+      expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: {}, replace: true }));
+    } finally {
+      scrolled.mockRestore();
+    }
+  });
+
+  it("loads earlier activity for a linked turn it doesn't have yet, and goes nowhere for one it can't find", async () => {
+    const scrolled = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    try {
+      const events = turn("Now the signup test");
+      const first = events[0]?.seq ?? 0;
+      route.search = { turn: first - 3 };
+      const p = page();
+      const store = stores.get("ses_a") as unknown as LiveSession;
+      vi.spyOn(store, "loadOlder").mockResolvedValue(undefined);
+      const earlier = vi.spyOn(store, "loadEarlier").mockResolvedValue(undefined);
+      p.hear({
+        type: "snapshot",
+        session: session(),
+        role: "owner",
+        events,
+        has_more_before: true,
+        next_seq: (events[events.length - 1]?.seq ?? 0) + 1,
+        live: [],
+        viewers: [],
+        runner_connected: true,
+      });
+      expect(earlier).toHaveBeenCalledWith({ until: first - 3 });
+      // Before the session's first turn, with nothing earlier: nowhere to go.
+      route.search = { turn: 1 };
+      const q = page();
+      q.snapshot(turn("Fix the flaky login test"));
+      await act(() => new Promise((r) => requestAnimationFrame(r)));
+      expect(scrolled.mock.calls.filter(([o]) => (o as ScrollToOptions)?.behavior === "smooth")).toEqual([]);
+    } finally {
+      scrolled.mockRestore();
+    }
+  });
+
+  it("leads the line above the message box with a plan only in the turn it was written in", () => {
     const p = page();
-    p.snapshot(events);
-    return new Promise<void>((done) =>
-      requestAnimationFrame(() => {
-        expect(scrolled).toHaveBeenCalled();
-        expect(p.container.querySelectorAll("[data-turn]")).toHaveLength(2);
-        scrolled.mockRestore();
-        done();
-      }),
+    p.snapshot(
+      [
+        ev("user_message", { text: "Fix the flaky login test", source: "web" }),
+        plan(),
+        assistant("m-a", [{ type: "text", text: "Fixed." }]),
+        ev("claude", { type: "result", subtype: "success", duration_ms: 1000, is_error: false }),
+        ev("user_message", { text: "Now update the README", source: "web" }),
+        assistant("m-b", [
+          {
+            type: "tool_use",
+            id: "r1",
+            name: "Read",
+            input: { file_path: "/home/agent/workspace/README.md" },
+          },
+        ]),
+      ],
+      session("running"),
     );
+    const now = p.container.querySelector(".now-line")?.textContent ?? "";
+    expect(now).toContain("Reading");
+    expect(now).not.toContain("Fixing the wait");
+    expect(now).not.toContain("1/3");
+    // The details keep the plan as it was left.
+    const rail = [...p.container.querySelectorAll("section")].find((x) => x.textContent?.startsWith("Plan"));
+    expect(rail?.textContent).toContain("Fixing the wait");
+    expect(rail?.querySelector(".animate-pulse-soft")).toBeNull();
   });
 
   it("opens with a cover, and reads in turns: each ask, the work on its thread, and how it ended", () => {
@@ -318,11 +386,12 @@ describe("the new session page", () => {
       session("running"),
     );
     expect(p.container.querySelector(".now-line")?.textContent).toContain("Run the tests");
-    // Done: it goes, once the step it showed has shown long enough to be read.
+    // Done: the step it showed holds until it has shown long enough to be read, then the line
+    // says it's the reader's turn.
     p.hear({ type: "events", events: [result("b1", "ok")] });
     p.hear({ type: "session", session: session("idle") });
+    expect(p.container.querySelector(".now-line")?.textContent).toContain("Run the tests");
     await act(() => new Promise((r) => setTimeout(r, 700)));
-    // It waits for the reader now, which the line says in its place.
     expect(p.container.querySelector(".now-line")?.textContent).not.toContain("Run the tests");
     expect(p.container.querySelector(".your-turn")).not.toBeNull();
   });

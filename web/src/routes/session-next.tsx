@@ -83,7 +83,7 @@ import { diskOf, useStall } from "@/lib/stall";
 import { statusNotes, waitsForYou } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import type { Item } from "@/lib/transcript";
-import { factsOf, type Turn, type TurnFacts, turnSeq, turnsOf, turnTitle } from "@/lib/turns";
+import { factsOf, type Turn, type TurnFacts, turnOfSeq, turnSeq, turnsOf, turnTitle } from "@/lib/turns";
 import { cameAfter, newestSeq } from "@/lib/unseen";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 import {
@@ -129,6 +129,8 @@ function NextSessionPage() {
   const [diffAt, setDiffAt] = useState<DiffTarget>();
   // Only the conversation: the agent's work and the milestones left out.
   const [quiet, setQuiet] = useState(false);
+  // The turn a link to it opens the page at, until the page has gone there.
+  const [landTurn, setLandTurn] = useState<{ session: string; seq: number }>();
   // They belong to the session they opened on (as on the classic page).
   const [overlaysOf, setOverlaysOf] = useState(id);
   if (overlaysOf !== id) {
@@ -137,6 +139,7 @@ function NextSessionPage() {
     setShare(false);
     setDiffAt(undefined);
     setQuiet(false);
+    setLandTurn(undefined);
   }
   const diffGroups = useDiffGroups(session, s.git);
   useShortcut("changes", () => {
@@ -232,31 +235,35 @@ function NextSessionPage() {
   const go = useGoToTurn(transcript, bar, letGo);
   // A link to a turn: the page goes there once it has the turn, loading earlier activity until it
   // does, and the address forgets it.
-  const [landTurn, setLandTurn] = useState<number>();
-  const landed = useRef<number | undefined>(undefined);
+  const landed = useRef<string | undefined>(undefined);
   useEffect(() => {
-    // Once for each link: the address forgets it as the page goes there.
-    if (!linked || landed.current === linked) return;
-    landed.current = linked;
-    setLandTurn(linked);
+    // Once for each link to a session's turn: the address forgets it as the page goes there,
+    // after which the same link goes there again.
+    if (!linked) {
+      landed.current = undefined;
+      return;
+    }
+    const key = `${id}:${linked}`;
+    if (landed.current === key) return;
+    landed.current = key;
+    setLandTurn({ session: id, seq: linked });
     void navigate({ to: "/s/$id", params: { id }, search: {}, replace: true, viewTransition: false });
   }, [linked, id, navigate]);
   useEffect(() => {
-    if (landTurn === undefined || !s.items.length) return;
-    const i = turns.findIndex((t) => turnSeq(t) === landTurn);
-    if (i >= 0) {
-      setLandTurn(undefined);
-      requestAnimationFrame(() => go(i));
+    if (landTurn?.session !== id || !s.items.length) return;
+    const { seq } = landTurn;
+    // The turn starts before what has loaded: earlier activity, until it has it.
+    if (s.hasMoreBefore && s.firstSeq > seq && !s.olderFailed) {
+      if (!s.loadingOlder) void store.loadEarlier({ until: seq });
       return;
     }
-    if (s.hasMoreBefore && s.firstSeq > landTurn && !s.olderFailed) {
-      if (!s.loadingOlder) void store.loadEarlier({ until: landTurn });
-      return;
-    }
-    // Not in this session, or not a turn's start.
     setLandTurn(undefined);
+    // The turn the event is in, however much of it has loaded since the link was made.
+    const i = turnOfSeq(turns, seq);
+    if (i >= 0) requestAnimationFrame(() => go(i));
   }, [
     landTurn,
+    id,
     turns,
     s.items.length,
     s.hasMoreBefore,
@@ -342,9 +349,14 @@ function NextSessionPage() {
     setQuiet(true);
     if (finder.open) finder.close();
   };
+  // The plan the agent works on: written in the turn under way. An older one stays in the
+  // details, as it was left, without the step it was at moving.
+  const lastTurn = turns[turns.length - 1];
+  const lastStart = lastTurn && !lastTurn.end ? turnSeq(lastTurn) : undefined;
+  const planNow = plan && lastStart !== undefined && plan.seq >= lastStart ? plan : undefined;
   const railPlan = plan && (
     <RailSection title="Plan">
-      <PlanList plan={plan} />
+      <PlanList plan={plan} live={!!planNow && !!status && BUSY.has(status)} />
     </RailSection>
   );
   const focusReply = () =>
@@ -749,7 +761,11 @@ function NextSessionPage() {
         >
           <div className="relative mx-auto w-full max-w-[760px] px-4 md:px-6">
             <div className="absolute inset-x-4 -top-10 flex h-8 items-center justify-between gap-2 md:inset-x-6">
-              {now ? <NowLine now={now} plan={plan} /> : yourTurn && <YourTurn onReply={focusReply} />}
+              <NowLine
+                now={now}
+                plan={planNow}
+                idle={yourTurn ? <YourTurn onReply={focusReply} /> : undefined}
+              />
               <Pill away={away} atBottom={atBottom} newSince={newSince} letGo={letGo} header={bar} />
             </div>
             <div className={cn("pointer-events-auto", invite && "invite")}>

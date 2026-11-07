@@ -611,7 +611,9 @@ function TurnMenu({
   took: number;
   sessionId: string;
 }) {
-  const seq = turnSeq(turn);
+  // A link to a turn names the message it starts with: a turn whose start isn't loaded has none
+  // yet, and its first part loaded so far would be inside it once earlier activity loads.
+  const seq = turn.ask ? turnSeq(turn) : undefined;
   return (
     <Menu
       // Up, over the turn: each part of a thread stacks on its own, and the next would cover it.
@@ -639,10 +641,7 @@ function TurnMenu({
             icon={<Copy />}
             onClick={() => {
               close();
-              void navigator.clipboard.writeText(
-                turnMarkdown(turn, facts, { title, when, took: duration(took) }),
-              );
-              toast("Turn copied as Markdown");
+              void copied(turnMarkdown(turn, facts, { title, when, took: duration(took) }), "The turn");
             }}
           >
             Copy as Markdown
@@ -652,8 +651,7 @@ function TurnMenu({
               icon={<Link2 />}
               onClick={() => {
                 close();
-                void navigator.clipboard.writeText(`${location.origin}/s/${sessionId}?turn=${seq}`);
-                toast("Link to the turn copied");
+                void copied(`${location.origin}/s/${sessionId}?turn=${seq}`, "The link to the turn");
               }}
             >
               Copy link to this turn
@@ -663,6 +661,19 @@ function TurnMenu({
       )}
     </Menu>
   );
+}
+
+/**
+ * Copies `text`, and says whether it did: browsers refuse the clipboard on plain http, and without
+ * the page's focus.
+ */
+async function copied(text: string, what: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${what} is copied`);
+  } catch {
+    toast(`${what} didn't copy`, "error");
+  }
 }
 
 /** A file a turn edited: its path, its lines, and its diff a click away while it is among the changes. */

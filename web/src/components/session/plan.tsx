@@ -41,8 +41,8 @@ export function PlanRing({ done, total, className }: { done: number; total: numb
   );
 }
 
-/** A step's mark: checked off, the one at hand, or still to come. */
-function Mark({ status, fresh }: { status: PlanStep["status"]; fresh: boolean }) {
+/** A step's mark: checked off, the one at hand (which pulses while the agent is at it), or still to come. */
+function Mark({ status, fresh, live }: { status: PlanStep["status"]; fresh: boolean; live: boolean }) {
   if (status === "completed")
     return (
       <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink">
@@ -64,7 +64,7 @@ function Mark({ status, fresh }: { status: PlanStep["status"]; fresh: boolean })
   if (status === "in_progress")
     return (
       <span className="plan-doing relative flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px] border-accent">
-        <span className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
+        <span className={cn("size-1.5 rounded-full bg-accent", live && "animate-pulse-soft")} />
       </span>
     );
   return <span className="block size-4 shrink-0 rounded-full border-[1.5px] border-line-strong" />;
@@ -74,7 +74,14 @@ function Mark({ status, fresh }: { status: PlanStep["status"]; fresh: boolean })
  * The plan beside the transcript: a bar of how far the agent got, then its steps, the one at hand
  * in the words the agent says while it does it. A step it just finished draws its check.
  */
-export function PlanList({ plan }: { plan: Plan }) {
+export function PlanList({
+  plan,
+  live = true,
+}: {
+  plan: Plan;
+  /** The agent works on it now; else it shows as it was left, its step at hand still. */
+  live?: boolean;
+}) {
   // The steps this list has seen finished: those that finish while it shows draw their checks.
   const seen = useRef<Set<string> | undefined>(undefined);
   const finished = plan.steps.filter((s) => s.status === "completed").map((s) => s.text);
@@ -104,13 +111,13 @@ export function PlanList({ plan }: { plan: Plan }) {
             style={{ "--i": i } as CSSProperties}
           >
             <span className="mt-px flex">
-              <Mark status={s.status} fresh={fresh.has(s.text)} />
+              <Mark status={s.status} fresh={fresh.has(s.text)} live={live} />
             </span>
             <span
               className={cn(
                 "min-w-0",
                 s.status === "completed" && "text-ink-4",
-                s.status === "in_progress" && "font-medium text-ink",
+                s.status === "in_progress" && (live ? "font-medium text-ink" : "text-ink-2"),
                 s.status === "pending" && "text-ink-3",
               )}
             >
