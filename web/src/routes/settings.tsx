@@ -65,6 +65,7 @@ import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
 import { forgetSidebar } from "@/lib/sidebar";
+import { SIDEBAR_DESIGNS, useSidebarDesign } from "@/lib/sidebar-design";
 import { useTheme } from "@/lib/theme";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 import { FEW_RECOVERY_CODES } from "@/lib/two-factor";
@@ -1577,6 +1578,7 @@ function Appearance() {
             </button>
           ))}
         </div>
+        <SidebarChoice />
         <ul className="divide-y divide-line border-y border-line">
           <SwitchRow
             label="24-hour clock"
@@ -1587,6 +1589,35 @@ function Appearance() {
         </ul>
       </div>
     </Section>
+  );
+}
+
+/** Which sidebar shows: today's, or one of the proposals (a design prototype, lib/sidebar-design.ts). */
+function SidebarChoice() {
+  const [design, setDesign] = useSidebarDesign();
+  return (
+    <fieldset>
+      <legend className="mb-2 text-[13.5px] text-ink">Sidebar</legend>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {SIDEBAR_DESIGNS.map((d) => (
+          <button
+            key={d.design}
+            type="button"
+            aria-pressed={design === d.design}
+            onClick={() => setDesign(d.design)}
+            className={cn(
+              "rounded-lg border px-3.5 py-2.5 text-left transition-colors",
+              design === d.design
+                ? "border-accent/50 bg-accent-soft text-ink"
+                : "border-line-strong text-ink-3 hover:text-ink",
+            )}
+          >
+            <span className="block text-[13px] font-medium">{d.label}</span>
+            <span className="mt-0.5 block text-[12px] leading-snug text-ink-3">{d.hint}</span>
+          </button>
+        ))}
+      </div>
+    </fieldset>
   );
 }
 

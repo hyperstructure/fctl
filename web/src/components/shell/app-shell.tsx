@@ -17,7 +17,15 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Avatar,
   Kbd,
@@ -36,6 +44,7 @@ import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { useFeed } from "@/lib/feed";
 import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
+import { useHotkey } from "@/lib/hotkeys";
 import { forgetPush, onPushOpen, syncPush } from "@/lib/push";
 import {
   keys,
@@ -48,6 +57,14 @@ import {
   useWorkspaces,
 } from "@/lib/queries";
 import { forgetSidebar, type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
+import {
+  RAIL,
+  type SidebarDesign,
+  useSidebarDesign,
+  useSidebarFolded,
+  useSidebarWidth,
+  WIDTHS,
+} from "@/lib/sidebar-design";
 import { type Sortable, useSortable } from "@/lib/sortable";
 import { useTheme } from "@/lib/theme";
 import {
@@ -63,6 +80,30 @@ import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { useDrawerDrag } from "./drawer-drag";
 import { FloorLink } from "./floor-link";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
+import { FocusSidebar } from "./sidebar-focus";
+import { ResizeHandle } from "./sidebar-kit";
+import { RailSidebar } from "./sidebar-rail";
+import { type SidebarProps, TreeSidebar } from "./sidebar-tree";
+
+/** One of the proposed sidebars (lib/sidebar-design.ts). */
+function Proposal({ design, ...props }: SidebarProps & { design: Exclude<SidebarDesign, "classic"> }) {
+  if (design === "rail") return <RailSidebar {...props} />;
+  if (design === "focus") return <FocusSidebar {...props} />;
+  return <TreeSidebar {...props} />;
+}
+
+/** Whether the window is wide enough for the sidebar beside the page (md). */
+function useWide(): boolean {
+  return useSyncExternalStore(
+    (fn) => {
+      const q = window.matchMedia?.("(min-width: 48rem)");
+      q?.addEventListener("change", fn);
+      return () => q?.removeEventListener("change", fn);
+    },
+    () => window.matchMedia?.("(min-width: 48rem)").matches ?? true,
+    () => true,
+  );
+}
 
 /**
  * The sidebar on phones: open, closed with its button or the shade (it slides away), or
@@ -98,8 +139,30 @@ export function AppShell() {
   useGravatarNews();
   useFactorsWatch();
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const tab = useRouterState({ select: (s) => (s.location.search as { tab?: string } | undefined)?.tab });
+  // Which sidebar shows (a design prototype), how wide, and whether it is folded into its rail.
+  const [design] = useSidebarDesign();
+  const [width, setWidth] = useSidebarWidth(design);
+  const [folded, setFolded] = useSidebarFolded();
+  const [resizing, setResizing] = useState(false);
+  const wide = useWide();
+  useHotkey(
+    "mod+\\",
+    useCallback(() => {
+      if (design !== "classic" && design !== "rail") setFolded(!folded);
+    }, [design, folded, setFolded]),
+  );
   return (
-    <div ref={root} className="flex min-h-dvh bg-canvas">
+    <div
+      ref={root}
+      className="flex min-h-dvh bg-canvas"
+      style={
+        {
+          "--sidebar-w": `${design === "classic" ? 244 : folded && design !== "rail" ? RAIL : width}px`,
+          "--sidebar-phone-w": `${design === "classic" ? 244 : WIDTHS[design].initial}px`,
+        } as CSSProperties
+      }
+    >
       {/* On phones the sidebar is a drawer over the page: opaque, and out of the page once
           it has slid away (display: none), so that it is drawn anew each time it opens.
           Kept off screen with a blur, it sometimes stopped showing properly in Safari on iOS
@@ -111,13 +174,36 @@ export function AppShell() {
       <aside
         ref={aside}
         className={cn(
-          "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[calc(244px+env(safe-area-inset-left))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
+          "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[min(calc(100vw-3rem),calc(var(--sidebar-phone-w)+env(safe-area-inset-left)))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:w-[calc(var(--sidebar-w)+env(safe-area-inset-left))] md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
           drawer !== "gone" &&
             "transition-[translate,display] transition-discrete duration-300 ease-out motion-reduce:transition-none",
+          !resizing && "md:transition-[width] md:duration-200 md:ease-[var(--ease-out)]",
           shown ? "translate-x-0" : "-translate-x-full max-md:hidden",
         )}
       >
-        <Sidebar onPalette={openPalette} onNavigate={dropDrawer} onClose={closeDrawer} path={path} />
+        {design === "classic" ? (
+          <Sidebar onPalette={openPalette} onNavigate={dropDrawer} onClose={closeDrawer} path={path} />
+        ) : (
+          <Proposal
+            design={design}
+            onPalette={openPalette}
+            onNavigate={dropDrawer}
+            onClose={closeDrawer}
+            path={path}
+            tab={tab}
+            folded={folded && wide}
+            onFold={setFolded}
+          />
+        )}
+        {!(folded && wide) && (
+          <ResizeHandle
+            width={width}
+            min={WIDTHS[design].min}
+            max={WIDTHS[design].max}
+            onResize={setWidth}
+            onDragging={setResizing}
+          />
+        )}
       </aside>
       {/* The shade fades in and out with the drawer's slide (and goes with it at once). */}
       <button
@@ -134,7 +220,12 @@ export function AppShell() {
       />
       {/* The page is never wider than the window: what is wider scrolls in its own row. The
           clip, unlike hidden, keeps the sticky bars working. */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(244px+env(safe-area-inset-left))]">
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 flex-col overflow-x-clip pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pl-[calc(var(--sidebar-w)+env(safe-area-inset-left))]",
+          !resizing && "md:transition-[padding] md:duration-200 md:ease-[var(--ease-out)]",
+        )}
+      >
         {/* On phones: the menu button, its icon in line with the page's text. */}
         {!headerButton && (
           <div className="sticky top-(--viewport-shift) z-10 flex h-14 items-center gap-1.5 border-b border-line bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
