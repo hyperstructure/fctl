@@ -1420,13 +1420,12 @@ question (`fctl ask`) and waits for an answer, which the page offers to
 send, then those whose agents finished and whose checks didn't fail,
 ready for review, then those whose checks failed, those whose sessions
 are still at work, those in a merge queue, and drafts. The sidebar counts
-the ones ready for review from the same list, unnarrowed, in one request
-with the page's without Mine; with Mine on (as it is until someone turns
-it off, which the browser keeps, `web/src/lib/pulls-view.ts`), it counts
-those of the sessions they started, which the page asks for with `mine`.
-The feed patches the sessions it came from, so states, checks, reviews
-and questions change there as GitHub and agents say, and a row whose
-standing changes lights up for a moment.
+the ones ready for review from the page's own request, in one with it:
+unnarrowed, or with `mine` while Mine is on (as it is until someone turns
+it off, which the browser keeps, `web/src/lib/pulls-view.ts`), which the
+server applies before its limit. The feed patches the sessions it came
+from, so states, checks, reviews and questions change there as GitHub
+and agents say, and a row whose standing changes lights up for a moment.
 
 Session lists, the session page and `fctl show` give each pull request its
 state, `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`,

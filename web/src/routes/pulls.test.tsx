@@ -155,6 +155,22 @@ describe("the pull requests page", () => {
     expect(went).toEqual([]);
   });
 
+  it("turns Mine off for as long as the page lasts where the browser keeps nothing", async () => {
+    answer = listing;
+    const page = await render();
+    const mine = () => [...page.querySelectorAll("button")].find((b) => b.textContent === "Mine");
+    const full = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    });
+    await act(async () => mine()?.click());
+    expect(mine()?.getAttribute("aria-pressed")).toBe("false");
+    expect(lastAsked()).not.toHaveProperty("mine");
+    full.mockRestore();
+    // On again, kept as the browser keeps it.
+    await act(async () => mine()?.click());
+    expect(mine()?.getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("comes back to the tab and the filter it showed last, for any project", async () => {
     answer = listing;
     search.value = { state: "merged", q: "danish" };

@@ -373,9 +373,14 @@ describe("what needs you", () => {
   it("counts the pull requests of your sessions ready for review, as the page lists them at first", async () => {
     const sidebar = reload("/");
     await sidebar.come({ workspaces, projects, sessions: [PULLS_QUERY, opened] });
+    // The page's own request, which the server narrows to Ada's before its limit: it reaches an
+    // older one of hers that everyone's newest sessions leave out.
+    const older = session(1, "Older", "stopped", "prj_web", { pull_requests: [pr(1)], created_by: ada });
+    const hers = opened.filter((s) => s.created_by.id === ada.id);
+    await sidebar.come({ sessions: [{ ...PULLS_QUERY, mine: true }, [...hers, older]] });
     const link = sidebar.container.querySelector('a[href="/pulls"]');
-    expect(link?.textContent).toBe("Pull requests1");
-    expect(link?.getAttribute("title")).toBe("1 ready for review, of 2 open from your sessions");
+    expect(link?.textContent).toBe("Pull requests2");
+    expect(link?.getAttribute("title")).toBe("2 ready for review, of 3 open from your sessions");
   });
 
   it("counts everyone's once Mine is off on the pull requests page", async () => {
@@ -394,20 +399,16 @@ describe("what needs you", () => {
       workspaces,
       projects,
       sessions: [
-        PULLS_QUERY,
+        { ...PULLS_QUERY, mine: true },
         [
           // Newest first, as the API lists them.
-          session(8, "Merged since", "stopped", "prj_web", { pull_requests: [merged], created_by: ada }),
+          session(8, "Merged since", "stopped", "prj_web", { pull_requests: [merged] }),
           session(7, "Asks", "idle", "prj_web", {
             pull_requests: [pr(6)],
             question: { text: "Keep øre?", asked_at: NOW },
-            created_by: ada,
           }),
-          session(6, "Ready", "stopped", "prj_web", { pull_requests: [pr(7)], created_by: ada }),
-          session(5, "Said open", "stopped", "prj_web", {
-            pull_requests: [{ ...pr(5), updated_at: 10 }],
-            created_by: ada,
-          }),
+          session(6, "Ready", "stopped", "prj_web", { pull_requests: [pr(7)] }),
+          session(5, "Said open", "stopped", "prj_web", { pull_requests: [{ ...pr(5), updated_at: 10 }] }),
         ],
       ],
     });

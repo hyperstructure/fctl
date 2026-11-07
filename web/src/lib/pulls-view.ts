@@ -18,8 +18,11 @@ export interface PullsLeft {
 }
 
 const listeners = new Set<() => void>();
+/** What the browser didn't let us keep (private browsing without storage, or none left): for the page. */
+const unkept = new Map<string, string | null>();
 
 function get(storage: () => Storage, key: string): string | null {
+  if (unkept.has(key)) return unkept.get(key) ?? null;
   try {
     return storage().getItem(key);
   } catch {
@@ -31,8 +34,9 @@ function put(storage: () => Storage, key: string, value: string | null) {
   try {
     if (value === null) storage().removeItem(key);
     else storage().setItem(key, value);
+    unkept.delete(key);
   } catch {
-    // Private browsing without storage: it lasts the page.
+    unkept.set(key, value);
   }
   for (const l of listeners) l();
 }
