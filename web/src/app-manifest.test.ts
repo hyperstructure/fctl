@@ -13,9 +13,14 @@ const web = new URL("..", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("public/manifest.webmanifest", web), "utf8"));
 const html = readFileSync(new URL("index.html", web), "utf8");
 
+/** An icon from @hyperstructure/design, as the build serves it. */
+function brandAsset(file: string): Buffer {
+  return readFileSync(require.resolve(`@hyperstructure/design/${BRAND_ASSETS[file]}`));
+}
+
 /** Width and height of an icon from @hyperstructure/design, as in a manifest. */
 function pngSize(file: string): string {
-  const png = readFileSync(require.resolve(`@hyperstructure/design/${BRAND_ASSETS[file]}`));
+  const png = brandAsset(file);
   return `${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`;
 }
 
@@ -63,5 +68,16 @@ describe("the installable app", () => {
       '<link rel="icon" href="/icon-maskable-512.png" type="image/png" sizes="512x512" />',
     );
     expect(pngSize("icon-maskable-512.png")).toBe("512x512");
+  });
+
+  // Feed readers, link previews and tools that save a site's icon fetch
+  // /favicon.ico without reading the page's links: without the file, the app
+  // would answer them with its page.
+  it("serves an icon at /favicon.ico, in tab and bookmark sizes", () => {
+    expect(Object.keys(BRAND_ASSETS)).toContain("favicon.ico");
+    const ico = brandAsset("favicon.ico");
+    expect([ico.readUInt16LE(0), ico.readUInt16LE(2)]).toEqual([0, 1]);
+    const sizes = Array.from({ length: ico.readUInt16LE(4) }, (_, i) => ico[6 + 16 * i] || 256);
+    expect(sizes).toEqual(expect.arrayContaining([16, 32]));
   });
 });

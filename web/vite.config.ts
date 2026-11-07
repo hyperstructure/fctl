@@ -11,12 +11,18 @@ const require = createRequire(import.meta.url);
 /** The favicon and app icons at the root, and where they are in @hyperstructure/design. */
 export const BRAND_ASSETS: Record<string, string> = {
   "favicon.svg": "assets/favicon.svg",
+  // For what fetches /favicon.ico without reading the page's links: without
+  // it, the app would answer with its page.
+  "favicon.ico": "assets/favicon.ico",
   "apple-touch-icon.png": "assets/icons/apple-touch-icon.png",
   "icon-192.png": "assets/icons/icon-192.png",
   "icon-512.png": "assets/icons/icon-512.png",
   "icon-maskable-512.png": "assets/icons/icon-maskable-512.png",
   "icon-maskable-1024.png": "assets/icons/icon-maskable-1024.png",
 };
+
+/** The content types of BRAND_ASSETS by extension, PNG otherwise, as the dev server sends them. */
+const CONTENT_TYPES: Record<string, string> = { svg: "image/svg+xml", ico: "image/x-icon" };
 
 /** Serves and emits the favicon and app icons from @hyperstructure/design (one source for the mark). */
 function brandAssets(): Plugin {
@@ -28,7 +34,7 @@ function brandAssets(): Plugin {
       server.middlewares.use((req, res, next) => {
         const file = req.url?.split("?")[0]?.slice(1) ?? "";
         if (!Object.hasOwn(BRAND_ASSETS, file)) return next();
-        res.setHeader("content-type", file.endsWith(".svg") ? "image/svg+xml" : "image/png");
+        res.setHeader("content-type", CONTENT_TYPES[file.split(".").pop() ?? ""] ?? "image/png");
         res.end(read(file));
       });
     },
