@@ -896,6 +896,15 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request) -> AppResult<Resp
     if let Some(on) = body.gravatar {
         settings.gravatar = on;
     }
+    if let Some(hours) = body.export_interval_hours {
+        if hours > fctl_domain::account::MAX_EXPORT_INTERVAL_HOURS {
+            return Err(validation(
+                "export_interval_hours",
+                "People can be made to wait a year at most (8760 hours) between exports of their data",
+            ));
+        }
+        settings.export_interval_hours = hours;
+    }
     crate::instance::save(&ctx.db, &settings).await?;
     if gravatar_off {
         // The copies go, and turned on again, it looks for everyone anew.

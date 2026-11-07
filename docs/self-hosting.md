@@ -340,6 +340,12 @@ as for an instance that must not reach gravatar.com or whose privacy
 policy doesn't name Gravatar, use **Admin → Settings → Profile pictures**
 (or `fctl admin set --gravatar off`), which also removes the copies.
 
+Each person can export their data once a week: an export reads everything
+they have, every transcript too. To let them export more often, or less,
+choose under **Admin → Settings → Data exports** (or `fctl admin set
+--export-interval 1d`; `off` lets them export at any time, and a year is
+the longest wait).
+
 ## Connect GitHub (optional, recommended)
 
 With a GitHub App, projects link repositories, agents get short-lived tokens

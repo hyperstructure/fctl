@@ -45,4 +45,12 @@ verify_sensitive_actions: boolean,
  * day, and keeps a copy. On by default. Turning it off removes those
  * copies, and fctl looks nothing up.
  */
-gravatar: boolean, };
+gravatar: boolean, 
+/**
+ * The hours people wait between two exports of their data
+ * (`GET /api/v1/me/export`), which reads everything they have, every
+ * transcript too: a week (168) by default, at most a year (8760); 0
+ * lets them export at any time. An export that fails on the control
+ * plane's side doesn't count.
+ */
+export_interval_hours: number, };

@@ -184,8 +184,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -220,6 +220,12 @@ pub enum AdminCmd {
         /// nothing up.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         gravatar: Option<bool>,
+        /// How long people wait between two exports of their data, which
+        /// reads everything they have, every transcript too: 1w (the
+        /// default), 1d, 30d and so on, up to a year, or off to let them
+        /// export at any time.
+        #[arg(long, value_name = "DURATION", value_parser = fctl_domain::account::parse_export_interval)]
+        export_interval: Option<u32>,
     },
 }
 
@@ -531,6 +537,23 @@ fn print_settings(s: &InstanceSettings) {
             "People without a picture of their own show their Gravatar, unless they turn it off."
         } else {
             "fctl looks up nobody's Gravatar: people without a picture show their initials."
+        })
+    );
+    let every = fctl_domain::account::export_interval_words(s.export_interval_hours);
+    println!(
+        "Data exports           {}",
+        if s.export_interval_hours == 0 {
+            style::dim(&every)
+        } else {
+            style::accent(&every)
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(&if s.export_interval_hours == 0 {
+            "People can export their data as often as they like.".to_owned()
+        } else {
+            format!("Each person can export their data {every}: an export reads all of it.")
         })
     );
 }
@@ -1067,6 +1090,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             two_factor_google,
             verify_sensitive_actions,
             gravatar,
+            export_interval,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
@@ -1075,6 +1099,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     two_factor_google,
                     verify_sensitive_actions,
                     gravatar,
+                    export_interval_hours: export_interval,
                 })
                 .await?;
             if json {

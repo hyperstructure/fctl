@@ -42,6 +42,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::InstanceInfo,
         api::SetupRequest,
         api::Me,
+        api::DataExport,
         api::EmailAddress,
         api::UpdateEmailRequest,
         api::User,
