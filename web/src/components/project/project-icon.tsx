@@ -1,7 +1,7 @@
 // A project's icon: its IconMCP glyph in its color, alone or on a soft square (a tile), which
 // headers and rails show. lib/project-icons.ts picks it.
 
-import { createElement, type ReactNode, useId } from "react";
+import { createElement, memo, type ReactNode, useId } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import type { IconElement } from "@/lib/project-icon-data";
@@ -16,8 +16,11 @@ function draw(els: IconElement[], mask: string, prefix = ""): ReactNode[] {
   });
 }
 
-/** A glyph alone, `size` pixels square, in `color` or `hex` (or the text's). */
-export function Glyph({
+/**
+ * A glyph alone, `size` pixels square, in `color` or `hex` (or the text's). Memoized: the picker
+ * draws two hundred of them, which a color dragged through shouldn't redraw.
+ */
+export const Glyph = memo(function Glyph({
   name,
   style = "outline",
   color,
@@ -56,7 +59,7 @@ export function Glyph({
       {def && draw(def[knownStyle(style)], mask)}
     </svg>
   );
-}
+});
 
 /**
  * An icon as a project shows it. A tile is `tile` pixels square, with the glyph on its soft color;

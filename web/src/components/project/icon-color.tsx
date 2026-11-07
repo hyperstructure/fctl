@@ -333,7 +333,6 @@ function Editor({
             autoComplete="off"
             autoCapitalize="characters"
             spellCheck={false}
-            maxLength={7}
             onFocus={(e) => e.currentTarget.select()}
             onChange={(e) => {
               // Only hex digits go in, so a pasted #FF8800 or "ff 88 00" reads as one.
