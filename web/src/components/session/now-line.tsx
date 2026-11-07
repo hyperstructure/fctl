@@ -44,31 +44,40 @@ const STEADY_MS = 600;
 
 /**
  * `value`, changing no more often than every `ms`: a change that comes sooner shows once the last
- * one has shown that long, unless another takes its place first. `id` says when it changed.
+ * one has shown that long, unless another takes its place first. `id` says when it changed; a
+ * value `settle` gives time to shows only once it has lasted that long (ms).
  */
-function useSteady<T>(value: T, id: (v: T) => string, ms = STEADY_MS): T {
+function useSteady<T>(value: T, id: (v: T) => string, settle?: (v: T) => number, ms = STEADY_MS): T {
   const key = id(value);
   const [shownKey, setShownKey] = useState(key);
   // The step shown, as it was last: the same step's newer facts (its seconds) show as they come.
   const [held, setHeld] = useState(value);
   const since = useRef(0);
   if (key === shownKey && held !== value) setHeld(value);
+  const lasts = settle?.(value) ?? 0;
   useEffect(() => {
     if (key === shownKey) return;
     const show = () => {
       since.current = Date.now();
       setShownKey(key);
     };
-    const wait = since.current + ms - Date.now();
+    const wait = Math.max(since.current + ms - Date.now(), lasts);
     if (wait <= 0) {
       show();
       return;
     }
     const t = setTimeout(show, wait);
     return () => clearTimeout(t);
-  }, [key, shownKey, ms]);
+  }, [key, shownKey, ms, lasts]);
   return key === shownKey ? value : held;
 }
+
+/**
+ * How long the agent waits before the line says so (ms): between a background task's end and the
+ * turn that takes up what came of it, its session waits for a message for a moment, which isn't
+ * the reader's turn yet.
+ */
+const SETTLE_MS = 400;
 
 /** The time, again each second while `on`. */
 function useSeconds(on: boolean): number {
@@ -164,16 +173,25 @@ function useGlide(ref: RefObject<HTMLElement | null>, step: string) {
   });
 }
 
+/** What showed for a step that rolls away, and how wide it was. */
+interface Gone {
+  step: string;
+  node: ReactNode;
+  width?: number;
+}
+
 /**
  * `children` as they are for `step`: as it changes, the new roll in from below while the last roll
- * away above, out of the line, which clips them. The first shows at once, as the line rises.
+ * away above, as it was, out of the line, which clips them. The first shows at once, as the line
+ * rises.
  */
 function Roll({ step, className, children }: { step: string; className?: string; children: ReactNode }) {
   const [at, setAt] = useState(step);
   const [rolled, setRolled] = useState(false);
-  const [gone, setGone] = useState<{ step: string; node: ReactNode }[]>([]);
-  // What showed for the step before, as it last was, to roll away.
-  const last = useRef<{ step: string; node: ReactNode }>({ step, node: children });
+  const [gone, setGone] = useState<Gone[]>([]);
+  // What showed for the step before, as it last was and as wide, to roll away just so.
+  const shown = useRef<HTMLSpanElement>(null);
+  const last = useRef<Gone>({ step, node: children });
   if (step !== at) {
     const before = last.current;
     setAt(step);
@@ -181,7 +199,7 @@ function Roll({ step, className, children }: { step: string; className?: string;
     setGone((g) => [...g.filter((x) => x.step !== before.step), before].slice(-2));
   }
   useLayoutEffect(() => {
-    last.current = { step, node: children };
+    last.current = { step, node: children, width: shown.current?.getBoundingClientRect().width };
   });
   // Gone by the time it has rolled away, whether its animation said so or not (hidden, it doesn't).
   useEffect(() => {
@@ -191,14 +209,19 @@ function Roll({ step, className, children }: { step: string; className?: string;
   }, [gone]);
   return (
     <span className={cn("relative flex min-w-0", className)}>
-      <span key={step} className={cn("flex min-w-0 items-baseline gap-1.5", rolled && "animate-now-in")}>
+      <span
+        ref={shown}
+        key={step}
+        className={cn("flex min-w-0 items-baseline gap-1.5", rolled && "animate-now-in")}
+      >
         <Fresh>{children}</Fresh>
       </span>
       {gone.map((g) => (
         <span
           key={`gone\u0000${g.step}`}
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 flex min-w-0 animate-now-out items-baseline gap-1.5"
+          style={{ width: g.width }}
+          className="pointer-events-none absolute inset-y-0 left-0 flex min-w-0 animate-now-out items-baseline gap-1.5"
           onAnimationEnd={(e) => {
             if (e.target === e.currentTarget) setGone((x) => x.filter((y) => y !== g));
           }}
@@ -341,10 +364,15 @@ export function NowLine({
     onGo: (call: string) => void;
   };
 }) {
-  // Mounted whether the agent works or not, so that its last step holds as long as a step does.
-  const shown = useSteady(now, (n) => (n ? stepOf(n) : ""));
-  // Once it does nothing: whose turn it is, when it's the reader's.
-  const turn = !shown && !!onReply;
+  // Mounted whether the agent works or not, so that its last step holds as long as a step does;
+  // once it does nothing, whose turn it is, when it's the reader's, once it has stayed so a moment.
+  const line = useSteady<Now | "turn" | undefined>(
+    now ?? (onReply ? "turn" : undefined),
+    (l) => (l === undefined ? "" : l === "turn" ? "turn" : stepOf(l)),
+    (l) => (l === undefined || l === "turn" ? SETTLE_MS : 0),
+  );
+  const shown = line === "turn" ? undefined : line;
+  const turn = line === "turn";
   const busy = !!shown && BUSY.has(shown.kind);
   // The step of its plan the agent is at, in the words it says while it does it, leads the line.
   const step = busy ? plan?.current : undefined;

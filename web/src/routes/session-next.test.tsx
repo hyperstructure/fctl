@@ -476,6 +476,28 @@ describe("the new session page", () => {
     expect(call()?.textContent).toMatch(/\d+ s in the background/);
   });
 
+  it("goes on from a background task to the turn that takes up its result, without a false hand-over", async () => {
+    const p = page();
+    p.snapshot(turn("Start the dev stack"), {
+      ...session("idle"),
+      status_reason: "Waiting for a background task",
+    });
+    expect(nowSays(p.container)).toContain("Waiting for a background task");
+    // The task ends: for a moment the session waits for a message, then the agent takes it up.
+    p.hear({ type: "session", session: { ...session("idle"), status_reason: "Waiting for a message" } });
+    p.hear({ type: "session", session: session("running") });
+    for (const ms of [100, 400, 400]) {
+      await act(() => new Promise((r) => setTimeout(r, ms)));
+      expect(p.container.querySelector(".now-line")).not.toBeNull();
+      expect(nowSays(p.container)).not.toContain("Your turn");
+    }
+    expect(nowSays(p.container)).toContain("Working");
+    // It hands over: the line says so once that has lasted a moment.
+    p.hear({ type: "session", session: { ...session("idle"), status_reason: "Waiting for a message" } });
+    await act(() => new Promise((r) => setTimeout(r, 1100)));
+    expect(nowSays(p.container)).toContain("Your turn");
+  });
+
   it("says on a folded run's line what its calls left running in the background", () => {
     const p = page();
     p.snapshot(

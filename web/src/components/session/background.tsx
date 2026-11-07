@@ -73,7 +73,7 @@ function TaskRow({
   const call = a.call;
   const body = (
     <>
-      <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-line bg-sunken text-ink-2 [&_svg]:size-3.5">
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] border border-line-strong bg-surface text-ink-3 [&_svg]:size-3.5">
         {iconOf(a)}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -161,7 +161,7 @@ export function BackgroundList({
       id={id}
       role="dialog"
       aria-label="In the background"
-      className="task-list pointer-events-auto absolute bottom-full left-0 z-20 mb-2 flex max-h-[min(60vh,26rem)] w-[min(24rem,calc(100vw-2rem))] origin-bottom-left animate-listbox-in flex-col overflow-hidden rounded-xl border border-line-strong bg-raised/95 shadow-[0_18px_60px_rgb(0_0_0/0.35)] backdrop-blur-xl [--listbox-y:6px]"
+      className="task-list pointer-events-auto absolute bottom-full left-0 z-20 mb-2 flex max-h-[min(60vh,26rem)] w-[min(24rem,calc(100vw-2rem))] origin-bottom-left animate-listbox-in flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-[0_18px_60px_rgb(0_0_0/0.35)] [--listbox-y:6px]"
     >
       <div className="flex items-baseline justify-between gap-3 px-3.5 pt-3 pb-1.5">
         <span className="text-[12.5px] font-medium text-ink">In the background</span>
