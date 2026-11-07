@@ -57,7 +57,8 @@ function Gist({
         const Icon = PART_ICON[p.key] ?? ListChecks;
         return (
           <Fragment key={p.key}>
-            <span className="flex items-center gap-1.5 self-start text-[12px] leading-[22px] whitespace-nowrap text-ink-4">
+            {/* As tall as a line beside it, its mark centred on it where its name is for screen readers. */}
+            <span className="flex h-[22px] items-center gap-1.5 self-start text-[12px] leading-[22px] whitespace-nowrap text-ink-4">
               <Icon aria-hidden="true" className="size-3.5 sm:hidden" />
               <span className="max-sm:sr-only">{p.label}</span>
               {marked && <Changed />}
