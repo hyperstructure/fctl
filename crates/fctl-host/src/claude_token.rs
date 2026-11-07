@@ -465,24 +465,18 @@ fn shaped_wait(text: &str) -> usize {
             if let Some(at) = tail.find(shape.prefix) {
                 return run - at;
             }
-            // The start of one, where a token may start: not the `s` of
-            // `tokens`, which would hold back most words.
+            // The characters at the end that could start one, wherever
+            // the word does: also after a letter or digit, so that the next
+            // delta, which starts mid-prefix, doesn't let one through. They
+            // wait for that delta alone (the `s` of `tokens`), a few tens of
+            // milliseconds, while the rest goes out at once.
             (1..shape.prefix.len())
                 .rev()
-                .find(|&k| {
-                    tail.ends_with(&shape.prefix[..k]) && token_may_start(bytes, bytes.len() - k)
-                })
+                .find(|&k| tail.ends_with(&shape.prefix[..k]))
                 .unwrap_or(0)
         })
         .max()
         .unwrap_or(0)
-}
-
-/// Whether a token may start at `at` in `text`: at its start, or after a
-/// character that is neither a letter nor a digit (a space, `=`, a quote,
-/// and the `-` and `_` that join words, as in `key_sk-ant-oat01-…`).
-fn token_may_start(text: &[u8], at: usize) -> bool {
-    at == 0 || text.get(at - 1).is_none_or(|b| !b.is_ascii_alphanumeric())
 }
 
 /// `value` with every token of a [`Shape`] in its strings replaced.
@@ -503,10 +497,8 @@ fn redact_shapes_in(value: &mut Value) {
 fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
     let text = redact(text, secrets).into_owned();
     let bytes = text.as_bytes();
-    // What starts a secret where a token may start, not inside a word
-    // that ends like its start ([`token_may_start`]); one that runs to the
-    // end inside a word, its whole prefix there, waits by its shape
-    // ([`shaped_wait`]).
+    // The characters at the end that could start a secret, wherever the
+    // word does, as for a token's shape ([`shaped_wait`]).
     let wait = secrets
         .iter()
         .filter(|s| s.len() >= MIN_REDACTED)
@@ -514,9 +506,7 @@ fn hold_back_known(text: &str, secrets: &[String]) -> (String, String) {
             let s = s.as_bytes();
             (1..s.len().min(bytes.len() + 1))
                 .rev()
-                .find(|&k| {
-                    bytes[bytes.len() - k..] == s[..k] && token_may_start(bytes, bytes.len() - k)
-                })
+                .find(|&k| bytes[bytes.len() - k..] == s[..k])
                 .unwrap_or(0)
         })
         .max()
@@ -768,36 +758,42 @@ mod tests {
     }
 
     #[test]
-    fn words_that_end_like_a_token_starts_go_out_at_once() {
+    fn only_what_could_start_a_token_waits() {
         let secrets = Secrets::default();
         secrets.add(TOKEN);
         let mut r = StreamRedactor::default();
-        for text in ["two tokens", "a string", "the hosts", "a long thing"] {
-            let plain = delta(None, 0, "text", text);
-            assert_eq!(r.apply(&secrets, plain.clone()), [plain], "{text}");
+        let text = |out: &[Value]| -> Vec<String> {
+            out.iter()
+                .filter_map(|e| e["event"]["delta"]["text"].as_str().map(str::to_owned))
+                .collect()
+        };
+        // A word that doesn't end like a token starts goes out at once.
+        for (index, said) in [(0, "two words."), (1, "a token's end")] {
+            let plain = delta(None, index, "text", said);
+            assert_eq!(r.apply(&secrets, plain.clone()), [plain], "{said}");
         }
-        // A word that could still be one waits.
-        assert!(
-            r.apply(&secrets, delta(None, 1, "text", "see sk"))
-                .iter()
-                .all(|e| { e["event"]["delta"]["text"].as_str() == Some("see ") })
+        // One that does goes out but for its last letters, which wait for
+        // the next delta, or the block's end.
+        assert_eq!(
+            text(&r.apply(&secrets, delta(None, 2, "text", "two tokens"))),
+            ["two token"]
         );
-        assert!(
-            r.apply(&secrets, delta(None, 2, "text", "GH_TOKEN=ghs_ab"))
-                .iter()
-                .all(|e| { e["event"]["delta"]["text"].as_str() == Some("GH_TOKEN=") })
+        assert_eq!(
+            text(&r.apply(&secrets, delta(None, 2, "text", " more"))),
+            ["s more"]
         );
-        // Also one that a `-` or `_` joins to a word.
-        for (index, text, now) in [
-            (3, "key_sk-a", "key_"),
-            (4, "x-ghs_ab", "x-"),
-            (5, "key_s", "key_"),
+        for (index, said, now) in [
+            (3, "see sk", "see "),
+            (4, "GH_TOKEN=ghs_ab", "GH_TOKEN="),
+            (5, "key_sk-a", "key_"),
+            (6, "x-ghs_ab", "x-"),
+            (7, "ask-ant-oa", "a"),
+            (8, "ag", "a"),
         ] {
-            assert!(
-                r.apply(&secrets, delta(None, index, "text", text))
-                    .iter()
-                    .all(|e| e["event"]["delta"]["text"].as_str() == Some(now)),
-                "{text}"
+            assert_eq!(
+                text(&r.apply(&secrets, delta(None, index, "text", said))),
+                [now],
+                "{said}"
             );
         }
     }
@@ -829,7 +825,10 @@ mod tests {
     #[test]
     fn redacts_a_token_it_never_knew_streamed_in_pieces() {
         let secrets = Secrets::default();
-        let said = format!("Here: {UNKNOWN}, and {GITHUB}, key_{UNKNOWN} and x-{GITHUB}.");
+        // Also glued to a letter or a digit, split anywhere.
+        let said = format!(
+            "Here: {UNKNOWN}, and {GITHUB}, key_{UNKNOWN} and x-{GITHUB}, a{UNKNOWN} 7{GITHUB} 9{TOKEN}."
+        );
         for size in [1, 2, 3, 5, 7, 13, 40, 200] {
             let chars: Vec<char> = said.chars().collect();
             let mut events: Vec<Value> = chars
@@ -842,7 +841,7 @@ mod tests {
             assert_eq!(
                 shown(&out, "text"),
                 format!(
-                    "Here: {REDACTED}, and {REDACTED_GITHUB}, key_{REDACTED} and x-{REDACTED_GITHUB}."
+                    "Here: {REDACTED}, and {REDACTED_GITHUB}, key_{REDACTED} and x-{REDACTED_GITHUB}, a{REDACTED} 7{REDACTED_GITHUB} 9{REDACTED}."
                 ),
                 "{size}"
             );
