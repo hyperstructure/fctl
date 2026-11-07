@@ -52,6 +52,20 @@ describe("choosing a project's icon", () => {
     expect(p.onSave).not.toHaveBeenCalled();
   });
 
+  it("fits the screen: the icons' list gives way, so that Save stays in view", () => {
+    const p = setup({ id: "prj_shop", name: "Shop" });
+    // The dialog is a column no taller than the screen, which its body fills.
+    expect(p.dialog().className.split(" ")).toEqual(expect.arrayContaining(["open:flex", "open:flex-col"]));
+    const list = p.dialog().querySelector('[role="listbox"]');
+    expect(list?.className.split(" ")).toEqual(expect.arrayContaining(["h-[min(44vh,340px)]", "min-h-28"]));
+    expect(list?.parentElement?.className.split(" ")).toEqual(
+      expect.arrayContaining(["min-h-0", "flex-1", "flex-col"]),
+    );
+    // On a phone, the dialog's × closes it in Cancel's place.
+    expect(p.button("Cancel")?.className).toContain("max-sm:hidden");
+    expect(p.dialog().querySelector('button[aria-label="Close"]')).not.toBeNull();
+  });
+
   it("saves the icon, color and style chosen", () => {
     const p = setup({ id: "prj_shop", name: "Shop" });
     act(() => p.option("Rocket")?.click());

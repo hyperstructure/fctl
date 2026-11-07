@@ -567,10 +567,11 @@ five or more. Anyone on the instance creates one, as its primary admin.
   glyph of [IconMCP](https://iconmcp.com) (an MIT-licensed set of 6,800
   icons on a 16-unit grid) by its name, in a workspace color and outline,
   duotone or solid (`ProjectIcon`, `projects.icon` as JSON). The web app
-  carries the glyphs it offers, about 150 of them, in three styles
-  (`web/src/lib/project-icon-data.ts`, in a chunk of its own), and draws
-  them as React elements, not markup it inserts. The control plane checks
-  a name's shape only, so the set can grow with the web app; a name the
+  carries the glyphs it offers, about 210 of them, in three styles
+  (`web/src/lib/project-icon-data.ts`, in a chunk of its own, which
+  `web/scripts/project-icons.mjs` adds to from IconMCP's MCP server), and
+  draws them as React elements, not markup it inserts. The control plane
+  checks a name's shape only, so the set can grow with the web app; a name the
   app doesn't have, like a project without an icon, shows the glyph that
   fits the project best: the words of its name, its description's emoji,
   then its words (`web/src/lib/project-icons.ts`), in ink lines.
