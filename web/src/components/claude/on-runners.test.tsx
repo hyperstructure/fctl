@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
-import { OnRunnersDetails, OnRunnersSetup } from "./on-runners";
+import { OnRunnersDetails, OnRunnersSteps } from "./on-runners";
 
 const connected = { claude: [] } as unknown as G.Me;
 const claudeOnRunners = vi.fn(() => Promise.resolve(connected));
@@ -76,11 +76,8 @@ const rows = (container: HTMLElement) =>
     .map((li) => li.textContent);
 
 describe("keeping the token on your runners", () => {
-  it("says what it is, and shows the steps once asked", () => {
-    const view = render(<OnRunnersSetup />, [runner({ id: "studio", claude_token: {} })]);
-    expect(view.textContent).toContain("never given to fctl");
-    expect(view.textContent).not.toContain("fctl host claude set-token");
-    act(() => button(view, "Set up")?.click());
+  it("shows the steps, none done while no runner keeps it", () => {
+    const view = render(<OnRunnersSteps />, [runner({ id: "studio", claude_token: {} })]);
     const text = view.textContent ?? "";
     for (const step of [
       "Create a token",
@@ -98,13 +95,12 @@ describe("keeping the token on your runners", () => {
   });
 
   it("ticks the steps on the runner off once one keeps it", () => {
-    const view = render(<OnRunnersSetup />, [
+    const view = render(<OnRunnersSteps />, [
       runner({ id: "spare", claude_token: {} }),
       runner({ id: "studio", claude_token: { saved_at: Date.now() - 60_000 } }),
       runner({ id: "old-box" }),
       runner({ id: "theirs", yours: false, claude_token: { saved_at: 1 } }),
     ]);
-    act(() => button(view, "Set up")?.click());
     expect(view.querySelectorAll('[aria-label="Done"]')).toHaveLength(3);
     expect(view.textContent).not.toContain("None of your runners keeps it yet");
     const list = rows(view);
@@ -114,18 +110,20 @@ describe("keeping the token on your runners", () => {
     expect(list[2]).toContain("Update its fctl first");
   });
 
-  it("connects it", async () => {
-    const view = render(<OnRunnersSetup />, [runner({ id: "studio", claude_token: { saved_at: 1 } })]);
-    act(() => button(view, "Set up")?.click());
+  it("connects it, and closes", async () => {
+    const onConnected = vi.fn();
+    const view = render(<OnRunnersSteps onConnected={onConnected} />, [
+      runner({ id: "studio", claude_token: { saved_at: 1 } }),
+    ]);
     await act(async () => button(view, "Use the token on my runners")?.click());
     expect(claudeOnRunners).toHaveBeenCalledOnce();
     expect(queryClient.getQueryData(keys.me)).toBe(connected);
+    expect(onConnected).toHaveBeenCalledOnce();
   });
 
   it("says where to bring a runner online when you have none", () => {
     const side = { id: "ws_side", slug: "side", name: "Side project" } as G.Workspace;
-    const view = render(<OnRunnersSetup />, [], [side]);
-    act(() => button(view, "Set up")?.click());
+    const view = render(<OnRunnersSteps />, [], [side]);
     expect(view.textContent).toContain("You have no runners yet");
     expect(view.querySelector("a")?.getAttribute("href")).toBe("/w/side?tab=runners");
   });

@@ -92,37 +92,46 @@ Sessions you start run on your own Claude Pro or Max plan. fctl never uses API
 keys: it refuses them, checks that every session reports a subscription
 credential, and pauses a session before it would draw on paid extra usage.
 
-There are three ways to connect, all under **Settings → Claude** in the app:
+Settings → Claude offers two kinds of connection, each with what it gives
+and lacks:
 
-- **Sign in with Claude** (recommended). The official Claude Code sign-in runs
-  in a sandbox on one of your runners; fctl shows you the link and relays the
-  code. This kind of login lets sessions join **Remote Control**, so they show
-  up in the Claude apps.
-- **A long-lived token.** Run `claude setup-token` on any machine with Claude
-  Code and paste the `sk-ant-oat01-…` token. It is valid for a year, but it
-  cannot use Remote Control.
-- **A token on your runners**, which you never give to fctl. On each of your
-  runners ([step 5](#5-bring-a-machine-online)), make a token and keep it
-  there:
+- **A long-lived token** (recommended). Run `claude setup-token` on any
+  machine with Claude Code and paste the `sk-ant-oat01-…` token. It lasts a
+  year, so a factory that runs around the clock keeps working without anyone
+  signing in again. Its sessions don't join **Remote Control** and get no
+  claude.ai connectors. Like every Claude token, it is in its sessions'
+  sandboxes, where the agent can read it, so an agent talked into handing it
+  over gives away a year of access rather than a full login's few hours:
+  use it where you trust everyone who can message your agents.
+- **Sign in with Claude**. The official Claude Code sign-in runs in a
+  sandbox on one of your runners; fctl shows you the link and relays the
+  code. Sessions on it join **Remote Control**, so they show up in the
+  Claude apps, and can use your claude.ai connectors in projects that turn
+  them on. Claude ends such a login after a while: its sessions stop, and
+  Settings → Claude says it needs reconnecting, until you sign in again or
+  connect a long-lived token.
 
-  ```sh
-  claude setup-token             # there, or on any machine with Claude Code
-  fctl host claude set-token     # paste it; kept in ~/.config/fctl/claude-token, mode 0600
-  fctl host claude status        # whether this runner keeps one, and whether fctl knows
-  ```
+A long-lived token can also stay **on your runners**, never given to fctl.
+On each of your runners ([step 5](#5-bring-a-machine-online)), make a token
+and keep it there:
 
-  Then choose **Keep the token on your runners** in Settings → Claude, which
-  shows each of your runners as it reports whether it keeps the token. Your
-  sessions on it run only on your runners that keep it, in every workspace,
-  and wait while none of them is online. Like any token from `claude
-  setup-token`, it lasts a year and can't use Remote Control.
+```sh
+claude setup-token             # there, or on any machine with Claude Code
+fctl host claude set-token     # paste it; kept in ~/.config/fctl/claude-token, mode 0600
+fctl host claude status        # whether this runner keeps one, and whether fctl knows
+```
+
+Then choose **Long-lived token → My runners keep it** in Settings → Claude,
+which shows each of your runners as it reports whether it keeps the token.
+Your sessions on it run only on your runners that keep it, in every
+workspace, and wait while none of them is online.
 
 From the terminal:
 
 ```sh
-fctl claude connect --login      # sign in with Claude, on one of your runners
-fctl claude connect              # or paste a long-lived token
+fctl claude connect              # paste a long-lived token
 fctl claude connect --on-runners # or use the token your runners keep
+fctl claude connect --login      # or sign in with Claude, on one of your runners
 fctl claude status
 ```
 
