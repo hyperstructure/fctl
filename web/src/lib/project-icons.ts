@@ -143,9 +143,9 @@ const WORDS: [RegExp, string[]][] = [
   [/\b(cart|basket|subscriptions?)\b/, ["cart", "bag"]],
   [/\b(payments?|billing|stripe|invoices?)\b/, ["credit-card", "wallet"]],
   [/\b(microservices?|service mesh|gateways?)\b/, ["topology-mesh", "api-gateway", "server-stack"]],
-  [/\b(pub ?\/ ?sub|pub-?sub|sns|fan[- ]?outs?|broadcasts?)\b/, ["pub-sub", "parallel-tasks", "broadcast"]],
+  [/\b(pub ?\/ ?sub|pub-?sub|sns|fan[- ]?outs?)\b/, ["pub-sub", "parallel-tasks", "broadcast"]],
   [
-    /\b(queues?|sqs|messaging|brokers?|rabbitmq|amqp|kafka|nats|consumers?|dlqs?)\b/,
+    /\b(queues?|sqs|messaging|message brokers?|rabbitmq|amqp|kafka|nats|dlqs?)\b/,
     ["message-queue", "event-bus", "task-queue"],
   ],
   [/\b(event[- ]driven|event ?bus|cloudevents|eventbridge)\b/, ["event-bus"]],

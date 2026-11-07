@@ -78,6 +78,12 @@ describe("project icons", () => {
     expect(lib).toEqual(
       expect.arrayContaining(["pub-sub", "message-queue", "library", "snake", "integration-plug"]),
     );
+    // Words that only sound like messaging don't suggest it.
+    expect(suggestIcons({ name: "Buyer", description: "A consumer mobile app" })[0]).toBe("smartphone");
+    expect(suggestIcons({ name: "Leads", description: "Mortgage broker CRM" }, 12)).not.toContain(
+      "message-queue",
+    );
+    expect(suggestIcons({ name: "Radio", description: "Our podcast broadcasts" })[0]).toBe("music-note");
     // An animal's emoji.
     expect(suggestIcons({ name: "zoo", description: "🦊 Foxes" })[0]).toBe("fox");
   });
