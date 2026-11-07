@@ -222,7 +222,7 @@ function Grid({
                   : "text-ink-3 hover:bg-hover hover:text-ink",
               )}
             >
-              <Glyph name={name} style={icon.style} color={on ? icon.color : undefined} size={18} />
+              <Glyph name={name} style={icon.style} color={on ? icon.color : undefined} size={20} />
             </button>
           );
         })}

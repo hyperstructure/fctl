@@ -25,6 +25,7 @@ import { AgentFloorIcon, Logo, PullRequestIcon, StatusDot } from "@/components/u
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
+import { apple } from "@/lib/hotkeys";
 import type { SidebarProject, SidebarWorkspace } from "@/lib/sidebar";
 import { createsProjects, roomForAnother, useFolded } from "@/lib/workspaces";
 import { FloorLink } from "./floor-link";
@@ -87,7 +88,7 @@ function Tree({
         <button
           type="button"
           aria-label="Fold the sidebar"
-          title="Fold the sidebar"
+          title={`Fold the sidebar (${apple() ? "⌘" : "Ctrl+"}\\)`}
           onClick={() => onFold(true)}
           className="flex size-8 items-center justify-center rounded-md text-ink-4 transition-colors hover:bg-hover hover:text-ink max-md:hidden"
         >

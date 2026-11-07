@@ -13,6 +13,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { agoShort } from "@/lib/format";
+import { apple } from "@/lib/hotkeys";
 import type { SidebarProject } from "@/lib/sidebar";
 import { roomForAnother } from "@/lib/workspaces";
 import { FloorLink } from "./floor-link";
@@ -63,7 +64,7 @@ function Focus({
         <button
           type="button"
           aria-label="Fold the sidebar"
-          title="Fold the sidebar"
+          title={`Fold the sidebar (${apple() ? "⌘" : "Ctrl+"}\\)`}
           onClick={() => onFold(true)}
           className="flex size-8 items-center justify-center rounded-md text-ink-4 transition-colors hover:bg-hover hover:text-ink max-md:hidden"
         >
