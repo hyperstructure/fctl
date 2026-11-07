@@ -680,9 +680,14 @@ build never sees, and runs the build in its container runtime's builder,
 outside any sandbox, or with Firecracker in a VM of the project's own that
 holds its builds' cache, apart from other projects' ([Sandbox images](sandbox-images.md#which-images-a-host-runs)),
 from the repository's files alone: the host checks again that the
-Dockerfile and the directory a project names are in the repository, and
-keeps each sandbox's name to letters, digits and dashes, whatever the
-control plane sends. Hosts pull images with their own registry logins;
+Dockerfile and the directory a project names are in the repository,
+removes the repository's symbolic links that lead out of it, so that no
+builder reads the host's files through one, and keeps each sandbox's
+name to letters, digits and dashes, whatever the control plane sends. A
+build starts `FROM` whatever image its Dockerfile names, or its
+devcontainer.json does, whatever `allowed_images` says, so allowing a
+repository's builds allows the images anyone who can push to its
+default branch names. Hosts pull images with their own registry logins;
 fctl stores no registry credentials.
 
 ## The control plane without Cloudflare
