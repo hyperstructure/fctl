@@ -672,6 +672,7 @@
   display: flow-root;
   isolation: isolate;
 }
+/* A border, not a background: Windows' contrast themes keep borders and drop backgrounds. */
 .thread::before {
   content: "";
   position: absolute;
@@ -679,8 +680,7 @@
   bottom: 0;
   left: 11.5px;
   z-index: -1;
-  width: 1px;
-  background: var(--thread);
+  border-left: 1px solid var(--thread);
   pointer-events: none;
 }
 .thread [data-rail=""] {
@@ -703,7 +703,8 @@
 }
 /* The end of the turn the agent works on fades out, as what comes next isn't there yet. */
 .thread-live::before {
-  background: linear-gradient(var(--thread), var(--thread) calc(100% - 3rem), transparent);
+  -webkit-mask: linear-gradient(#000 calc(100% - 3rem), transparent);
+  mask: linear-gradient(#000 calc(100% - 3rem), transparent);
 }
 /* The card that opens a turn: the thread hangs from its lower left corner, which is all but
    square there. The light theme lifts it off the page with a soft shadow. */

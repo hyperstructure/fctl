@@ -43,7 +43,7 @@ import { QuestionCard } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
 import { thinkingNow } from "@/components/session/thinking";
-import { TurnBar, TurnOutline, useGoToTurn, useTurnPlace } from "@/components/session/turn-nav";
+import { TurnBar, TurnList, TurnOutline, useGoToTurn, useTurnPlace } from "@/components/session/turn-nav";
 import { TurnTranscript } from "@/components/session/turns";
 import { useViewShortcut, ViewSwitch } from "@/components/session/view-switch";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
@@ -86,6 +86,7 @@ import {
   Details,
   noteTone,
   Overview,
+  RailSection,
   reviewLabel,
   SessionGithub,
   SessionPage,
@@ -738,6 +739,20 @@ function NextSessionPage() {
             runnerConnected={s.runnerConnected}
             stall={stall}
             disk={disk}
+            turns={
+              turns.length > 1 && (
+                <RailSection title={`Turns (${turns.length})`}>
+                  <TurnList
+                    turns={turns}
+                    facts={facts}
+                    at={place.at}
+                    live={!!status && BUSY.has(status)}
+                    hasMoreBefore={s.hasMoreBefore}
+                    onGo={go}
+                  />
+                </RailSection>
+              )
+            }
           />
         </aside>
       )}

@@ -10,14 +10,25 @@
 
 import {
   ArrowUpRight,
+  Check,
   CircleCheck,
   CircleSlash,
+  Copy,
   FilePenLine,
   OctagonX,
   Sparkle,
   TriangleAlert,
 } from "lucide-react";
-import { type CSSProperties, memo, type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { ImageSizes } from "@/components/markdown";
 import { Avatar, DotWave, Gallery, Logo } from "@/components/ui";
 import type * as G from "@/gen";
@@ -370,7 +381,7 @@ export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
   return (
     <article
       className={cn(
-        "ask-card animate-rise rounded-[18px] rounded-bl-[7px] border border-line bg-surface px-4 pt-3 pb-3.5 md:px-5 md:pt-3.5 md:pb-4",
+        "ask-card group/ask animate-rise rounded-[18px] rounded-bl-[7px] border border-line bg-surface px-4 pt-3 pb-3.5 md:px-5 md:pt-3.5 md:pb-4",
         item.pending && "opacity-70",
       )}
     >
@@ -379,11 +390,12 @@ export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
           {author ? <Avatar user={author} size={20} /> : <Logo withWord={false} className="[&_svg]:size-5" />}
         </span>
         <span className="truncate font-medium text-ink">{author?.name ?? "fctl"}</span>
-        <span className="shrink-0 text-ink-4" title={item.pending ? undefined : stamp(item.ts)}>
+        <span className="min-w-0 truncate text-ink-4" title={item.pending ? undefined : stamp(item.ts)}>
           {item.pending ? "Sending…" : when(item.ts)}
           {item.source === "cli" && " · from the CLI"}
           {item.source === "remote_control" && " · from the Claude app"}
         </span>
+        {item.text && !item.pending && <CopyAsk text={item.text} />}
       </header>
       {item.text && (
         <div className="mt-2 text-[15px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink md:text-[15.5px]">
@@ -407,6 +419,32 @@ export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * Copies what someone asked, to ask it again or elsewhere: at the card's corner, where a pointer
+ * rests on the card. Not on touch screens, where nothing rests on it, and selecting the text does.
+ */
+function CopyAsk({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  const t = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(t.current), []);
+  return (
+    <button
+      type="button"
+      aria-label={done ? "Copied" : "Copy the message"}
+      title="Copy the message"
+      onClick={async () => {
+        await navigator.clipboard.writeText(text);
+        setDone(true);
+        clearTimeout(t.current);
+        t.current = setTimeout(() => setDone(false), 1600);
+      }}
+      className="-my-1 -mr-2 ml-auto flex size-7 shrink-0 items-center justify-center rounded-md text-ink-4 opacity-0 transition-[opacity,color,background-color] duration-150 group-hover/ask:opacity-100 hover:bg-hover hover:text-ink focus-visible:opacity-100 [@media(hover:none)]:hidden"
+    >
+      {done ? <Check className="size-3.5 text-accent" /> : <Copy className="size-3.5" />}
+    </button>
   );
 }
 

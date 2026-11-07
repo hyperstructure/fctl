@@ -144,7 +144,12 @@ export function NowLine({ now }: { now?: Now }) {
           </span>
         )}
       </span>
-      {took && <span className="shrink-0 text-[11.5px] text-ink-4 tabular-nums">{took}</span>}
+      {/* Screen readers hear the step, not each second of it. */}
+      {took && (
+        <span aria-hidden="true" className="shrink-0 text-[11.5px] text-ink-4 tabular-nums">
+          {took}
+        </span>
+      )}
     </output>
   );
 }

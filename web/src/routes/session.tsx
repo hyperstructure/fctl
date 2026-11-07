@@ -804,7 +804,7 @@ export function SessionGithub({ session }: { session: G.Session }) {
   return <GithubAccessChip access={sessionGithub(session, project)} />;
 }
 
-function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
+export function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-line px-5 py-4 last:border-b-0">
       <h3 className="mb-2.5 text-[12.5px] font-medium text-ink-3">{title}</h3>
@@ -1038,6 +1038,7 @@ export function Details({
   disk,
   pullsFirst,
   onDiff,
+  turns,
 }: {
   session: G.Session;
   /** The signed-in person's, in the session. */
@@ -1059,6 +1060,8 @@ export function Details({
   pullsFirst?: boolean;
   /** Opens the diffs over the page, at a file of the changes. */
   onDiff: (at: DiffTarget) => void;
+  /** The new session page's list of turns, after the pull requests. */
+  turns?: React.ReactNode;
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
@@ -1153,6 +1156,7 @@ export function Details({
         )}
       </RailSection>
       {!pullsFirst && pulls}
+      {turns}
       {(retrospectives.length > 0 || (project?.settings.retrospectives && !session.review)) && (
         <RailSection
           title={retrospectives.length > 1 ? `Retrospectives (${retrospectives.length})` : "Retrospective"}

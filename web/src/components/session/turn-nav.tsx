@@ -3,7 +3,7 @@
 // the list of every turn it opens, and the keys that go from turn to turn.
 
 import { CircleCheck, CircleSlash, ListTree, OctagonX, Sparkle, TriangleAlert } from "lucide-react";
-import { type ReactNode, type RefObject, useCallback, useEffect, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { Avatar, Logo, Menu } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { agoShort, duration, stamp } from "@/lib/format";
@@ -228,65 +228,153 @@ export function TurnOutline({
           {hasMoreBefore && (
             <p className="px-2.5 pt-1.5 pb-2 text-[12px] text-ink-4">Earlier turns load as you scroll up.</p>
           )}
-          {turns.map((turn, i) => {
-            const f = facts(turn);
-            const isLive = live && i === turns.length - 1;
-            const took = turnTook(turn, f);
-            return (
-              <button
-                key={turn.key}
-                type="button"
-                role="menuitem"
-                aria-current={i === at ? "true" : undefined}
-                onClick={() => {
-                  close();
-                  onGo(i);
-                }}
-                className={cn(
-                  "group/turn relative flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors hover:bg-hover",
-                  i === at && "bg-hover",
-                )}
-              >
-                {i === at && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute top-2 bottom-2 left-0 w-0.5 rounded-full bg-accent"
-                  />
-                )}
-                <span className="mt-px flex size-[18px] shrink-0 items-center justify-center">
-                  <Starter turn={turn} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 text-[13px] leading-[1.4] text-ink">
-                    {turnTitle(turn, i === 0, hasMoreBefore)}
-                  </span>
-                  <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-ink-4">
-                    <span title={stamp(f.start)}>{agoShort(f.start)}</span>
-                    {f.calls > 0 && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        {f.calls} {f.calls === 1 ? "step" : "steps"}
-                      </>
-                    )}
-                    {f.files.length > 0 && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        {f.files.length} {f.files.length === 1 ? "file" : "files"} edited
-                      </>
-                    )}
-                  </span>
-                </span>
-                <span className="mt-0.5 flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-4 tabular-nums">
-                  {(turn.end || isLive) && took >= 1000 && duration(took)}
-                  <span className="flex size-3.5 items-center justify-center">
-                    <EndMark turn={turn} live={isLive} />
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+          {turns.map((turn, i) => (
+            <TurnRow
+              key={turn.key}
+              turn={turn}
+              facts={facts(turn)}
+              title={turnTitle(turn, i === 0, hasMoreBefore)}
+              current={i === at}
+              live={live && i === turns.length - 1}
+              role="menuitem"
+              onClick={() => {
+                close();
+                onGo(i);
+              }}
+            />
+          ))}
         </div>
       )}
     </Menu>
+  );
+}
+
+/**
+ * A turn as the lists of turns show it: who asked what, when, its steps and the files it edited,
+ * how long it took and how it ended. The turn the reader is in is marked.
+ */
+function TurnRow({
+  turn,
+  facts: f,
+  title,
+  current,
+  live,
+  role,
+  compact,
+  onClick,
+}: {
+  turn: Turn;
+  facts: TurnFacts;
+  title: string;
+  current: boolean;
+  /** The agent works on it. */
+  live: boolean;
+  role?: "menuitem";
+  /** In the rail: a line of its title, less room. */
+  compact?: boolean;
+  onClick: () => void;
+}) {
+  const took = turnTook(turn, f);
+  return (
+    <button
+      type="button"
+      role={role}
+      aria-current={current ? "true" : undefined}
+      onClick={onClick}
+      className={cn(
+        "group/turn relative flex w-full items-start gap-2.5 rounded-md text-left transition-colors hover:bg-hover",
+        compact ? "px-2 py-1.5" : "px-2.5 py-2",
+        current && "bg-hover",
+      )}
+    >
+      {current && (
+        <span aria-hidden="true" className="absolute top-2 bottom-2 left-0 w-0.5 rounded-full bg-accent" />
+      )}
+      <span className="mt-px flex size-[18px] shrink-0 items-center justify-center">
+        <Starter turn={turn} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            "text-ink",
+            compact ? "line-clamp-1 text-[12.5px] leading-5" : "line-clamp-2 text-[13px] leading-[1.4]",
+          )}
+        >
+          {title}
+        </span>
+        <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-ink-4">
+          <span title={stamp(f.start)}>{agoShort(f.start)}</span>
+          {f.calls > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              {f.calls} {f.calls === 1 ? "step" : "steps"}
+            </>
+          )}
+          {f.files.length > 0 && (
+            <>
+              <span aria-hidden="true">·</span>
+              {f.files.length} {f.files.length === 1 ? "file" : "files"} edited
+            </>
+          )}
+        </span>
+      </span>
+      <span className="mt-0.5 flex shrink-0 items-center gap-1.5 text-[11.5px] text-ink-4 tabular-nums">
+        {(turn.end || live) && took >= 1000 && duration(took)}
+        <span className="flex size-3.5 items-center justify-center">
+          <EndMark turn={turn} live={live} />
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Every turn, in the details beside the transcript, as a table of contents: the one the reader is
+ * in is marked as they read, and kept in view in the list, which scrolls on its own when long.
+ */
+export function TurnList({
+  turns,
+  facts,
+  at,
+  live,
+  hasMoreBefore,
+  onGo,
+}: {
+  turns: Turn[];
+  facts: (turn: Turn) => TurnFacts;
+  at: number;
+  live: boolean;
+  hasMoreBefore: boolean;
+  onGo: (i: number) => void;
+}) {
+  const list = useRef<HTMLDivElement>(null);
+  // The list scrolls itself, not the rail or the page, to keep the turn the reader is in in view.
+  useEffect(() => {
+    const el = list.current;
+    const row = el?.querySelectorAll<HTMLElement>("button")[at];
+    if (!el || !row) return;
+    const top = row.offsetTop - el.offsetTop;
+    if (top < el.scrollTop) el.scrollTop = top - 4;
+    else if (top + row.offsetHeight > el.scrollTop + el.clientHeight)
+      el.scrollTop = top + row.offsetHeight - el.clientHeight + 4;
+  }, [at]);
+  return (
+    <div ref={list} className="-mx-2 max-h-[17.5rem] overflow-y-auto overscroll-contain">
+      {hasMoreBefore && (
+        <p className="px-2 pb-1 text-[11.5px] text-ink-4">Earlier turns load as you scroll up.</p>
+      )}
+      {turns.map((turn, i) => (
+        <TurnRow
+          key={turn.key}
+          turn={turn}
+          facts={facts(turn)}
+          title={turnTitle(turn, i === 0, hasMoreBefore)}
+          current={i === at}
+          live={live && i === turns.length - 1}
+          compact
+          onClick={() => onGo(i)}
+        />
+      ))}
+    </div>
   );
 }
