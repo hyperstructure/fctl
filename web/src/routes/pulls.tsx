@@ -28,6 +28,7 @@ import {
   StatusDot,
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
+import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { agoShort, stamp } from "@/lib/format";
@@ -65,6 +66,8 @@ const TITLES: Record<PullState, string> = { open: "Open", merged: "Merged", clos
 export function PullsPage() {
   const search = useSearch({ from: "/app/pulls" });
   const navigate = useNavigate({ from: "/pulls" });
+  const workspaces = useWorkspaces().data?.workspaces ?? [];
+  const projects = useProjects().data?.projects ?? [];
   const state = search.state ?? "open";
   const [kind, slug] = (search.scope ?? "").split(":");
   const scope = { workspace: kind === "w" ? slug : undefined, project: kind === "p" ? slug : undefined };
@@ -92,8 +95,8 @@ export function PullsPage() {
           Pull requests
         </h1>
         <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3">
-          What agents opened in {scopeName(search.scope)}, sorted by what each needs next. Their states and
-          checks change here as GitHub reports them.
+          What agents opened in {scopeName(search.scope, workspaces, projects)}, sorted by what each needs
+          next. Their states and checks change here as GitHub reports them.
         </p>
       </header>
 
@@ -247,10 +250,16 @@ export function PullsPage() {
 }
 
 /** "your projects", or the workspace's or project's name as the scope says. */
-function scopeName(scope: string | undefined): string {
+/** What the page lists, by name: "your projects", "Romanesco's projects", "Shop". */
+function scopeName(
+  scope: string | undefined,
+  workspaces: readonly G.Workspace[],
+  projects: readonly G.Project[],
+): string {
   if (!scope) return "your projects";
-  const [kind, slug] = scope.split(":");
-  return kind === "w" ? `${slug}'s projects` : `${slug}`;
+  const [kind, slug = ""] = scope.split(":");
+  if (kind === "w") return `${workspaces.find((w) => w.slug === slug)?.name ?? slug}'s projects`;
+  return projects.find((p) => p.slug === slug)?.name ?? slug;
 }
 
 /** Which workspace or project the page shows: one list, its workspaces' projects under each. */

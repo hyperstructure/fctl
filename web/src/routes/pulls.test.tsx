@@ -3,11 +3,14 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
-import { queryClient } from "@/lib/queries";
+import { keys, queryClient } from "@/lib/queries";
 import { PullsPage } from "./pulls";
 
+/** The page's search: what it lists. */
+const search = vi.hoisted(() => ({ value: {} as { scope?: string } }));
+
 vi.mock("@tanstack/react-router", () => ({
-  useSearch: () => ({}),
+  useSearch: () => search.value,
   useNavigate: () => vi.fn(),
   Link: ({ children }: { children: ReactNode }) => <a href="/s/ses_1">{children}</a>,
 }));
@@ -31,6 +34,7 @@ afterEach(() => {
   queryClient.clear();
   queryClient.setQueryDefaults(["sessions"], {});
   vi.unstubAllGlobals();
+  search.value = {};
 });
 
 const listing = (): Response =>
@@ -82,6 +86,26 @@ async function render() {
 }
 
 describe("the pull requests page", () => {
+  it("says what it lists by name", async () => {
+    answer = listing;
+    queryClient.setQueryData(keys.workspaces, {
+      workspaces: [{ id: "ws_r", slug: "romanesco", name: "Romanesco" }],
+      invitations: [],
+      limit: 5,
+    } as unknown as G.WorkspaceList);
+    queryClient.setQueryData(keys.projects, {
+      projects: [{ id: "prj_shop", slug: "shop", name: "Shop" }],
+    } as unknown as G.ProjectList);
+    const lead = async (scope?: string) => {
+      search.value = { scope };
+      const page = await render();
+      return page.querySelector("header p")?.textContent ?? "";
+    };
+    expect(await lead()).toContain("What agents opened in your projects,");
+    expect(await lead("w:romanesco")).toContain("What agents opened in Romanesco's projects,");
+    expect(await lead("p:shop")).toContain("What agents opened in Shop,");
+  });
+
   it("says so when the list doesn't load", async () => {
     answer = failure;
     const page = await render();
