@@ -26,7 +26,10 @@ work from the web app, the terminal or your phone; follow every session live;
 message an agent to steer it, with screenshots and files; share projects and
 sessions with your team.
 
-![app.fctl.sh](https://github.com/user-attachments/assets/7f3f3b3c-60e8-46df-b51a-0bde53b13971)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/e109a310-fa4e-49ef-97a7-b52e793283f0">
+  <img src="https://github.com/user-attachments/assets/4302046b-8fe3-46e1-a41e-be42382397d4" alt="fctl: a session at work in the web app, and the Agent Floor on a phone">
+</picture>
 
 ```sh
 curl -fsSL https://fctl.sh/install | sh
