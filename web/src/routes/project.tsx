@@ -5,7 +5,9 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { ArrowRight, Building2, GitBranch, KeyRound, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
+import { IconPicker } from "@/components/project/icon-picker";
 import { MemoryTab } from "@/components/project/memory";
+import { ProjectIcon, useProjectIcons } from "@/components/project/project-icon";
 import { RepoPicker } from "@/components/project/repo-picker";
 import { RetrospectivesTab } from "@/components/project/retrospectives";
 import { ReviewsTab } from "@/components/project/reviews";
@@ -107,6 +109,28 @@ const OPEN_TABS: Tab[] = [
   "members",
 ];
 
+/** The project's icon beside its name: its maintainers click it to choose another (a design prototype). */
+function ProjectHeaderIcon({ project, manage }: { project: G.Project; manage: boolean }) {
+  const iconFor = useProjectIcons();
+  const [picking, setPicking] = useState(false);
+  const icon = <ProjectIcon icon={iconFor(project)} tile={46} />;
+  if (!manage) return icon;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setPicking(true)}
+        aria-label={`Change ${project.name}'s icon`}
+        title="Change its icon"
+        className="rounded-[13px] transition-transform duration-150 hover:scale-[1.04] active:scale-95"
+      >
+        {icon}
+      </button>
+      <IconPicker project={project} open={picking} onClose={() => setPicking(false)} />
+    </>
+  );
+}
+
 export function ProjectPage() {
   const { slug } = useParams({ from: "/app/p/$slug" });
   const { tab = "sessions", schedule, linear } = useSearch({ from: "/app/p/$slug" });
@@ -136,9 +160,12 @@ export function ProjectPage() {
             </Link>
           )}
           {/* A name or a link with no spaces wraps on a phone instead of widening the page. */}
-          <h1 className="font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em] [overflow-wrap:anywhere]">
-            {p.name}
-          </h1>
+          <div className="flex items-center gap-4">
+            <ProjectHeaderIcon project={p} manage={manage} />
+            <h1 className="min-w-0 font-display text-[38px] leading-[1.1] font-medium tracking-[-0.022em] [overflow-wrap:anywhere]">
+              {p.name}
+            </h1>
+          </div>
           {p.description && (
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ink-3 [overflow-wrap:anywhere]">
               {p.description}
