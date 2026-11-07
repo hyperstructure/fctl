@@ -16,7 +16,9 @@ export const ROW = cn(
   // The line above it, as wide as the list.
   "before:pointer-events-none before:absolute before:inset-x-3 before:top-0 before:h-px before:bg-line before:transition-opacity before:duration-150",
   "hover:before:opacity-0 active:before:opacity-0 has-[[data-cover]:focus-visible]:before:opacity-0",
-  "[:hover+&]:before:opacity-0 [:active+&]:before:opacity-0 [:has([data-cover]:focus-visible)+&]:before:opacity-0",
+  // Only where hover does, as for the row itself: a touch screen leaves what it tapped hovered.
+  "[@media(hover:hover)]:[:hover+&]:before:opacity-0",
+  "[:active+&]:before:opacity-0 [:has([data-cover]:focus-visible)+&]:before:opacity-0",
 );
 
 /**
