@@ -159,9 +159,11 @@ const session = createRoute({
   path: "/s/$id",
   component: SessionRoute,
   // From a search of all sessions: what was found, and the event it was found in (lib/find.ts).
-  validateSearch: (s: Record<string, unknown>): { find?: string; at?: number } => ({
+  // From a link to a turn (the new session page's): the event the turn starts with.
+  validateSearch: (s: Record<string, unknown>): { find?: string; at?: number; turn?: number } => ({
     find: str(s.find),
     at: typeof s.at === "number" && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : undefined,
+    turn: typeof s.turn === "number" && Number.isSafeInteger(s.turn) && s.turn > 0 ? s.turn : undefined,
   }),
 });
 const pulls = createRoute({

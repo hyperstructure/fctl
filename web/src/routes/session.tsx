@@ -1039,6 +1039,7 @@ export function Details({
   pullsFirst,
   onDiff,
   turns,
+  plan,
 }: {
   session: G.Session;
   /** The signed-in person's, in the session. */
@@ -1062,6 +1063,8 @@ export function Details({
   onDiff: (at: DiffTarget) => void;
   /** The new session page's list of turns, after the pull requests. */
   turns?: React.ReactNode;
+  /** The new session page's agent's plan, first. */
+  plan?: React.ReactNode;
 }) {
   const st = session.stats;
   const project = useProject(session.project_slug).data;
@@ -1129,6 +1132,7 @@ export function Details({
           <ReviewFacts session={session} review={review} />
         </RailSection>
       )}
+      {plan}
       {pullsFirst && pulls}
       <RailSection title={session.review ? "Changes reviewed" : "Changes"}>
         {primary && others.length === 0 ? (

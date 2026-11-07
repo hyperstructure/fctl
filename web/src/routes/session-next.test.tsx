@@ -3,19 +3,21 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
+import type { LiveSession } from "@/lib/live";
 import { keys, queryClient } from "@/lib/queries";
 import { setSessionView } from "@/lib/session-view";
 import { SessionRoute } from "./session-next";
 
 /** The session the address names. */
-const route = vi.hoisted(() => ({ id: "ses_a" }));
+const route = vi.hoisted(() => ({ id: "ses_a", search: {} as { turn?: number } }));
+const navigate = vi.hoisted(() => vi.fn());
 /** The live sessions the page made, by id, to say what their server would. */
 const stores = vi.hoisted(() => new Map<string, { onMessage(m: unknown): void }>());
 
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({ id: route.id }),
-  useSearch: () => ({}),
-  useNavigate: () => vi.fn(),
+  useSearch: () => route.search,
+  useNavigate: () => navigate,
   Link: ({ children }: { children: ReactNode }) => <a href="/s/ses_b">{children}</a>,
 }));
 
@@ -45,6 +47,7 @@ afterEach(() => {
   queryClient.clear();
   vi.unstubAllGlobals();
   route.id = "ses_a";
+  route.search = {};
   stores.clear();
   setSessionView("classic");
 });
@@ -180,7 +183,162 @@ describe("SessionRoute", () => {
   });
 });
 
+/** The agent writes its plan: the first step done, the second under way. */
+const plan = () =>
+  assistant(`m${seq}`, [
+    {
+      type: "tool_use",
+      id: `todo${seq}`,
+      name: "TodoWrite",
+      input: {
+        todos: [
+          { content: "Read the test", status: "completed", activeForm: "Reading the test" },
+          { content: "Fix the wait", status: "in_progress", activeForm: "Fixing the wait" },
+          { content: "Run it on CI", status: "pending", activeForm: "Running it on CI" },
+        ],
+      },
+    },
+  ]);
+
 describe("the new session page", () => {
+  it("keeps the agent's plan in view, and says above the message box where it is in it", () => {
+    const p = page();
+    p.snapshot(
+      [
+        ev("user_message", { text: "Fix the flaky login test", source: "web" }),
+        plan(),
+        assistant("m-run", [
+          {
+            type: "tool_use",
+            id: "b1",
+            name: "Bash",
+            input: { command: "npm test", description: "Run the test" },
+          },
+        ]),
+      ],
+      session("running"),
+    );
+    const rail = [...p.container.querySelectorAll("section")].find((s) => s.textContent?.startsWith("Plan"));
+    expect(rail?.textContent).toContain("1 of 3");
+    expect(rail?.textContent).toContain("Fixing the wait");
+    const now = p.container.querySelector(".now-line")?.textContent ?? "";
+    expect(now).toContain("Fixing the wait");
+    expect(now).toContain("Run the test");
+    expect(now).toContain("1/3");
+  });
+
+  it("says it's the reader's turn once the agent waits for them, and asks for a reply only as it hands over", () => {
+    const p = page();
+    // Opened waiting: whose turn it is, without the message box asking.
+    p.snapshot(turn("Fix the flaky login test"));
+    expect(p.container.querySelector(".your-turn")?.textContent).toContain("Your turn");
+    expect(p.container.querySelector(".invite")).toBeNull();
+    // The agent works again, then hands the turn over while the reader watches.
+    p.hear({ type: "session", session: session("running") });
+    expect(p.container.querySelector(".your-turn")).toBeNull();
+    p.hear({ type: "session", session: session("idle") });
+    expect(p.container.querySelector(".invite")).not.toBeNull();
+  });
+
+  it("opens with the session at a glance: its figures, and its turns as a ribbon that goes to each", () => {
+    const p = page();
+    const s = {
+      ...session(),
+      stats: { ...session().stats, turns: 2, tool_calls: 4, files_changed: 1, additions: 2, deletions: 1 },
+    };
+    p.snapshot([...turn("Fix the flaky login test"), ...turn("Now the signup test")], s);
+    const glance = p.container.querySelector(".cover")?.textContent ?? "";
+    expect(glance).toContain("turns");
+    expect(glance).toContain("steps");
+    expect(glance).toContain("+2");
+    const ribbon = p.container.querySelectorAll("nav[aria-label='Turns'] button");
+    expect(ribbon).toHaveLength(2);
+    expect(ribbon[1]?.getAttribute("aria-label")).toBe("Now the signup test: finished in 1m 5s");
+  });
+
+  it("opens a link to a turn at that turn, and the address forgets it", async () => {
+    const scrolled = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    try {
+      const events = [...turn("Fix the flaky login test"), ...turn("Now the signup test")];
+      const second = events.filter((e) => e.kind === "user_message")[1]?.seq;
+      route.search = { turn: second };
+      const p = page();
+      p.snapshot(events);
+      // Where each turn starts on the page, which happy-dom doesn't lay out: the second 2000 px down.
+      for (const [i, el] of p.container.querySelectorAll("[data-turn]").entries())
+        el.getBoundingClientRect = () => ({ top: 1000 * (i + 1), bottom: 1000 * (i + 1) + 100 }) as DOMRect;
+      // It goes there on the next frame, past the header (here at 0) and a little room.
+      await act(() => new Promise((r) => requestAnimationFrame(r)));
+      expect(scrolled).toHaveBeenLastCalledWith({ top: 1992, behavior: "smooth" });
+      expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ search: {}, replace: true }));
+    } finally {
+      scrolled.mockRestore();
+    }
+  });
+
+  it("loads earlier activity for a linked turn it doesn't have yet, and goes nowhere for one it can't find", async () => {
+    const scrolled = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    try {
+      const events = turn("Now the signup test");
+      const first = events[0]?.seq ?? 0;
+      route.search = { turn: first - 3 };
+      const p = page();
+      const store = stores.get("ses_a") as unknown as LiveSession;
+      vi.spyOn(store, "loadOlder").mockResolvedValue(undefined);
+      const earlier = vi.spyOn(store, "loadEarlier").mockResolvedValue(undefined);
+      p.hear({
+        type: "snapshot",
+        session: session(),
+        role: "owner",
+        events,
+        has_more_before: true,
+        next_seq: (events[events.length - 1]?.seq ?? 0) + 1,
+        live: [],
+        viewers: [],
+        runner_connected: true,
+      });
+      expect(earlier).toHaveBeenCalledWith({ until: first - 3 });
+      // Before the session's first turn, with nothing earlier: nowhere to go.
+      route.search = { turn: 1 };
+      const q = page();
+      q.snapshot(turn("Fix the flaky login test"));
+      await act(() => new Promise((r) => requestAnimationFrame(r)));
+      expect(scrolled.mock.calls.filter(([o]) => (o as ScrollToOptions)?.behavior === "smooth")).toEqual([]);
+    } finally {
+      scrolled.mockRestore();
+    }
+  });
+
+  it("leads the line above the message box with a plan only in the turn it was written in", () => {
+    const p = page();
+    p.snapshot(
+      [
+        ev("user_message", { text: "Fix the flaky login test", source: "web" }),
+        plan(),
+        assistant("m-a", [{ type: "text", text: "Fixed." }]),
+        ev("claude", { type: "result", subtype: "success", duration_ms: 1000, is_error: false }),
+        ev("user_message", { text: "Now update the README", source: "web" }),
+        assistant("m-b", [
+          {
+            type: "tool_use",
+            id: "r1",
+            name: "Read",
+            input: { file_path: "/home/agent/workspace/README.md" },
+          },
+        ]),
+      ],
+      session("running"),
+    );
+    const now = p.container.querySelector(".now-line")?.textContent ?? "";
+    expect(now).toContain("Reading");
+    expect(now).not.toContain("Fixing the wait");
+    expect(now).not.toContain("1/3");
+    // The details keep the plan as it was left.
+    const rail = [...p.container.querySelectorAll("section")].find((x) => x.textContent?.startsWith("Plan"));
+    expect(rail?.textContent).toContain("Fixing the wait");
+    expect(rail?.querySelector(".animate-pulse-soft")).toBeNull();
+  });
+
   it("opens with a cover, and reads in turns: each ask, the work on its thread, and how it ended", () => {
     const p = page();
     p.snapshot([...turn("Fix the flaky login test"), ...turn("Now the signup test")]);
@@ -228,11 +386,14 @@ describe("the new session page", () => {
       session("running"),
     );
     expect(p.container.querySelector(".now-line")?.textContent).toContain("Run the tests");
-    // Done: it goes, once the step it showed has shown long enough to be read.
+    // Done: the step it showed holds until it has shown long enough to be read, then the line
+    // says it's the reader's turn.
     p.hear({ type: "events", events: [result("b1", "ok")] });
     p.hear({ type: "session", session: session("idle") });
+    expect(p.container.querySelector(".now-line")?.textContent).toContain("Run the tests");
     await act(() => new Promise((r) => setTimeout(r, 700)));
-    expect(p.container.querySelector(".now-line")).toBeNull();
+    expect(p.container.querySelector(".now-line")?.textContent).not.toContain("Run the tests");
+    expect(p.container.querySelector(".your-turn")).not.toBeNull();
   });
 
   it("shows only the conversation when asked: people's messages and the agent's words", () => {

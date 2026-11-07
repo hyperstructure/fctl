@@ -272,3 +272,62 @@ export function laterBy(ms: number): string | undefined {
   const days = Math.round(hours / 24);
   return days === 1 ? "A day later" : `${days} days later`;
 }
+
+/** Where a turn starts, as a link to it says: its ask's event, else its first part's. */
+export function turnSeq(turn: Turn): number | undefined {
+  if (turn.ask) return turn.ask.seq;
+  const p = turn.body[0] ?? turn.after[0];
+  return p ? (p.kind === "run" ? p.steps[0]?.seq : p.item.seq) : undefined;
+}
+
+/**
+ * A turn as Markdown, to paste where people talk about it: who asked what, when, what the agent
+ * said, and how the turn ended, with the files its edits changed. `when` says a time as the page
+ * does; `took` how long the turn took.
+ */
+export function turnMarkdown(
+  turn: Turn,
+  facts: TurnFacts,
+  { title, when, took }: { title: string; when: (ms: number) => string; took: string },
+): string {
+  const out: string[] = [];
+  const ask = turn.ask;
+  if (ask) {
+    out.push(`**${ask.author?.name ?? "fctl"}** · ${when(ask.ts)}`);
+    const text = ask.followUp || ask.ticket || ask.review ? title : ask.text.trim();
+    if (text)
+      out.push(
+        text
+          .split("\n")
+          .map((l) => `> ${l}`.trimEnd())
+          .join("\n"),
+      );
+  }
+  for (const p of turn.body) if (p.kind === "item" && p.item.kind === "prose") out.push(p.item.text.trim());
+  const end = turn.end;
+  const how =
+    end?.kind === "result"
+      ? `${end.ok ? "Finished in" : "Ended after"} ${took}`
+      : end
+        ? `Worked for ${took}`
+        : `Working for ${took}`;
+  const steps = facts.calls ? ` · ${facts.calls} ${facts.calls === 1 ? "step" : "steps"}` : "";
+  const files = facts.files.length
+    ? ` · edited ${facts.files.map((f) => `\`${f.path}\` (+${f.lines.added} −${f.lines.removed})`).join(", ")}`
+    : "";
+  out.push(`_${how}${steps}${files}_`);
+  return out.join("\n\n");
+}
+
+/**
+ * The turn an event is in: the last that starts at it or before, as a link to a turn finds it even
+ * when the turn's start has loaded since the link was made. -1 before the first.
+ */
+export function turnOfSeq(turns: readonly Turn[], seq: number): number {
+  let at = -1;
+  for (const [i, t] of turns.entries()) {
+    const start = turnSeq(t);
+    if (start !== undefined && start <= seq) at = i;
+  }
+  return at;
+}

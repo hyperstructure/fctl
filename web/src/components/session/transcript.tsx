@@ -200,7 +200,7 @@ function MemoryNotice({
 }) {
   const duplicateOf = stale ? memory.stale?.duplicate_of : undefined;
   return (
-    <div className="animate-rise py-1.5">
+    <div data-memory="" className="animate-rise py-1.5">
       <Milestone icon={stale ? <Archive /> : <BookMarked />} tone={stale ? "muted" : "ok"}>
         {duplicateOf
           ? "Marked a note a duplicate"

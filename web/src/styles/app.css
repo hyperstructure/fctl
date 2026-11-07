@@ -732,6 +732,93 @@
   }
 }
 
+/* A turn that ends while the reader watches: a light runs down the last of its thread to its end
+   (components/session/turns.tsx gives each stretch its place from the end, --k, of --n). */
+@media (prefers-reduced-motion: no-preference) {
+  .thread.sweep::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 11px;
+    z-index: -1;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--c-accent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--c-accent) 60%, transparent);
+    opacity: 0;
+    pointer-events: none;
+    animation: thread-sweep 420ms var(--ease-out) calc((var(--n, 1) - var(--k, 0)) * 55ms) both;
+  }
+}
+@keyframes thread-sweep {
+  0% {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0);
+  }
+  35% {
+    opacity: 0.9;
+    clip-path: inset(0 0 0 0);
+  }
+  100% {
+    opacity: 0;
+    clip-path: inset(100% 0 0 0);
+  }
+}
+
+/* The turn the agent works on, in the cover's ribbon of turns (components/session/glance.tsx): a
+   light runs along it. */
+@media (prefers-reduced-motion: no-preference) {
+  .ribbon-live {
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--c-canvas) 55%, transparent),
+      transparent
+    );
+    background-size: 60% 100%;
+    background-repeat: no-repeat;
+    animation: ribbon-live 1.8s var(--ease-in-out) infinite;
+  }
+}
+@keyframes ribbon-live {
+  from {
+    background-position: -150% 0;
+  }
+  to {
+    background-position: 250% 0;
+  }
+}
+
+/* The message box asks for a reply once the agent hands the turn over while the reader watches:
+   a ring of the accent breathes out from it once. */
+@media (prefers-reduced-motion: no-preference) {
+  .invite [data-composer] {
+    animation: invite 1.6s var(--ease-out) both;
+  }
+}
+@keyframes invite {
+  0% {
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, var(--c-accent) 45%, transparent),
+      0 10px 40px rgb(0 0 0 / 0.25);
+  }
+  100% {
+    box-shadow:
+      0 0 0 14px transparent,
+      0 10px 40px rgb(0 0 0 / 0.25);
+  }
+}
+
+/* The new session page keeps the notes the agent keeps quiet beside what it says: the words in the
+   text's own gray, the mark in the accent (the classic page lights the whole line). */
+.session-next [data-memory] > :first-child {
+  color: var(--c-ink-3);
+}
+.session-next [data-memory] > :first-child [data-rail] {
+  color: var(--c-accent);
+}
+
 /* The new session page's sign of work (components/ui/dot-wave.tsx): a wave of light runs through
    its dots from one corner to the other, then rests. They take the text's color, the accent where
    work is under way. Where motion is reduced, the dots hold still, brightest where the wave

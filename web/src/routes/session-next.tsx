@@ -31,9 +31,11 @@ import { ReviewFooter, useSessionReview } from "@/components/review";
 import { Composer } from "@/components/session/composer";
 import { DiffDialog, type DiffTarget } from "@/components/session/diff-dialog";
 import { FindBar, findShortcut, Reveal, useFind } from "@/components/session/find";
+import { Glance } from "@/components/session/glance";
 import { BusyMark } from "@/components/session/lines";
-import { JumpPill, NowLine, toBottom, useAtBottom } from "@/components/session/now-line";
+import { JumpPill, NowLine, toBottom, useAtBottom, YourTurn } from "@/components/session/now-line";
 import { AgentOrb } from "@/components/session/orb";
+import { PlanList } from "@/components/session/plan";
 import {
   PullRequestChecksIcon,
   PullRequestReviewMark,
@@ -70,6 +72,7 @@ import { cn } from "@/lib/cn";
 import { stamp, when } from "@/lib/format";
 import { useLiveSession } from "@/lib/live";
 import { nowOf } from "@/lib/now";
+import { planOf } from "@/lib/plan";
 import { prLabel, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { keys, queryClient, useMe } from "@/lib/queries";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
@@ -77,10 +80,10 @@ import { parts } from "@/lib/runs";
 import { useSessionView } from "@/lib/session-view";
 import { ariaShortcut, useShortcut, withShortcut } from "@/lib/shortcuts";
 import { diskOf, useStall } from "@/lib/stall";
-import { statusNotes } from "@/lib/status";
+import { statusNotes, waitsForYou } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import type { Item } from "@/lib/transcript";
-import { factsOf, type Turn, type TurnFacts, turnsOf, turnTitle } from "@/lib/turns";
+import { factsOf, type Turn, type TurnFacts, turnOfSeq, turnSeq, turnsOf, turnTitle } from "@/lib/turns";
 import { cameAfter, newestSeq } from "@/lib/unseen";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 import {
@@ -107,7 +110,7 @@ const BUSY = new Set<G.SessionStatus>(["running", "provisioning", "preparing"]);
 function NextSessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
   // From a search of all sessions: what it found here, and where.
-  const { find, at } = useSearch({ from: "/app/s/$id" });
+  const { find, at, turn: linked } = useSearch({ from: "/app/s/$id" });
   const navigate = useNavigate();
   const { data: me } = useMe();
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
@@ -126,6 +129,8 @@ function NextSessionPage() {
   const [diffAt, setDiffAt] = useState<DiffTarget>();
   // Only the conversation: the agent's work and the milestones left out.
   const [quiet, setQuiet] = useState(false);
+  // The turn a link to it opens the page at, until the page has gone there.
+  const [landTurn, setLandTurn] = useState<{ session: string; seq: number }>();
   // They belong to the session they opened on (as on the classic page).
   const [overlaysOf, setOverlaysOf] = useState(id);
   if (overlaysOf !== id) {
@@ -134,6 +139,7 @@ function NextSessionPage() {
     setShare(false);
     setDiffAt(undefined);
     setQuiet(false);
+    setLandTurn(undefined);
   }
   const diffGroups = useDiffGroups(session, s.git);
   useShortcut("changes", () => {
@@ -222,9 +228,51 @@ function NextSessionPage() {
 
   // The turns, for the bar and the list of them; the transcript works them out as it shows them.
   const turns = useMemo(() => turnsOf(parts(s.items)), [s.items]);
+  // The agent's plan, as it last wrote it.
+  const plan = useMemo(() => planOf(s.items), [s.items]);
   const facts = useFactsOf(cwd);
   const place = useTurnPlace(transcript, bar);
   const go = useGoToTurn(transcript, bar, letGo);
+  // A link to a turn: the page goes there once it has the turn, loading earlier activity until it
+  // does, and the address forgets it.
+  const landed = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    // Once for each link to a session's turn: the address forgets it as the page goes there,
+    // after which the same link goes there again.
+    if (!linked) {
+      landed.current = undefined;
+      return;
+    }
+    const key = `${id}:${linked}`;
+    if (landed.current === key) return;
+    landed.current = key;
+    setLandTurn({ session: id, seq: linked });
+    void navigate({ to: "/s/$id", params: { id }, search: {}, replace: true, viewTransition: false });
+  }, [linked, id, navigate]);
+  useEffect(() => {
+    if (landTurn?.session !== id || !s.items.length) return;
+    const { seq } = landTurn;
+    // The turn starts before what has loaded: earlier activity, until it has it.
+    if (s.hasMoreBefore && s.firstSeq > seq && !s.olderFailed) {
+      if (!s.loadingOlder) void store.loadEarlier({ until: seq });
+      return;
+    }
+    setLandTurn(undefined);
+    // The turn the event is in, however much of it has loaded since the link was made.
+    const i = turnOfSeq(turns, seq);
+    if (i >= 0) requestAnimationFrame(() => go(i));
+  }, [
+    landTurn,
+    id,
+    turns,
+    s.items.length,
+    s.hasMoreBefore,
+    s.firstSeq,
+    s.olderFailed,
+    s.loadingOlder,
+    store,
+    go,
+  ]);
   const current = turns[place.at];
   // j: the next turn, or the newest work after the last; k: back to where this one starts, then the one before.
   useShortcut(
@@ -248,6 +296,11 @@ function NextSessionPage() {
   const away = useAway(s.items, id);
   const atBottom = useAtBottom();
   const newSince = useNewSince(s.items, atBottom);
+  // Once the agent hands the turn over while the reader watches, the message box asks for a reply.
+  const handedOver = s.session
+    ? !s.session.review && !s.session.question && waitsForYou(s.session)
+    : undefined;
+  const invite = useJustNow(handedOver, id);
   const coverTitle = useRef<HTMLDivElement>(null);
   const coverShows = useShows(coverTitle, bar, !s.hasMoreBefore && !!session);
 
@@ -278,6 +331,13 @@ function NextSessionPage() {
     thinking: thinkingNow,
   });
   const live = !!status && BUSY.has(status) && !stall;
+  // The agent ended its turn and waits for someone to write, who can.
+  const yourTurn =
+    !!session &&
+    !session.review &&
+    !session.question &&
+    waitsForYou(session) &&
+    (role === "editor" || role === "owner");
   // With the find bar open, all of the transcript shows, for it to go to what it finds: asking for
   // the conversation alone then puts the bar away.
   const quietNow = quiet && !finder.open;
@@ -289,6 +349,18 @@ function NextSessionPage() {
     setQuiet(true);
     if (finder.open) finder.close();
   };
+  // The plan the agent works on: written in the turn under way. An older one stays in the
+  // details, as it was left, without the step it was at moving.
+  const lastTurn = turns[turns.length - 1];
+  const lastStart = lastTurn && !lastTurn.end ? turnSeq(lastTurn) : undefined;
+  const planNow = plan && lastStart !== undefined && plan.seq >= lastStart ? plan : undefined;
+  const railPlan = plan && (
+    <RailSection title="Plan">
+      <PlanList plan={plan} live={!!planNow && !!status && BUSY.has(status)} />
+    </RailSection>
+  );
+  const focusReply = () =>
+    document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')?.focus();
   const outline = turns.length > 0 && (
     <TurnOutline
       turns={turns}
@@ -654,7 +726,23 @@ function NextSessionPage() {
                   hasMoreBefore={s.hasMoreBefore}
                   loadingOlder={s.loadingOlder}
                   olderFailed={s.olderFailed}
-                  cover={<Cover session={session} workspace={workspace} titleRef={coverTitle} />}
+                  cover={
+                    <Cover
+                      session={session}
+                      workspace={workspace}
+                      titleRef={coverTitle}
+                      glance={
+                        <Glance
+                          session={session}
+                          turns={turns}
+                          facts={facts}
+                          live={!!status && BUSY.has(status)}
+                          hasMoreBefore={s.hasMoreBefore}
+                          onGo={go}
+                        />
+                      }
+                    />
+                  }
                   quiet={quietNow}
                   newFrom={away.from}
                   diffGroups={diffGroups}
@@ -673,10 +761,14 @@ function NextSessionPage() {
         >
           <div className="relative mx-auto w-full max-w-[760px] px-4 md:px-6">
             <div className="absolute inset-x-4 -top-10 flex h-8 items-center justify-between gap-2 md:inset-x-6">
-              <NowLine now={now} />
+              <NowLine
+                now={now}
+                plan={planNow}
+                idle={yourTurn ? <YourTurn onReply={focusReply} /> : undefined}
+              />
               <Pill away={away} atBottom={atBottom} newSince={newSince} letGo={letGo} header={bar} />
             </div>
-            <div className="pointer-events-auto">
+            <div className={cn("pointer-events-auto", invite && "invite")}>
               {session?.question && !session.review && (
                 <QuestionCard
                   key={session.question.asked_at}
@@ -749,6 +841,7 @@ function NextSessionPage() {
             runnerConnected={s.runnerConnected}
             stall={stall}
             disk={disk}
+            plan={railPlan}
             turns={
               turns.length > 1 && (
                 <RailSection title={`Turns (${turns.length})`}>
@@ -781,6 +874,7 @@ function NextSessionPage() {
             runnerConnected={s.runnerConnected}
             stall={stall}
             disk={disk}
+            plan={railPlan}
             pullsFirst
             onDiff={setDiffAt}
           />
@@ -809,10 +903,13 @@ function Cover({
   session,
   workspace,
   titleRef,
+  glance,
 }: {
   session: G.Session;
   workspace?: G.WorkspaceRef;
   titleRef: RefObject<HTMLDivElement | null>;
+  /** The session at a glance: its figures, its turns and its pull requests. */
+  glance: React.ReactNode;
 }) {
   return (
     <header className="cover pt-6 pb-8 md:pt-10 md:pb-10">
@@ -876,8 +973,28 @@ function Cover({
         <TicketLink session={session} />
         {!session.review && <SessionGithub session={session} />}
       </div>
+      {glance}
     </header>
   );
+}
+
+/**
+ * Whether `on` just came on while the page showed `key` (a session): for a couple of seconds after
+ * it does, not when the page opens with it on. Until it is known (`undefined`), it is neither.
+ */
+function useJustNow(on: boolean | undefined, key: string, ms = 2400): boolean {
+  const [state, setState] = useState<{ key: string; on?: boolean; at?: number }>({ key, on });
+  if (state.key !== key) setState({ key, on });
+  else if (on !== undefined && state.on === undefined) setState({ key, on });
+  else if (on !== undefined && state.on !== on) setState({ key, on, at: on ? Date.now() : undefined });
+  const at = state.key === key ? state.at : undefined;
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    if (at === undefined) return;
+    const t = setTimeout(() => rerender((n) => n + 1), Math.max(0, at + ms - Date.now()));
+    return () => clearTimeout(t);
+  }, [at, ms]);
+  return at !== undefined && Date.now() - at < ms;
 }
 
 /**

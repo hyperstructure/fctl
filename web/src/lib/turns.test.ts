@@ -2,7 +2,19 @@ import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import { parts } from "./runs";
 import type { Item } from "./transcript";
-import { factsOf, firstLine, lastTs, laterBy, turnAt, turnsOf, turnTitle, turnTook } from "./turns";
+import {
+  factsOf,
+  firstLine,
+  lastTs,
+  laterBy,
+  turnAt,
+  turnMarkdown,
+  turnOfSeq,
+  turnSeq,
+  turnsOf,
+  turnTitle,
+  turnTook,
+} from "./turns";
 
 let seq = 0;
 const base = (ts = seq * 1000) => ({ key: `k${++seq}`, seq, ts });
@@ -220,5 +232,42 @@ describe("a turn's title", () => {
     const [loose] = turns([prose("…and the tests pass.")]);
     expect(loose && turnTitle(loose, true, true)).toBe("Earlier activity");
     expect(loose && turnTitle(loose, false, false)).toBe("The agent went on without a message");
+  });
+});
+
+describe("a turn as Markdown", () => {
+  it("says who asked what, what the agent said, and how it ended with the files it edited", () => {
+    const [t] = turns([
+      ask("Fix the login test\nIt fails on CI."),
+      call("Edit", { file_path: "/w/login.test.ts", old_string: "a", new_string: "b" }),
+      prose("The test waits for the redirect now."),
+      result(65_000),
+    ]);
+    if (!t) throw new Error("no turn");
+    const md = turnMarkdown(t, factsOf(t, "/w"), {
+      title: "Fix the login test",
+      when: () => "08:52",
+      took: "1m 5s",
+    });
+    expect(md).toBe(
+      [
+        "**Ada** · 08:52",
+        "> Fix the login test\n> It fails on CI.",
+        "The test waits for the redirect now.",
+        "_Finished in 1m 5s · 1 step · edited `login.test.ts` (+1 −1)_",
+      ].join("\n\n"),
+    );
+    expect(turnSeq(t)).toBe(t.ask?.seq);
+  });
+});
+
+describe("turnOfSeq", () => {
+  it("finds the turn an event is in, by where turns start", () => {
+    const t = turns([ask("One"), prose("a"), result(1), ask("Two"), prose("b"), result(1)]);
+    const second = t[1]?.ask?.seq ?? 0;
+    expect(turnOfSeq(t, second)).toBe(1);
+    expect(turnOfSeq(t, second + 1)).toBe(1);
+    expect(turnOfSeq(t, second - 1)).toBe(0);
+    expect(turnOfSeq(t, 0)).toBe(-1);
   });
 });
