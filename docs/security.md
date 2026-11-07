@@ -219,10 +219,17 @@ its VM, and nothing outside it except through these channels:
 
 - **Firecracker VMs** have a kernel of their own, as Apple's and Lima's
   do, where a Docker container shares the host's: a kernel bug in the
-  sandbox stays there. They share no files with the host, and the host
-  runs what it runs in them through their vsock, not SSH. Firecracker runs
-  with its seccomp filters, as the host's user: a VM escape would run as
-  that user, who can read the runner's token, as a container escape can
+  sandbox stays there. They share no filesystem with the host, and the host
+  runs what it runs in them through their vsock, not SSH. In projects that
+  share package caches, the host serves the project's cache directory to
+  each of its VMs over 9P on the vsock (`fctl-agent share`, a process of
+  the host's user beside each VM), which anything in the VM can reach: the
+  server walks one name at a time without following symlinks, refuses `.`,
+  `..` and names with `/`, opens only files and directories, and makes
+  neither devices nor setuid files, so the VM reaches nothing of the
+  host's but that directory, which its sandbox mounts anyway. Firecracker
+  runs with its seccomp filters, as the host's user: a VM escape would run
+  as that user, who can read the runner's token, as a container escape can
   with Docker. A host that runs as root runs each VM through Firecracker's
   jailer instead (unless `host.toml` sets `jailer = false`): as a user of
   its own, which no other running VM and nothing else on the machine runs
@@ -230,8 +237,8 @@ its VM, and nothing outside it except through these channels:
   in a cgroup of its own, so that an escape reaches neither the host's
   files nor another VM's. The host reaches the VM's sockets through links
   of its own, so a jail can't send it to another VM's, and takes the VM's
-  disk back from the jail's user when it stops. Their images unpack in a VM of their own, so a crafted
-  layer can't reach the host's filesystem.
+  disk back from the jail's user when it stops. Their images unpack in a
+  VM of their own, so a crafted layer can't reach the host's filesystem.
 
 - **fctl-agent** runs as root in the sandbox, and Claude and everything
   it runs as the image's user, so that the agent's commands can't stop
@@ -481,7 +488,9 @@ its VM, and nothing outside it except through these channels:
 - **Package caches.** In a project that shares them (`fctl projects set
   --package-caches on`), its sessions on a runner share what their package
   managers download, in a Docker volume or, with Apple's `container`, a
-  directory on the Mac that each sandbox mounts. Anything a session runs
+  directory on the Mac that each sandbox mounts, or, with Firecracker, a
+  directory on the runner that the host serves to each VM over 9P.
+  Anything a session runs
   can change what they hold, and the project's later sessions on that
   runner build with it: package managers check a download against a
   lockfile's hashes as they fetch it, but most don't check again what is

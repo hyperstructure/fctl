@@ -7,10 +7,11 @@
 //! `fctl-cache-<project>`, on the daemon's disk like its sandboxes. With
 //! Apple's `container`, they are a directory in the data directory,
 //! `caches/<project>`, which sandboxes mount: a named volume there is an
-//! ext4 image, which two running VMs must not share. The process driver's
-//! agents use that directory directly. Sandboxes see the caches at
-//! [`MOUNT`], and fctl-agent points the package managers there. Lima's VMs
-//! get none.
+//! ext4 image, which two running VMs must not share. Firecracker's VMs mount
+//! that directory too, over 9P from `fctl-agent share`, which the host runs
+//! beside each VM. The process driver's agents use it directly. Sandboxes
+//! see the caches at [`MOUNT`], and fctl-agent points the package managers
+//! there. Lima's VMs get none.
 //!
 //! `<data dir>/caches.json` records when each project's caches were last
 //! used and measured, and which sandboxes were made with them: after a

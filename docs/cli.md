@@ -401,11 +401,11 @@ comes with its own), so a setup script like `npm ci` or `cargo fetch` gets
 only what is new. The runner keeps them for the project up to its owner's
 limit, 10 GiB unless `host.toml` says otherwise, empties them past it, and
 removes them two weeks after a session last used them ([Hosts](#hosts)).
-Sessions get them on runners with the Docker or Apple container driver
-(and the process driver), not Firecracker or Lima, and review agents never
-do. A session
-in a sandbox made before the project turned them on gets them in its next
-sandbox.
+Sessions get them on runners with the Docker, Apple container or
+Firecracker driver (and the process driver), not Lima, and review agents
+never do. A session in a sandbox made before the project turned them on
+gets them in its next sandbox, but with Firecracker, whose VMs mount them
+as they boot.
 
 ### Ticket trackers
 
@@ -886,8 +886,9 @@ runs each VM through Firecracker's jailer, as a user of its own in a
 chroot, unless `jailer = false` in `host.toml`'s `[firecracker]`; that
 needs cgroup v2 and a data directory on a filesystem that allows device
 files, and `fctl host doctor` says when either is missing. Its sandboxes
-get no package caches, and it builds projects' images with BuildKit in a
-VM of each project's own; projects' own images run as with Docker.
+mount their project's package caches from the host over their vsock, and
+it builds projects' images with BuildKit in a VM of each project's own;
+projects' own images run as with Docker.
 [Architecture](architecture.md#firecracker) has the details.
 
 Sessions start from their project's image or, without one, the host's:
@@ -994,9 +995,10 @@ has, and run `fctl host restart` after changing either.
 For projects that share package caches (`fctl projects set
 --package-caches on`), the host keeps what their sessions' package
 managers download: with Docker in a volume per project,
-`fctl-cache-<project id>`, and with Apple's `container` in a directory of
-its data directory, `caches/<project id>`, that its sandboxes mount at
-`/var/cache/fctl`. The sweep that removes stopped sandboxes, when the host
+`fctl-cache-<project id>`, and with Apple's `container` and Firecracker in
+a directory of its data directory, `caches/<project id>`, that its
+sandboxes mount at `/var/cache/fctl` (Firecracker's over 9P on their
+vsock). The sweep that removes stopped sandboxes, when the host
 starts and every hour, looks after them too:
 
 - It measures the caches that a session used since they were last

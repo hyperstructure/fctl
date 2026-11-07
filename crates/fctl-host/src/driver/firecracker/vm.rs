@@ -1,10 +1,11 @@
-//! A microVM's processes on the host: Firecracker, and `passt` for its
-//! network. Both run in process groups of their own, so that restarting the
-//! host (whose service stops only its main process) leaves them running.
+//! A microVM's processes on the host: Firecracker, `passt` for its network,
+//! and `fctl-agent share` for the project's package caches. They run in
+//! process groups of their own, so that restarting the host (whose service
+//! stops only its main process) leaves them running.
 
 use super::vsock;
 use anyhow::{Context, Result, anyhow, bail};
-use fctl_proto::vm::{ADDRESS, Boot, DNS, GATEWAY, Mode, NET_PORT, PREFIX};
+use fctl_proto::vm::{ADDRESS, Boot, DNS, GATEWAY, Mode, NET_PORT, PREFIX, SHARE_PORT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -59,6 +60,15 @@ pub struct Spec {
     pub memory_mb: u32,
     /// Whether the VM gets a network (`passt`).
     pub network: bool,
+}
+
+/// A directory the host serves to a VM over its vsock ([`SHARE_PORT`]): the
+/// project's package caches.
+#[derive(Clone, Debug)]
+pub struct Share {
+    /// The static fctl-agent, which serves it (`fctl-agent share`).
+    pub agent: PathBuf,
+    pub dir: PathBuf,
 }
 
 /// A microVM's files: `dir` keeps its configuration, its console's log and
@@ -184,6 +194,24 @@ impl Vm {
 
     pub fn vsock(&self) -> PathBuf {
         self.run.join("v.sock")
+    }
+
+    /// Where `fctl-agent share` serves the VM's [`Share`], for the VM's
+    /// connections to the host's [`SHARE_PORT`]: beside its vsock socket,
+    /// under `run`, short as sockets' paths must be. Firecracker connects
+    /// here, or, for a jailed VM, at a link of it that the host puts in the
+    /// chroot ([`serve_share`](Self::serve_share)).
+    pub fn share(&self) -> PathBuf {
+        self.run.join(format!("v.sock_{SHARE_PORT}"))
+    }
+
+    /// The chroot of this VM's jail and the jail's uid, when it runs in one.
+    fn jail(&self) -> Option<(PathBuf, u32)> {
+        self.jail_dirs().into_iter().find_map(|dir| {
+            let lent: Lent =
+                serde_json::from_slice(&std::fs::read(dir.join("jail.json")).ok()?).ok()?;
+            Some((dir.join("root"), lent.uid))
+        })
     }
 
     pub fn console(&self) -> PathBuf {
@@ -466,6 +494,64 @@ impl Vm {
         Ok(())
     }
 
+    /// Whether `fctl-agent share` serves the VM a directory.
+    pub fn sharing(&self) -> bool {
+        self.pid("share").is_some()
+    }
+
+    /// Starts `fctl-agent share`, which serves `share`'s directory where the
+    /// VM's connections to [`SHARE_PORT`] come, in place of one that served
+    /// it before.
+    pub async fn serve_share(&self, share: &Share) -> Result<()> {
+        self.kill_one("share").await;
+        let _ = std::fs::remove_file(self.share());
+        let log = std::fs::File::create(self.dir.join("share.log"))?;
+        let mut cmd = std::process::Command::new(&share.agent);
+        cmd.arg("share")
+            .arg("--dir")
+            .arg(&share.dir)
+            .arg("--socket")
+            .arg(self.share())
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        spawn_detached(&mut cmd, &self.pid_file("share"))
+            .with_context(|| format!("starting {} share", share.agent.display()))?;
+        let until = Instant::now() + Duration::from_secs(10);
+        while !self.share().exists() {
+            if Instant::now() > until || self.pid("share").is_none() {
+                let said = std::fs::read_to_string(self.dir.join("share.log")).unwrap_or_default();
+                self.stop_share().await;
+                bail!("fctl-agent share did not start: {}", said.trim());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // A jailed Firecracker connects in its chroot, as the jail's user:
+        // the socket, given to that user, is linked there (`run` is on the
+        // chroot's filesystem, beside it), in place of what the jail put
+        // there, which a link replaces without following.
+        if let Some((root, uid)) = self.jail() {
+            let given = async {
+                std::os::unix::fs::lchown(self.share(), Some(uid), Some(uid))?;
+                let inside = root.join(format!("v.sock_{SHARE_PORT}"));
+                let _ = std::fs::remove_file(&inside);
+                std::fs::hard_link(self.share(), &inside)?;
+                Ok::<_, std::io::Error>(())
+            }
+            .await;
+            if let Err(e) = given {
+                self.stop_share().await;
+                return Err(e).context("giving the cache server's socket to the VM's jail");
+            }
+        }
+        Ok(())
+    }
+
+    /// Stops `fctl-agent share`, if it serves the VM.
+    pub async fn stop_share(&self) {
+        self.kill_one("share").await;
+    }
+
     /// A connection to `port` in the VM, through Firecracker's vsock
     /// socket, once something there takes it, within `within`.
     async fn connect_port(
@@ -712,7 +798,7 @@ impl Vm {
 
     /// Kills the VM's processes.
     pub async fn kill(&self) {
-        for what in ["firecracker", "passt"] {
+        for what in ["firecracker", "passt", "share"] {
             self.kill_one(what).await;
         }
         // A link to its jail, as an earlier fctl made, or its own directory.
@@ -1509,6 +1595,59 @@ mod tests {
         Ok(())
     }
 
+    /// A jailed VM's Firecracker connects to the cache server in its chroot,
+    /// as the jail's user: the server listens under `run`, whose path is
+    /// short whatever the data directory's, and the host links its socket
+    /// into the chroot, given to that user.
+    #[tokio::test]
+    async fn a_jailed_vms_caches_are_served_in_its_jail() -> Result<()> {
+        use crate::driver::fake::write_script;
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir()?;
+        let agent = dir.path().join("fctl-agent");
+        write_script(
+            &agent,
+            "#!/bin/sh\nfor a; do [ \"$prev\" = --socket ] && touch \"$a\"; prev=$a; done\nsleep 60\n",
+        )?;
+        // A data directory with a long path, as a jail's sockets can't have.
+        let jails = dir.path().join("a".repeat(60)).join("jail");
+        let vm = Vm::new(dir.path().join("fctl-ses-j"))?.with_jails(jails.clone());
+        std::fs::create_dir_all(&vm.dir)?;
+        // The jail `make_jail` and `start_jailed` leave, here with this
+        // user's uid, which only root could make another's.
+        let jail = jails.join("firecracker-v1.17.0").join(&vm.key);
+        std::fs::create_dir_all(jail.join("root"))?;
+        std::fs::create_dir_all(jail.join("run"))?;
+        std::fs::create_dir_all(vm.run.parent().context("no parent")?)?;
+        let _ = std::fs::remove_file(&vm.run);
+        std::os::unix::fs::symlink(jail.join("run"), &vm.run)?;
+        let uid = nix::unistd::geteuid().as_raw();
+        let lent = Lent {
+            uid,
+            writable: Vec::new(),
+        };
+        std::fs::write(jail.join("jail.json"), serde_json::to_vec(&lent)?)?;
+        // What the jail put where the link goes.
+        let inside = jail.join("root").join(format!("v.sock_{SHARE_PORT}"));
+        std::os::unix::fs::symlink("/etc/passwd", &inside)?;
+        let share = Share {
+            agent,
+            dir: dir.path().to_owned(),
+        };
+        vm.serve_share(&share).await?;
+        assert!(vm.share().starts_with(&vm.run));
+        assert!(vm.share().as_os_str().len() < 100);
+        assert!(vm.sharing());
+        let linked = std::fs::symlink_metadata(&inside)?;
+        assert!(linked.is_file());
+        assert_eq!(linked.ino(), std::fs::metadata(vm.share())?.ino());
+        assert_eq!(linked.uid(), uid);
+        vm.stop_share().await;
+        assert!(!vm.sharing());
+        std::fs::remove_file(&vm.run)?;
+        Ok(())
+    }
+
     #[test]
     fn a_vm_runs_only_while_its_process_does() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -1830,10 +1969,26 @@ mod tests {
         )?;
         let firecracker = dir.path().join("firecracker");
         write_script(&firecracker, "#!/bin/sh\nsleep 60\n")?;
+        // fctl-agent share, which makes its socket and waits.
+        let share = dir.path().join("fctl-agent");
+        write_script(
+            &share,
+            "#!/bin/sh\nfor a; do [ \"$prev\" = --socket ] && touch \"$a\"; prev=$a; done\nsleep 60\n",
+        )?;
         let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
         let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
         vm.start(&spec, &firecracker, None).await?;
-        assert!(vm.running() && !vm.linked());
+        assert!(vm.running() && !vm.linked() && !vm.sharing());
+        let share = Share {
+            agent: share,
+            dir: dir.path().to_owned(),
+        };
+        vm.serve_share(&share).await?;
+        let first_share = vm.pid("share");
+        assert!(vm.sharing() && vm.share().exists());
+        // Served again: the first server goes.
+        vm.serve_share(&share).await?;
+        assert!(vm.sharing() && vm.pid("share") != first_share);
         let (close, got) = vsock_stand_in(&vm.vsock())?;
         // A passt that fails once it has made its pid's file: no link,
         // though an earlier passt's pid is where this one's goes.
@@ -1903,7 +2058,7 @@ mod tests {
         // A start that fails leaves nothing running.
         let missing = dir.path().join("no-firecracker");
         assert!(vm.start(&spec, &missing, None).await.is_err());
-        assert!(!vm.linked() && !vm.running());
+        assert!(!vm.linked() && !vm.running() && vm.pid("share").is_none());
         let _ = std::fs::remove_dir_all(&other.run);
         Ok(())
     }

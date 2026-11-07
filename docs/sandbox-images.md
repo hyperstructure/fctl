@@ -145,9 +145,10 @@ checks every build for it:
   managed, so packages go into a virtual environment (`uv venv`,
   `python3 -m venv`).
 
-In projects that share package caches, the Docker and Apple container
-drivers mount the project's caches at `/var/cache/fctl`, over whatever an
-image has there, and fctl-agent points the package managers there, for the
+In projects that share package caches, the Docker, Apple container and
+Firecracker drivers mount the project's caches at `/var/cache/fctl`, over
+whatever an image has there (Firecracker's VMs over 9P, as the image's
+user's files), and fctl-agent points the package managers there, for the
 setup script and for Claude: `npm_config_cache`, `pnpm_config_store_dir`
 and `pnpm_config_cache_dir` (pnpm 11; pnpm 9 and 10 get theirs in
 `~/.config/pnpm/rc`), `COREPACK_HOME`, `YARN_CACHE_FOLDER` and

@@ -18,6 +18,11 @@
 //!   their own, so that restarting the host leaves them running ([`vm`]).
 //! - **The host runs programs** in the VM through its vsock, as `docker
 //!   exec` would ([`vsock`]).
+//! - **Package caches** are a directory of the host's for each project, as
+//!   with Apple's `container`, which `fctl-agent share` serves to each VM of
+//!   the project over its vsock, beside `passt`, and the VM's kernel mounts
+//!   with its 9p client (`fctl-agent vm-mount`): several sandboxes of a
+//!   project share them at once.
 
 pub mod assets;
 mod builds;
@@ -32,6 +37,7 @@ use super::{
     SandboxInfo, SandboxSpec, attach_as_root, attach_script, ran_as_root, serve_as_root,
     serve_script,
 };
+use crate::caches::{self, Spot};
 use crate::config::{FirecrackerConfig, HostConfig};
 use crate::driver::ImageInfo;
 use anyhow::{Context, Result, bail};
@@ -1031,6 +1037,7 @@ impl FirecrackerDriver {
                         .context("passt is not installed: it gives the VMs their network")?;
                     vm.link_network(&passt).await?;
                 }
+                self.serve_caches_again(&vm, spec, log).await;
                 return Ok(sb);
             }
             log(format!(
@@ -1048,7 +1055,12 @@ impl FirecrackerDriver {
             && !self.resized(&vm, spec, log)
         {
             match self.resume_saved(&vm, &spec.name, &saved, log).await {
-                Ok(()) => return Ok(sb),
+                Ok(()) => {
+                    // Its server of the caches stopped with the VM, whose
+                    // mount resumed with a connection that is gone.
+                    self.serve_caches_again(&vm, spec, log).await;
+                    return Ok(sb);
+                }
                 Err(e) => log(format!(
                     "{} couldn't resume where it stopped ({e:#}), so it starts again from its disk",
                     spec.name
@@ -1092,6 +1104,7 @@ impl FirecrackerDriver {
         let passt = self
             .passt()
             .context("passt is not installed: it gives the VMs their network")?;
+        let share = self.share_of(spec).await?;
         let boot = Spec {
             kernel,
             initrd,
@@ -1128,7 +1141,92 @@ impl FirecrackerDriver {
         }
         record.agent = Some(agent);
         self.save_record(&spec.name, &record)?;
+        if let Some(share) = &share {
+            self.share_caches(&vm, &spec.name, share, log).await;
+        }
         Ok(sb)
+    }
+
+    /// What `spec`'s VM is served of the host's: its project's package
+    /// caches, which `fctl-agent share` serves.
+    async fn share_of(&self, spec: &SandboxSpec) -> Result<Option<vm::Share>> {
+        let Some(Spot::Dir(dir)) = &spec.cache else {
+            return Ok(None);
+        };
+        let agent = crate::agentbin::linux_agent(&self.host)
+            .await
+            .context("getting fctl-agent to serve the package caches")?;
+        Ok(Some(vm::Share {
+            agent,
+            dir: dir.clone(),
+        }))
+    }
+
+    /// Serves the package caches to a running VM whose server of them is
+    /// gone (it stopped with the VM whose state the VM resumed, say) or
+    /// never got going: another, which the VM mounts in place of the mount
+    /// the old one left.
+    async fn serve_caches_again(&self, vm: &Vm, spec: &SandboxSpec, log: Log<'_>) {
+        if !matches!(spec.cache, Some(Spot::Dir(_))) || vm.sharing() {
+            return;
+        }
+        log(format!("Serving the package caches of {} again", spec.name));
+        match self.share_of(spec).await {
+            Ok(Some(share)) => self.share_caches(vm, &spec.name, &share, log).await,
+            Ok(None) => {}
+            Err(e) => log(format!(
+                "The package caches couldn't be served to {} ({e:#}), so this session's package managers keep their own downloads",
+                spec.name
+            )),
+        }
+    }
+
+    /// Serves `share` to the VM, which is up, and mounts it there. Without
+    /// it, the session runs on without package caches, and its log says so;
+    /// no server stays, so that the VM's next start serves them again.
+    async fn share_caches(&self, vm: &Vm, name: &str, share: &vm::Share, log: Log<'_>) {
+        let shared = async {
+            vm.serve_share(share).await?;
+            self.mount_caches(vm, name).await
+        }
+        .await;
+        if let Err(e) = shared {
+            vm.stop_share().await;
+            log(format!(
+                "The package caches couldn't be mounted in {name} ({e:#}), so this session's package managers keep their own downloads"
+            ));
+        }
+    }
+
+    /// Mounts the project's package caches, which `fctl-agent share` serves
+    /// beside the VM, at [`caches::MOUNT`], as the image's user's files.
+    async fn mount_caches(&self, vm: &Vm, name: &str) -> Result<()> {
+        let image = self.exec_for(name, Vec::new());
+        let mut argv: Vec<String> = vec![
+            AGENT_PATH.into(),
+            "vm-mount".into(),
+            "--port".into(),
+            fctl_proto::vm::SHARE_PORT.to_string(),
+            "--dir".into(),
+            caches::MOUNT.into(),
+        ];
+        if let Some(user) = &image.user {
+            argv.extend(["--user".into(), user.clone()]);
+        }
+        let exec = Exec {
+            argv,
+            user: Some("root".into()),
+            cwd: Some("/".into()),
+            ..image
+        };
+        let out = tokio::time::timeout(super::COMMAND_TIMEOUT, vsock::run(&vm.vsock(), exec, None))
+            .await
+            .map_err(|_| anyhow::anyhow!("fctl-agent vm-mount didn't finish within a minute"))??;
+        if out.code != 0 {
+            let said = String::from_utf8_lossy(&out.stderr);
+            bail!("{}", said.trim().trim_start_matches("Error: "));
+        }
+        Ok(())
     }
 
     /// A new sandbox's directory and record, which come before its disk
@@ -2284,6 +2382,114 @@ mod tests {
         .await;
         d.remove(&sb).await?;
         assert!(!d.list().await?.iter().any(|s| s.name == name));
+        result
+    }
+
+    /// The host and the VMs' configuration for the tests that boot VMs, as
+    /// [`boots_a_sandbox`] says, with the host's files in `data`.
+    fn vm_host(data: &Path) -> Result<HostConfig> {
+        let agent = std::env::var("FCTL_TEST_FIRECRACKER_AGENT")
+            .context("FCTL_TEST_FIRECRACKER_AGENT isn't set")?;
+        let mut cfg = HostConfig {
+            data_dir: Some(data.to_owned()),
+            agent_bin: Some(agent.into()),
+            ..HostConfig::default()
+        };
+        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
+        cfg.firecracker.disk_gb = 4;
+        Ok(cfg)
+    }
+
+    /// Two sandboxes of a project at once share its package caches: what one
+    /// writes the other reads, as the image's user's files, and their locks
+    /// hold between them. Needs a kernel with 9p (the one hosts pull has it).
+    #[tokio::test]
+    #[ignore = "needs KVM, passt and a static fctl-agent"]
+    async fn sandboxes_of_a_project_share_its_package_caches() -> Result<()> {
+        use super::super::Driver;
+        let temp = tempfile::tempdir()?;
+        let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| temp.path().to_owned());
+        let cfg = vm_host(&data)?;
+        let d = Driver::select("firecracker", &cfg).await?;
+        let log = |line: String| eprintln!("{line}");
+        let project = format!("prj_test{}", hex::encode(fctl_domain::random_bytes::<4>()));
+        let spot = d.cache_spot(&project, &data).context("no caches")?;
+        let Spot::Dir(dir) = &spot else {
+            bail!("the firecracker driver keeps caches in a directory, not {spot}");
+        };
+        std::fs::create_dir_all(dir)?;
+        let image = std::env::var("FCTL_TEST_FIRECRACKER_IMAGE")
+            .unwrap_or_else(|_| "docker.io/library/debian:trixie-slim".into());
+        let names: Vec<String> = (0..2)
+            .map(|_| {
+                format!(
+                    "fctl-test-{}",
+                    hex::encode(fctl_domain::random_bytes::<4>())
+                )
+            })
+            .collect();
+        let spec = |name: &String| SandboxSpec {
+            name: name.clone(),
+            image: image.clone(),
+            fallback_image: None,
+            cpus: 1,
+            memory_mb: 512,
+            cache: Some(spot.clone()),
+        };
+        let mut sandboxes = Vec::new();
+        let result = async {
+            for name in &names {
+                sandboxes.push(d.ensure(&spec(name), &log).await?);
+            }
+            let (a, b) = (&sandboxes[0], &sandboxes[1]);
+            let mounted = d.exec(a, "grep ' /var/cache/fctl ' /proc/mounts").await?;
+            assert!(mounted.contains(" 9p "), "{mounted}");
+            // One writes, the other reads, and the host has it.
+            d.exec(
+                a,
+                "mkdir -p /var/cache/fctl/npm && echo from-a > /var/cache/fctl/npm/index",
+            )
+            .await?;
+            assert_eq!(
+                d.exec(b, "cat /var/cache/fctl/npm/index").await?,
+                "from-a\n"
+            );
+            assert_eq!(std::fs::read_to_string(dir.join("npm/index"))?, "from-a\n");
+            // The image's user's files (root's, in Debian's image).
+            let owner = d
+                .exec(b, "stat -c '%u:%g %a' /var/cache/fctl/npm/index")
+                .await?;
+            assert_eq!(owner.trim(), "0:0 644");
+            // A lock one holds keeps the other waiting, as cargo's do.
+            // Its program runs while the host holds it.
+            let holder = d
+                .spawn(a, "exec flock /var/cache/fctl/.package-cache sleep 30")
+                .await?;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let busy = d
+                .exec(
+                    b,
+                    "flock -n /var/cache/fctl/.package-cache true && echo free || echo held",
+                )
+                .await?;
+            assert_eq!(busy.trim(), "held");
+            drop(holder);
+            // A sandbox started again mounts them again.
+            d.stop(b).await?;
+            let b = d.ensure(&spec(&names[1]), &log).await?;
+            assert_eq!(
+                d.exec(&b, "cat /var/cache/fctl/npm/index").await?,
+                "from-a\n"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        for name in &names {
+            d.remove(&d.handle(name)).await?;
+        }
+        let _ = std::fs::remove_dir_all(dir);
         result
     }
 

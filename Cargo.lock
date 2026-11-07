@@ -542,6 +542,7 @@ dependencies = [
  "fctl-proto",
  "flate2",
  "hex",
+ "libc",
  "nix",
  "serde",
  "serde_json",

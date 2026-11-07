@@ -12,7 +12,8 @@
 //! The host connects to the VM's [`NET_PORT`] too, once the VM is up, and
 //! hands the connection to a `passt` of the VM's own, which takes its
 //! network: Ethernet frames, each after its length (4 bytes, big endian),
-//! as passt reads them from QEMU.
+//! as passt reads them from QEMU. The VM reaches the host's [`SHARE_PORT`],
+//! where the host serves the project's package caches over 9P2000.L.
 //!
 //! A host may be one version ahead of the init of a VM that was running
 //! when it updated, so requests only gain optional fields, and an init
@@ -27,6 +28,10 @@ pub const PORT: u32 = 1024;
 /// The vsock port where the VM takes the host's link to its network
 /// (`passt`).
 pub const NET_PORT: u32 = 1025;
+
+/// The vsock port where the host serves the project's package caches, over
+/// 9P2000.L (`fctl-agent share`), which `fctl-agent vm-mount` mounts.
+pub const SHARE_PORT: u32 = 1026;
 
 /// The VM's network, as the host's `passt` gives it: the VM's address and
 /// prefix, the gateway, and the address that forwards DNS queries to the
