@@ -605,10 +605,11 @@ workspace chips or a page's tabs, scrolls in a row of its own
 whatever still sticks out. A card whose buttons go under its text when it
 is narrow, like Home's invitations, goes by its own width rather than the
 screen's, with a container query (`@container` on the card, `@xl:` and
-`@max-xl:` inside): from 768 px the sidebar takes 244 px of the screen, so
-a card is narrower at 768 px than at 767. When you change a page, look at
-it 320 to 430 px wide, with long names in its data, and beside the sidebar
-at 768 px.
+`@max-xl:` inside): from 768 px the sidebar takes 288 px of the screen
+unless someone dragged it wider (up to 420) or narrower (240), or 60 folded
+into its rail, so a card is narrower at 768 px than at 767. When you change
+a page, look at it 320 to 430 px wide, with long names in its data, and
+beside the sidebar at 768 px.
 
 ## Other repositories
 

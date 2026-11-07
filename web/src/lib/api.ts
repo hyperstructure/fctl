@@ -330,6 +330,8 @@ export const api = {
       /** Without those that ended before then (ms). */
       activeSince?: number;
       mine?: boolean;
+      /** Only those the caller started or follows. */
+      yours?: boolean;
       /** Only those that list a pull request in this state (the pull requests page). */
       pulls?: "open" | "merged" | "closed" | "any";
     } = {},
@@ -343,6 +345,7 @@ export const api = {
     if (q.limit) p.set("limit", String(q.limit));
     if (q.before) p.set("before", String(q.before));
     if (q.mine) p.set("mine", "1");
+    if (q.yours) p.set("yours", "1");
     return request<G.SessionList>("GET", `/sessions?${p}`);
   },
   session: (id: string) => request<G.Session>("GET", `/sessions/${enc(id)}`),

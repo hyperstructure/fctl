@@ -11,6 +11,7 @@ import { AuthenticatorSetup } from "@/components/two-factor/setup";
 import { Banner, Button, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, TWO_FACTOR_REQUIRED } from "@/lib/api";
+import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
@@ -70,6 +71,7 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
     await forgetDraft();
     await api.logout().catch(() => {});
     queryClient.clear();
+    clearAttention();
     forgetSidebar(); // last, so that no list that comes is kept again
     window.location.assign("/login");
   };

@@ -2,6 +2,7 @@
 import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "./api";
+import { FAILED_FOR } from "./needs";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
 import { forgetSidebar } from "./sidebar";
 
@@ -166,6 +167,18 @@ export const useSidebarSessions = () => {
     placeholderData: () => ({ sessions: cachedSessions(qc) }),
   });
 };
+const YOUR_SESSIONS = { yours: true, since: "1d", limit: 200 };
+/**
+ * The sessions the person started or follows that haven't ended or ended in the last day, which
+ * the sidebar's Needs you looks through, under one key whatever the time it asks from.
+ */
+export const useYourSessions = (enabled: boolean) =>
+  useQuery({
+    queryKey: keys.sessions(YOUR_SESSIONS),
+    queryFn: () =>
+      api.sessions({ yours: true, activeSince: Date.now() - FAILED_FOR, limit: YOUR_SESSIONS.limit }),
+    enabled,
+  });
 /**
  * The sessions in `sessions` that haven't ended, or ended in the hour before
  * `now`, and aren't archived: the feed marks one that ends or is archived

@@ -8,8 +8,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowUpRight, CircleAlert, FolderGit2, Layers, Search, X } from "lucide-react";
+import { ArrowUpRight, CircleAlert, Layers, Search, X } from "lucide-react";
 import { type ReactNode, useMemo, useRef } from "react";
+import { ProjectMark } from "@/components/project/project-icon";
 import {
   PullRequestChecksIcon,
   PullRequestReviewMark,
@@ -249,6 +250,12 @@ export function PullsPage() {
   );
 }
 
+/** Your projects by id, for their icons. */
+function useProjectIndex(): Map<string, G.Project> {
+  const projects = useProjects().data?.projects;
+  return useMemo(() => new Map((projects ?? []).map((p) => [p.id, p])), [projects]);
+}
+
 /** What the page lists, by name: "your projects", "Romanesco's projects", "Shop". */
 function scopeName(
   scope: string | undefined,
@@ -282,7 +289,7 @@ function ScopeSelect({ value, onChange }: { value?: string; onChange: (v: string
           label: `${w.name} / ${p.name}`,
           item: p.name,
           short: p.name,
-          icon: <FolderGit2 className="size-3.5" />,
+          icon: <ProjectMark project={p} size={14} />,
           section: { key: w.id, label: w.name },
         })),
     ]),
@@ -360,6 +367,7 @@ function byWhen(list: ListedPull[]): [string, ListedPull[]][] {
  */
 function PullRow({ l }: { l: ListedPull }) {
   const { pr, sessions } = l;
+  const projects = useProjectIndex();
   const [s, ...others] = sessions;
   const checks = checksText(pr);
   const review = prReview(pr);
@@ -382,6 +390,10 @@ function PullRow({ l }: { l: ListedPull }) {
             <span className="shrink-0 font-mono text-ink-3">{prFullRef(pr)}</span>
             <span aria-hidden="true">·</span>
             <span className="inline-flex min-w-0 items-center gap-1.5">
+              <ProjectMark
+                project={projects.get(s.project_id) ?? { id: s.project_id, name: s.project_slug }}
+                size={13}
+              />
               <StatusDot status={s.status} className="scale-75" />
               <span className="truncate">
                 {s.project_slug}#{s.number}
