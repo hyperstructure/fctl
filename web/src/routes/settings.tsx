@@ -226,6 +226,7 @@ function Pages({
     .filter((p) => has(p.tab))
     .map((p) => p.tab)
     .join();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: again as another page opens, or the list changes
   useLayoutEffect(() => {
     const list = nav.current;
     if (!list) return;
