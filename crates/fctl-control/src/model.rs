@@ -71,6 +71,9 @@ pub struct UserRow {
     /// How many workspaces they are a member of.
     #[serde(deserialize_with = "int", default)]
     pub workspace_count: i64,
+    /// When they last exported their data.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub exported_at: Option<i64>,
 }
 
 impl UserRow {
@@ -224,6 +227,7 @@ pub fn user_columns(alias: &str) -> String {
         "two_factor_google",
         "gravatar",
         "gravatar_checked_at",
+        "exported_at",
     ]
     .iter()
     .map(|c| format!("{alias}.{c} AS {c}"))

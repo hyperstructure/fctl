@@ -427,7 +427,18 @@ pub async fn me(ctx: &Ctx, user: &UserRow) -> AppResult<Me> {
         token: None,
         avatar_source: user.picture().source.filter(|_| user.avatar_url.is_some()),
         gravatar: ctx.settings().gravatar.then_some(user.gravatar),
+        export: Some(data_export(ctx, user)),
     })
+}
+
+/// How often `user` can export their data, and when next.
+pub fn data_export(ctx: &Ctx, user: &UserRow) -> fctl_proto::api::DataExport {
+    let hours = ctx.settings().export_interval_hours;
+    fctl_proto::api::DataExport {
+        interval_hours: hours,
+        last_at: user.exported_at,
+        next_at: fctl_domain::account::next_export_at(user.exported_at, hours, ctx.now),
+    }
 }
 
 /// Revokes every token of a user (password change or reset), except `keep`.

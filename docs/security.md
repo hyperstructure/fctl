@@ -760,7 +760,11 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   schedules you wrote, and the sessions you follow, come from the projects
   and sessions you still see, since others keep them up to date. Files you
   attached are listed in the transcripts there; each downloads from its
-  session.
+  session. An export reads all of that, so each person can export once a
+  week, counted from when one starts (`users.exported_at`); admins choose
+  another wait, or none, under Admin → Settings → Data exports (`fctl
+  admin set --export-interval`). One that fails on the control plane's
+  side doesn't count.
 - A Linear account people link stays until they unlink it (Settings, or
   `fctl account linear disconnect`) or delete their fctl account. fctl's
   tokens in a Linear workspace stay while an fctl workspace is connected

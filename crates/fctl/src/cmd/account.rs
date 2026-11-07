@@ -104,7 +104,9 @@ pub enum AccountCmd {
     /// and two-factor sign-in, devices and tokens, Claude connections
     /// (without secrets), notification settings and browsers, projects, the
     /// sessions you started with their transcripts, the sessions you follow,
-    /// and your activity.
+    /// and your activity. The instance allows one export a week, unless its
+    /// admins chose another wait, and `fctl whoami` says when you can export
+    /// again; one that fails on the instance's side doesn't count.
     Export {
         /// Where to write it (default: fctl-export-<date>.json here; `-` prints it).
         #[arg(short, long)]
