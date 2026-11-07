@@ -151,6 +151,9 @@ export interface BackgroundTask {
   ts: number;
   /** How it ended, once it has: `completed`, `failed`, `stopped`, … */
   ended?: string;
+  /** The event that said it ended, and when. */
+  endSeq?: number;
+  endTs?: number;
 }
 
 /**
@@ -274,11 +277,13 @@ export class TranscriptBuilder {
   }
 
   /** Subagents still working when their Claude Code stops end with it, and so does its other work. */
-  private stopSubagents(items: Item[]) {
+  private stopSubagents(items: Item[], at: { seq: number; ts: number }) {
     for (const id of this.open) this.updateAgent(items, id, (a) => ({ ...a, ended: a.ended ?? "stopped" }));
     this.open.clear();
     if (this.tasks.some((t) => !t.ended))
-      this.tasks = this.tasks.map((t) => (t.ended ? t : { ...t, ended: "stopped" }));
+      this.tasks = this.tasks.map((t) =>
+        t.ended ? t : { ...t, ended: "stopped", endSeq: at.seq, endTs: at.ts },
+      );
   }
 
   private setup(items: Item[], ev: G.SessionEvent): Extract<Item, { kind: "setup" }> | undefined {
@@ -357,7 +362,7 @@ export class TranscriptBuilder {
           });
           if (st === "failed" || st === "stopped") {
             this.closeSetup(items, ev.ts);
-            this.stopSubagents(items);
+            this.stopSubagents(items, base);
           }
         }
         return;
@@ -379,7 +384,7 @@ export class TranscriptBuilder {
         // A restarted Claude Code doesn't follow the last one's subagents or background work,
         // nor one that a restarted fctl-agent started in place of the last; and a session that
         // stops says what of it stopped with it.
-        if (CLAUDE_GONE.has(ev.data.code)) this.stopSubagents(items);
+        if (CLAUDE_GONE.has(ev.data.code)) this.stopSubagents(items, ev);
         items.push({ ...base, kind: "notice", key: `n-${ev.seq}`, notice: ev.data });
         return;
       case "git": {
@@ -561,7 +566,13 @@ export class TranscriptBuilder {
     } else if (m.subtype === "task_notification") {
       const i = this.tasks.findIndex((t) => t.id === id && !t.ended);
       const t = this.tasks[i];
-      if (t) this.tasks = this.tasks.with(i, { ...t, ended: m.status || "completed" });
+      if (t)
+        this.tasks = this.tasks.with(i, {
+          ...t,
+          ended: m.status || "completed",
+          endSeq: at.seq,
+          endTs: at.ts,
+        });
     }
   }
 }

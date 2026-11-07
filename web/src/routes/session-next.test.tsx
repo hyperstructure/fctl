@@ -166,6 +166,13 @@ const visibility = (v: "hidden" | "visible") =>
     document.dispatchEvent(new Event("visibilitychange"));
   });
 
+/** What the line above the message box says, once what rolls away from it has gone. */
+function nowSays(container: HTMLElement): string {
+  const copy = container.querySelector(".now-line")?.cloneNode(true) as HTMLElement | undefined;
+  for (const gone of copy?.querySelectorAll(".animate-now-out, .animate-digit-out") ?? []) gone.remove();
+  return copy?.textContent ?? "";
+}
+
 function press(key: string) {
   act(() => {
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
@@ -392,7 +399,9 @@ describe("the new session page", () => {
     p.hear({ type: "session", session: session("idle") });
     expect(p.container.querySelector(".now-line")?.textContent).toContain("Run the tests");
     await act(() => new Promise((r) => setTimeout(r, 700)));
-    expect(p.container.querySelector(".now-line")?.textContent).not.toContain("Run the tests");
+    expect(nowSays(p.container)).not.toContain("Run the tests");
+    // The same line: whose turn it is rolls in.
+    expect(nowSays(p.container)).toContain("Your turn");
     expect(p.container.querySelector(".your-turn")).not.toBeNull();
   });
 
@@ -429,6 +438,12 @@ describe("the new session page", () => {
     const line = p.container.querySelector(".now-line");
     expect(line?.textContent).toContain("Waiting for");
     expect(line?.textContent).toContain("Start the dev stack");
+    // Its call says so too, on its line.
+    const call = () =>
+      [...p.container.querySelectorAll(".turns button")].find((b) =>
+        b.textContent?.includes("Start the dev stack"),
+      );
+    expect(call()?.textContent).toContain("In the background");
     const toggle = line?.querySelector<HTMLButtonElement>("button[aria-expanded]");
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
     act(() => toggle?.click());
@@ -450,6 +465,47 @@ describe("the new session page", () => {
     await act(() => new Promise((r) => setTimeout(r, 100)));
     expect(p.container.querySelector('[data-find^="cmd:"]')?.textContent).toContain("npm run dev");
     expect(scrolled).toHaveBeenCalled();
+    // It ends: its line says how long it ran.
+    p.hear({
+      type: "events",
+      events: [
+        ev("claude", { type: "system", subtype: "task_notification", task_id: "t1", status: "completed" }),
+      ],
+    });
+    expect(call()?.textContent).not.toContain("In the background");
+    expect(call()?.textContent).toMatch(/\d+ s in the background/);
+  });
+
+  it("says on a folded run's line what its calls left running in the background", () => {
+    const p = page();
+    p.snapshot(
+      [
+        ev("user_message", { text: "Start the stack and look around", source: "web" }),
+        assistant("m-ls", [{ type: "tool_use", id: "ls1", name: "Bash", input: { command: "ls" } }]),
+        result("ls1", "src"),
+        assistant("m-bg", [
+          {
+            type: "tool_use",
+            id: "bg1",
+            name: "Bash",
+            input: { command: "npm run dev", description: "Start the dev stack", run_in_background: true },
+          },
+        ]),
+        ev("claude", {
+          type: "system",
+          subtype: "task_started",
+          task_id: "t1",
+          tool_use_id: "bg1",
+          task_type: "local_bash",
+        }),
+        result("bg1", "Command running in background with ID: t1"),
+      ],
+      session("running"),
+    );
+    const run = [...p.container.querySelectorAll(".turns button")].find((b) =>
+      b.textContent?.startsWith("Ran 2 commands"),
+    );
+    expect(run?.textContent).toContain("1 in the background");
   });
 
   it("looks further back for the background tasks it waits for that started before what loaded", () => {
@@ -486,12 +542,7 @@ describe("the new session page", () => {
     stream({ type: "system", subtype: "thinking_tokens", estimated_tokens: 4180 });
     await act(() => new Promise((r) => setTimeout(r, 700)));
     const line = () => p.container.querySelector(".now-line");
-    // What shows once what rolls away has gone.
-    const shown = () => {
-      const copy = line()?.cloneNode(true) as HTMLElement | undefined;
-      for (const gone of copy?.querySelectorAll(".animate-now-out, .animate-digit-out") ?? []) gone.remove();
-      return copy?.textContent ?? "";
-    };
+    const shown = () => nowSays(p.container);
     expect(shown()).toContain("Thinking");
     expect(shown()).toContain("4.2K tokens");
     // Not in the transcript as well.

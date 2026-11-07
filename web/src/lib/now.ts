@@ -167,6 +167,8 @@ function callOf(items: readonly Item[], key: string): Tool | undefined {
 /**
  * What an idle session waits for, while its status says it waits for background tasks: those the
  * transcript saw start and not end, the newest as many as the status counts, with their calls.
+ * One that ended since the agent's last turn counts still where the status does: it says so a
+ * moment after the transcript, and the agent takes up what came of it in a turn of its own.
  */
 export function waitingOf(
   tasks: readonly BackgroundTask[],
@@ -175,10 +177,15 @@ export function waitingOf(
 ): Waiting | undefined {
   const count = waitingCount(reason);
   if (count === undefined) return undefined;
-  const running = tasks.filter((t) => !t.ended).slice(-count);
+  const lastTurn = items.findLast((it) => it.kind === "turn")?.seq ?? 0;
+  const running = tasks.filter((t) => !t.ended);
+  const lagging = tasks.filter((t) => t.ended && (t.endSeq ?? 0) > lastTurn);
+  const awaited = [...running, ...lagging.slice(-Math.max(0, count - running.length))]
+    .sort((a, b) => a.seq - b.seq)
+    .slice(-count);
   return {
-    tasks: running.map((task) => ({ task, call: task.call ? callOf(items, task.call) : undefined })),
-    more: count - running.length,
+    tasks: awaited.map((task) => ({ task, call: task.call ? callOf(items, task.call) : undefined })),
+    more: count - awaited.length,
   };
 }
 

@@ -95,16 +95,16 @@ export function useGoToTurn(
   );
 }
 
-/** Lights a line up for a moment, as a row that moved does: where the page went. */
+/** Lights a line up for a moment: where the page went. */
 function light(el: HTMLElement) {
   const done = (e: AnimationEvent) => {
     if (e.target !== el) return;
-    el.classList.remove("animate-row-moved");
+    el.classList.remove("animate-landed");
     el.removeEventListener("animationend", done);
   };
-  el.classList.remove("animate-row-moved");
+  el.classList.remove("animate-landed");
   void el.offsetWidth;
-  el.classList.add("animate-row-moved");
+  el.classList.add("animate-landed");
   el.addEventListener("animationend", done);
 }
 

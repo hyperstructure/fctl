@@ -33,7 +33,7 @@ import { DiffDialog, type DiffTarget } from "@/components/session/diff-dialog";
 import { FindBar, findShortcut, Reveal, useFind } from "@/components/session/find";
 import { Glance } from "@/components/session/glance";
 import { BusyMark } from "@/components/session/lines";
-import { JumpPill, NowLine, toBottom, useAtBottom, YourTurn } from "@/components/session/now-line";
+import { JumpPill, NowLine, toBottom, useAtBottom } from "@/components/session/now-line";
 import { AgentOrb } from "@/components/session/orb";
 import { PlanList } from "@/components/session/plan";
 import {
@@ -772,6 +772,7 @@ function NextSessionPage() {
                   newFrom={away.from}
                   diffGroups={diffGroups}
                   onDiff={setDiffAt}
+                  tasks={s.tasks}
                 />
               </BusyMark>
             </Reveal.Provider>
@@ -788,7 +789,7 @@ function NextSessionPage() {
               <NowLine
                 now={now}
                 plan={planNow}
-                idle={yourTurn ? <YourTurn onReply={focusReply} /> : undefined}
+                onReply={yourTurn ? focusReply : undefined}
                 background={
                   waiting && {
                     waiting,

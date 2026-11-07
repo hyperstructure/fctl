@@ -18,8 +18,10 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
+  createContext,
   type ReactNode,
   type RefObject,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -190,7 +192,7 @@ function Roll({ step, className, children }: { step: string; className?: string;
   return (
     <span className={cn("relative flex min-w-0", className)}>
       <span key={step} className={cn("flex min-w-0 items-baseline gap-1.5", rolled && "animate-now-in")}>
-        {children}
+        <Fresh>{children}</Fresh>
       </span>
       {gone.map((g) => (
         <span
@@ -201,11 +203,23 @@ function Roll({ step, className, children }: { step: string; className?: string;
             if (e.target === e.currentTarget) setGone((x) => x.filter((y) => y !== g));
           }}
         >
-          {g.node}
+          <WithStep.Provider value={true}>{g.node}</WithStep.Provider>
         </span>
       ))}
     </span>
   );
+}
+
+/**
+ * Whether what is in a step came with it, as it rolled in: what comes later in the same step rolls
+ * in by itself (a thought's count, once Claude Code says it).
+ */
+const WithStep = createContext(false);
+
+function Fresh({ children }: { children: ReactNode }) {
+  const [fresh, setFresh] = useState(true);
+  useEffect(() => setFresh(false), []);
+  return <WithStep.Provider value={fresh}>{children}</WithStep.Provider>;
 }
 
 /** A thought's tokens in a few figures that keep their places as they grow: "860", "4.2K", "12.0K". */
@@ -280,9 +294,14 @@ function Odometer({ value, text }: { value: number; text: string }) {
 
 /** How far a thought got: "4.2K tokens", its figures rolling as it goes on. */
 function Tokens({ n }: { n: number }) {
+  // Once its thought has shown for a while: it rolls in by itself.
+  const [later] = useState(!useContext(WithStep));
   // Screen readers hear the step, not each figure of it.
   return (
-    <span aria-hidden="true" className="flex shrink-0 items-baseline gap-1.5">
+    <span
+      aria-hidden="true"
+      className={cn("flex shrink-0 items-baseline gap-1.5", later && "animate-now-in")}
+    >
       <span className="text-ink-4">·</span>
       <span className="text-ink-3">
         <Odometer value={n} text={tokenFigures(n)} /> {n === 1 ? "token" : "tokens"}
@@ -295,19 +314,19 @@ function Tokens({ n }: { n: number }) {
  * What the agent does now, in a line that stays put above the message box: the step it is at and
  * what it does it to, for how long, each new step rolling in as it moves on. While it waits for
  * its background work, what for, which the line opens into: each task, going to where it started.
- * What the reader set in `idle` while it waits for people.
+ * Once it waits for the reader, that it's their turn, which takes them to the message box.
  */
 export function NowLine({
   now,
   plan,
-  idle,
+  onReply,
   background,
 }: {
   now?: Now;
   /** The plan of the turn the agent works on. */
   plan?: Plan;
-  /** What the line says while the agent does nothing: that it's the reader's turn. */
-  idle?: ReactNode;
+  /** It's the reader's turn while the agent does nothing: the line says so, and goes to their reply. */
+  onReply?: () => void;
   /** What the agent waits for in the background, while it does, and how to go to each. */
   background?: {
     waiting: Waiting;
@@ -324,12 +343,13 @@ export function NowLine({
 }) {
   // Mounted whether the agent works or not, so that its last step holds as long as a step does.
   const shown = useSteady(now, (n) => (n ? stepOf(n) : ""));
+  // Once it does nothing: whose turn it is, when it's the reader's.
+  const turn = !shown && !!onReply;
   const busy = !!shown && BUSY.has(shown.kind);
   // The step of its plan the agent is at, in the words it says while it does it, leads the line.
   const step = busy ? plan?.current : undefined;
   const doing = step && (step.doing ?? step.text);
-  const pill = useRef<HTMLOutputElement>(null);
-  useGlide(pill, shown ? `${stepOf(shown)}\u0000${doing ?? ""}` : "");
+  const ring = busy && !!plan && plan.done < plan.steps.length;
   // What it waits for in the background, which the line opens into while it does.
   const waiting =
     shown?.kind === "background" && background && (background.waiting.tasks.length || background.waiting.more)
@@ -357,118 +377,150 @@ export function NowLine({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  const ticking = (!!shown?.since && shown.kind !== "paused") || open;
-  const time = useSeconds(ticking);
-  if (!shown) return idle ?? null;
-  const took =
-    shown.seconds !== undefined && shown.seconds > 1
+  const time = useSeconds((!!shown?.since && shown.kind !== "paused") || open);
+  const took = !shown
+    ? undefined
+    : shown.seconds !== undefined && shown.seconds > 1
       ? ran(shown.seconds * 1000)
       : shown.since && shown.kind !== "paused"
         ? ran(time - shown.since)
         : undefined;
-  const target = shown.target;
-  const row = (
+  const figures = shown?.tokens ? tokenFigures(shown.tokens) : "";
+  const pill = useRef<HTMLOutputElement>(null);
+  // It glides to its new width as it changes shape: another step, a count that shows or grows a
+  // figure, a time that does, the plan's ring.
+  useGlide(
+    pill,
+    turn
+      ? "turn"
+      : shown
+        ? [stepOf(shown), doing ?? "", figures.length, took?.length ?? 0, ring, !!waiting].join("\u0000")
+        : "",
+  );
+  if (!shown && !turn) return null;
+  const target = shown?.target;
+  const words = shown ? (
     <>
       <span
-        data-busy={busy || undefined}
-        className="busy-ring relative flex size-6 shrink-0 items-center justify-center rounded-full bg-raised"
+        className={cn(
+          "min-w-0 truncate",
+          target && "max-w-[60%] shrink-0",
+          doing
+            ? "text-ink-3"
+            : busy
+              ? "text-shimmer"
+              : shown.kind === "stalled"
+                ? "text-amber"
+                : "text-ink-2",
+        )}
       >
-        {/* The icon rolls inside its circle, which the ring goes around. */}
-        <span className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-full">
-          <Roll step={iconOf(shown)} className="justify-center">
-            {icon(shown)}
-          </Roll>
-        </span>
+        {shown.text}
       </span>
-      {doing && (
-        <Roll step={doing} className="shrink-[0.6]">
-          <span className="min-w-0 truncate font-medium text-shimmer">{doing}</span>
-        </Roll>
-      )}
-      <Roll
-        step={stepOf(shown)}
-        // Beside the plan's step, the call at hand: where there's room.
-        className={cn(doing && "border-l border-line pl-2 max-sm:hidden")}
-      >
+      {figures && shown.tokens !== undefined && <Tokens n={shown.tokens} />}
+      {target && (
         <span
           className={cn(
-            "min-w-0 truncate",
-            target && "max-w-[60%] shrink-0",
-            doing
-              ? "text-ink-3"
-              : busy
-                ? "text-shimmer"
-                : shown.kind === "stalled"
-                  ? "text-amber"
-                  : "text-ink-2",
+            "min-w-0 truncate text-ink-3",
+            target.kind !== "text" && "font-mono text-[11.5px]",
+            target.kind === "path" && "[direction:rtl] text-left",
           )}
         >
-          {shown.text}
+          {/* A path keeps its file's name in view: it gives way from its start. */}
+          {target.kind === "path" ? <bdi>{target.text}</bdi> : target.text}
         </span>
-        {shown.tokens !== undefined && shown.tokens > 0 && <Tokens n={shown.tokens} />}
-        {target && (
-          <span
-            className={cn(
-              "min-w-0 truncate text-ink-3",
-              target.kind !== "text" && "font-mono text-[11.5px]",
-              target.kind === "path" && "[direction:rtl] text-left",
-            )}
-          >
-            {/* A path keeps its file's name in view: it gives way from its start. */}
-            {target.kind === "path" ? <bdi>{target.text}</bdi> : target.text}
-          </span>
-        )}
-        {/* Screen readers hear the step, not each second of it. */}
-        {took && (
-          <span aria-hidden="true" className="shrink-0 text-[11.5px] text-ink-4 tabular-nums">
-            {took}
-          </span>
-        )}
-      </Roll>
-      {busy && plan && plan.done < plan.steps.length && (
-        <PlanRing
-          done={plan.done}
-          total={plan.steps.length}
-          className="-mr-0.5 shrink-0 border-l border-line pl-2"
-        />
       )}
-      {waiting && (
-        <ChevronUp
-          aria-hidden="true"
-          className={cn(
-            "-mr-1 size-3.5 shrink-0 text-ink-4 transition-transform duration-200 ease-[var(--ease-out)]",
-            open && "rotate-180",
-          )}
-        />
+      {/* Screen readers hear the step, not each second of it. */}
+      {took && (
+        <span aria-hidden="true" className="shrink-0 text-[11.5px] text-ink-4 tabular-nums">
+          {took}
+        </span>
       )}
     </>
+  ) : (
+    <>
+      <span className="shrink-0 font-medium text-ink">Your turn</span>
+      <span className="min-w-0 truncate text-ink-3 max-sm:hidden">The agent waits for your reply</span>
+    </>
   );
-  const rowClass = "now-row flex h-full min-w-0 items-center gap-2 py-1 pr-3 pl-1";
   return (
     <div ref={wrap} className="relative flex min-w-0 max-w-full">
       <output
         ref={pill}
         aria-live="polite"
         className={cn(
-          "now-line pointer-events-auto flex h-8 max-w-full min-w-0 animate-rise overflow-hidden rounded-full border border-line bg-surface/85 text-[12.5px] shadow-[0_6px_24px_rgb(0_0_0/0.18)] backdrop-blur-xl",
-          waiting &&
-            "transition-[border-color] duration-150 hover:border-line-strong has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent has-[:focus-visible]:outline-solid",
+          "now-line pointer-events-auto relative flex h-8 max-w-full min-w-0 animate-rise overflow-hidden rounded-full border bg-surface/85 text-[12.5px] shadow-[0_6px_24px_rgb(0_0_0/0.18)] backdrop-blur-xl transition-[border-color] duration-300",
+          turn ? "your-turn border-blue/30 hover:border-blue/60" : "border-line",
+          waiting && "hover:border-line-strong",
           open && "border-line-strong",
+          // The button over it takes the focus: the ring goes around the line.
+          "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent has-[:focus-visible]:outline-solid",
         )}
       >
-        {waiting ? (
-          <button
-            ref={toggle}
-            type="button"
-            aria-expanded={open}
-            aria-controls={open ? listId : undefined}
-            onClick={() => setOpen((o) => !o)}
-            className={cn(rowClass, "w-full text-left focus-visible:outline-none")}
+        <span className="now-row flex h-full min-w-0 items-center gap-2 py-1 pr-3 pl-1">
+          <span
+            data-busy={busy || undefined}
+            className={cn(
+              "busy-ring relative flex size-6 shrink-0 items-center justify-center rounded-full transition-colors duration-300",
+              turn ? "bg-blue-soft" : "bg-raised",
+            )}
           >
-            {row}
-          </button>
+            {/* The icon rolls inside its circle, which the ring goes around. */}
+            <span className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-full">
+              <Roll step={shown ? iconOf(shown) : "turn"} className="justify-center">
+                {shown ? icon(shown) : <MessageSquareReply className="size-3.5 text-blue" />}
+              </Roll>
+            </span>
+          </span>
+          {doing && (
+            <Roll step={doing} className="shrink-[0.6]">
+              <span className="min-w-0 truncate font-medium text-shimmer">{doing}</span>
+            </Roll>
+          )}
+          <Roll
+            step={shown ? stepOf(shown) : "turn"}
+            // Beside the plan's step, the call at hand: where there's room.
+            className={cn(doing && "border-l border-line pl-2 max-sm:hidden")}
+          >
+            {words}
+          </Roll>
+          {ring && plan && (
+            <PlanRing
+              done={plan.done}
+              total={plan.steps.length}
+              className="-mr-0.5 shrink-0 border-l border-line pl-2"
+            />
+          )}
+          {waiting && (
+            <ChevronUp
+              aria-hidden="true"
+              className={cn(
+                "-mr-1 size-3.5 shrink-0 text-ink-4 transition-transform duration-200 ease-[var(--ease-out)]",
+                open && "rotate-180",
+              )}
+            />
+          )}
+        </span>
+        {/* Over the line, what it does when it does something: the line stays as it is under it,
+            for its steps to roll on as they change. */}
+        {turn ? (
+          <button
+            type="button"
+            aria-label="Your turn: reply to the agent"
+            onClick={onReply}
+            className="absolute inset-0 rounded-full focus-visible:outline-none"
+          />
         ) : (
-          <span className={rowClass}>{row}</span>
+          waiting && (
+            <button
+              ref={toggle}
+              type="button"
+              aria-label={`${shown?.text ?? ""}${target ? ` ${target.text}` : ""}`}
+              aria-expanded={open}
+              aria-controls={open ? listId : undefined}
+              onClick={() => setOpen((o) => !o)}
+              className="absolute inset-0 rounded-full focus-visible:outline-none"
+            />
+          )
         )}
       </output>
       {open && waiting && (
@@ -487,26 +539,6 @@ export function NowLine({
         />
       )}
     </div>
-  );
-}
-
-/**
- * Above the message box once the agent has ended its turn and waits for someone to write: whose
- * turn it is, which takes them to the message box.
- */
-export function YourTurn({ onReply }: { onReply: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onReply}
-      className="now-line your-turn pointer-events-auto flex h-8 max-w-full min-w-0 animate-rise items-center gap-2 rounded-full border border-blue/30 bg-surface/85 py-1 pr-3 pl-1 text-[12.5px] shadow-[0_6px_24px_rgb(0_0_0/0.18)] backdrop-blur-xl transition-[border-color] duration-150 hover:border-blue/60"
-    >
-      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-blue-soft text-blue">
-        <MessageSquareReply className="size-3.5" />
-      </span>
-      <span className="shrink-0 font-medium text-ink">Your turn</span>
-      <span className="min-w-0 truncate text-ink-3 max-sm:hidden">The agent waits for your reply</span>
-    </button>
   );
 }
 

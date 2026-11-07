@@ -136,6 +136,16 @@ describe("what it waits for in the background", () => {
     expect(waitingOf([dev], [shell], "Waiting for a message")).toBeUndefined();
   });
 
+  it("still counts one that just ended, until the agent's next turn: its status says so a moment later", () => {
+    const end: Item = { ...base(), kind: "turn", durationMs: 1, ok: true };
+    const done = task("d", { ended: "completed", endSeq: end.seq + 1 });
+    const one = "Waiting for a background task";
+    expect(waitingOf([done], [end], one)).toEqual({ tasks: [{ task: done }], more: 0 });
+    // Once a turn took up what came of it, it is done with.
+    const next: Item = { ...base(), kind: "turn", durationMs: 1, ok: true };
+    expect(waitingOf([{ ...done, endSeq: end.seq + 1 }], [end, next], one)).toEqual({ tasks: [], more: 1 });
+  });
+
   it("finds a call in a subagent's work", () => {
     const inner = call("Bash", { command: "make watch" }) as Tool;
     const agent: Tool = { ...(call("Agent", {}) as Tool), children: 1, agent: { steps: [inner] } };
