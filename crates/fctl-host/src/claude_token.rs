@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result, bail};
 use fctl_proto::Millis;
-use fctl_proto::runner::{ClaudeCredential, RunnerClaudeToken};
+use fctl_proto::runner::{CLAUDE_STAND_IN, ClaudeCredential, RunnerClaudeToken};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -94,7 +94,9 @@ pub fn redact_shapes(text: &str) -> Cow<'_, str> {
         while let Some(at) = out.get(from..).and_then(|s| s.find(shape.prefix)) {
             let at = from + at;
             let end = shape.end(bytes, at);
-            if end - at >= shape.min {
+            // The stand-in for a token the host keeps (`CLAUDE_STAND_IN`) is
+            // nobody's, and says so: it shows as it is.
+            if end - at >= shape.min && out.get(at..end) != Some(CLAUDE_STAND_IN) {
                 // Prefixes and bodies are ASCII: these are characters' starts.
                 redacted.push_str(out.get(copied..at).unwrap_or_default());
                 redacted.push_str(shape.redacted);
@@ -537,6 +539,7 @@ mod tests {
             subscription_type: None,
             account: None,
             on_runners,
+            stand_in: false,
         }
     }
 
@@ -914,5 +917,14 @@ mod tests {
             redact(&format!("{TOKEN} and {TOKEN}"), &[TOKEN.to_owned()]),
             format!("{REDACTED} and {REDACTED}")
         );
+    }
+
+    #[test]
+    fn the_stand_in_shows_as_it_is() {
+        let said = format!("Claude Code got the token {CLAUDE_STAND_IN}.");
+        assert!(matches!(redact_shapes(&said), Cow::Borrowed(_)));
+        // Anything longer is a token of its shape, whoever's.
+        let longer = format!("{CLAUDE_STAND_IN}x");
+        assert_eq!(redact_shapes(&longer), REDACTED);
     }
 }

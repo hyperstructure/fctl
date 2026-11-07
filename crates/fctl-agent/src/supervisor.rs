@@ -14,6 +14,7 @@ use crate::local;
 use crate::orphan;
 use crate::prompt;
 use crate::refresh::Refresh;
+use crate::relay;
 use crate::tasks::{self, Task, Tasks};
 use crate::user;
 use crate::workspace::{self, Moment, Paths};
@@ -24,8 +25,8 @@ use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
 use fctl_domain::models::ModelName;
 use fctl_domain::{files, published, validate};
 use fctl_proto::agent::{
-    AgentConfig, AgentHello, AgentToHost, HostToAgent, SESSION_SOCKET_ENV, SessionReply,
-    SessionRequest,
+    AgentConfig, AgentHello, AgentToHost, FEATURE_CLAUDE_RELAY, HostToAgent, SESSION_SOCKET_ENV,
+    SessionReply, SessionRequest,
 };
 use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{
@@ -33,8 +34,8 @@ use fctl_proto::event::{
     PublishedFile,
 };
 use fctl_proto::runner::{
-    ClaudeCredential, ClaudeCredentialKind, CredentialKind, GitIdentity, GithubCredential,
-    StopReason,
+    CLAUDE_STAND_IN, ClaudeCredential, ClaudeCredentialKind, CredentialKind, GitIdentity,
+    GithubCredential, StopReason,
 };
 use fctl_proto::session::{GithubAccess, ProjectSettings, RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{
@@ -108,6 +109,11 @@ struct Persisted {
     /// this supervisor dies before it does.
     #[serde(default)]
     cut_off: Option<CutOff>,
+    /// The port of Claude's proxy, where the host keeps its token
+    /// ([`relay`]): a supervisor that takes over listens there again, for
+    /// what Claude started that still runs.
+    #[serde(default)]
+    relay_port: Option<u16>,
 }
 
 /// A turn of Claude's that a supervisor before this one didn't see to its
@@ -139,6 +145,9 @@ const REVIEW_POSTED: &str = "Finished: its review is posted";
 
 pub(crate) enum Work {
     Prepared(Result<(), String>),
+    /// Claude opened a connection to the Anthropic API, which waits for
+    /// the host to open its channel ([`relay`]).
+    ClaudeConnection(String),
     /// A refresh of the repositories' state at a moment ended: what they
     /// hold, the pull requests it follows and the changed files' diffs
     /// (when the host takes them), unless it failed.
@@ -273,6 +282,12 @@ pub struct Supervisor {
     /// The name the session knows Claude's model by: the alias it was
     /// started on or switched to, say, rather than the ID Claude gives it.
     model_name: ModelName,
+    /// Where the host's channels for Claude's connections come in, until
+    /// the host configures a relay ([`relay`]).
+    pub(crate) relay_socket: Option<tokio::net::UnixListener>,
+    /// Claude's proxy, where the host keeps its token, and the certificates
+    /// Claude trusts there.
+    relay: Option<(relay::Relay, PathBuf)>,
 }
 
 impl Supervisor {
@@ -356,6 +371,8 @@ impl Supervisor {
                 settings_waiting: HashSet::new(),
                 settings_refused: VecDeque::new(),
                 model_name: ModelName::default(),
+                relay_socket: None,
+                relay: None,
             },
             claude_rx,
             work_rx,
@@ -436,7 +453,16 @@ impl Supervisor {
             status: self.state.status,
             agent_seq: self.journal.last_seq(),
             claude_version: self.claude_version.map(|v| v.to_string()),
-            features: vec![FEATURE_ATTACHMENTS.to_owned(), FEATURE_SETTINGS.to_owned()],
+            features: [FEATURE_ATTACHMENTS, FEATURE_SETTINGS]
+                .into_iter()
+                // Where the host's channels can come in.
+                .chain(
+                    (self.relay_socket.is_some() || self.relay.is_some())
+                        .then_some(FEATURE_CLAUDE_RELAY),
+                )
+                .map(str::to_owned)
+                .collect(),
+            claude_relay: self.relay.is_some(),
         })
     }
 
@@ -1047,6 +1073,68 @@ impl Supervisor {
 
     // ───────────────────────────── preparation ─────────────────────────────
 
+    /// Starts Claude's proxy, where the host keeps its token
+    /// ([`AgentConfig::claude_relay`]): what the session reached through a
+    /// proxy of its own still goes through that one, and Claude trusts the
+    /// host's certificate authority besides the certificates the session
+    /// gave it. Without it Claude can't reach the Anthropic API, and
+    /// doesn't start ([`Self::start_claude`]).
+    fn start_relay(&mut self, config: &AgentConfig) {
+        let Some(want) = &config.claude_relay else {
+            return;
+        };
+        if self.relay.is_some() {
+            return;
+        }
+        // The socket is taken last, once nothing else can fail: what fails
+        // now may not when Claude starts again (`start_claude` tries again).
+        if self.relay_socket.is_none() {
+            tracing::error!("no relay socket, so Claude's proxy can't reach the host");
+            return;
+        }
+        let var = |keys: &[&str]| session_var(config, keys);
+        let upstream = var(&["https_proxy", "HTTPS_PROXY"])
+            .and_then(|u| relay::Upstream::parse(&u, var(&["no_proxy", "NO_PROXY"]).as_deref()));
+        // The certificates the session had Claude trust, and the host's.
+        let mut bundle = var(&["NODE_EXTRA_CA_CERTS"])
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| format!("{}\n", text.trim_end()))
+            .unwrap_or_default();
+        bundle.push_str(&want.ca);
+        let ca = self.user_state.join("claude-relay-ca.pem");
+        if let Err(e) =
+            std::fs::create_dir_all(&self.user_state).and_then(|()| std::fs::write(&ca, bundle))
+        {
+            tracing::error!("writing {}: {e}", ca.display());
+            return;
+        }
+        let listener = match relay::listen(self.persisted.relay_port.unwrap_or(0)) {
+            Ok(listener) => listener,
+            Err(e) => {
+                tracing::error!("starting Claude's proxy: {e:#}");
+                return;
+            }
+        };
+        let Some(socket) = self.relay_socket.take() else {
+            return;
+        };
+        let (ask, mut asked) = mpsc::unbounded_channel();
+        let work = self.work_tx.clone();
+        tokio::spawn(async move {
+            while let Some(id) = asked.recv().await {
+                let _ = work.send(Work::ClaudeConnection(id));
+            }
+        });
+        let r = relay::Relay::serve(listener, socket, upstream, ask);
+        tracing::info!(
+            "Claude's proxy listens on 127.0.0.1:{}; the host keeps Claude's token",
+            r.port()
+        );
+        self.persisted.relay_port = Some(r.port());
+        self.persist();
+        self.relay = Some((r, ca));
+    }
+
     fn configure(&mut self, config: AgentConfig) {
         if let Some(seq) = config.first_agent_seq
             && let Err(e) = self.journal.start_after(seq)
@@ -1072,6 +1160,11 @@ impl Supervisor {
         let creds = &config.spec.credentials;
         if let Some(at) = expiry(creds.github.as_ref(), creds.github_read.as_ref()) {
             self.github_expires_at = at;
+        }
+        if config.claude_relay.is_some() {
+            // The host keeps the token: Claude never gets anything else.
+            config.spec.credentials.claude.access_token = CLAUDE_STAND_IN.to_owned();
+            self.start_relay(&config);
         }
         self.claude_credential = Some(config.spec.credentials.claude.clone());
         self.paths = Some(paths.clone());
@@ -1206,6 +1299,12 @@ impl Supervisor {
     async fn on_work(&mut self, w: Work) {
         match w {
             Work::Log(level, text, source) => self.log(source, level, &text),
+            Work::ClaudeConnection(id) => match (&self.host, &self.relay) {
+                (Some(_), _) => self.send(&AgentToHost::ClaudeConnection { id }),
+                // No host to open it: Claude hears so, and tries again.
+                (None, Some((relay, _))) => relay.refuse(&id),
+                (None, None) => {}
+            },
             Work::Prepared(Ok(())) => {
                 if let Err(e) = self.start_claude().await {
                     let msg = format!("Claude could not start: {e:#}");
@@ -1417,6 +1516,15 @@ impl Supervisor {
         let (Some(config), Some(paths)) = (self.config.clone(), self.paths.clone()) else {
             anyhow::bail!("not configured");
         };
+        // What kept Claude's proxy from starting may be gone now.
+        if config.claude_relay.is_some() && self.relay.is_none() {
+            self.start_relay(&config);
+        }
+        if config.claude_relay.is_some() && self.relay.is_none() {
+            anyhow::bail!(
+                "the proxy through which Claude reaches the Anthropic API didn't start, and the runner keeps the Claude token, as its owner asked"
+            );
+        }
         let spec = &config.spec;
         let workdir = config.workdir.clone();
         let bin = config.claude_bin.clone().unwrap_or_else(|| "claude".into());
@@ -1532,6 +1640,25 @@ impl Supervisor {
             env.insert(k.clone(), v.clone());
         }
         env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), cred.access_token.clone());
+        // Claude reaches the Anthropic API through the host, which puts the
+        // token in: its proxy, the host's certificate authority, and the
+        // stand-in, whatever came.
+        if let Some((relay, ca)) = &self.relay {
+            let proxy = format!("http://127.0.0.1:{}", relay.port());
+            let no_proxy = relay::no_proxy(
+                env.get("no_proxy")
+                    .or_else(|| env.get("NO_PROXY"))
+                    .map(String::as_str),
+            );
+            for key in ["https_proxy", "HTTPS_PROXY"] {
+                env.insert(key.into(), proxy.clone());
+            }
+            for key in ["no_proxy", "NO_PROXY"] {
+                env.insert(key.into(), no_proxy.clone());
+            }
+            env.insert("NODE_EXTRA_CA_CERTS".into(), ca.display().to_string());
+            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), CLAUDE_STAND_IN.into());
+        }
         env.insert(
             "CLAUDE_CODE_OAUTH_SCOPES".into(),
             if cred.scopes.is_empty() {
@@ -2257,7 +2384,15 @@ impl Supervisor {
                 tracing::warn!("writing the GitHub tokens failed: {e:#}");
             }
         }
-        if let Some(c) = &claude {
+        let mut claude = claude;
+        if let Some(c) = claude.as_mut() {
+            // The host keeps the token: should one come, it goes no further.
+            if self.relay.is_some() && c.access_token != CLAUDE_STAND_IN {
+                tracing::warn!(
+                    "the host sent a Claude token though it keeps it; Claude gets the stand-in"
+                );
+                c.access_token = CLAUDE_STAND_IN.to_owned();
+            }
             self.claude_credential = Some(c.clone());
         }
         let Some(rid) = request_id else { return };
@@ -2864,6 +2999,22 @@ fn stop_text(r: StopReason) -> &'static str {
     }
 }
 
+/// The session's value of the first of `keys` it sets, as Claude would get
+/// it: the host's configuration wins over the project's secrets, which win
+/// over its settings.
+fn session_var(config: &AgentConfig, keys: &[&str]) -> Option<String> {
+    let project = fctl_domain::settings::session_env(&config.spec.project.settings);
+    keys.iter().find_map(|k| {
+        config
+            .env
+            .get(*k)
+            .or_else(|| config.spec.secrets.get(*k))
+            .or_else(|| project.get(*k))
+            .filter(|v| !v.trim().is_empty())
+            .cloned()
+    })
+}
+
 /// Used by `main` to run the supervisor and its sockets.
 pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
     // The lock is held until the supervisor exits.
@@ -2879,7 +3030,22 @@ pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
     };
     let session_socket = local::socket_path(&socket);
     let user_state = state_dir.clone();
-    serving(listener, socket, state_dir, session_socket, user_state).await
+    let relay = match link::bind(&relay::socket_path(&socket)).await {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            tracing::warn!("no relay socket: {e:#}");
+            None
+        }
+    };
+    serving(
+        listener,
+        relay,
+        socket,
+        state_dir,
+        session_socket,
+        user_state,
+    )
+    .await
 }
 
 /// [`serve`], as root, with the host's socket already bound
@@ -2888,6 +3054,7 @@ pub async fn serve(socket: PathBuf, state_dir: PathBuf) -> Result<()> {
 pub async fn serve_protected(started: crate::protected::Started) -> Result<()> {
     let crate::protected::Started {
         listener,
+        relay,
         lock: _lock,
         socket,
         state,
@@ -2895,11 +3062,13 @@ pub async fn serve_protected(started: crate::protected::Started) -> Result<()> {
         user_state,
     } = started;
     let listener = tokio::net::UnixListener::from_std(listener)?;
-    serving(listener, socket, state, session_socket, user_state).await
+    let relay = relay.and_then(|r| tokio::net::UnixListener::from_std(r).ok());
+    serving(listener, relay, socket, state, session_socket, user_state).await
 }
 
 async fn serving(
     listener: tokio::net::UnixListener,
+    relay_socket: Option<tokio::net::UnixListener>,
     socket: PathBuf,
     state_dir: PathBuf,
     session_socket: PathBuf,
@@ -2922,10 +3091,12 @@ async fn serving(
     };
     let (mut sup, claude_rx, work_rx) = Supervisor::new(state_dir, session_socket.clone())?;
     sup.user_state = user_state;
+    sup.relay_socket = relay_socket;
     sup.take_over().await;
     tracing::info!("fctl-agent {VERSION} serving {}", socket.display());
     let r = sup.run(link_rx, claude_rx, work_rx, local_rx).await;
     let _ = user::as_root(|| std::fs::remove_file(&socket));
+    let _ = user::as_root(|| std::fs::remove_file(relay::socket_path(&socket)));
     if let Some(s) = session_socket {
         let _ = std::fs::remove_file(s);
     }
@@ -2989,6 +3160,7 @@ mod tests {
             sandbox: None,
             cache: None,
             diffs: false,
+            claude_relay: None,
         });
         let reply = ask(
             &mut sup,
@@ -3044,6 +3216,44 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn claudes_proxy_starts_on_a_later_try_after_one_fails() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        sup.relay_socket = Some(tokio::net::UnixListener::bind(
+            dir.path().join("agent.relay.sock"),
+        )?);
+        let mut config = config(dir.path(), false)?;
+        config.claude_relay = Some(fctl_proto::agent::ClaudeRelay {
+            ca: "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n".into(),
+        });
+        // Where the certificates go is a file: writing them fails.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, "")?;
+        sup.user_state = blocked;
+        sup.start_relay(&config);
+        assert!(sup.relay.is_none());
+        assert!(
+            sup.relay_socket.is_some(),
+            "the socket waits for the next try"
+        );
+        let AgentToHost::Hello(hello) = sup.hello() else {
+            anyhow::bail!("a hello");
+        };
+        assert!(hello.features.iter().any(|f| f == FEATURE_CLAUDE_RELAY));
+        assert!(!hello.claude_relay);
+        // The next try, as Claude starts, gets through.
+        sup.user_state = dir.path().join("user");
+        sup.start_relay(&config);
+        assert!(sup.relay.is_some());
+        assert!(sup.relay_socket.is_none());
+        let AgentToHost::Hello(hello) = sup.hello() else {
+            anyhow::bail!("a hello");
+        };
+        assert!(hello.claude_relay);
+        Ok(())
+    }
+
     fn config(dir: &std::path::Path, publish: bool) -> anyhow::Result<AgentConfig> {
         let mut spec = crate::workspace::tests::spec()?;
         spec.project.settings.publish_screenshots = publish;
@@ -3059,6 +3269,7 @@ mod tests {
             sandbox: None,
             cache: None,
             diffs: false,
+            claude_relay: None,
         })
     }
 

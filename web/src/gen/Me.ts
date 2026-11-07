@@ -47,6 +47,16 @@ avatar_source?: AvatarSource,
  */
 gravatar?: boolean, 
 /**
+ * Whether you keep your Claude token out of sandboxes (off unless you
+ * turn it on: [`UpdateMeRequest::claude_stand_in`]). Claude then gets
+ * a stand-in that Anthropic refuses
+ * ([`crate::runner::CLAUDE_STAND_IN`]), and the host of the runner a
+ * session runs on puts your token in as Claude's requests leave for the
+ * Anthropic API, so that agents can neither read your token nor send it
+ * anywhere. It applies to the sessions that start after you change it.
+ */
+claude_stand_in: boolean, 
+/**
  * The access token of the request, when it is one. A limited one sees
  * only `user` and this here: the rest stays empty.
  */

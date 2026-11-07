@@ -4,7 +4,7 @@
 
 use super::{
     AGENT_DIR, AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, COMMAND_TIMEOUT, RAN_AS_ROOT_SCRIPT,
-    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, USER_AGENT, attach_as_root,
+    SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, Socket, USER_AGENT, attach_as_root,
     attach_as_user_script, ran_as_root, run_cmd_within, serve_as_root, serve_as_user_script,
     shell_words,
 };
@@ -235,8 +235,8 @@ impl LimaDriver {
         Ok(())
     }
 
-    pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
-        let mut child = self.spawn(sb, &attach_script_for_lima()).await?;
+    pub async fn attach(&self, sb: &Sandbox, socket: Socket) -> Result<AgentIo> {
+        let mut child = self.spawn(sb, &attach_script_for_lima(socket)).await?;
         let stdout = child.stdout.take().context("shell stdout")?;
         let stdin = child.stdin.take().context("shell stdin")?;
         Ok(AgentIo {
@@ -320,12 +320,12 @@ fn serve_script_for_lima(root: bool) -> String {
 
 /// Attaches to fctl-agent as root where it runs so, as the VM's user where
 /// it runs as the user: without `sudo` in a VM where it never ran as root.
-fn attach_script_for_lima() -> String {
-    let socket = format!("{AGENT_DIR}/agent.sock");
+fn attach_script_for_lima(socket: Socket) -> String {
+    let path = format!("{AGENT_DIR}/{}", socket.file());
     format!(
-        "if [ -d {AGENT_DIR} ] && sudo -n test -S {socket} 2>/dev/null; then exec sudo -n {}; fi; {}",
-        shell_words(&attach_as_root()),
-        attach_as_user_script()
+        "if [ -d {AGENT_DIR} ] && sudo -n test -S {path} 2>/dev/null; then exec sudo -n {}; fi; {}",
+        shell_words(&attach_as_root(socket)),
+        attach_as_user_script(socket)
     )
 }
 
@@ -350,7 +350,7 @@ mod tests {
             "setsid sh -c 'mkdir -p \"$HOME/.fctl\" && exec \"$HOME/.fctl/bin/fctl-agent\" serve --socket \"$HOME/.fctl/agent.sock\""
         ));
         assert_eq!(
-            attach_script_for_lima(),
+            attach_script_for_lima(Socket::Host),
             "if [ -d /var/lib/fctl-agent ] && sudo -n test -S /var/lib/fctl-agent/agent.sock 2>/dev/null; then exec sudo -n '/opt/fctl/bin/fctl-agent' 'attach' '--socket' '/var/lib/fctl-agent/agent.sock'; fi; a=\"$HOME/.fctl/bin/fctl-agent\"; [ -x \"$a\" ] || a=/opt/fctl/bin/fctl-agent; exec \"$a\" attach --socket \"$HOME/.fctl/agent.sock\""
         );
     }

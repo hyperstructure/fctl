@@ -357,6 +357,7 @@ pub fn limited_me(user: &crate::model::UserRow, token: Option<TokenInfo>) -> Me 
         token,
         avatar_source: None,
         gravatar: None,
+        claude_stand_in: false,
         export: None,
     }
 }

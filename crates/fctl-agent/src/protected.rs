@@ -37,6 +37,9 @@ const OWN_STATE: [&str; 3] = ["journal.jsonl", "journal.ack", "state.json"];
 pub struct Started {
     /// The host's socket, bound.
     pub listener: UnixListener,
+    /// The socket where the host's channels for Claude's connections come
+    /// in, beside it ([`crate::relay`]), bound.
+    pub relay: Option<UnixListener>,
     /// Held while it serves.
     pub lock: link::Lock,
     pub socket: PathBuf,
@@ -91,6 +94,13 @@ pub fn start(spec: &str, socket: &Path, state: &Path, log: Option<&Path>) -> Res
     }
     migrate(&before.join("state"), state);
     let listener = bind(socket)?;
+    let relay = match bind(&crate::relay::socket_path(socket)) {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            tracing::warn!("no relay socket: {e:#}");
+            None
+        }
+    };
     match user::shield_from_oom() {
         Ok(()) => tracing::info!("the OOM killer leaves fctl-agent alone"),
         Err(e) => tracing::info!(
@@ -107,6 +117,7 @@ pub fn start(spec: &str, socket: &Path, state: &Path, log: Option<&Path>) -> Res
     );
     Ok(Start::Serving(Box::new(Started {
         listener,
+        relay,
         lock,
         socket: socket.to_owned(),
         state: state.to_owned(),

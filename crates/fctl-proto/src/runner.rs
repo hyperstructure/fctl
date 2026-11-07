@@ -263,7 +263,25 @@ pub struct ClaudeCredential {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub on_runners: bool,
+    /// Its owner keeps their Claude token out of sandboxes
+    /// ([`crate::api::Me::claude_stand_in`]): the host gives the agent
+    /// [`CLAUDE_STAND_IN`] in its place, and puts the token in as Claude's
+    /// requests leave for the Anthropic API
+    /// ([`crate::agent::AgentConfig::claude_relay`]). Hosts that don't know
+    /// it give the agent the token.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub stand_in: bool,
 }
+
+/// The token Claude gets in place of its owner's, when they keep it out of
+/// sandboxes ([`ClaudeCredential::stand_in`]). It is worth nothing:
+/// Anthropic refuses it, and only the host that runs the session puts the
+/// real token in its place, on the requests its sandbox's Claude sends the
+/// Anthropic API. Shaped like a token from `claude setup-token`, which is
+/// what Claude Code expects.
+pub const CLAUDE_STAND_IN: &str =
+    "sk-ant-oat01-fctl-stand-in-the-host-puts-the-real-token-in-0000000000000000000000000-AA";
 
 /// A GitHub installation token, scoped to some of the session's
 /// repositories and valid for an hour.

@@ -68,6 +68,38 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub diffs: bool,
+    /// Claude's token stays with the host ([`crate::runner::ClaudeCredential::stand_in`]):
+    /// the spec's and every later credential's token is
+    /// [`crate::runner::CLAUDE_STAND_IN`], and fctl-agent hands each of
+    /// Claude's connections to the Anthropic API to the host
+    /// ([`AgentToHost::ClaudeConnection`]), which puts the real token in.
+    /// Only for agents that announce [`FEATURE_CLAUDE_RELAY`].
+    #[serde(default)]
+    pub claude_relay: Option<ClaudeRelay>,
+}
+
+/// An agent that hands Claude's connections to the Anthropic API to the host
+/// ([`AgentConfig::claude_relay`]), in its [`AgentHello`].
+pub const FEATURE_CLAUDE_RELAY: &str = "claude_relay";
+
+/// The host whose API Claude's connections the host relays: the only one
+/// it puts a token in for.
+pub const CLAUDE_API_HOST: &str = "api.anthropic.com";
+
+/// How Claude reaches the Anthropic API when the host keeps its token
+/// ([`AgentConfig::claude_relay`]). fctl-agent runs an HTTPS proxy for
+/// Claude (`HTTPS_PROXY`) and for what it runs: connections to
+/// [`CLAUDE_API_HOST`] go to the host through the sandbox's socket for them
+/// (`agent.relay.sock`, beside the host's), the others straight out. The
+/// host answers them as that host, with a certificate of its own authority,
+/// which Claude trusts (`NODE_EXTRA_CA_CERTS`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ClaudeRelay {
+    /// The host's certificate authority, PEM. It signs nothing but the
+    /// certificate the host answers Claude's connections with, and its key
+    /// never leaves the host.
+    pub ca: String,
 }
 
 /// Where a sandbox finds its project's package caches, which the project's
@@ -174,6 +206,12 @@ pub struct AgentHello {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
     pub features: Vec<String>,
+    /// It was configured with a relay ([`AgentConfig::claude_relay`]): its
+    /// Claude has the stand-in, and the host that attaches puts the token
+    /// in, which a host that restarted asks the control plane for again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub claude_relay: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -240,6 +278,14 @@ pub enum AgentToHost {
     /// that ask for it ([`AgentConfig::diffs`]).
     Diff {
         files: Vec<FileDiff>,
+    },
+    /// Claude opened a connection to the Anthropic API, which waits for the
+    /// host ([`AgentConfig::claude_relay`]): the host opens a channel to the
+    /// sandbox's relay socket, as it attaches, sends `id` and a newline on
+    /// it, then answers Claude's TLS on it. Agents send it only to hosts
+    /// that configured them with a relay.
+    ClaudeConnection {
+        id: String,
     },
     /// The supervisor is exiting.
     Exited {

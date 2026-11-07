@@ -31,4 +31,10 @@ commit_email?: string,
  * removes the picture if it is your Gravatar. Removing your picture
  * (`DELETE /api/v1/me/avatar`) turns it off too.
  */
-gravatar?: boolean, };
+gravatar?: boolean, 
+/**
+ * `true` keeps your Claude token out of sandboxes (`Me.claude_stand_in`);
+ * `false` gives it to them again, which takes confirming it's you where
+ * the instance asks for that.
+ */
+claude_stand_in?: boolean, };

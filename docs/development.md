@@ -81,6 +81,24 @@ echo sk-ant-oat01-fctl-dev-kept-on-the-runner-0000000000 \
 cargo run -p fctl -- claude connect --on-runners
 ```
 
+To try keeping the token out of sandboxes, turn it on and ask fake-claude
+for its environment: it says it got the stand-in (`sk-ant-oat01-fctl-stand-in-…`),
+and its environment has `HTTPS_PROXY` at fctl-agent's proxy. (Release builds
+give Claude the token on the `process` driver; debug builds relay there, so
+the dev host does.)
+
+```sh
+cargo run -p fctl -- claude set --stand-in on
+cargo run -p fctl -- run "printenv"
+```
+
+fake-claude never calls the Anthropic API. To see Claude's requests go
+through the host, run real Claude Code on a second runner (its `host.toml`'s
+`claude_bin`) whose host has `FCTL_DEV_CLAUDE_API` pointing at a stand-in
+for the API on localhost, with that server's certificate in
+`SSL_CERT_FILE`: debug builds of the host send Claude's requests there,
+with the session's token in place of the stand-in. Release builds ignore it.
+
 More workspaces, and people in them, take a few commands: `cargo run -p
 fctl -- workspaces create "Side project"`, then `workspaces add-runner
 dev-host -w side-project` so that the dev runner takes its sessions too,

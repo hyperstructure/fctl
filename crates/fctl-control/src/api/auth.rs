@@ -12,6 +12,7 @@ use fctl_domain::allowlist;
 use fctl_domain::tokens::{self, SecretKind, hash_secret, new_secret};
 use fctl_domain::two_factor::{self, Via};
 use fctl_domain::validate;
+use fctl_domain::verify::Sensitive;
 use fctl_proto::api::*;
 use fctl_proto::session::InstanceRole;
 use fctl_proto::{ApiError, ErrorCode};
@@ -434,10 +435,20 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
         Some(p) => validate::preferred_name(p)?,
         None => user.preferred_name.clone(),
     };
+    let commit_email = body
+        .commit_email
+        .as_deref()
+        .map(validate::commit_email)
+        .transpose()?;
+    // Giving sandboxes the Claude token again lets their agents hand it
+    // over: a stolen session can't do it alone. Asked once the rest is
+    // checked, before anything changes.
+    if body.claude_stand_in == Some(false) && user.claude_stand_in {
+        ctx.verified(Sensitive::GiveClaudeTokenToSandboxes)?;
+    }
     // The primary address's commit email (Settings → Email addresses sets
     // the others').
-    if let Some(e) = body.commit_email.as_deref() {
-        let commit_email = validate::commit_email(e)?;
+    if let Some(commit_email) = commit_email {
         crate::api::emails::set_commit_email(ctx, &user, &user.email, commit_email.as_deref())
             .await?;
     }
@@ -473,6 +484,24 @@ pub async fn update_me(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
             statements.extend(avatars::remove_gravatar(&ctx.db, ctx.now, &user.id)?);
         }
         None => {}
+    }
+    if let Some(on) = body.claude_stand_in
+        && on != user.claude_stand_in
+    {
+        statements.push(q(
+            &ctx.db,
+            "UPDATE users SET claude_stand_in = ? WHERE id = ?",
+            &[n(i64::from(on)), s(&user.id)],
+        )?);
+        ctx.audit(
+            if on {
+                "claude.stand_in_on"
+            } else {
+                "claude.stand_in_off"
+            },
+            Some(&user.id),
+            None,
+        );
     }
     batch(&ctx.db, statements).await?;
     let mut user = auth::user_by_id(ctx, &user.id)

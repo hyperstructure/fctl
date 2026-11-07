@@ -34,7 +34,7 @@ pub mod vsock;
 
 use super::{
     AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, DiskSpot, RAN_AS_ROOT_SCRIPT, Running, SH, Sandbox,
-    SandboxInfo, SandboxSpec, attach_as_root, attach_script, ran_as_root, serve_as_root,
+    SandboxInfo, SandboxSpec, Socket, attach_as_root, attach_script, ran_as_root, serve_as_root,
     serve_script, system_script,
 };
 use crate::caches::{self, Spot};
@@ -1434,17 +1434,17 @@ impl FirecrackerDriver {
         }
     }
 
-    pub async fn attach(&self, sb: &Sandbox) -> Result<AgentIo> {
+    pub async fn attach(&self, sb: &Sandbox, socket: Socket) -> Result<AgentIo> {
         let vm = self.vm(&sb.name)?;
         let exec = if self.agent_root(sb).await? {
             Exec {
-                argv: attach_as_root(),
+                argv: attach_as_root(socket),
                 user: Some("root".into()),
                 cwd: Some("/".into()),
                 ..self.exec_for(&sb.name, Vec::new())
             }
         } else {
-            self.sh(&sb.name, &attach_script(AGENT_PATH))
+            self.sh(&sb.name, &attach_script(AGENT_PATH, socket))
         };
         let started = vsock::start(&vm.vsock(), exec).await?;
         // Why an attach failed, in the host's log.
