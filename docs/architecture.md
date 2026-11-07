@@ -3509,9 +3509,12 @@ in `firecracker/` in the host's data directory.
   goes, and lets the states of stopped sandboxes go first while the disk
   is low. One another Firecracker release saved, or one that doesn't load,
   goes too, and the sandbox boots from its disk. A VM that runs through
-  the jailer saves none yet: Firecracker would write it in the jail's
-  chroot, which goes as the VM stops, so it boots from its disk. Image
-  builders save none either: they boot afresh for each build.
+  the jailer saves its state at the root of its chroot, as the jail's
+  user, and the host takes it out to `saved/` before the jail goes; it
+  resumes in a new jail (below). A state saved in the jailer resumes
+  only in one, and one saved without it only without, so turning
+  `jailer` on or off lets the states kept before go. Image builders save
+  none: they boot afresh for each build.
 - **The VM's init** is fctl-agent, from an initramfs the host makes of its
   own static fctl-agent (`crates/fctl-agent/src/vm`). It mounts the root,
   copies itself to `/opt/fctl/bin/fctl-agent`, sets up what images don't
@@ -3569,9 +3572,23 @@ checked to be a socket. Its writable disk is lent to the
 jail's user while it runs, noted in `jail.json` beside the chroot, and
 given back to root as the VM stops, so that a later jail with the same
 uid owns nothing; jails of VMs that don't run, which a host that stopped
-or crashed left, go before the next VM starts. The jailer needs cgroup v2
-and a filesystem that allows device files (it makes `/dev/kvm` in the
-chroot): without either, the driver isn't ready and says what to change.
+or crashed left, go before the next VM starts. The host keeps the VM's
+configuration with its own paths in the sandbox's directory, for its
+size and its disks. A jailed VM's saved state goes through its chroot:
+Firecracker writes `vmstate` and `memory` at its root, as the jail's
+user, and the host takes each out to `saved/` by what it opened without
+following a link, checked to be a regular file of that user's with no
+other name (so that the jail can't hand it a host's file, or the disk it
+was lent), then gives it to root, readable by root alone. A resume makes
+a new jail as a start does, but with no configuration: hard links of the
+disks the VM booted with, at the same paths in the chroot, and of the
+saved state, lent to the jail's user, who must read it. The host starts
+Firecracker in it, has it load the state, and only then links the
+vsock's socket out, since Firecracker makes it as the state loads; the
+state's links in the chroot go once it is loaded. The jailer needs
+cgroup v2 and a filesystem that allows device files (it makes `/dev/kvm`
+in the chroot): without either, the driver isn't ready and says what to
+change.
 `passt` runs outside the jail and drops to `nobody` itself; its pid's
 file goes in `/tmp` under a name with a random part. A jailed VM's cache
 server listens in the VM's socket directory, whose path stays short, and
