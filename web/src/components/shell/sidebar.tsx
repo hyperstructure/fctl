@@ -2,7 +2,7 @@
 // at the top; then each workspace with its projects, each with its icon, its sessions at work and
 // those that ended in the last hour; for the project a page is about, its own pull requests too.
 // People drag workspaces and projects into their order, drag the sidebar wider, and fold it into a
-// rail of icons (⌘\).
+// rail of icons (⌘B).
 
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
