@@ -1,5 +1,5 @@
 // The sidebar's parts: the search that opens ⌘K, a session's line, a count, the rows at its foot,
-// the person's menu, and the handle that makes it wider or narrower.
+// the person's menu, and the handle on its edge that resizes, folds and unfolds it.
 
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -26,6 +26,7 @@ import { pullRequests } from "@/lib/pulls";
 import { forgetPush } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
 import { forgetSidebar } from "@/lib/sidebar";
+import { draggedTo, RAIL_WIDTH, SIDEBAR_WIDTH } from "@/lib/sidebar-layout";
 import { useTheme } from "@/lib/theme";
 
 /** The time, again every minute: a session leaves the sidebar an hour after it ended. */
@@ -279,54 +280,77 @@ export function UserMenu({
 
 /**
  * The handle on the sidebar's edge: drag it, or use the arrow keys, to make the sidebar wider or
- * narrower; a double click puts it back.
+ * narrower, or to fold it into its rail and out again (Enter does either); a double click puts it
+ * back as it was at first.
  */
 export function ResizeHandle({
   width,
-  min,
-  max,
+  folded,
   onResize,
-  onDragging,
+  onFold,
+  onFollow,
 }: {
   width: number;
-  min: number;
-  max: number;
+  /** It is folded into its rail. */
+  folded: boolean;
   /** A new width, or none for the initial one. */
   onResize: (w: number | null) => void;
-  onDragging: (on: boolean) => void;
+  onFold: (folded: boolean) => void;
+  /** Whether it follows the pointer at once, without its animation: not as it folds or unfolds. */
+  onFollow: (on: boolean) => void;
 }) {
-  const start = useRef<{ x: number; w: number } | null>(null);
+  // Where the drag started, and how wide the sidebar was then: folding puts that width back.
+  const start = useRef<{ x: number; from: number; width: number } | null>(null);
+  const end = () => {
+    start.current = null;
+    onFollow(false);
+  };
   return (
     // biome-ignore lint/a11y/useSemanticElements: a separator that moves is a focusable widget, not an <hr>.
     <div
       role="separator"
       aria-orientation="vertical"
       aria-label="Sidebar width"
-      aria-valuenow={width}
-      aria-valuemin={min}
-      aria-valuemax={max}
+      aria-valuenow={folded ? RAIL_WIDTH : width}
+      aria-valuetext={folded ? "Folded" : undefined}
+      aria-valuemin={RAIL_WIDTH}
+      aria-valuemax={SIDEBAR_WIDTH.max}
       tabIndex={0}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
-        start.current = { x: e.clientX, w: width };
-        onDragging(true);
+        start.current = { x: e.clientX, from: folded ? RAIL_WIDTH : width, width };
       }}
       onPointerMove={(e) => {
-        if (start.current) onResize(start.current.w + e.clientX - start.current.x);
+        const s = start.current;
+        if (!s) return;
+        const to = draggedTo(s.from + e.clientX - s.x);
+        if (to === "folded") {
+          if (folded) return;
+          onFollow(false);
+          if (width !== s.width) onResize(s.width);
+          onFold(true);
+        } else {
+          // Out of the rail it slides to where the pointer is, then follows it.
+          onFollow(!folded);
+          onResize(to);
+          if (folded) onFold(false);
+        }
       }}
-      onPointerUp={() => {
-        start.current = null;
-        onDragging(false);
+      onPointerUp={end}
+      onLostPointerCapture={end}
+      onDoubleClick={() => {
+        onResize(null);
+        if (folded) onFold(false);
       }}
-      onLostPointerCapture={() => {
-        start.current = null;
-        onDragging(false);
-      }}
-      onDoubleClick={() => onResize(null)}
       onKeyDown={(e) => {
-        if (e.key === "ArrowLeft") onResize(width - 16);
-        else if (e.key === "ArrowRight") onResize(width + 16);
-        else return;
+        if (e.key === "Enter") onFold(!folded);
+        else if (e.key === "ArrowRight") {
+          if (folded) onFold(false);
+          else onResize(width + 16);
+        } else if (e.key === "ArrowLeft" && !folded) {
+          if (width <= SIDEBAR_WIDTH.min) onFold(true);
+          else onResize(width - 16);
+        } else return;
         e.preventDefault();
       }}
       className="group/handle absolute inset-y-0 -right-1.5 z-10 hidden w-3 cursor-col-resize touch-none outline-none md:block"

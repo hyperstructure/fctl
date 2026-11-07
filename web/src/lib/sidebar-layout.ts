@@ -41,6 +41,13 @@ function subscribe(fn: () => void) {
 
 const clamp = (w: number) => Math.round(Math.min(SIDEBAR_WIDTH.max, Math.max(SIDEBAR_WIDTH.min, w)));
 
+/**
+ * Where dragging its edge to `w` px leaves it: folded into its rail while the edge is nearer the
+ * rail than its least width, else open that wide, within bounds.
+ */
+export const draggedTo = (w: number): number | "folded" =>
+  w < (RAIL_WIDTH + SIDEBAR_WIDTH.min) / 2 ? "folded" : clamp(w);
+
 /** Its width, and a setter that keeps a new one within bounds (none: back to the initial one). */
 export function useSidebarWidth(): [number, (w: number | null) => void] {
   const raw = useSyncExternalStore(
