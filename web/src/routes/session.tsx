@@ -41,6 +41,7 @@ import {
   PullRequestReviewMark,
   PullRequestStateIcon,
 } from "@/components/session/pull-request";
+import { QuestionCard } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
 import { Transcript } from "@/components/session/transcript";
@@ -596,6 +597,23 @@ export function SessionPage() {
           className="sticky -bottom-(--viewport-shift) z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]"
         >
           <div className="mx-auto w-full max-w-[760px] px-6">
+            {session?.question && !session.review && (
+              <QuestionCard
+                key={session.question.asked_at}
+                question={session.question}
+                canAnswer={(role === "editor" || role === "owner") && status !== "failed"}
+                onAnswer={(t) =>
+                  store.send(
+                    t,
+                    me?.user
+                      ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
+                      : undefined,
+                    { attachments: [], previews: {} },
+                  )
+                }
+                className="mb-3"
+              />
+            )}
             {session?.review ? (
               <ReviewFooter session={session} review={review} />
             ) : (

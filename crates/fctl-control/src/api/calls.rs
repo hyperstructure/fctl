@@ -258,6 +258,9 @@ pub async fn runner_call(
         AgentCall::Ticket { request } => AgentAnswer::Ticket {
             answer: crate::tickets::call(ctx, &session, request).await?,
         },
+        AgentCall::Ask { question, options } => AgentAnswer::Asked {
+            question: ask(ctx, &session, &question, &options).await?,
+        },
         AgentCall::SubmitReview {
             summary,
             findings,
@@ -332,4 +335,33 @@ async fn resolve_thread(
         resolved,
         pull_request_url: found.pull_request_url,
     })
+}
+
+/// `fctl ask`: the session's agent asks the people who follow it for their
+/// input, or takes its question back. SessionDO keeps it, shows it where
+/// people follow the session, and tells them as the turn ends (`crate::
+/// notify`); a person's next message answers it. A review agent waits for
+/// nobody, so it asks nothing.
+async fn ask(
+    ctx: &Ctx,
+    session: &RunnerSession,
+    text: &str,
+    options: &[String],
+) -> AppResult<Option<fctl_proto::session::SessionQuestion>> {
+    if session.review {
+        return Err(forbidden(
+            "Review agents ask nobody: say what you need in the review.",
+        ));
+    }
+    let question = fctl_domain::validate::question(text, options)?.map(|(text, options)| {
+        fctl_proto::session::SessionQuestion {
+            text,
+            options,
+            asked_at: ctx.now,
+        }
+    });
+    let stub = crate::internal::session_stub(&ctx.env, &session.id)?;
+    let asked: crate::internal::Ask =
+        crate::internal::post(&stub, "/ask", &crate::internal::Ask { question }).await?;
+    Ok(asked.question)
 }

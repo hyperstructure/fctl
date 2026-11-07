@@ -5,6 +5,7 @@ import type { NoticeLevel } from "./NoticeLevel";
 import type { PostedReview } from "./PostedReview";
 import type { PublishedFile } from "./PublishedFile";
 import type { Retrospective } from "./Retrospective";
+import type { SessionQuestion } from "./SessionQuestion";
 import type { SummarizedPullRequest } from "./SummarizedPullRequest";
 import type { TicketNotice } from "./TicketNotice";
 
@@ -18,7 +19,8 @@ export type Notice = { level: NoticeLevel,
  * `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
  * `pull_request_summarized`, `follow_up_held`, `ticket_created`,
  * `ticket_commented`, `ticket_updated`, `ticket_replied`,
- * `ticket_moved`, `ticket_failed`.
+ * `ticket_moved`, `ticket_failed`, `question_asked`,
+ * `question_withdrawn`.
  */
 code: string, message: string, 
 /**
@@ -61,4 +63,9 @@ follow_up?: FollowUp,
  * What the agent, or fctl for it, did in the project's ticket tracker,
  * in a `ticket_*` notice. Clients from before it show the message.
  */
-ticket?: TicketNotice, };
+ticket?: TicketNotice, 
+/**
+ * The question a `question_asked` notice is about (`fctl ask`), as the
+ * agent asked it. Clients from before it show the message.
+ */
+question?: SessionQuestion, };

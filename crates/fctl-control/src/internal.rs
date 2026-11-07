@@ -83,6 +83,18 @@ pub struct ControlState {
     /// said.
     #[serde(default)]
     pub disk: Option<DiskNews>,
+    /// Someone stopped the session, or deleted it: its agent's question
+    /// goes, as nobody will answer it.
+    #[serde(default)]
+    pub drop_question: bool,
+}
+
+/// The question a session's agent asks people now (`/ask`, from `fctl ask`
+/// through `crate::api::calls`): none takes back the one it asked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Ask {
+    #[serde(default)]
+    pub question: Option<fctl_proto::session::SessionQuestion>,
 }
 
 /// What the session's page shows of its runner's disk from now on.

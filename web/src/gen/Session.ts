@@ -5,6 +5,7 @@ import type { PullRequestRef } from "./PullRequestRef";
 import type { RemoteControlState } from "./RemoteControlState";
 import type { RunnerRef } from "./RunnerRef";
 import type { SessionId } from "./SessionId";
+import type { SessionQuestion } from "./SessionQuestion";
 import type { SessionReview } from "./SessionReview";
 import type { SessionRole } from "./SessionRole";
 import type { SessionSchedule } from "./SessionSchedule";
@@ -107,4 +108,10 @@ schedule?: SessionSchedule,
  * Absent for other sessions, and from control planes before ticket
  * trackers.
  */
-ticket?: SessionTicket, };
+ticket?: SessionTicket, 
+/**
+ * What its agent asked the people who follow it (`fctl ask`), until
+ * someone answers: a person's next message does. Absent while it
+ * asks nothing, and from control planes before questions.
+ */
+question?: SessionQuestion, };

@@ -8,7 +8,8 @@ use crate::event::SessionEvent;
 use crate::runner::{ClaudeCredentialKind, DriverInfo, RunnerClaudeToken, SandboxLimits};
 use crate::session::{
     GithubAccess, InstanceRole, Memory, Project, ProjectIcon, ProjectRole, ProjectSettings,
-    PullRequestRef, RepoAccess, RepoRef, Retrospective, RetrospectiveOutcome, Session, SessionRef,
+    PullRequestRef, RepoAccess, RepoRef, Retrospective, RetrospectiveOutcome, Session,
+    SessionQuestion, SessionRef,
     SessionRole, SessionStatus, UserRef, WorkspaceColor, WorkspaceRef, WorkspaceRole,
 };
 use crate::{
@@ -3661,6 +3662,17 @@ pub enum AgentCall {
     /// ([`ReviewAgents::description_summary`]); fctl-agents and control
     /// planes from before it refuse it.
     SummarizePullRequest { summary: PullRequestSummary },
+    /// Asks the people who follow the session for their input (`fctl
+    /// ask`): the question, and answers they can give with a click. It
+    /// takes the place of one the agent asked before, and an empty
+    /// question takes that back. A person's next message answers it.
+    /// fctl-agents and control planes from before questions refuse it.
+    Ask {
+        question: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+        options: Vec<String>,
+    },
     /// Reads or writes the project's ticket tracker (`fctl ticket`): a
     /// [`crate::tickets::TicketRequest`], which hosts and fctl-agent pass
     /// on as it is, so that what `fctl ticket` does grows with the control
@@ -3716,6 +3728,11 @@ pub enum AgentAnswer {
     /// summary now.
     PullRequestSummarized {
         summarized: SummarizedPullRequest,
+    },
+    /// The session's question as it is now: none once taken back.
+    Asked {
+        #[cfg_attr(feature = "ts", ts(optional))]
+        question: Option<SessionQuestion>,
     },
     /// The tracker's answer to a [`AgentCall::Ticket`]: a
     /// [`crate::tickets::TicketAnswer`], passed on as it is.

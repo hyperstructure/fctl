@@ -110,6 +110,16 @@ Examples:
   fctl publish --json after.png | jq -r '.published[].markdown'"
     )]
     Publish(cmd::publish::PublishArgs),
+    /// Ask the people who follow your session for their input (agents, in
+    /// its sandbox): a decision only they can make, access, an answer. They
+    /// see it where they follow the session, with the answers you offer to
+    /// click, and hear of it as your turn ends; end it then. Their answer
+    /// comes as a message.
+    #[command(after_help = "Examples:
+  fctl ask \"Round Danish prices to whole kroner, or keep øre?\" -o \"Round to whole kroner\" -o \"Keep øre\"
+  fctl ask \"Which Stripe account should the webhooks use?\"
+  fctl ask --withdraw                  # you found the answer yourself")]
+    Ask(cmd::ask::AskArgs),
     /// Resolve review threads of a pull request (agents that review and
     /// comment, in their session's sandbox): GitHub lets only tokens that
     /// can push resolve them, so fctl does it for them.
@@ -454,6 +464,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Show { session } => cmd::sessions::show(server, &session, json).await,
         Command::Edit(args) => cmd::sessions::edit(server, args, json).await,
         Command::Publish(args) => cmd::publish::publish(args, json).await,
+        Command::Ask(args) => cmd::ask::run(args, json).await,
         Command::Unpublish { links } => cmd::publish::unpublish(server, &links, json).await,
         Command::Memory(args) => cmd::memory::run(server, args, json).await,
         Command::Retro(args) => cmd::retro::run(server, args, json).await,
