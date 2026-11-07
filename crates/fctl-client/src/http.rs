@@ -163,6 +163,34 @@ impl HttpClient {
         max_bytes: u64,
     ) -> Result<u64> {
         use tokio::io::AsyncWriteExt;
+        let mut body = self.open(url, token, headers).await?;
+        let io = |e: std::io::Error| Error::Other(format!("writing {}: {e}", path.display()));
+        let mut file = tokio::fs::File::create(path).await.map_err(io)?;
+        let mut size: u64 = 0;
+        while let Some(data) = body.next().await? {
+            size += data.len() as u64;
+            if size > max_bytes {
+                return Err(Error::Other(format!(
+                    "{} is larger than {} MiB",
+                    body.url,
+                    max_bytes / 1024 / 1024
+                )));
+            }
+            file.write_all(&data).await.map_err(io)?;
+        }
+        file.flush().await.map_err(io)?;
+        Ok(size)
+    }
+
+    /// GETs `url`, following up to 5 redirects, for its body to be read as
+    /// it comes ([`Body::next`]), with no time limit: the caller sets one.
+    /// The token and `headers` go to `url`'s origin only.
+    pub async fn open(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> Result<Body> {
         let origin = |u: &str| url::Url::parse(u).ok().map(|u| u.origin());
         let first = origin(url);
         let mut current = url.to_owned();
@@ -176,15 +204,10 @@ impl HttpClient {
             let req = request(Method::GET, &current, token, None, None, headers)?;
             // Signed download links carry a token in their query.
             let shown = without_query(&current);
-            let network = |message: String| Error::Network {
+            let res = self.client.request(req).await.map_err(|e| Error::Network {
                 url: shown.clone(),
-                message,
-            };
-            let res = self
-                .client
-                .request(req)
-                .await
-                .map_err(|e| network(error_chain(&e)))?;
+                message: error_chain(&e),
+            })?;
             let status = res.status();
             if status.is_redirection() {
                 let Some(loc) = res
@@ -200,7 +223,7 @@ impl HttpClient {
                     .map_err(|e| Error::Decode(e.to_string()))?;
                 continue;
             }
-            let mut body = res.into_body();
+            let body = res.into_body();
             if !status.is_success() {
                 let bytes = body
                     .collect()
@@ -212,24 +235,7 @@ impl HttpClient {
                     body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
                 });
             }
-            let io = |e: std::io::Error| Error::Other(format!("writing {}: {e}", path.display()));
-            let mut file = tokio::fs::File::create(path).await.map_err(io)?;
-            let mut size: u64 = 0;
-            while let Some(frame) = body.frame().await {
-                let frame = frame.map_err(|e| network(e.to_string()))?;
-                if let Ok(data) = frame.into_data() {
-                    size += data.len() as u64;
-                    if size > max_bytes {
-                        return Err(Error::Other(format!(
-                            "{shown} is larger than {} MiB",
-                            max_bytes / 1024 / 1024
-                        )));
-                    }
-                    file.write_all(&data).await.map_err(io)?;
-                }
-            }
-            file.flush().await.map_err(io)?;
-            return Ok(size);
+            return Ok(Body { body, url: shown });
         }
         Err(Error::Other("too many redirects".into()))
     }
@@ -313,6 +319,31 @@ impl HttpClient {
             return Ok(bytes.to_vec());
         }
         Err(Error::Other("too many redirects".into()))
+    }
+}
+
+/// The body of a response to [`HttpClient::open`], read as it comes.
+pub struct Body {
+    body: hyper::body::Incoming,
+    /// Where it comes from, without the query, which may hold a token.
+    pub url: String,
+}
+
+impl Body {
+    /// What came next; `None` once all of it came.
+    pub async fn next(&mut self) -> Result<Option<Bytes>> {
+        while let Some(frame) = self.body.frame().await {
+            let frame = frame.map_err(|e| Error::Network {
+                url: self.url.clone(),
+                message: error_chain(&e),
+            })?;
+            if let Ok(data) = frame.into_data()
+                && !data.is_empty()
+            {
+                return Ok(Some(data));
+            }
+        }
+        Ok(None)
     }
 }
 

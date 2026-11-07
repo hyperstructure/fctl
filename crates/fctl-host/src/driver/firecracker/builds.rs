@@ -364,15 +364,13 @@ impl FirecrackerDriver {
                 b.reference
             ));
         }
-        let layers: Vec<fctl_proto::vm::Layer> = image.resolved.layers[skip..]
-            .iter()
-            .map(|l| fctl_proto::vm::Layer {
-                media_type: l.media_type.clone(),
-                size: l.size,
-            })
-            .collect();
+        let blobs = &image.resolved.layers[skip..];
+        let layers = super::vm_layers(blobs);
+        let files = &image.layers[skip..];
         let unpacked = self
-            .unpack(&rootfs, &layers, &image.layers[skip..], skip > 0, log)
+            .unpack(&rootfs, &layers, skip > 0, log, |to_vm| {
+                super::send_files(blobs, files, to_vm)
+            })
             .await?;
         let diff_ids = super::checked_diff_ids(&image.resolved, skip, unpacked.diff_ids.as_deref())
             .context("the image built isn't what its config says")?;

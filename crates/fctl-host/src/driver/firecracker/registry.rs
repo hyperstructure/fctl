@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// What a manifest may be, as registries name them: an index of the
 /// platforms' manifests, or one platform's.
@@ -450,52 +451,105 @@ impl Registry {
         bail!("{reference}'s index points at another index")
     }
 
-    /// Downloads the blob `layer` of the image `reference` to `to`, and
-    /// checks it against its digest.
+    /// Downloads the blob `layer` of the image `reference` to the file
+    /// `to`, and checks it against its size and digest.
     pub async fn blob(&self, reference: &str, layer: &Descriptor, to: &Path) -> Result<()> {
+        let mut file = tokio::fs::File::create(to)
+            .await
+            .with_context(|| format!("making {}", to.display()))?;
+        self.blob_into(reference, layer, &mut file).await?;
+        file.flush().await?;
+        Ok(())
+    }
+
+    /// Downloads the blob `layer` of the image `reference` into `to` as it
+    /// comes, within [`LAYER_TIME`]: no more of it than its manifest's
+    /// size, all of which `to` has had by the time its digest is checked.
+    /// So what reads `to` as it fills (a VM that unpacks the layer, say)
+    /// has read a layer that isn't what the manifest says by the time this
+    /// fails, and what it made of it must go.
+    pub async fn blob_into<W: AsyncWrite + Unpin>(
+        &self,
+        reference: &str,
+        layer: &Descriptor,
+        to: &mut W,
+    ) -> Result<()> {
         let r = ImageRef::parse(reference)
             .with_context(|| format!("{reference} isn't an image reference"))?;
         let (base, repository) = endpoint(&r.name)?;
         let url = format!("{base}/blobs/{}", layer.digest);
         let registry = r.name.split('/').next().unwrap_or_default();
-        let http = HttpClient::new(LAYER_TIME);
-        let mut renewed = false;
-        let size = loop {
-            let token = self.token(repository);
-            match http
-                .download_to(&url, token.as_deref(), &[], to, MAX_LAYER, LAYER_TIME)
-                .await
-            {
-                Ok(size) => break size,
-                // Tokens run out, minutes after they came: the layers of a
-                // large image may take longer.
-                Err(fctl_client::Error::Status { status: 401, .. }) if !renewed => {
-                    let challenge = self.challenge(repository).with_context(|| {
-                        format!("{registry} refused {} without a token", layer.digest)
-                    })?;
-                    self.renew(registry, repository, &challenge).await?;
-                    renewed = true;
-                }
-                Err(e) => {
-                    return Err(
-                        anyhow::Error::from(e).context(format!("downloading {}", layer.digest))
-                    );
-                }
-            }
-        };
-        if layer.size > 0 && size != layer.size {
+        if layer.size > MAX_LAYER {
             bail!(
-                "{} is {size} bytes rather than the {} its manifest says",
+                "{} is larger than {} GiB",
                 layer.digest,
-                layer.size
+                MAX_LAYER / 1024 / 1024 / 1024
             );
         }
-        let path = to.to_owned();
-        let digest = tokio::task::spawn_blocking(move || file_digest(&path)).await??;
-        if digest != layer.digest {
-            bail!("{} doesn't match its digest", layer.digest);
-        }
-        Ok(())
+        let http = HttpClient::new(LAYER_TIME);
+        let downloading = async {
+            let mut renewed = false;
+            let mut body = loop {
+                let token = self.token(repository);
+                match http.open(&url, token.as_deref(), &[]).await {
+                    Ok(body) => break body,
+                    // Tokens run out, minutes after they came: the layers of
+                    // a large image may take longer.
+                    Err(fctl_client::Error::Status { status: 401, .. }) if !renewed => {
+                        let challenge = self.challenge(repository).with_context(|| {
+                            format!("{registry} refused {} without a token", layer.digest)
+                        })?;
+                        self.renew(registry, repository, &challenge).await?;
+                        renewed = true;
+                    }
+                    Err(e) => {
+                        return Err(
+                            anyhow::Error::from(e).context(format!("downloading {}", layer.digest))
+                        );
+                    }
+                }
+            };
+            let mut hasher = Sha256::new();
+            let mut size: u64 = 0;
+            while let Some(data) = body
+                .next()
+                .await
+                .with_context(|| format!("downloading {}", layer.digest))?
+            {
+                size += data.len() as u64;
+                if size > layer.size {
+                    bail!(
+                        "{} is larger than the {} bytes its manifest says",
+                        layer.digest,
+                        layer.size
+                    );
+                }
+                hasher.update(&data);
+                to.write_all(&data)
+                    .await
+                    .with_context(|| format!("passing {} on", layer.digest))?;
+            }
+            if size != layer.size {
+                bail!(
+                    "{} is {size} bytes rather than the {} its manifest says",
+                    layer.digest,
+                    layer.size
+                );
+            }
+            if format!("sha256:{}", hex::encode(hasher.finalize())) != layer.digest {
+                bail!("{} doesn't match its digest", layer.digest);
+            }
+            Ok(())
+        };
+        tokio::time::timeout(LAYER_TIME, downloading)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "downloading {} took more than {} minutes",
+                    layer.digest,
+                    LAYER_TIME.as_secs() / 60
+                )
+            })?
     }
 }
 
@@ -707,6 +761,137 @@ mod tests {
         registry.blob(&reference, &resolved.layers[0], &to).await?;
         assert_eq!(std::fs::read(&to)?, layer);
         assert_eq!(tokens_given.load(std::sync::atomic::Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    /// A registry on this machine that answers any GET with `parts`, one
+    /// after the other, all their length said first: the second only once
+    /// `between`, when there is one, lets it (on the first connection).
+    async fn blob_server(
+        parts: Vec<Vec<u8>>,
+        between: Option<tokio::sync::oneshot::Receiver<()>>,
+    ) -> Result<String> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let between = std::sync::Arc::new(tokio::sync::Mutex::new(between));
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (parts, between) = (parts.clone(), between.clone());
+                tokio::spawn(async move {
+                    let (r, mut w) = stream.into_split();
+                    let mut r = BufReader::new(r);
+                    loop {
+                        let mut line = String::new();
+                        if r.read_line(&mut line).await.unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let length: usize = parts.iter().map(Vec::len).sum();
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = w.write_all(head.as_bytes()).await;
+                    for (i, part) in parts.iter().enumerate() {
+                        if i == 1
+                            && let Some(between) = between.lock().await.take()
+                        {
+                            let _ = between.await;
+                        }
+                        let _ = w.write_all(part).await;
+                        let _ = w.flush().await;
+                    }
+                });
+            }
+        });
+        Ok(format!("127.0.0.1:{port}/acme/agent:1"))
+    }
+
+    fn descriptor(digest: String, size: usize) -> Descriptor {
+        Descriptor {
+            media_type: "application/vnd.oci.image.layer.v1.tar+gzip".into(),
+            digest,
+            size: size as u64,
+        }
+    }
+
+    /// What reads a layer gets it as it downloads, not once all of it has:
+    /// here the rest comes only once the first part has been read.
+    #[tokio::test]
+    async fn layers_pass_on_as_they_download() -> Result<()> {
+        use tokio::io::AsyncReadExt;
+        let (first, rest) = (vec![1u8; 64 * 1024], vec![2u8; 64 * 1024]);
+        let all = [first.clone(), rest.clone()].concat();
+        let (go, between) = tokio::sync::oneshot::channel();
+        let reference = blob_server(vec![first.clone(), rest.clone()], Some(between)).await?;
+        let layer = descriptor(digest_of(&all), all.len());
+        let registry = Registry::new();
+        let (mut to, mut from) = tokio::io::duplex(1024 * 1024);
+        let reading = async {
+            let mut got = vec![0u8; first.len()];
+            from.read_exact(&mut got).await?;
+            let _ = go.send(());
+            from.read_to_end(&mut got).await?;
+            Ok::<_, anyhow::Error>(got)
+        };
+        let downloading = async {
+            registry.blob_into(&reference, &layer, &mut to).await?;
+            drop(to);
+            Ok(())
+        };
+        let ((), got) = tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::try_join!(downloading, reading)
+        })
+        .await
+        .context("the layer passed on only once it had all come")??;
+        assert_eq!(got, all);
+        Ok(())
+    }
+
+    /// A layer that isn't what its manifest says fails, once what reads it
+    /// has had all of it, but never more than the manifest's size.
+    #[tokio::test]
+    async fn layers_that_arent_what_their_manifest_says_fail() -> Result<()> {
+        let bytes = b"layer bytes".to_vec();
+        let reference = blob_server(vec![bytes.clone()], None).await?;
+        let registry = Registry::new();
+        let fails = |layer: Descriptor| {
+            let (registry, reference) = (&registry, &reference);
+            async move {
+                let mut to = Vec::new();
+                let e = registry.blob_into(reference, &layer, &mut to).await;
+                (e.err().map(|e| e.to_string()), to)
+            }
+        };
+        let other = digest_of(b"other bytes");
+        let (e, to) = fails(descriptor(other.clone(), bytes.len())).await;
+        assert_eq!(e, Some(format!("{other} doesn't match its digest")));
+        assert_eq!(to, bytes);
+        let right = digest_of(&bytes);
+        let (e, to) = fails(descriptor(right.clone(), 4)).await;
+        assert_eq!(
+            e,
+            Some(format!(
+                "{right} is larger than the 4 bytes its manifest says"
+            ))
+        );
+        assert!(to.len() <= 4);
+        let (e, _) = fails(descriptor(right.clone(), bytes.len() + 10)).await;
+        assert_eq!(
+            e,
+            Some(format!(
+                "{right} is {} bytes rather than the {} its manifest says",
+                bytes.len(),
+                bytes.len() + 10
+            ))
+        );
+        let huge = descriptor(right.clone(), MAX_LAYER as usize + 1);
+        let (e, to) = fails(huge).await;
+        assert_eq!(e, Some(format!("{right} is larger than 64 GiB")));
+        assert!(to.is_empty());
+        let (e, to) = fails(descriptor(right, bytes.len())).await;
+        assert_eq!(e, None);
+        assert_eq!(to, bytes);
         Ok(())
     }
 }

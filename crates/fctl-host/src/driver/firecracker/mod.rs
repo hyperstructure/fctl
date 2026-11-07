@@ -2,10 +2,10 @@
 //! Firecracker microVM with a kernel of its own (ADR 0070).
 //!
 //! - **Images** are pulled from their registries as Docker pulls them
-//!   ([`registry`]), and their layers unpacked onto an ext4 filesystem in a
-//!   short-lived VM ([`fctl_proto::vm::Mode::Unpack`]), as root there, so
-//!   that their owners and modes stay theirs and none of their files touch
-//!   the host's filesystem. The sandboxes made from an image share its
+//!   ([`registry`]), and their layers unpacked, as they download, onto an
+//!   ext4 filesystem in a short-lived VM ([`fctl_proto::vm::Mode::Unpack`]),
+//!   as root there, so that their owners and modes stay theirs and none of
+//!   their files touch the host's filesystem. The sandboxes made from an image share its
 //!   filesystem, read only ([`images`]).
 //! - **A sandbox** is a directory with the VM's own disk, a sparse ext4 file
 //!   that takes what the session writes (`disk_gb` at most), which the
@@ -194,6 +194,46 @@ fn checked_diff_ids(
         }
     }
     Ok(resolved.diff_ids.clone())
+}
+
+/// What the VM that unpacks `blobs` reads of each: its media type and its
+/// size, as the manifest says.
+fn vm_layers(blobs: &[registry::Descriptor]) -> Vec<fctl_proto::vm::Layer> {
+    blobs
+        .iter()
+        .map(|l| fctl_proto::vm::Layer {
+            media_type: l.media_type.clone(),
+            size: l.size,
+        })
+        .collect()
+}
+
+/// Writes the files `blobs`, the layers `layers` of an image on this
+/// machine, into `to`, one after the other, for the VM that unpacks them:
+/// each as large as its manifest says, or none after it.
+async fn send_files(
+    layers: &[registry::Descriptor],
+    blobs: &[PathBuf],
+    mut to: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    for (layer, blob) in layers.iter().zip(blobs) {
+        let file = tokio::fs::File::open(blob)
+            .await
+            .with_context(|| format!("opening {}", blob.display()))?;
+        let size = file.metadata().await?.len();
+        if size != layer.size {
+            bail!(
+                "{} is {size} bytes rather than the {} its manifest says",
+                layer.digest,
+                layer.size
+            );
+        }
+        tokio::io::copy(&mut file.take(size), &mut to)
+            .await
+            .context("sending a layer to the VM")?;
+    }
+    Ok(())
 }
 
 /// Makes an ext4 filesystem in a new sparse file of `gb` GiB at `path`,
@@ -892,8 +932,9 @@ impl FirecrackerDriver {
     }
 
     /// Downloads `resolved`'s layers but the first `skip`, which an image
-    /// here has, and unpacks them in a VM: as overlayfs reads them, to lie
-    /// over that image's, when it skips any.
+    /// here has, and unpacks them in a VM as they arrive: as overlayfs
+    /// reads them, to lie over that image's, when it skips any. A layer
+    /// that isn't what the manifest says fails it, once the VM has read it.
     async fn download_and_unpack(
         &self,
         image: &str,
@@ -904,39 +945,43 @@ impl FirecrackerDriver {
         log: Log<'_>,
     ) -> Result<(PathBuf, vsock::Unpacked)> {
         std::fs::create_dir_all(downloads)?;
-        let mut files = Vec::new();
-        for (i, layer) in resolved.layers.iter().enumerate().skip(skip) {
-            let path = downloads.join(format!("layer-{i}"));
-            registry.blob(image, layer, &path).await?;
-            files.push(path);
-        }
-        log(format!("Unpacking {image} in a VM"));
         let rootfs = downloads.join("rootfs.ext4");
         // What a pull that stopped halfway left.
         let _ = std::fs::remove_file(&rootfs);
         make_fs(&rootfs, IMAGE_FS_GB, "fctl-image", false).await?;
-        let layers: Vec<fctl_proto::vm::Layer> = resolved.layers[skip..]
-            .iter()
-            .map(|l| fctl_proto::vm::Layer {
-                media_type: l.media_type.clone(),
-                size: l.size,
-            })
-            .collect();
-        let unpacked = self.unpack(&rootfs, &layers, &files, skip > 0, log).await?;
+        let blobs = &resolved.layers[skip..];
+        let layers = vm_layers(blobs);
+        if !layers.is_empty() {
+            log(format!("Unpacking {image} in a VM as it downloads"));
+        }
+        let send = |mut to_vm| async move {
+            for layer in blobs {
+                registry.blob_into(image, layer, &mut to_vm).await?;
+            }
+            Ok(())
+        };
+        let unpacked = self.unpack(&rootfs, &layers, skip > 0, log, send).await?;
         Ok((rootfs, unpacked))
     }
 
-    /// Unpacks `layers`, the files `blobs`, onto the filesystem `rootfs`
-    /// in a VM booted for it; what it wrote. None, for an image that only
-    /// sets its config over another, needs no VM.
-    async fn unpack(
+    /// Unpacks `layers` onto the filesystem `rootfs` in a VM booted for it;
+    /// what it wrote. `send` writes their bytes into the pipe it is given,
+    /// one layer after the other, which the VM reads as it unpacks them:
+    /// it starts as the VM boots, and when it fails, so does this, at once.
+    /// It succeeds only once `send` has. None, for an image that only sets
+    /// its config over another, needs no VM.
+    async fn unpack<F, Fut>(
         &self,
         rootfs: &Path,
         layers: &[fctl_proto::vm::Layer],
-        blobs: &[PathBuf],
         overlay: bool,
         log: Log<'_>,
-    ) -> Result<vsock::Unpacked> {
+        send: F,
+    ) -> Result<vsock::Unpacked>
+    where
+        F: FnOnce(tokio::io::DuplexStream) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
         if layers.is_empty() {
             return Ok(vsock::Unpacked {
                 diff_ids: Some(Vec::new()),
@@ -956,23 +1001,14 @@ impl FirecrackerDriver {
         let spec = vm::unpack_spec(kernel, initrd, &name, rootfs);
         self.remove_stale_jails();
         let jail = self.jail_for(&vm, &firecracker)?;
-        vm.start(&spec, &firecracker, jail.as_ref()).await?;
+        let within = registry::LAYER_TIME * u32::try_from(layers.len()).unwrap_or(u32::MAX);
         let result = async {
-            vm.wait_ready().await?;
-            let within =
-                registry::LAYER_TIME * u32::try_from(blobs.len().max(1)).unwrap_or(u32::MAX);
-            vsock::unpack(&vm.vsock(), layers, blobs, overlay, within).await
+            vm.start(&spec, &firecracker, jail.as_ref()).await?;
+            let (booted, console) = (vm.wait_ready(), || vm.console_tail());
+            vsock::unpack_sent(&vm.vsock(), layers, overlay, within, booted, console, send).await
         }
         .await;
-        let result = result.map_err(|e| {
-            let tail = vm.console_tail();
-            if tail.is_empty() {
-                e
-            } else {
-                e.context(format!("the VM's console said:\n{tail}"))
-            }
-        });
-        // It powers off once done.
+        // It powers off once done; one whose layers stopped coming, here.
         vm.stop().await;
         let _ = std::fs::remove_dir_all(&vm.dir);
         result
