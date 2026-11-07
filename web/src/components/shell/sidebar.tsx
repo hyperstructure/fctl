@@ -24,7 +24,7 @@ import {
   Shield,
   X,
 } from "lucide-react";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { IconPicker } from "@/components/project/icon-picker";
 import { ProjectIcon, ProjectMark } from "@/components/project/project-icon";
 import { AgentFloorIcon, Logo, PullRequestIcon, StatusDot, toast } from "@/components/ui";
@@ -34,6 +34,7 @@ import { api } from "@/lib/api";
 import { useAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { agoShort } from "@/lib/format";
+import { useHiddenSessions } from "@/lib/hidden-sessions";
 import { type Need, needSays, needsOf } from "@/lib/needs";
 import { iconOf, useSaveIcon } from "@/lib/project-icons";
 import { listPulls, PULLS_QUERY, needOf as pullNeed, stateOf } from "@/lib/pull-list";
@@ -139,7 +140,12 @@ function useSidebarData(path: string, scope?: string) {
   const yourPulls = useSessions({ ...PULLS_QUERY, mine: true }, { enabled: mine }).data?.sessions;
   // Every session they started or follow from the last day, which the others may not reach.
   const yours = useYourSessions(!!me).data?.sessions;
-  const recent = useMemo(() => byProject(recentSessions(listed ?? [], now)), [listed, now]);
+  // Those someone hid stay out while their agents rest.
+  const { hidden, hide } = useHiddenSessions(listed);
+  const recent = useMemo(
+    () => byProject(recentSessions(listed ?? [], now).filter((s) => !hidden.has(s.id))),
+    [listed, now, hidden],
+  );
   const needs = useMemo(
     () =>
       needsOf(
@@ -192,6 +198,8 @@ function useSidebarData(path: string, scope?: string) {
     groups,
     full,
     recent,
+    /** Hides a session from the sidebar while its agent rests. */
+    hide,
     needs,
     pulls,
     ready: pulls.filter((l) => pullNeed(l) === "ready"),
@@ -738,6 +746,16 @@ function ProjectRow({
   const page = path === `/p/${p.slug}`;
   const pulls = data.pulls.filter((l) => l.sessions.some((s) => s.project_id === p.id)).length;
   const lifted = sort.lifted === p.id;
+  const row = useRef<HTMLDivElement>(null);
+  // Hidden from the keyboard, a session leaves the focus on the one after it, or before it, or
+  // on the project.
+  const hide = (s: G.Session, from: HTMLElement) => {
+    const focused = document.activeElement === from;
+    const line = from.closest("li");
+    const next = (line?.nextElementSibling ?? line?.previousElementSibling)?.querySelector("a");
+    data.hide(s);
+    if (focused) (next ?? row.current?.querySelector("a"))?.focus();
+  };
   return (
     <div
       ref={sort.itemRef(p.id)}
@@ -746,7 +764,7 @@ function ProjectRow({
         lifted && LIFTED,
       )}
     >
-      <div className="group relative flex items-center">
+      <div ref={row} className="group relative flex items-center">
         <Link
           {...sort.handleProps(p.id)}
           to="/p/$slug"
@@ -812,7 +830,13 @@ function ProjectRow({
             <ul aria-label={`${p.name}'s recent sessions`} className="flex flex-col gap-px">
               {sessions.map((s) => (
                 <li key={s.id}>
-                  <SessionLine s={s} here={path === `/s/${s.id}`} lifted={lifted} onNavigate={onNavigate} />
+                  <SessionLine
+                    s={s}
+                    here={path === `/s/${s.id}`}
+                    lifted={lifted}
+                    onNavigate={onNavigate}
+                    onHide={hide}
+                  />
                 </li>
               ))}
             </ul>
