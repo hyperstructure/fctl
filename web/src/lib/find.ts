@@ -350,6 +350,11 @@ function notice(out: Out, part: string, it: Item, n: G.Notice) {
       push(out, `retro:${it.key}:${p.key}`, part, it.seq, plain(p.text), []);
     return;
   }
+  // What the agent asked shows as its question alone (its answers are chips the page doesn't find).
+  if (n.question) {
+    push(out, `notice:${it.key}`, part, it.seq, n.question.text, []);
+    return;
+  }
   // Screenshots, reviews, follow-ups held and tickets show as lines of their own.
   if (n.published || n.review || n.follow_up || n.ticket) return;
   push(out, `notice:${it.key}`, part, it.seq, n.message, []);

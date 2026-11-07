@@ -1,5 +1,6 @@
 pub mod account;
 pub mod admin;
+pub mod ask;
 pub mod attach;
 pub mod auth;
 pub mod claude;

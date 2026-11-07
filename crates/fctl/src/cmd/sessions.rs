@@ -379,6 +379,15 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             truncate(&style::plain(&s.title), 44),
             style::dim(&when)
         );
+        // What its agent asks, under it: it waits on someone.
+        if let Some(q) = &s.question {
+            println!(
+                "{:<20} {} {}",
+                "",
+                style::accent("asks"),
+                truncate(&style::plain(&q.text), 60)
+            );
+        }
     }
     Ok(())
 }
@@ -506,6 +515,24 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
             .map(|r| style::dim(&format!(" — {}", style::terminal_safe(r))))
             .unwrap_or_default()
     );
+    // What its agent asks, and how to answer: first, as it waits on people.
+    if let Some(q) = &s.question {
+        println!(
+            "{}  {}",
+            style::accent("asks:"),
+            style::bold(&style::terminal_safe(&q.text))
+        );
+        for o in &q.options {
+            println!("          · {}", style::terminal_safe(o));
+        }
+        println!(
+            "{}",
+            style::dim(&format!(
+                "          answer with: fctl send {}#{} \"…\"",
+                s.project_slug, s.number
+            ))
+        );
+    }
     if let Some(t) = &s.ticket {
         println!(
             "ticket:   {} {}{}",

@@ -28,6 +28,14 @@ const API_TIMEOUT: Duration = Duration::from_secs(10);
 /// memory goes to or comes from a file, gigabytes of it.
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How long a jailed Firecracker may take to make a socket in its chroot,
+/// or a Firecracker that loads a state to answer on its API socket.
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The files of a VM's saved state, as Firecracker writes them: its own
+/// state, and the VM's memory.
+const STATE_FILES: [&str; 2] = ["vmstate", "memory"];
+
 /// The kernel's command line, before what fctl-agent reads: the console, a
 /// reset that ends Firecracker, and no modules to look for. On x86_64 also
 /// what Firecracker suggests to boot faster: no PS/2 probing, and no PCI
@@ -103,6 +111,41 @@ struct Lent {
     uid: u32,
     /// The VM's writable disks, which the jail's user owns while it runs.
     writable: Vec<PathBuf>,
+    /// The saved state a VM resumes from (in the sandbox's `saved/`), which
+    /// the jail's user owns until Firecracker has loaded it.
+    #[serde(default)]
+    saved: Vec<PathBuf>,
+}
+
+/// A jail the host made for a VM ([`Vm::make_jail`]): its directory
+/// (`<jails>/<Firecracker's file name>/<key>`), the chroot in it (`root`),
+/// which the jail's user owns, and what the jail was lent, noted beside the
+/// chroot.
+struct Made {
+    dir: PathBuf,
+    root: PathBuf,
+    lent: Lent,
+}
+
+impl Made {
+    /// Notes what the jail is lent, before it is: for a host that stops
+    /// halfway.
+    fn note(&self) -> Result<()> {
+        std::fs::write(self.dir.join("jail.json"), serde_json::to_vec(&self.lent)?)?;
+        Ok(())
+    }
+
+    /// Lends the file of a saved state `from` to the jail's user, who must
+    /// read it to load it, as a hard link `name` at the chroot's root.
+    fn lend_saved(&mut self, from: &Path, name: &str) -> Result<()> {
+        link_into(&self.root, from, name)?;
+        let host = from.canonicalize()?;
+        self.lent.saved.push(host.clone());
+        self.note()?;
+        let uid = self.lent.uid;
+        std::os::unix::fs::lchown(&host, Some(uid), Some(uid))
+            .with_context(|| format!("lending {} to the VM's jail", host.display()))
+    }
 }
 
 /// The first uid and gid of the VMs' jails: far from those people, systems
@@ -214,6 +257,12 @@ impl Vm {
         })
     }
 
+    /// Whether the VM runs in a jail ([`Jail`]), which a state it saves
+    /// needs to resume in.
+    pub fn jailed(&self) -> bool {
+        self.jail().is_some()
+    }
+
     pub fn console(&self) -> PathBuf {
         self.dir.join("console.log")
     }
@@ -283,8 +332,83 @@ impl Vm {
     /// so the host never goes through it to reach the sockets: it links
     /// them into a directory of its own beside it, checked to be the
     /// sockets Firecracker made ([`link_sockets`](Self::link_sockets)), and
-    /// `run` leads there.
+    /// `run` leads there. The host keeps the configuration with its own
+    /// paths in the VM's directory, where the jail's user can't change it:
+    /// the VM's size, and the disks a state it saves resumes with.
     async fn start_jailed(&self, spec: &Spec, firecracker: &Path, jail: &Jail) -> Result<()> {
+        let (made, drives) = self.make_jail(firecracker, &spec.drives)?;
+        let inside = Spec {
+            kernel: put_in_jail(&made.root, &spec.kernel, "vmlinux")?,
+            initrd: put_in_jail(&made.root, &spec.initrd, "initrd.cpio")?,
+            drives,
+            ..spec.clone()
+        };
+        let mut config = self.config(&inside);
+        config["vsock"]["uds_path"] = json!("/v.sock");
+        std::fs::write(
+            made.root.join("firecracker.json"),
+            serde_json::to_vec_pretty(&config)?,
+        )?;
+        std::fs::create_dir_all(&self.dir)?;
+        std::fs::write(
+            self.dir.join("firecracker.json"),
+            serde_json::to_vec_pretty(&self.config(spec))?,
+        )?;
+        let sockets = self.spawn_jailed(jail, firecracker, &made, Some("/firecracker.json"))?;
+        self.link_sockets(&made.root, &sockets, &["api.sock", "v.sock"])
+            .await
+    }
+
+    /// Starts Firecracker `firecracker` through its jailer, in the jail
+    /// `made`, with its configuration at `config` in the chroot, or none
+    /// for a state to load; where the host's links to its sockets go,
+    /// beside the chroot (on its filesystem, as links must be), where only
+    /// root may change them, and where `run`, short as sockets' paths must
+    /// be, leads.
+    fn spawn_jailed(
+        &self,
+        jail: &Jail,
+        firecracker: &Path,
+        made: &Made,
+        config: Option<&str>,
+    ) -> Result<PathBuf> {
+        let jails = self
+            .jails
+            .as_ref()
+            .context("no directory for the VM's jail")?;
+        let sockets = made.root.with_file_name("run");
+        std::fs::create_dir(&sockets)?;
+        let _ = std::fs::remove_file(&self.run);
+        let _ = std::fs::remove_dir_all(&self.run);
+        std::os::unix::fs::symlink(&sockets, &self.run)
+            .with_context(|| format!("linking {} to the VM's sockets", self.run.display()))?;
+        std::fs::create_dir_all(&self.dir)?;
+        let console = std::fs::File::create(self.console())?;
+        let mut cmd = std::process::Command::new(&jail.jailer);
+        cmd.args(jailer_args(
+            &self.key,
+            firecracker,
+            made.lent.uid,
+            jails,
+            config,
+        ))
+        .stdin(Stdio::null())
+        .stdout(console.try_clone()?)
+        .stderr(console);
+        spawn_detached(&mut cmd, &self.pid_file("firecracker"))
+            .with_context(|| format!("starting {}", jail.jailer.display()))?;
+        Ok(sockets)
+    }
+
+    /// Makes this VM's jail for Firecracker `firecracker`, under the VMs'
+    /// jails: a chroot, owned by a uid and gid that no other jail here has
+    /// (picked under the jails' lock, which other processes' VMs take too),
+    /// holding the VM's disks `drives`, the writable ones lent to the
+    /// jail's user ([`Lent`]), what an earlier jail of it lent given back
+    /// first. The jail, and the disks as its chroot has them, in their
+    /// order: `/drive0.ext4`, `/drive1.ext4`, …
+    fn make_jail(&self, firecracker: &Path, drives: &[Drive]) -> Result<(Made, Vec<Drive>)> {
+        use std::os::unix::fs::PermissionsExt;
         let jails = self
             .jails
             .as_ref()
@@ -296,48 +420,6 @@ impl Vm {
         if let Some(why) = jails_problem(jails) {
             bail!("{why}");
         }
-        let (uid, inside, root) = self.make_jail(jails, exec, spec)?;
-        let mut config = self.config(&inside);
-        config["vsock"]["uds_path"] = json!("/v.sock");
-        std::fs::write(
-            root.join("firecracker.json"),
-            serde_json::to_vec_pretty(&config)?,
-        )?;
-        // The host's links to the sockets, beside the chroot (on its
-        // filesystem, as links must be), where only root may change them;
-        // `run`, short as sockets' paths must be, leads there.
-        let sockets = root.with_file_name("run");
-        std::fs::create_dir(&sockets)?;
-        let _ = std::fs::remove_file(&self.run);
-        let _ = std::fs::remove_dir_all(&self.run);
-        std::os::unix::fs::symlink(&sockets, &self.run)
-            .with_context(|| format!("linking {} to the VM's sockets", self.run.display()))?;
-        std::fs::create_dir_all(&self.dir)?;
-        let console = std::fs::File::create(self.console())?;
-        let mut cmd = std::process::Command::new(&jail.jailer);
-        cmd.args(jailer_args(&self.key, firecracker, uid, jails))
-            .stdin(Stdio::null())
-            .stdout(console.try_clone()?)
-            .stderr(console);
-        spawn_detached(&mut cmd, &self.pid_file("firecracker"))
-            .with_context(|| format!("starting {}", jail.jailer.display()))?;
-        self.link_sockets(&root, &sockets, Duration::from_secs(10))
-            .await
-    }
-
-    /// Makes this VM's jail under `jails` for Firecracker `exec`: a chroot,
-    /// owned by a uid and gid that no other jail here has (picked under the
-    /// jails' lock, which other processes' VMs take too), holding the VM's
-    /// kernel and initramfs and its disks, the writable ones lent to the
-    /// jail's user ([`Lent`]), what an earlier jail of it lent given back
-    /// first. Its uid, `spec` as the chroot has it, and the chroot.
-    fn make_jail(
-        &self,
-        jails: &Path,
-        exec: &std::ffi::OsStr,
-        spec: &Spec,
-    ) -> Result<(u32, Spec, PathBuf)> {
-        use std::os::unix::fs::PermissionsExt;
         let dir = jails.join(exec).join(&self.key);
         let root = dir.join("root");
         let uid = {
@@ -350,23 +432,27 @@ impl Vm {
             std::os::unix::fs::chown(&root, Some(uid), Some(uid))?;
             uid
         };
-        let mut lent = Lent {
-            uid,
-            writable: Vec::new(),
+        let mut made = Made {
+            dir,
+            root,
+            lent: Lent {
+                uid,
+                ..Lent::default()
+            },
         };
-        let mut inside = spec.clone();
-        inside.kernel = put_in_jail(&root, &spec.kernel, "vmlinux")?;
-        inside.initrd = put_in_jail(&root, &spec.initrd, "initrd.cpio")?;
-        for (i, drive) in inside.drives.iter_mut().enumerate() {
+        let mut inside = Vec::new();
+        for (i, drive) in drives.iter().enumerate() {
             let host = drive
                 .path
                 .canonicalize()
                 .with_context(|| format!("finding {}", drive.path.display()))?;
-            drive.path = link_into(&root, &host, &format!("drive{i}.ext4"))?;
+            inside.push(Drive {
+                path: link_into(&made.root, &host, &format!("drive{i}.ext4"))?,
+                writable: drive.writable,
+            });
             if drive.writable {
-                // Noted before it is lent, for a host that stops halfway.
-                lent.writable.push(host.clone());
-                std::fs::write(dir.join("jail.json"), serde_json::to_vec(&lent)?)?;
+                made.lent.writable.push(host.clone());
+                made.note()?;
                 std::os::unix::fs::chown(&host, Some(uid), Some(uid))?;
             } else {
                 let mode = std::fs::metadata(&host)?.permissions().mode();
@@ -375,20 +461,21 @@ impl Vm {
                 }
             }
         }
-        std::fs::write(dir.join("jail.json"), serde_json::to_vec(&lent)?)?;
-        Ok((uid, inside, root))
+        made.note()?;
+        Ok((made, inside))
     }
 
-    /// Links the sockets Firecracker makes in the chroot `root`, its API's
-    /// and its vsock's, into `sockets`, within `within`: each opened without
-    /// following a link and checked to be a socket, then linked by what
-    /// was opened, so that the jail's user, who may change the chroot,
-    /// can't send the host to another VM's sockets.
-    async fn link_sockets(&self, root: &Path, sockets: &Path, within: Duration) -> Result<()> {
+    /// Links the sockets `names` that Firecracker makes in the chroot
+    /// `root` (its API's, `api.sock`, and its vsock's, `v.sock`) into
+    /// `sockets`, once each is there: each opened without following a link
+    /// and checked to be a socket, then linked by what was opened, so that
+    /// the jail's user, who may change the chroot, can't send the host to
+    /// another VM's sockets.
+    async fn link_sockets(&self, root: &Path, sockets: &Path, names: &[&str]) -> Result<()> {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-        let until = Instant::now() + within;
-        for name in ["api.sock", "v.sock"] {
+        let until = Instant::now() + SOCKET_TIMEOUT;
+        for name in names {
             loop {
                 let opened = std::fs::OpenOptions::new()
                     .read(true)
@@ -426,8 +513,8 @@ impl Vm {
     }
 
     /// Gives back what this VM's jails lent of the host's ([`Lent`]): its
-    /// writable disks go back to the host's user, so that a later jail
-    /// with the same uid owns none of them.
+    /// writable disks and the state it resumed from go back to the host's
+    /// user, so that a later jail with the same uid owns none of them.
     fn give_back(&self) {
         for jail in self.jail_dirs() {
             give_back(&jail);
@@ -673,12 +760,31 @@ impl Vm {
 
     /// Pauses the VM and saves its state in `dir`: Firecracker's
     /// (`vmstate`) and the VM's memory (`memory`), with its programs as
-    /// they are. The VM stays paused.
+    /// they are. The VM stays paused. A jailed Firecracker writes them at
+    /// the root of its chroot, as the jail's user, and the host takes them
+    /// out ([`take_out`]); what is there by those names goes first, so that
+    /// they are files Firecracker makes.
     pub async fn snapshot(&self, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         if !self.paused().await {
             self.pause().await?;
         }
+        let Some((root, uid)) = self.jail() else {
+            return self.create_snapshot(dir).await;
+        };
+        for name in STATE_FILES {
+            let _ = std::fs::remove_file(root.join(name));
+        }
+        self.create_snapshot(Path::new("/")).await?;
+        for name in STATE_FILES {
+            take_out(&root, uid, name, &dir.join(name))?;
+        }
+        Ok(())
+    }
+
+    /// Has Firecracker save the paused VM's state in `dir`, as Firecracker
+    /// sees it.
+    async fn create_snapshot(&self, dir: &Path) -> Result<()> {
         let body = json!({
             "snapshot_type": "Full",
             "snapshot_path": dir.join("vmstate"),
@@ -697,49 +803,110 @@ impl Vm {
 
     /// Starts Firecracker on the state saved in `dir` ([`snapshot`](Self::snapshot)),
     /// the VM running on where it was, after stopping what an earlier boot
-    /// left. The VM's disks must be where they were. What it started goes
-    /// again when it fails.
-    pub async fn restore(&self, dir: &Path, firecracker: &Path, name: &str) -> Result<()> {
+    /// left: through its jailer when `jail` says so, as a state saved in a
+    /// jail must. The VM's disks must be where they were. What it started
+    /// goes again when it fails.
+    pub async fn restore(
+        &self,
+        dir: &Path,
+        firecracker: &Path,
+        jail: Option<&Jail>,
+        name: &str,
+    ) -> Result<()> {
         self.kill().await;
-        let restored = async {
-            std::fs::create_dir_all(&self.run)?;
-            let console = std::fs::File::create(self.console())?;
-            let mut cmd = std::process::Command::new(firecracker);
-            cmd.arg("--api-sock")
-                .arg(self.api())
-                .args(["--id", name, "--level", "Warning"])
-                .stdin(Stdio::null())
-                .stdout(console.try_clone()?)
-                .stderr(console);
-            spawn_detached(&mut cmd, &self.pid_file("firecracker"))
-                .with_context(|| format!("starting {}", firecracker.display()))?;
-            let until = Instant::now() + Duration::from_secs(10);
-            while self.state().await.is_err() {
-                if Instant::now() > until || !self.running() {
-                    bail!("Firecracker did not start: {}", self.console_tail());
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            let body = json!({
-                "snapshot_path": dir.join("vmstate"),
-                "mem_backend": { "backend_type": "File", "backend_path": dir.join("memory") },
-                "resume_vm": true,
-            });
-            api_within(
-                &self.api(),
-                "PUT",
-                "/snapshot/load",
-                Some(&body),
-                SNAPSHOT_TIMEOUT,
-            )
-            .await?;
-            Ok::<_, anyhow::Error>(())
-        }
-        .await;
+        let restored = match jail {
+            Some(jail) => self.restore_jailed(dir, firecracker, jail).await,
+            None => self.restore_processes(dir, firecracker, name).await,
+        };
         if restored.is_err() {
             self.kill().await;
         }
         restored
+    }
+
+    async fn restore_processes(&self, dir: &Path, firecracker: &Path, name: &str) -> Result<()> {
+        std::fs::create_dir_all(&self.run)?;
+        let console = std::fs::File::create(self.console())?;
+        let mut cmd = std::process::Command::new(firecracker);
+        cmd.arg("--api-sock")
+            .arg(self.api())
+            .args(["--id", name, "--level", "Warning"])
+            .stdin(Stdio::null())
+            .stdout(console.try_clone()?)
+            .stderr(console);
+        spawn_detached(&mut cmd, &self.pid_file("firecracker"))
+            .with_context(|| format!("starting {}", firecracker.display()))?;
+        self.load(dir).await
+    }
+
+    /// Firecracker through its jailer, on the state saved in `dir`, in a
+    /// jail made as a start makes one ([`start_jailed`](Self::start_jailed))
+    /// but without a configuration: its chroot holds the disks the VM
+    /// booted with, as they were there, and the saved state, lent to the
+    /// jail's user, who reads it ([`Made::lend_saved`]). Firecracker makes
+    /// the vsock's socket as it loads the state, so the host links that
+    /// out only then. Loaded, the state's names in the chroot go: the
+    /// memory stays mapped, and a later save makes new files.
+    async fn restore_jailed(&self, dir: &Path, firecracker: &Path, jail: &Jail) -> Result<()> {
+        let drives = self
+            .booted_drives()
+            .context("the host has no record of the disks the VM booted with")?;
+        let (mut made, _) = self.make_jail(firecracker, &drives)?;
+        for name in STATE_FILES {
+            made.lend_saved(&dir.join(name), name)?;
+        }
+        let sockets = self.spawn_jailed(jail, firecracker, &made, None)?;
+        self.link_sockets(&made.root, &sockets, &["api.sock"])
+            .await?;
+        self.load(Path::new("/")).await?;
+        self.link_sockets(&made.root, &sockets, &["v.sock"]).await?;
+        for name in STATE_FILES {
+            let _ = std::fs::remove_file(made.root.join(name));
+        }
+        Ok(())
+    }
+
+    /// Has the Firecracker just started load the state saved in `dir`, as
+    /// Firecracker sees it, once it answers, and resume the VM.
+    async fn load(&self, dir: &Path) -> Result<()> {
+        let until = Instant::now() + SOCKET_TIMEOUT;
+        while self.state().await.is_err() {
+            if Instant::now() > until || !self.running() {
+                bail!("Firecracker did not start: {}", self.console_tail());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let body = json!({
+            "snapshot_path": dir.join("vmstate"),
+            "mem_backend": { "backend_type": "File", "backend_path": dir.join("memory") },
+            "resume_vm": true,
+        });
+        api_within(
+            &self.api(),
+            "PUT",
+            "/snapshot/load",
+            Some(&body),
+            SNAPSHOT_TIMEOUT,
+        )
+        .await
+        .map(drop)
+    }
+
+    /// The disks the VM booted with, from the configuration with the
+    /// host's paths that the host keeps in the VM's directory.
+    fn booted_drives(&self) -> Option<Vec<Drive>> {
+        let config = std::fs::read(self.dir.join("firecracker.json")).ok()?;
+        let config: Value = serde_json::from_slice(&config).ok()?;
+        config["drives"]
+            .as_array()?
+            .iter()
+            .map(|d| {
+                Some(Drive {
+                    path: PathBuf::from(d["path_on_host"].as_str()?),
+                    writable: !d["is_read_only"].as_bool()?,
+                })
+            })
+            .collect()
     }
 
     /// Whether the VM is paused. One that doesn't run, or whose Firecracker
@@ -1018,9 +1185,16 @@ fn pick_jail_id(key: &str, taken: &std::collections::HashSet<u32>) -> u32 {
 /// The jailer's arguments for the VM `key`: Firecracker `firecracker` as
 /// `uid` (and the gid of the same number), chrooted under `jails`, in a
 /// cgroup of its own under `fctl` (Firecracker runs a thread for each vCPU
-/// and a few of its own), with its configuration and API socket at the
-/// chroot's root.
-fn jailer_args(key: &str, firecracker: &Path, uid: u32, jails: &Path) -> Vec<std::ffi::OsString> {
+/// and a few of its own), with its API socket at the chroot's root, and
+/// its configuration at `config` in the chroot, or none for a state to
+/// load.
+fn jailer_args(
+    key: &str,
+    firecracker: &Path,
+    uid: u32,
+    jails: &Path,
+    config: Option<&str>,
+) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = vec!["--id".into(), key.into()];
     args.extend(["--exec-file".into(), firecracker.as_os_str().to_owned()]);
     args.extend([
@@ -1041,13 +1215,13 @@ fn jailer_args(key: &str, firecracker: &Path, uid: u32, jails: &Path) -> Vec<std
             "--",
             "--api-sock",
             "/api.sock",
-            "--config-file",
-            "/firecracker.json",
-            "--level",
-            "Warning",
         ]
         .map(std::ffi::OsString::from),
     );
+    if let Some(config) = config {
+        args.extend(["--config-file".into(), config.into()]);
+    }
+    args.extend(["--level".into(), "Warning".into()]);
     args
 }
 
@@ -1099,8 +1273,9 @@ impl Drop for JailsLock {
 }
 
 /// Gives back what the jail `dir` lent of the host's ([`Lent`]): each
-/// writable disk it noted goes back to the host's user, not following a
-/// link. Its note is the host's, beside the chroot.
+/// writable disk and file of a saved state it noted goes back to the
+/// host's user, not following a link. Its note is the host's, beside the
+/// chroot.
 fn give_back(dir: &Path) {
     let Ok(bytes) = std::fs::read(dir.join("jail.json")) else {
         return;
@@ -1110,11 +1285,11 @@ fn give_back(dir: &Path) {
     };
     let me = nix::unistd::geteuid().as_raw();
     let group = nix::unistd::getegid().as_raw();
-    for disk in &lent.writable {
-        if let Err(e) = std::os::unix::fs::lchown(disk, Some(me), Some(group))
+    for file in lent.writable.iter().chain(&lent.saved) {
+        if let Err(e) = std::os::unix::fs::lchown(file, Some(me), Some(group))
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            tracing::warn!("giving {} back from its VM's jail: {e}", disk.display());
+            tracing::warn!("giving {} back from its VM's jail: {e}", file.display());
         }
     }
 }
@@ -1178,6 +1353,48 @@ fn link_into(root: &Path, from: &Path, name: &str) -> Result<PathBuf> {
         )
     })?;
     Ok(Path::new("/").join(name))
+}
+
+/// Takes the file `name` that Firecracker made at the root of its chroot
+/// `root`, as the jail's user `uid`, out to the host's `to`: opened
+/// without following a link and checked to be a regular file of that
+/// user's with no other name, then linked by what was opened, so that the
+/// jail's user can't hand the host another file in its place (one of the
+/// host's through a link, or the disk it was lent). `to` is then the host's
+/// user's, and private, and the chroot's name for it goes.
+fn take_out(root: &Path, uid: u32, name: &str, to: &Path) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_PATH | nix::libc::O_NOFOLLOW)
+        .open(root.join(name))
+        .with_context(|| format!("opening the {name} Firecracker saved in the VM's jail"))?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        bail!("{name} in the VM's jail isn't a file");
+    }
+    if meta.uid() != uid {
+        bail!("{name} in the VM's jail isn't its user's");
+    }
+    if meta.nlink() != 1 {
+        bail!("{name} in the VM's jail has another name");
+    }
+    let _ = std::fs::remove_file(to);
+    nix::unistd::linkat(
+        nix::fcntl::AT_FDCWD,
+        format!("/proc/self/fd/{}", file.as_raw_fd()).as_str(),
+        nix::fcntl::AT_FDCWD,
+        to,
+        nix::fcntl::AtFlags::AT_SYMLINK_FOLLOW,
+    )
+    .with_context(|| format!("taking the VM's {name} out of its jail"))?;
+    let me = nix::unistd::geteuid().as_raw();
+    let group = nix::unistd::getegid().as_raw();
+    std::os::unix::fs::lchown(to, Some(me), Some(group))?;
+    std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o600))?;
+    let _ = std::fs::remove_file(root.join(name));
+    Ok(())
 }
 
 /// Puts a file the VM boots from (its kernel or initramfs) in a jail's
@@ -1444,21 +1661,33 @@ mod tests {
         assert!((JAIL_ID_BASE..JAIL_ID_BASE + JAIL_IDS).contains(&pick_jail_id("zz", &none)));
     }
 
+    /// The jailer runs Firecracker as the jail's user, with its
+    /// configuration to boot, and without one to load a saved state.
     #[test]
     fn the_jailer_runs_firecracker_as_the_jails_user() {
-        let args = jailer_args(
-            "0123456789abcdef",
-            Path::new("/var/lib/fctl/firecracker/bin/firecracker-v1.17.0"),
-            1_900_000_007,
-            Path::new("/var/lib/fctl/firecracker/jail"),
-        );
-        let line: Vec<String> = args
+        let args = |config| {
+            jailer_args(
+                "0123456789abcdef",
+                Path::new("/var/lib/fctl/firecracker/bin/firecracker-v1.17.0"),
+                1_900_000_007,
+                Path::new("/var/lib/fctl/firecracker/jail"),
+                config,
+            )
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+            .collect::<Vec<_>>()
+            .join(" ")
+        };
+        let jailer = "--id 0123456789abcdef --exec-file /var/lib/fctl/firecracker/bin/firecracker-v1.17.0 --uid 1900000007 --gid 1900000007 --chroot-base-dir /var/lib/fctl/firecracker/jail --cgroup-version 2 --parent-cgroup fctl --cgroup pids.max=256";
         assert_eq!(
-            line.join(" "),
-            "--id 0123456789abcdef --exec-file /var/lib/fctl/firecracker/bin/firecracker-v1.17.0 --uid 1900000007 --gid 1900000007 --chroot-base-dir /var/lib/fctl/firecracker/jail --cgroup-version 2 --parent-cgroup fctl --cgroup pids.max=256 -- --api-sock /api.sock --config-file /firecracker.json --level Warning"
+            args(Some("/firecracker.json")),
+            format!(
+                "{jailer} -- --api-sock /api.sock --config-file /firecracker.json --level Warning"
+            )
+        );
+        assert_eq!(
+            args(None),
+            format!("{jailer} -- --api-sock /api.sock --level Warning")
         );
     }
 
@@ -1529,7 +1758,7 @@ mod tests {
         let other = std::os::unix::net::UnixListener::bind(dir.path().join("other.sock"))?;
         std::os::unix::fs::symlink(dir.path().join("other.sock"), root.join("v.sock"))?;
         let e = vm
-            .link_sockets(&root, &sockets, Duration::from_millis(100))
+            .link_sockets(&root, &sockets, &["api.sock", "v.sock"])
             .await;
         assert_eq!(
             e.map_err(|e| e.to_string()),
@@ -1540,8 +1769,7 @@ mod tests {
         // Its own: the host's links reach it, whatever the jail does after.
         std::fs::remove_file(root.join("v.sock"))?;
         let own = std::os::unix::net::UnixListener::bind(root.join("v.sock"))?;
-        vm.link_sockets(&root, &sockets, Duration::from_millis(100))
-            .await?;
+        vm.link_sockets(&root, &sockets, &["v.sock"]).await?;
         std::fs::remove_file(root.join("v.sock"))?;
         std::os::unix::fs::symlink(dir.path().join("other.sock"), root.join("v.sock"))?;
         let _conn = std::os::unix::net::UnixStream::connect(vm.vsock())?;
@@ -1553,17 +1781,25 @@ mod tests {
     }
 
     /// Jails that no running VM has go once they are older than a VM takes
-    /// to start, with what they lent given back.
+    /// to start, with what they lent given back: the VM's disk, and the
+    /// state it was resuming from when its host stopped.
     #[test]
     fn stale_jails_go() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let jails = dir.path().join("jail");
         let disk = dir.path().join("disk.ext4");
         std::fs::write(&disk, b"ext4")?;
+        let memory = dir.path().join("memory");
+        std::fs::write(&memory, b"memory")?;
         let lent = Lent {
             uid: JAIL_ID_BASE,
             writable: vec![disk.clone()],
+            saved: vec![memory.clone()],
         };
+        // As an earlier fctl noted it, before jails were lent states.
+        let older: Lent =
+            serde_json::from_str(r#"{"uid":1900000000,"writable":["/data/disk.ext4"]}"#)?;
+        assert!(older.saved.is_empty());
         let jail = |key: &str, age: Duration| -> Result<PathBuf> {
             let d = jails.join("firecracker-v1.17.0").join(key);
             std::fs::create_dir_all(d.join("root"))?;
@@ -1578,17 +1814,21 @@ mod tests {
         // Lent to the jail's user, which only root can (CI runs this as root).
         let root = nix::unistd::geteuid().is_root();
         if root {
-            std::os::unix::fs::chown(&disk, Some(JAIL_ID_BASE), Some(JAIL_ID_BASE))?;
+            for file in [&disk, &memory] {
+                std::os::unix::fs::chown(file, Some(JAIL_ID_BASE), Some(JAIL_ID_BASE))?;
+            }
         }
         let keys = std::collections::HashSet::from(["bbbbbbbbbbbbbbbb".to_owned()]);
         remove_stale_jails(&jails, &keys, Duration::from_secs(600));
         assert!(!stale.exists() && running.exists() && starting.exists());
-        // The disk it lent is the host's user's again, and still there.
+        // What it lent is the host's user's again, and still there.
         use std::os::unix::fs::MetadataExt;
-        assert_eq!(
-            std::fs::metadata(&disk)?.uid(),
-            nix::unistd::geteuid().as_raw()
-        );
+        for file in [&disk, &memory] {
+            assert_eq!(
+                std::fs::metadata(file)?.uid(),
+                nix::unistd::geteuid().as_raw()
+            );
+        }
         if !root {
             eprintln!("only root lends disks: this checked that the jail went");
         }
@@ -1624,7 +1864,7 @@ mod tests {
         let uid = nix::unistd::geteuid().as_raw();
         let lent = Lent {
             uid,
-            writable: Vec::new(),
+            ..Lent::default()
         };
         std::fs::write(jail.join("jail.json"), serde_json::to_vec(&lent)?)?;
         // What the jail put where the link goes.
@@ -1737,20 +1977,75 @@ mod tests {
 
     /// A stand-in for Firecracker's API on `socket`: it says what its VM
     /// does, pauses and resumes it as Firecracker does, and refuses to
-    /// resume one that runs. It answers each request on a connection of its
-    /// own, and keeps them in `requests`.
-    fn firecracker_api(socket: &Path) -> Result<(tokio::task::JoinHandle<()>, Requests)> {
+    /// resume one that runs. It saves a paused VM's state where it's told,
+    /// and loads one, making the vsock's socket as it does; in `chroot`
+    /// when it stands in for a jailed Firecracker, as the jail's user (the
+    /// chroot's owner), who loads only what it may read. It answers each
+    /// request on a connection of its own, and keeps them in `requests`.
+    fn firecracker_api(
+        socket: &Path,
+        chroot: Option<&Path>,
+    ) -> Result<(tokio::task::JoinHandle<()>, Requests)> {
+        use std::os::unix::fs::MetadataExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         std::fs::create_dir_all(socket.parent().context("no parent")?)?;
         let listener = tokio::net::UnixListener::bind(socket)?;
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = requests.clone();
+        let user = match chroot {
+            Some(root) => Some(std::fs::metadata(root)?.uid()),
+            None => None,
+        };
+        let chroot = chroot.map(Path::to_owned);
+        // Where a path in a request is, as the host sees it.
+        let at = move |path: &Value| -> Option<PathBuf> {
+            let path = Path::new(path.as_str()?);
+            match &chroot {
+                Some(root) => Some(root.join(path.strip_prefix("/").ok()?)),
+                None => Some(path.to_owned()),
+            }
+        };
+        let save = {
+            let at = at.clone();
+            move |asked: &Value| -> Option<()> {
+                let memory = [b"the agent's heap".as_slice(), &[0u8; 8192]].concat();
+                for (path, bytes) in [
+                    (at(&asked["snapshot_path"])?, b"state".as_slice()),
+                    (at(&asked["mem_file_path"])?, &memory),
+                ] {
+                    std::fs::write(&path, bytes).ok()?;
+                    if let Some(uid) = user {
+                        std::os::unix::fs::chown(&path, Some(uid), Some(uid)).ok()?;
+                    }
+                }
+                Some(())
+            }
+        };
+        let load = move |asked: &Value| -> Option<Option<std::os::unix::net::UnixListener>> {
+            for path in [
+                at(&asked["snapshot_path"])?,
+                at(&asked["mem_backend"]["backend_path"])?,
+            ] {
+                let file = std::fs::metadata(path).ok()?;
+                if user.is_some_and(|uid| file.uid() != uid) {
+                    return None;
+                }
+            }
+            let vsock = match user {
+                Some(_) => {
+                    Some(std::os::unix::net::UnixListener::bind(at(&json!("/v.sock"))?).ok()?)
+                }
+                None => None,
+            };
+            Some(vsock)
+        };
         let task = tokio::spawn(async move {
             let mut state = "Running";
+            let mut _vsock = None;
             while let Ok((mut stream, _)) = listener.accept().await {
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
-                let request = loop {
+                let (line, body) = loop {
                     let Ok(n) = stream.read(&mut chunk).await else {
                         return;
                     };
@@ -1769,12 +2064,15 @@ mod tests {
                         .unwrap_or(0);
                     if body.len() >= len {
                         let line = head.lines().next().unwrap_or_default();
-                        break format!("{line} {body}");
+                        break (line.to_owned(), body.to_owned());
                     }
                 };
+                let request = format!("{line} {body}");
                 if let Ok(mut r) = seen.lock() {
                     r.push(request.clone());
                 }
+                let asked: Value = serde_json::from_str(&body).unwrap_or_default();
+                let done = "HTTP/1.1 204 No Content\r\n\r\n".to_owned();
                 let answer = if request.starts_with("GET / ") {
                     let body = format!(
                         r#"{{"id":"fctl-ses-x","state":"{state}","vmm_version":"1.17.0"}}"#
@@ -1785,12 +2083,23 @@ mod tests {
                     )
                 } else if request.contains(r#""state":"Paused""#) {
                     state = "Paused";
-                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+                    done
                 } else if request.contains(r#""state":"Resumed""#) && state == "Paused" {
                     state = "Running";
-                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
-                } else if request.starts_with("PUT /snapshot/create ") && state == "Paused" {
-                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+                    done
+                } else if request.starts_with("PUT /snapshot/create ")
+                    && state == "Paused"
+                    && save(&asked).is_some()
+                {
+                    done
+                } else if let Some(vsock) = request
+                    .starts_with("PUT /snapshot/load ")
+                    .then(|| load(&asked))
+                    .flatten()
+                {
+                    _vsock = vsock;
+                    state = "Running";
+                    done
                 } else {
                     let body = r#"{"fault_message":"The requested operation is not supported in the current VM state."}"#;
                     format!(
@@ -1804,6 +2113,34 @@ mod tests {
         Ok((task, requests))
     }
 
+    /// Firecracker's API in the jail whose chroot is `root`, served once
+    /// `ready` is there, which the host puts in before it starts the
+    /// jailer, with the vsock's socket when `booting`: Firecracker makes it
+    /// at once from its configuration, and as it loads a state otherwise.
+    async fn firecracker_in_jail(
+        root: PathBuf,
+        ready: &'static str,
+        booting: bool,
+    ) -> Result<(
+        tokio::task::JoinHandle<()>,
+        Requests,
+        Option<std::os::unix::net::UnixListener>,
+    )> {
+        let until = Instant::now() + Duration::from_secs(10);
+        while std::fs::symlink_metadata(root.join(ready)).is_err() {
+            if Instant::now() > until {
+                bail!("the jail never had {ready}");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let (api, requests) = firecracker_api(&root.join("api.sock"), Some(&root))?;
+        let vsock = match booting {
+            true => Some(std::os::unix::net::UnixListener::bind(root.join("v.sock"))?),
+            false => None,
+        };
+        Ok((api, requests, vsock))
+    }
+
     #[tokio::test]
     async fn pauses_and_resumes_the_vm_through_firecrackers_api() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -1811,7 +2148,7 @@ mod tests {
         // No Firecracker: nothing is paused.
         assert!(!vm.paused().await);
         assert!(vm.pause().await.is_err());
-        let (api, requests) = firecracker_api(&vm.api())?;
+        let (api, requests) = firecracker_api(&vm.api(), None)?;
         assert_eq!(vm.state().await?, "Running");
         vm.pause().await?;
         assert!(vm.paused().await);
@@ -1841,11 +2178,12 @@ mod tests {
     async fn saves_the_vms_state_through_firecrackers_api() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let vm = Vm::new(dir.path().join("fctl-ses-x"))?;
-        let (api, requests) = firecracker_api(&vm.api())?;
+        let (api, requests) = firecracker_api(&vm.api(), None)?;
         assert_eq!(vm.firecracker_version().await?, "1.17.0");
         let saved = dir.path().join("saved");
         vm.snapshot(&saved).await?;
         assert!(vm.paused().await);
+        assert!(saved.join("vmstate").is_file() && saved.join("memory").is_file());
         let requests = requests.lock().map(|r| r.clone()).unwrap_or_default();
         let created = format!(
             r#"PUT /snapshot/create HTTP/1.1 {{"mem_file_path":"{0}/memory","snapshot_path":"{0}/vmstate","snapshot_type":"Full"}}"#,
@@ -1861,8 +2199,9 @@ mod tests {
                 "GET / HTTP/1.1 ",
             ]
         );
-        // The memory the VM booted with, from its configuration.
+        // The memory and disks the VM booted with, from its configuration.
         assert_eq!(vm.memory_mb(), None);
+        assert!(vm.booted_drives().is_none());
         std::fs::create_dir_all(&vm.dir)?;
         let spec = unpack_spec("/k".into(), "/i".into(), "fctl-ses-x", Path::new("/r"));
         std::fs::write(
@@ -1870,9 +2209,217 @@ mod tests {
             serde_json::to_vec(&vm.config(&spec))?,
         )?;
         assert_eq!(vm.memory_mb(), Some(1024));
+        let drives = vm.booted_drives().context("no drives")?;
+        assert_eq!(drives.len(), 1);
+        assert!(drives[0].path == Path::new("/r") && drives[0].writable);
         api.abort();
         let _ = std::fs::remove_dir_all(&vm.run);
         Ok(())
+    }
+
+    /// The host takes out of a jail only what Firecracker saved there, as
+    /// the jail's user: not a link to a file of the host's, not a file with
+    /// another name (the disk the jail was lent, say), not another user's,
+    /// nor anything but a file, which it opens without waiting on it. What
+    /// it takes is the host's user's, and private.
+    #[test]
+    fn takes_out_of_a_jail_only_what_firecracker_saved_there() -> Result<()> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root)?;
+        let inside = root.join("memory");
+        let to = dir.path().join("memory");
+        let me = nix::unistd::geteuid().as_raw();
+        let take = |uid| take_out(&root, uid, "memory", &to).map_err(|e| e.to_string());
+        let hosts = dir.path().join("hosts");
+        std::fs::write(&hosts, b"the host's")?;
+        std::os::unix::fs::symlink(&hosts, &inside)?;
+        assert_eq!(take(me), Err("memory in the VM's jail isn't a file".into()));
+        std::fs::remove_file(&inside)?;
+        let disk = dir.path().join("disk.ext4");
+        std::fs::write(&disk, b"disk")?;
+        std::fs::hard_link(&disk, &inside)?;
+        assert_eq!(
+            take(me),
+            Err("memory in the VM's jail has another name".into())
+        );
+        std::fs::remove_file(&inside)?;
+        nix::unistd::mkfifo(&inside, nix::sys::stat::Mode::S_IRWXU)?;
+        assert_eq!(take(me), Err("memory in the VM's jail isn't a file".into()));
+        std::fs::remove_file(&inside)?;
+        std::fs::write(&inside, b"the agent's heap")?;
+        std::fs::set_permissions(&inside, std::fs::Permissions::from_mode(0o644))?;
+        assert_eq!(
+            take(me.wrapping_add(1)),
+            Err("memory in the VM's jail isn't its user's".into())
+        );
+        assert!(std::fs::symlink_metadata(&to).is_err());
+        assert_eq!(std::fs::read(&hosts)?, b"the host's");
+        assert_eq!(std::fs::metadata(&disk)?.nlink(), 1);
+        // What Firecracker made: out of the jail, private.
+        take_out(&root, me, "memory", &to)?;
+        assert!(std::fs::symlink_metadata(&inside).is_err());
+        let taken = std::fs::symlink_metadata(&to)?;
+        assert!(taken.is_file() && taken.nlink() == 1 && taken.uid() == me);
+        assert_eq!(taken.mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read(&to)?, b"the agent's heap");
+        // Nothing saved: the error says what is missing.
+        let missing = take_out(&root, me, "vmstate", &dir.path().join("vmstate"));
+        assert!(missing.is_err_and(|e| e.to_string().contains("vmstate")));
+        Ok(())
+    }
+
+    /// A jailed VM's state goes through its jail: Firecracker saves it at
+    /// the root of its chroot, as the jail's user, and the host takes it out
+    /// to the sandbox's `saved/`, root's; a resume makes a jail around it,
+    /// with no configuration, the disks the VM booted with where they were
+    /// in the chroot and the state lent to the jail's user to load, and
+    /// links the vsock's socket out once Firecracker has made it, as it
+    /// loads the state. Stand-ins: a jailer that waits, and Firecracker's
+    /// API, served in the chroot. Jails are root's to make: CI runs this as
+    /// root.
+    #[tokio::test]
+    async fn a_jailed_vms_state_is_saved_and_resumed_through_its_jail() -> Result<()> {
+        use crate::driver::fake::write_script;
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+        if !nix::unistd::geteuid().is_root() {
+            eprintln!("only root makes jails: skipped");
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let jails = dir.path().join("jail");
+        if let Some(why) = jails_problem(&jails) {
+            eprintln!("{why}: skipped");
+            return Ok(());
+        }
+        let asked = dir.path().join("jailer.args");
+        let jail = Jail {
+            jailer: dir.path().join("jailer"),
+        };
+        write_script(
+            &jail.jailer,
+            &format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\nsleep 60\n",
+                asked.display()
+            ),
+        )?;
+        let firecracker = dir.path().join("firecracker-v1.17.0");
+        std::fs::write(&firecracker, b"")?;
+        let file = |name: &str| -> Result<PathBuf> {
+            let path = dir.path().join(name);
+            std::fs::write(&path, name)?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+            Ok(path)
+        };
+        let (kernel, initrd, image) = (file("vmlinux")?, file("initrd")?, file("rootfs.ext4")?);
+        let vm = Vm::new(dir.path().join("sandboxes/fctl-ses-j"))?.with_jails(jails.clone());
+        std::fs::create_dir_all(&vm.dir)?;
+        let disk = vm.dir.join("disk.ext4");
+        std::fs::write(&disk, b"disk")?;
+        let mut spec = unpack_spec(kernel, initrd, "fctl-ses-j", &image);
+        spec.drives.insert(
+            0,
+            Drive {
+                path: image.clone(),
+                writable: false,
+            },
+        );
+        spec.drives[1].path = disk.clone();
+        let root = jails.join("firecracker-v1.17.0").join(&vm.key).join("root");
+        let owner = |path: &Path| std::fs::symlink_metadata(path).map(|m| m.uid());
+        let result = async {
+            // Booted, its writable disk lent to the jail's user, and its
+            // configuration kept with the host's paths.
+            let booting = tokio::spawn(firecracker_in_jail(root.clone(), "firecracker.json", true));
+            vm.start(&spec, &firecracker, Some(&jail)).await?;
+            let (api, requests, _vsock) = booting.await??;
+            let uid = owner(&root)?;
+            assert!(uid >= JAIL_ID_BASE, "{uid}");
+            assert!(vm.running() && vm.jailed());
+            assert_eq!(owner(&disk)?, uid);
+            assert_eq!(vm.memory_mb(), Some(1024));
+            let booted = vm.booted_drives().context("no drives")?;
+            let booted: Vec<_> = booted.into_iter().map(|d| (d.path, d.writable)).collect();
+            assert_eq!(booted, [(image.clone(), false), (disk.clone(), true)]);
+            // Saved in the chroot, and taken out: what was there by the
+            // state's names goes first.
+            let hosts = dir.path().join("hosts");
+            std::fs::write(&hosts, b"the host's")?;
+            std::os::unix::fs::symlink(&hosts, root.join("memory"))?;
+            let saved = vm.dir.join("saved");
+            vm.snapshot(&saved).await?;
+            assert_eq!(std::fs::read(&hosts)?, b"the host's");
+            for name in STATE_FILES {
+                let file = std::fs::symlink_metadata(saved.join(name))?;
+                assert!(file.is_file() && file.uid() == 0, "{name}: {file:?}");
+                assert_eq!(file.mode() & 0o777, 0o600, "{name}");
+                assert!(std::fs::symlink_metadata(root.join(name)).is_err(), "{name}");
+            }
+            assert!(std::fs::read(saved.join("memory"))?.starts_with(b"the agent's heap"));
+            let asked_for = |requests: &Requests, what: &str| {
+                requests
+                    .lock()
+                    .map(|r| r.iter().find(|r| r.starts_with(what)).cloned())
+                    .unwrap_or_default()
+            };
+            assert_eq!(
+                asked_for(&requests, "PUT /snapshot/create").as_deref(),
+                Some(
+                    r#"PUT /snapshot/create HTTP/1.1 {"mem_file_path":"/memory","snapshot_path":"/vmstate","snapshot_type":"Full"}"#
+                )
+            );
+            // Stopped, as a stop that saved stops it: the jail goes, and
+            // gives the disk back.
+            vm.kill().await;
+            api.abort();
+            assert!(!vm.running() && std::fs::symlink_metadata(&root).is_err());
+            assert_eq!(owner(&disk)?, 0);
+            // Resumed in a jail made around the state, which its user owns
+            // as Firecracker loads it (the stand-in refuses it otherwise).
+            let resuming = tokio::spawn(firecracker_in_jail(root.clone(), "memory", false));
+            vm.restore(&saved, &firecracker, Some(&jail), "fctl-ses-j")
+                .await?;
+            let (api, requests, _) = resuming.await??;
+            let uid = owner(&root)?;
+            assert!(vm.running() && vm.jailed());
+            assert_eq!(
+                asked_for(&requests, "PUT /snapshot/load").as_deref(),
+                Some(
+                    r#"PUT /snapshot/load HTTP/1.1 {"mem_backend":{"backend_path":"/memory","backend_type":"File"},"resume_vm":true,"snapshot_path":"/vmstate"}"#
+                )
+            );
+            let args = std::fs::read_to_string(&asked)?;
+            let args: Vec<_> = args.lines().collect();
+            assert_eq!(args.len(), 2, "{args:?}");
+            assert!(args[0].ends_with("--api-sock /api.sock --config-file /firecracker.json --level Warning"));
+            assert!(args[1].ends_with("-- --api-sock /api.sock --level Warning"));
+            // Its sockets, the vsock's made as the state loaded, linked out.
+            assert!(std::fs::metadata(vm.vsock())?.file_type().is_socket());
+            assert!(std::fs::metadata(vm.api())?.file_type().is_socket());
+            // The chroot has the disks it booted with, where they were, and
+            // no longer the state, which Firecracker has loaded; nor the
+            // kernel or a configuration, which a resume doesn't need.
+            let ino = |path: &Path| std::fs::metadata(path).map(|m| m.ino());
+            assert_eq!(ino(&root.join("drive0.ext4"))?, ino(&image)?);
+            assert_eq!(ino(&root.join("drive1.ext4"))?, ino(&disk)?);
+            for gone in ["vmstate", "memory", "vmlinux", "initrd.cpio", "firecracker.json"] {
+                assert!(std::fs::symlink_metadata(root.join(gone)).is_err(), "{gone}");
+            }
+            // Lent until the VM stops: the disk, and the state, which the
+            // host lets go once it resumed.
+            assert_eq!(owner(&disk)?, uid);
+            assert_eq!(owner(&saved.join("memory"))?, uid);
+            vm.kill().await;
+            api.abort();
+            for file in [&disk, &saved.join("vmstate"), &saved.join("memory")] {
+                assert_eq!(owner(file)?, 0, "{file:?}");
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        vm.kill().await;
+        result
     }
 
     #[test]

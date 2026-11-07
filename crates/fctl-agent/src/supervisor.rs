@@ -622,6 +622,7 @@ impl Supervisor {
             review: None,
             summarized: None,
             follow_up: None,
+            question: None,
         }));
     }
 
@@ -1570,6 +1571,9 @@ impl Supervisor {
             }
             _ => false,
         };
+        // `fctl ask` asks people, where the sandbox's fctl has it.
+        let asks_cli =
+            spec.review.is_none() && self.session_socket.is_some() && fctl_can(&paths, "ask").await;
         let system = match &spec.review {
             Some(review) => {
                 let previous_here = match review.previous_sha.as_deref() {
@@ -1593,6 +1597,7 @@ impl Supervisor {
                 config.sandbox,
                 self.cache.as_ref(),
                 tickets_cli,
+                asks_cli,
             ),
         };
         let launch = LaunchSpec {
@@ -2651,6 +2656,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         review: None,
         summarized: None,
         follow_up: None,
+        question: None,
     }
 }
 
@@ -2673,6 +2679,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         review: None,
         summarized: None,
         follow_up: None,
+        question: None,
     };
     match answer {
         AgentAnswer::Memories { .. } | AgentAnswer::Retrospectives { .. } => vec![],
@@ -2725,6 +2732,26 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         }],
         // The control plane adds what fctl did in the tracker itself.
         AgentAnswer::Ticket { .. } => vec![],
+        // What the agent asked people stays in the transcript, after the
+        // question itself is answered.
+        AgentAnswer::Asked { question: Some(q) } => vec![Notice {
+            question: Some(q.clone()),
+            ..notice("question_asked", asked_message(q))
+        }],
+        AgentAnswer::Asked { question: None } => vec![notice(
+            "question_withdrawn",
+            "The agent took its question back.".into(),
+        )],
+    }
+}
+
+/// What the transcript says the agent asked, for clients from before the
+/// notice's `question`: the question, and the answers it offered.
+fn asked_message(q: &fctl_proto::session::SessionQuestion) -> String {
+    if q.options.is_empty() {
+        format!("Asked: {}", q.text)
+    } else {
+        format!("Asked: {} ({})", q.text, q.options.join(" / "))
     }
 }
 

@@ -579,6 +579,7 @@ for its own session and project only.
 
 ```sh
 fctl edit --title "Fix the flaky login test" --description "Retries the redirect and tests it."
+fctl ask "Round Danish prices to whole kroner, or keep øre?" -o "Round to whole kroner" -o "Keep øre"   # then end the turn
 fctl memory                                  # the project's notes, now
 fctl memory add "The e2e tests need Chromium: run npx playwright install chromium first."
 fctl memory stale mem_… --reason "The script moved to xtask"

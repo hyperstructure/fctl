@@ -237,8 +237,12 @@ its VM, and nothing outside it except through these channels:
   in a cgroup of its own, so that an escape reaches neither the host's
   files nor another VM's. The host reaches the VM's sockets through links
   of its own, so a jail can't send it to another VM's, and takes the VM's
-  disk back from the jail's user when it stops. Their images unpack in a
-  VM of their own, so a crafted layer can't reach the host's filesystem.
+  disk back from the jail's user when it stops. The state a VM saves as
+  it stops is written in its chroot, and the host takes it out only as
+  the files Firecracker made there, never through a link the jail put in
+  their place, so a jail can't have the host read or change another
+  file. Their images unpack in a VM of their own, so a crafted layer
+  can't reach the host's filesystem.
 
 - **fctl-agent** runs as root in the sandbox, and Claude and everything
   it runs as the image's user, so that the agent's commands can't stop

@@ -105,7 +105,7 @@ fctl search -p my-app "flaky test" --limit 50
 
 fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
-fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it
+fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it, and it answers what its agent asks (fctl show prints the question)
 fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
@@ -950,14 +950,15 @@ the session with Claude running where it was rather than starting it
 again; the host lets those states go first when the disk runs low, and
 `snapshots = false` keeps none: turned off, it lets those kept before go
 at its next sweep or the sandbox's next start, rather than resume them. A
-host that runs its VMs through the jailer keeps none yet. With Apple's
-`container`, a sandbox's disk image keeps the space of the files its
-session deleted (a build of fctl leaves about 5.5 GB) until the host
-stops the sandbox: then the host gives that space back to the Mac with
-`container clean`. That needs Apple's `container` 1.4 or later. With an
-older one, a stopped sandbox keeps the most its session ever stored, and
-`fctl host logs` says so each time a sandbox stops. `df` in the sandbox
-shows its 512 GiB disk image rather than what the Mac has free.
+sandbox whose state was kept before `jailer` was turned on or off starts
+again from its disk. With Apple's `container`, a sandbox's disk image
+keeps the space of the files its session deleted (a build of fctl leaves
+about 5.5 GB) until the host stops the sandbox: then the host gives that
+space back to the Mac with `container clean`. That needs Apple's
+`container` 1.4 or later. With an older one, a stopped sandbox keeps the
+most its session ever stored, and `fctl host logs` says so each time a
+sandbox stops. `df` in the sandbox shows its 512 GiB disk image rather
+than what the Mac has free.
 
 The host keeps `min_free_disk_gb` free (20 GiB unless `host.toml` says
 otherwise) on the disk where its sandboxes are: Apple's `container` app

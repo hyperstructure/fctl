@@ -2559,11 +2559,15 @@ impl FleetObject {
                 );
                 // Stopping first: from then on the session keeps messages for
                 // its next run instead of handing them to an agent that stops.
-                self.session_control(
+                // Whoever stopped it answers its agent's question with that.
+                self.session_control_with(
                     &b.session_id,
-                    Some(SessionStatus::Stopping),
-                    Some("Stopping".into()),
-                    false,
+                    ControlState {
+                        status: Some(SessionStatus::Stopping),
+                        reason: Some("Stopping".into()),
+                        drop_question: true,
+                        ..Default::default()
+                    },
                 )
                 .await;
                 self.send_runner(
@@ -2581,11 +2585,15 @@ impl FleetObject {
                     "DELETE FROM assignments WHERE session_id = ?",
                     Some(vec![sv(b.session_id.as_str())]),
                 );
-                self.session_control(
+                self.session_control_with(
                     &b.session_id,
-                    Some(SessionStatus::Stopped),
-                    Some("Stopped".into()),
-                    true,
+                    ControlState {
+                        status: Some(SessionStatus::Stopped),
+                        reason: Some("Stopped".into()),
+                        clear_runner: true,
+                        drop_question: true,
+                        ..Default::default()
+                    },
                 )
                 .await;
             }
@@ -2595,11 +2603,15 @@ impl FleetObject {
                 } else {
                     "Stopped"
                 };
-                self.session_control(
+                self.session_control_with(
                     &b.session_id,
-                    Some(SessionStatus::Stopped),
-                    Some(reason.into()),
-                    true,
+                    ControlState {
+                        status: Some(SessionStatus::Stopped),
+                        reason: Some(reason.into()),
+                        clear_runner: true,
+                        drop_question: true,
+                        ..Default::default()
+                    },
                 )
                 .await;
             }
@@ -2615,18 +2627,25 @@ impl FleetObject {
         reason: Option<String>,
         clear_runner: bool,
     ) {
+        self.session_control_with(
+            session_id,
+            ControlState {
+                status,
+                reason,
+                clear_runner,
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+
+    /// Tells SessionDO what changed, as `control` takes it, and D1 that the
+    /// session has no runner when it says so.
+    async fn session_control_with(&self, session_id: &SessionId, control: ControlState) {
+        let clear_runner = control.clear_runner;
         if let Ok(stub) = internal::session_stub(&self.env, session_id.as_str()) {
-            let r: std::result::Result<serde_json::Value, _> = internal::post(
-                &stub,
-                "/control",
-                &ControlState {
-                    status,
-                    reason,
-                    clear_runner,
-                    ..Default::default()
-                },
-            )
-            .await;
+            let r: std::result::Result<serde_json::Value, _> =
+                internal::post(&stub, "/control", &control).await;
             if let Err(e) = r {
                 worker::console_error!("session control failed: {}", e.0.message);
             }

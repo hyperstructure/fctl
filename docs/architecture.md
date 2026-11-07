@@ -919,8 +919,8 @@ it's its person), device codes, workspaces
 invitations, GitHub
 accounts (and what GitHub sign-ins offer to connect, while admins choose)
 and runners, with their enrollment tokens, projects (with their icons),
-their members and repositories, sessions (summary rows, and whether the search index has
-all of each), which sessions list which pull
+their members and repositories, sessions (summary rows with their agents'
+open questions, and whether the search index has all of each), which sessions list which pull
 request, projects' review agents and their reviews, shares, who follows
 which session,
 notification settings and browsers (push subscriptions), runners, encrypted
@@ -2352,6 +2352,32 @@ Older control planes and hosts send neither, and their agents see full
 names alone
 ([ADR 0064](adr/0064-agents-call-people-what-they-choose-or-all-their-first-names.md)).
 
+### Questions
+
+An agent that needs a person to go on (a decision only they can make,
+access, an answer) asks with `fctl ask "…"` in its sandbox, with `-o "…"`
+for each answer people could give with a click, and ends its turn
+([ADR 0078](adr/0078-agents-ask-people-with-fctl-ask.md)). fctl reaches
+fctl-agent over the session socket, which asks the control plane through
+its host (`AgentCall::Ask`), as for `fctl memory`. SessionDO keeps the
+session's one open question (`Session.question`: at most 500 characters,
+up to six answers of at most 120), writes it through to D1's
+`sessions.question` so that session lists carry it, and shows it to
+viewers and dashboards at once; a newer question takes its place (the same
+one again changes nothing, and tells nobody again), and `fctl ask
+--withdraw` takes it back. One that comes as the session stops or fails is
+refused, as nobody would see it. A person's next message answers it:
+SessionDO drops it as it delivers a message with an author, however it
+came, and an answer clicked is that message, sent as it is. It goes too
+when the session fails or someone stops or deletes it (FleetDO's stop says
+so: `ControlState::drop_question`), but stays through an idle stop or a
+runner's drain, since a message resumes the session and answers it. Followers hear
+of it as the turn ends ([Notifications](#notifications)), and at once when
+it comes after. fctl-agent writes a `question_asked` notice in the
+transcript, so that the question stays there once answered, and tells
+Claude about `fctl ask`, in place of saying so and stopping, where the
+sandbox's fctl has it. Review agents ask nobody.
+
 ### Titles
 
 A session's title starts as the first line of its task. Once the agent
@@ -2939,7 +2965,10 @@ recorded.
 ## Notifications
 
 A session notifies the people who follow it when it waits for a reply (a
-turn ends: `running` → `idle`), pauses on a usage limit, or fails. Starting
+turn ends: `running` → `idle`), pauses on a usage limit, or fails. A turn
+that ends with a [question](#questions) open says so instead ("my-app#12
+asks you", with the question and its answers), to those who want to hear
+when it waits. Starting
 or resuming a session follows it, unless the person turned that off in
 Settings; anyone who can see a session can follow it (the bell on its page,
 `fctl follow`). Notifications are Web Push messages (RFC 8030) to the
@@ -3520,9 +3549,12 @@ in `firecracker/` in the host's data directory.
   goes, and lets the states of stopped sandboxes go first while the disk
   is low. One another Firecracker release saved, or one that doesn't load,
   goes too, and the sandbox boots from its disk. A VM that runs through
-  the jailer saves none yet: Firecracker would write it in the jail's
-  chroot, which goes as the VM stops, so it boots from its disk. Image
-  builders save none either: they boot afresh for each build.
+  the jailer saves its state at the root of its chroot, as the jail's
+  user, and the host takes it out to `saved/` before the jail goes; it
+  resumes in a new jail (below). A state saved in the jailer resumes
+  only in one, and one saved without it only without, so turning
+  `jailer` on or off lets the states kept before go. Image builders save
+  none: they boot afresh for each build.
 - **The VM's init** is fctl-agent, from an initramfs the host makes of its
   own static fctl-agent (`crates/fctl-agent/src/vm`). It mounts the root,
   copies itself to `/opt/fctl/bin/fctl-agent`, sets up what images don't
@@ -3580,9 +3612,23 @@ checked to be a socket. Its writable disk is lent to the
 jail's user while it runs, noted in `jail.json` beside the chroot, and
 given back to root as the VM stops, so that a later jail with the same
 uid owns nothing; jails of VMs that don't run, which a host that stopped
-or crashed left, go before the next VM starts. The jailer needs cgroup v2
-and a filesystem that allows device files (it makes `/dev/kvm` in the
-chroot): without either, the driver isn't ready and says what to change.
+or crashed left, go before the next VM starts. The host keeps the VM's
+configuration with its own paths in the sandbox's directory, for its
+size and its disks. A jailed VM's saved state goes through its chroot:
+Firecracker writes `vmstate` and `memory` at its root, as the jail's
+user, and the host takes each out to `saved/` by what it opened without
+following a link, checked to be a regular file of that user's with no
+other name (so that the jail can't hand it a host's file, or the disk it
+was lent), then gives it to root, readable by root alone. A resume makes
+a new jail as a start does, but with no configuration: hard links of the
+disks the VM booted with, at the same paths in the chroot, and of the
+saved state, lent to the jail's user, who must read it. The host starts
+Firecracker in it, has it load the state, and only then links the
+vsock's socket out, since Firecracker makes it as the state loads; the
+state's links in the chroot go once it is loaded. The jailer needs
+cgroup v2 and a filesystem that allows device files (it makes `/dev/kvm`
+in the chroot): without either, the driver isn't ready and says what to
+change.
 `passt` runs outside the jail and drops to `nobody` itself; its pid's
 file goes in `/tmp` under a name with a random part. A jailed VM's cache
 server listens in the VM's socket directory, whose path stays short, and

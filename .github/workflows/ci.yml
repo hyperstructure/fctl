@@ -139,7 +139,7 @@ jobs:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
         run: |
           cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
-      - name: Boot a sandbox on a host that runs as root
+      - name: Boot sandboxes on a host that runs as root
         env:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
         run: |
@@ -147,9 +147,12 @@ jobs:
           test -x "$bin"
           sudo env "FCTL_TEST_FIRECRACKER_AGENT=$FCTL_TEST_FIRECRACKER_AGENT" "FCTL_TEST_FIRECRACKER_DATA=$RUNNER_TEMP/root" \
             "$bin" driver::firecracker::tests::boots_a_sandbox driver::firecracker::tests::sandboxes_of_a_project_share_its_package_caches \
+            driver::firecracker::tests::stopped_sandboxes_resume_where_they_were \
             --ignored --nocapture --test-threads 1
-          # Jails lend disks to their users, which only root can.
-          sudo "$bin" driver::firecracker::vm::tests::stale_jails_go --exact --nocapture
+          # Jails lend disks and saved states to their users, which only root can.
+          sudo "$bin" driver::firecracker::vm::tests::stale_jails_go \
+            driver::firecracker::vm::tests::a_jailed_vms_state_is_saved_and_resumed_through_its_jail \
+            --exact --nocapture --test-threads 1
       # Whiteouts kept as overlayfs reads them, for images that lie over
       # others, need root, which the VMs' init is.
       - name: Unpack layers as root
