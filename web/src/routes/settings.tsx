@@ -5,7 +5,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
-  ArrowUpRight,
   Bell,
   BellOff,
   Download,
@@ -26,7 +25,8 @@ import {
   Trash2,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { OnRunnersDetails, OnRunnersSetup } from "@/components/claude/on-runners";
+import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
+import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
 import { AccessTokens } from "@/components/tokens";
@@ -44,7 +44,6 @@ import {
   LinearIcon,
   NameFields,
   nameParts,
-  SecretInput,
   Section,
   Select,
   Skeleton,
@@ -584,61 +583,9 @@ function Workspaces({ me }: { me: G.Me }) {
   );
 }
 
-/** Whether a Claude sign-in is still under way: its runner may still pass on what it signs in to. */
-function signingIn(job: G.ClaudeLoginJob): boolean {
-  return job.state !== "succeeded" && job.state !== "failed";
-}
-
-/**
- * What a Claude sign-in that runs on someone else's runner means: none of the person's is online, and
- * that runner's host sees the login's long-lived tokens, and could keep them or connect a Claude
- * account of its own in their place (docs/security.md).
- */
-function OthersRunner({ runner }: { runner: G.ClaudeLoginRunner }) {
-  const whose = runner.owner ? `${runner.owner}'s runner` : "a runner";
-  return (
-    <>
-      This sign-in runs on <span className="font-medium text-ink">{runner.name}</span>, {whose} that runs your
-      sessions, because none of yours is online. Its machine sees your Claude login's long-lived tokens as
-      they pass to fctl: it could keep them, or connect a Claude account of its own in place of yours, on
-      which your sessions would then run. Go on only if you trust {runner.owner ?? "its owner"} with your
-      Claude account; otherwise start one of your runners and start again, or connect a long-lived token
-      below.
-    </>
-  );
-}
-
 function Claude({ me }: { me: G.Me }) {
-  const [token, setToken] = useState("");
-  const [job, setJob] = useState<G.ClaudeLoginJob | null>(null);
-  const [code, setCode] = useState("");
-  const add = useMutation({
-    mutationFn: () => api.claudeToken({ token }),
-    onSuccess: (m) => {
-      queryClient.setQueryData(keys.me, m);
-      setToken("");
-      toast("Claude connected");
-    },
-  });
-  const start = useMutation({ mutationFn: api.claudeLogin, onSuccess: setJob });
-  const submit = useMutation({
-    mutationFn: () => api.claudeLoginCode(job?.id ?? "", code),
-    onSuccess: setJob,
-  });
-  // Follow the sign-in job (the feed also pushes updates).
-  const live = useQuery({
-    queryKey: ["claude-login", job?.id],
-    queryFn: () => api.claudeLoginJob(job?.id ?? ""),
-    enabled: !!job && job.state !== "succeeded" && job.state !== "failed",
-    refetchInterval: 1500,
-  });
-  const current = live.data ?? job;
-  useEffect(() => {
-    if (current?.state === "succeeded") {
-      void queryClient.invalidateQueries({ queryKey: keys.me });
-      toast("Signed in with Claude: Remote Control is on");
-    }
-  }, [current?.state]);
+  // Which way to connect is open: the recommended one until you have a connection.
+  const [way, setWay] = useState<Way | null>(() => (me.claude.length === 0 ? "token" : null));
   const remove = useMutation({
     mutationFn: (id: string) => api.claudeRemove(id),
     onSuccess: (m) => queryClient.setQueryData(keys.me, m),
@@ -647,6 +594,16 @@ function Claude({ me }: { me: G.Me }) {
     mutationFn: (id: string) => api.claudeDefault(id),
     onSuccess: (m) => queryClient.setQueryData(keys.me, m),
   });
+  /** Opens a way to connect again, for a connection Claude ended, and brings it into view. */
+  const reconnect = (w: Way) => {
+    setWay(w);
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    requestAnimationFrame(() =>
+      document
+        .getElementById(CONNECT_ID)
+        ?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" }),
+    );
+  };
 
   return (
     <Section
@@ -656,8 +613,7 @@ function Claude({ me }: { me: G.Me }) {
         <>
           Sessions you start run on your own Claude subscription. fctl refuses API keys and stops a session
           before it would draw on paid extra usage. Each connection shows how much of its plan's limits is
-          used, as sessions last reported it. Keep the token on your runners, and you never give it to fctl.
-          Removing a connection stops the sessions that run on it.
+          used, as sessions last reported it. Removing a connection stops the sessions that run on it.
         </>
       }
     >
@@ -670,7 +626,7 @@ function Claude({ me }: { me: G.Me }) {
                   <span
                     className={cn(
                       "flex size-8 items-center justify-center rounded-md border",
-                      c.remote_control || c.on_runners
+                      (c.remote_control || c.on_runners) && c.status !== "invalid"
                         ? "border-accent/30 bg-accent-soft text-accent"
                         : "border-line bg-raised text-ink-3",
                     )}
@@ -724,6 +680,9 @@ function Claude({ me }: { me: G.Me }) {
                   </button>
                 </div>
                 <div className="mt-3 flex flex-col gap-4 pl-11">
+                  {c.status === "invalid" && c.kind === "oauth" && !c.on_runners && (
+                    <EndedLogin onReconnect={reconnect} />
+                  )}
                   {c.on_runners && <OnRunnersDetails />}
                   {c.usage?.length ? (
                     <PlanUsageList usage={c.usage} />
@@ -737,124 +696,7 @@ function Claude({ me }: { me: G.Me }) {
             ))}
           </ul>
         )}
-
-        <div>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="flex items-center gap-2 text-[13.5px] font-medium text-ink">
-                <Radio className="size-3.5 text-accent" /> Sign in with Claude
-              </h3>
-              <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
-                The official Claude Code sign-in, run in a sandbox on one of your runners or, when none is
-                online, on one that runs your sessions, whose machine sees the tokens. Sessions can then be
-                followed and steered from claude.ai/code and the Claude apps.
-              </p>
-            </div>
-            {(!current || current.state === "failed" || current.state === "succeeded") && (
-              <Button size="sm" variant="primary" onClick={() => start.mutate()} loading={start.isPending}>
-                Start
-              </Button>
-            )}
-          </div>
-          {start.error && (
-            <Banner tone="error" className="mt-3">
-              {start.error.message}
-            </Banner>
-          )}
-          {current && (
-            <div className="mt-4 animate-rise">
-              {current.runner && !current.runner.yours && signingIn(current) && (
-                <Banner tone="warn" className="mb-4">
-                  <OthersRunner runner={current.runner} />
-                </Banner>
-              )}
-              {(current.state === "pending" || current.state === "starting") && (
-                <p className="flex items-center gap-2 text-[13px] text-ink-3">
-                  <Spinner className="size-3.5" /> Starting Claude Code in a sandbox…
-                </p>
-              )}
-              {current.state === "awaiting_code" && (
-                <form
-                  className="flex flex-col gap-3"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    submit.mutate();
-                  }}
-                >
-                  <a
-                    href={current.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 self-start rounded-md bg-ink px-3 py-1.5 text-[13px] font-medium text-canvas"
-                  >
-                    1. Approve on claude.ai <ArrowUpRight className="size-3.5" />
-                  </a>
-                  <Field label="2. Paste the code claude.ai shows">
-                    {(id) => (
-                      <Input
-                        id={id}
-                        value={code}
-                        onChange={(e) => setCode(e.target.value)}
-                        className="font-mono"
-                        autoComplete="off"
-                      />
-                    )}
-                  </Field>
-                  <div>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      size="sm"
-                      loading={submit.isPending}
-                      disabled={!code.includes("#")}
-                    >
-                      Finish
-                    </Button>
-                  </div>
-                </form>
-              )}
-              {current.state === "verifying" && (
-                <p className="flex items-center gap-2 text-[13px] text-ink-3">
-                  <Spinner className="size-3.5" /> Verifying with Claude…
-                </p>
-              )}
-              {current.state === "succeeded" && (
-                <Banner tone="ok">Connected. New sessions enable Remote Control.</Banner>
-              )}
-              {current.state === "failed" && <Banner tone="error">{current.error}</Banner>}
-            </div>
-          )}
-        </div>
-
-        <form
-          className="border-t border-line pt-6"
-          onSubmit={(e) => {
-            e.preventDefault();
-            add.mutate();
-          }}
-        >
-          <h3 className="flex items-center gap-2 text-[13.5px] font-medium text-ink">
-            <KeyRound className="size-3.5 text-ink-3" /> Or paste a long-lived token
-          </h3>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-3">
-            Run <code className="rounded bg-raised px-1 font-mono text-[11.5px]">claude setup-token</code> on
-            any machine with Claude Code. Valid for a year; no Remote Control.
-          </p>
-          <div className="mt-3 flex gap-2">
-            <SecretInput
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="sk-ant-oat01-…"
-              className="font-mono"
-            />
-            <Button type="submit" variant="secondary" size="field" loading={add.isPending} disabled={!token}>
-              Connect
-            </Button>
-          </div>
-          {add.error && <p className="mt-2 text-[12.5px] text-danger">{add.error.message}</p>}
-        </form>
-
-        {!me.claude.some((c) => c.on_runners) && <OnRunnersSetup />}
+        <ConnectClaude me={me} way={way} onWay={setWay} />
       </div>
     </Section>
   );

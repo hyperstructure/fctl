@@ -74,15 +74,19 @@ import {
   prReviewLook,
   prReviewText,
 } from "@/lib/pulls";
+import { keepPullsLeft, usePullsLeft, usePullsMine } from "@/lib/pulls-view";
 import { keys, useProjects, useWorkspaces } from "@/lib/queries";
 import { issues, type ReviewLook } from "@/lib/reviews";
 
-/** What the page's address says it shows. */
+/**
+ * What the page's address says it shows. One that names no tab comes from elsewhere (the sidebar,
+ * the command palette): the page shows the tab and the filter it showed last in this browser tab,
+ * and puts them in its address as they change. Mine isn't in it: this browser keeps it.
+ */
 export interface PullsSearch {
   state?: PullState;
   /** `w:<slug>` for a workspace's, `p:<slug>` for a project's; none for all. */
   scope?: string;
-  mine?: boolean;
   q?: string;
 }
 
@@ -93,26 +97,36 @@ export function PullsPage() {
   const navigate = useNavigate({ from: "/pulls" });
   const workspaces = useWorkspaces().data?.workspaces ?? [];
   const projects = useProjects().data?.projects ?? [];
-  const state = search.state ?? "open";
+  const [mine, setMine] = usePullsMine();
+  const left = usePullsLeft();
+  // Come from elsewhere: the tab and the filter as they were left (PullsSearch).
+  const arrived = search.state === undefined;
+  const state = search.state ?? left.state ?? "open";
+  const filtering = search.q ?? (arrived ? left.q : undefined);
+  useEffect(() => keepPullsLeft({ state, q: filtering }), [state, filtering]);
   const [kind, slug] = (search.scope ?? "").split(":");
   const scope = { workspace: kind === "w" ? slug : undefined, project: kind === "p" ? slug : undefined };
   // Every session that lists one, whatever its state: each pull request takes the state the session
   // that heard of it last says, which one that heard of it earlier may not.
-  const q = { ...PULLS_QUERY, ...scope, mine: search.mine };
+  const q = { ...PULLS_QUERY, ...scope, mine: mine || undefined };
   const key = keys.sessions(q);
   const sessions = useQuery({ queryKey: key, queryFn: () => api.sessions(q) });
   const all = useMemo(() => listPulls(sessions.data?.sessions ?? []), [sessions.data]);
-  const words = useMemo(() => filterWords(search.q ?? ""), [search.q]);
+  const words = useMemo(() => filterWords(filtering ?? ""), [filtering]);
   // The tabs count what the filter finds, so that they say where the rest of it is.
   const matching = useMemo(
-    () => (words.length ? all.filter((l) => pullMatches(l, search.q ?? "")) : all),
-    [all, words, search.q],
+    () => (words.length ? all.filter((l) => pullMatches(l, filtering ?? "")) : all),
+    [all, words, filtering],
   );
   const counts = useMemo(() => countStates(matching), [matching]);
   const shown = useMemo(() => matching.filter((l) => stateOf(l) === state), [matching, state]);
   const changed = useChangedRows(all, JSON.stringify(key));
+  // The tab and the filter shown go in the address with the change, so that it says them from then on.
   const set = (next: Partial<PullsSearch>) =>
-    void navigate({ search: (s: PullsSearch) => ({ ...s, ...next }), replace: true });
+    void navigate({
+      search: (s: PullsSearch) => ({ ...s, state, q: filtering, ...next }),
+      replace: true,
+    });
   const filter = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   useHotkey("/", () => filter.current?.focus());
@@ -141,14 +155,14 @@ export function PullsPage() {
             state={state}
             counts={counts}
             loading={sessions.isPending}
-            onPick={(s) => set({ state: s === "open" ? undefined : s })}
+            onPick={(s) => set({ state: s })}
           />
           <div className="flex w-full items-center gap-2 pb-2 sm:w-auto">
             <label className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-sunken/60 px-2 text-[12.5px] transition-colors focus-within:border-line-strong sm:w-56 sm:flex-none">
               <Search className="size-3.5 shrink-0 text-ink-4" />
               <input
                 ref={filter}
-                value={search.q ?? ""}
+                value={filtering ?? ""}
                 onChange={(e) => set({ q: e.target.value || undefined })}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
@@ -163,7 +177,7 @@ export function PullsPage() {
                 aria-label="Filter pull requests"
                 className="min-w-0 flex-1 bg-transparent text-ink outline-none placeholder:text-ink-4"
               />
-              {search.q ? (
+              {filtering ? (
                 <button
                   type="button"
                   aria-label="Clear the filter"
@@ -184,12 +198,12 @@ export function PullsPage() {
             <ScopeSelect value={search.scope} onChange={(scope) => set({ scope })} />
             <button
               type="button"
-              aria-pressed={!!search.mine}
-              onClick={() => set({ mine: search.mine ? undefined : true })}
+              aria-pressed={mine}
+              onClick={() => setMine(!mine)}
               title="Only those of sessions you started"
               className={cn(
                 "h-7 shrink-0 rounded-md border px-2.5 text-[12.5px] transition-colors",
-                search.mine
+                mine
                   ? "border-accent/45 bg-accent-soft text-ink"
                   : "border-line text-ink-3 hover:border-line-strong hover:bg-hover hover:text-ink",
               )}
@@ -243,11 +257,11 @@ export function PullsPage() {
         ) : shown.length === 0 ? (
           <Nothing
             state={state}
-            q={search.q}
-            mine={search.mine}
+            q={filtering}
+            mine={mine}
             scope={search.scope && scopeName(search.scope, workspaces, projects)}
             counts={counts}
-            onPick={(s) => set({ state: s === "open" ? undefined : s })}
+            onPick={(s) => set({ state: s })}
             onClear={() => set({ q: undefined })}
           />
         ) : state === "open" ? (

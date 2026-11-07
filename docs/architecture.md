@@ -566,9 +566,14 @@ five or more. Anyone on the instance creates one, as its primary admin.
   project's page and settings, `fctl projects set --icon`), which everyone
   in the workspace sees in the sidebar, the project's page and search: a
   glyph of [IconMCP](https://iconmcp.com) (an MIT-licensed set of 6,800
-  icons on a 16-unit grid) by its name, in a workspace color and outline,
-  duotone or solid (`ProjectIcon`, `projects.icon` as JSON). The web app
-  carries the glyphs it offers, about 240 of them, in three styles
+  icons on a 16-unit grid) by its name, in a workspace color or one of its
+  own (`#rrggbb`, kept with the workspace color nearest it for older
+  clients), and outline, duotone or solid (`ProjectIcon`, `projects.icon`
+  as JSON). A color of its own is drawn lighter in the dark theme or darker
+  in the light one, keeping its hue, only as far as its lines need to stand
+  4.5:1 against the background, as the workspace colors' shades do
+  (`web/src/lib/color.ts`). The web app carries the glyphs it offers,
+  about 240 of them, in three styles
   (`web/src/lib/project-icon-data.ts`, in a chunk of its own, which
   `web/scripts/project-icons.mjs` adds to from IconMCP's MCP server), and
   draws them as React elements, not markup it inserts. The control plane
@@ -1436,10 +1441,12 @@ question (`fctl ask`) and waits for an answer, which the page offers to
 send, then those whose agents finished and whose checks didn't fail,
 ready for review, then those whose checks failed, those whose sessions
 are still at work, those in a merge queue, and drafts. The sidebar counts
-the ones ready for review from the same list, unnarrowed, in one request
-with the page's. The feed patches the sessions it came from, so states,
-checks, reviews and questions change there as GitHub and agents say, and
-a row whose standing changes lights up for a moment.
+the ones ready for review from the page's own request, in one with it:
+unnarrowed, or with `mine` while Mine is on (as it is until someone turns
+it off, which the browser keeps, `web/src/lib/pulls-view.ts`), which the
+server applies before its limit. The feed patches the sessions it came
+from, so states, checks, reviews and questions change there as GitHub
+and agents say, and a row whose standing changes lights up for a moment.
 
 Session lists, the session page and `fctl show` give each pull request its
 state, `open`, `draft`, `queued` (in a merge queue), `merged` or `closed`,
@@ -2406,6 +2413,13 @@ transcript, so that the question stays there once answered, and tells
 Claude about `fctl ask`, in place of saying so and stopping, where the
 sandbox's fctl has it. Review agents ask nobody.
 
+As it delivers a message with an author, SessionDO also notes when
+(`Session.messaged_at`, written through to `sessions.messaged_at`). The
+web app's Needs you lists a session that waits for a message as waiting
+for a reply unless its pull requests are all merged or closed and nobody
+wrote to it after the last of them was: then its agent has finished, and
+waits only until its idle timeout stops the session.
+
 ### Titles
 
 A session's title starts as the first line of its task. Once the agent
@@ -3108,8 +3122,9 @@ on their runners
    (`HostHello.claude_token`, `RunnerClaudeToken`), never what it is;
    FleetDO keeps that in the runner's hello, and the runner's owner sees it
    (`Runner.claude_token`). Hosts too old to keep one say nothing.
-2. **In fctl**, they connect "On your runners" (Settings → Claude, `fctl
-   claude connect --on-runners`, `POST /api/v1/me/claude/on-runners`): a
+2. **In fctl**, they connect it "on your runners" (Settings → Claude's
+   long-lived token, with "My runners keep it", `fctl claude connect
+   --on-runners`, `POST /api/v1/me/claude/on-runners`): a
    row in `claude_credentials` with `on_runners` set and no secret, of kind
    `setup_token`, one per person, which becomes their default.
 3. **Its sessions run only on their runners that keep a token.** It keeps

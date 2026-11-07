@@ -933,9 +933,11 @@ impl SessionObject {
             self.end_reviews_in_a_row(now).await;
             self.delete_meta(CHECKS_IN_A_ROW);
             self.delete_meta(CONFLICTS_IN_A_ROW);
-            // It answers the agent's question.
-            if let Some(mut s) = self.summary().filter(|s| s.question.is_some()) {
+            // It answers the agent's question, and the reply that ends the
+            // turn it starts is theirs (`Session::messaged_at`).
+            if let Some(mut s) = self.summary() {
                 s.question = None;
+                s.messaged_at = Some(now);
                 self.publish(&mut s, now).await;
             }
         }
@@ -4317,7 +4319,7 @@ impl SessionObject {
             &db,
             "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
              claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-             pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+             pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
                 crate::db::s(&s.title),
                 crate::db::os(s.description.as_deref()),
@@ -4337,6 +4339,7 @@ impl SessionObject {
                 crate::db::os(question.as_deref()),
                 crate::db::n(s.updated_at),
                 crate::db::on(s.last_activity_at),
+                crate::db::on(s.messaged_at),
                 crate::db::on(s.started_at),
                 crate::db::on(s.ended_at),
                 crate::db::s(s.id.as_str()),

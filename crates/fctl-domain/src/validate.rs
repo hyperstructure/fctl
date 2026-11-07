@@ -2,7 +2,7 @@
 //! [`ApiError`] naming the field, so handlers can return it as is.
 
 use crate::webpush;
-use fctl_proto::session::{ImageBuild, ProjectIcon};
+use fctl_proto::session::{ImageBuild, ProjectIcon, WorkspaceColor};
 use fctl_proto::{ApiError, AttachmentId};
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -315,11 +315,78 @@ pub fn project_icon(icon: &ProjectIcon) -> Result<Option<ProjectIcon>> {
             "Use an icon's name: lowercase letters, digits and dashes between words",
         ));
     }
+    let hex = icon.hex.as_deref().map(icon_hex).transpose()?.flatten();
     Ok(Some(ProjectIcon {
         name,
-        color: icon.color,
+        // Apps before colors of their own show the workspace color nearest it.
+        color: hex.as_deref().and_then(nearest_color).unwrap_or(icon.color),
         style: icon.style,
+        hex,
     }))
+}
+
+/// An icon's color of its own, as `#rrggbb` in lowercase: six hex digits,
+/// or three for `#rgb`, with or without the `#`. Empty: none.
+pub fn icon_hex(input: &str) -> Result<Option<String>> {
+    let s = input.trim();
+    let digits = s.strip_prefix('#').unwrap_or(s);
+    if digits.is_empty() {
+        return Ok(None);
+    }
+    if !digits.bytes().all(|b| b.is_ascii_hexdigit()) || !matches!(digits.len(), 3 | 6) {
+        return Err(ApiError::validation(
+            "icon",
+            "Use a color as #rrggbb, like #ff8800",
+        ));
+    }
+    let digits = digits.to_ascii_lowercase();
+    let full = if digits.len() == 3 {
+        digits.chars().flat_map(|c| [c, c]).collect()
+    } else {
+        digits
+    };
+    Ok(Some(format!("#{full}")))
+}
+
+/// The workspace color nearest `#rrggbb`: ink for grays and colors too dark
+/// or pale to have much of a hue, else the one whose hue is closest.
+pub fn nearest_color(hex: &str) -> Option<WorkspaceColor> {
+    let digits = hex.strip_prefix('#').unwrap_or(hex);
+    if digits.len() != 6 {
+        return None;
+    }
+    let channel = |i: usize| {
+        digits
+            .get(i..i + 2)
+            .and_then(|d| u8::from_str_radix(d, 16).ok())
+            .map(|v| f64::from(v) / 255.0)
+    };
+    let (r, g, b) = (channel(0)?, channel(2)?, channel(4)?);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let chroma = max - min;
+    if chroma < 0.15 {
+        return Some(WorkspaceColor::Ink);
+    }
+    let hue = if max == r {
+        60.0 * ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / chroma + 2.0)
+    } else {
+        60.0 * ((r - g) / chroma + 4.0)
+    };
+    // The brand's yellow, hot pink and blue.
+    let hues = [
+        (WorkspaceColor::Yellow, 60.0),
+        (WorkspaceColor::Pink, 309.0),
+        (WorkspaceColor::Blue, 210.0),
+    ];
+    let apart = |h: f64| {
+        let d = (hue - h).abs() % 360.0;
+        d.min(360.0 - d)
+    };
+    hues.into_iter()
+        .min_by(|a, b| apart(a.1).total_cmp(&apart(b.1)))
+        .map(|(c, _)| c)
 }
 
 /// The most answers a question offers.
@@ -1102,6 +1169,7 @@ mod tests {
             name: name.into(),
             color: WorkspaceColor::Pink,
             style: IconStyle::Duotone,
+            hex: None,
         };
         assert_eq!(
             project_icon(&icon(" Server-Stack ")).ok().flatten(),
@@ -1109,6 +1177,7 @@ mod tests {
                 name: "server-stack".into(),
                 color: WorkspaceColor::Pink,
                 style: IconStyle::Duotone,
+                hex: None,
             })
         );
         assert_eq!(project_icon(&icon("")).ok(), Some(None));
@@ -1127,6 +1196,70 @@ mod tests {
         let plain: ProjectIcon = serde_json::from_str(r#"{"name":"cube"}"#).unwrap_or(icon("x"));
         assert_eq!(plain.color, WorkspaceColor::Ink);
         assert_eq!(plain.style, IconStyle::Outline);
+        assert_eq!(plain.hex, None);
+        // ...and an icon without a color of its own says nothing of one.
+        assert_eq!(
+            serde_json::to_string(&icon("cube")).ok().as_deref(),
+            Some(r#"{"name":"cube","color":"pink","style":"duotone"}"#)
+        );
+    }
+
+    #[test]
+    fn icons_in_colors_of_their_own() {
+        use fctl_proto::session::{IconStyle, WorkspaceColor};
+        let icon = |hex: &str| {
+            project_icon(&ProjectIcon {
+                name: "rocket".into(),
+                color: WorkspaceColor::Ink,
+                style: IconStyle::Solid,
+                hex: Some(hex.into()),
+            })
+        };
+        // Kept as #rrggbb, with the workspace color nearest it for older apps.
+        assert_eq!(
+            icon(" #FF8800 ").ok().flatten(),
+            Some(ProjectIcon {
+                name: "rocket".into(),
+                color: WorkspaceColor::Yellow,
+                style: IconStyle::Solid,
+                hex: Some("#ff8800".into()),
+            })
+        );
+        let hex = |s: &str| icon(s).ok().flatten().and_then(|i| i.hex);
+        assert_eq!(hex("2a9d8f").as_deref(), Some("#2a9d8f"));
+        assert_eq!(hex("#0Af").as_deref(), Some("#00aaff"));
+        // An empty one is none: the workspace color.
+        let plain = icon(" ").ok().flatten();
+        assert_eq!(plain.as_ref().map(|i| i.hex.is_none()), Some(true));
+        assert_eq!(plain.map(|i| i.color), Some(WorkspaceColor::Ink));
+        for bad in [
+            "#ff88", "#ff88000", "orange", "#gg8800", "#ff 880", "##ff8800",
+        ] {
+            assert!(icon(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn nearest_workspace_colors() {
+        use fctl_proto::session::WorkspaceColor::{Blue, Ink, Pink, Yellow};
+        for (hex, color) in [
+            ("#ffff5d", Yellow),
+            ("#ff8800", Yellow),
+            ("#84cc16", Yellow),
+            ("#22c55e", Blue),
+            ("#ff00d8", Pink),
+            ("#e11d48", Pink),
+            ("#a855f7", Pink),
+            ("#8b5cf6", Blue),
+            ("#007eff", Blue),
+            ("#14b8a6", Blue),
+            ("#808080", Ink),
+            ("#111111", Ink),
+            ("#f4f1ec", Ink),
+        ] {
+            assert_eq!(nearest_color(hex), Some(color), "{hex}");
+        }
+        assert_eq!(nearest_color("#fff"), None);
     }
 
     #[test]

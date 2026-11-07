@@ -170,7 +170,6 @@ const pulls = createRoute({
   validateSearch: (s: Record<string, unknown>): PullsSearch => ({
     state: oneOf(s.state, ["open", "merged", "closed"] as const),
     scope: typeof s.scope === "string" && /^[wp]:[a-z0-9-]+$/.test(s.scope) ? s.scope : undefined,
-    mine: flag(s.mine),
     q: str(s.q),
   }),
 });

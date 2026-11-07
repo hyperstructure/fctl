@@ -1,7 +1,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Menu, MenuItem, MenuSeparator } from "./overlay";
+import { Dialog, Menu, MenuItem, MenuSeparator } from "./overlay";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,5 +120,30 @@ describe("Menu", () => {
     const stretch = setup({ align: "stretch" });
     stretch.open();
     expect(stretch.menu()?.className).toMatch(/\binset-x-0\b/);
+  });
+});
+
+describe("Dialog", () => {
+  const dialog = (children: ReactNode) => {
+    render(
+      <Dialog open title="Rename" onClose={() => {}}>
+        {children}
+      </Dialog>,
+    );
+    return document.querySelector("dialog") as HTMLDialogElement;
+  };
+
+  it("focuses itself as it opens, not the X", () => {
+    const d = dialog(<button type="button">Save</button>);
+    expect(d.open).toBe(true);
+    expect(d.hasAttribute("autofocus")).toBe(true);
+    expect(document.activeElement).toBe(d);
+    // What a screen reader says of it, now that the X isn't what it reads first.
+    expect(document.getElementById(d.getAttribute("aria-labelledby") ?? "")?.textContent).toBe("Rename");
+  });
+
+  it("lets what it shows take the focus with autoFocus", () => {
+    const d = dialog(<input aria-label="Name" autoFocus />);
+    expect(document.activeElement).toBe(d.querySelector('input[aria-label="Name"]'));
   });
 });
