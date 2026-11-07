@@ -897,6 +897,40 @@
   }
 }
 
+/* The thinking mark (components/ui/icons.tsx ThoughtIcon): while a thought streams in, its trace
+   dims and a comet sweeps along it, bright at its head, as the arc around what the agent does now
+   runs. Where motion is reduced, the trace shows still and whole. */
+.thought-tail,
+.thought-head {
+  display: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .thought-live .thought-line {
+    opacity: 0.55;
+  }
+  .thought-live .thought-tail,
+  .thought-live .thought-head {
+    display: inline;
+    animation: thought-sweep 1.5s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  }
+  .thought-live .thought-tail {
+    stroke-dasharray: 36 100;
+    opacity: 0.7;
+  }
+  .thought-live .thought-head {
+    stroke-dasharray: 13 100;
+  }
+}
+/* The head and the tail end where the comet is: in at the trace's start, out past its end. */
+@keyframes thought-sweep {
+  from {
+    stroke-dashoffset: var(--L);
+  }
+  to {
+    stroke-dashoffset: calc(var(--L) - 136);
+  }
+}
+
 /* As the agent moves on, the line's new step rolls in from below, out of a blur, settling with a
    little spring, while the last one rolls away above; the line glides to its new width, its words
    kept whole until it gets there. A thought's tokens count up figure by figure, each rolling up

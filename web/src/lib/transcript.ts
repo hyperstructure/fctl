@@ -69,7 +69,12 @@ export type Item =
     })
   | (Base & { kind: "status"; status: G.SessionStatus; reason?: string; resumeAt?: number })
   | (Base & { kind: "logs"; lines: G.LogLine[] })
-  | (Base & { kind: "notice"; notice: G.Notice })
+  | (Base & {
+      kind: "notice";
+      notice: G.Notice;
+      /** For a retrospective the agent updated: how it was before, where the transcript has that. */
+      retroBefore?: G.Retrospective;
+    })
   /** The repositories whose branch changed (`branchChanges`), in a state. */
   | (Base & { kind: "git"; git: G.GitState; repos: (string | undefined)[] })
   | (Base & { kind: "remote"; rc: G.RemoteControlState })
@@ -197,6 +202,8 @@ export class TranscriptBuilder {
   private open = new Set<string>();
   private seen = new Set<number>();
   private pullRequests = new Set<string>();
+  /** Each retrospective as its last notice had it. */
+  private retros = new Map<string, G.Retrospective>();
   private setupOpen = true;
 
   /** Appends events (in seq order); returns the new items array. */
@@ -380,13 +387,24 @@ export class TranscriptBuilder {
         }
         return;
       }
-      case "notice":
+      case "notice": {
         // A restarted Claude Code doesn't follow the last one's subagents or background work,
         // nor one that a restarted fctl-agent started in place of the last; and a session that
         // stops says what of it stopped with it.
         if (CLAUDE_GONE.has(ev.data.code)) this.stopSubagents(items, ev);
-        items.push({ ...base, kind: "notice", key: `n-${ev.seq}`, notice: ev.data });
+        // An updated retrospective keeps how it was, for what changed.
+        const retro = ev.data.retrospective;
+        const retroBefore = retro ? this.retros.get(retro.id) : undefined;
+        if (retro) this.retros.set(retro.id, retro);
+        items.push({
+          ...base,
+          kind: "notice",
+          key: `n-${ev.seq}`,
+          notice: ev.data,
+          ...(retroBefore ? { retroBefore } : {}),
+        });
         return;
+      }
       case "git": {
         // A line when a branch changed: a commit, a push or a new pull request.
         const repos = branchChanges(this.latestGit, ev.data, this.pullRequests);

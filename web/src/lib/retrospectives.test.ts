@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { canDelete, changedAt, outcomeLabel, parts, total, unlisted } from "./retrospectives";
+import { canDelete, changedAt, changes, outcomeLabel, parts, total, unlisted } from "./retrospectives";
 import type { Item } from "./transcript";
 
 const retro = (over: Partial<G.Retrospective> = {}): G.Retrospective => ({
@@ -74,5 +74,20 @@ describe("outcomes", () => {
     expect(outcomeLabel("partial")).toBe("Partly done");
     expect(total({ completed: 3, partial: 1, blocked: 2 })).toBe(6);
     expect(total(undefined)).toBe(0);
+  });
+});
+
+describe("an update", () => {
+  it("says which parts it changed, and the outcome it moved from", () => {
+    const before = retro({ outcome: "partial", approach: "Fixed it first.", challenges: "CI was slow." });
+    const after = retro({
+      approach: "Fixed it first. ",
+      challenges: "CI was slow, then red.",
+      insights: "Run it",
+    });
+    const c = changes(before, after);
+    expect([...c.parts]).toEqual(["challenges", "insights"]);
+    expect(c.outcome).toBe("partial");
+    expect(changes(after, after)).toEqual({ parts: new Set(), outcome: undefined });
   });
 });

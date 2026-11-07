@@ -2,7 +2,8 @@
 // checks, as GitHub draws them (16 units, filled), and fctl's own, drawn on lucide's grid
 // (24 units, 2-unit round strokes) so that they sit beside its icons.
 
-import type { CSSProperties } from "react";
+import { type CSSProperties, useId } from "react";
+import { cn } from "@/lib/cn";
 
 /**
  * The Agent Floor: three agents whose traces run into a core with its light on, as the
@@ -147,22 +148,55 @@ export function ReviewIcon({ kind, className }: { kind: keyof typeof REVIEW_PATH
   return <Octicon path={REVIEW_PATHS[kind]} className={className} />;
 }
 
-/** A thought: a cloud with the bubbles that lead up to it, as comics draw one. */
-export function ThoughtIcon({ className }: { className?: string }) {
+/** The thinking mark's trace, as a monitor draws a beat: a small wave, a spike, and a slow one. */
+const THOUGHT_TRACE =
+  "M2 12.5H6.5L8 10L9.5 12.5L11 4.5L13.2 19.5L15 12.5H16.2C17 10.5 18.6 10.5 19.4 12.5H22";
+
+/**
+ * Thinking, as a monitor's trace of a signal, in the brand's blue turning pink. While the agent
+ * thinks (`live`), the trace sweeps along it as a comet does, bright at its head, every one in
+ * step; where motion is reduced, the trace shows still (styles/app.css).
+ */
+export function ThoughtIcon({ className, live = false }: { className?: string; live?: boolean }) {
+  const id = `thought${useId().replace(/[^\w-]/g, "")}`;
+  const paint = `url(#${id})`;
   return (
     <svg
       viewBox="0 0 24 24"
-      className={className ?? "size-4"}
+      className={cn("thought", live && "thought-live", className ?? "size-4")}
       fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M18.4 13.7h-6.8a5.6 5.6 0 1 1 5.37-7.2h1.43a3.6 3.6 0 1 1 0 7.2Z" />
-      <circle cx="6.1" cy="17.6" r="1.9" fill="currentColor" stroke="none" />
-      <circle cx="3.2" cy="20.85" r="1.15" fill="currentColor" stroke="none" />
+      <defs>
+        <linearGradient id={id} x1="2" y1="20" x2="22" y2="4" gradientUnits="userSpaceOnUse">
+          <stop offset="0" style={{ stopColor: "var(--c-blue)" }} />
+          <stop offset="0.5" style={{ stopColor: "color-mix(in oklab, var(--c-blue), var(--c-pink))" }} />
+          <stop offset="1" style={{ stopColor: "var(--c-pink)" }} />
+        </linearGradient>
+      </defs>
+      <path className="thought-line" d={THOUGHT_TRACE} stroke={paint} strokeWidth="2.25" />
+      {live && (
+        <>
+          <path
+            className="thought-tail"
+            d={THOUGHT_TRACE}
+            pathLength={100}
+            stroke={paint}
+            strokeWidth="2.25"
+            style={{ "--L": 36 } as CSSProperties}
+          />
+          <path
+            className="thought-head"
+            d={THOUGHT_TRACE}
+            pathLength={100}
+            stroke={paint}
+            strokeWidth="2.6"
+            style={{ "--L": 13 } as CSSProperties}
+          />
+        </>
+      )}
     </svg>
   );
 }

@@ -33,13 +33,7 @@ export function Thinking({
   return (
     <div>
       <OpenLine
-        icon={
-          nested ? (
-            <span className="flex size-3.5 shrink-0 text-violet/80">{icon}</span>
-          ) : (
-            <RailIcon className="text-violet/80">{icon}</RailIcon>
-          )
-        }
+        icon={nested ? <span className="flex size-3.5 shrink-0">{icon}</span> : <RailIcon>{icon}</RailIcon>}
         open={open}
         onToggle={onToggle ?? (() => setOwn(!open))}
         controls={id}

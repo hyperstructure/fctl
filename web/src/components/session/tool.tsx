@@ -691,7 +691,7 @@ function Coming({ block }: { block: Pick<LiveBlock, "type" | "name" | "tokens"> 
   return (
     <div className="step-in flex min-h-7 items-center gap-2 py-1 text-[13px] text-ink-3">
       {block.type === "thinking" ? (
-        <ThoughtIcon className="size-3.5 shrink-0 text-violet/80" />
+        <ThoughtIcon live className="size-3.5 shrink-0" />
       ) : (
         <Busy className="size-3.5 shrink-0 text-accent" />
       )}

@@ -74,9 +74,12 @@ export function RetrospectiveParts({
   remember,
   className,
   findKey,
+  changed,
 }: {
   r: G.Retrospective;
   wide?: boolean;
+  /** The parts an update changed, marked beside their names. */
+  changed?: ReadonlySet<string>;
   /** The project to remember insights in, for people who may edit its memory. */
   remember?: G.Project;
   className?: string;
@@ -95,7 +98,19 @@ export function RetrospectiveParts({
       {parts(r).map((p) => (
         // Beside its name where there is room, under it on phones.
         <div key={p.key} className={wide ? "block sm:contents" : "block"}>
-          <dt className={cn("text-[12px] font-medium text-ink-3", wide && "sm:pt-[3px]")}>{p.label}</dt>
+          <dt className={cn("flex items-center gap-1.5 text-[12px] leading-[22px] text-ink-4")}>
+            {p.label}
+            {changed?.has(p.key) && (
+              <>
+                <span
+                  aria-hidden="true"
+                  title="Changed in this update"
+                  className="inline-block size-1.5 shrink-0 rounded-full bg-accent"
+                />
+                <span className="sr-only"> (changed)</span>
+              </>
+            )}
+          </dt>
           <dd className={cn("mt-0.5 min-w-0 text-ink-2 [overflow-wrap:anywhere]", wide && "sm:mt-0")}>
             <div data-find={findKey && `retro:${findKey}:${p.key}`}>
               <Markdown text={p.text} className="prose-note" />

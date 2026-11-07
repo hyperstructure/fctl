@@ -347,7 +347,7 @@ function notice(out: Out, part: string, it: Item, n: G.Notice) {
   }
   if (n.retrospective) {
     for (const p of retrospectiveParts(n.retrospective))
-      push(out, `retro:${it.key}:${p.key}`, part, it.seq, plain(p.text), []);
+      push(out, `retro:${it.key}:${p.key}`, part, it.seq, plain(p.text), [[`retro:${it.key}`, "open"]]);
     return;
   }
   // What the agent asked shows as its question alone (its answers are chips the page doesn't find).
