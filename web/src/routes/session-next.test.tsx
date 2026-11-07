@@ -572,6 +572,9 @@ describe("the new session page", () => {
     // As it goes on, its figures roll where they are: the step stays.
     const step = line()?.querySelector(".now-row > span:nth-child(2) > span");
     stream({ type: "system", subtype: "thinking_tokens", estimated_tokens: 4310 });
+    stream({ type: "system", subtype: "thinking_tokens", estimated_tokens: 4330 });
+    // At most as often as each roll can be read.
+    await act(() => new Promise((r) => setTimeout(r, 500)));
     expect(shown()).toContain("4.3K tokens");
     expect(line()?.querySelector(".now-row > span:nth-child(2) > span")).toBe(step);
   });

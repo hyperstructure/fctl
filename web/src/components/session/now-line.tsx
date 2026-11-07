@@ -315,6 +315,30 @@ function Odometer({ value, text }: { value: number; text: string }) {
   );
 }
 
+/** How often a count changes at most (ms): each roll ends before the next, for it to be read. */
+const COUNT_MS = 450;
+
+/** `value`, changing at most every `ms`: the newest one when its time comes. */
+function useThrottled<T>(value: T, ms: number): T {
+  const [shown, setShown] = useState(value);
+  const last = useRef(0);
+  useEffect(() => {
+    if (Object.is(value, shown)) return;
+    const show = () => {
+      last.current = Date.now();
+      setShown(value);
+    };
+    const wait = last.current + ms - Date.now();
+    if (wait <= 0) {
+      show();
+      return;
+    }
+    const t = setTimeout(show, wait);
+    return () => clearTimeout(t);
+  }, [value, shown, ms]);
+  return shown;
+}
+
 /** How far a thought got: "4.2K tokens", its figures rolling as it goes on. */
 function Tokens({ n }: { n: number }) {
   // Once its thought has shown for a while: it rolls in by itself.
@@ -413,7 +437,10 @@ export function NowLine({
       : shown.since && shown.kind !== "paused"
         ? ran(time - shown.since)
         : undefined;
-  const figures = shown?.tokens ? tokenFigures(shown.tokens) : "";
+  // A thought's count, as often as it can be read.
+  const counted = useThrottled(shown?.kind === "thinking" ? shown.tokens : undefined, COUNT_MS);
+  const tokens = shown?.kind === "thinking" ? counted : undefined;
+  const figures = tokens ? tokenFigures(tokens) : "";
   const pill = useRef<HTMLOutputElement>(null);
   // It glides to its new width as it changes shape: another step, a count that shows or grows a
   // figure, a time that does, the plan's ring.
@@ -444,7 +471,7 @@ export function NowLine({
       >
         {shown.text}
       </span>
-      {figures && shown.tokens !== undefined && <Tokens n={shown.tokens} />}
+      {figures && tokens !== undefined && <Tokens n={tokens} />}
       {target && (
         <span
           className={cn(
