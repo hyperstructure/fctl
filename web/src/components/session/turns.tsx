@@ -198,13 +198,22 @@ export const TurnTranscript = memo(function TurnTranscript({
   const open = !!last && !last.end;
 
   const rows: ReactNode[] = [];
-  const marked = (key: string, thread: boolean) => {
-    if (key === newFrom) rows.push(<NewLine key="new-line" thread={thread} />);
+  // Where what came while the reader was away starts: the line goes before the first row from
+  // there on that shows (the conversation alone leaves the agent's work out).
+  let lineDue = false;
+  const reached = (key: string) => {
+    if (key === newFrom) lineDue = true;
+  };
+  const lineBefore = (thread: boolean) => {
+    if (!lineDue) return;
+    lineDue = false;
+    rows.push(<NewLine key="new-line" thread={thread} />);
   };
   const arrived = (seq: number | undefined) => seq !== undefined && seq > shownUpTo;
   const part = (p: Part<Item>, thread: boolean) => {
+    reached(p.key);
     if (quiet && !inConversation(p)) return;
-    marked(p.key, thread);
+    lineBefore(thread);
     const beside = p.kind === "item" && besideThread(p.item);
     const seq = p.kind === "run" ? p.steps[0]?.seq : p.item.seq;
     rows.push(
@@ -241,7 +250,9 @@ export const TurnTranscript = memo(function TurnTranscript({
     // Where it starts, for the bar that says which turn the reader is in.
     if (turn.ask && turn.askPart) {
       // What came while the reader was away starts with this turn: the line says so above its card.
-      const isNew = turn.askPart.key === newFrom;
+      reached(turn.askPart.key);
+      const isNew = lineDue;
+      lineDue = false;
       rows.push(
         <div
           key={turn.askPart.key}
@@ -261,6 +272,7 @@ export const TurnTranscript = memo(function TurnTranscript({
       // Its start isn't loaded: earlier activity above it has it.
       rows.push(<div key={`start-${turn.key}`} data-turn={turn.key} />);
     } else {
+      lineBefore(false);
       rows.push(
         <div key={`start-${turn.key}`} data-turn={turn.key} className={cn(!first && "pt-10")}>
           {gap}
@@ -273,6 +285,7 @@ export const TurnTranscript = memo(function TurnTranscript({
     for (const p of turn.body) part(p, true);
     const isLast = i === turns.length - 1;
     if (isLast && open) {
+      lineBefore(true);
       rows.push(
         <div key="live" className="thread thread-live">
           <LiveTurnView
@@ -295,6 +308,7 @@ export const TurnTranscript = memo(function TurnTranscript({
       );
     }
     if (turn.end) {
+      lineBefore(true);
       rows.push(
         <div
           key={`end-${turn.end.key}`}

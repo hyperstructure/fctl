@@ -156,6 +156,13 @@ function page(view: "classic" | "new" = "new") {
   };
 }
 
+/** The page goes out of sight, or comes back. */
+const visibility = (v: "hidden" | "visible") =>
+  act(() => {
+    Object.defineProperty(document, "visibilityState", { value: v, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
 function press(key: string) {
   act(() => {
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
@@ -261,11 +268,6 @@ describe("the new session page", () => {
   it("marks where what came while the reader was away starts, until they leave again", () => {
     const p = page();
     p.snapshot(turn("Fix the flaky login test"));
-    const visibility = (v: "hidden" | "visible") =>
-      act(() => {
-        Object.defineProperty(document, "visibilityState", { value: v, configurable: true });
-        document.dispatchEvent(new Event("visibilitychange"));
-      });
     visibility("hidden");
     const later = turn("Now the signup test");
     p.hear({ type: "events", events: later });
@@ -282,6 +284,36 @@ describe("the new session page", () => {
     visibility("hidden");
     expect(p.container.querySelector(".new-line")).toBeNull();
     visibility("visible");
+  });
+
+  it("marks what came while away in the conversation alone too, before the first of it that shows", () => {
+    const p = page();
+    p.snapshot(
+      [
+        ev("user_message", { text: "Run the tests", source: "web" }),
+        assistant("m1", [{ type: "text", text: "On it." }]),
+      ],
+      session("running"),
+    );
+    p.click('button[aria-label="Show only the conversation"]');
+    visibility("hidden");
+    // The agent's work first, which the conversation leaves out, then what it said.
+    p.hear({
+      type: "events",
+      events: [
+        assistant("m2", [{ type: "tool_use", id: "b9", name: "Bash", input: { command: "npm test" } }]),
+        result("b9", "ok"),
+        assistant("m3", [{ type: "text", text: "The tests pass." }]),
+      ],
+    });
+    visibility("visible");
+    const line = p.container.querySelector(".new-line");
+    expect(line?.nextElementSibling?.textContent).toContain("The tests pass.");
+    // All of it again: the line goes back before the work.
+    p.click(`button[aria-label="Show the agent's work"]`);
+    expect(p.container.querySelector(".new-line")?.nextElementSibling?.textContent).not.toContain(
+      "The tests pass.",
+    );
   });
 
   it("marks the parts that come after it first showed, whose thread draws as they come", () => {

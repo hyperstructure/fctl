@@ -1019,26 +1019,27 @@ function Pill({
   header: RefObject<HTMLElement | null>;
 }) {
   // Whether the line that marks what came while away is above the reader: measured once the page
-  // has it, and again as the reader scrolls.
+  // has it, after each render (the conversation alone, finding and earlier activity move it or
+  // take it out), and as the reader scrolls or the page changes size.
   const [above, setAbove] = useState(false);
-  useLayoutEffect(() => {
-    if (!away.from) {
-      setAbove(false);
-      return;
-    }
-    const measure = () => {
-      const line = document.querySelector<HTMLElement>(".new-line");
-      const top = header.current?.getBoundingClientRect().bottom ?? 0;
-      setAbove(!!line && line.getBoundingClientRect().bottom < top);
-    };
-    measure();
+  const measure = useCallback(() => {
+    const line = away.from ? document.querySelector<HTMLElement>(".new-line") : null;
+    const top = header.current?.getBoundingClientRect().bottom ?? 0;
+    setAbove(!!line && line.getBoundingClientRect().bottom < top);
+  }, [away.from, header]);
+  useLayoutEffect(measure);
+  useEffect(() => {
+    if (!away.from) return;
     window.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure, { passive: true });
+    const grown = new ResizeObserver(measure);
+    grown.observe(document.documentElement);
     return () => {
       window.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);
+      grown.disconnect();
     };
-  }, [away.from, header]);
+  }, [away.from, measure]);
   if (above) {
     return (
       <JumpPill
