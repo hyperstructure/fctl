@@ -488,17 +488,24 @@ started.
 To try the new session view, choose **Try the new view** in a session's ⋯
 menu, press `v` on its page, or turn on **New session view** in **Settings →
 Appearance**; your browser keeps the choice, and the same places switch
-back. It reads a session in turns: each message opens a card, what the
-agent did about it hangs from the card on a thread, and each turn ends with
-how long it took, its steps and the files it edited, each of which opens
-its diff. Above the message box, a line says what the agent does now and
-for how long. Scrolled away from the newest work, a button goes back down
-to it and counts what came meanwhile; back on the tab, a line marks where
-what came while you were away starts. A bar under the header says which
-turn you are in and lists them all, as the details beside the transcript do
-on a computer, and `j` and `k` go from turn to turn. The speech bubbles in
-its header (**Show only the conversation** in the ⋯ menu on a phone) leave
-out the agent's work: what remains is what people asked and what the agent
+back. It opens with the session at a glance: its turns, the agent's time,
+its steps, what it changed and its pull requests, and its turns as a
+ribbon, each a click from its start. It reads a session in turns: each
+message opens a card, what the agent did about it hangs from the card on a
+thread, and each turn ends with how long it took, its steps and the files
+it edited, each of which opens its diff; the ⋯ at a turn's end copies it as
+Markdown, or a link that opens the session at that turn. The agent's plan
+(its to-do list) stays beside the transcript, its steps checked off as the
+agent goes. Above the message box, a line says what the agent does now and
+for how long, led by the step of its plan it is at, with how far it got;
+once it ends its turn and waits for you, the line says it's your turn.
+Scrolled away from the newest work, a button goes back down to it and
+counts what came meanwhile; back on the tab, a line marks where what came
+while you were away starts. A bar under the header says which turn you are
+in and lists them all, as the details beside the transcript do on a
+computer, and `j` and `k` go from turn to turn. The speech bubbles in its
+header (**Show only the conversation** in the ⋯ menu on a phone) leave out
+the agent's work: what remains is what people asked and what the agent
 answered.
 
 To find what a session said, press ⌘F (Ctrl+F) on its page, or choose
