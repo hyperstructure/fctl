@@ -499,6 +499,11 @@ Markdown, or a link that opens the session at that turn. The agent's plan
 agent goes. Above the message box, a line says what the agent does now and
 for how long, led by the step of its plan it is at, with how far it got;
 once it ends its turn and waits for you, the line says it's your turn.
+While it waits for work it left running in the background (a dev server, a
+build, a subagent), the line names it, and opens into a list of each task:
+what it is, its command, for how long it has run, and a click to the call
+that started it. That call's line says it runs in the background, and once
+it ends, how long it ran.
 Scrolled away from the newest work, a button goes back down to it and
 counts what came meanwhile; back on the tab, a line marks where what came
 while you were away starts. A bar under the header says which turn you are
