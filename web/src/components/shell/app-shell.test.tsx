@@ -328,7 +328,9 @@ describe("hiding a session from the sidebar", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  const turns = (n: number) => ({ stats: { turns: n } as G.SessionStats });
+  // How many turns each had ended, as summaries from a while ago say, and a newer summary.
+  const turns = (n: number) => ({ stats: { turns: n } as G.SessionStats, updated_at: NOW - HOUR });
+  const newer = { updated_at: NOW };
   const building = session(6, "Fix the build", "running", "prj_web", turns(1));
   const waiting = session(5, "Add dark mode", "idle", "prj_web", turns(2));
   const asking = session(4, "Pick a font", "idle", "prj_web", {
@@ -395,9 +397,11 @@ describe("hiding a session from the sidebar", () => {
     const sidebar = reload("/");
     await sidebar.come({ workspaces, projects, sessions: [recent, [building, waiting]] });
     act(() => hideButton(sidebar.container, "Add dark mode").click());
-    await sidebar.come({ sessions: [recent, [building, { ...waiting, status: "stopping" }]] });
+    await sidebar.come({ sessions: [recent, [building, { ...waiting, status: "stopping", ...newer }]] });
     expect(titles(sidebar)).toEqual(["Fix the build"]);
-    await sidebar.come({ sessions: [recent, [building, { ...waiting, status: "stopped", ended_at: NOW }]] });
+    await sidebar.come({
+      sessions: [recent, [building, { ...waiting, status: "stopped", ended_at: NOW, ...newer }]],
+    });
     expect(titles(sidebar)).toEqual(["Fix the build"]);
   });
 
@@ -406,10 +410,10 @@ describe("hiding a session from the sidebar", () => {
     await sidebar.come({ workspaces, projects, sessions: [recent, [waiting]] });
     act(() => hideButton(sidebar.container, "Add dark mode").click());
     expect(titles(sidebar)).toEqual([]);
-    await sidebar.come({ sessions: [recent, [{ ...waiting, status: "running" }]] });
+    await sidebar.come({ sessions: [recent, [{ ...waiting, status: "running", ...newer }]] });
     expect(titles(sidebar)).toEqual(["Add dark mode"]);
     // Seeing it work forgot that it was hidden: resting again, it shows, whatever its turns.
-    await sidebar.come({ sessions: [recent, [waiting]] });
+    await sidebar.come({ sessions: [recent, [{ ...waiting, updated_at: NOW + MINUTE }]] });
     expect(titles(sidebar)).toEqual(["Add dark mode"]);
   });
 
@@ -423,8 +427,8 @@ describe("hiding a session from the sidebar", () => {
       sessions: [
         recent,
         [
-          { ...waiting, question: { text: "Which shade?" } as G.SessionQuestion },
-          { ...retried, ...turns(5), ended_at: NOW },
+          { ...waiting, question: { text: "Which shade?" } as G.SessionQuestion, ...newer },
+          { ...retried, ...turns(5), ended_at: NOW, ...newer },
         ],
       ],
     });
@@ -444,8 +448,24 @@ describe("hiding a session from the sidebar", () => {
     expect(titles(tab)).toEqual([]);
     expect(localStorage.getItem("fctl:hidden-sessions")).toContain("ses_5");
     // It catches up as the agent works on the next turn: it comes back everywhere.
-    await behind.come({ sessions: [recent, [{ ...waiting, status: "running" }]] });
+    await behind.come({ sessions: [recent, [{ ...waiting, status: "running", ...newer }]] });
     expect(titles(tab)).toEqual(["Add dark mode"]);
+  });
+
+  it("stays hidden when it stopped during a turn, which another tab still sees it at work on", async () => {
+    // A turn that a stop or a failure cuts short counts as none: it has as many turns as it worked with.
+    const cut = session(7, "Trim the logs", "running", "prj_web", turns(3));
+    const behind = reload("/");
+    await behind.come({ workspaces, projects, sessions: [recent, [cut]] });
+    const tab = reload("/");
+    await tab.come({
+      workspaces,
+      projects,
+      sessions: [recent, [{ ...cut, status: "stopped", ended_at: NOW, ...newer }]],
+    });
+    act(() => hideButton(tab.container, "Trim the logs").click());
+    expect(titles(tab)).toEqual([]);
+    expect(localStorage.getItem("fctl:hidden-sessions")).toContain("ses_7");
   });
 
   it("leaves the focus on the session after it, or before it, or on the project", async () => {
