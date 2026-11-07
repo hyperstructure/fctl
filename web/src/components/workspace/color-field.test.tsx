@@ -71,7 +71,7 @@ describe("a workspace's color", () => {
     expect(f.custom()?.getAttribute("aria-label")).toBe("Custom color: teal, #2A9D8F");
     expect(f.custom()?.getAttribute("aria-pressed")).toBe("true");
     expect(f.button("Yellow")?.getAttribute("aria-pressed")).toBe("false");
-    expect(f.popover()?.textContent).toContain("Its initials in black");
+    expect(f.popover()?.textContent).toContain("As it is, in both themes");
     expect(f.save).not.toHaveBeenCalled();
     f.key(f.hex(), "Escape");
     expect(f.popover()?.dataset.state).toBe("closed");
@@ -88,7 +88,6 @@ describe("a workspace's color", () => {
     expect(f.custom()?.getAttribute("aria-label")).toBe("Custom color: dark blue, #1D3557");
     act(() => f.custom()?.click());
     expect(f.hex()?.value).toBe("1D3557");
-    expect(f.popover()?.textContent).toContain("Its initials in white");
     f.key(f.hex(), "Escape");
     await f.settle();
     expect(f.save).not.toHaveBeenCalled();

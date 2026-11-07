@@ -3,7 +3,6 @@
 // saved as the popover closes. Until then the avatars here show it as it's dragged, and the
 // popover offers the colors of their own its projects have, so that it can match them.
 
-import { palette } from "@hyperstructure/design/brand";
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ColorPopover, RAINBOW } from "@/components/ui/color-popover";
 import { toast } from "@/components/ui/feedback";
@@ -12,7 +11,7 @@ import { cn } from "@/lib/cn";
 import { colorName, showHex, THEME_BACKGROUNDS } from "@/lib/color";
 import { BRAND_HEX, FIRST_OWN, ownColors } from "@/lib/project-icons";
 import { keys, queryClient } from "@/lib/queries";
-import { ownFill, WORKSPACE_COLORS, WorkspaceAvatar } from "./avatar";
+import { WORKSPACE_COLORS, WorkspaceAvatar } from "./avatar";
 
 /** The change of color a press saves. */
 export type ColorChange = Pick<G.UpdateWorkspaceRequest, "color" | "hex">;
@@ -205,9 +204,12 @@ export function Wheel({ size }: { size: number }) {
   );
 }
 
-/** The avatar on each theme's background, and the ink its initials take to read on the color. */
+/**
+ * The avatar on each theme's background, where it keeps the color as chosen: unlike an icon's, it
+ * fills a tile, which its hairline keeps apart from the background, and its initials take the ink
+ * that reads on it.
+ */
 export function AvatarThemes({ name, hex }: { name: string; hex: string }) {
-  const white = ownFill(hex).ink === palette.whiteish;
   return (
     <div className="flex items-center gap-2.5">
       <div
@@ -226,9 +228,7 @@ export function AvatarThemes({ name, hex }: { name: string; hex: string }) {
           </span>
         ))}
       </div>
-      <p className="min-w-0 text-[11.5px] leading-snug text-ink-4">
-        {white ? "Its initials in white, to read on it" : "Its initials in black, to read on it"}
-      </p>
+      <p className="min-w-0 text-[11.5px] leading-snug text-ink-4">As it is, in both themes</p>
     </div>
   );
 }
