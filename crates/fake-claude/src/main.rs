@@ -29,7 +29,7 @@
 //! | `look` | reads an image with `Read`, as agents look at a screenshot of what they changed: a small PNG it draws, or each image at the paths after the word (`look /tmp/before.png /tmp/after.png`), one call after another; the result holds the image, as Claude Code's does |
 //! | `remember <text>` | adds `<text>` (to the end of its line) to the project's memory with `fctl memory add`, as agents do |
 //! | `recall` | lists the project's memory with `fctl memory` |
-//! | `ask <question>` | asks the people who follow the session `<question>` (to the end of its line) with `fctl ask`, offering the answers after each ` / ` in it to click (`ask Ship it today? / Yes / Not yet`), and ends its turn, as agents do when they need a person's input |
+//! | a line that starts with `ask <question>` | asks the people who follow the session `<question>` (to the end of its line) with `fctl ask`, offering the answers after each ` / ` in it to click (`ask Ship it today? / Yes / Not yet`), and ends its turn, as agents do when they need a person's input |
 //! | a line that starts with `fctl ticket` | runs it, as agents read and write their project's tickets (`fctl ticket view ENG-1`, `fctl ticket comment ENG-1 "On it"`) |
 //! | `printenv` | shows the `CLAUDE_CODE_…` variables it got, its Claude token among them, in a `Bash` call, as an agent that looks at its environment does, then says the token back in pieces of five characters, as Claude streams what it writes (the host keeps the token out of both) |
 //! | `retro` | records a retrospective of the turn's work with `fctl retro`, as agents do when they finish a piece of work: completed, or `partial` or `blocked` when the message says so |
@@ -1413,7 +1413,7 @@ impl Session {
         if says(&lower, "recall") {
             self.fctl(&["memory"], "Read the project's memory");
         }
-        if let Some(asked) = word_at_start(text, "ask ") {
+        if let Some(asked) = line_starting(text, "ask ") {
             let asked = asked.unwrap_or_else(|| "Shall I go on? / Yes / Not yet".into());
             let mut parts = asked.split(" / ").map(str::trim).filter(|p| !p.is_empty());
             let question = parts.next().unwrap_or("Shall I go on?").to_owned();
@@ -1829,20 +1829,18 @@ fn after_word(text: &str, word: &str) -> Option<Option<String>> {
     Some((!rest.is_empty()).then(|| rest.to_owned()))
 }
 
-/// What follows `word` where it starts a word (not "task " for "ask "), to
-/// the end of its line, as [`after_word`] gives it.
-fn word_at_start(text: &str, word: &str) -> Option<Option<String>> {
-    let at = text.char_indices().find_map(|(i, _)| {
-        let starts = text[..i]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !c.is_alphanumeric());
-        text.get(i..i + word.len())
-            .filter(|w| starts && w.eq_ignore_ascii_case(word))
-            .map(|_| i + word.len())
-    })?;
-    let rest = text[at..].lines().next().unwrap_or_default().trim();
-    Some((!rest.is_empty()).then(|| rest.to_owned()))
+/// The rest of the first line that starts with `word` (any case), after
+/// spaces: `ask Ship it?` asks, while "task " or a follow-up that says "ask
+/// on the pull request" mid-line doesn't.
+fn line_starting(text: &str, word: &str) -> Option<Option<String>> {
+    text.lines().find_map(|line| {
+        let line = line.trim_start();
+        let head = line.get(..word.len())?;
+        head.eq_ignore_ascii_case(word).then(|| {
+            let rest = line[word.len()..].trim();
+            (!rest.is_empty()).then(|| rest.to_owned())
+        })
+    })
 }
 
 /// The title after `rename` (any case), to the end of its line.
@@ -2048,17 +2046,22 @@ fn main() {
 mod tests {
 
     #[test]
-    fn asks_only_where_a_word_starts() {
+    fn asks_only_on_a_line_that_starts_with_ask() {
         assert_eq!(
-            super::word_at_start("Please ask Ship it? / Yes / No", "ask "),
+            super::line_starting("Look around.\n  ask Ship it? / Yes / No", "ask "),
             Some(Some("Ship it? / Yes / No".into()))
         );
-        assert_eq!(super::word_at_start("Write a task list", "ask "), None);
-        assert_eq!(super::word_at_start("ask", "ask "), None);
+        assert_eq!(super::line_starting("Write a task list", "ask "), None);
+        // fctl's own follow-ups say it mid-line.
         assert_eq!(
-            super::word_at_start("(ask why)", "ask "),
-            Some(Some("why)".into()))
+            super::line_starting("Answer them unless they ask you to wait.", "ask "),
+            None
         );
+        assert_eq!(
+            super::line_starting("ASK  Why? ", "ask "),
+            Some(Some("Why?".into()))
+        );
+        assert_eq!(super::line_starting("ask ", "ask "), Some(None));
     }
     use super::{
         CONTEXT_START, CONTEXT_WINDOW, adler32, asks_for_limit, background_for, context_for, crc32,

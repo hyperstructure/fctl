@@ -1529,7 +1529,28 @@ impl SessionObject {
         let Some(mut s) = self.summary() else {
             return Err(api_err(ErrorCode::NotFound, "Session not initialized"));
         };
-        if s.question != b.question {
+        // A question that comes as the session stops or fails would stay
+        // with nobody to answer it: one coming late then is refused. Taking
+        // one back always goes.
+        if b.question.is_some()
+            && matches!(
+                s.status,
+                SessionStatus::Stopping | SessionStatus::Stopped | SessionStatus::Failed
+            )
+        {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "The session is ending, so nobody would see the question: say it in your message.",
+            ));
+        }
+        // The same question again (an agent trying again after a timeout)
+        // changes nothing, and tells nobody again.
+        let same = match (&s.question, &b.question) {
+            (Some(old), Some(new)) => old.text == new.text && old.options == new.options,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
             s.question = b.question;
             self.publish(&mut s, now).await;
             if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {

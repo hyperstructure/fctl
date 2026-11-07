@@ -2339,8 +2339,10 @@ its host (`AgentCall::Ask`), as for `fctl memory`. SessionDO keeps the
 session's one open question (`Session.question`: at most 500 characters,
 up to six answers of at most 120), writes it through to D1's
 `sessions.question` so that session lists carry it, and shows it to
-viewers and dashboards at once; a newer question takes its place, and
-`fctl ask --withdraw` takes it back. A person's next message answers it:
+viewers and dashboards at once; a newer question takes its place (the same
+one again changes nothing, and tells nobody again), and `fctl ask
+--withdraw` takes it back. One that comes as the session stops or fails is
+refused, as nobody would see it. A person's next message answers it:
 SessionDO drops it as it delivers a message with an author, however it
 came, and an answer clicked is that message, sent as it is. It goes too
 when the session fails or someone stops or deletes it (FleetDO's stop says
