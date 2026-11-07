@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
 import { own } from "@/lib/dialog";
@@ -29,6 +29,9 @@ export function Dialog({
   fit?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  // Named by its title, and described by its description, for what focuses the dialog itself.
+  const titleId = useId();
+  const descriptionId = useId();
   // What it shows mounts only once it is open: an `autoFocus` in it focuses
   // nothing in a closed dialog, which shows nothing. Before paint, all the same.
   const [shown, setShown] = useState(false);
@@ -51,6 +54,8 @@ export function Dialog({
     // biome-ignore lint/a11y/useKeyWithClickEvents: the click closes on the backdrop only; Escape is native to <dialog>.
     <dialog
       ref={ref}
+      aria-labelledby={titleId}
+      aria-describedby={description ? descriptionId : undefined}
       onClose={own(onClose)}
       onClick={(e) => {
         if (e.target === ref.current) onClose();
@@ -69,9 +74,12 @@ export function Dialog({
         <div className={cn("p-6", fit && "flex min-h-0 flex-1 flex-col")}>
           <div className="mb-5 flex items-start justify-between gap-4">
             <div className="min-w-0 [overflow-wrap:anywhere]">
-              <h2 className="font-display text-[22px] leading-tight tracking-[-0.01em]">{title}</h2>
+              <h2 id={titleId} className="font-display text-[22px] leading-tight tracking-[-0.01em]">
+                {title}
+              </h2>
               {description && (
                 <p
+                  id={descriptionId}
                   className={cn(
                     "mt-1.5 text-[13.5px] leading-relaxed text-ink-3",
                     fit && "[@media(max-height:600px)]:hidden",

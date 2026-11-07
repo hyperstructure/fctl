@@ -138,6 +138,8 @@ describe("Dialog", () => {
     expect(d.open).toBe(true);
     expect(d.hasAttribute("autofocus")).toBe(true);
     expect(document.activeElement).toBe(d);
+    // What a screen reader says of it, now that the X isn't what it reads first.
+    expect(document.getElementById(d.getAttribute("aria-labelledby") ?? "")?.textContent).toBe("Rename");
   });
 
   it("lets what it shows take the focus with autoFocus", () => {
