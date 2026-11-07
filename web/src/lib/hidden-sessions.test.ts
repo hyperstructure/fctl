@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { hideable, staysHidden } from "./hidden-sessions";
+import { cameBack, hideable, staysHidden } from "./hidden-sessions";
 
 const session = (status: G.SessionStatus, turns = 2, question?: string) => ({
   id: "ses_1",
@@ -35,5 +35,18 @@ describe("hiding a session from the sidebar", () => {
     // It worked while nobody looked, and rests again.
     expect(staysHidden(session("idle", 3), hidden)).toBe(false);
     expect(staysHidden(session("stopped", 3), hidden)).toBe(false);
+  });
+
+  it("is forgotten on a summary no older than the hide: not one from another tab whose lists are behind", () => {
+    const hidden = { turns: 2, at: 0 };
+    // At work on the turn after the one it was hidden after, or past it.
+    expect(cameBack(session("running", 2), hidden)).toBe(true);
+    expect(cameBack(session("idle", 3), hidden)).toBe(true);
+    expect(cameBack(session("idle", 2, "Which branch?"), hidden)).toBe(true);
+    // Still at work on the turn it was hidden after.
+    expect(cameBack(session("running", 1), hidden)).toBe(false);
+    expect(cameBack(session("idle", 1, "Which branch?"), hidden)).toBe(false);
+    expect(cameBack(session("idle", 2), hidden)).toBe(false);
+    expect(cameBack(session("running", 2), undefined)).toBe(false);
   });
 });

@@ -32,6 +32,13 @@ export const hideable = (s: Session) =>
 export const staysHidden = (s: Session, h: Hidden | undefined) =>
   !!h && (hideable(s) || (s.status === "stopping" && !s.question)) && s.stats.turns <= h.turns;
 
+/**
+ * Whether `s`, hidden as `h`, came back for good: it doesn't stay hidden, and it has ended at least
+ * the turns it had then, so that this summary of it isn't older than the hide.
+ */
+export const cameBack = (s: Session, h: Hidden | undefined) =>
+  !!h && !staysHidden(s, h) && s.stats.turns >= h.turns;
+
 const listeners = new Set<() => void>();
 
 function read(): string {
@@ -110,10 +117,11 @@ export function useHiddenSessions(sessions: readonly Session[] | undefined): {
     () => new Set((sessions ?? []).filter((s) => staysHidden(s, store[s.id])).map((s) => s.id)),
     [sessions, store],
   );
-  // The hidden ones whose agents work again.
+  // The hidden ones whose agents work again, as summaries no older than the hide say: another tab
+  // whose lists are behind, where one still works on the turn it was hidden after, leaves it.
   const back = useMemo(
-    () => (sessions ?? []).filter((s) => store[s.id] && !hidden.has(s.id)).map((s) => s.id),
-    [sessions, store, hidden],
+    () => (sessions ?? []).filter((s) => cameBack(s, store[s.id])).map((s) => s.id),
+    [sessions, store],
   );
   // Those, and those hidden longer ago than anyone needs, go.
   useEffect(() => {

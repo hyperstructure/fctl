@@ -457,7 +457,9 @@ started.
   project's sessions under it, in all your workspaces: those that haven't
   ended (starting, at work, waiting or paused), and for an hour those that
   stopped or failed, dimmer, the one you are on marked, so a click switches
-  to another. Above them, **Needs you** gathers what waits on you in the
+  to another. On a computer, hover one that waits for a message, stopped
+  or failed and click its eye to hide it from the sidebar in that browser,
+  until its agent works again. Above them, **Needs you** gathers what waits on you in the
   sessions you started or follow, most pressing first: what an agent asks
   you, a failure, failed checks, a pull request an agent finished, a reply
   it waits for (unless its pull requests are all merged or closed and

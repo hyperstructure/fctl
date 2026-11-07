@@ -431,6 +431,23 @@ describe("hiding a session from the sidebar", () => {
     expect(titles(sidebar)).toEqual(["Add dark mode", "Retry uploads"]);
   });
 
+  it("stays hidden while another tab, whose lists are behind, still sees it at work", async () => {
+    const behind = reload("/");
+    await behind.come({
+      workspaces,
+      projects,
+      sessions: [recent, [{ ...waiting, status: "running", ...turns(1) }]],
+    });
+    const tab = reload("/");
+    await tab.come({ workspaces, projects, sessions: [recent, [waiting]] });
+    act(() => hideButton(tab.container, "Add dark mode").click());
+    expect(titles(tab)).toEqual([]);
+    expect(localStorage.getItem("fctl:hidden-sessions")).toContain("ses_5");
+    // It catches up as the agent works on the next turn: it comes back everywhere.
+    await behind.come({ sessions: [recent, [{ ...waiting, status: "running" }]] });
+    expect(titles(tab)).toEqual(["Add dark mode"]);
+  });
+
   it("leaves the focus on the session after it, or before it, or on the project", async () => {
     const sidebar = reload("/");
     await sidebar.come({ workspaces, projects, sessions: [recent, [building, waiting, retried]] });
