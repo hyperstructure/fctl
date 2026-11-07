@@ -6,7 +6,7 @@ import type * as G from "@/gen";
 import type { Json } from "./claude-types";
 import { describe, kindOf, type Target, toolName } from "./runs";
 import { type Stall, stallLabel } from "./stall";
-import { type Item, isSubagent, type LiveTurn, type Tool } from "./transcript";
+import { type BackgroundTask, type Item, isSubagent, type LiveTurn, type Tool } from "./transcript";
 
 export type NowKind =
   /** Its sandbox is set up, or it waits its turn for one. */
@@ -29,8 +29,10 @@ export type NowKind =
 
 export interface Now {
   kind: NowKind;
-  /** What it does: "Running the tests", "Thinking · 1.2K tokens". */
+  /** What it does: "Running the tests", "Thinking". */
   text: string;
+  /** How far a thought got, as Claude Code estimates it: its tokens so far. */
+  tokens?: number;
   /** What it does it to: a command, a file, a pattern. */
   target?: Target;
   /** The tool it uses, for its icon. */
@@ -105,9 +107,6 @@ function preparing(name?: string): string {
   }
 }
 
-/** What a thought that streams in says, with how far it got once Claude Code says: "Thinking · 1.2K tokens". */
-export type ThinkingText = (tokens?: number) => string;
-
 /** The last call of the turn the agent works on that hasn't returned: what it waits on. */
 function waitingOn(items: Item[]): Tool | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -132,6 +131,93 @@ function turnStart(items: Item[]): number | undefined {
   return start;
 }
 
+/** A task the session waits for, with the call that started it where the transcript has that. */
+export interface Awaited {
+  task: BackgroundTask;
+  call?: Tool;
+}
+
+/** What an idle session waits for in the background, as its status says and the transcript tells. */
+export interface Waiting {
+  /** The tasks the transcript saw start and not end, oldest first. */
+  tasks: Awaited[];
+  /** How many more its status counts: they started before the activity loaded here. */
+  more: number;
+}
+
+/** How many tasks fctl-agent says an idle session waits for: "Waiting for 2 background tasks". */
+export function waitingCount(reason?: string): number | undefined {
+  if (reason === "Waiting for a background task") return 1;
+  const n = reason?.match(/^Waiting for (\d+) background tasks$/)?.[1];
+  return n ? Number(n) : undefined;
+}
+
+/** The call `key`, in the transcript or in the work of the subagents in it. */
+function callOf(items: readonly Item[], key: string): Tool | undefined {
+  for (const it of items) {
+    if (it.kind !== "tool") continue;
+    if (it.key === key) return it;
+    const steps = it.agent?.steps;
+    const inner = steps && callOf(steps, key);
+    if (inner) return inner;
+  }
+  return undefined;
+}
+
+/**
+ * What an idle session waits for, while its status says it waits for background tasks: those the
+ * transcript saw start and not end, the newest as many as the status counts, with their calls.
+ * One that ended since the agent's last turn counts still where the status does: it says so a
+ * moment after the transcript, and the agent takes up what came of it in a turn of its own.
+ */
+export function waitingOf(
+  tasks: readonly BackgroundTask[],
+  items: readonly Item[],
+  reason?: string,
+): Waiting | undefined {
+  const count = waitingCount(reason);
+  if (count === undefined) return undefined;
+  const lastTurn = items.findLast((it) => it.kind === "turn")?.seq ?? 0;
+  const running = tasks.filter((t) => !t.ended);
+  // Only where the status counts more than run: one that ended never takes a running one's place.
+  const room = count - running.length;
+  const lagging = room > 0 ? tasks.filter((t) => t.ended && (t.endSeq ?? 0) > lastTurn).slice(-room) : [];
+  const awaited = [...running, ...lagging].sort((a, b) => a.seq - b.seq).slice(-count);
+  return {
+    tasks: awaited.map((task) => ({ task, call: task.call ? callOf(items, task.call) : undefined })),
+    more: count - awaited.length,
+  };
+}
+
+/** What kind of work a task is, in a word or two: "shell command", "subagent". */
+export function taskKind(type?: string): string | undefined {
+  switch (type) {
+    case "local_bash":
+      return "shell command";
+    case "local_agent":
+      return "subagent";
+    case "remote_agent":
+      return "remote agent";
+    case "in_process_teammate":
+      return "teammate";
+    case "local_workflow":
+      return "workflow";
+    case "mcp_task":
+      return "MCP task";
+  }
+  return type?.startsWith("monitor") ? "monitor" : undefined;
+}
+
+/** A task as a line says it: its description, else its command, else what kind of work it is. */
+export function taskLabel({ task, call }: Awaited): Target {
+  if (task.description) return { kind: "text", text: task.description };
+  const command = call?.name === "Bash" && typeof call.input.command === "string" ? call.input.command : "";
+  const line = command.trim().split("\n")[0];
+  if (line) return { kind: "code", text: line };
+  const kind = taskKind(task.type);
+  return { kind: "text", text: kind ? `a ${kind}` : "a task" };
+}
+
 /**
  * What the agent is doing now, while its session is at it: the step it is at, the call it waits
  * on, or else that it works. Nothing while it waits for people or has stopped.
@@ -144,7 +230,7 @@ export function nowOf({
   cwd,
   reason,
   resumeAt,
-  thinking,
+  waiting,
 }: {
   status?: G.SessionStatus;
   items: Item[];
@@ -155,8 +241,8 @@ export function nowOf({
   reason?: string;
   /** When a paused session resumes. */
   resumeAt?: number;
-  /** How a thought in progress is said. */
-  thinking: ThinkingText;
+  /** What it waits for in the background, while it does ([`waitingOf`]). */
+  waiting?: Waiting;
 }): Now | undefined {
   if (stall) return { kind: "stalled", text: stallLabel(stall), since: stall.since };
   switch (status) {
@@ -175,9 +261,15 @@ export function nowOf({
       return { kind: "paused", text: reason ?? "Paused", since: resumeAt };
     case "stopping":
       return { kind: "stopping", text: "Stopping" };
-    case "idle":
-      // Waiting for its background work, which its status says, rather than for a message.
-      return reason && reason !== "Waiting for a message" ? { kind: "background", text: reason } : undefined;
+    case "idle": {
+      // Waiting for its background work, which its status says, rather than for a message: one
+      // task the transcript knows by what it does, and since when it runs.
+      if (!reason || reason === "Waiting for a message") return undefined;
+      const one = waiting?.tasks.length === 1 && !waiting.more ? waiting.tasks[0] : undefined;
+      return one
+        ? { kind: "background", text: "Waiting for", target: taskLabel(one), since: one.task.ts }
+        : { kind: "background", text: reason };
+    }
     case "running":
       break;
     default:
@@ -185,7 +277,7 @@ export function nowOf({
   }
   const block = live.blocks.findLast((b) => !b.done);
   if (block?.type === "text") return { kind: "writing", text: "Writing" };
-  if (block?.type === "thinking") return { kind: "thinking", text: thinking(block.tokens) };
+  if (block?.type === "thinking") return { kind: "thinking", text: "Thinking", tokens: block.tokens };
   if (block?.type === "tool_use") return { kind: "preparing", text: preparing(block.name), tool: block.name };
   const call = waitingOn(items);
   if (call) {

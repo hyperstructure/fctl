@@ -133,11 +133,43 @@ export function subagentReport(t: Tool): string | undefined {
 }
 
 /**
+ * Work Claude Code runs on its own, as it reports it starting (`system/task_started`) and ending
+ * (`system/task_notification`): a shell command in the background, a subagent, a monitor. A
+ * session whose agent ended its turn waits for those that run (fctl-agent's `tasks.rs`).
+ */
+export interface BackgroundTask {
+  /** Claude Code's id for it. */
+  id: string;
+  /** What it does, in Claude Code's words: the command's description, or the subagent's. */
+  description: string;
+  /** Claude Code's `task_type`: `local_bash`, `local_agent`, `monitor`, … */
+  type?: string;
+  /** The key of the call that started it, when the transcript has it. */
+  call?: string;
+  /** The event that said it started, and when. */
+  seq: number;
+  ts: number;
+  /** How it ended, once it has: `completed`, `failed`, `stopped`, … */
+  ended?: string;
+  /** The event that said it ended, and when. */
+  endSeq?: number;
+  endTs?: number;
+}
+
+/**
  * Whether a message is one from fctl that passed a review's findings on before such messages
  * carried the review (`UserMessage.review`): it starts as fctl_domain::reviews::passed_on writes it.
  */
 export const findingsBefore = (item: Extract<Item, { kind: "user" }>) =>
   item.source === "system" && item.text.startsWith("fctl's review agent reviewed commit ");
+
+/** Notices after which the Claude Code that ran the agent's work no longer does (fctl-agent's supervisor). */
+const CLAUDE_GONE = new Set([
+  "claude_restarted",
+  "claude_crashed",
+  "turn_cut_off",
+  "background_tasks_stopped",
+]);
 
 /** Statuses shown in the transcript after setup (others live in the header). */
 const SHOWN_STATUSES = new Set<G.SessionStatus>(["paused", "stopped", "failed", "queued"]);
@@ -154,8 +186,13 @@ export class TranscriptBuilder {
   perTurnEffort?: boolean;
   /** Where each tool call is: in the transcript, or in the steps of the subagent `parent` started. */
   private tools = new Map<string, { index: number; parent?: string }>();
+  /**
+   * The work Claude Code ran on its own, in the order it started: a new array whenever one starts
+   * or ends.
+   */
+  tasks: BackgroundTask[] = [];
   /** The calls of subagents that Claude Code reported started, by task id. */
-  private tasks = new Map<string, string>();
+  private agentTasks = new Map<string, string>();
   /** The calls of subagents that started and haven't ended. */
   private open = new Set<string>();
   private seen = new Set<number>();
@@ -239,10 +276,14 @@ export class TranscriptBuilder {
     else this.updateAgent(items, parent, (a) => ({ ...a, steps: a.steps.with(-1, step) }));
   }
 
-  /** Subagents still working when their Claude Code stops end with it. */
-  private stopSubagents(items: Item[]) {
+  /** Subagents still working when their Claude Code stops end with it, and so does its other work. */
+  private stopSubagents(items: Item[], at: { seq: number; ts: number }) {
     for (const id of this.open) this.updateAgent(items, id, (a) => ({ ...a, ended: a.ended ?? "stopped" }));
     this.open.clear();
+    if (this.tasks.some((t) => !t.ended))
+      this.tasks = this.tasks.map((t) =>
+        t.ended ? t : { ...t, ended: "stopped", endSeq: at.seq, endTs: at.ts },
+      );
   }
 
   private setup(items: Item[], ev: G.SessionEvent): Extract<Item, { kind: "setup" }> | undefined {
@@ -321,7 +362,7 @@ export class TranscriptBuilder {
           });
           if (st === "failed" || st === "stopped") {
             this.closeSetup(items, ev.ts);
-            this.stopSubagents(items);
+            this.stopSubagents(items, base);
           }
         }
         return;
@@ -340,9 +381,10 @@ export class TranscriptBuilder {
         return;
       }
       case "notice":
-        // A restarted Claude Code doesn't follow the last one's subagents,
-        // nor one that a restarted fctl-agent started in place of the last.
-        if (ev.data.code === "claude_restarted" || ev.data.code === "turn_cut_off") this.stopSubagents(items);
+        // A restarted Claude Code doesn't follow the last one's subagents or background work,
+        // nor one that a restarted fctl-agent started in place of the last; and a session that
+        // stops says what of it stopped with it.
+        if (CLAUDE_GONE.has(ev.data.code)) this.stopSubagents(items, ev);
         items.push({ ...base, kind: "notice", key: `n-${ev.seq}`, notice: ev.data });
         return;
       case "git": {
@@ -441,7 +483,7 @@ export class TranscriptBuilder {
       return;
     }
     if (isTask(m)) {
-      this.task(items, m);
+      this.task(items, m, base);
       return;
     }
     // The API refused the effort level in the conversation: changes rewrite the cache from now on.
@@ -477,15 +519,19 @@ export class TranscriptBuilder {
     }
   }
 
-  /** Follows Claude Code's word on a subagent: that it started, in the background or not, and how it ended. */
-  private task(items: Item[], m: TaskMessage) {
-    const id = m.tool_use_id ?? (m.task_id ? this.tasks.get(m.task_id) : undefined);
+  /**
+   * Follows Claude Code's word on its work: that a task started and how it ended, as fctl-agent
+   * counts what a session waits for; and for a subagent, its call's story too.
+   */
+  private task(items: Item[], m: TaskMessage, at: { seq: number; ts: number }) {
+    this.follow(items, m, at);
+    const id = m.tool_use_id ?? (m.task_id ? this.agentTasks.get(m.task_id) : undefined);
     const t = id ? this.tool(items, id) : undefined;
     if (!id || !t) return;
     if (m.subtype === "task_started") {
       // Shell commands and monitors are tasks too.
       if (m.task_type !== "local_agent" && !isSubagent(t)) return;
-      if (m.task_id) this.tasks.set(m.task_id, id);
+      if (m.task_id) this.agentTasks.set(m.task_id, id);
       this.open.add(id);
       this.updateAgent(items, id, (a) => ({ ...a, background: m.is_backgrounded === true }));
     } else if (m.subtype === "task_notification" && t.agent) {
@@ -497,6 +543,36 @@ export class TranscriptBuilder {
         report: (ended === "completed" && m.summary) || a.report,
         durationMs: m.usage?.duration_ms ?? a.durationMs,
       }));
+    }
+  }
+
+  /** A task starting, once, unless it is Claude Code's own housekeeping; or one that ran ending. */
+  private follow(items: Item[], m: TaskMessage, at: { seq: number; ts: number }) {
+    const id = m.task_id;
+    if (!id) return;
+    if (m.subtype === "task_started") {
+      if (m.ambient === true || this.tasks.some((t) => t.id === id)) return;
+      const call = m.tool_use_id ? this.tool(items, m.tool_use_id) : undefined;
+      this.tasks = [
+        ...this.tasks,
+        {
+          id,
+          description: typeof m.description === "string" ? m.description.trim() : "",
+          type: m.task_type,
+          call: call?.key,
+          ...at,
+        },
+      ];
+    } else if (m.subtype === "task_notification") {
+      const i = this.tasks.findIndex((t) => t.id === id && !t.ended);
+      const t = this.tasks[i];
+      if (t)
+        this.tasks = this.tasks.with(i, {
+          ...t,
+          ended: m.status || "completed",
+          endSeq: at.seq,
+          endTs: at.ts,
+        });
     }
   }
 }

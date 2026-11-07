@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { doing, nowOf } from "./now";
+import { doing, nowOf, taskLabel, waitingCount, waitingOf } from "./now";
 import type { Stall } from "./stall";
-import { emptyLive, type Item, type LiveTurn } from "./transcript";
+import { type BackgroundTask, emptyLive, type Item, type LiveTurn, type Tool } from "./transcript";
 
 let seq = 0;
 const base = (ts = 1000 * ++seq) => ({ key: `k${seq}`, seq, ts });
@@ -15,9 +15,14 @@ const call = (name: string, input: Record<string, unknown>, done = false): Item 
   result: done ? { text: "", isError: false } : undefined,
   children: 0,
 });
-const thinking = (tokens?: number) => (tokens ? `Thinking · ${tokens}` : "Thinking");
 const at = (items: Item[], live: LiveTurn = emptyLive(), more: Partial<Parameters<typeof nowOf>[0]> = {}) =>
-  nowOf({ status: "running", items, live, thinking, cwd: "/home/agent/workspace", ...more });
+  nowOf({ status: "running", items, live, cwd: "/home/agent/workspace", ...more });
+const task = (id: string, more: Partial<BackgroundTask> = {}): BackgroundTask => ({
+  id,
+  description: "",
+  ...base(),
+  ...more,
+});
 
 describe("what the agent does now", () => {
   it("says what it writes, thinks or prepares, as it streams in", () => {
@@ -26,7 +31,12 @@ describe("what the agent does now", () => {
       updatedAt: 5,
     });
     expect(at([ask()], live("text"))?.text).toBe("Writing");
-    expect(at([ask()], live("thinking", { tokens: 1200 }))?.text).toBe("Thinking · 1200");
+    // A thought's tokens go on as it does: its step is the same thought.
+    expect(at([ask()], live("thinking", { tokens: 1200 }))).toMatchObject({
+      kind: "thinking",
+      text: "Thinking",
+      tokens: 1200,
+    });
     expect(at([ask()], live("tool_use", { name: "Edit" }))).toMatchObject({
       kind: "preparing",
       text: "Preparing an edit",
@@ -75,6 +85,96 @@ describe("what the agent does now", () => {
       "background",
     );
     expect(at([ask()], emptyLive(), { status: "stopped" })).toBeUndefined();
+  });
+
+  it("names the one task it waits for, since it started, where the transcript knows it", () => {
+    const one = task("b1", { description: "Start the dev stack", type: "local_bash" });
+    const reason = "Waiting for a background task";
+    const waiting = waitingOf([one], [], reason);
+    expect(at([ask()], emptyLive(), { status: "idle", reason, waiting })).toEqual({
+      kind: "background",
+      text: "Waiting for",
+      target: { kind: "text", text: "Start the dev stack" },
+      since: one.ts,
+    });
+    // More than one, or one the transcript doesn't know: what its status says.
+    const two = "Waiting for 2 background tasks";
+    expect(
+      at([ask()], emptyLive(), { status: "idle", reason: two, waiting: waitingOf([one], [], two) }),
+    ).toEqual({
+      kind: "background",
+      text: two,
+    });
+  });
+});
+
+describe("what it waits for in the background", () => {
+  it("counts the tasks its status says it waits for", () => {
+    expect(waitingCount("Waiting for a background task")).toBe(1);
+    expect(waitingCount("Waiting for 12 background tasks")).toBe(12);
+    expect(waitingCount("Waiting for a message")).toBeUndefined();
+    expect(waitingCount(undefined)).toBeUndefined();
+  });
+
+  it("lists those that run, the newest as many as its status counts, and how many more it misses", () => {
+    const shell = call("Bash", { command: "npm run dev\n# and wait", run_in_background: true }) as Tool;
+    const ended = task("a", { ended: "completed" });
+    const old = task("b");
+    const dev = task("c", { call: shell.key });
+    const two = "Waiting for 2 background tasks";
+    expect(waitingOf([ended, old, dev], [shell], two)).toEqual({
+      tasks: [{ task: old }, { task: dev, call: shell }],
+      more: 0,
+    });
+    // One the transcript didn't see start, before what loaded.
+    expect(waitingOf([dev], [shell], two)?.more).toBe(1);
+    // Fewer than the transcript thinks run: the newest.
+    expect(
+      waitingOf([old, dev], [shell], "Waiting for a background task")?.tasks.map((a) => a.task.id),
+    ).toEqual(["c"]);
+    // Not waiting for tasks.
+    expect(waitingOf([dev], [shell], "Waiting for a message")).toBeUndefined();
+  });
+
+  it("still counts one that just ended, until the agent's next turn: its status says so a moment later", () => {
+    const end: Item = { ...base(), kind: "turn", durationMs: 1, ok: true };
+    const done = task("d", { ended: "completed", endSeq: end.seq + 1 });
+    const one = "Waiting for a background task";
+    expect(waitingOf([done], [end], one)).toEqual({ tasks: [{ task: done }], more: 0 });
+    // Where the status counts no more than run, one that ended never takes a running one's place.
+    const server = task("s", { seq: 0 });
+    expect(waitingOf([server, done], [end], one)?.tasks.map((a) => a.task.id)).toEqual(["s"]);
+    // Once a turn took up what came of it, it is done with.
+    const next: Item = { ...base(), kind: "turn", durationMs: 1, ok: true };
+    expect(waitingOf([{ ...done, endSeq: end.seq + 1 }], [end, next], one)).toEqual({ tasks: [], more: 1 });
+  });
+
+  it("finds a call in a subagent's work", () => {
+    const inner = call("Bash", { command: "make watch" }) as Tool;
+    const agent: Tool = { ...(call("Agent", {}) as Tool), children: 1, agent: { steps: [inner] } };
+    expect(
+      waitingOf([task("w", { call: inner.key })], [agent], "Waiting for a background task")?.tasks[0]?.call,
+    ).toBe(inner);
+  });
+
+  it("names a task by its description, else its command, else its kind", () => {
+    const shell = call("Bash", { command: "  tail -f log/dev.log\nexit" }) as Tool;
+    expect(taskLabel({ task: task("1", { description: "Follow the log" }), call: shell })).toEqual({
+      kind: "text",
+      text: "Follow the log",
+    });
+    expect(taskLabel({ task: task("1"), call: shell })).toEqual({
+      kind: "code",
+      text: "tail -f log/dev.log",
+    });
+    expect(taskLabel({ task: task("1", { type: "monitor_mcp" }) })).toEqual({
+      kind: "text",
+      text: "a monitor",
+    });
+    expect(taskLabel({ task: task("1", { type: "something_new" }) })).toEqual({
+      kind: "text",
+      text: "a task",
+    });
   });
 });
 

@@ -862,6 +862,15 @@
   -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px));
   mask: radial-gradient(closest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px));
 }
+/* It fades in as the agent gets to work, and out as it stops to wait. */
+.busy-ring::before,
+.busy-ring::after {
+  transition: opacity 300ms var(--ease-out);
+}
+.busy-ring:not([data-busy])::before,
+.busy-ring:not([data-busy])::after {
+  opacity: 0;
+}
 /* The track. */
 .busy-ring::before {
   background: var(--c-line);
@@ -885,6 +894,79 @@
 @media (prefers-reduced-motion: reduce) {
   .busy-ring::after {
     animation: none;
+  }
+}
+
+/* As the agent moves on, the line's new step rolls in from below, out of a blur, settling with a
+   little spring, while the last one rolls away above; the line glides to its new width, its words
+   kept whole until it gets there. A thought's tokens count up figure by figure, each rolling up
+   in its own slot as an odometer's do. Where motion is reduced, it all changes at once. */
+@theme {
+  --animate-now-in: now-in 420ms var(--ease-spring) both;
+  --animate-now-out: now-out 220ms var(--ease-out) both;
+  --animate-digit-in: digit-in 360ms var(--ease-out) both;
+  --animate-digit-out: digit-out 360ms var(--ease-out) both;
+}
+@keyframes now-in {
+  from {
+    opacity: 0;
+    transform: translateY(1.2em);
+    filter: blur(3px);
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@keyframes now-out {
+  to {
+    opacity: 0;
+    transform: translateY(-1em);
+    filter: blur(3px);
+  }
+}
+@keyframes digit-in {
+  from {
+    transform: translateY(calc(var(--dir, 1) * 100%));
+  }
+}
+@keyframes digit-out {
+  to {
+    transform: translateY(calc(var(--dir, 1) * -100%));
+  }
+}
+/* The list the line opens into while the agent waits in the background: its rows settle in one
+   after another. */
+@media (prefers-reduced-motion: no-preference) {
+  .task-list .task-row {
+    animation: listbox-option-in 240ms var(--ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 7) * 18ms + 40ms);
+  }
+}
+/* The line of a call the page went to (session/turn-nav.tsx): lit for a moment, then fading. */
+@theme {
+  --animate-landed: landed 2.6s linear both;
+}
+@keyframes landed {
+  0%,
+  30% {
+    background-color: var(--c-accent-soft);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.now-line[data-glide] {
+  transition: width 420ms cubic-bezier(0.25, 1.12, 0.45, 1);
+}
+.now-line[data-glide] .now-row {
+  min-width: max-content;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-now-in,
+  .animate-now-out,
+  .animate-digit-in,
+  .animate-digit-out {
+    animation-duration: 1ms;
   }
 }
 

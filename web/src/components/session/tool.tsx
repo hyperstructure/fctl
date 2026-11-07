@@ -28,6 +28,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useId,
   useLayoutEffect,
   useMemo,
@@ -58,6 +59,7 @@ import {
   type Work,
 } from "@/lib/runs";
 import {
+  type BackgroundTask,
   isSubagent,
   type LiveBlock,
   type Step,
@@ -103,6 +105,35 @@ const ranFor = (s: number) => (s < 60 ? `${Math.round(s)} s` : duration(s * 1000
 
 /** A call that took this long (ms) says so on its line. */
 const SLOW = 10_000;
+
+/**
+ * What Claude Code runs on its own, by the key of the call that started each, where the page
+ * follows that (the new session page): a call that left work in the background says how it goes.
+ */
+export const CallTasks = createContext<ReadonlyMap<string, BackgroundTask> | undefined>(undefined);
+
+/** What a call left running in the background: that it runs, for how long so far; then how it went. */
+function InBackground({ task }: { task: BackgroundTask }) {
+  const running = !task.ended;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  const s = Math.max(0, ((task.endTs ?? now) - task.ts) / 1000);
+  if (running)
+    return (
+      <span className="flex items-center gap-1.5 text-ink-3" title="It runs in the background">
+        <span aria-hidden="true" className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
+        In the background · {ranFor(s)}
+      </span>
+    );
+  if (task.ended === "failed") return <span className="text-danger">Failed after {ranFor(s)}</span>;
+  if (task.ended === "stopped" || task.ended === "killed") return <span>Stopped after {ranFor(s)}</span>;
+  return <span>{ranFor(s)} in the background</span>;
+}
 
 /**
  * What an edit changed: Claude Code's hunks, numbered as the file has them,
@@ -595,6 +626,9 @@ export const ToolRow = memo(function ToolRow({
   const lines = changed(t);
   const ms = took(t);
   const command = t.name === "Bash" ? str(t.input.command) : "";
+  // Work it left in the background, a subagent's aside, which says how it goes on its own.
+  const task = useContext(CallTasks)?.get(t.key);
+  const left = task && !agent ? task : undefined;
   return (
     <div>
       <OpenLine
@@ -616,9 +650,13 @@ export const ToolRow = memo(function ToolRow({
               t.children > 0 &&
                 `${t.children} ${t.children === 1 ? "step" : "steps"}${t.childLast ? ` · ${t.childLast}` : ""}`,
               lines && <LinesChanged lines={lines} />,
-              pending
-                ? elapsed !== undefined && elapsed > 2 && ranFor(elapsed)
-                : !agent && ms !== undefined && ms >= SLOW && duration(ms),
+              left ? (
+                <InBackground key="left" task={left} />
+              ) : pending ? (
+                elapsed !== undefined && elapsed > 2 && ranFor(elapsed)
+              ) : (
+                !agent && ms !== undefined && ms >= SLOW && duration(ms)
+              ),
             ]}
           </Facts>
         }
@@ -717,6 +755,7 @@ export const Run = memo(
       });
       setShown((s) => (s.has(key) ? s : new Set(s).add(key)));
     }, []);
+    const tasks = useContext(CallTasks);
     const calls = callsIn(steps);
     const step = (s: Work, nested: boolean) => (
       <Unreadable key={s.key}>
@@ -752,6 +791,10 @@ export const Run = memo(
     const newest = new Set(now.map((s) => s.key));
     const visible = open ? steps : steps.filter((s) => shown.has(s.key) || newest.has(s.key));
     const failed = calls.filter((t) => t.result?.isError).length;
+    const left = calls.filter((t) => {
+      const task = tasks?.get(t.key);
+      return !!task && !task.ended && !isSubagent(t);
+    }).length;
     const lines = changedIn(calls);
     const ms = runTook(steps);
     return (
@@ -772,6 +815,13 @@ export const Run = memo(
               {[
                 lines && <LinesChanged lines={lines} />,
                 failed > 0 && <span className="text-danger/80">{failed} failed</span>,
+                // Folded, it says what its calls left running in the background.
+                left > 0 && (
+                  <span key="left" className="flex items-center gap-1.5 text-ink-3">
+                    <span aria-hidden="true" className="size-1.5 animate-pulse-soft rounded-full bg-accent" />
+                    {left} in the background
+                  </span>
+                ),
                 !active && ms >= 1000 && duration(ms),
               ]}
             </Facts>

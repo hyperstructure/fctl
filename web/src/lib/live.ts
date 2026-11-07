@@ -11,6 +11,7 @@ import { patchSession, queryClient } from "./queries";
 import { parts } from "./runs";
 import {
   applyStream,
+  type BackgroundTask,
   emptyLive,
   type Item,
   type LiveTurn,
@@ -59,6 +60,8 @@ export interface LiveState {
   firstSeq: number;
   lastSeq: number;
   git?: G.GitState;
+  /** The work Claude Code ran on its own, as far as the loaded activity tells (`TranscriptBuilder.tasks`). */
+  tasks: BackgroundTask[];
   model?: string;
   /** Whether an effort change keeps Claude's prompt cache (`TranscriptBuilder.perTurnEffort`). */
   perTurnEffort?: boolean;
@@ -96,6 +99,7 @@ export class LiveSession {
     this.state = {
       session: initial,
       items: [],
+      tasks: [],
       live: emptyLive(),
       viewers: [],
       connection: "connecting",
@@ -261,6 +265,7 @@ export class LiveSession {
           firstSeq: this.events[0]?.seq ?? 0,
           lastSeq: Math.max(this.state.lastSeq, events[events.length - 1]?.seq ?? 0, m.next_seq - 1),
           git: this.builder.latestGit,
+          tasks: this.builder.tasks,
           model: this.builder.model ?? m.session.model,
           perTurnEffort: this.builder.perTurnEffort,
           error: undefined,
@@ -280,6 +285,7 @@ export class LiveSession {
           live: settleLive(this.state.live, events),
           lastSeq: events[events.length - 1]?.seq ?? this.state.lastSeq,
           git: this.builder.latestGit,
+          tasks: this.builder.tasks,
           model: this.builder.model ?? this.state.model,
           perTurnEffort: this.builder.perTurnEffort,
         });
@@ -462,6 +468,7 @@ export class LiveSession {
       firstSeq: this.events[0]?.seq ?? firstSeq,
       loadingOlder: false,
       git: this.builder.latestGit,
+      tasks: this.builder.tasks,
       model: this.builder.model ?? this.state.model,
       perTurnEffort: this.builder.perTurnEffort,
     });

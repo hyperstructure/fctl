@@ -28,11 +28,12 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { ImageSizes } from "@/components/markdown";
-import { Avatar, DotWave, Gallery, Logo, Menu, MenuItem, toast } from "@/components/ui";
+import { Avatar, Gallery, Logo, Menu, MenuItem, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { duration, stamp, when } from "@/lib/format";
@@ -40,7 +41,7 @@ import { useKeepPlace } from "@/lib/keep-place";
 import type { Part } from "@/lib/runs";
 import { splitRunNote } from "@/lib/schedules";
 import type { DiskShort, Stall } from "@/lib/stall";
-import { findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
+import { type BackgroundTask, findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
 import {
   type EditedFile,
   factsOf,
@@ -58,7 +59,7 @@ import {
 import { MessageFiles } from "./attachments";
 import type { DiffGroup, DiffTarget } from "./diff-files";
 import { Chevron, Milestone, RailIcon, Unreadable } from "./lines";
-import { SessionImages, WorkDir } from "./tool";
+import { CallTasks, SessionImages, WorkDir } from "./tool";
 import {
   EarlierActivity,
   LiveTurnView,
@@ -158,7 +159,7 @@ export const TurnTranscript = memo(function TurnTranscript({
   newFrom,
   diffGroups,
   onDiff,
-  resting,
+  tasks,
 }: {
   sessionId: string;
   items: Item[];
@@ -187,10 +188,12 @@ export const TurnTranscript = memo(function TurnTranscript({
   /** The session's changes, which the files a turn edited open in. */
   diffGroups: readonly DiffGroup[];
   onDiff: (at: DiffTarget) => void;
-  /** The agent is between steps of the turn it works on: its thread ends in its sign of work. */
-  resting?: boolean;
+  /** What Claude Code ran on its own: the calls that left work in the background say how it goes. */
+  tasks?: readonly BackgroundTask[];
 }) {
-  const t = transcriptParts(items, live, status, stall);
+  // What the agent does at this moment shows in the line above the message box (now-line.tsx):
+  // what streams in, a thought or a call it writes, shows there, and here once it is done.
+  const t = { ...transcriptParts(items, live, status, stall), coming: [] };
   // What came after the page first showed the session is new to the reader: its thread draws.
   const shownUpTo = useShownUpTo(sessionId, items);
   // When the page saw each turn end that came while it showed: its light runs for a moment.
@@ -209,6 +212,10 @@ export const TurnTranscript = memo(function TurnTranscript({
     if (loadingOlder) keepPlace();
   }, [loadingOlder, keepPlace]);
   const sizes = useShotSizes(items);
+  const byCall = useMemo(
+    () => new Map((tasks ?? []).flatMap((task) => (task.call ? [[task.call, task] as const] : []))),
+    [tasks],
+  );
   const ctx: Ctx = { t, sessionId, stall, canManage, startedBy, me, projectSlug };
   const last = turns[turns.length - 1];
   // The agent works on the last turn: the work that streams in goes on its thread.
@@ -316,7 +323,8 @@ export const TurnTranscript = memo(function TurnTranscript({
     if (isLast && open) {
       lineBefore(true);
       rows.push(
-        <div key="live" className="thread thread-live">
+        // The thread trails off under the newest step, where the next comes.
+        <div key="live" className="thread thread-live min-h-8">
           <LiveTurnView
             live={live}
             status={status}
@@ -324,15 +332,8 @@ export const TurnTranscript = memo(function TurnTranscript({
             disk={disk}
             inRun={t.folded}
             textClassName="pl-[34px]"
-            showWorking={false}
+            nowLine
           />
-          {resting && (
-            <div className="flex h-8 items-center" title="At work">
-              <RailIcon>
-                <DotWave className="text-accent" />
-              </RailIcon>
-            </div>
-          )}
         </div>,
       );
     }
@@ -363,7 +364,7 @@ export const TurnTranscript = memo(function TurnTranscript({
     // The agent went on after the last turn ended, without a message yet: what streams in.
     rows.push(
       <div key="live">
-        <LiveTurnView live={live} status={status} stall={stall} disk={disk} inRun={t.folded} />
+        <LiveTurnView live={live} status={status} stall={stall} disk={disk} inRun={t.folded} nowLine />
       </div>,
     );
   }
@@ -385,7 +386,9 @@ export const TurnTranscript = memo(function TurnTranscript({
             cover
           )}
           <WorkDir value={t.cwd}>
-            <SessionImages value={sessionId}>{rows}</SessionImages>
+            <SessionImages value={sessionId}>
+              <CallTasks.Provider value={byCall}>{rows}</CallTasks.Provider>
+            </SessionImages>
           </WorkDir>
         </div>
       </Gallery>

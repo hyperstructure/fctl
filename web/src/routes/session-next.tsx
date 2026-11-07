@@ -33,7 +33,7 @@ import { DiffDialog, type DiffTarget } from "@/components/session/diff-dialog";
 import { FindBar, findShortcut, Reveal, useFind } from "@/components/session/find";
 import { Glance } from "@/components/session/glance";
 import { BusyMark } from "@/components/session/lines";
-import { JumpPill, NowLine, toBottom, useAtBottom, YourTurn } from "@/components/session/now-line";
+import { JumpPill, NowLine, toBottom, useAtBottom } from "@/components/session/now-line";
 import { AgentOrb } from "@/components/session/orb";
 import { PlanList } from "@/components/session/plan";
 import {
@@ -44,8 +44,14 @@ import {
 import { QuestionCard } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
-import { thinkingNow } from "@/components/session/thinking";
-import { TurnBar, TurnList, TurnOutline, useGoToTurn, useTurnPlace } from "@/components/session/turn-nav";
+import {
+  TurnBar,
+  TurnList,
+  TurnOutline,
+  useGoToCall,
+  useGoToTurn,
+  useTurnPlace,
+} from "@/components/session/turn-nav";
 import { TurnTranscript } from "@/components/session/turns";
 import { useViewShortcut, ViewSwitch } from "@/components/session/view-switch";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
@@ -71,7 +77,7 @@ import { setPageTitle } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { stamp, when } from "@/lib/format";
 import { useLiveSession } from "@/lib/live";
-import { nowOf } from "@/lib/now";
+import { nowOf, waitingOf } from "@/lib/now";
 import { planOf } from "@/lib/plan";
 import { prLabel, prRef, prTitle, pullRequests } from "@/lib/pulls";
 import { keys, queryClient, useMe } from "@/lib/queries";
@@ -104,6 +110,13 @@ export function SessionRoute() {
   return view === "new" ? <NextSessionPage /> : <SessionPage />;
 }
 
+/**
+ * How far back the list of background tasks looks for those that started before the activity
+ * loaded here, in pages of it (lib/live.ts), as finding does: 40,000 events, 4,000 at a time.
+ */
+const LOOK_BACK_PAGES = 100;
+const LOOK_BACK_AT_ONCE = 10;
+
 /** Statuses in which the agent is at it, or getting there: the header's edge runs with light. */
 const BUSY = new Set<G.SessionStatus>(["running", "provisioning", "preparing"]);
 
@@ -131,6 +144,8 @@ function NextSessionPage() {
   const [quiet, setQuiet] = useState(false);
   // The turn a link to it opens the page at, until the page has gone there.
   const [landTurn, setLandTurn] = useState<{ session: string; seq: number }>();
+  // Pages of earlier activity the list of background tasks loaded, looking for those it misses.
+  const [lookedBack, setLookedBack] = useState(0);
   // They belong to the session they opened on (as on the classic page).
   const [overlaysOf, setOverlaysOf] = useState(id);
   if (overlaysOf !== id) {
@@ -140,6 +155,7 @@ function NextSessionPage() {
     setDiffAt(undefined);
     setQuiet(false);
     setLandTurn(undefined);
+    setLookedBack(0);
   }
   const diffGroups = useDiffGroups(session, s.git);
   useShortcut("changes", () => {
@@ -230,9 +246,13 @@ function NextSessionPage() {
   const turns = useMemo(() => turnsOf(parts(s.items)), [s.items]);
   // The agent's plan, as it last wrote it.
   const plan = useMemo(() => planOf(s.items), [s.items]);
+  // What the agent waits for in the background, while its session waits for that.
+  const idleFor = session?.status === "idle" ? session.status_reason : undefined;
+  const waiting = useMemo(() => waitingOf(s.tasks, s.items, idleFor), [s.tasks, s.items, idleFor]);
   const facts = useFactsOf(cwd);
   const place = useTurnPlace(transcript, bar);
   const go = useGoToTurn(transcript, bar, letGo);
+  const goToCall = useGoToCall(transcript, bar, letGo, finder.reveal, s.items, cwd);
   // A link to a turn: the page goes there once it has the turn, loading earlier activity until it
   // does, and the address forgets it.
   const landed = useRef<string | undefined>(undefined);
@@ -328,7 +348,7 @@ function NextSessionPage() {
     cwd,
     reason: session?.status_reason,
     resumeAt: session?.resume_at,
-    thinking: thinkingNow,
+    waiting,
   });
   const live = !!status && BUSY.has(status) && !stall;
   // The agent ended its turn and waits for someone to write, who can.
@@ -359,6 +379,11 @@ function NextSessionPage() {
       <PlanList plan={plan} live={!!planNow && !!status && BUSY.has(status)} />
     </RailSection>
   );
+  // A task's call, which the conversation alone leaves out: it shows with the rest again.
+  const goToTask = (call: string) => {
+    if (quietNow) setQuiet(false);
+    goToCall(call);
+  };
   const focusReply = () =>
     document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')?.focus();
   const outline = turns.length > 0 && (
@@ -747,7 +772,7 @@ function NextSessionPage() {
                   newFrom={away.from}
                   diffGroups={diffGroups}
                   onDiff={setDiffAt}
-                  resting={now?.kind === "working"}
+                  tasks={s.tasks}
                 />
               </BusyMark>
             </Reveal.Provider>
@@ -764,7 +789,24 @@ function NextSessionPage() {
               <NowLine
                 now={now}
                 plan={planNow}
-                idle={yourTurn ? <YourTurn onReply={focusReply} /> : undefined}
+                onReply={yourTurn ? focusReply : undefined}
+                background={
+                  waiting && {
+                    waiting,
+                    cwd,
+                    earlier: s.hasMoreBefore,
+                    looking: s.loadingOlder,
+                    failed: s.olderFailed,
+                    onLookBack:
+                      s.hasMoreBefore && lookedBack < LOOK_BACK_PAGES
+                        ? () => {
+                            setLookedBack((n) => n + LOOK_BACK_AT_ONCE);
+                            void store.loadEarlier({ pages: LOOK_BACK_AT_ONCE });
+                          }
+                        : undefined,
+                    onGo: goToTask,
+                  }
+                }
               />
               <Pill away={away} atBottom={atBottom} newSince={newSince} letGo={letGo} header={bar} />
             </div>
