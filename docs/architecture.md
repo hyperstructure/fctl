@@ -372,10 +372,11 @@ token can't do them alone
   confirmation itself; resetting someone's two-factor
   sign-in, and removing a passkey;
 - adding one of your runners to a workspace, or letting it run
-  everyone's sessions there, registering a new one for a workspace (as
-  `fctl host install` does, which asks in the terminal), replacing the
-  token of one that serves a workspace, making a workspace's enrollment
-  token, and approving a runner that enrolled with one;
+  everyone's sessions there, registering a new one (as `fctl host
+  install` does, which asks in the terminal), replacing a runner's token,
+  making a workspace's enrollment token, and approving a runner that
+  enrolled with one: your own runners, in a workspace or not, run your
+  Claude sign-ins first, with a full login's long-lived tokens;
 - making someone a workspace's admin, or inviting them as one, and
   handing over or giving a workspace's primary admin role;
 - making an access token, approving a CLI's sign-in, and connecting a

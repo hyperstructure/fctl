@@ -500,9 +500,10 @@ pub async fn rotate_token(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             closed.name
         )));
     }
-    if !served.is_empty() {
-        ctx.verified(Sensitive::AddRunner)?;
-    }
+    // Also for one that serves no workspace: their runners run their Claude
+    // sign-ins first, which pass a full login's long-lived tokens through
+    // the host (`api::claude::login_runners`).
+    ctx.verified(Sensitive::AddRunner)?;
     let token = new_secret(SecretKind::Runner);
     // Only while it is still theirs.
     let changed = q(

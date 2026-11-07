@@ -115,7 +115,7 @@ owner and purpose), so a value copied between rows does not decrypt.
   roles, turning two-factor sign-in, codes on Google sign-in or this off,
   resetting someone's
   two-factor sign-in, removing a passkey, adding or registering a runner
-  for a workspace and replacing its token, new access tokens and CLI
+  and replacing a runner's token, new access tokens and CLI
   sign-ins, connecting a Claude subscription (whose account a full login's
   sessions show in), linking a Linear account (whose delegations start
   sessions as you), exporting your data, deleting accounts, projects and
