@@ -3089,8 +3089,9 @@ on their runners
    (`HostHello.claude_token`, `RunnerClaudeToken`), never what it is;
    FleetDO keeps that in the runner's hello, and the runner's owner sees it
    (`Runner.claude_token`). Hosts too old to keep one say nothing.
-2. **In fctl**, they connect "On your runners" (Settings → Claude, `fctl
-   claude connect --on-runners`, `POST /api/v1/me/claude/on-runners`): a
+2. **In fctl**, they connect it "on your runners" (Settings → Claude's
+   long-lived token, with "My runners keep it", `fctl claude connect
+   --on-runners`, `POST /api/v1/me/claude/on-runners`): a
    row in `claude_credentials` with `on_runners` set and no secret, of kind
    `setup_token`, one per person, which becomes their default.
 3. **Its sessions run only on their runners that keep a token.** It keeps

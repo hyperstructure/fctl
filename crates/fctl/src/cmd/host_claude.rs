@@ -114,7 +114,7 @@ fn set_token(cfg: &HostConfig, path: &Path, name: &str, json: bool) -> Result<()
     println!(
         "  {}",
         style::dim(
-            "Next, if you haven't: choose Keep the token on your runners in Settings → Claude, or run `fctl claude connect --on-runners`."
+            "Next, if you haven't: choose Long-lived token, then My runners keep it, in Settings → Claude, or run `fctl claude connect --on-runners`."
         )
     );
     Ok(())

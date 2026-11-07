@@ -13,14 +13,17 @@ use std::time::Duration;
 
 #[derive(Subcommand)]
 pub enum ClaudeCmd {
-    /// Connect your subscription: a long-lived token, a full login (Remote
-    /// Control), or the token you keep on your runners.
+    /// Connect your subscription: a long-lived token, which lasts a year
+    /// (recommended for sessions that run around the clock), the token you
+    /// keep on your runners, or a full login (Remote Control), which Claude
+    /// ends after a while.
     Connect {
         /// A token from `claude setup-token` (otherwise you are asked for one).
         #[arg(long, conflicts_with_all = ["login", "on_runners"])]
         token: Option<String>,
         /// Sign in with claude.ai, in a sandbox on one of your runners, instead
-        /// (enables Remote Control).
+        /// (enables Remote Control and claude.ai connectors; its sessions stop
+        /// when Claude ends the login, until you sign in again).
         #[arg(long, conflicts_with = "on_runners")]
         login: bool,
         /// Run your sessions on the token you keep on your runners (`fctl
