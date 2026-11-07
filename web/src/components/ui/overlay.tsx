@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
 import { own } from "@/lib/dialog";
@@ -29,11 +29,23 @@ export function Dialog({
   fit?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
+  // What it shows mounts only once it is open: an `autoFocus` in it focuses
+  // nothing in a closed dialog, which shows nothing. Before paint, all the same.
+  const [shown, setShown] = useState(false);
+  // The dialog focuses itself as it opens, not the X, its first button: Chrome
+  // and Safari ring what a dialog focuses even when a click opened it. Then
+  // what it shows can take the focus with `autoFocus`, and Tab reaches the X.
+  // React doesn't set the `autofocus` attribute from `autoFocus`.
+  useLayoutEffect(() => {
     const d = ref.current;
     if (!d) return;
-    if (open && !d.open) d.showModal();
+    if (open && !d.open) {
+      d.setAttribute("autofocus", "");
+      d.showModal();
+      d.focus();
+    }
     if (!open && d.open) d.close();
+    setShown(open);
   }, [open]);
   return createPortal(
     // biome-ignore lint/a11y/useKeyWithClickEvents: the click closes on the backdrop only; Escape is native to <dialog>.
@@ -49,9 +61,11 @@ export function Dialog({
         wide ? "max-w-2xl" : "max-w-md",
         // The modal's own max-height (the screen, less a margin) bounds the column.
         fit && "open:flex open:flex-col",
+        // Focused itself as it opens: no ring around the whole dialog.
+        "outline-none",
       )}
     >
-      {open && (
+      {open && shown && (
         <div className={cn("p-6", fit && "flex min-h-0 flex-1 flex-col")}>
           <div className="mb-5 flex items-start justify-between gap-4">
             <div className="min-w-0 [overflow-wrap:anywhere]">
