@@ -8,7 +8,7 @@ import { PullsPage } from "./pulls";
 
 /** The page's search: what it lists. */
 const search = vi.hoisted(() => ({
-  value: {} as { scope?: string; state?: "open" | "merged" | "closed"; q?: string; mine?: boolean },
+  value: {} as { scope?: string; state?: "open" | "merged" | "closed"; q?: string },
 }));
 /** Where the page went: each search it asked for, worked out from the one before. */
 const went = vi.hoisted(() => [] as object[]);
@@ -59,6 +59,8 @@ afterEach(() => {
   queryClient.clear();
   queryClient.setQueryDefaults(["sessions"], {});
   vi.unstubAllGlobals();
+  localStorage.clear();
+  sessionStorage.clear();
   search.value = {};
   went.length = 0;
   asked.length = 0;
@@ -116,12 +118,80 @@ const listOf =
     Response.json({ sessions });
 
 describe("the pull requests page", () => {
+  /** What the page asked the sessions endpoint for last. */
+  const lastAsked = () => {
+    const url = asked.findLast((a) => a.url.startsWith("/api/v1/sessions?"))?.url ?? "";
+    return Object.fromEntries(new URLSearchParams(url.split("?")[1]));
+  };
+  const tab = (page: HTMLElement) =>
+    page.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.replace(/\d+$/, "");
+  const filterOf = (page: HTMLElement) =>
+    page.querySelector<HTMLInputElement>('input[aria-label="Filter pull requests"]')?.value;
+
   it("asks for archived sessions' pull requests and those of schedules that hide theirs", async () => {
     answer = listing;
     await render();
-    const url = asked.find((a) => a.url.startsWith("/api/v1/sessions?"))?.url ?? "";
-    const params = new URLSearchParams(url.split("?")[1]);
-    expect(Object.fromEntries(params)).toEqual({ pulls: "any", limit: "200", archived: "1", hidden: "1" });
+    expect(lastAsked()).toEqual({ pulls: "any", limit: "200", archived: "1", hidden: "1", mine: "1" });
+  });
+
+  it("lists those of sessions you started at first, and everyone's from when Mine is turned off", async () => {
+    answer = listing;
+    const page = await render();
+    const mine = () => [...page.querySelectorAll("button")].find((b) => b.textContent === "Mine");
+    expect(mine()?.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => mine()?.click());
+    expect(mine()?.getAttribute("aria-pressed")).toBe("false");
+    expect(lastAsked()).not.toHaveProperty("mine");
+    // Mine stays off where the page is opened again, and in no address.
+    roots.pop()?.();
+    asked.length = 0;
+    const again = await render();
+    expect(lastAsked()).not.toHaveProperty("mine");
+    expect(
+      [...again.querySelectorAll("button")]
+        .find((b) => b.textContent === "Mine")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(went).toEqual([]);
+  });
+
+  it("comes back to the tab and the filter it showed last, for any project", async () => {
+    answer = listing;
+    search.value = { state: "merged", q: "danish" };
+    await render();
+    roots.pop()?.();
+    // From the sidebar, which names no tab: its link at the top, then a project's.
+    for (const link of [{}, { scope: "p:shop" }]) {
+      search.value = link;
+      const page = await render();
+      expect(tab(page)).toBe("Merged");
+      expect(filterOf(page)).toBe("danish");
+      roots.pop()?.();
+    }
+    // They go in the address with what changes next.
+    const page = await render();
+    const closed = [...page.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) =>
+      t.textContent?.startsWith("Closed"),
+    );
+    await act(async () => closed?.click());
+    expect(went.at(-1)).toEqual({ scope: "p:shop", state: "closed", q: "danish" });
+  });
+
+  it("shows what its address says over what it showed last", async () => {
+    answer = listing;
+    search.value = { state: "merged", q: "danish" };
+    await render();
+    roots.pop()?.();
+    search.value = { state: "open" };
+    const page = await render();
+    expect(tab(page)).toBe("Open");
+    expect(filterOf(page)).toBe("");
+    // And keeps that for next time.
+    roots.pop()?.();
+    search.value = {};
+    const again = await render();
+    expect(tab(again)).toBe("Open");
+    expect(filterOf(again)).toBe("");
   });
 
   it("shows what an agent asks first, and sends the answer picked as the reply", async () => {
@@ -197,7 +267,7 @@ describe("the pull requests page", () => {
     answer = listOf(finished(231, 1291, "Danish for the shop"), merged);
     const page = await render();
     await act(() => vi.waitFor(() => expect(page.textContent).toContain("None here")));
-    expect(page.textContent).toContain("Nothing open matches “newsletter”.");
+    expect(page.textContent).toContain("Nothing open from your sessions matches “newsletter”.");
     const see = [...page.querySelectorAll("button")].find((b) => b.textContent === "See 1 merged");
     await act(async () => see?.click());
     expect(went.at(-1)).toMatchObject({ state: "merged", q: "newsletter" });

@@ -439,8 +439,11 @@ started.
   sessions you started or follow, most pressing first: what an agent asks
   you, a failure, failed checks, a pull request an agent finished, a reply
   it waits for. Its count shows in the browser's tab, and on fctl's icon
-  where you installed it. **Pull requests** opens every pull request agents
-  opened, sorted by what each needs next. On a phone, tap the session's title for its
+  where you installed it. **Pull requests** opens the pull requests agents
+  opened in the sessions you started, sorted by what each needs next; turn
+  **Mine** off there for everyone's, and the sidebar counts them too. The
+  browser keeps that choice, and the page keeps its tab and its filter
+  while you look elsewhere. On a phone, tap the session's title for its
   details: its pull requests, the files changed, its branch and who else is
   watching. Type below to message the agent, with files attached if you
   like; it reads your message at its next step. **Interrupt** stops the
