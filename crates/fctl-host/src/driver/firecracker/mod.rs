@@ -2,10 +2,10 @@
 //! Firecracker microVM with a kernel of its own (ADR 0070).
 //!
 //! - **Images** are pulled from their registries as Docker pulls them
-//!   ([`registry`]), and their layers unpacked onto an ext4 filesystem in a
-//!   short-lived VM ([`fctl_proto::vm::Mode::Unpack`]), as root there, so
-//!   that their owners and modes stay theirs and none of their files touch
-//!   the host's filesystem. The sandboxes made from an image share its
+//!   ([`registry`]), and their layers unpacked, as they download, onto an
+//!   ext4 filesystem in a short-lived VM ([`fctl_proto::vm::Mode::Unpack`]),
+//!   as root there, so that their owners and modes stay theirs and none of
+//!   their files touch the host's filesystem. The sandboxes made from an image share its
 //!   filesystem, read only ([`images`]).
 //! - **A sandbox** is a directory with the VM's own disk, a sparse ext4 file
 //!   that takes what the session writes (`disk_gb` at most), which the

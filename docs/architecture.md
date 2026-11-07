@@ -3446,8 +3446,14 @@ in `firecracker/` in the host's data directory.
   registry on the machine itself. A VM booted for it (`fctl.mode=unpack`)
   unpacks the layers onto a new ext4 filesystem, as root there, with their
   whiteouts: owners, modes, setuid bits and capabilities stay the image's,
-  and no file of the image touches the host's filesystem. Each image keeps
-  its filesystem, read only, and what its config says about running it
+  and no file of the image touches the host's filesystem. The VM boots as
+  the first layer starts to download, and the host sends it each layer
+  over its vsock as it arrives, hashing it on the way: the download and
+  the unpacking overlap rather than follow each other, and a pull needs no
+  room for the compressed layers. A layer whose size or digest isn't what
+  the manifest says fails the pull once the VM has read it, and the
+  filesystem it unpacked to goes with it. Each image keeps its
+  filesystem, read only, and what its config says about running it
   (user, environment, working directory, labels), under its config's
   digest, as Docker's image ID; names refer to images as Docker's tags do
   (`images.rs`). A pull whose image is here already reads only its

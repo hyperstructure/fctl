@@ -204,14 +204,10 @@ impl HttpClient {
             let req = request(Method::GET, &current, token, None, None, headers)?;
             // Signed download links carry a token in their query.
             let shown = without_query(&current);
-            let res = self
-                .client
-                .request(req)
-                .await
-                .map_err(|e| Error::Network {
-                    url: shown.clone(),
-                    message: error_chain(&e),
-                })?;
+            let res = self.client.request(req).await.map_err(|e| Error::Network {
+                url: shown.clone(),
+                message: error_chain(&e),
+            })?;
             let status = res.status();
             if status.is_redirection() {
                 let Some(loc) = res

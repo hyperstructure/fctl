@@ -94,7 +94,8 @@ microVM of its own.
   and each image takes all its size on disk: images share no layers.
   (Since session #802, an image whose layers start with another's keeps
   only its other layers, over that image's filesystem, and pulls and
-  unpacks only those.)
+  unpacks only those. Since session #880, the VM unpacks each layer as it
+  downloads.)
 - A VM holds the memory its guest has touched, but for what its balloon
   reports free.
 - The VM's clock follows the host's at boot and at each request of the

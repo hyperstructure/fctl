@@ -85,13 +85,13 @@ pull` pulls it now. While the version's image can't be pulled, it pulls
   user, and the host's log says the agent's commands can stop it. The
   process driver uses no image.
 - **Firecracker** hosts pull the same images without Docker, and unpack
-  each in a short-lived microVM into a filesystem that the sandboxes made
-  from it share, read only; they boot a kernel that hyperstructure/sandbox
-  publishes too, `ghcr.io/hyperstructure/sandbox-kernel:<version>`. They
-  build projects' images with BuildKit in a VM of each project's own,
-  from BuildKit's image, which they pull from Docker Hub
-  (`docker.io/moby/buildkit`) for a project's first build
-  ([Architecture](architecture.md#firecracker)).
+  each in a short-lived microVM, as its layers download, into a
+  filesystem that the sandboxes made from it share, read only; they boot
+  a kernel that hyperstructure/sandbox publishes too,
+  `ghcr.io/hyperstructure/sandbox-kernel:<version>`. They build projects'
+  images with BuildKit in a VM of each project's own, from BuildKit's
+  image, which they pull from Docker Hub (`docker.io/moby/buildkit`) for
+  a project's first build ([Architecture](architecture.md#firecracker)).
 - **Disk.** The host removes the default images that sessions no longer
   start from: builds that a newer one replaced, other versions' images, and
   `latest` once the version's image is there. It does that when it starts,
