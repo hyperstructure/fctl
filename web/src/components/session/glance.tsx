@@ -37,6 +37,12 @@ function Figure({ value, label, children }: { value?: number; label: string; chi
   );
 }
 
+/**
+ * The most turns the ribbon shows, a pixel and a gap each across a phone's width: a session with
+ * more has its figures and its lists of turns, and no ribbon.
+ */
+const RIBBON_MOST = 150;
+
 /** How a turn went, as its stretch of the ribbon shows it, brighter under a pointer. */
 function tone(turn: Turn, live: boolean): string {
   const end = turn.end;
@@ -97,14 +103,12 @@ export function Glance({
           </span>
         </Figure>
       </div>
-      {turns.length > 0 && !hasMoreBefore && (
-        // As many turns as the session has fit its width: past a couple of dozen, closer together,
-        // down to a pixel each. Each stretch takes a finger or a pointer across the ribbon's height.
+      {turns.length > 0 && turns.length <= RIBBON_MOST && !hasMoreBefore && (
+        // The turns fit its width: past a couple of dozen, closer together, down to a pixel each
+        // (a phone's width takes RIBBON_MOST so), and nothing clips the focus ring around each.
+        // Each stretch takes a finger or a pointer across the ribbon's height.
         <nav
-          className={cn(
-            "-my-2 flex max-w-full items-stretch overflow-hidden",
-            turns.length > 24 ? "gap-px" : "gap-1",
-          )}
+          className={cn("-my-2 flex max-w-full items-stretch", turns.length > 24 ? "gap-px" : "gap-1")}
           aria-label="Turns"
         >
           {turns.map((turn, i) => {
