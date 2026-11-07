@@ -1,10 +1,12 @@
 // A workspace's avatar: its uploaded image, or its initials on its color, in
-// a rounded square (people's avatars are round).
+// a rounded square (people's avatars are round). Its color is one of the
+// brand's or one of its own.
 
 import { palette } from "@hyperstructure/design/brand";
 import { useState } from "react";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
+import { contrast, parseHex } from "@/lib/color";
 
 /**
  * Each color's fill and the ink on it: the darker ink reads best on the brand colors. Yellow is the
@@ -17,6 +19,26 @@ export const WORKSPACE_COLORS: Record<G.WorkspaceColor, { fill: string; ink: str
   blue: { fill: palette.blue, ink: palette.blackish, label: "Blue" },
   ink: { fill: "var(--c-ink)", ink: "var(--c-canvas)", label: "Ink" },
 };
+
+/**
+ * A color of its own as an avatar: the color as chosen in both themes, as an image would be, with
+ * the initials in whichever of blackish and whiteish reads better on it (blackish on the brand's
+ * pink and blue, as theirs).
+ */
+export function ownFill(hex: string): { fill: string; ink: string } {
+  const dark = contrast(hex, palette.blackish) >= contrast(hex, palette.whiteish);
+  return { fill: hex, ink: dark ? palette.blackish : palette.whiteish };
+}
+
+/** The fill and the initials' ink of a workspace's color, of its own (`hex`) or the brand's. */
+export function workspaceFill(workspace: Pick<G.WorkspaceRef, "color" | "hex">): {
+  fill: string;
+  ink: string;
+} {
+  const hex = workspace.hex && parseHex(workspace.hex);
+  if (hex) return ownFill(hex);
+  return WORKSPACE_COLORS[workspace.color] ?? WORKSPACE_COLORS.yellow;
+}
 
 /** "hyperstructure" → "H", "Side project" → "SP". */
 export function workspaceInitials(name: string): string {
@@ -34,7 +56,7 @@ export function WorkspaceAvatar({
   className,
   title = true,
 }: {
-  workspace: Pick<G.WorkspaceRef, "name" | "color" | "avatar_url">;
+  workspace: Pick<G.WorkspaceRef, "name" | "color" | "hex" | "avatar_url">;
   size?: number;
   className?: string;
   /** Show its name on hover. */
@@ -61,7 +83,7 @@ export function WorkspaceAvatar({
       </span>
     );
   }
-  const c = WORKSPACE_COLORS[workspace.color] ?? WORKSPACE_COLORS.yellow;
+  const c = workspaceFill(workspace);
   const initials = workspaceInitials(workspace.name);
   return (
     <span

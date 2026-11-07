@@ -8,7 +8,17 @@ export type CreateWorkspaceRequest = { name: string,
 /**
  * Absent: made from the name.
  */
-slug?: string, color?: WorkspaceColor, 
+slug?: string, 
+/**
+ * Absent, with no `hex`: one your other workspaces don't have.
+ */
+color?: WorkspaceColor, 
+/**
+ * A color of its own, `#rrggbb` (or `#rgb`), in place of `color`.
+ * Control planes before colors of their own keep only `color`: send
+ * the workspace color nearest it there.
+ */
+hex?: string, 
 /**
  * The address to be a member as, one of yours. Absent: your primary one.
  */

@@ -32,6 +32,8 @@ export const ICON_COLORS: Record<G.WorkspaceColor, { label: string; ink: string;
   blue: { label: "Blue", ink: "var(--p-blue)", soft: "var(--c-blue-soft)" },
 };
 export const COLOR_ORDER: G.WorkspaceColor[] = ["ink", "yellow", "pink", "blue"];
+/** Where a color of one's own starts when there's none yet and the color is ink: a warm orange. */
+export const FIRST_OWN = "#ff8a1f";
 /** The brand's own of each workspace color, where a color of one's own starts from it. */
 export const BRAND_HEX: Record<G.WorkspaceColor, string> = {
   ink: "#8d8d8d",

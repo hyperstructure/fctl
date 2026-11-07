@@ -1518,8 +1518,14 @@ pub struct Workspace {
     /// URL-safe, unique per instance.
     pub slug: String,
     pub name: String,
+    /// With `hex`, the workspace color nearest it, which apps before
+    /// colors of their own show.
     pub color: WorkspaceColor,
-    /// Its avatar image, a path in the app; absent: its initial on `color`.
+    /// A color of its own, `#rrggbb`, in place of `color`. Absent: `color`;
+    /// from control planes before colors of their own too.
+    pub hex: Option<String>,
+    /// Its avatar image, a path in the app; absent: its initials on its
+    /// color.
     pub avatar_url: Option<String>,
     /// Your role in it.
     pub role: WorkspaceRole,
@@ -1571,6 +1577,7 @@ impl Workspace {
             slug: self.slug.clone(),
             name: self.name.clone(),
             color: self.color,
+            hex: self.hex.clone(),
             avatar_url: self.avatar_url.clone(),
         }
     }
@@ -1600,7 +1607,12 @@ pub struct CreateWorkspaceRequest {
     pub name: String,
     /// Absent: made from the name.
     pub slug: Option<String>,
+    /// Absent, with no `hex`: one your other workspaces don't have.
     pub color: Option<WorkspaceColor>,
+    /// A color of its own, `#rrggbb` (or `#rgb`), in place of `color`.
+    /// Control planes before colors of their own keep only `color`: send
+    /// the workspace color nearest it there.
+    pub hex: Option<String>,
     /// The address to be a member as, one of yours. Absent: your primary one.
     pub email: Option<String>,
 }
@@ -1612,7 +1624,12 @@ pub struct CreateWorkspaceRequest {
 pub struct UpdateWorkspaceRequest {
     pub name: Option<String>,
     pub slug: Option<String>,
+    /// A workspace color, which takes the place of a color of its own.
     pub color: Option<WorkspaceColor>,
+    /// A color of its own, `#rrggbb` (or `#rgb`), in place of `color`.
+    /// Control planes before colors of their own keep only `color`: send
+    /// the workspace color nearest it there. Empty: `color` decides.
+    pub hex: Option<String>,
     pub base_role: Option<BaseRole>,
     /// Members need two-factor sign-in. Not `false` while the instance
     /// requires it: every workspace does then.

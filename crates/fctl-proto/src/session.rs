@@ -158,8 +158,9 @@ impl WorkspaceRole {
     }
 }
 
-/// A workspace's color, from the brand palette: its avatar is its initial
-/// on this color, until an admin uploads an image.
+/// A workspace's color, from the brand palette: its avatar is its initials
+/// on this color, until an admin uploads an image or chooses a color of its
+/// own (`hex`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -258,8 +259,14 @@ pub struct WorkspaceRef {
     /// URL-safe, unique per instance.
     pub slug: String,
     pub name: String,
+    /// With `hex`, the workspace color nearest it, which apps before
+    /// colors of their own show.
     pub color: WorkspaceColor,
-    /// Its avatar image, a path in the app; absent: its initial on `color`.
+    /// A color of its own, `#rrggbb`, in place of `color`. Absent: `color`;
+    /// from control planes before colors of their own too.
+    pub hex: Option<String>,
+    /// Its avatar image, a path in the app; absent: its initials on its
+    /// color.
     pub avatar_url: Option<String>,
 }
 

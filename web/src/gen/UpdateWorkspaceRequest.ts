@@ -5,7 +5,17 @@ import type { WorkspaceColor } from "./WorkspaceColor";
 /**
  * `PATCH /api/v1/workspaces/{id}` (admins): absent fields stay as they are.
  */
-export type UpdateWorkspaceRequest = { name?: string, slug?: string, color?: WorkspaceColor, base_role?: BaseRole, 
+export type UpdateWorkspaceRequest = { name?: string, slug?: string, 
+/**
+ * A workspace color, which takes the place of a color of its own.
+ */
+color?: WorkspaceColor, 
+/**
+ * A color of its own, `#rrggbb` (or `#rgb`), in place of `color`.
+ * Control planes before colors of their own keep only `color`: send
+ * the workspace color nearest it there. Empty: `color` decides.
+ */
+hex?: string, base_role?: BaseRole, 
 /**
  * Members need two-factor sign-in. Not `false` while the instance
  * requires it: every workspace does then.

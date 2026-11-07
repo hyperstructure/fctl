@@ -18,7 +18,7 @@ const VERSION = 1;
 /** A workspace as the sidebar shows it. */
 export type SidebarWorkspace = Pick<
   G.Workspace,
-  "id" | "slug" | "name" | "color" | "avatar_url" | "role" | "blocked"
+  "id" | "slug" | "name" | "color" | "hex" | "avatar_url" | "role" | "blocked"
 >;
 /** A project as the sidebar shows it, under its workspace, with what picks its icon. */
 export type SidebarProject = Pick<
@@ -56,6 +56,7 @@ const ref = (w: G.WorkspaceRef): G.WorkspaceRef => ({
   slug: w.slug,
   name: w.name,
   color: w.color,
+  hex: w.hex,
   avatar_url: w.avatar_url,
 });
 
@@ -105,6 +106,8 @@ function readRef(v: unknown): G.WorkspaceRef | undefined {
     slug: v.slug,
     name: v.name,
     color: v.color as G.WorkspaceColor,
+    // Lists kept before workspaces' colors of their own have none.
+    ...(isText(v.hex) && parseHex(v.hex) && { hex: parseHex(v.hex) }),
     avatar_url: isText(v.avatar_url) ? v.avatar_url : undefined,
   };
 }

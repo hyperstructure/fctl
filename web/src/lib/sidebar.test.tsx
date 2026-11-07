@@ -159,6 +159,24 @@ describe("the sidebar kept in this browser", () => {
     expect(api?.icon).toEqual({ name: "api", color: undefined, style: undefined });
   });
 
+  it("keeps a workspace's color of its own, and drops one that isn't a color", () => {
+    const teal = { ...side, color: "blue" as const, hex: "#2a9d8f" };
+    keepSidebar("usr_ada", { ...workspaces, workspaces: [acme, teal] }, projects);
+    expect(keptSidebar("usr_ada")?.workspaces?.workspaces[1]).toMatchObject({
+      color: "blue",
+      hex: "#2a9d8f",
+    });
+    const kept = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");
+    kept.workspaces.workspaces[1].hex = "#2A9D8F";
+    kept.workspaces.workspaces[0].hex = "teal";
+    kept.workspaces.invitations[0].workspace.hex = "#F80";
+    localStorage.setItem("fctl:sidebar", JSON.stringify(kept));
+    const [first, second] = keptSidebar("usr_ada")?.workspaces?.workspaces ?? [];
+    expect(first).not.toHaveProperty("hex");
+    expect(second?.hex).toBe("#2a9d8f");
+    expect(keptSidebar("usr_ada")?.workspaces?.invitations[0]?.workspace.hex).toBe("#ff8800");
+  });
+
   it("keeps that the primary instance owner can be in any number of workspaces", () => {
     keepSidebar("usr_ada", { ...workspaces, unlimited: true }, projects);
     expect(keptSidebar("usr_ada")?.workspaces).toMatchObject({ limit: 5, unlimited: true });

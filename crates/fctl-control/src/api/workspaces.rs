@@ -134,24 +134,27 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     };
     let email = own_address(ctx, &user, body.email.as_deref()).await?;
     let id = fctl_domain::ids::workspace_id(ctx.now);
-    let color = match body.color {
+    let color = match policy::stored_color(body.color, body.hex.as_deref())? {
         Some(c) => c,
         None => {
-            // A color their other workspaces don't have, while one is left.
-            let taken: Vec<Option<String>> = ws::mine(&ctx.db, &user.id)
+            // A color their other workspaces don't have, or one near it,
+            // while one is left.
+            let taken: Vec<WorkspaceColor> = ws::mine(&ctx.db, &user.id)
                 .await?
                 .into_iter()
-                .map(|w| w.color)
+                .map(|w| policy::color(w.color.as_deref()).0)
                 .collect();
             WorkspaceColor::ALL
                 .into_iter()
-                .find(|c| !taken.iter().any(|t| t.as_deref() == Some(c.as_str())))
+                .find(|c| !taken.contains(c))
                 .unwrap_or_else(|| {
                     WorkspaceColor::ALL
                         .get(taken.len() % WorkspaceColor::ALL.len())
                         .copied()
                         .unwrap_or_default()
                 })
+                .as_str()
+                .to_owned()
         }
     };
     let created = batch(
@@ -168,7 +171,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                     s(id.as_str()),
                     s(&slug),
                     s(&name),
-                    s(color.as_str()),
+                    s(&color),
                     s(&user.id),
                     n(ctx.now),
                     on(limit.map(|l| l as i64)),
@@ -231,6 +234,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         Some(sl) => Some(slugs::chosen(&ctx.db, Of::Workspace, sl, Some(a.id())).await?),
         None => None,
     };
+    let color = policy::stored_color(body.color, body.hex.as_deref())?;
     if let Some(on) = body.require_two_factor {
         policy::check_two_factor(&ctx.settings(), on)?;
     }
@@ -254,7 +258,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         &[
             os(name.as_deref()),
             os(slug.as_deref()),
-            os(body.color.map(WorkspaceColor::as_str)),
+            os(color.as_deref()),
             os(body.base_role.map(BaseRole::as_str)),
             body.require_two_factor.map_or(crate::db::null(), crate::db::b),
             body.skip_invites.map_or(crate::db::null(), crate::db::b),
