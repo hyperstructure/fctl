@@ -175,6 +175,16 @@ pub fn maker_gone(workspace: &str) -> ApiError {
     ))
 }
 
+/// Why a token for everyone's sessions enrolls nothing, whatever its
+/// state: the admin who made it is no longer an active admin of its
+/// workspace (removed, demoted, disabled or deleted), so it no longer
+/// speaks for the workspace, as their invitations no longer do.
+pub fn maker_no_admin(workspace: &str) -> ApiError {
+    ApiError::forbidden(format!(
+        "This enrollment token was made by someone who is no longer an admin of {workspace}: it enrolls no runner. Ask one of its admins for another."
+    ))
+}
+
 /// `2026-11-05`, in UTC: messages from the control plane don't know the
 /// reader's time zone.
 fn day(ms: i64) -> String {
@@ -642,6 +652,10 @@ mod tests {
         assert_eq!(
             maker_gone("Acme").message,
             "This enrollment token was made by someone who is no longer a member of Acme, for their own sessions: it enrolls no runner."
+        );
+        assert_eq!(
+            maker_no_admin("Acme").message,
+            "This enrollment token was made by someone who is no longer an admin of Acme: it enrolls no runner. Ask one of its admins for another."
         );
     }
 

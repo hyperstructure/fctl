@@ -575,6 +575,15 @@ function phone({ wide = false } = {}) {
       }),
     palette: () => !!document.querySelector('input[placeholder^="Search"]'),
     drawer,
+    /** The handle on its edge, beside the page. */
+    edge: () => drawer().querySelector('[role="separator"]') as HTMLElement,
+    /** How wide it shows, whether it animates as that changes, and what this browser keeps. */
+    layout: () => ({
+      shows: container.querySelector<HTMLElement>(":scope > div")?.style.getPropertyValue("--sidebar-w"),
+      animates: drawer().classList.contains("md:transition-[width]"),
+      folded: localStorage.getItem("fctl:sidebar-folded") === "1",
+      width: localStorage.getItem("fctl:sidebar-width"),
+    }),
     /** The shade over the page while it is open. */
     overlay: () => closeButtons().find((b) => !drawer().contains(b)) as HTMLElement | undefined,
     /** Something on the page, beside the drawer. */
@@ -652,6 +661,78 @@ describe("folding the sidebar", () => {
     phone();
     fold();
     expect(localStorage.getItem("fctl:sidebar-folded")).toBeNull();
+  });
+
+  /** A mouse that presses on `el` at `x`, moves to each of `to` and lets go, and what `during` sees after each move. */
+  const drag = <T,>(el: HTMLElement, x: number, to: number[], during: () => T) => {
+    const pointer = (type: string, clientX: number) =>
+      act(() => {
+        el.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, clientX }));
+      });
+    pointer("pointerdown", x);
+    const seen = to.map((x) => {
+      pointer("pointermove", x);
+      return during();
+    });
+    pointer("pointerup", to.at(-1) ?? x);
+    return seen;
+  };
+
+  it("drags it out of its rail by its edge: it slides out past halfway to its least width, then follows", () => {
+    localStorage.setItem("fctl:sidebar-folded", "1");
+    localStorage.setItem("fctl:sidebar-width", "320");
+    const shell = phone({ wide: true });
+    expect(shell.layout()).toEqual({ shows: "60px", animates: true, folded: true, width: "320" });
+    expect(shell.edge().getAttribute("aria-valuetext")).toBe("Folded");
+    const seen = drag(shell.edge(), 58, [140, 160, 300], shell.layout);
+    expect(seen).toEqual([
+      { shows: "60px", animates: true, folded: true, width: "320" },
+      { shows: "240px", animates: true, folded: false, width: "240" },
+      { shows: "302px", animates: false, folded: false, width: "302" },
+    ]);
+    expect(shell.layout()).toEqual({ shows: "302px", animates: true, folded: false, width: "302" });
+    expect(shell.edge().getAttribute("aria-valuenow")).toBe("302");
+    expect(shell.edge().hasAttribute("aria-valuetext")).toBe(false);
+  });
+
+  it("folds it into its rail as its edge passes halfway there, with the width it had before", () => {
+    localStorage.setItem("fctl:sidebar-width", "320");
+    const shell = phone({ wide: true });
+    const seen = drag(shell.edge(), 320, [250, 160, 140, 100, 200, 260], shell.layout);
+    expect(seen).toEqual([
+      { shows: "250px", animates: false, folded: false, width: "250" },
+      { shows: "240px", animates: false, folded: false, width: "240" },
+      { shows: "60px", animates: true, folded: true, width: "320" },
+      { shows: "60px", animates: true, folded: true, width: "320" },
+      { shows: "240px", animates: true, folded: false, width: "240" },
+      { shows: "260px", animates: false, folded: false, width: "260" },
+    ]);
+  });
+
+  it("folds and unfolds it from its edge with the keys, and unfolds it as it was at first with a double click", () => {
+    localStorage.setItem("fctl:sidebar-width", "256");
+    const shell = phone({ wide: true });
+    const key = (key: string) =>
+      act(() => {
+        shell.edge().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+      });
+    key("ArrowLeft");
+    expect(shell.layout()).toMatchObject({ folded: false, width: "240" });
+    key("ArrowLeft");
+    expect(shell.layout()).toMatchObject({ folded: true, width: "240" });
+    key("ArrowLeft");
+    expect(shell.layout()).toMatchObject({ folded: true, width: "240" });
+    key("ArrowRight");
+    expect(shell.layout()).toMatchObject({ shows: "240px", folded: false });
+    key("Enter");
+    expect(shell.layout()).toMatchObject({ shows: "60px", folded: true });
+    key("Enter");
+    expect(shell.layout()).toMatchObject({ shows: "240px", folded: false });
+    key("Enter");
+    act(() => {
+      shell.edge().dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(shell.layout()).toEqual({ shows: "288px", animates: true, folded: false, width: null });
   });
 });
 

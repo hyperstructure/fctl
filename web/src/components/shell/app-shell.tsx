@@ -9,13 +9,7 @@ import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { useHotkey } from "@/lib/hotkeys";
 import { onPushOpen, syncPush } from "@/lib/push";
 import { useMe } from "@/lib/queries";
-import {
-  FOLD_SHORTCUT,
-  RAIL_WIDTH,
-  SIDEBAR_WIDTH,
-  useSidebarFolded,
-  useSidebarWidth,
-} from "@/lib/sidebar-layout";
+import { FOLD_SHORTCUT, RAIL_WIDTH, useSidebarFolded, useSidebarWidth } from "@/lib/sidebar-layout";
 import { useFactorsWatch } from "@/lib/workspaces";
 import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { useDrawerDrag } from "./drawer-drag";
@@ -93,7 +87,8 @@ export function AppShell() {
           "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[min(calc(100vw-3rem),calc(300px+env(safe-area-inset-left)))] flex-col border-r border-line bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:w-[calc(var(--sidebar-w)+env(safe-area-inset-left))] md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
           drawer !== "gone" &&
             "transition-[translate,display] transition-discrete duration-300 ease-out motion-reduce:transition-none",
-          // Folding animates its width; dragging its edge follows the pointer at once.
+          // Folding animates its width, as does dragging its edge into the rail or out of it;
+          // otherwise the edge follows the pointer at once.
           !resizing &&
             "md:transition-[width] md:duration-200 md:ease-[var(--ease-out)] md:motion-reduce:transition-none",
           shown ? "translate-x-0" : "-translate-x-full max-md:hidden",
@@ -109,15 +104,15 @@ export function AppShell() {
           folded={folded && wide}
           onFold={setFolded}
         />
-        {!(folded && wide) && (
-          <ResizeHandle
-            width={width}
-            min={SIDEBAR_WIDTH.min}
-            max={SIDEBAR_WIDTH.max}
-            onResize={setWidth}
-            onDragging={setResizing}
-          />
-        )}
+        {/* On the rail too, whose edge drags the sidebar out of it: the same element, so that it
+            keeps the pointer as the sidebar unfolds under it. */}
+        <ResizeHandle
+          width={width}
+          folded={folded && wide}
+          onResize={setWidth}
+          onFold={setFolded}
+          onFollow={setResizing}
+        />
       </aside>
       {/* The shade fades in and out with the drawer's slide (and goes with it at once). */}
       <button

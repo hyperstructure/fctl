@@ -9,9 +9,9 @@
 
 use super::{
     AGENT_DIR_SCRIPT, AGENT_PATH, AgentIo, BuildJob, COMMAND_TIMEOUT, DiskSpot, NotStarted,
-    RAN_AS_ROOT_SCRIPT, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut,
+    RAN_AS_ROOT_SCRIPT, SH, SLOW_COMMAND_TIMEOUT, Sandbox, SandboxInfo, SandboxSpec, TimedOut,
     attach_as_root, attach_as_user_script, install_as_user_script, ran_as_root, run_cmd_within,
-    serve_as_root, serve_as_user_script, timed_out, unanswered,
+    serve_as_root, serve_as_user_script, system_script, timed_out, unanswered,
 };
 use crate::caches::{self, Spot};
 use crate::docker_access::Unreachable;
@@ -566,7 +566,13 @@ impl ContainerDriver {
             return;
         }
         let ids = self
-            .run(&["exec", name, "sh", "-c", r#"echo "$(id -u):$(id -g)""#])
+            .run(&[
+                "exec",
+                name,
+                SH,
+                "-c",
+                &system_script(r#"echo "$(id -u):$(id -g)""#),
+            ])
             .await;
         let owner = match ids {
             Ok(out) => out.trim().to_owned(),
@@ -582,9 +588,11 @@ impl ContainerDriver {
             return;
         }
         let mount = caches::MOUNT;
-        let script = format!(r#"[ "$(stat -c %u:%g {mount})" = "$1" ] || chown -R "$1" {mount}"#);
+        let script = system_script(&format!(
+            r#"[ "$(stat -c %u:%g {mount})" = "$1" ] || chown -R "$1" {mount}"#
+        ));
         let given = self
-            .run(&["exec", "-u", "0", name, "sh", "-c", &script, "sh", &owner])
+            .run(&["exec", "-u", "0", name, SH, "-c", &script, "sh", &owner])
             .await;
         if let Err(e) = given {
             tracing::warn!("{name} may not write to its package caches: {e:#}");
@@ -922,14 +930,24 @@ impl ContainerDriver {
         let src = binary.display().to_string();
         let new = format!("{AGENT_PATH}.new");
         let dest = format!("{}:{new}", sb.name);
-        self.run(&["exec", "-u", "0", &sb.name, "sh", "-c", AGENT_DIR_SCRIPT])
-            .await
-            .context("readying /opt/fctl/bin in the sandbox")?;
+        self.run(&[
+            "exec",
+            "-u",
+            "0",
+            &sb.name,
+            SH,
+            "-c",
+            &system_script(AGENT_DIR_SCRIPT),
+        ])
+        .await
+        .context("readying /opt/fctl/bin in the sandbox")?;
         self.run(&["cp", &src, &dest])
             .await
             .context("copying fctl-agent into the sandbox")?;
-        let script = format!("chown 0:0 {new} && chmod 755 {new} && mv -f {new} {AGENT_PATH}");
-        self.run(&["exec", "-u", "0", &sb.name, "sh", "-c", &script])
+        let script = system_script(&format!(
+            "chown 0:0 {new} && chmod 755 {new} && mv -f {new} {AGENT_PATH}"
+        ));
+        self.run(&["exec", "-u", "0", &sb.name, SH, "-c", &script])
             .await
             .context("putting fctl-agent in place in the sandbox")?;
         Ok(())
@@ -944,7 +962,13 @@ impl ContainerDriver {
             return Ok(true);
         }
         let said = self
-            .run(&["exec", &sb.name, "sh", "-c", RAN_AS_ROOT_SCRIPT])
+            .run(&[
+                "exec",
+                &sb.name,
+                SH,
+                "-c",
+                &system_script(RAN_AS_ROOT_SCRIPT),
+            ])
             .await
             .context("asking whether fctl-agent ran as root in the sandbox")?;
         ran_as_root(&said)
@@ -963,8 +987,10 @@ impl ContainerDriver {
                 .await?;
             return Ok(());
         }
+        // The `id` of the system, not one the image's user put first on
+        // its PATH: a uid of 0 would run Claude as root.
         let uid = self
-            .run(&["exec", &sb.name, "id", "-u"])
+            .run(&["exec", &sb.name, SH, "-c", &system_script("id -u")])
             .await
             .context("finding the sandbox's user")?;
         let uid = uid.trim();
@@ -2239,11 +2265,11 @@ esac
             cli.calls(),
             [
                 // Root's, as fctl-agent runs as root from there.
-                "exec -u 0 fctl-ses-1 sh -c mkdir -p /opt/fctl/bin && chown 0:0 /opt/fctl /opt/fctl/bin && chmod 755 /opt/fctl /opt/fctl/bin",
+                format!("exec -u 0 fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; {AGENT_DIR_SCRIPT}").as_str(),
                 // Beside the one that may run, then in its place.
                 "cp fctl-agent fctl-ses-1:/opt/fctl/bin/fctl-agent.new",
-                "exec -u 0 fctl-ses-1 sh -c chown 0:0 /opt/fctl/bin/fctl-agent.new && chmod 755 /opt/fctl/bin/fctl-agent.new && mv -f /opt/fctl/bin/fctl-agent.new /opt/fctl/bin/fctl-agent",
-                "exec fctl-ses-1 id -u",
+                "exec -u 0 fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; chown 0:0 /opt/fctl/bin/fctl-agent.new && chmod 755 /opt/fctl/bin/fctl-agent.new && mv -f /opt/fctl/bin/fctl-agent.new /opt/fctl/bin/fctl-agent",
+                "exec fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; id -u",
                 "exec -d -u 0 fctl-ses-1 /opt/fctl/bin/fctl-agent serve --user 1000 --socket /var/lib/fctl-agent/agent.sock --state /var/lib/fctl-agent/state --log /var/lib/fctl-agent/agent.log",
             ]
         );
@@ -2297,11 +2323,11 @@ esac
         assert_eq!(
             cli.calls(),
             [
-                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                "exec fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
                 r#"exec -i fctl-ses-1 sh -c mkdir -p "$HOME/.fctl/bin" && cat > "$HOME/.fctl/bin/fctl-agent.new" && chmod 755 "$HOME/.fctl/bin/fctl-agent.new" && mv -f "$HOME/.fctl/bin/fctl-agent.new" "$HOME/.fctl/bin/fctl-agent""#,
-                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                "exec fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
                 r#"exec -d fctl-ses-1 sh -c mkdir -p "$HOME/.fctl" && exec "$HOME/.fctl/bin/fctl-agent" serve --socket "$HOME/.fctl/agent.sock" --state "$HOME/.fctl/state" --log "$HOME/.fctl/agent.log""#,
-                "exec fctl-ses-1 sh -c if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
+                "exec fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; if [ -d /var/lib/fctl-agent ]; then echo root; else echo user; fi",
                 r#"exec -i fctl-ses-1 sh -c a="$HOME/.fctl/bin/fctl-agent"; [ -x "$a" ] || a=/opt/fctl/bin/fctl-agent; exec "$a" attach --socket "$HOME/.fctl/agent.sock""#,
             ]
         );
@@ -2377,7 +2403,7 @@ esac
         assert_eq!(
             given.as_deref(),
             Some(
-                r#"exec -u 0 fctl-ses-1 sh -c [ "$(stat -c %u:%g /var/cache/fctl)" = "$1" ] || chown -R "$1" /var/cache/fctl sh 1000:1000"#
+                r#"exec -u 0 fctl-ses-1 /bin/sh -c PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH; [ "$(stat -c %u:%g /var/cache/fctl)" = "$1" ] || chown -R "$1" /var/cache/fctl sh 1000:1000"#
             )
         );
         assert_eq!(cli.volumes()?, [("fctl-cache-prj_1".to_owned(), 0)]);

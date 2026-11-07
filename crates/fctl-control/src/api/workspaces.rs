@@ -1337,10 +1337,10 @@ pub async fn register_runner(
     let name = validate::name("name", name)?;
     // A new runner gets the workspace's sessions, with their code, secrets
     // and tokens, as adding one does: the same confirmation, so that a
-    // stolen session or token can't register one instead.
-    if workspace_id.is_some() {
-        ctx.verified(Sensitive::AddRunner)?;
-    }
+    // stolen session or token can't register one instead. Also one for no
+    // workspace, which runs its owner's Claude sign-ins first, with a full
+    // login's long-lived tokens (`api::claude::login_runners`).
+    ctx.verified(Sensitive::AddRunner)?;
     let token = new_secret(SecretKind::Runner);
     let id = fctl_domain::ids::runner_id(ctx.now);
     let mut statements = vec![q(

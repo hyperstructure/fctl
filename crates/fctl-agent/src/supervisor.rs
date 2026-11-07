@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
@@ -591,12 +591,11 @@ impl Supervisor {
         let Some(dir) = self.config.as_ref().map(|c| c.workdir.clone()) else {
             return false;
         };
-        let df = tokio::process::Command::new("df")
-            .args(["-Pk", &dir])
-            .output();
-        match tokio::time::timeout(Duration::from_secs(5), df).await {
-            Ok(Ok(out)) => fctl_domain::disk::df_free_mb(&String::from_utf8_lossy(&out.stdout))
-                .is_some_and(|free| free < FULL_MB),
+        // Asked of the kernel, not of a `df`: one on the image's PATH, which
+        // its user may write to, would run as root where fctl-agent does.
+        let free = tokio::task::spawn_blocking(move || free_mb(Path::new(&dir)));
+        match tokio::time::timeout(Duration::from_secs(5), free).await {
+            Ok(Ok(Some(free))) => free < FULL_MB,
             _ => false,
         }
     }
@@ -1495,7 +1494,17 @@ impl Supervisor {
                 "This sandbox has no fctl that can rename the session, so it keeps the title it started with. The default image, ghcr.io/hyperstructure/sandbox, has one; an image of your own needs fctl on the PATH.",
             );
         }
+        // A review's working directory holds the pull request's head, which
+        // anyone may have written: its Claude settings (hooks, a status
+        // line, plugins, MCP servers, and the commands they run) would run
+        // as Claude starts, before its agent reads a word, beside the
+        // operator's Claude token and the project's read token, whatever
+        // its instructions say about running the pull request's code. A
+        // review takes the user's settings alone, and no MCP server of the
+        // repository's (`.mcp.json`).
+        let review = spec.review.is_some();
         let setting_sources = match claude::project_settings_are_unsafe(&paths.workdir) {
+            _ if review => "user",
             Some(why) => {
                 let msg = format!(
                     "Ignoring the repository's Claude settings because {why}: fctl only runs Claude on subscriptions."
@@ -1616,6 +1625,7 @@ impl Supervisor {
                 .or(spec.project.settings.effort.as_deref()),
             append_system_prompt: &system,
             setting_sources,
+            strict_mcp: review,
             extra_args: &config.claude_args,
             env,
         };
@@ -2922,9 +2932,27 @@ async fn serving(
     r
 }
 
+/// The MiB free to the image's user on the filesystem of `dir`, as `df`
+/// says (`f_bavail`).
+// The kernel's counts are 64 bits on the Linux sandboxes run, narrower
+// elsewhere.
+#[allow(clippy::useless_conversion)]
+fn free_mb(dir: &Path) -> Option<u64> {
+    let s = nix::sys::statvfs::statvfs(dir).ok()?;
+    let bytes = u64::from(s.blocks_available()).saturating_mul(u64::from(s.fragment_size()));
+    Some(bytes / (1024 * 1024))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_disk_comes_from_the_kernel() {
+        let dir = std::env::temp_dir();
+        assert!(free_mb(&dir).is_some());
+        assert_eq!(free_mb(Path::new("/no/such/dir")), None);
+    }
 
     /// What the supervisor answers right away (`None`: it waits for the host).
     fn ask(sup: &mut Supervisor, request: SessionRequest) -> Option<SessionReply> {
@@ -3699,6 +3727,7 @@ mod tests {
                 effort: None,
                 append_system_prompt: "",
                 setting_sources: "user",
+                strict_mcp: false,
                 extra_args: &[],
                 env: Default::default(),
             },

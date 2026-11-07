@@ -38,6 +38,7 @@ export type { ClaudeCredentialInfo } from "./ClaudeCredentialInfo";
 export type { ClaudeCredentialKind } from "./ClaudeCredentialKind";
 export type { ClaudeLoginCodeRequest } from "./ClaudeLoginCodeRequest";
 export type { ClaudeLoginJob } from "./ClaudeLoginJob";
+export type { ClaudeLoginRunner } from "./ClaudeLoginRunner";
 export type { ClaudeLoginState } from "./ClaudeLoginState";
 export type { CommitInfo } from "./CommitInfo";
 export type { ConfirmAuthenticatorRequest } from "./ConfirmAuthenticatorRequest";

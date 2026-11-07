@@ -331,6 +331,14 @@ pub async fn set_default(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     http::ok(&auth::me(ctx, &user).await?)
 }
 
+/// A Claude sign-in, with the runner it runs on and whose that is
+/// ([`JobRow`]): `WHERE j.…` follows.
+pub const JOB_SELECT: &str = "SELECT j.id, j.state, j.created_at, j.updated_at, j.user_id, j.runner_id, \
+    r.name AS runner_name, r.created_by AS runner_owner, ou.name AS runner_owner_name, \
+    w.name AS runner_workspace_name FROM claude_login_jobs j \
+    LEFT JOIN runners r ON r.id = j.runner_id LEFT JOIN users ou ON ou.id = r.created_by \
+    LEFT JOIN workspaces w ON w.id = r.workspace_id";
+
 #[derive(serde::Deserialize)]
 pub struct JobRow {
     pub id: String,
@@ -339,6 +347,21 @@ pub struct JobRow {
     pub created_at: i64,
     #[serde(deserialize_with = "crate::db::int")]
     pub updated_at: i64,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// The runner it runs on, once one took it.
+    #[serde(default)]
+    pub runner_id: Option<String>,
+    #[serde(default)]
+    pub runner_name: Option<String>,
+    /// Who registered that runner; none for one that enrolled in a
+    /// workspace, which is the workspace's.
+    #[serde(default)]
+    pub runner_owner: Option<String>,
+    #[serde(default)]
+    pub runner_owner_name: Option<String>,
+    #[serde(default)]
+    pub runner_workspace_name: Option<String>,
 }
 
 impl JobRow {
@@ -350,7 +373,28 @@ impl JobRow {
             }),
             created_at: self.created_at,
             updated_at: self.updated_at,
+            runner: self.runner(),
         }
+    }
+
+    /// The runner it runs on, and whether it is its person's own: one of
+    /// someone else's sees the login's tokens, which the app and the CLI
+    /// say before the person approves the sign-in.
+    fn runner(&self) -> Option<ClaudeLoginRunner> {
+        let (id, name) = (self.runner_id.as_ref()?, self.runner_name.as_ref()?);
+        let yours = self.runner_owner.is_some() && self.runner_owner == self.user_id;
+        Some(ClaudeLoginRunner {
+            id: fctl_proto::RunnerId(id.clone()),
+            name: name.clone(),
+            yours,
+            owner: (!yours)
+                .then(|| {
+                    self.runner_owner_name
+                        .clone()
+                        .or_else(|| self.runner_workspace_name.clone())
+                })
+                .flatten(),
+        })
     }
 }
 
@@ -385,6 +429,17 @@ pub async fn start_login(ctx: &mut Ctx) -> AppResult<Response> {
             "None of the runners that may run your Claude sign-in is online: yours, and those that run your sessions in your workspaces. Start one, or connect a long-lived token instead.",
         ));
     }
+    // Where it runs, from the start: the person sees whose runner it is
+    // before they approve it.
+    if let Some(runner) = started.get("runner_id").and_then(serde_json::Value::as_str) {
+        q(
+            &ctx.db,
+            "UPDATE claude_login_jobs SET runner_id = ? WHERE id = ? AND runner_id IS NULL",
+            &[s(runner), s(id.as_str())],
+        )?
+        .run()
+        .await?;
+    }
     job(ctx, id.as_str()).await
 }
 
@@ -392,7 +447,7 @@ pub async fn job(ctx: &Ctx, id: &str) -> AppResult<Response> {
     let user = ctx.user()?;
     let row: Option<JobRow> = q(
         &ctx.db,
-        "SELECT * FROM claude_login_jobs WHERE id = ? AND user_id = ?",
+        &format!("{JOB_SELECT} WHERE j.id = ? AND j.user_id = ?"),
         &[s(id), s(&user.id)],
     )?
     .first()

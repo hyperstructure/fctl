@@ -418,9 +418,12 @@ impl RepoRef {
         format!("{}/{}", self.owner, self.name)
     }
 
-    /// Parses `owner/name`.
+    /// Parses `owner/name` (or `owner/name.git`). Neither part may be `.`
+    /// or `..`, also once `.git` is gone (`acme/...git`), since both go in
+    /// URLs' paths, where they would name another place.
     pub fn parse(s: &str) -> Option<Self> {
         let (owner, name) = s.trim().split_once('/')?;
+        let name = name.strip_suffix(".git").unwrap_or(name);
         let ok = |p: &str| {
             !p.is_empty()
                 && p.len() <= 100
@@ -431,7 +434,7 @@ impl RepoRef {
         };
         (ok(owner) && ok(name)).then(|| Self {
             owner: owner.to_owned(),
-            name: name.trim_end_matches(".git").to_owned(),
+            name: name.to_owned(),
         })
     }
 
@@ -1545,6 +1548,28 @@ pub struct Retrospective {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repositories_are_never_dot_or_dot_dot() {
+        let parsed = |s: &str| RepoRef::parse(s).map(|r| r.full_name());
+        assert_eq!(parsed("acme/web").as_deref(), Some("acme/web"));
+        assert_eq!(parsed(" acme/web.git ").as_deref(), Some("acme/web"));
+        assert_eq!(parsed("acme/web.js").as_deref(), Some("acme/web.js"));
+        for bad in [
+            "acme/...git",
+            "acme/..git",
+            "acme/.git",
+            "acme/..",
+            "acme/.",
+            "../web",
+            "acme/",
+            "/web",
+            "acme",
+            "acme/we b",
+        ] {
+            assert_eq!(parsed(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn a_github_access_this_version_does_not_know_reads_as_the_least()
