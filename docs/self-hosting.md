@@ -265,7 +265,11 @@ the web app and the Worker (Rust compiled to WebAssembly), renders
 and deploys to your domain. Run it again, without `--create`, for every
 upgrade. When Cloudflare's API throttles a step (it answers 429 for a while
 once a token or an address has made too many requests), the step runs again
-once the wait the API asks for is over, up to four times.
+once the wait the API asks for is over, up to four times. So does a step
+that a server in front of the API failed, answering it with a 5xx that
+isn't JSON (wrangler says "Received a malformed response from the API"),
+5, 15 and 45 s later; creating the database doesn't, since it may have
+been made before the answer failed.
 
 ### 3. Set the secrets
 

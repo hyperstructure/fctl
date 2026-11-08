@@ -5,7 +5,7 @@
 //! the web app and the Worker, applies D1 migrations and deploys. `secrets`
 //! sets what only the Worker may know, once.
 
-use crate::util::{self, output, retry_cloudflare, run, run_with_stdin};
+use crate::util::{self, output, retry_cloudflare, retry_throttled, run, run_with_stdin};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -319,7 +319,9 @@ fn create_database(root: &Path, name: &str, inst: &Instance) -> Result<String> {
     if let Some(loc) = &inst.d1.location {
         cmd.args(["--location", loc]);
     }
-    let out = retry_cloudflare(&mut cmd, output)?;
+    // Not after an answer that isn't JSON: it may have come once the
+    // database was made, and making it again fails.
+    let out = retry_throttled(&mut cmd, output)?;
     let id = out
         .split('"')
         .skip_while(|s| *s != "database_id")

@@ -717,5 +717,7 @@ malformed response from the API". Wrangler gives up at once on that, and on
 a 429 in its D1, KV and secret commands, so `cargo xtask deploy`, `secrets`
 and `publish` run such a wrangler command again, up to four times: once
 the wait a 429 asks for is over, and 5, 15 and 45 s after an answer that
-isn't JSON (`util::retry_cloudflare`). A 5xx that the API answers in JSON
-can't be told from wrangler's output, and isn't run again.
+isn't JSON (`util::retry_cloudflare`). `d1 create` runs again only after a
+429 (`util::retry_throttled`): an answer that isn't JSON may have come
+once the database was made. A 5xx that the API answers in JSON can't be
+told from wrangler's output, and isn't run again.

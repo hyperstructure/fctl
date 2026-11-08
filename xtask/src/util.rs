@@ -182,12 +182,31 @@ const MALFORMED: &str = "Received a malformed response from the API";
 /// Wrangler waits that out in only some of `wrangler deploy`'s requests,
 /// and gives up at once in its D1, KV and secret commands. A request the
 /// API answered with an error page rather than JSON ([`MALFORMED`]) failed
-/// in front of it, and wrangler gives up at once on that too. Running one
-/// of xtask's wrangler commands again ends where one run would have
-/// (migrations apply those not applied yet, a deploy deploys the same
-/// build), so the command runs again from the start once the wait is over:
-/// up to four times, and only for waits of up to five minutes.
+/// in front of it, and wrangler gives up at once on that too. Running such
+/// a command again ends where one run would have (migrations apply those
+/// not applied yet, a deploy deploys the same build, a secret or a KV value
+/// is put again), so it runs again from the start once the wait is over:
+/// up to four times, and only for waits of up to five minutes. A command
+/// that would fail the second time if the first did what it asked
+/// (`d1 create`) takes [`retry_throttled`].
 pub fn retry_cloudflare<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<T>) -> Result<T> {
+    retry(cmd, f, true)
+}
+
+/// [`retry_cloudflare`], but only when the API throttled the command: a
+/// throttled request never ran, while an answer that isn't JSON may have
+/// come after the API did what it was asked.
+pub fn retry_throttled<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<T>) -> Result<T> {
+    retry(cmd, f, false)
+}
+
+/// Runs the command with `f`, and again when the API throttled it, or,
+/// with `unavailable`, couldn't answer it.
+fn retry<T>(
+    cmd: &mut Command,
+    f: impl Fn(&mut Command) -> Result<T>,
+    unavailable: bool,
+) -> Result<T> {
     let mut attempt = 1;
     loop {
         // Where wrangler writes what it did, how it failed included.
@@ -203,7 +222,9 @@ pub fn retry_cloudflare<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result
             Ok(out) => return Ok(out),
             Err(err) => err,
         };
-        let Some(again) = again(&entries) else {
+        let Some(again) =
+            again(&entries).filter(|a| unavailable || matches!(a, Again::Throttled(_)))
+        else {
             return Err(err);
         };
         let (why, wait) = match again {
@@ -494,6 +515,20 @@ mod tests {
             "{err:#}"
         );
         assert_eq!(runs(&bin), API_ATTEMPTS as usize);
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+        // What may have done what it asked by the time its answer failed,
+        // only once; a throttled one again, as it never ran.
+        let bin = wrangler("unavailable-once-created", 1, now);
+        let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
+        assert!(
+            err.to_string().contains("failed (exit status: 1)"),
+            "{err:#}"
+        );
+        assert_eq!(runs(&bin), 1);
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+        let bin = wrangler("throttled-once-created", 1, NOW);
+        let out = retry_throttled(&mut Command::new(&bin), output).unwrap();
+        assert_eq!(out.trim(), "2");
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
     }
 
