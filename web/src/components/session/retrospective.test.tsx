@@ -79,6 +79,19 @@ describe("a retrospective in the transcript", () => {
     expect(marked[0]?.parentElement?.textContent).toContain("Challenges");
   });
 
+  it("dims no part for an update that only moved the outcome", () => {
+    const c = render(
+      <RetrospectiveCard
+        r={retro({ updated_at: 20 })}
+        before={retro({ outcome: "blocked" })}
+        findKey="n-9"
+      />,
+    );
+    expect(c.textContent).toContain("Blocked");
+    expect(c.querySelectorAll(".text-ink-4.truncate, .text-ink-4.line-clamp-2")).toHaveLength(0);
+    expect([...c.querySelectorAll(".sr-only")].some((s) => s.textContent === " (changed)")).toBe(false);
+  });
+
   it("opens to a match finding goes to in it", () => {
     const reveal = new Revealer();
     const c = render(

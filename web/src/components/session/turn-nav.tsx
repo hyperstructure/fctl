@@ -456,9 +456,10 @@ export function TurnList({
 }) {
   const shares = sharesOf(turns, facts);
   // In the rail, which scrolls: the newest turns, and the earlier ones a click away, rather than
-  // a list that scrolls in it.
+  // a list that scrolls in it. The turn the reader is in always shows, the list growing back to it.
   const [all, setAll] = useState(false);
-  const folded = !all && turns.length > LISTED + 2 ? turns.length - LISTED : 0;
+  const newest = turns.length - LISTED;
+  const folded = !all && turns.length > LISTED + 2 ? (at >= 0 ? Math.min(newest, at) : newest) : 0;
   return (
     <div className="-mx-2">
       {hasMoreBefore && (

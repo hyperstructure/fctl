@@ -507,8 +507,9 @@ it ends, how long it ran.
 Scrolled away from the newest work, a button goes back down to it and
 counts what came meanwhile; back on the tab, a line marks where what came
 while you were away starts. A bar under the header says which turn you are
-in and lists them all, as the details beside the transcript do on a
-computer, and `j` and `k` go from turn to turn. The speech bubbles in its
+in and lists them all; the details beside the transcript on a computer list
+the newest, the one you are in and, a click away, the earlier ones; `j` and
+`k` go from turn to turn. The speech bubbles in its
 header (**Show only the conversation** in the ⋯ menu on a phone) leave out
 the agent's work: what remains is what people asked and what the agent
 answered.

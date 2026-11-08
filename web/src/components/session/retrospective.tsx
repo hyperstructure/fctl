@@ -114,6 +114,8 @@ export function RetrospectiveCard({
   useRevealed(`retro:${findKey}`, () => setOpen(true));
   const id = useId();
   const changed = before ? changes(before, r) : undefined;
+  // The parts an update changed, if it changed any: one that only moved the outcome dims none.
+  const marked = changed?.parts.size ? changed.parts : undefined;
   // It glides from the height it had to the one it takes.
   const body = useRef<HTMLDivElement>(null);
   const from = useRef<number | undefined>(undefined);
@@ -168,10 +170,10 @@ export function RetrospectiveCard({
       <div ref={body} id={id} className="overflow-hidden px-4 pb-3.5">
         {open ? (
           <div className="animate-fade">
-            <RetrospectiveParts r={r} wide findKey={findKey} changed={changed?.parts} />
+            <RetrospectiveParts r={r} wide findKey={findKey} changed={marked} />
           </div>
         ) : (
-          <Gist r={r} changed={changed?.parts} onOpen={() => toggle(true)} />
+          <Gist r={r} changed={marked} onOpen={() => toggle(true)} />
         )}
       </div>
     </section>
