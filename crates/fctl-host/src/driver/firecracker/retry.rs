@@ -83,10 +83,14 @@ pub fn brief(message: &str) -> String {
 }
 
 /// Downloads into the file `to` what each of `urls` serves, the same file:
-/// from the first, then, while that fails in a way that may pass, from the
-/// next, from the start each time, and from the first again after the
-/// last. At most `max_bytes`, each try within `limit`. `what` names it in
-/// what `log` says.
+/// from the first, then from the next one each time it fails, from the
+/// start each time, and from the first again after the last, until
+/// [`Retries::tries`] tries have failed. A place whose failure won't pass
+/// on another try (a refusal, say, as GitHub's API refuses those who made
+/// too many requests) is tried no more, and once none is left, it fails.
+/// What it says then is what the first place said last, the canonical
+/// one, where it said anything. At most `max_bytes`, each try within
+/// `limit`. `what` names it in what `log` says.
 pub async fn download(
     urls: &[&str],
     to: &Path,
@@ -97,27 +101,55 @@ pub async fn download(
     log: Log<'_>,
 ) -> fctl_client::http::Result<u64> {
     let http = fctl_client::HttpClient::new(limit);
-    let mut next = urls.iter().cycle();
-    retries
-        .run(
-            what,
-            log,
-            || {
-                let (http, url) = (&http, next.next().copied());
-                async move {
-                    let url = url.ok_or_else(|| {
-                        fctl_client::Error::Other("nowhere to download from".into())
-                    })?;
-                    // GitHub's API sends a release asset's file, not JSON
-                    // about it, when it is asked for that.
-                    let headers = [("accept", "application/octet-stream")];
-                    http.download_to(url, None, &headers, to, max_bytes, limit)
-                        .await
-                }
-            },
-            |r| r.as_ref().err().and_then(may_pass),
-        )
-        .await
+    // GitHub's API sends a release asset's file, not JSON about it, when it
+    // is asked for that.
+    let headers = [("accept", "application/octet-stream")];
+    let mut places: Vec<&str> = urls.to_vec();
+    let mut next = 0;
+    // What the first place said last, and what another said last.
+    let (mut first, mut other) = (None, None);
+    for tried in 1..=retries.tries {
+        let Some(&url) = places.get(next) else {
+            break;
+        };
+        let e = match http
+            .download_to(url, None, &headers, to, max_bytes, limit)
+            .await
+        {
+            Ok(size) => return Ok(size),
+            Err(e) => e,
+        };
+        let why = match may_pass(&e) {
+            Some(why) => {
+                next += 1;
+                why
+            }
+            None => {
+                places.remove(next);
+                brief(&e.to_string())
+            }
+        };
+        if next >= places.len() {
+            next = 0;
+        }
+        if urls.first() == Some(&url) {
+            first = Some(e);
+        } else {
+            other = Some(e);
+        }
+        if places.is_empty() || tried == retries.tries {
+            break;
+        }
+        let wait = retries.wait(tried);
+        log(format!(
+            "{what} failed ({why}): trying again in {} s",
+            wait.as_secs_f64().ceil()
+        ));
+        tokio::time::sleep(wait).await;
+    }
+    Err(first
+        .or(other)
+        .unwrap_or_else(|| fctl_client::Error::Other("nowhere to download from".into())))
 }
 
 #[cfg(test)]
@@ -271,6 +303,78 @@ pub(super) mod tests {
             (again.load(Ordering::SeqCst), failed.load(Ordering::SeqCst)),
             (2, 2)
         );
+        Ok(())
+    }
+
+    /// A place that refuses (GitHub's API, which lets those without a token
+    /// make 60 requests an hour) is tried no more, and the others are
+    /// tried again: what it says in the end is the first place's.
+    #[tokio::test]
+    async fn a_place_that_refuses_is_tried_no_more() -> anyhow::Result<()> {
+        let (failing, failed) = server(|_| ("504 Gateway Time-out", Vec::new())).await?;
+        let (refusing, refused) = server(|_| ("403 Forbidden", b"rate limit".to_vec())).await?;
+        let dir = tempfile::tempdir()?;
+        let to = dir.path().join("archive");
+        let urls = [failing.as_str(), refusing.as_str()];
+        let e = download(
+            &urls,
+            &to,
+            1024,
+            Duration::from_secs(10),
+            QUICK,
+            "x",
+            &|_| {},
+        )
+        .await;
+        assert!(
+            matches!(e, Err(fctl_client::Error::Status { status: 504, .. })),
+            "{e:?}"
+        );
+        assert_eq!(
+            (
+                failed.load(Ordering::SeqCst),
+                refused.load(Ordering::SeqCst)
+            ),
+            (2, 1)
+        );
+        // The first refusing, the next has it; none left, it stops.
+        let (working, worked) = server(|_| ("200 OK", b"the release".to_vec())).await?;
+        let urls = [refusing.as_str(), working.as_str()];
+        download(
+            &urls,
+            &to,
+            1024,
+            Duration::from_secs(10),
+            QUICK,
+            "x",
+            &|_| {},
+        )
+        .await?;
+        assert_eq!(std::fs::read(&to)?, b"the release");
+        assert_eq!(
+            (
+                refused.load(Ordering::SeqCst),
+                worked.load(Ordering::SeqCst)
+            ),
+            (2, 1)
+        );
+        let (missing, _) = server(|_| ("404 Not Found", Vec::new())).await?;
+        let urls = [missing.as_str(), refusing.as_str()];
+        let e = download(
+            &urls,
+            &to,
+            1024,
+            Duration::from_secs(10),
+            QUICK,
+            "x",
+            &|_| {},
+        )
+        .await;
+        assert!(
+            matches!(e, Err(fctl_client::Error::Status { status: 404, .. })),
+            "{e:?}"
+        );
+        assert_eq!(refused.load(Ordering::SeqCst), 3);
         Ok(())
     }
 
