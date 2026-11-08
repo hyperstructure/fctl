@@ -8,7 +8,9 @@
 // it. Registered in src/main.tsx, and by src/lib/push.ts when notifications
 // are turned on.
 
-const CACHE = "fctl-offline-v1";
+// Bump it with every change to offline.html: browsers install the worker again,
+// and so fetch the page anew, only when this file changes.
+const CACHE = "fctl-offline-v2";
 // public/offline.html, at the URL Workers static assets serve it from (they
 // redirect /offline.html there, and a navigation cannot take a redirect).
 const OFFLINE = "/offline";
