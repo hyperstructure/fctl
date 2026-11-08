@@ -1021,11 +1021,12 @@
   background: linear-gradient(90deg, var(--c-line-strong), transparent);
 }
 
-/* While the agent works, a soft light of the accent runs along the new session page's header's
-   lower edge, out of nowhere and back into it. Where motion is reduced, the edge holds still. */
+/* While the agent works, a soft light of the accent runs along the session page's header's
+   lower edge, out of nowhere and back into it: the header has no border, so the light is the
+   only line there. Where motion is reduced, it doesn't show. */
 .header-live {
   position: absolute;
-  inset: auto 0 -1px;
+  inset: auto 0 0;
   height: 1px;
   overflow: hidden;
   pointer-events: none;

@@ -442,7 +442,7 @@ export function Home() {
     <div>
       <div
         // Shorter on a phone, so that the composer and the sessions start higher up.
-        className="relative h-[360px] overflow-hidden border-b border-line max-sm:h-[272px]"
+        className="relative h-[360px] overflow-hidden max-sm:h-[272px]"
         onPointerMove={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           scene.current?.pointer((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
