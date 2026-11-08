@@ -1,5 +1,5 @@
-// What the agent is doing at this moment, in a few words, for the line the new session page
-// (routes/session-next.tsx) keeps above its message box while the agent works: what it writes
+// What the agent is doing at this moment, in a few words, for the line the session page
+// (routes/session.tsx) keeps above its message box while the agent works: what it writes
 // or thinks, the call it waits on, the sandbox it sets up, or why its work isn't coming through.
 
 import type * as G from "@/gen";

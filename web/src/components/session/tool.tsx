@@ -36,7 +36,7 @@ import {
 } from "react";
 import { DiffLines } from "@/components/diff";
 import { CodeBlock, Markdown } from "@/components/markdown";
-import { plainClick, ThoughtIcon, useLightbox } from "@/components/ui";
+import { plainClick, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
@@ -61,7 +61,6 @@ import {
 import {
   type BackgroundTask,
   isSubagent,
-  type LiveBlock,
   type Step,
   type Subagent,
   subagentReport,
@@ -70,7 +69,7 @@ import {
 } from "@/lib/transcript";
 import { useRevealed, useWanted } from "./find";
 import { Busy, OpenLine, RailIcon, Thread, Tile, Unreadable } from "./lines";
-import { Thinking, thinkingNow } from "./thinking";
+import { Thinking } from "./thinking";
 
 const ICONS: Record<string, ReactNode> = {
   Bash: <Terminal />,
@@ -686,22 +685,6 @@ export const ToolRow = memo(function ToolRow({
 
 const none: ReadonlySet<string> = new Set();
 
-/** A thought or a call that streams in, in the run it goes in, until it is stored. */
-function Coming({ block }: { block: Pick<LiveBlock, "type" | "name" | "tokens"> }) {
-  return (
-    <div className="step-in flex min-h-7 items-center gap-2 py-1 text-[13px] text-ink-3">
-      {block.type === "thinking" ? (
-        <ThoughtIcon live className="size-3.5 shrink-0" />
-      ) : (
-        <Busy className="size-3.5 shrink-0 text-accent" />
-      )}
-      <span className="text-shimmer">
-        {block.type === "thinking" ? thinkingNow(block.tokens) : `Preparing ${block.name ?? "a tool"}`}
-      </span>
-    </div>
-  );
-}
-
 /**
  * A run of the agent's work: tool calls and thoughts in a row. Two calls or
  * more fold into a line that says what they did and opens into them; while
@@ -716,7 +699,6 @@ export const Run = memo(
     active,
     up = false,
     progress,
-    coming = [],
   }: {
     steps: Work[];
     /** Whether the agent works on the turn the run is in, as far as the page knows. */
@@ -727,8 +709,6 @@ export const Run = memo(
     up?: boolean;
     /** How long its call in progress has run, as Claude Code reports it. */
     progress?: { id: string; seconds: number };
-    /** The thoughts and calls streaming in, which will be its next steps. */
-    coming?: Pick<LiveBlock, "index" | "type" | "name" | "tokens">[];
   }) {
     const [open, setOpen] = useState(false);
     const [shown, setShown] = useState(none);
@@ -783,9 +763,9 @@ export const Run = memo(
     // A call on its own is a line of its own.
     if (calls.length < 2) return steps.map((s) => step(s, false));
     // Folded, a run that goes on shows what it does now: its calls in
-    // progress, what streams in, or else its newest step.
+    // progress, or else its newest step.
     const pending = running ? calls.filter((t) => !t.result) : [];
-    const now = active ? (pending.length || coming.length ? pending : steps.slice(-1)) : [];
+    const now = active ? (pending.length ? pending : steps.slice(-1)) : [];
     // Its line says what its calls did, and only while none has, what they do.
     const done = pending.length ? calls.filter((t) => !pending.includes(t)) : calls;
     const newest = new Set(now.map((s) => s.key));
@@ -834,15 +814,12 @@ export const Run = memo(
         />
         {/* Folded, it shows the images its calls read: those of the steps it shows are under them. */}
         {!open && <ReadImages calls={calls.filter((t) => !visible.includes(t))} />}
-        {(visible.length > 0 || coming.length > 0) && (
+        {visible.length > 0 && (
           <Thread id={id} className="mb-1">
             {visible.map((s, i) => (
               <div key={s.key} className="step-in" style={{ "--i": i } as CSSProperties}>
                 {step(s, true)}
               </div>
-            ))}
-            {coming.map((b) => (
-              <Coming key={`coming-${b.index}`} block={b} />
             ))}
           </Thread>
         )}
@@ -856,7 +833,5 @@ export const Run = memo(
     a.progress?.id === b.progress?.id &&
     a.progress?.seconds === b.progress?.seconds &&
     a.steps.length === b.steps.length &&
-    a.steps.every((s, i) => s === b.steps[i]) &&
-    (a.coming?.length ?? 0) === (b.coming?.length ?? 0) &&
-    (a.coming ?? []).every((c, i) => c.index === b.coming?.[i]?.index && c.type === b.coming[i]?.type),
+    a.steps.every((s, i) => s === b.steps[i]),
 );

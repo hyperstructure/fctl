@@ -1,4 +1,9 @@
-// A session: the agent at work, live.
+// A session's page: the agent at work, live. The session reads in turns
+// (components/session/turns.tsx), which open with a cover that says what the session is; what the
+// agent does now shows above the message box; and long sessions have ways through them: the bar
+// that says which turn the reader is in, the list of turns, j and k, the way back down to the
+// newest work and a line where what came while the reader was away starts. Beside the transcript,
+// the details: the rail where it fits, else a sheet.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -7,11 +12,12 @@ import {
   Bell,
   BellOff,
   BellRing,
-  ChevronRight,
+  Clock,
   Ellipsis,
   ExternalLink,
   GitBranch,
   Globe,
+  MessagesSquare,
   PanelRight,
   Play,
   Search,
@@ -21,20 +27,23 @@ import {
   Undo2,
   Users,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access";
 import { ReviewFacts, ReviewFooter, useSessionReview } from "@/components/review";
 import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
 import { DiffDialog, type DiffGroup, type DiffTarget } from "@/components/session/diff-dialog";
 import { FindBar, findShortcut, Reveal, useFind } from "@/components/session/find";
+import { Glance } from "@/components/session/glance";
 import {
   SessionMemory,
   SessionRetrospectives,
   useRetrospectives,
   useSessionMemory,
 } from "@/components/session/kept";
+import { JumpPill, NowLine, toBottom, useAtBottom } from "@/components/session/now-line";
 import { AgentOrb } from "@/components/session/orb";
+import { PlanList } from "@/components/session/plan";
 import {
   PullRequestChecksIcon,
   PullRequestReviewLine,
@@ -44,8 +53,15 @@ import {
 import { QuestionCard } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
-import { Transcript } from "@/components/session/transcript";
-import { useViewShortcut, ViewSwitch } from "@/components/session/view-switch";
+import {
+  TurnBar,
+  TurnList,
+  TurnOutline,
+  useGoToCall,
+  useGoToTurn,
+  useTurnPlace,
+} from "@/components/session/turn-nav";
+import { TurnTranscript } from "@/components/session/turns";
 import { HeaderMenuButton } from "@/components/shell/menu-button";
 import {
   Avatar,
@@ -59,7 +75,6 @@ import {
   Input,
   Menu,
   MenuItem,
-  MenuSeparator,
   Select,
   type SelectOption,
   Sheet,
@@ -73,10 +88,12 @@ import { api } from "@/lib/api";
 import { setPageTitle } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { followUpHint } from "@/lib/follow-ups";
-import { ago, duration, num, until } from "@/lib/format";
+import { ago, duration, num, stamp, when } from "@/lib/format";
 import { blobLink, branchOf, hasChanges, repoChanges } from "@/lib/git";
 import { onGithub, sessionGithub } from "@/lib/github-access";
 import { useLiveSession } from "@/lib/live";
+import { nowOf, waitingOf } from "@/lib/now";
+import { planOf } from "@/lib/plan";
 import {
   checksText,
   prFullRef,
@@ -90,27 +107,31 @@ import {
 } from "@/lib/pulls";
 import { keys, queryClient, useMe, useProject } from "@/lib/queries";
 import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote-control";
+import { parts } from "@/lib/runs";
 import { ariaShortcut, useShortcut, withShortcut } from "@/lib/shortcuts";
-import {
-  type DiskShort,
-  diskLabel,
-  diskOf,
-  diskText,
-  type Stall,
-  stallLabel,
-  stallText,
-  useStall,
-} from "@/lib/stall";
-import { type StatusNote, statusNotes, statusReason } from "@/lib/status";
+import { type DiskShort, diskOf, diskText, type Stall, stallText, useStall } from "@/lib/stall";
+import { type StatusNote, statusNotes, waitsForYou } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import type { Item } from "@/lib/transcript";
+import { factsOf, type Turn, type TurnFacts, turnOfSeq, turnSeq, turnsOf, turnTitle } from "@/lib/turns";
+import { cameAfter, newestSeq } from "@/lib/unseen";
 import { agentTime, type ContextUse, contextNote, contextUse, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
+
+/**
+ * How far back the list of background tasks looks for those that started before the activity
+ * loaded here, in pages of it (lib/live.ts), as finding does: 40,000 events, 4,000 at a time.
+ */
+const LOOK_BACK_PAGES = 100;
+const LOOK_BACK_AT_ONCE = 10;
+
+/** Statuses in which the agent is at it, or getting there: the header's edge runs with light. */
+const BUSY = new Set<G.SessionStatus>(["running", "provisioning", "preparing"]);
 
 export function SessionPage() {
   const { id } = useParams({ from: "/app/s/$id" });
   // From a search of all sessions: what it found here, and where.
-  const { find, at } = useSearch({ from: "/app/s/$id" });
+  const { find, at, turn: linked } = useSearch({ from: "/app/s/$id" });
   const navigate = useNavigate();
   const { data: me } = useMe();
   const initial = useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) });
@@ -127,6 +148,12 @@ export function SessionPage() {
   const [share, setShare] = useState(false);
   // The diffs shown over the page, at the file opened in Changes (or the first, with c).
   const [diffAt, setDiffAt] = useState<DiffTarget>();
+  // Only the conversation: the agent's work and the milestones left out.
+  const [quiet, setQuiet] = useState(false);
+  // The turn a link to it opens the page at, until the page has gone there.
+  const [landTurn, setLandTurn] = useState<{ session: string; seq: number }>();
+  // Pages of earlier activity the list of background tasks loaded, looking for those it misses.
+  const [lookedBack, setLookedBack] = useState(0);
   // They belong to the session they opened on. The router keeps this page when a link (in the
   // sheet, to the review agent's session) or Back leads to another session, so they close as it
   // comes in: in the same render, without sliding away, which the view transition would show
@@ -137,6 +164,9 @@ export function SessionPage() {
     setDetails(false);
     setShare(false);
     setDiffAt(undefined);
+    setQuiet(false);
+    setLandTurn(undefined);
+    setLookedBack(0);
   }
   const diffGroups = useDiffGroups(session, s.git);
   // c opens the changes at the first file; d shows or hides the details: the rail where it fits,
@@ -160,9 +190,10 @@ export function SessionPage() {
     },
     { inDialogs: "dialog.sheet" },
   );
-  useViewShortcut();
   const transcript = useRef<HTMLDivElement>(null);
+  // What sticks to the top: the header, and the bar under it. Where the header ends, the reader's view starts.
   const header = useRef<HTMLDivElement>(null);
+  const bar = useRef<HTMLElement>(null);
   const footer = useRef<HTMLDivElement>(null);
   // The newest work stays in view while the reader is at the bottom.
   const letGo = useStickToBottom(transcript, id);
@@ -174,10 +205,11 @@ export function SessionPage() {
     // Without a view transition of its own: one would cut short the one that opened the page.
     void navigate({ to: "/s/$id", params: { id }, search: {}, replace: true, viewTransition: false });
   }, [find, at, id, navigate]);
+  const cwd = s.items.find((it) => it.kind === "init")?.cwd;
   const finder = useFind({
     store,
     items: s.items,
-    cwd: s.items.find((it) => it.kind === "init")?.cwd,
+    cwd,
     firstSeq: s.firstSeq,
     hasMoreBefore: s.hasMoreBefore,
     loadingOlder: s.loadingOlder,
@@ -226,6 +258,88 @@ export function SessionPage() {
     onError: (e) => toast(e.message, "error"),
   });
 
+  // The turns, for the bar and the list of them; the transcript works them out as it shows them.
+  const turns = useMemo(() => turnsOf(parts(s.items)), [s.items]);
+  // The agent's plan, as it last wrote it.
+  const plan = useMemo(() => planOf(s.items), [s.items]);
+  // What the agent waits for in the background, while its session waits for that.
+  const idleFor = session?.status === "idle" ? session.status_reason : undefined;
+  const waiting = useMemo(() => waitingOf(s.tasks, s.items, idleFor), [s.tasks, s.items, idleFor]);
+  const facts = useFactsOf(cwd);
+  const place = useTurnPlace(transcript, bar);
+  const go = useGoToTurn(transcript, bar, letGo);
+  const goToCall = useGoToCall(transcript, bar, letGo, finder.reveal, s.items, cwd);
+  // A link to a turn: the page goes there once it has the turn, loading earlier activity until it
+  // does, and the address forgets it.
+  const landed = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    // Once for each link to a session's turn: the address forgets it as the page goes there,
+    // after which the same link goes there again.
+    if (!linked) {
+      landed.current = undefined;
+      return;
+    }
+    const key = `${id}:${linked}`;
+    if (landed.current === key) return;
+    landed.current = key;
+    setLandTurn({ session: id, seq: linked });
+    void navigate({ to: "/s/$id", params: { id }, search: {}, replace: true, viewTransition: false });
+  }, [linked, id, navigate]);
+  useEffect(() => {
+    if (landTurn?.session !== id || !s.items.length) return;
+    const { seq } = landTurn;
+    // The turn starts before what has loaded: earlier activity, until it has it.
+    if (s.hasMoreBefore && s.firstSeq > seq && !s.olderFailed) {
+      if (!s.loadingOlder) void store.loadEarlier({ until: seq });
+      return;
+    }
+    setLandTurn(undefined);
+    // The turn the event is in, however much of it has loaded since the link was made.
+    const i = turnOfSeq(turns, seq);
+    if (i >= 0) requestAnimationFrame(() => go(i));
+  }, [
+    landTurn,
+    id,
+    turns,
+    s.items.length,
+    s.hasMoreBefore,
+    s.firstSeq,
+    s.olderFailed,
+    s.loadingOlder,
+    store,
+    go,
+  ]);
+  const current = turns[place.at];
+  // j: the next turn, or the newest work after the last; k: back to where this one starts, then the one before.
+  useShortcut(
+    "nextTurn",
+    (e) => {
+      if (!turns.length) return;
+      if (e.key === "j") {
+        if (place.at < turns.length - 1) go(place.at + 1);
+        else toBottom();
+        return;
+      }
+      const start = transcript.current?.querySelectorAll<HTMLElement>("[data-turn]")[place.at];
+      const top = bar.current?.getBoundingClientRect().bottom ?? 0;
+      if (start && start.getBoundingClientRect().top < top - 4) go(place.at);
+      else go(Math.max(0, place.at - 1));
+    },
+    { repeat: true },
+  );
+
+  // Coming back to the page: where what came meanwhile starts, and back up to it.
+  const away = useAway(s.items, id);
+  const atBottom = useAtBottom();
+  const newSince = useNewSince(s.items, atBottom);
+  // Once the agent hands the turn over while the reader watches, the message box asks for a reply.
+  const handedOver = s.session
+    ? !s.session.review && !s.session.question && waitsForYou(s.session)
+    : undefined;
+  const invite = useJustNow(handedOver, id);
+  const coverTitle = useRef<HTMLDivElement>(null);
+  const coverShows = useShows(coverTitle, bar, !s.hasMoreBefore && !!session);
+
   if (initial.isError && !session) {
     return (
       <div className="mx-auto max-w-xl px-6 py-24">
@@ -244,136 +358,145 @@ export function SessionPage() {
   const notes = session
     ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall, disk })
     : [];
+  const now = nowOf({
+    status,
+    items: s.items,
+    live: s.live,
+    stall,
+    cwd,
+    reason: session?.status_reason,
+    resumeAt: session?.resume_at,
+    waiting,
+  });
+  const live = !!status && BUSY.has(status) && !stall;
+  // The agent ended its turn and waits for someone to write, who can.
+  const yourTurn =
+    !!session &&
+    !session.review &&
+    !session.question &&
+    waitsForYou(session) &&
+    (role === "editor" || role === "owner");
+  // With the find bar open, all of the transcript shows, for it to go to what it finds: asking for
+  // the conversation alone then puts the bar away.
+  const quietNow = quiet && !finder.open;
+  const toggleQuiet = () => {
+    if (quietNow) {
+      setQuiet(false);
+      return;
+    }
+    setQuiet(true);
+    if (finder.open) finder.close();
+  };
+  // The plan the agent works on: written in the turn under way. An older one stays in the
+  // details, as it was left, without the step it was at moving.
+  const lastTurn = turns[turns.length - 1];
+  const lastStart = lastTurn && !lastTurn.end ? turnSeq(lastTurn) : undefined;
+  const planNow = plan && lastStart !== undefined && plan.seq >= lastStart ? plan : undefined;
+  const railPlan = plan && (
+    <RailSection title="Plan">
+      <PlanList plan={plan} live={!!planNow && !!status && BUSY.has(status)} />
+    </RailSection>
+  );
+  // A task's call, which the conversation alone leaves out: it shows with the rest again.
+  const goToTask = (call: string) => {
+    if (quietNow) setQuiet(false);
+    goToCall(call);
+  };
+  const focusReply = () =>
+    document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')?.focus();
+  const outline = turns.length > 0 && (
+    <TurnOutline
+      turns={turns}
+      facts={facts}
+      at={place.at}
+      live={!!status && BUSY.has(status)}
+      hasMoreBefore={s.hasMoreBefore}
+      onGo={go}
+    />
+  );
 
   return (
     <div className="flex min-h-dvh">
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Header. On phones it holds the menu button, in place of the top bar it would cover,
-            and has room for the title and status only: the orb and title open the rest, with
-            what the rail shows on wider screens, in a sheet. */}
         <div ref={header} className="sticky top-(--viewport-shift) z-10">
-          {/* Above the find bar, so that its menu opens over it. */}
-          <header className="relative z-1 border-b border-line bg-canvas/80 backdrop-blur-xl max-md:h-14">
-            {/* On phones as tall as the top bar, with the menu button where the bar has it. */}
-            <div className="flex h-full items-center gap-3 px-2.5 md:gap-4 md:py-3.5 md:pr-6 md:pl-6">
-              {/* Over the edge of the title's button, which reaches out to it. */}
-              <HeaderMenuButton className="relative z-1 -mr-3" />
-              <div className="relative flex min-w-0 flex-1 items-center gap-3 md:gap-4">
-                <AgentOrb status={status} activity={s.activity} className="size-9 md:size-11" />
+          <header
+            ref={bar}
+            className="relative z-2 h-14 border-b border-line bg-canvas/80 backdrop-blur-xl md:h-[60px]"
+          >
+            {/* While the agent works, light runs along the header's edge. */}
+            {live && <span aria-hidden="true" className="header-live" />}
+            <div className="flex h-full items-center gap-2.5 px-2.5 md:gap-3 md:pr-5 md:pl-5">
+              <HeaderMenuButton className="relative z-1 -mr-2.5" />
+              <div className="relative flex min-w-0 flex-1 items-center gap-2.5 md:gap-3">
+                <AgentOrb status={status} activity={s.activity} className="size-8 md:size-9" />
                 <div className="min-w-0 flex-1">
                   {session ? (
                     <>
-                      <h1 className="flex items-center gap-0.5 font-display text-[16px] leading-5 font-medium tracking-[-0.011em] text-ink md:text-[21px] md:leading-tight md:tracking-[-0.012em]">
-                        <span className="truncate">{session.title}</span>
-                        <ChevronRight className="size-4 shrink-0 text-ink-4 md:hidden" />
+                      <h1
+                        className={cn(
+                          "truncate font-display text-[15.5px] leading-5 font-medium tracking-[-0.011em] text-ink transition-[opacity,translate] duration-300 ease-[var(--ease-out)] md:text-[16.5px]",
+                          coverShows && "translate-y-1 opacity-0",
+                        )}
+                      >
+                        {session.title}
                       </h1>
-                      {/* Phones: the status, and what says most about it. */}
-                      <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] leading-4 md:hidden">
+                      <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-3">
                         <StatusPill
                           status={session.status}
                           label={reviewLabel(session)}
-                          className="shrink-0"
+                          className="shrink-0 text-[12px]"
                         />
-                        <span aria-hidden="true" className="text-ink-4">
+                        {notes[0] && (
+                          <>
+                            <span aria-hidden="true" className="text-ink-4">
+                              ·
+                            </span>
+                            <span className={cn("truncate", noteTone(notes[0]))}>{notes[0].text}</span>
+                          </>
+                        )}
+                        <span aria-hidden="true" className="text-ink-4 max-md:hidden">
                           ·
                         </span>
-                        {notes[0] ? (
-                          <span className={cn("truncate", noteTone(notes[0]))}>{notes[0].text}</span>
-                        ) : (
-                          <span className="truncate font-mono text-[12px] text-ink-3">
-                            {session.project_slug}#{session.number}
+                        <Link
+                          to="/p/$slug"
+                          params={{ slug: session.project_slug }}
+                          search={{ tab: undefined }}
+                          className="relative z-1 shrink-0 font-mono text-[11.5px] text-ink-3 hover:text-ink max-md:hidden"
+                        >
+                          {session.project_slug}#{session.number}
+                        </Link>
+                        {prs.length > 0 && (
+                          <span className="inline-flex min-w-0 items-center gap-2.5 overflow-hidden pl-1 max-md:hidden">
+                            {prs.map((pr) => (
+                              <a
+                                key={pr.url}
+                                href={pr.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={prTitle(pr)}
+                                aria-label={prLabel(pr)}
+                                className="inline-flex shrink-0 items-center gap-1 text-ink-2 hover:text-ink"
+                              >
+                                <PullRequestStateIcon pr={pr} className="size-3" />
+                                {prRef(pr)}
+                                <PullRequestChecksIcon pr={pr} className="size-3" />
+                                <PullRequestReviewMark pr={pr} />
+                              </a>
+                            ))}
                           </span>
                         )}
                       </p>
-                      <div className="max-md:hidden">
-                        {session.description && (
-                          <p className="mt-0.5 truncate text-[13.5px] text-ink-2" title={session.description}>
-                            {session.description}
-                          </p>
-                        )}
-                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-ink-3">
-                          <span className="inline-flex min-w-0 items-center gap-1.5">
-                            {workspace && (
-                              <>
-                                <Link
-                                  to="/w/$slug"
-                                  params={{ slug: workspace.slug }}
-                                  className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 hover:text-ink"
-                                >
-                                  <WorkspaceAvatar workspace={workspace} size={15} />
-                                  <span className="max-w-[12rem] truncate">{workspace.name}</span>
-                                </Link>
-                                <span className="text-ink-4">/</span>
-                              </>
-                            )}
-                            <Link
-                              to="/p/$slug"
-                              params={{ slug: session.project_slug }}
-                              search={{ tab: undefined }}
-                              className="font-mono text-ink-2 hover:text-ink"
-                            >
-                              {session.project_slug}#{session.number}
-                            </Link>
-                          </span>
-                          <StatusPill status={session.status} label={reviewLabel(session)} />
-                          <ScheduleLink session={session} />
-                          <TicketLink session={session} />
-                          {/* A review agent only reads, and its footer says what fctl posts for it. */}
-                          {!session.review && <SessionGithub session={session} />}
-                          {statusReason(session) && (
-                            <span className="truncate text-ink-4">{statusReason(session)}</span>
-                          )}
-                          {session.resume_at && (
-                            <span className="text-amber">resumes in {until(session.resume_at)}</span>
-                          )}
-                          {session.branch && (
-                            <span className="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-ink-3">
-                              <GitBranch className="size-3 shrink-0" />
-                              <span className="[overflow-wrap:anywhere]">{session.branch}</span>
-                            </span>
-                          )}
-                          {prs.length > 0 && (
-                            // Together, so that they wrap to the next line as one list.
-                            <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-                              {prs.map((pr) => (
-                                <a
-                                  key={pr.url}
-                                  href={pr.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title={prTitle(pr)}
-                                  aria-label={prLabel(pr)}
-                                  className="inline-flex items-center gap-1 text-ink-2 hover:text-ink"
-                                >
-                                  <PullRequestStateIcon pr={pr} className="size-3" />
-                                  {prRef(pr)}
-                                  <PullRequestChecksIcon pr={pr} className="size-3" />
-                                  <PullRequestReviewMark pr={pr} />
-                                </a>
-                              ))}
-                            </span>
-                          )}
-                          {s.connection === "reconnecting" && (
-                            <span className="text-amber">Reconnecting…</span>
-                          )}
-                          {stall && <span className="text-amber">{stallLabel(stall)}</span>}
-                          {disk && (
-                            <span className={disk.room === "out" ? "text-danger" : "text-amber"}>
-                              {diskLabel(disk)}
-                            </span>
-                          )}
-                        </div>
-                      </div>
                     </>
                   ) : (
                     <>
-                      <Skeleton className="h-5 w-40 md:h-6 md:w-80" />
-                      <Skeleton className="mt-1.5 h-3.5 w-24 md:mt-2 md:w-56" />
+                      <Skeleton className="h-5 w-40 md:w-72" />
+                      <Skeleton className="mt-1.5 h-3 w-24 md:w-48" />
                     </>
                   )}
                 </div>
                 {session && (
-                  // Over the orb and the title, which are what people tap.
+                  // On phones the header has room for the title and status only: the orb and
+                  // title open the rest, with what the rail shows on wider screens, in a sheet.
                   <button
                     type="button"
                     aria-label="Details"
@@ -384,23 +507,31 @@ export function SessionPage() {
                   />
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex shrink-0 items-center gap-1">
                 {s.viewers.length > 1 && (
-                  // On phones the details list who watches.
-                  <span className="hidden md:contents">
+                  <span className="hidden pr-1 md:contents">
                     <AvatarStack users={s.viewers.map((v) => v.user)} />
                   </span>
                 )}
                 {claudeUrl && (
                   <a
                     {...claudeAppLink(claudeUrl)}
-                    className="hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 md:inline-flex"
+                    className="mr-1 hidden h-8 items-center gap-1.5 rounded-md border border-accent/30 bg-accent-soft px-3 text-[12.5px] font-medium text-accent transition-colors hover:border-accent/60 xl:inline-flex"
                   >
                     Open in Claude <ArrowUpRight className="size-3.5" />
                   </a>
                 )}
                 {session && (
-                  // On phones it is in the menu, where the title keeps its room.
+                  <IconButton
+                    label={quietNow ? "Show the agent's work" : "Show only the conversation"}
+                    aria-pressed={quietNow}
+                    onClick={toggleQuiet}
+                    className={cn("max-md:hidden", quietNow && "bg-accent-soft text-accent")}
+                  >
+                    <MessagesSquare className="size-4" />
+                  </IconButton>
+                )}
+                {session && (
                   <IconButton
                     label={`Find in this session (${findShortcut()})`}
                     aria-expanded={finder.open}
@@ -411,7 +542,6 @@ export function SessionPage() {
                   </IconButton>
                 )}
                 {session && (
-                  // On phones it is in the menu, where the title keeps its room.
                   <span className="hidden md:contents">
                     <IconButton
                       label={
@@ -429,12 +559,10 @@ export function SessionPage() {
                   </span>
                 )}
                 {isOwner && (
-                  // Also in the menu on phones (`hidden` would lose to IconButton's `inline-flex`).
                   <IconButton label="Share" onClick={() => setShare(true)} className="max-md:hidden">
                     <Share2 className="size-4" />
                   </IconButton>
                 )}
-                {/* The rail where it fits. */}
                 <IconButton
                   label="Details"
                   title={withShortcut("Details", "details")}
@@ -446,7 +574,6 @@ export function SessionPage() {
                   <PanelRight className="size-4" />
                 </IconButton>
                 {session && (
-                  // Narrower, the details sheet: on phones the title opens it.
                   <IconButton
                     label="Details"
                     title={withShortcut("Details", "details")}
@@ -476,12 +603,11 @@ export function SessionPage() {
                     <>
                       {claudeUrl && (
                         <>
-                          {/* The header has no room for the button on phones. */}
                           <MenuItem
                             icon={<ArrowUpRight />}
                             link={claudeAppLink(claudeUrl)}
                             onClick={close}
-                            className="md:hidden"
+                            className="xl:hidden"
                           >
                             Open in Claude
                           </MenuItem>
@@ -517,7 +643,6 @@ export function SessionPage() {
                         </MenuItem>
                       )}
                       {session && (
-                        // The header has no room for its button on phones.
                         <MenuItem
                           icon={<Search />}
                           onClick={() => {
@@ -527,6 +652,18 @@ export function SessionPage() {
                           className="md:hidden"
                         >
                           Find in this session
+                        </MenuItem>
+                      )}
+                      {session && (
+                        <MenuItem
+                          icon={<MessagesSquare />}
+                          onClick={() => {
+                            close();
+                            toggleQuiet();
+                          }}
+                          className="md:hidden"
+                        >
+                          {quietNow ? "Show the agent's work" : "Show only the conversation"}
                         </MenuItem>
                       )}
                       {session && (
@@ -541,7 +678,6 @@ export function SessionPage() {
                         </MenuItem>
                       )}
                       {isOwner && (
-                        // The header has no room for its button on phones.
                         <MenuItem
                           icon={<Share2 />}
                           onClick={() => {
@@ -573,40 +709,50 @@ export function SessionPage() {
                       >
                         Copy link
                       </MenuItem>
-                      <MenuSeparator />
-                      <ViewSwitch onClick={close} />
                     </>
                   )}
                 </Menu>
               </div>
             </div>
           </header>
-          {/* Finding in the transcript: under the header, over the page, which stays where it is. */}
-          {finder.open && (
+          {/* Under the header: finding in the transcript, or the turn the reader is in. */}
+          {finder.open ? (
             <div className="absolute inset-x-0 top-full border-b border-line bg-canvas/85 backdrop-blur-xl">
               <div className="mx-auto w-full max-w-[760px] px-2.5 py-2 md:px-6 md:py-2.5">
                 <FindBar {...finder.bar} />
               </div>
             </div>
+          ) : (
+            session && (
+              <TurnBar
+                turn={current}
+                title={current ? turnTitle(current, place.at === 0, s.hasMoreBefore) : ""}
+                shown={place.pinned && !!current}
+                onBack={() => go(place.at)}
+                outline={outline}
+              />
+            )
           )}
         </div>
 
         {/* Transcript */}
-        <div ref={transcript} className="mx-auto w-full max-w-[760px] flex-1 px-6 pt-6 pb-4">
+        <div ref={transcript} className="mx-auto w-full max-w-[760px] flex-1 px-4 pt-2 pb-4 md:px-6 md:pt-4">
           {s.error && (
             <Banner tone="error" className="mb-4">
               {s.error}
             </Banner>
           )}
           {!session || (s.connection === "connecting" && !s.items.length) ? (
-            <div className="space-y-4 pt-4">
-              <Skeleton className="h-16 w-3/4" />
+            <div className="space-y-4 pt-8">
+              <Skeleton className="h-8 w-2/3" />
               <Skeleton className="h-4 w-1/2" />
-              <Skeleton className="h-24 w-full" />
+              <Skeleton className="mt-8 h-24 w-full rounded-2xl" />
+              <Skeleton className="ml-[34px] h-4 w-1/3" />
+              <Skeleton className="ml-[34px] h-4 w-2/5" />
             </div>
           ) : (
             <Reveal.Provider value={finder.reveal}>
-              <Transcript
+              <TurnTranscript
                 sessionId={id}
                 items={s.items}
                 live={s.live}
@@ -621,68 +767,117 @@ export function SessionPage() {
                 hasMoreBefore={s.hasMoreBefore}
                 loadingOlder={s.loadingOlder}
                 olderFailed={s.olderFailed}
+                cover={
+                  <Cover
+                    session={session}
+                    workspace={workspace}
+                    titleRef={coverTitle}
+                    glance={
+                      <Glance
+                        session={session}
+                        turns={turns}
+                        facts={facts}
+                        live={!!status && BUSY.has(status)}
+                        hasMoreBefore={s.hasMoreBefore}
+                        onGo={go}
+                      />
+                    }
+                  />
+                }
+                quiet={quietNow}
+                newFrom={away.from}
+                diffGroups={diffGroups}
+                onDiff={setDiffAt}
+                tasks={s.tasks}
               />
             </Reveal.Provider>
           )}
         </div>
 
-        {/* Composer: a review agent takes no messages, and says what becomes of its review instead. */}
+        {/* The message box, and above it what the agent does now and the way back to the newest work. */}
         <div
           ref={footer}
-          className="sticky -bottom-(--viewport-shift) z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-6 pb-[max(1.25rem,env(safe-area-inset-bottom))]"
+          className="pointer-events-none sticky -bottom-(--viewport-shift) z-10 bg-gradient-to-t from-canvas via-canvas/95 to-transparent pt-12 pb-[max(1.25rem,env(safe-area-inset-bottom))]"
         >
-          <div className="mx-auto w-full max-w-[760px] px-6">
-            {session?.question && !session.review && (
-              <QuestionCard
-                key={session.question.asked_at}
-                question={session.question}
-                canAnswer={(role === "editor" || role === "owner") && status !== "failed"}
-                onAnswer={(t) =>
-                  store.send(
-                    t,
-                    me?.user
-                      ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
-                      : undefined,
-                    { attachments: [], previews: {} },
-                  )
+          <div className="relative mx-auto w-full max-w-[760px] px-4 md:px-6">
+            <div className="absolute inset-x-4 -top-10 flex h-8 items-center justify-between gap-2 md:inset-x-6">
+              <NowLine
+                now={now}
+                plan={planNow}
+                onReply={yourTurn ? focusReply : undefined}
+                background={
+                  waiting && {
+                    waiting,
+                    cwd,
+                    earlier: s.hasMoreBefore,
+                    looking: s.loadingOlder,
+                    failed: s.olderFailed,
+                    onLookBack:
+                      s.hasMoreBefore && lookedBack < LOOK_BACK_PAGES
+                        ? () => {
+                            setLookedBack((n) => n + LOOK_BACK_AT_ONCE);
+                            void store.loadEarlier({ pages: LOOK_BACK_AT_ONCE });
+                          }
+                        : undefined,
+                    onGo: goToTask,
+                  }
                 }
-                className="mb-3"
               />
-            )}
-            {session?.review ? (
-              <ReviewFooter session={session} review={review} />
-            ) : (
-              <Composer
-                status={status}
-                role={role}
-                viewers={s.viewers}
-                meId={me?.user.id}
-                sessionId={id}
-                onSend={(t, files) =>
-                  store.send(
-                    t,
-                    me?.user
-                      ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
-                      : undefined,
-                    files,
-                  )
-                }
-                onInterrupt={() => store.interrupt()}
-                onTyping={() => store.typing()}
-                choices={
-                  isOwner && session ? (
-                    <SessionChoices session={session} perTurnEffort={s.perTurnEffort} />
-                  ) : undefined
-                }
-                onResume={async (t, files) => {
-                  await resume.mutateAsync({
-                    prompt: t,
-                    attachments: files.attachments.map((a) => a.id),
-                  });
-                  for (const url of Object.values(files.previews)) URL.revokeObjectURL(url);
-                }}
-              />
-            )}
+              <Pill away={away} atBottom={atBottom} newSince={newSince} letGo={letGo} header={bar} />
+            </div>
+            <div className={cn("pointer-events-auto", invite && "invite")}>
+              {session?.question && !session.review && (
+                <QuestionCard
+                  key={session.question.asked_at}
+                  question={session.question}
+                  canAnswer={(role === "editor" || role === "owner") && status !== "failed"}
+                  onAnswer={(t) =>
+                    store.send(
+                      t,
+                      me?.user
+                        ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
+                        : undefined,
+                      { attachments: [], previews: {} },
+                    )
+                  }
+                  className="mb-3"
+                />
+              )}
+              {session?.review ? (
+                <ReviewFooter session={session} review={review} />
+              ) : (
+                <Composer
+                  status={status}
+                  role={role}
+                  viewers={s.viewers}
+                  meId={me?.user.id}
+                  sessionId={id}
+                  onSend={(t, files) =>
+                    store.send(
+                      t,
+                      me?.user
+                        ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
+                        : undefined,
+                      files,
+                    )
+                  }
+                  onInterrupt={() => store.interrupt()}
+                  onTyping={() => store.typing()}
+                  choices={
+                    isOwner && session ? (
+                      <SessionChoices session={session} perTurnEffort={s.perTurnEffort} />
+                    ) : undefined
+                  }
+                  onResume={async (t, files) => {
+                    await resume.mutateAsync({
+                      prompt: t,
+                      attachments: files.attachments.map((a) => a.id),
+                    });
+                    for (const url of Object.values(files.previews)) URL.revokeObjectURL(url);
+                  }}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -690,7 +885,6 @@ export function SessionPage() {
       {rail && session && (
         <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
           <Details
-            // Anew for another session: the retrospectives it showed close.
             key={session.id}
             session={session}
             onDiff={setDiffAt}
@@ -704,6 +898,21 @@ export function SessionPage() {
             runnerConnected={s.runnerConnected}
             stall={stall}
             disk={disk}
+            plan={railPlan}
+            turns={
+              turns.length > 1 && (
+                <RailSection title={`Turns (${turns.length})`}>
+                  <TurnList
+                    turns={turns}
+                    facts={facts}
+                    at={place.at}
+                    live={!!status && BUSY.has(status)}
+                    hasMoreBefore={s.hasMoreBefore}
+                    onGo={go}
+                  />
+                </RailSection>
+              )
+            }
           />
         </aside>
       )}
@@ -722,6 +931,7 @@ export function SessionPage() {
             runnerConnected={s.runnerConnected}
             stall={stall}
             disk={disk}
+            plan={railPlan}
             pullsFirst
             onDiff={setDiffAt}
           />
@@ -741,6 +951,290 @@ export function SessionPage() {
   );
 }
 
+/**
+ * What opens the session, once its start is loaded: where it is, its title and what it is
+ * about, and who started it, when, on what branch. The header's title gives way to it while it
+ * shows.
+ */
+function Cover({
+  session,
+  workspace,
+  titleRef,
+  glance,
+}: {
+  session: G.Session;
+  workspace?: G.WorkspaceRef;
+  titleRef: RefObject<HTMLDivElement | null>;
+  /** The session at a glance: its figures, its turns and its pull requests. */
+  glance: React.ReactNode;
+}) {
+  return (
+    <header className="cover pt-6 pb-8 md:pt-10 md:pb-10">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[12.5px] text-ink-3">
+        {workspace && (
+          <>
+            <Link
+              to="/w/$slug"
+              params={{ slug: workspace.slug }}
+              className="inline-flex min-w-0 items-center gap-1.5 text-ink-2 transition-colors hover:text-ink"
+            >
+              <WorkspaceAvatar workspace={workspace} size={16} />
+              <span className="max-w-[14rem] truncate">{workspace.name}</span>
+            </Link>
+            <span className="text-ink-4">/</span>
+          </>
+        )}
+        <Link
+          to="/p/$slug"
+          params={{ slug: session.project_slug }}
+          search={{ tab: undefined }}
+          className="font-mono text-[12px] text-ink-2 transition-colors hover:text-ink"
+        >
+          {session.project_slug}#{session.number}
+        </Link>
+      </div>
+      {/* The header's title says it to screen readers. */}
+      <div
+        ref={titleRef}
+        aria-hidden="true"
+        className="mt-3 font-display text-[26px] leading-[1.15] font-semibold tracking-[-0.022em] text-balance text-ink md:text-[32px]"
+      >
+        {session.title}
+      </div>
+      {session.description && (
+        <p className="mt-3 max-w-[62ch] text-[15px] leading-relaxed text-pretty text-ink-2 md:text-[15.5px]">
+          {session.description}
+        </p>
+      )}
+      <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12.5px] text-ink-3">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
+          <Avatar user={session.created_by} size={16} />
+          <span className="truncate">
+            {session.review ? "On " : "Started by "}
+            <span className="text-ink-2">{session.created_by.name}</span>
+            {session.review && "'s Claude subscription"}
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-1.5" title={stamp(session.created_at)}>
+          <Clock className="size-3.5 text-ink-4" />
+          {when(session.created_at)}
+        </span>
+        {session.branch && (
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <GitBranch className="size-3.5 shrink-0 text-ink-4" />
+            <span className="truncate font-mono text-[12px] text-ink-2">{session.branch}</span>
+            <CopyButton text={session.branch} label="Copy" className="-my-1 py-0.5 max-sm:hidden" />
+          </span>
+        )}
+        <ScheduleLink session={session} />
+        <TicketLink session={session} />
+        {!session.review && <SessionGithub session={session} />}
+      </div>
+      {glance}
+    </header>
+  );
+}
+
+/**
+ * Whether `on` just came on while the page showed `key` (a session): for a couple of seconds after
+ * it does, not when the page opens with it on. Until it is known (`undefined`), it is neither.
+ */
+function useJustNow(on: boolean | undefined, key: string, ms = 2400): boolean {
+  const [state, setState] = useState<{ key: string; on?: boolean; at?: number }>({ key, on });
+  if (state.key !== key) setState({ key, on });
+  else if (on !== undefined && state.on === undefined) setState({ key, on });
+  else if (on !== undefined && state.on !== on) setState({ key, on, at: on ? Date.now() : undefined });
+  const at = state.key === key ? state.at : undefined;
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    if (at === undefined) return;
+    const t = setTimeout(() => rerender((n) => n + 1), Math.max(0, at + ms - Date.now()));
+    return () => clearTimeout(t);
+  }, [at, ms]);
+  return at !== undefined && Date.now() - at < ms;
+}
+
+/**
+ * Each turn's facts, worked out once for each turn as it is: the list of turns asks for them as it
+ * opens, and again only for a turn that changed.
+ */
+function useFactsOf(cwd?: string): (turn: Turn) => TurnFacts {
+  const cache = useRef(new WeakMap<object, TurnFacts>());
+  return useCallback(
+    (turn: Turn) => {
+      // A turn is the same while its last part and its end are.
+      const last = turn.body[turn.body.length - 1] ?? turn.after[turn.after.length - 1];
+      const tip = last ? (last.kind === "run" ? last.steps[last.steps.length - 1] : last.item) : undefined;
+      const k = tip ?? turn.ask;
+      if (!k) return factsOf(turn, cwd);
+      let f = cache.current.get(k);
+      if (!f) {
+        f = factsOf(turn, cwd);
+        cache.current.set(k, f);
+      }
+      return f;
+    },
+    [cwd],
+  );
+}
+
+/**
+ * Whether `ref` shows below the header: the cover's title, for the header's to give way to it.
+ * Measured as the page scrolls; never while not `enabled`.
+ */
+function useShows(
+  ref: RefObject<HTMLElement | null>,
+  header: RefObject<HTMLElement | null>,
+  enabled: boolean,
+) {
+  const [shows, setShows] = useState(false);
+  useEffect(() => {
+    if (!enabled) {
+      setShows(false);
+      return;
+    }
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const el = ref.current;
+      const top = header.current?.getBoundingClientRect().bottom ?? 0;
+      setShows(!!el && el.getBoundingClientRect().bottom > top + 4);
+    };
+    const on = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    window.addEventListener("scroll", on, { passive: true });
+    window.addEventListener("resize", on, { passive: true });
+    measure();
+    // Its place changes as the transcript loads.
+    const grown = new ResizeObserver(on);
+    grown.observe(document.documentElement);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", on);
+      window.removeEventListener("resize", on);
+      grown.disconnect();
+    };
+  }, [ref, header, enabled]);
+  return shows;
+}
+
+/**
+ * What came while the page was out of sight (another tab, another app): the first part of it,
+ * which a line marks until the reader leaves again, and how many of the transcript's items came
+ * since. Nothing came: nothing to mark.
+ */
+function useAway(items: Item[], session: string): { from?: string; count: number } {
+  // When the page went out of sight: the newest event then, the last part, and whether the reader
+  // is back, after which what comes isn't what came while they were away. Earlier activity that
+  // loads meanwhile came before.
+  const left = useRef<{ seq: number; part?: string; back: boolean } | undefined>(undefined);
+  const [away, setAway] = useState<{ from?: string; count: number }>({ count: 0 });
+  const latest = useRef(items);
+  latest.current = items;
+  useEffect(() => {
+    const seen = () => {
+      if (document.visibilityState === "hidden") {
+        // A message on its way gets another key once it is stored: the part before it.
+        const ps = parts(latest.current).filter(
+          (p) => !(p.kind === "item" && p.item.kind === "user" && p.item.pending),
+        );
+        left.current = { seq: newestSeq(latest.current), part: ps[ps.length - 1]?.key, back: false };
+        setAway({ count: 0 });
+      } else if (left.current) left.current.back = true;
+    };
+    document.addEventListener("visibilitychange", seen);
+    return () => document.removeEventListener("visibilitychange", seen);
+  }, []);
+  useEffect(() => {
+    const l = left.current;
+    const count = l && !l.back ? cameAfter(items, l.seq) : 0;
+    if (!l || !count) return;
+    const ps = parts(items);
+    const i = ps.findIndex((p) => p.key === l.part);
+    const from = i >= 0 ? ps[i + 1]?.key : undefined;
+    setAway((a) => (a.from === from && a.count === count ? a : { from, count }));
+  }, [items]);
+  // Another session: nothing came while away from it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another session starts it over
+  useEffect(() => {
+    left.current = undefined;
+    setAway({ count: 0 });
+  }, [session]);
+  return away;
+}
+
+/**
+ * How many of the transcript's items came since the reader scrolled up from the bottom: after the
+ * newest event then, not the earlier activity that loads as they scroll up.
+ */
+function useNewSince(items: Item[], atBottom: boolean): number {
+  const [left, setLeft] = useState<number>();
+  if (atBottom && left !== undefined) setLeft(undefined);
+  if (!atBottom && left === undefined) setLeft(newestSeq(items));
+  return left === undefined ? 0 : cameAfter(items, left);
+}
+
+/**
+ * The button back to what the reader hasn't seen: up to where what came while they were away
+ * starts, while that is above them, or down to the newest work while they are up the page.
+ */
+function Pill({
+  away,
+  atBottom,
+  newSince,
+  letGo,
+  header,
+}: {
+  away: { from?: string; count: number };
+  atBottom: boolean;
+  newSince: number;
+  letGo: () => void;
+  header: RefObject<HTMLElement | null>;
+}) {
+  // Whether the line that marks what came while away is above the reader: measured once the page
+  // has it, after each render (the conversation alone, finding and earlier activity move it or
+  // take it out), and as the reader scrolls or the page changes size.
+  const [above, setAbove] = useState(false);
+  const measure = useCallback(() => {
+    const line = away.from ? document.querySelector<HTMLElement>(".new-line") : null;
+    const top = header.current?.getBoundingClientRect().bottom ?? 0;
+    setAbove(!!line && line.getBoundingClientRect().bottom < top);
+  }, [away.from, header]);
+  useLayoutEffect(measure);
+  useEffect(() => {
+    if (!away.from) return;
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure, { passive: true });
+    const grown = new ResizeObserver(measure);
+    grown.observe(document.documentElement);
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+      grown.disconnect();
+    };
+  }, [away.from, measure]);
+  if (above) {
+    return (
+      <JumpPill
+        up
+        count={away.count}
+        onClick={() => {
+          const line = document.querySelector<HTMLElement>(".new-line");
+          if (!line) return;
+          letGo();
+          const reduce = matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+          const top = header.current?.getBoundingClientRect().bottom ?? 0;
+          const y = line.getBoundingClientRect().top + window.scrollY - top - 16;
+          window.scrollTo({ top: Math.max(0, y), behavior: reduce ? "instant" : "smooth" });
+        }}
+      />
+    );
+  }
+  if (atBottom) return null;
+  return <JumpPill count={newSince} onClick={toBottom} />;
+}
+
 /** What the details call the session's primary repository. */
 const primaryTitleOf = (project?: G.Project) =>
   project?.repo ? `${project.repo.owner}/${project.repo.name}` : "~/workspace";
@@ -749,7 +1243,7 @@ const primaryTitleOf = (project?: G.Project) =>
  * The changed files of each of the session's repositories, as the diffs over the page show them:
  * the primary repository's, then each other's that has changes.
  */
-export function useDiffGroups(session: G.Session | undefined, git: G.GitState | undefined): DiffGroup[] {
+function useDiffGroups(session: G.Session | undefined, git: G.GitState | undefined): DiffGroup[] {
   // The details' own (useProject), once the session says which.
   const slug = session?.project_slug ?? "";
   const project = useQuery({
@@ -792,19 +1286,19 @@ function runnerDot(connected: boolean, stall?: Stall, disk?: DiskShort): string 
 }
 
 /** The color of a note beside the status pill. */
-export const noteTone = (n: StatusNote) => (n.danger ? "text-danger" : n.warn ? "text-amber" : "text-ink-3");
+const noteTone = (n: StatusNote) => (n.danger ? "text-danger" : n.warn ? "text-amber" : "text-ink-3");
 
 /** A review agent's session waits for nobody: once its turn ends, it finishes and stops. */
-export const reviewLabel = (session: G.Session) =>
+const reviewLabel = (session: G.Session) =>
   session.review && session.status === "idle" ? "Finishing" : undefined;
 
 /** What the session's agent may do on GitHub, beside its status, when that is less than push. */
-export function SessionGithub({ session }: { session: G.Session }) {
+function SessionGithub({ session }: { session: G.Session }) {
   const project = useProject(session.project_slug).data;
   return <GithubAccessChip access={sessionGithub(session, project)} />;
 }
 
-export function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
+function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-line px-5 py-4 last:border-b-0">
       <h3 className="mb-2.5 text-[12.5px] font-medium text-ink-3">{title}</h3>
@@ -968,7 +1462,7 @@ function PullRequests({
  * What the header has no room for on phones: the status with all it says,
  * where the session is and its branch. The details sheet starts with it.
  */
-export function Overview({
+function Overview({
   session,
   workspace,
   notes,
@@ -1024,7 +1518,7 @@ export function Overview({
 }
 
 /** What the rail shows beside the transcript, and the details sheet where the rail doesn't fit. */
-export function Details({
+function Details({
   session,
   role,
   review,
@@ -1061,9 +1555,9 @@ export function Details({
   pullsFirst?: boolean;
   /** Opens the diffs over the page, at a file of the changes. */
   onDiff: (at: DiffTarget) => void;
-  /** The new session page's list of turns, after the pull requests. */
+  /** The list of turns, after the pull requests. */
   turns?: React.ReactNode;
-  /** The new session page's agent's plan, first. */
+  /** The agent's plan, first. */
   plan?: React.ReactNode;
 }) {
   const st = session.stats;
@@ -1259,15 +1753,7 @@ const SHARE_ROLES: SelectOption<G.SessionRole>[] = [
   { value: "editor", label: "Can message", description: "Also messages and interrupts the agent" },
 ];
 
-export function ShareDialog({
-  open,
-  onClose,
-  session,
-}: {
-  open: boolean;
-  onClose: () => void;
-  session: G.Session;
-}) {
+function ShareDialog({ open, onClose, session }: { open: boolean; onClose: () => void; session: G.Session }) {
   const shares = useQuery({
     queryKey: keys.shares(session.id),
     queryFn: () => api.shares(session.id),

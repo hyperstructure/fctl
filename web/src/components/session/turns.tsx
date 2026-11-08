@@ -1,12 +1,12 @@
-// The new session page's transcript (routes/session-next.tsx): the session in turns, each a
+// The session page's transcript (routes/session.tsx): the session in turns, each a
 // chapter of it. What someone asked opens a turn, in a card. What the agent did about it hangs
 // from the card on a thread down the rail its steps' icons sit in, with what it said beside the
 // thread; and where the thread ends, the turn says how it went: how long it took, how many steps,
 // and the files it edited, which open in the changes.
 //
-// The parts of the transcript stay the classic transcript's (`PartView`), one element each in one
-// list, with the keys they have there: finding, earlier activity coming in above the reader and
-// what the reader opened all work as they do on the classic page.
+// The parts of the transcript are transcript.tsx's (`PartView`), one element each in one list, with
+// their keys: finding, earlier activity coming in above the reader and what the reader opened all
+// work by them.
 
 import {
   ArrowUpRight,
@@ -193,7 +193,7 @@ export const TurnTranscript = memo(function TurnTranscript({
 }) {
   // What the agent does at this moment shows in the line above the message box (now-line.tsx):
   // what streams in, a thought or a call it writes, shows there, and here once it is done.
-  const t = { ...transcriptParts(items, live, status, stall), coming: [] };
+  const t = transcriptParts(items, live, status, stall);
   // What came after the page first showed the session is new to the reader: its thread draws.
   const shownUpTo = useShownUpTo(sessionId, items);
   // When the page saw each turn end that came while it showed: its light runs for a moment.
@@ -325,15 +325,7 @@ export const TurnTranscript = memo(function TurnTranscript({
       rows.push(
         // The thread trails off under the newest step, where the next comes.
         <div key="live" className="thread thread-live min-h-8">
-          <LiveTurnView
-            live={live}
-            status={status}
-            stall={stall}
-            disk={disk}
-            inRun={t.folded}
-            textClassName="pl-[34px]"
-            nowLine
-          />
+          <LiveTurnView live={live} stall={stall} disk={disk} textClassName="pl-[34px]" />
         </div>,
       );
     }
@@ -364,7 +356,7 @@ export const TurnTranscript = memo(function TurnTranscript({
     // The agent went on after the last turn ended, without a message yet: what streams in.
     rows.push(
       <div key="live">
-        <LiveTurnView live={live} status={status} stall={stall} disk={disk} inRun={t.folded} nowLine />
+        <LiveTurnView live={live} stall={stall} disk={disk} />
       </div>,
     );
   }
@@ -427,7 +419,7 @@ function NewLine({ thread, className }: { thread: boolean; className?: string })
 /**
  * What someone asked, as the card that opens a turn: who, when and from where, and what they
  * wrote, with what they attached. Messages from fctl about a pull request, a review or a ticket
- * keep the classic transcript's look, which shows what happened there.
+ * keep the look of the messages that come during a turn, which shows what happened there.
  */
 export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
   if (item.followUp || item.ticket || item.review) return <UserMessage item={item} sessionId={sessionId} />;

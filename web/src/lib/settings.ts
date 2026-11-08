@@ -49,7 +49,7 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsPage[])[] = [
     {
       tab: "appearance",
       label: "Appearance",
-      keywords: "theme dark light clock 24-hour 12-hour session view classic new",
+      keywords: "theme dark light clock 24-hour 12-hour",
     },
   ],
   [

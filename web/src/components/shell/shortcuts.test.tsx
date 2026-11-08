@@ -158,7 +158,6 @@ describe("the keyboard shortcuts sheet", () => {
       "Open the changes",
       "Show or hide the details",
       "Next turn / previous",
-      "Switch between the classic and the new view",
     ]);
   });
 

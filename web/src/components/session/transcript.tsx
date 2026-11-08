@@ -1,5 +1,6 @@
-// The transcript: people's messages, the agent's prose, its tool calls, and
-// the session's milestones, with the turn in progress streaming at the end.
+// The transcript's items: people's messages, the agent's prose, its tool calls, and the session's
+// milestones, with what the agent writes streaming in. The session page shows them in turns
+// (turns.tsx).
 
 import { useMutation } from "@tanstack/react-query";
 import {
@@ -22,8 +23,8 @@ import {
   TriangleAlert,
   Unplug,
 } from "lucide-react";
-import { type MouseEvent, memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ImageSizes, Markdown } from "@/components/markdown";
+import { type MouseEvent, memo, useId, useMemo, useRef, useState } from "react";
+import { Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { PullRequestSummarizedNotice, ReviewPostedNotice } from "@/components/review";
 import {
@@ -31,11 +32,9 @@ import {
   Button,
   CopyButton,
   Dialog,
-  Gallery,
   Logo,
   plainClick,
   Spinner,
-  ThoughtIcon,
   toast,
   useLightbox,
 } from "@/components/ui";
@@ -44,11 +43,10 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { bytes, clock, day, duration, until } from "@/lib/format";
 import { repoChanges } from "@/lib/git";
-import { useKeepPlace } from "@/lib/keep-place";
 import { useLoadInView } from "@/lib/load-in-view";
 import { isPublishedLink, linkToken, markdown } from "@/lib/published";
 import { claudeAppLink, remoteControlUrl } from "@/lib/remote-control";
-import { callsIn, lastRun, type Part, parts } from "@/lib/runs";
+import { lastRun, type Part, parts } from "@/lib/runs";
 import { splitRunNote } from "@/lib/schedules";
 import { type DiskShort, diskText, type Stall, stallText } from "@/lib/stall";
 import { findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
@@ -56,11 +54,10 @@ import { MessageFiles } from "./attachments";
 import { useRevealed } from "./find";
 import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
-import { Busy, Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
+import { Busy, Milestone, MilestoneButton, RailIcon, Thread } from "./lines";
 import { RetrospectiveCard } from "./retrospective";
-import { thinkingNow } from "./thinking";
 import { TicketMessageView, TicketNoticeView } from "./ticket";
-import { Run, SessionImages, ToolRow, WorkDir } from "./tool";
+import { Run, ToolRow } from "./tool";
 
 export const UserMessage = memo(function UserMessage({
   item,
@@ -679,70 +676,33 @@ function DiskNotice({ disk }: { disk: DiskShort }) {
   );
 }
 
+/**
+ * What the agent writes as it comes, and why its work isn't coming through or how short of disk its
+ * runner is. The rest of what it does at this moment (the thoughts and calls that stream in, and
+ * that it works between its steps) shows in the line above the message box (now-line.tsx).
+ */
 export function LiveTurnView({
   live,
-  status,
-  since,
   stall,
   disk,
-  inRun,
   textClassName,
-  nowLine = false,
 }: {
   live: LiveTurn;
-  status?: G.SessionStatus;
-  since?: number;
   stall?: Stall;
   /** How short of disk the session's runner is. */
   disk?: DiskShort;
-  /** The run the agent works on shows its thoughts and calls as they come, in place of these lines. */
-  inRun?: boolean;
-  /** For the words it writes as they come, which the new session page sets in from its thread. */
+  /** For the words it writes as they come, which the transcript sets in from its thread. */
   textClassName?: string;
-  /**
-   * The page says what the agent does at this moment in a line of its own (the new session page's,
-   * now-line.tsx): the thoughts and calls that stream in, and that it works between its steps,
-   * show there and not here. Its words as it writes them show here still.
-   */
-  nowLine?: boolean;
 }) {
-  const blocks = live.blocks;
-  const working = status === "running" && !stall;
   return (
     <>
-      {blocks.map((b) =>
+      {live.blocks.map((b) =>
         b.type === "text" ? (
           <LiveText key={`live-${b.index}`} text={b.text} writing={!stall} className={textClassName} />
-        ) : inRun || nowLine ? null : b.type === "thinking" ? (
-          <div key={`live-${b.index}`} className="flex min-h-8 items-center gap-2.5 py-1 text-[13.5px]">
-            <RailIcon>
-              <ThoughtIcon live={!stall} />
-            </RailIcon>
-            <span className={cn("text-ink-3", !stall && "text-shimmer")}>{thinkingNow(b.tokens)}</span>
-          </div>
-        ) : (
-          <div
-            key={`live-${b.index}`}
-            className="flex min-h-8 items-center gap-2.5 py-1 text-[13.5px] text-ink-3"
-          >
-            <Tile>{stall ? <Hourglass className="text-ink-4" /> : <Busy className="text-accent" />}</Tile>
-            <span className={cn(!stall && "text-shimmer")}>Preparing {b.name ?? "a tool"}</span>
-          </div>
-        ),
+        ) : null,
       )}
       {stall && <StallNotice stall={stall} />}
       {disk && <DiskNotice disk={disk} />}
-      {!nowLine && working && !blocks.some((b) => !b.done) && (
-        <div className="flex items-center gap-2.5 py-2 text-[12.5px] text-ink-3">
-          <RailIcon>
-            <span className="relative flex size-2">
-              <span className="absolute inset-0 animate-ping rounded-full bg-accent/60" />
-              <span className="relative size-2 rounded-full bg-accent" />
-            </span>
-          </RailIcon>
-          <span className="text-shimmer">Working{since ? ` · ${duration(Date.now() - since)}` : ""}</span>
-        </div>
-      )}
     </>
   );
 }
@@ -781,7 +741,7 @@ export function EarlierActivity({
 
 /**
  * The transcript's parts (`parts`), and what each needs to know of the session as it is now: the
- * run the agent goes on with, and what streams into it.
+ * run the agent goes on with, and the call in progress.
  */
 export function transcriptParts(items: Item[], live: LiveTurn, status?: G.SessionStatus, stall?: Stall) {
   // A tool call without a result runs only in the turn the agent works on,
@@ -791,20 +751,16 @@ export function transcriptParts(items: Item[], live: LiveTurn, status?: G.Sessio
   const turnStart = items.findLastIndex((it) => it.kind === "turn" || it.kind === "status");
   // Its tool calls and thoughts in runs, each folded into a line. The newest
   // goes on while the agent works on its turn and hasn't started to write:
-  // it shows its thoughts and calls as they come.
+  // it shows its newest step as it comes.
   const ps = parts(items);
   const last = lastRun(ps);
   const writing = live.blocks.some((b) => b.type === "text");
   const tail = last && running && last.index > turnStart && !writing ? last : undefined;
-  // What streams in shows in the run, once it is folded; until then, after it.
-  const folded = !!tail && callsIn(tail.steps).length > 1;
   return {
     ps,
     running,
     turnStart,
     tail,
-    folded,
-    coming: folded ? live.blocks.filter((b) => b.type !== "text") : [],
     progress: live.tool,
     // Paths start where Claude Code works, which its first message says.
     cwd: items.find((it) => it.kind === "init")?.cwd,
@@ -836,7 +792,7 @@ export function PartView({
   me?: G.UserId;
   projectSlug?: string;
 }) {
-  const { running, turnStart, tail, coming, progress, up } = t;
+  const { running, turnStart, tail, progress, up } = t;
   return p.kind === "run" ? (
     <Run
       steps={p.steps}
@@ -846,7 +802,6 @@ export function PartView({
       progress={
         progress && p.steps.some((s) => s.kind === "tool" && s.id === progress.id) ? progress : undefined
       }
-      coming={p === tail ? coming : undefined}
     />
   ) : (
     <ItemView
@@ -875,92 +830,3 @@ export function useShotSizes(items: Item[]): ReadonlyMap<string, G.PublishedFile
   // biome-ignore lint/correctness/useExhaustiveDependencies: shotUrls stands for shots
   return useMemo(() => new Map(shots.map((f) => [f.url, f])), [shotUrls]);
 }
-
-export const Transcript = memo(function Transcript({
-  sessionId,
-  items,
-  live,
-  status,
-  stall,
-  disk,
-  canManage,
-  startedBy,
-  me,
-  projectSlug,
-  onLoadOlder,
-  hasMoreBefore,
-  loadingOlder,
-  olderFailed = false,
-}: {
-  sessionId: string;
-  items: Item[];
-  live: LiveTurn;
-  status?: G.SessionStatus;
-  /** Why the agent's work isn't coming through right now. */
-  stall?: Stall;
-  /** How short of disk the session's runner is. */
-  disk?: DiskShort;
-  canManage?: boolean;
-  /** Who started the session, and who is signed in: a Remote Control link is only for its person. */
-  startedBy: G.UserRef;
-  me?: G.UserId;
-  /** The session's project, which the notes its agent keeps link to. */
-  projectSlug?: string;
-  onLoadOlder: () => void;
-  hasMoreBefore: boolean;
-  loadingOlder: boolean;
-  /** The last load of earlier activity brought nothing: a page failed. */
-  olderFailed?: boolean;
-}) {
-  const t = transcriptParts(items, live, status, stall);
-  const list = useRef<HTMLDivElement>(null);
-  // Earlier activity goes in above the reader, who stays where they are:
-  // what scrolling up asks for, and what finding in the transcript loads.
-  const keepPlace = useKeepPlace(list, loadingOlder);
-  useLayoutEffect(() => {
-    if (loadingOlder) keepPlace();
-  }, [loadingOlder, keepPlace]);
-  const sizes = useShotSizes(items);
-  // The agent's work sits in a quiet column; everything else spans the
-  // reading width. The pictures people attach, the agent publishes and its answers show
-  // open in one lightbox, which steps through them all.
-  return (
-    <ImageSizes value={sizes}>
-      <Gallery>
-        <div ref={list} className="flex flex-col">
-          {hasMoreBefore && (
-            <EarlierActivity
-              onLoad={() => {
-                keepPlace();
-                onLoadOlder();
-              }}
-              loading={loadingOlder}
-              failed={olderFailed}
-            />
-          )}
-          <WorkDir value={t.cwd}>
-            <SessionImages value={sessionId}>
-              {t.ps.map((p) => (
-                <div key={p.key} data-item data-part={p.key}>
-                  <Unreadable>
-                    <PartView
-                      p={p}
-                      t={t}
-                      sessionId={sessionId}
-                      stall={stall}
-                      canManage={canManage}
-                      startedBy={startedBy}
-                      me={me}
-                      projectSlug={projectSlug}
-                    />
-                  </Unreadable>
-                </div>
-              ))}
-            </SessionImages>
-          </WorkDir>
-          <LiveTurnView live={live} status={status} stall={stall} disk={disk} inRun={t.folded} />
-        </div>
-      </Gallery>
-    </ImageSizes>
-  );
-});

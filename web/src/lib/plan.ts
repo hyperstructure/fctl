@@ -1,5 +1,5 @@
 // The agent's plan: the to-do list it keeps with Claude Code's TodoWrite, as it last wrote it.
-// The new session page (routes/session-next.tsx) keeps it in view beside the transcript, and says
+// The session page (routes/session.tsx) keeps it in view beside the transcript, and says
 // above the message box where the agent is in it, in the words Claude Code shows for the step at
 // hand ("Formatting prices in DKK").
 

@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactNode, useContext } from "react";
+import { act, type ComponentProps, type ReactNode, useContext } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import type { Stall } from "@/lib/stall";
 import { emptyLive, type Item, type Step, type Subagent } from "@/lib/transcript";
-import { Transcript } from "./transcript";
+import { TurnTranscript } from "./turns";
 
 vi.mock("@/components/ui", async () => {
   const { plainClick } =
@@ -14,15 +14,20 @@ vi.mock("@/components/ui", async () => {
     await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery");
   const { GithubIcon, LinearIcon, ReviewIcon, ThoughtIcon } =
     await vi.importActual<typeof import("@/components/ui/icons")>("@/components/ui/icons");
+  const { DotWave } =
+    await vi.importActual<typeof import("@/components/ui/dot-wave")>("@/components/ui/dot-wave");
   return {
     Avatar: () => null,
     Button: () => null,
     CopyButton: () => null,
     Dialog: () => null,
+    DotWave,
     Gallery,
     GithubIcon,
     LinearIcon,
     Logo: () => null,
+    Menu: () => null,
+    MenuItem: () => null,
     plainClick,
     ReviewIcon,
     Spinner: () => <svg className="animate-spin" />,
@@ -123,6 +128,23 @@ const stall: Stall = {
   showFrom: 0,
 };
 
+/** The session's transcript, in turns, as Ada sees the session she started unless `props` say otherwise. */
+function turns(props: Partial<ComponentProps<typeof TurnTranscript>> & { items: Item[] }) {
+  return (
+    <TurnTranscript
+      sessionId="ses_1"
+      startedBy={ada}
+      live={emptyLive()}
+      onLoadOlder={() => {}}
+      hasMoreBefore={false}
+      loadingOlder={false}
+      diffGroups={[]}
+      onDiff={() => {}}
+      {...props}
+    />
+  );
+}
+
 function transcript(
   items: Item[],
   status: "running" | "idle",
@@ -130,42 +152,30 @@ function transcript(
   { onLoadOlder = () => {}, hasMoreBefore = false, loadingOlder = false, olderFailed = false } = {},
 ) {
   return render(
-    <Transcript
-      sessionId="ses_1"
-      startedBy={ada}
-      items={items}
-      live={emptyLive()}
-      status={status}
-      stall={withStall}
-      onLoadOlder={onLoadOlder}
-      hasMoreBefore={hasMoreBefore}
-      loadingOlder={loadingOlder}
-      olderFailed={olderFailed}
-    />,
+    turns({ items, status, stall: withStall, onLoadOlder, hasMoreBefore, loadingOlder, olderFailed }),
   );
 }
 
+/** The signs that a step of the agent's work is under way. */
+const busy = (c: HTMLElement) => c.querySelectorAll(".dot-wave").length;
 const spinners = (c: HTMLElement) => c.querySelectorAll(".animate-spin").length;
 
 describe("the transcript", () => {
   it("shows a tool call of the turn in progress as running", () => {
     const c = transcript([tool("done"), tool()], "running");
-    expect(spinners(c)).toBe(1);
-    expect(c.textContent).toContain("Working");
+    expect(busy(c)).toBe(1);
   });
 
   it("never shows a tool call of a turn that ended as running, even without its result", () => {
     // A crash, or a result that never reached the control plane.
     const c = transcript([tool(), turn(), tool("done")], "running");
-    expect(spinners(c)).toBe(0);
-    expect(transcript([tool()], "idle").textContent).not.toContain("Working");
-    expect(spinners(transcript([tool()], "idle"))).toBe(0);
+    expect(busy(c)).toBe(0);
+    expect(busy(transcript([tool()], "idle"))).toBe(0);
   });
 
   it("says why the agent's work isn't coming through instead of showing it in progress", () => {
     const c = transcript([tool()], "running", stall);
-    expect(spinners(c)).toBe(0);
-    expect(c.textContent).not.toContain("Working");
+    expect(busy(c)).toBe(0);
     const [title, detail] = [...c.querySelectorAll("[role=status] p")].map((p) => p.textContent);
     expect(title).toMatch(/^Runner now hasn't been heard from since .+\.$/);
     expect(detail).toMatch(/^The agent's work shows up here when it's back/);
@@ -246,28 +256,17 @@ describe("a subagent", () => {
     const launched = "Async agent launched successfully. agentId: a1 (internal ID - do not mention to user.)";
     const item = delegated({}, launched, true);
     const c = transcript([item, turn()], "idle");
-    expect(spinners(c)).toBe(1);
+    expect(busy(c)).toBe(1);
     open(c, "Delegated");
     expect(c.textContent).not.toContain("Async agent launched");
     expect(c.querySelector("[data-item]")?.textContent).toContain("Working");
-    const stopped = render(
-      <Transcript
-        sessionId="ses_1"
-        startedBy={ada}
-        items={[item]}
-        live={emptyLive()}
-        status="stopped"
-        onLoadOlder={() => {}}
-        hasMoreBefore={false}
-        loadingOlder={false}
-      />,
-    );
-    expect(spinners(stopped)).toBe(0);
+    const stopped = render(turns({ items: [item], status: "stopped" }));
+    expect(busy(stopped)).toBe(0);
     const done = transcript(
       [delegated({ ended: "completed", report: "Two callers." }, launched, true)],
       "idle",
     );
-    expect(spinners(done)).toBe(0);
+    expect(busy(done)).toBe(0);
     open(done, "Delegated");
     expect(done.textContent).toContain("Two callers.");
     expect(done.textContent).not.toContain("Working");
@@ -280,7 +279,7 @@ describe("a subagent", () => {
     const c = transcript([item], "running");
     open(c, "Delegated");
     // The call and its step in progress.
-    expect(spinners(c)).toBe(2);
+    expect(busy(c)).toBe(2);
     expect(c.querySelector("[data-item]")?.textContent).not.toContain("Working");
   });
 
@@ -326,18 +325,7 @@ describe("a run of work", () => {
     const draw = (next: Item[]) =>
       act(() =>
         root.render(
-          <QueryClientProvider client={client}>
-            <Transcript
-              sessionId="ses_1"
-              startedBy={ada}
-              items={next}
-              live={live}
-              status={status}
-              onLoadOlder={() => {}}
-              hasMoreBefore={false}
-              loadingOlder={false}
-            />
-          </QueryClientProvider>,
+          <QueryClientProvider client={client}>{turns({ items: next, live, status })}</QueryClientProvider>,
         ),
       );
     draw(items);
@@ -393,51 +381,15 @@ describe("a run of work", () => {
     expect(line(c, "Ran 1 command")).toBeDefined();
     expect(line(c, "Run the tests")).toBeDefined();
     expect(c.textContent).not.toContain("List the files");
-    expect(spinners(c)).toBe(1);
+    expect(busy(c)).toBe(1);
     // Calls at once, none done yet.
     const both = transcript([bash("List the files"), bash("Run the tests")], "running");
     expect(line(both, "Running 2 commands")).toBeDefined();
-    expect(spinners(both)).toBe(2);
+    expect(busy(both)).toBe(2);
     // Once the turn is over, it says what it did.
     const done = transcript([bash("List the files", "a"), bash("Run the tests", "ok"), turn()], "idle");
     expect(line(done, "Ran 2 commands")).toBeDefined();
     expect(done.textContent).not.toContain("Run the tests");
-  });
-
-  it("shows the thought or call streaming in where it will go, once", () => {
-    const live = {
-      ...emptyLive(),
-      blocks: [{ index: 0, type: "tool_use" as const, text: "", name: "Bash", done: false }],
-    };
-    const { container } = mount(
-      [bash("List the files", "a"), bash("Check the branch", "main")],
-      "running",
-      live,
-    );
-    expect(container.querySelector("[data-item]")?.textContent).toContain("Preparing Bash");
-    expect(container.textContent?.split("Preparing Bash")).toHaveLength(2);
-    // What it streamed in takes the place of its newest step.
-    expect(container.textContent).not.toContain("Check the branch");
-    // After a call on its own, it shows after it.
-    const single = mount([prose("Looking."), bash("List the files", "a")], "running", live).container;
-    expect(single.textContent?.split("Preparing Bash")).toHaveLength(2);
-    expect(single.textContent).toContain("List the files");
-  });
-
-  it("says how far the thought streaming in got", () => {
-    const thinking = (tokens?: number) => ({
-      ...emptyLive(),
-      blocks: [{ index: 0, type: "thinking" as const, text: "", tokens, done: false }],
-    });
-    // After a call on its own…
-    const single = mount([prose("Looking."), bash("List the files", "a")], "running", thinking(900));
-    expect(single.container.textContent).toContain("Thinking · 900 tokens");
-    // …and in the run it will go in, once that is folded.
-    const run = [bash("List the files", "a"), bash("Check the branch", "main")];
-    const folded = mount(run, "running", thinking(1)).container;
-    expect(folded.querySelector("[data-item]")?.textContent).toContain("Thinking · 1 token");
-    // Until Claude Code says, it thinks.
-    expect(mount(run, "running", thinking()).container.textContent).toMatch(/Thinking$/);
   });
 
   it("says how many of its calls failed", () => {
@@ -506,20 +458,7 @@ describe("earlier activity", () => {
 
 describe("Remote Control", () => {
   /** A transcript of a session Ada started, as `me` sees it. */
-  const seenBy = (me: G.UserId, items: Item[]) =>
-    render(
-      <Transcript
-        sessionId="ses_1"
-        startedBy={ada}
-        me={me}
-        items={items}
-        live={emptyLive()}
-        status="idle"
-        onLoadOlder={() => {}}
-        hasMoreBefore={false}
-        loadingOlder={false}
-      />,
-    );
+  const seenBy = (me: G.UserId, items: Item[]) => render(turns({ me, items, status: "idle" }));
   const followable = (c: HTMLElement) => c.textContent?.includes("Followable in the Claude apps");
 
   it("is offered only to the person on whose Claude subscription the session ran", () => {
@@ -695,19 +634,7 @@ const kept = (code: string, m: G.Memory): Item => ({
 
 describe("what the agent keeps", () => {
   it("shows a note it remembered, with a link to it in the project's memory", () => {
-    const c = render(
-      <Transcript
-        sessionId="ses_1"
-        startedBy={ada}
-        items={[kept("memory_added", memory())]}
-        live={emptyLive()}
-        status="idle"
-        projectSlug="app"
-        onLoadOlder={() => {}}
-        hasMoreBefore={false}
-        loadingOlder={false}
-      />,
-    );
+    const c = render(turns({ items: [kept("memory_added", memory())], status: "idle", projectSlug: "app" }));
     expect(c.textContent).toContain("Remembered for later agents");
     expect(c.textContent).toContain("The e2e tests need Chromium");
     expect(c.querySelector("a")?.getAttribute("href")).toBe("/p/app?tab=memory#note-mem_1");
@@ -723,19 +650,7 @@ describe("what the agent keeps", () => {
 
   it("says which note a duplicate repeats, with a link to it", () => {
     const copy = memory({ stale: { at: 1, reason: "Duplicate of mem_0", duplicate_of: "mem_0" } });
-    const c = render(
-      <Transcript
-        sessionId="ses_1"
-        startedBy={ada}
-        items={[kept("memory_stale", copy)]}
-        live={emptyLive()}
-        status="idle"
-        projectSlug="app"
-        onLoadOlder={() => {}}
-        hasMoreBefore={false}
-        loadingOlder={false}
-      />,
-    );
+    const c = render(turns({ items: [kept("memory_stale", copy)], status: "idle", projectSlug: "app" }));
     expect(c.textContent).toContain("Marked a note a duplicate");
     expect(c.textContent).toContain("It repeats another note.");
     expect(c.textContent).not.toContain("Duplicate of mem_0");

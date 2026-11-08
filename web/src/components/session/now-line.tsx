@@ -1,4 +1,4 @@
-// Above the new session page's message box (routes/session-next.tsx): what the agent is doing at
+// Above the session page's message box (routes/session.tsx): what the agent is doing at
 // this moment, as it changes, and for how long, each new step rolling in from below as the last
 // rolls away above; while it waits for work it left in the background, what that is, in a list the
 // line opens into; and beside it, the way back to the newest work, with how much came since the

@@ -1,4 +1,4 @@
-// A session's transcript in turns, as the new session page (routes/session-next.tsx) shows it:
+// A session's transcript in turns, as the session page (routes/session.tsx) shows it:
 // what a person or fctl asked, what the agent did about it, and how that ended. Each turn is a
 // chapter of the page, which the reader steps through and finds their way back to.
 //

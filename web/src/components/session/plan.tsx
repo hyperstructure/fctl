@@ -1,4 +1,4 @@
-// The agent's plan in the new session page (routes/session-next.tsx): beside the transcript, its
+// The agent's plan on the session page (routes/session.tsx): beside the transcript, its
 // steps as the agent last wrote them, the one it is at marked and those it finished checked off as
 // it does, with how far it got; and above the message box, a ring that fills as it goes.
 

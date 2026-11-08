@@ -77,7 +77,6 @@ import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
 import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
-import { useSessionView } from "@/lib/session-view";
 import {
   askedTab,
   claudeGist,
@@ -391,7 +390,6 @@ function useGists(me: G.Me, has: (t: SettingsTab) => boolean): Partial<Record<Se
   const notifications = useQuery({ queryKey: keys.notifications, queryFn: api.notifications });
   const [theme] = useTheme();
   const [hours] = useHourCycle();
-  const [view] = useSessionView();
   const here = permission() === "granted" ? notifications.data?.devices.find((d) => d.current) : undefined;
   return {
     emails: emailsGist(me),
@@ -402,7 +400,7 @@ function useGists(me: G.Me, has: (t: SettingsTab) => boolean): Partial<Record<Se
       text: here ? "On in this browser" : "Off in this browser",
     },
     appearance: {
-      text: `${theme === "dark" ? "Dark" : "Light"} · ${hours}-hour clock${view === "new" ? " · New session view" : ""}`,
+      text: `${theme === "dark" ? "Dark" : "Light"} · ${hours}-hour clock`,
     },
     security: securityGist(me, workspaces?.filter((w) => w.blocked).length),
     tokens: tokensGist(tokens.data?.tokens),
@@ -1884,7 +1882,6 @@ function Devices() {
 function Appearance() {
   const [theme, setTheme] = useTheme();
   const [hours, setHours] = useHourCycle();
-  const [view, setView] = useSessionView();
   return (
     <Section title="Appearance" description="How fctl looks in this browser.">
       <fieldset>
@@ -1939,12 +1936,6 @@ function Appearance() {
           hint={`Times read ${sampleTime(24)} rather than ${sampleTime(12)}. Until you change it here, it follows this browser's language.`}
           checked={hours === 24}
           onChange={(on) => setHours(on ? 24 : 12)}
-        />
-        <SwitchRow
-          label="New session view"
-          hint="Sessions read in turns, and say above the message box what the agent does now. On a session's page, v switches between the two views."
-          checked={view === "new"}
-          onChange={(on) => setView(on ? "new" : "classic")}
         />
       </ul>
     </Section>
