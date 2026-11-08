@@ -89,7 +89,13 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   fonts, WebGL scenes and the mark live in
   [hyperstructure/design](https://github.com/hyperstructure/design)
   (`@hyperstructure/design`, pinned to a tag in `web/package.json`): change
-  them there, tag a release, then bump the tag here.
+  them there, tag a release, then bump the tag here. How the web app is
+  designed, component by component (its principles, what each component
+  shows and how much, how it behaves and moves, its edge cases, the traps
+  found building it, and how to check a change), is in
+  [its docs](https://github.com/hyperstructure/design/blob/main/docs/README.md):
+  read them before designing a component, and update them with a change to
+  what they describe.
 - Copy is plain and specific: say what happens ("The agent reads your message
   at its next step"), not what is possible.
 - A **runner** is a machine that runs sessions, as the control plane, the
