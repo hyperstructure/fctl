@@ -596,6 +596,15 @@ if (open) {
             console.error(`${shot.name} (${theme}): ${e.message.split("\n")[0]}`);
           }
           await dress(tab);
+          // Where its card is, measured on the page the shot shows: one it can't find is left
+          // out, as a failed act is, and the run goes on.
+          const card =
+            typeof shot.card === "function"
+              ? await shot.card(tab).catch((e) => {
+                  console.error(`${shot.name} (${theme}): no card: ${e.message.split("\n")[0]}`);
+                  return undefined;
+                })
+              : shot.card;
           const png = await tab.screenshot();
           if (features) {
             mkdirSync(path.join(out, shot.page), { recursive: true });
@@ -607,9 +616,9 @@ if (open) {
             }
             // Its page's tile on the features page: the part of it that `card`
             // says, [x, y, width, height] in CSS pixels, at twice that size.
-            if (shot.card) {
+            if (card) {
               const view = tab.viewportSize();
-              const [x, y, w, h] = typeof shot.card === "function" ? await shot.card(tab) : shot.card;
+              const [x, y, w, h] = card;
               const crop = [x / view.width, y / view.height, w / view.width, h / view.height];
               const c = await webp(converter, png, w * 2, crop);
               const file = path.join(out, shot.page, `card-${theme}.webp`);
