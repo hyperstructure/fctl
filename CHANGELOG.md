@@ -2,6 +2,29 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.32.2 (2026-11-08)
+
+### Features
+
+- **web:** Make the session view in turns the only one ([#480](https://github.com/hyperstructure/fctl/pull/480))
+- **web:** Keep the session's title in the header at the top of the page ([#482](https://github.com/hyperstructure/fctl/pull/482))
+- **web:** Darken the dark theme's backgrounds to near black ([#483](https://github.com/hyperstructure/fctl/pull/483))
+
+### Fixes
+
+- **host:** Retry the firecracker driver's downloads that may pass ([#485](https://github.com/hyperstructure/fctl/pull/485))
+- **xtask:** Run wrangler again when Cloudflare's API can't answer it ([#486](https://github.com/hyperstructure/fctl/pull/486))
+- **web:** Open a session at its bottom when coming from another one ([#488](https://github.com/hyperstructure/fctl/pull/488))
+- **web:** End the transcript with the agent's question on a phone ([#489](https://github.com/hyperstructure/fctl/pull/489))
+
+### Documentation
+
+- Point to the web app's design docs in hyperstructure/design ([#479](https://github.com/hyperstructure/fctl/pull/479))
+
+### Other changes
+
+- **xtask:** Shoot sessions in the new view, with an agent's question ([#481](https://github.com/hyperstructure/fctl/pull/481))
+
 ## 0.32.1 (2026-11-08)
 
 ### Features
