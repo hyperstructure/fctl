@@ -2,6 +2,23 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.32.1 (2026-11-08)
+
+### Features
+
+- **web:** Hide a resting session from the sidebar on hover ([#468](https://github.com/hyperstructure/fctl/pull/468))
+- **web:** Split Settings into pages, with a navigation beside them ([#471](https://github.com/hyperstructure/fctl/pull/471))
+- **web:** Redesign the rows of session and project lists ([#470](https://github.com/hyperstructure/fctl/pull/470))
+- **web:** Choose a color of a workspace's own ([#473](https://github.com/hyperstructure/fctl/pull/473))
+- **web:** Try a new session view that reads in turns ([#474](https://github.com/hyperstructure/fctl/pull/474))
+- **web:** The new session view's plan, glance and hand-over ([#475](https://github.com/hyperstructure/fctl/pull/475))
+- **web:** The now line names background work and rolls in each step ([#476](https://github.com/hyperstructure/fctl/pull/476))
+- **web:** A retrospective at a glance and a pulse for thinking ([#477](https://github.com/hyperstructure/fctl/pull/477))
+
+### Fixes
+
+- **web:** Show the icon picker and shortcuts sheet whole in Safari 26 ([#469](https://github.com/hyperstructure/fctl/pull/469))
+
 ## 0.32.0 (2026-11-07)
 
 ### Features
