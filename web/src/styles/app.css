@@ -1023,7 +1023,8 @@
 
 /* While the agent works, a soft light of the accent runs along the session page's header's
    lower edge, out of nowhere and back into it: the header has no border, so the light is the
-   only line there. Where motion is reduced, it doesn't show. */
+   only line there. Where motion is reduced, it holds still, brightest in the middle, as the
+   other signs of work do. */
 .header-live {
   position: absolute;
   inset: auto 0 0;
@@ -1041,7 +1042,7 @@
     color-mix(in srgb, var(--c-accent) 70%, transparent) 50%,
     transparent
   );
-  opacity: 0;
+  opacity: 0.5;
 }
 @media (prefers-reduced-motion: no-preference) {
   .header-live::before {
