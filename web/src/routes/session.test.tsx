@@ -528,6 +528,36 @@ describe("the session in turns", () => {
     expect(p.text()).toContain("Edited 1 file");
   });
 
+  it("asks the agent's question above the message box where there is room, and at the transcript's end on a phone", () => {
+    const asked: G.SessionQuestion = {
+      text: "Round Danish prices to whole kroner, or keep øre?",
+      options: ["Round to whole kroner", "Keep øre"],
+      asked_at: Date.now(),
+    };
+    const card = (c: HTMLElement) => c.querySelector<HTMLElement>('section[aria-label="The agent asks you"]');
+    const footer = (c: HTMLElement) =>
+      c.querySelector('textarea[aria-label="Message the agent"]')?.closest(".sticky");
+    // A computer: over the transcript, which scrolls under it.
+    const wide = page();
+    wide.snapshot(turn("Price the Danish boxes"), { ...session(), question: asked });
+    expect(footer(wide.container)?.contains(card(wide.container))).toBe(true);
+    expect(card(wide.container)?.className).toContain("backdrop-blur");
+    for (const unmount of roots.splice(0)) unmount();
+    // A phone: after the last turn's end, scrolling away with the transcript.
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q }));
+    const phone = page();
+    phone.snapshot(turn("Price the Danish boxes"), { ...session(), question: asked });
+    const inline = card(phone.container);
+    expect(inline?.textContent).toContain(asked.text);
+    expect(footer(phone.container)?.contains(inline)).toBe(false);
+    const end = phone.container.querySelector(".thread-end");
+    expect(
+      end && inline && end.compareDocumentPosition(inline) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(inline?.className).not.toContain("backdrop-blur");
+    expect(phone.container.querySelectorAll('section[aria-label="The agent asks you"]')).toHaveLength(1);
+  });
+
   it("lists the files a turn edited, each a click from its changes when the session has them", () => {
     const p = page();
     p.snapshot(turn("Fix the flaky login test"));

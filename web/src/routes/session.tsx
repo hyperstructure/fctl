@@ -50,7 +50,7 @@ import {
   PullRequestReviewMark,
   PullRequestStateIcon,
 } from "@/components/session/pull-request";
-import { QuestionCard } from "@/components/session/question";
+import { QuestionCard, useQuestionFloats } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
 import {
@@ -337,6 +337,7 @@ export function SessionPage() {
     ? !s.session.review && !s.session.question && waitsForYou(s.session)
     : undefined;
   const invite = useJustNow(handedOver, id);
+  const questionFloats = useQuestionFloats();
 
   if (initial.isError && !session) {
     return (
@@ -402,6 +403,24 @@ export function SessionPage() {
   };
   const focusReply = () =>
     document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')?.focus();
+  // What the agent asks: above the message box where the window has room for it, else at the
+  // transcript's end, where it scrolls away with the rest rather than covering it.
+  const question = session?.question && !session.review && (
+    <QuestionCard
+      key={session.question.asked_at}
+      question={session.question}
+      canAnswer={(role === "editor" || role === "owner") && status !== "failed"}
+      onAnswer={(t) =>
+        store.send(
+          t,
+          me?.user ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url } : undefined,
+          { attachments: [], previews: {} },
+        )
+      }
+      floating={questionFloats}
+      className={questionFloats ? "mb-3" : "mt-6"}
+    />
+  );
   const outline = turns.length > 0 && (
     <TurnOutline
       turns={turns}
@@ -782,6 +801,7 @@ export function SessionPage() {
                 onDiff={setDiffAt}
                 tasks={s.tasks}
               />
+              {!questionFloats && question}
             </Reveal.Provider>
           )}
         </div>
@@ -818,23 +838,7 @@ export function SessionPage() {
               <Pill away={away} atBottom={atBottom} newSince={newSince} letGo={letGo} header={bar} />
             </div>
             <div className={cn("pointer-events-auto", invite && "invite")}>
-              {session?.question && !session.review && (
-                <QuestionCard
-                  key={session.question.asked_at}
-                  question={session.question}
-                  canAnswer={(role === "editor" || role === "owner") && status !== "failed"}
-                  onAnswer={(t) =>
-                    store.send(
-                      t,
-                      me?.user
-                        ? { id: me.user.id, name: me.user.name, avatar_url: me.user.avatar_url }
-                        : undefined,
-                      { attachments: [], previews: {} },
-                    )
-                  }
-                  className="mb-3"
-                />
-              )}
+              {questionFloats && question}
               {session?.review ? (
                 <ReviewFooter session={session} review={review} />
               ) : (
