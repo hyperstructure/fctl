@@ -3,6 +3,7 @@
 // saved as the popover closes. Until then the avatars here show it as it's dragged, and the
 // popover offers the colors of their own its projects have, so that it can match them.
 
+import { themes } from "@hyperstructure/design/brand";
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ColorPopover, RAINBOW } from "@/components/ui/color-popover";
 import { toast } from "@/components/ui/feedback";
@@ -220,7 +221,7 @@ export function AvatarThemes({ name, hex }: { name: string; hex: string }) {
         {(
           [
             ["light", THEME_BACKGROUNDS.light],
-            ["dark", "#1c1c1c"],
+            ["dark", themes.dark.surface],
           ] as const
         ).map(([theme, bg]) => (
           <span key={theme} className="flex w-9 items-center justify-center" style={{ background: bg }}>

@@ -4,7 +4,7 @@
 // access tokens and your data (the export, deleting the account). Which pages there are, and what
 // the list says about each, is lib/settings.ts.
 
-import { palette } from "@hyperstructure/design/brand";
+import { palette, themes } from "@hyperstructure/design/brand";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "@tanstack/react-router";
 import {
@@ -1949,7 +1949,7 @@ function Appearance() {
 function ThemePicture({ theme }: { theme: "dark" | "light" }) {
   const dark = theme === "dark";
   const ink = dark ? palette.whiteish : palette.blackish;
-  const canvas = dark ? palette.blackish : palette.whiteish;
+  const canvas = themes[theme].canvas;
   const line = withAlpha(ink, dark ? 0.08 : 0.09);
   const faint = withAlpha(ink, dark ? 0.16 : 0.13);
   const accent = dark ? palette.yellow : palette.lime;

@@ -3,6 +3,7 @@
 // serves (BRAND_ASSETS in vite.config.ts), at the sizes they claim.
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { themes } from "@hyperstructure/design/brand";
 import { describe, expect, it } from "vitest";
 import { BRAND_ASSETS } from "../vite.config";
 
@@ -79,5 +80,17 @@ describe("the installable app", () => {
     expect([ico.readUInt16LE(0), ico.readUInt16LE(2)]).toEqual([0, 1]);
     const sizes = Array.from({ length: ico.readUInt16LE(4) }, (_, i) => ico[6 + 16 * i] || 256);
     expect(sizes).toEqual(expect.arrayContaining([16, 32]));
+  });
+
+  // What paints before the app's styles do takes the dark canvas from the
+  // design package: the title bar, the installed app's splash and the
+  // offline page, so that none of them shows a band of another dark.
+  it("gives what paints before the app the dark theme's canvas", () => {
+    const canvas = themes.dark.canvas;
+    const file = (path: string) => readFileSync(new URL(path, web), "utf8");
+    expect(manifest).toMatchObject({ background_color: canvas, theme_color: canvas });
+    expect(html).toContain(`<meta name="theme-color" content="${canvas}" />`);
+    expect(file("public/theme.js")).toContain(`dark ? "${canvas}" : "${themes.light.canvas}"`);
+    expect(file("public/offline.html")).toMatch(new RegExp(`:root \\{\\s*--canvas: ${canvas};`));
   });
 });

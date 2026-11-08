@@ -79,8 +79,9 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
   labels (`items-start`), so that a hint or an error under one moves nothing.
 - Design: the brand palette is yellow `#ffff5d` (lime `#eaff81` on light
   backgrounds), hot pink `#ff00d8`, blue `#007eff`, blackish `#171717`,
-  whiteish `#fafafa`. Red is for danger only (`danger`: destructive actions,
-  errors, failures). Hovered rows and buttons fill with `hover`, not
+  whiteish `#fafafa`; the dark theme's page is near black (`canvas`
+  `#0a0a0a`), darker than blackish. Red is for danger only (`danger`:
+  destructive actions, errors, failures). Hovered rows and buttons fill with `hover`, not
   `raised`, which is white in the light theme. Use the semantic tokens, not
   raw colors. Inter (with optical sizes) for text and display, JetBrains Mono
   for code and small labels. Sentence case everywhere, no decorative
