@@ -6,6 +6,7 @@ import {
   keyDirection,
   mayShrink,
   NEAR_BOTTOM,
+  routerScrolls,
   Stick,
   scrollsInside,
   useStickToBottom,
@@ -133,6 +134,19 @@ describe("the page's bottom", () => {
     expect(bottomOf(2000, 800, Number.NaN)).toBe(1200);
     // A fraction taller than the layout viewport, rounded.
     expect(bottomOf(2000, 800, 800.5)).toBe(1200);
+  });
+});
+
+describe("the router's scroll", () => {
+  it("puts other pages at their top, or back where the reader left them", () => {
+    for (const path of ["/", "/p/web", "/pulls", "/settings", "/w/acme", "/s/"]) {
+      expect(routerScrolls(path)).toBe(true);
+    }
+  });
+
+  it("leaves a session's page, which opens at its bottom, to the page", () => {
+    expect(routerScrolls("/s/ses_01M6XDXP721N7601T5FERGHG6Q")).toBe(false);
+    expect(routerScrolls("/s/ses_01M6XDXP721N7601T5FERGHG6Q/")).toBe(false);
   });
 });
 

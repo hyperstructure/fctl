@@ -76,9 +76,25 @@ export function bottomOf(height: number, layout: number, visual?: number): numbe
 }
 
 /**
+ * Whether the router puts the page at `pathname` where it goes, at its top or
+ * back where the reader left it: everywhere but on a session's page, which
+ * this hook takes to its bottom. There the router would scroll the window up
+ * from the last session's bottom as the next one comes in, and the hook down
+ * again a frame later. On an iPhone, the next session then sometimes showed
+ * well above its bottom, and this hook, taking that for the reader's scroll,
+ * stopped following it; from the Agent Floor, whose page is usually at its
+ * top, the router's scroll moves nothing and the session always opened at
+ * its bottom.
+ */
+export function routerScrolls(pathname: string): boolean {
+  return !/^\/s\/[^/]+\/?$/.test(pathname);
+}
+
+/**
  * Keeps the page's bottom in view while `content` grows, or anything else on
  * the page, as long as the reader is at the bottom. A new `key` (another
- * session) starts at the bottom again. Returns what lets go of the bottom
+ * session) starts at the bottom again, wherever the last one was, the router
+ * leaving the page's scroll to it (`routerScrolls`). Returns what lets go of the bottom
  * before the page moves elsewhere for the reader, as finding in the
  * transcript does: what that opens grows the page, which would otherwise
  * take it back down.

@@ -6,6 +6,7 @@ import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@t
 import { api } from "@/lib/api";
 import { fetchMe, keys, queryClient } from "@/lib/queries";
 import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings";
+import { routerScrolls } from "@/lib/stick-to-bottom";
 import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
 import { Admin } from "@/routes/admin";
 import { InvitePage, LoginPage, ResetPage, SetupPage, TwoFactorPage } from "@/routes/auth";
@@ -239,7 +240,8 @@ export const router = createRouter({
   routeTree: tree,
   defaultPreload: "intent",
   defaultViewTransition: true,
-  scrollRestoration: true,
+  // A session's page opens at its newest work by itself (lib/stick-to-bottom.ts).
+  scrollRestoration: ({ location }) => routerScrolls(location.pathname),
 });
 
 declare module "@tanstack/react-router" {
