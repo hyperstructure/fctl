@@ -29,6 +29,7 @@ mod builds;
 pub mod images;
 pub mod oci;
 pub mod registry;
+mod retry;
 pub mod vm;
 pub mod vsock;
 
@@ -516,6 +517,16 @@ impl FirecrackerDriver {
         assets::kernel(&kernel, &self.root.join("kernels"), log).await
     }
 
+    /// Firecracker and the kernel, which unpacking an image takes, as do the
+    /// sandboxes made from it: had before a pull, so that when they can't
+    /// be, the pull fails saying so rather than that the image can't be
+    /// pulled, and tries no fallback, which would need them too.
+    async fn vm_assets(&self, log: Log<'_>) -> Result<()> {
+        self.firecracker(log).await?;
+        self.kernel(log).await?;
+        Ok(())
+    }
+
     /// The initramfs, and the start of the SHA-256 of the fctl-agent in it.
     async fn initrd(&self) -> Result<(PathBuf, String)> {
         let agent = crate::agentbin::linux_agent(&self.host)
@@ -792,6 +803,7 @@ impl FirecrackerDriver {
         progress: bool,
         log: Log<'_>,
     ) -> Result<String> {
+        self.vm_assets(log).await?;
         let error = match self.pull(image, progress).await {
             Ok(()) => return Ok(image.to_owned()),
             Err(e) => e,
@@ -821,7 +833,7 @@ impl FirecrackerDriver {
         self.make_root()?;
         let lock = self.lock(&format!("pull {key}"));
         let _held = lock.lock().await;
-        let registry = registry::Registry::new();
+        let registry = registry::Registry::new(log);
         let resolved = registry.resolve(image, std::env::consts::ARCH).await?;
         if self.store.image(&resolved.id).is_some() {
             // One an earlier fctl pulled has no layers' digests, so no
@@ -952,7 +964,7 @@ impl FirecrackerDriver {
     async fn download_and_unpack(
         &self,
         image: &str,
-        registry: &registry::Registry,
+        registry: &registry::Registry<'_>,
         resolved: &registry::Resolved,
         skip: usize,
         downloads: &Path,
@@ -1040,6 +1052,7 @@ impl FirecrackerDriver {
         if let Some(image) = self.store.lookup(&spec.image) {
             return Ok(image);
         }
+        self.vm_assets(log).await?;
         let error = match self.pull_with(&spec.image, log).await {
             Ok(()) => {
                 return self
@@ -2387,8 +2400,10 @@ mod tests {
     /// ```
     ///
     /// `FCTL_TEST_FIRECRACKER_DATA` keeps the host's files (the image, the
-    /// kernel and Firecracker) between runs, and `FCTL_TEST_FIRECRACKER_RUN`
-    /// is a command whose output it shows (`claude --version`, say).
+    /// kernel and Firecracker) between runs, `FCTL_TEST_FIRECRACKER_ASSETS`
+    /// only Firecracker and the kernel ([`vm_host`]), and
+    /// `FCTL_TEST_FIRECRACKER_RUN` is a command whose output it shows
+    /// (`claude --version`, say).
     #[tokio::test]
     #[ignore = "needs KVM, passt and a static fctl-agent"]
     async fn boots_a_sandbox() -> Result<()> {
@@ -2399,13 +2414,7 @@ mod tests {
         let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| temp.path().to_owned());
-        let mut cfg = HostConfig {
-            data_dir: Some(data),
-            agent_bin: Some(var("FCTL_TEST_FIRECRACKER_AGENT")?.into()),
-            ..HostConfig::default()
-        };
-        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
-        cfg.firecracker.disk_gb = 4;
+        let cfg = vm_host(&data).await?;
         let d = Driver::select("firecracker", &cfg).await?;
         let probed = d.probe().await;
         assert!(probed.available, "{probed:?}");
@@ -2519,8 +2528,10 @@ mod tests {
     }
 
     /// The host and the VMs' configuration for the tests that boot VMs, as
-    /// [`boots_a_sandbox`] says, with the host's files in `data`.
-    fn vm_host(data: &Path) -> Result<HostConfig> {
+    /// [`boots_a_sandbox`] says, with the host's files in `data`: with
+    /// Firecracker and the kernel from `FCTL_TEST_FIRECRACKER_ASSETS`, where
+    /// it is set ([`give_kept_assets`]).
+    async fn vm_host(data: &Path) -> Result<HostConfig> {
         let agent = std::env::var("FCTL_TEST_FIRECRACKER_AGENT")
             .context("FCTL_TEST_FIRECRACKER_AGENT isn't set")?;
         let mut cfg = HostConfig {
@@ -2530,7 +2541,49 @@ mod tests {
         };
         cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
         cfg.firecracker.disk_gb = 4;
+        if let Ok(kept) = std::env::var("FCTL_TEST_FIRECRACKER_ASSETS") {
+            give_kept_assets(Path::new(&kept), &cfg).await?;
+        }
         Ok(cfg)
+    }
+
+    /// Gives the host `cfg` the pinned Firecracker and, unless `cfg` names
+    /// another, the kernel, from `kept`: a directory that keeps them
+    /// between runs (CI caches it), which they are downloaded to first when
+    /// they aren't there, as a host downloads them. The host finds them
+    /// where it would have downloaded them itself, so that its VMs boot as
+    /// a host's do, with fewer downloads that can fail.
+    async fn give_kept_assets(kept: &Path, cfg: &HostConfig) -> Result<()> {
+        // Tests that run at once download them once.
+        static DOWNLOADING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _held = DOWNLOADING.lock().await;
+        let log = |line: String| eprintln!("{line}");
+        let root = cfg.data_dir().join("firecracker");
+        let (bin, kernels) = (root.join("bin"), root.join("kernels"));
+        let firecracker = assets::download_firecracker(&kept.join("bin"), &log).await?;
+        let mut give = vec![
+            (firecracker, assets::pinned_firecracker(&bin)),
+            (
+                assets::pinned_jailer(&kept.join("bin")),
+                assets::pinned_jailer(&bin),
+            ),
+        ];
+        if cfg.firecracker.kernel.is_none() {
+            let kernel = assets::kernel(assets::KERNEL_IMAGE, &kept.join("kernels"), &log).await?;
+            let inside = kernel.strip_prefix(kept.join("kernels"))?.to_owned();
+            give.push((kernel, kernels.join(inside)));
+        }
+        for (from, to) in give {
+            if to.is_file() {
+                continue;
+            }
+            if let Some(dir) = to.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::copy(&from, &to)
+                .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+        }
+        Ok(())
     }
 
     /// Two sandboxes of a project at once share its package caches: what one
@@ -2544,7 +2597,7 @@ mod tests {
         let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| temp.path().to_owned());
-        let cfg = vm_host(&data)?;
+        let cfg = vm_host(&data).await?;
         let d = Driver::select("firecracker", &cfg).await?;
         let log = |line: String| eprintln!("{line}");
         let project = format!("prj_test{}", hex::encode(fctl_domain::random_bytes::<4>()));
@@ -2637,18 +2690,9 @@ mod tests {
         let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| temp.path().to_owned());
-        let mut cfg = HostConfig {
-            data_dir: Some(data),
-            agent_bin: Some(
-                std::env::var("FCTL_TEST_FIRECRACKER_AGENT")
-                    .context("FCTL_TEST_FIRECRACKER_AGENT isn't set")?
-                    .into(),
-            ),
-            cpus: 2,
-            memory_mb: 2048,
-            ..HostConfig::default()
-        };
-        cfg.firecracker.kernel = std::env::var("FCTL_TEST_FIRECRACKER_KERNEL").ok();
+        let mut cfg = vm_host(&data).await?;
+        cfg.cpus = 2;
+        cfg.memory_mb = 2048;
         cfg.firecracker.disk_gb = 8;
         let d = Driver::select("firecracker", &cfg).await?;
         assert!(d.builds_images());
@@ -2745,7 +2789,7 @@ mod tests {
         let data = std::env::var("FCTL_TEST_FIRECRACKER_DATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| temp.path().to_owned());
-        let cfg = vm_host(&data)?;
+        let cfg = vm_host(&data).await?;
         let d = Driver::select("firecracker", &cfg).await?;
         let log = |line: String| eprintln!("{line}");
         let name = format!(

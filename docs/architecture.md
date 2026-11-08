@@ -3614,7 +3614,19 @@ SHA-256), and the VMs' kernel, Linux 6.18 with Firecracker's guest
 configuration, which hyperstructure/sandbox publishes as an image
 (`ghcr.io/hyperstructure/sandbox-kernel:<version>`), unless the
 `[firecracker]` table of `host.toml` names others. Everything it keeps is
-in `firecracker/` in the host's data directory.
+in `firecracker/` in the host's data directory. A download that fails in a
+way that may pass (a network error, a timeout, a 5xx or a 429) is tried
+again, five times at most, 2, 6, 18 and 54 s apart, and says so in the
+log of the session that waits for it, or the host's (`retry.rs`):
+Firecracker's archive,
+from GitHub's release downloads and its API in turn (each pinned asset's
+ID is beside its SHA-256), and an image's or the kernel's manifests,
+configs, tokens and layers. A layer cut off halfway goes on from where it
+stopped, with a `Range`, and fails only after five tries in a row that got
+no further. A pull has Firecracker and the kernel first, which unpacking
+the image takes: when they can't be had, it fails saying so, rather than
+that the image can't be pulled, and tries no fallback image, which would
+need them too.
 
 - **Images.** The host reads an image's manifest for its platform, its
   config and its layers from the registry, each checked against its
