@@ -15,6 +15,12 @@ stopPinchZoom();
 syncShimmers();
 watchViewport();
 
+// Sessions have one view since the classic one went: browsers that kept which of the two to show
+// (fctl:session-view) forget it.
+try {
+  localStorage.removeItem("fctl:session-view");
+} catch {}
+
 // Makes the app installable and shows an offline page (public/sw.js). Not in
 // development, where it would outlive the dev server on this origin.
 if (import.meta.env.PROD && "serviceWorker" in navigator) {

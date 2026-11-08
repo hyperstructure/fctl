@@ -1,4 +1,4 @@
-// The session at a glance, on the new session page's cover (routes/session-next.tsx): how many
+// The session at a glance, on the session page's cover (routes/session.tsx): how many
 // turns it took, the agent's time, its steps and what it changed, in figures that roll as they
 // move; its pull requests and how each stands; and its turns as a ribbon, each as wide as the
 // work in it, colored by how it went, that goes to the turn it is.

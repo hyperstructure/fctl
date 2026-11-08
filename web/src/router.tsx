@@ -18,7 +18,7 @@ import { NewWorkspace } from "@/routes/new-workspace";
 import { NotFound } from "@/routes/not-found";
 import { ProjectPage } from "@/routes/project";
 import { PullsPage, type PullsSearch } from "@/routes/pulls";
-import { SessionRoute } from "@/routes/session-next";
+import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
 import { SignedInLayout } from "@/routes/two-factor";
 import {
@@ -157,9 +157,9 @@ const project = createRoute({
 const session = createRoute({
   getParentRoute: () => app,
   path: "/s/$id",
-  component: SessionRoute,
+  component: SessionPage,
   // From a search of all sessions: what was found, and the event it was found in (lib/find.ts).
-  // From a link to a turn (the new session page's): the event the turn starts with.
+  // From a link to a turn: the event the turn starts with.
   validateSearch: (s: Record<string, unknown>): { find?: string; at?: number; turn?: number } => ({
     find: str(s.find),
     at: typeof s.at === "number" && Number.isSafeInteger(s.at) && s.at > 0 ? s.at : undefined,

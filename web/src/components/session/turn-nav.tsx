@@ -1,4 +1,4 @@
-// Finding one's way through the new session page's turns (routes/session-next.tsx): which turn
+// Finding one's way through the session page's turns (routes/session.tsx): which turn
 // the reader is in, the bar under the header that says so once the turn's start has scrolled away,
 // the list of every turn it opens, and the keys that go from turn to turn.
 

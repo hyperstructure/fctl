@@ -1,5 +1,5 @@
-// What of a session's transcript the reader hasn't seen, as the new session page counts it
-// (routes/session-next.tsx): the items that came after a moment, by the events they started
+// What of a session's transcript the reader hasn't seen, as the session page counts it
+// (routes/session.tsx): the items that came after a moment, by the events they started
 // with. Earlier activity that loads above the reader came before it, and a message on its way
 // isn't stored yet: neither counts.
 

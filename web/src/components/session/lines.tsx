@@ -8,20 +8,16 @@
 // with their icons bare.
 
 import { ChevronRight, CircleAlert } from "lucide-react";
-import { Component, type ComponentType, createContext, type ReactNode, useContext } from "react";
-import { Spinner } from "@/components/ui";
+import { Component, type ReactNode } from "react";
+import { DotWave } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 /**
- * What says a step of the agent's work is under way (a call that runs, one that streams in, the
- * sandbox's setup): the spinner, unless the page has its own (the new session page's dots).
+ * What says a step of the agent's work is under way (a call that runs, the sandbox's setup): the
+ * session page's dots.
  */
-export const BusyMark = createContext<ComponentType<{ className?: string }>>(Spinner);
-
-/** The page's sign that a step is under way ([`BusyMark`]). */
 export function Busy({ className }: { className?: string }) {
-  const Mark = useContext(BusyMark);
-  return <Mark className={className} />;
+  return <DotWave className={className} />;
 }
 
 export function Milestone({
@@ -51,8 +47,8 @@ export function Milestone({
 }
 
 /**
- * An icon in the rail, without a tile. It says it is one (`data-rail`), for the new session page,
- * whose thread runs down behind the rail's icons.
+ * An icon in the rail, without a tile. It says it is one (`data-rail`), for the thread that runs
+ * down behind the rail's icons.
  */
 export function RailIcon({ children, className }: { children: ReactNode; className?: string }) {
   return (

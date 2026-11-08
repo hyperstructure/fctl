@@ -810,12 +810,12 @@
   }
 }
 
-/* The new session page keeps the notes the agent keeps quiet beside what it says: the words in the
-   text's own gray, the mark in the accent (the classic page lights the whole line). */
-.session-next [data-memory] > :first-child {
+/* The notes the agent keeps stay quiet beside what it says: the words in the text's own gray, the
+   mark in the accent. */
+[data-memory] > :first-child {
   color: var(--c-ink-3);
 }
-.session-next [data-memory] > :first-child [data-rail] {
+[data-memory] > :first-child [data-rail] {
   color: var(--c-accent);
 }
 
