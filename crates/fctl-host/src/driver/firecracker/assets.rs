@@ -89,7 +89,9 @@ pub async fn download_firecracker(
         log,
     )
     .await
-    .with_context(|| format!("downloading Firecracker {FIRECRACKER_VERSION} from {url}"));
+    .with_context(|| {
+        format!("downloading Firecracker {FIRECRACKER_VERSION} ({url}, or from GitHub's API)")
+    });
     let result = downloaded.and_then(|_| {
         let digest = file_digest(&archive)?;
         if digest != format!("sha256:{sum}") {

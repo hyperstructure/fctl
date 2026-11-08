@@ -88,9 +88,8 @@ pub fn brief(message: &str) -> String {
 /// [`Retries::tries`] tries have failed. A place whose failure won't pass
 /// on another try (a refusal, say, as GitHub's API refuses those who made
 /// too many requests) is tried no more, and once none is left, it fails.
-/// What it says then is what the first place said last, the canonical
-/// one, where it said anything. At most `max_bytes`, each try within
-/// `limit`. `what` names it in what `log` says.
+/// What it says then is what its last try said. At most `max_bytes`, each
+/// try within `limit`. `what` names it in what `log` says.
 pub async fn download(
     urls: &[&str],
     to: &Path,
@@ -106,8 +105,7 @@ pub async fn download(
     let headers = [("accept", "application/octet-stream")];
     let mut places: Vec<&str> = urls.to_vec();
     let mut next = 0;
-    // What the first place said last, and what another said last.
-    let (mut first, mut other) = (None, None);
+    let mut last = None;
     for tried in 1..=retries.tries {
         let Some(&url) = places.get(next) else {
             break;
@@ -132,11 +130,7 @@ pub async fn download(
         if next >= places.len() {
             next = 0;
         }
-        if urls.first() == Some(&url) {
-            first = Some(e);
-        } else {
-            other = Some(e);
-        }
+        last = Some(e);
         if places.is_empty() || tried == retries.tries {
             break;
         }
@@ -147,9 +141,7 @@ pub async fn download(
         ));
         tokio::time::sleep(wait).await;
     }
-    Err(first
-        .or(other)
-        .unwrap_or_else(|| fctl_client::Error::Other("nowhere to download from".into())))
+    Err(last.unwrap_or_else(|| fctl_client::Error::Other("nowhere to download from".into())))
 }
 
 #[cfg(test)]
@@ -308,73 +300,45 @@ pub(super) mod tests {
 
     /// A place that refuses (GitHub's API, which lets those without a token
     /// make 60 requests an hour) is tried no more, and the others are
-    /// tried again: what it says in the end is the first place's.
+    /// tried again: what it says in the end is what its last try said.
     #[tokio::test]
     async fn a_place_that_refuses_is_tried_no_more() -> anyhow::Result<()> {
-        let (failing, failed) = server(|_| ("504 Gateway Time-out", Vec::new())).await?;
-        let (refusing, refused) = server(|_| ("403 Forbidden", b"rate limit".to_vec())).await?;
         let dir = tempfile::tempdir()?;
         let to = dir.path().join("archive");
-        let urls = [failing.as_str(), refusing.as_str()];
-        let e = download(
-            &urls,
-            &to,
-            1024,
-            Duration::from_secs(10),
-            QUICK,
-            "x",
-            &|_| {},
-        )
-        .await;
-        assert!(
-            matches!(e, Err(fctl_client::Error::Status { status: 504, .. })),
-            "{e:?}"
-        );
-        assert_eq!(
-            (
-                failed.load(Ordering::SeqCst),
-                refused.load(Ordering::SeqCst)
-            ),
-            (2, 1)
-        );
-        // The first refusing, the next has it; none left, it stops.
+        let get = async |urls: &[&str]| {
+            download(
+                urls,
+                &to,
+                1024,
+                Duration::from_secs(10),
+                QUICK,
+                "x",
+                &|_| {},
+            )
+            .await
+        };
+        let status = |e: fctl_client::http::Result<u64>| match e {
+            Err(fctl_client::Error::Status { status, .. }) => Some(status),
+            _ => None,
+        };
+        let count = |n: &Arc<AtomicUsize>| n.load(Ordering::SeqCst);
+        let (failing, failed) = server(|_| ("504 Gateway Time-out", Vec::new())).await?;
+        let (refusing, refused) = server(|_| ("403 Forbidden", b"rate limit".to_vec())).await?;
+        let (missing, gone) = server(|_| ("404 Not Found", Vec::new())).await?;
         let (working, worked) = server(|_| ("200 OK", b"the release".to_vec())).await?;
-        let urls = [refusing.as_str(), working.as_str()];
-        download(
-            &urls,
-            &to,
-            1024,
-            Duration::from_secs(10),
-            QUICK,
-            "x",
-            &|_| {},
-        )
-        .await?;
+        // 504, 403, then the first again: its 504.
+        assert_eq!(status(get(&[&failing, &refusing]).await), Some(504));
+        assert_eq!((count(&failed), count(&refused)), (2, 1));
+        // The first refusing, the next has it.
+        get(&[&refusing, &working]).await?;
         assert_eq!(std::fs::read(&to)?, b"the release");
-        assert_eq!(
-            (
-                refused.load(Ordering::SeqCst),
-                worked.load(Ordering::SeqCst)
-            ),
-            (2, 1)
-        );
-        let (missing, _) = server(|_| ("404 Not Found", Vec::new())).await?;
-        let urls = [missing.as_str(), refusing.as_str()];
-        let e = download(
-            &urls,
-            &to,
-            1024,
-            Duration::from_secs(10),
-            QUICK,
-            "x",
-            &|_| {},
-        )
-        .await;
-        assert!(
-            matches!(e, Err(fctl_client::Error::Status { status: 404, .. })),
-            "{e:?}"
-        );
-        assert_eq!(refused.load(Ordering::SeqCst), 3);
+        assert_eq!((count(&refused), count(&worked)), (2, 1));
+        // All refusing: it stops, with the last refusal.
+        assert_eq!(status(get(&[&missing, &refusing]).await), Some(403));
+        assert_eq!((count(&gone), count(&refused)), (1, 3));
+        // What the place still tried said, not the one that refused first.
+        assert_eq!(status(get(&[&missing, &failing]).await), Some(504));
+        assert_eq!((count(&gone), count(&failed)), (2, 4));
         Ok(())
     }
 
