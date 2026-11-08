@@ -13,7 +13,7 @@
 //! `cargo xtask publish` uploads a dist directory to the releases store
 //! (deploy/releases.toml) that https://fctl.sh/releases serves.
 
-use crate::util::{self, retry_throttled, run};
+use crate::util::{self, retry_cloudflare, run};
 use anyhow::{Result, bail};
 use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest, Sha256};
@@ -301,13 +301,13 @@ pub fn publish(root: &Path, version: Option<String>, latest: bool) -> Result<()>
         if size > KV_MAX {
             bail!("{n} is {size} bytes, over the 25 MiB a KV value can hold");
         }
-        retry_throttled(
+        retry_cloudflare(
             put(&format!("v{version}/{n}"))?.arg("--path").arg(&path),
             run,
         )?;
     }
     if latest {
-        retry_throttled(put("latest")?.arg(&version), run)?;
+        retry_cloudflare(put("latest")?.arg(&version), run)?;
     }
     eprintln!(
         "published v{version}{} to {}/v{version}/",

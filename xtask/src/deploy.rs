@@ -5,7 +5,7 @@
 //! the web app and the Worker, applies D1 migrations and deploys. `secrets`
 //! sets what only the Worker may know, once.
 
-use crate::util::{self, output, retry_throttled, run, run_with_stdin};
+use crate::util::{self, output, retry_cloudflare, retry_throttled, run, run_with_stdin};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -286,7 +286,7 @@ pub fn deploy(root: &Path, name: &str, opts: DeployOpts) -> Result<()> {
         eprintln!("dry run: config at {}", config.display());
         return Ok(());
     }
-    retry_throttled(
+    retry_cloudflare(
         util::wrangler(root)?
             .args(["d1", "migrations", "apply", "DB", "--remote", "--config"])
             .arg(&config)
@@ -294,7 +294,7 @@ pub fn deploy(root: &Path, name: &str, opts: DeployOpts) -> Result<()> {
             .env("CI", "1"),
         run,
     )?;
-    retry_throttled(
+    retry_cloudflare(
         util::wrangler(root)?
             .args(["deploy", "--config"])
             .arg(&config)
@@ -319,6 +319,8 @@ fn create_database(root: &Path, name: &str, inst: &Instance) -> Result<String> {
     if let Some(loc) = &inst.d1.location {
         cmd.args(["--location", loc]);
     }
+    // Not after an answer that isn't JSON: it may have come once the
+    // database was made, and making it again fails.
     let out = retry_throttled(&mut cmd, output)?;
     let id = out
         .split('"')
@@ -347,7 +349,7 @@ fn existing_secrets(root: &Path, config: &Path) -> Result<BTreeSet<String>> {
     struct S {
         name: String,
     }
-    let out = retry_throttled(
+    let out = retry_cloudflare(
         util::wrangler(root)?
             .args(["secret", "list", "--format", "json", "--config"])
             .arg(config)
@@ -387,7 +389,7 @@ pub fn secrets(root: &Path, name: &str, opts: SecretOpts) -> Result<()> {
     let control = root.join("crates/fctl-control");
     let have = existing_secrets(root, &config)?;
     let put = |key: &str, value: &str| -> Result<()> {
-        retry_throttled(
+        retry_cloudflare(
             util::wrangler(root)?
                 .args(["secret", "put", key, "--config"])
                 .arg(&config)

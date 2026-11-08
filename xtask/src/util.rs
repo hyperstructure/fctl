@@ -155,26 +155,58 @@ pub fn run_with_stdin(cmd: &mut Command, input: &str) -> Result<()> {
     Ok(())
 }
 
-/// How many times `retry_throttled` runs a command that Cloudflare's API
-/// keeps throttling.
-const THROTTLED_ATTEMPTS: u32 = 4;
+/// How many times `retry_cloudflare` runs a command that Cloudflare's API
+/// keeps throttling or failing.
+const API_ATTEMPTS: u32 = 4;
 
-/// The longest wait `retry_throttled` takes: Cloudflare blocks a token that
+/// The longest wait `retry_cloudflare` takes: Cloudflare blocks a token that
 /// went over its limit for five minutes.
-const THROTTLED_MAX_WAIT: Duration = Duration::from_secs(5 * 60);
+const API_MAX_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// How long `retry_cloudflare` waits before it runs a command again that
+/// failed because Cloudflare's API couldn't answer, unless the API said how
+/// long: three times longer after each failure (5, 15, 45 s).
+const UNAVAILABLE_WAIT: Duration = Duration::from_secs(5);
+
+/// What wrangler says when an API request got an answer that isn't JSON:
+/// what a server in front of Cloudflare's API sends when it fails, as its
+/// `503 Service Unavailable` ("no healthy upstream") failed app.fctl.sh's
+/// deploy on 2026-11-06. The API's own errors are JSON.
+const MALFORMED: &str = "Received a malformed response from the API";
 
 /// Runs a wrangler command that calls Cloudflare's API with `f` (`run`,
-/// `output`, …), and runs it again when the API throttled it. Once a token,
-/// an account or an address has made too many requests, Cloudflare answers
-/// 429 (code 971) with a Retry-After for a while, even to a first request,
-/// as app.fctl.sh's deploy found in CI. Wrangler waits that out in only some
-/// of `wrangler deploy`'s requests, and gives up at once in its D1, KV and
-/// secret commands. A throttled request never ran, and running one of
-/// xtask's wrangler commands again ends where one run would have (migrations
-/// apply those not applied yet), so the command runs again from the start
-/// once the wait the API asked for is over: up to four times, and only for
-/// waits of up to five minutes.
+/// `output`, …), and runs it again when the API throttled it, or couldn't
+/// answer it. Once a token, an account or an address has made too many
+/// requests, Cloudflare answers 429 (code 971) with a Retry-After for a
+/// while, even to a first request, as app.fctl.sh's deploy found in CI.
+/// Wrangler waits that out in only some of `wrangler deploy`'s requests,
+/// and gives up at once in its D1, KV and secret commands. A request the
+/// API answered with an error page rather than JSON ([`MALFORMED`]) failed
+/// in front of it, and wrangler gives up at once on that too. Running such
+/// a command again ends where one run would have (migrations apply those
+/// not applied yet, a deploy deploys the same build, a secret or a KV value
+/// is put again), so it runs again from the start once the wait is over:
+/// up to four times, and only for waits of up to five minutes. A command
+/// that would fail the second time if the first did what it asked
+/// (`d1 create`) takes [`retry_throttled`].
+pub fn retry_cloudflare<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<T>) -> Result<T> {
+    retry(cmd, f, true)
+}
+
+/// [`retry_cloudflare`], but only when the API throttled the command: a
+/// throttled request never ran, while an answer that isn't JSON may have
+/// come after the API did what it was asked.
 pub fn retry_throttled<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<T>) -> Result<T> {
+    retry(cmd, f, false)
+}
+
+/// Runs the command with `f`, and again when the API throttled it, or,
+/// with `unavailable`, couldn't answer it.
+fn retry<T>(
+    cmd: &mut Command,
+    f: impl Fn(&mut Command) -> Result<T>,
+    unavailable: bool,
+) -> Result<T> {
     let mut attempt = 1;
     loop {
         // Where wrangler writes what it did, how it failed included.
@@ -190,25 +222,32 @@ pub fn retry_throttled<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<
             Ok(out) => return Ok(out),
             Err(err) => err,
         };
-        let Some(wait) = throttled(&entries) else {
+        let Some(again) =
+            again(&entries).filter(|a| unavailable || matches!(a, Again::Throttled(_)))
+        else {
             return Err(err);
         };
-        if wait > THROTTLED_MAX_WAIT {
+        let (why, wait) = match again {
+            Again::Throttled(wait) => ("throttled wrangler", wait),
+            Again::Unavailable(asked) => (
+                "couldn't answer wrangler",
+                asked.unwrap_or(UNAVAILABLE_WAIT * 3u32.pow(attempt - 1)),
+            ),
+        };
+        if wait > API_MAX_WAIT {
             return Err(err.context(format!(
                 "Cloudflare's API asked wrangler to wait {} s, longer than xtask waits",
                 wait.as_secs()
             )));
         }
-        if attempt == THROTTLED_ATTEMPTS {
-            return Err(err.context(format!(
-                "Cloudflare's API throttled wrangler {attempt} times in a row"
-            )));
+        if attempt == API_ATTEMPTS {
+            return Err(err.context(format!("Cloudflare's API {why} {attempt} times in a row")));
         }
         attempt += 1;
         // Retry-After is rounded up already; a second more for the clocks.
         let wait = wait + Duration::from_secs(1);
         eprintln!(
-            "{}Cloudflare's API throttled wrangler: running it again in {} s (attempt {attempt} of {THROTTLED_ATTEMPTS})",
+            "{}Cloudflare's API {why}: running it again in {} s (attempt {attempt} of {API_ATTEMPTS})",
             tag(),
             wait.as_secs()
         );
@@ -216,16 +255,27 @@ pub fn retry_throttled<T>(cmd: &mut Command, f: impl Fn(&mut Command) -> Result<
     }
 }
 
-/// How long Cloudflare's API asked a wrangler command to wait before it
-/// runs again, when it failed because the API throttled it, from what the
-/// command wrote to WRANGLER_OUTPUT_FILE_PATH: its Retry-After, or a minute
-/// for a 971 that came without one.
-fn throttled(entries: &str) -> Option<Duration> {
+/// Why a wrangler command that failed may pass when it runs again.
+#[derive(Debug, PartialEq, Eq)]
+enum Again {
+    /// The API throttled it, and asked it to wait this long.
+    Throttled(Duration),
+    /// The API couldn't answer it ([`MALFORMED`]), and asked it to wait this
+    /// long, if it said.
+    Unavailable(Option<Duration>),
+}
+
+/// Whether a wrangler command failed in a way that may pass when it runs
+/// again, from what it wrote to WRANGLER_OUTPUT_FILE_PATH: throttled by
+/// the API, which asked it to wait (its Retry-After, or a minute for a 971
+/// that came without one), or not answered by it.
+fn again(entries: &str) -> Option<Again> {
     #[derive(serde::Deserialize)]
     struct Entry {
         #[serde(rename = "type")]
         kind: String,
         code: Option<serde_json::Value>,
+        message: Option<String>,
         retry_after_ms: Option<f64>,
     }
     let failed = entries
@@ -236,8 +286,13 @@ fn throttled(entries: &str) -> Option<Duration> {
     let asked = failed
         .retry_after_ms
         .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok());
+    if failed.message.as_deref() == Some(MALFORMED) {
+        return Some(Again::Unavailable(asked));
+    }
     let code = failed.code.and_then(|code| code.as_u64());
-    asked.or((code == Some(971)).then_some(Duration::from_secs(60)))
+    asked
+        .or((code == Some(971)).then_some(Duration::from_secs(60)))
+        .map(Again::Throttled)
 }
 
 /// Whether a program is on PATH.
@@ -354,23 +409,41 @@ mod tests {
 {"type":"command-failed","version":1,"code":971,"message":"A request to the Cloudflare API (/accounts/0123/d1/database/e84e35ee-6755-4bff-a1ff-ba2539406ba0/query) failed.","retry_after_ms":40000,"timestamp":"2026-10-23T12:38:07.465Z"}
 "#;
 
+    /// What wrangler 4.156.1 writes when a server in front of the API
+    /// answers `503 Service Unavailable` ("no healthy upstream"), as one did
+    /// app.fctl.sh's deploy on 2026-11-06.
+    const UNAVAILABLE: &str = r#"{"type":"wrangler-session","version":1,"wrangler_version":"4.156.1","command_line_args":["deploy","--config","wrangler.deploy.toml"],"log_file_path":"/tmp/wrangler.log","timestamp":"2026-11-06T09:29:43.590Z"}
+{"type":"command-failed","version":1,"message":"Received a malformed response from the API","timestamp":"2026-11-06T09:29:43.844Z"}
+"#;
+
     #[test]
     fn waits_as_long_as_the_api_asks() {
-        assert_eq!(throttled(THROTTLED), Some(Duration::from_secs(40)));
+        let throttled = |wait| Some(Again::Throttled(Duration::from_secs(wait)));
+        assert_eq!(again(THROTTLED), throttled(40));
         let no_retry_after = r#"{"type":"command-failed","version":1,"code":971,"message":"…"}"#;
-        assert_eq!(throttled(no_retry_after), Some(Duration::from_secs(60)));
+        assert_eq!(again(no_retry_after), throttled(60));
     }
 
     #[test]
-    fn other_failures_are_not_throttling() {
+    fn runs_again_what_the_api_couldnt_answer() {
+        assert_eq!(again(UNAVAILABLE), Some(Again::Unavailable(None)));
+        let asked = r#"{"type":"command-failed","version":1,"message":"Received a malformed response from the API","retry_after_ms":30000}"#;
+        assert_eq!(
+            again(asked),
+            Some(Again::Unavailable(Some(Duration::from_secs(30))))
+        );
+    }
+
+    #[test]
+    fn other_failures_dont_run_again() {
         let denied = r#"{"type":"command-failed","version":1,"code":10000,"message":"…"}"#;
-        assert_eq!(throttled(denied), None);
+        assert_eq!(again(denied), None);
         let local = r#"{"type":"command-failed","version":1,"code":"ENOENT","message":"…"}"#;
-        assert_eq!(throttled(local), None);
+        assert_eq!(again(local), None);
         let session = THROTTLED.lines().next().unwrap();
-        assert_eq!(throttled(session), None);
-        assert_eq!(throttled(""), None);
-        assert_eq!(throttled("not json\n"), None);
+        assert_eq!(again(session), None);
+        assert_eq!(again(""), None);
+        assert_eq!(again("not json\n"), None);
     }
 
     /// Writes `script` to `path`, executable, for a test to run right away.
@@ -421,6 +494,39 @@ mod tests {
     #[test]
     fn runs_a_throttled_command_again() {
         let bin = wrangler("throttled-once", 1, NOW);
+        let out = retry_cloudflare(&mut Command::new(&bin), output).unwrap();
+        assert_eq!(out.trim(), "2");
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn runs_a_command_the_api_couldnt_answer_again() {
+        // A 503 whose Retry-After said 0, so that the test doesn't wait.
+        let now = r#"{"type":"command-failed","version":1,"message":"Received a malformed response from the API","retry_after_ms":0}"#;
+        let bin = wrangler("unavailable-twice", 2, now);
+        let out = retry_cloudflare(&mut Command::new(&bin), output).unwrap();
+        assert_eq!(out.trim(), "3");
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+        let bin = wrangler("unavailable-always", u32::MAX, now);
+        let err = retry_cloudflare(&mut Command::new(&bin), run).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("couldn't answer wrangler 4 times in a row"),
+            "{err:#}"
+        );
+        assert_eq!(runs(&bin), API_ATTEMPTS as usize);
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+        // What may have done what it asked by the time its answer failed,
+        // only once; a throttled one again, as it never ran.
+        let bin = wrangler("unavailable-once-created", 1, now);
+        let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
+        assert!(
+            err.to_string().contains("failed (exit status: 1)"),
+            "{err:#}"
+        );
+        assert_eq!(runs(&bin), 1);
+        std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
+        let bin = wrangler("throttled-once-created", 1, NOW);
         let out = retry_throttled(&mut Command::new(&bin), output).unwrap();
         assert_eq!(out.trim(), "2");
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
@@ -429,9 +535,9 @@ mod tests {
     #[test]
     fn gives_up_on_a_command_the_api_keeps_throttling() {
         let bin = wrangler("throttled-always", u32::MAX, NOW);
-        let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
+        let err = retry_cloudflare(&mut Command::new(&bin), run).unwrap_err();
         assert!(err.to_string().contains("4 times in a row"), "{err:#}");
-        assert_eq!(runs(&bin), THROTTLED_ATTEMPTS as usize);
+        assert_eq!(runs(&bin), API_ATTEMPTS as usize);
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
     }
 
@@ -444,7 +550,7 @@ mod tests {
             ("throttled-for-long", later, "wait 600 s"),
         ] {
             let bin = wrangler(name, 1, entry);
-            let err = retry_throttled(&mut Command::new(&bin), run).unwrap_err();
+            let err = retry_cloudflare(&mut Command::new(&bin), run).unwrap_err();
             // The stand-in's own failure, not a failure to start it.
             assert!(err.to_string().contains(says), "{err:#}");
             assert_eq!(runs(&bin), 1);
