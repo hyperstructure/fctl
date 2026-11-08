@@ -710,7 +710,12 @@ cargo xtask deploy fctl-sh
 
 Cloudflare's API throttles a token, an account or an address that has made
 too many requests: it answers 429 with a Retry-After, for up to five
-minutes, even to a deploy's first request. Wrangler gives up at once in its
-D1, KV and secret commands, so `cargo xtask deploy`, `secrets` and
-`publish` run a throttled wrangler command again once the wait is over, up
-to four times (`util::retry_throttled`).
+minutes, even to a deploy's first request. And now and then a server in
+front of it fails, and answers a 5xx that isn't JSON (`503 Service
+Unavailable`, "no healthy upstream"), which wrangler reports as "Received a
+malformed response from the API". Wrangler gives up at once on that, and on
+a 429 in its D1, KV and secret commands, so `cargo xtask deploy`, `secrets`
+and `publish` run such a wrangler command again, up to four times: once
+the wait a 429 asks for is over, and 5, 15 and 45 s after an answer that
+isn't JSON (`util::retry_cloudflare`). A 5xx that the API answers in JSON
+can't be told from wrangler's output, and isn't run again.
