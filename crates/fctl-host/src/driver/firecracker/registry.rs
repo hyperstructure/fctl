@@ -2,7 +2,10 @@
 //! the manifest for this machine's platform, the config, and the layers,
 //! each checked against its digest.
 
+use super::Log;
+use super::retry::{self, Retries};
 use anyhow::{Context, Result, bail};
+use bytes::Bytes;
 use fctl_client::HttpClient;
 use fctl_domain::image::ImageRef;
 use serde::Deserialize;
@@ -267,25 +270,24 @@ fn login_in(config: &str, registry: &str) -> Option<String> {
     Some(format!("Basic {auth}"))
 }
 
-/// A registry client for one pull.
-pub struct Registry {
+/// A registry client for one pull, which tries again what fails in a way
+/// that may pass, and says so in `log`.
+pub struct Registry<'a> {
     http: HttpClient,
     /// Tokens for the repositories this pull read, by repository, with the
     /// challenge each answers, to ask for another when one runs out.
     tokens: Mutex<BTreeMap<String, (String, String)>>,
+    retries: Retries,
+    log: Log<'a>,
 }
 
-impl Default for Registry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Registry {
-    pub fn new() -> Self {
+impl<'a> Registry<'a> {
+    pub fn new(log: Log<'a>) -> Self {
         Self {
             http: HttpClient::new(Duration::from_secs(60)),
             tokens: Mutex::new(BTreeMap::new()),
+            retries: Retries::DOWNLOADS,
+            log,
         }
     }
 
@@ -306,6 +308,31 @@ impl Registry {
         Ok(())
     }
 
+    /// A GET of `url`, tried again while it fails in a way that may pass or
+    /// the registry answers 5xx or 429: what came of the last try.
+    async fn fetch(
+        &self,
+        registry: &str,
+        url: &str,
+        token: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> fctl_client::http::Result<(http::StatusCode, http::HeaderMap, Bytes)> {
+        self.retries
+            .run(
+                &format!("Reaching {registry}"),
+                self.log,
+                || self.http.get_with(url, token, headers),
+                |r| match r {
+                    Ok((status, _, _)) if status.is_server_error() || status.as_u16() == 429 => {
+                        Some(format!("it answered {status}"))
+                    }
+                    Ok(_) => None,
+                    Err(e) => retry::may_pass(e),
+                },
+            )
+            .await
+    }
+
     /// A GET of `url` for `name`, asking the registry's token service for a
     /// token when it wants one, and following redirects (Docker Hub's blobs
     /// are on a CDN), where the token doesn't go.
@@ -320,8 +347,7 @@ impl Registry {
                 .token(repository)
                 .filter(|_| origin(&current) == origin(url));
             let (status, headers, body) = self
-                .http
-                .get_with(&current, token.as_deref(), &[("accept", accept)])
+                .fetch(registry, &current, token.as_deref(), &[("accept", accept)])
                 .await
                 .with_context(|| format!("reaching {registry}"))?;
             if status.as_u16() == 401 && !signed_in && origin(&current) == origin(url) {
@@ -381,8 +407,7 @@ impl Registry {
             headers.push(("authorization", auth));
         }
         let (status, _, body) = self
-            .http
-            .get_with(url.as_str(), None, &headers)
+            .fetch(registry, url.as_str(), None, &headers)
             .await
             .with_context(|| format!("signing in to {registry}"))?;
         if !status.is_success() {
@@ -467,7 +492,10 @@ impl Registry {
     /// size, all of which `to` has had by the time its digest is checked.
     /// So what reads `to` as it fills (a VM that unpacks the layer, say)
     /// has read a layer that isn't what the manifest says by the time this
-    /// fails, and what it made of it must go.
+    /// fails, and what it made of it must go. A download cut off in a way
+    /// that may pass goes on from where it stopped, with what `to` has had
+    /// already, until it has failed as many tries in a row as
+    /// [`Retries`] allow without getting further.
     pub async fn blob_into<W: AsyncWrite + Unpin>(
         &self,
         reference: &str,
@@ -488,46 +516,89 @@ impl Registry {
         }
         let http = HttpClient::new(LAYER_TIME);
         let downloading = async {
-            let mut renewed = false;
-            let mut body = loop {
-                let token = self.token(repository);
-                match http.open(&url, token.as_deref(), &[]).await {
-                    Ok(body) => break body,
-                    // Tokens run out, minutes after they came: the layers of
-                    // a large image may take longer.
-                    Err(fctl_client::Error::Status { status: 401, .. }) if !renewed => {
-                        let challenge = self.challenge(repository).with_context(|| {
-                            format!("{registry} refused {} without a token", layer.digest)
-                        })?;
-                        self.renew(registry, repository, &challenge).await?;
-                        renewed = true;
+            let mut hasher = Sha256::new();
+            let mut size: u64 = 0;
+            // Tries in a row that failed without getting further.
+            let mut failed = 0;
+            loop {
+                let before = size;
+                let mut renewed = false;
+                let opened = loop {
+                    let token = self.token(repository);
+                    match http.open_from(&url, token.as_deref(), &[], size).await {
+                        // Tokens run out, minutes after they came: the layers
+                        // of a large image may take longer.
+                        Err(fctl_client::Error::Status { status: 401, .. }) if !renewed => {
+                            let challenge = self.challenge(repository).with_context(|| {
+                                format!("{registry} refused {} without a token", layer.digest)
+                            })?;
+                            self.renew(registry, repository, &challenge).await?;
+                            renewed = true;
+                        }
+                        other => break other,
                     }
-                    Err(e) => {
+                };
+                let cut = match opened {
+                    Err(e) => Some(e),
+                    Ok(mut body) => {
+                        if body.start > size {
+                            bail!(
+                                "{registry} sent {} from byte {} rather than {size}",
+                                layer.digest,
+                                body.start
+                            );
+                        }
+                        // A registry that sends all of it again: what came
+                        // already doesn't go on twice.
+                        let mut skip = size - body.start;
+                        loop {
+                            let mut data = match body.next().await {
+                                Ok(Some(data)) => data,
+                                Ok(None) => break None,
+                                Err(e) => break Some(e),
+                            };
+                            if skip > 0 {
+                                let n = usize::try_from(skip).unwrap_or(usize::MAX).min(data.len());
+                                data = data.slice(n..);
+                                skip -= n as u64;
+                            }
+                            size += data.len() as u64;
+                            if size > layer.size {
+                                bail!(
+                                    "{} is larger than the {} bytes its manifest says",
+                                    layer.digest,
+                                    layer.size
+                                );
+                            }
+                            hasher.update(&data);
+                            to.write_all(&data)
+                                .await
+                                .with_context(|| format!("passing {} on", layer.digest))?;
+                        }
+                    }
+                };
+                // Cut off once all of it came: its digest says whether it did.
+                let Some(e) = cut.filter(|_| size < layer.size) else {
+                    break;
+                };
+                failed = if size > before { 1 } else { failed + 1 };
+                let why = match retry::may_pass(&e) {
+                    Some(why) if failed < self.retries.tries => why,
+                    _ => {
                         return Err(
                             anyhow::Error::from(e).context(format!("downloading {}", layer.digest))
                         );
                     }
-                }
-            };
-            let mut hasher = Sha256::new();
-            let mut size: u64 = 0;
-            while let Some(data) = body
-                .next()
-                .await
-                .with_context(|| format!("downloading {}", layer.digest))?
-            {
-                size += data.len() as u64;
-                if size > layer.size {
-                    bail!(
-                        "{} is larger than the {} bytes its manifest says",
-                        layer.digest,
-                        layer.size
-                    );
-                }
-                hasher.update(&data);
-                to.write_all(&data)
-                    .await
-                    .with_context(|| format!("passing {} on", layer.digest))?;
+                };
+                let wait = self.retries.wait(failed);
+                (self.log)(format!(
+                    "Downloading {} stopped at {} of {} MB ({why}): going on in {} s",
+                    layer.digest,
+                    size / 1_000_000,
+                    layer.size.div_ceil(1_000_000),
+                    wait.as_secs_f64().ceil()
+                ));
+                tokio::time::sleep(wait).await;
             }
             if size != layer.size {
                 bail!(
@@ -752,7 +823,7 @@ mod tests {
             }
         });
         let reference = format!("127.0.0.1:{port}/acme/agent:1");
-        let registry = Registry::new();
+        let registry = Registry::new(&|_| {});
         let resolved = registry.resolve(&reference, "aarch64").await?;
         assert_eq!(resolved.id, digest_of(&config));
         assert_eq!(resolved.config.user.as_deref(), Some("agent"));
@@ -825,7 +896,7 @@ mod tests {
         let (go, between) = tokio::sync::oneshot::channel();
         let reference = blob_server(vec![first.clone(), rest.clone()], Some(between)).await?;
         let layer = descriptor(digest_of(&all), all.len());
-        let registry = Registry::new();
+        let registry = Registry::new(&|_| {});
         let (mut to, mut from) = tokio::io::duplex(1024 * 1024);
         let reading = async {
             let mut got = vec![0u8; first.len()];
@@ -854,7 +925,7 @@ mod tests {
     async fn layers_that_arent_what_their_manifest_says_fail() -> Result<()> {
         let bytes = b"layer bytes".to_vec();
         let reference = blob_server(vec![bytes.clone()], None).await?;
-        let registry = Registry::new();
+        let registry = Registry::new(&|_| {});
         let fails = |layer: Descriptor| {
             let (registry, reference) = (&registry, &reference);
             async move {
@@ -892,6 +963,224 @@ mod tests {
         let (e, to) = fails(descriptor(right, bytes.len())).await;
         assert_eq!(e, None);
         assert_eq!(to, bytes);
+        Ok(())
+    }
+
+    /// A registry on this machine that answers its `n`th request (from 0)
+    /// with what `answer` makes of `n` and the request's `Range`: the bytes
+    /// it writes before it closes the connection.
+    async fn raw_server(
+        answer: impl Fn(usize, Option<String>) -> Vec<u8> + Send + Sync + 'static,
+    ) -> Result<(
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    )> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let ranges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (asked, answer) = (ranges.clone(), std::sync::Arc::new(answer));
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (asked, answer) = (asked.clone(), answer.clone());
+                tokio::spawn(async move {
+                    let (r, mut w) = stream.into_split();
+                    let mut r = BufReader::new(r);
+                    let mut range = None;
+                    loop {
+                        let mut line = String::new();
+                        if r.read_line(&mut line).await.unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: ") {
+                            range = Some(v.trim().to_owned());
+                        }
+                    }
+                    let n = {
+                        let mut asked = asked.lock().unwrap_or_else(|e| e.into_inner());
+                        asked.push(range.clone());
+                        asked.len() - 1
+                    };
+                    let _ = w.write_all(&answer(n, range)).await;
+                    let _ = w.shutdown().await;
+                });
+            }
+        });
+        Ok((format!("127.0.0.1:{port}/acme/agent:1"), ranges))
+    }
+
+    /// An answer of `status` with `body`, which says it is `length` bytes.
+    fn answer(status: &str, extra: &str, length: usize, body: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {length}\r\nConnection: close\r\n{extra}\r\n"
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn quick(registry: Registry<'_>) -> Registry<'_> {
+        Registry {
+            retries: super::retry::tests::QUICK,
+            ..registry
+        }
+    }
+
+    /// Registries answer 5xx now and then (Docker Hub, GitHub's): manifests,
+    /// configs and tokens are asked for again.
+    #[tokio::test]
+    async fn asks_again_when_the_registry_fails_in_a_way_that_may_pass() -> Result<()> {
+        let config = br#"{"config":{"User":"agent"}}"#.to_vec();
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"digest":"{}","size":{}}},"layers":[]}}"#,
+            digest_of(&config),
+            config.len()
+        );
+        let (reference, asked) = raw_server(move |n, _| match n {
+            0 => answer("503 Service Unavailable", "", 0, b""),
+            1 => answer("200 OK", "", manifest.len(), manifest.as_bytes()),
+            2 => answer("429 Too Many Requests", "", 0, b""),
+            _ => answer("200 OK", "", config.len(), &config),
+        })
+        .await?;
+        let said = Mutex::new(Vec::new());
+        let log = |line: String| said.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+        let registry = quick(Registry::new(&log));
+        let resolved = registry.resolve(&reference, "x86_64").await?;
+        assert_eq!(resolved.config.user.as_deref(), Some("agent"));
+        assert_eq!(asked.lock().map(|a| a.len()).unwrap_or_default(), 4);
+        let said = said.into_inner().unwrap_or_default();
+        let host = reference.split('/').next().unwrap_or_default();
+        assert_eq!(
+            said.first().cloned(),
+            Some(format!(
+                "Reaching {host} failed (it answered 503 Service Unavailable): trying again in 1 s"
+            ))
+        );
+        // What keeps failing fails, with what the registry said last.
+        let (reference, asked) =
+            raw_server(|_, _| answer("502 Bad Gateway", "", 3, b"bad")).await?;
+        let e = quick(Registry::new(&|_| {}))
+            .resolve(&reference, "x86_64")
+            .await
+            .err()
+            .map(|e| format!("{e:#}"));
+        let host = reference.split('/').next().unwrap_or_default();
+        assert_eq!(e, Some(format!("{host} answered 502 Bad Gateway: bad")));
+        assert_eq!(asked.lock().map(|a| a.len()).unwrap_or_default(), 3);
+        // What won't pass isn't asked for again.
+        let (reference, asked) = raw_server(|_, _| answer("404 Not Found", "", 0, b"")).await?;
+        assert!(
+            quick(Registry::new(&|_| {}))
+                .resolve(&reference, "x86_64")
+                .await
+                .is_err()
+        );
+        assert_eq!(asked.lock().map(|a| a.len()).unwrap_or_default(), 1);
+        Ok(())
+    }
+
+    /// A layer cut off halfway, as Docker Hub's CDN cut one in CI, goes on
+    /// from where it stopped: with the rest alone where the registry sends
+    /// only that, and without what came already where it sends all again.
+    #[tokio::test]
+    async fn layers_cut_off_go_on_from_where_they_stopped() -> Result<()> {
+        let all: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let layer = descriptor(digest_of(&all), all.len());
+        for ranges in [true, false] {
+            let bytes = all.clone();
+            let (reference, asked) = raw_server(move |n, range| {
+                let from = range
+                    .filter(|_| ranges)
+                    .and_then(|r| r.strip_prefix("bytes=")?.strip_suffix('-')?.parse().ok())
+                    .unwrap_or(0usize);
+                match n {
+                    // A third, then the connection goes.
+                    0 => answer("200 OK", "", bytes.len(), &bytes[..bytes.len() / 3]),
+                    // Two thirds of it, from where it was asked to start.
+                    1 if from > 0 => {
+                        let to = bytes.len() * 2 / 3;
+                        let extra = format!(
+                            "Content-Range: bytes {from}-{}/{}\r\n",
+                            bytes.len() - 1,
+                            bytes.len()
+                        );
+                        answer(
+                            "206 Partial Content",
+                            &extra,
+                            bytes.len() - from,
+                            &bytes[from..to],
+                        )
+                    }
+                    1 => answer("200 OK", "", bytes.len(), &bytes[..bytes.len() * 2 / 3]),
+                    _ if from > 0 => {
+                        let extra = format!(
+                            "Content-Range: bytes {from}-{}/{}\r\n",
+                            bytes.len() - 1,
+                            bytes.len()
+                        );
+                        answer(
+                            "206 Partial Content",
+                            &extra,
+                            bytes.len() - from,
+                            &bytes[from..],
+                        )
+                    }
+                    _ => answer("200 OK", "", bytes.len(), &bytes),
+                }
+            })
+            .await?;
+            let said = Mutex::new(Vec::new());
+            let log = |line: String| said.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+            let registry = quick(Registry::new(&log));
+            let mut to = Vec::new();
+            registry.blob_into(&reference, &layer, &mut to).await?;
+            assert!(to == all, "ranges: {ranges}");
+            let asked = asked.lock().map(|a| a.clone()).unwrap_or_default();
+            let third = all.len() / 3;
+            let two_thirds = all.len() * 2 / 3;
+            assert_eq!(
+                asked,
+                [
+                    None,
+                    Some(format!("bytes={third}-")),
+                    Some(format!("bytes={two_thirds}-"))
+                ],
+                "ranges: {ranges}"
+            );
+            let said = said.into_inner().unwrap_or_default();
+            assert_eq!(said.len(), 2, "{said:?}");
+            assert!(
+                said[0].starts_with(&format!(
+                    "Downloading {} stopped at 0 of 1 MB (",
+                    layer.digest
+                )),
+                "{said:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A layer that keeps being cut off at the same place fails once it has
+    /// as many tries in a row as the retries allow.
+    #[tokio::test]
+    async fn layers_that_get_no_further_fail() -> Result<()> {
+        let all = vec![7u8; 10_000];
+        let layer = descriptor(digest_of(&all), all.len());
+        let bytes = all.clone();
+        let (reference, asked) =
+            raw_server(move |_, _| answer("200 OK", "", bytes.len(), &bytes[..100])).await?;
+        let registry = quick(Registry::new(&|_| {}));
+        let mut to = Vec::new();
+        let e = registry.blob_into(&reference, &layer, &mut to).await;
+        assert!(
+            e.as_ref().is_err_and(|e| format!("{e:#}")
+                .starts_with(&format!("downloading {}: could not reach", layer.digest))),
+            "{e:?}"
+        );
+        // Once from the start, then twice more without getting further.
+        assert_eq!(asked.lock().map(|a| a.len()).unwrap_or_default(), 3);
+        assert_eq!(to, all[..100]);
         Ok(())
     }
 }

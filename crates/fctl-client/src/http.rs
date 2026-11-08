@@ -191,17 +191,37 @@ impl HttpClient {
         token: Option<&str>,
         headers: &[(&str, &str)],
     ) -> Result<Body> {
+        self.open_from(url, token, headers, 0).await
+    }
+
+    /// [`open`](Self::open), for the bytes of `url` from `from` on, to go on
+    /// with a download that stopped there: the `Range` that asks for them
+    /// goes with every redirect (a registry's blobs are on a CDN). A server
+    /// may send all of it anyway: [`Body::start`] says where the body
+    /// starts.
+    pub async fn open_from(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        headers: &[(&str, &str)],
+        from: u64,
+    ) -> Result<Body> {
         let origin = |u: &str| url::Url::parse(u).ok().map(|u| u.origin());
         let first = origin(url);
+        let range = format!("bytes={from}-");
         let mut current = url.to_owned();
         for _ in 0..6 {
             let same_origin = first.is_some() && origin(&current) == first;
-            let (token, headers) = if same_origin {
-                (token, headers)
+            let mut sent: Vec<(&str, &str)> = if same_origin {
+                headers.to_vec()
             } else {
-                (None, &[][..])
+                Vec::new()
             };
-            let req = request(Method::GET, &current, token, None, None, headers)?;
+            let token = token.filter(|_| same_origin);
+            if from > 0 {
+                sent.push(("range", &range));
+            }
+            let req = request(Method::GET, &current, token, None, None, &sent)?;
             // Signed download links carry a token in their query.
             let shown = without_query(&current);
             let res = self.client.request(req).await.map_err(|e| Error::Network {
@@ -223,6 +243,15 @@ impl HttpClient {
                     .map_err(|e| Error::Decode(e.to_string()))?;
                 continue;
             }
+            let start = if status == StatusCode::PARTIAL_CONTENT {
+                res.headers()
+                    .get(http::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(range_start)
+                    .ok_or_else(|| Error::Decode("a partial answer without its range".into()))?
+            } else {
+                0
+            };
             let body = res.into_body();
             if !status.is_success() {
                 let bytes = body
@@ -235,7 +264,11 @@ impl HttpClient {
                     body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
                 });
             }
-            return Ok(Body { body, url: shown });
+            return Ok(Body {
+                body,
+                url: shown,
+                start,
+            });
         }
         Err(Error::Other("too many redirects".into()))
     }
@@ -327,6 +360,9 @@ pub struct Body {
     body: hyper::body::Incoming,
     /// Where it comes from, without the query, which may hold a token.
     pub url: String,
+    /// Where in what `url` has the body starts: 0, unless the server sent
+    /// only a part ([`HttpClient::open_from`]).
+    pub start: u64,
 }
 
 impl Body {
@@ -345,6 +381,12 @@ impl Body {
         }
         Ok(None)
     }
+}
+
+/// Where the part in a `Content-Range` (`bytes 100-199/200`) starts.
+fn range_start(header: &str) -> Option<u64> {
+    let (first, _) = header.trim().strip_prefix("bytes ")?.split_once('-')?;
+    first.trim().parse().ok()
 }
 
 /// `url` without its query or fragment, for messages.
@@ -441,5 +483,13 @@ mod tests {
             Some("https://app.fctl.sh")
         );
         assert_eq!(origin("javascript:alert(1)"), None);
+    }
+
+    #[test]
+    fn reads_where_a_part_starts() {
+        assert_eq!(range_start("bytes 100-199/200"), Some(100));
+        assert_eq!(range_start("bytes 0-9/*"), Some(0));
+        assert_eq!(range_start("bytes */200"), None);
+        assert_eq!(range_start("items 1-2/3"), None);
     }
 }

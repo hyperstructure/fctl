@@ -2,23 +2,29 @@
 //! a kernel, and the initramfs with fctl-agent as its init.
 
 use super::registry::{Registry, file_digest};
+use super::retry::{self, Retries};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// The Firecracker the host downloads, and the SHA-256 of each
-/// architecture's release archive. Older ones lack what the VMs use
+/// The Firecracker the host downloads, and each architecture's release
+/// archive: its SHA-256, and its ID as a release asset in GitHub's API,
+/// which serves it too (`gh api
+/// repos/firecracker-microvm/firecracker/releases/tags/v1.17.0 --jq
+/// '.assets[] | [.id, .name, .digest]'`). Older ones lack what the VMs use
 /// (discard on their disks, from 1.17).
 pub const FIRECRACKER_VERSION: &str = "1.17.0";
-const FIRECRACKER_ARCHIVES: [(&str, &str); 2] = [
+const FIRECRACKER_ARCHIVES: [(&str, &str, u64); 2] = [
     (
         "x86_64",
         "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558",
+        555159508,
     ),
     (
         "aarch64",
         "e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256",
+        555159577,
     ),
 ];
 
@@ -35,6 +41,13 @@ fn firecracker_url(version: &str, arch: &str) -> String {
     )
 }
 
+/// Where GitHub's API serves the release asset `id`, the same file as the
+/// release download: on 2026-11-08 it sent the archive at once while the
+/// release download answered 504 for half an hour.
+fn asset_url(id: u64) -> String {
+    format!("https://api.github.com/repos/firecracker-microvm/firecracker/releases/assets/{id}")
+}
+
 /// The Firecracker binary the host downloads for this machine, in `bin`.
 pub fn pinned_firecracker(bin: &Path) -> PathBuf {
     bin.join(format!("firecracker-v{FIRECRACKER_VERSION}"))
@@ -46,7 +59,9 @@ pub fn pinned_jailer(bin: &Path) -> PathBuf {
 }
 
 /// Downloads the pinned Firecracker and its jailer into `bin`, checked
-/// against their archive's SHA-256, unless they are there.
+/// against their archive's SHA-256, unless they are there. While the
+/// download fails in a way that may pass, it tries again, from GitHub's
+/// release downloads and its API in turn.
 pub async fn download_firecracker(
     bin: &Path,
     log: &(dyn Fn(String) + Send + Sync),
@@ -57,25 +72,27 @@ pub async fn download_firecracker(
         return Ok(path);
     }
     let arch = std::env::consts::ARCH;
-    let Some((_, sum)) = FIRECRACKER_ARCHIVES.iter().find(|(a, _)| *a == arch) else {
+    let Some((_, sum, id)) = FIRECRACKER_ARCHIVES.iter().find(|(a, ..)| *a == arch) else {
         bail!("Firecracker runs on x86_64 and aarch64, not {arch}");
     };
     std::fs::create_dir_all(bin)?;
     let url = firecracker_url(FIRECRACKER_VERSION, arch);
     log(format!("Downloading Firecracker {FIRECRACKER_VERSION}"));
     let archive = bin.join(format!(".firecracker-v{FIRECRACKER_VERSION}.tgz"));
-    let http = fctl_client::HttpClient::new(std::time::Duration::from_secs(600));
-    http.download_to(
-        &url,
-        None,
-        &[],
+    let downloaded = retry::download(
+        &[&url, &asset_url(*id)],
         &archive,
         512 * 1024 * 1024,
         std::time::Duration::from_secs(600),
+        Retries::DOWNLOADS,
+        &format!("Downloading Firecracker {FIRECRACKER_VERSION}"),
+        log,
     )
     .await
-    .with_context(|| format!("downloading {url}"))?;
-    let result = (|| -> Result<()> {
+    .with_context(|| {
+        format!("downloading Firecracker {FIRECRACKER_VERSION} ({url}, or from GitHub's API)")
+    });
+    let result = downloaded.and_then(|_| {
         let digest = file_digest(&archive)?;
         if digest != format!("sha256:{sum}") {
             bail!("{url} doesn't match the checksum fctl expects");
@@ -109,7 +126,7 @@ pub async fn download_firecracker(
             bail!("{url} has no Firecracker or no jailer");
         }
         Ok(())
-    })();
+    });
     let _ = std::fs::remove_file(&archive);
     result.map(|()| path)
 }
@@ -134,29 +151,36 @@ pub async fn kernel(
         return Ok(path);
     }
     log(format!("Pulling the VMs' kernel, {kernel}"));
-    let registry = Registry::new();
-    let image = registry.resolve(kernel, std::env::consts::ARCH).await?;
     let Some(parent) = path.parent() else {
         bail!("no directory for the kernel");
     };
-    std::fs::create_dir_all(parent)?;
-    // The kernel is the image's only file; its last layer has it.
-    for layer in image.layers.iter().rev() {
-        let blob = parent.join("layer.tmp");
-        registry.blob(kernel, layer, &blob).await?;
-        let found = extract(
-            &blob,
-            &layer.media_type,
-            "vmlinux",
-            &path.with_extension("tmp"),
-        );
-        let _ = std::fs::remove_file(&blob);
-        if found? {
-            std::fs::rename(path.with_extension("tmp"), &path)?;
-            return Ok(path);
+    let pulled = async {
+        let registry = Registry::new(log);
+        let image = registry.resolve(kernel, std::env::consts::ARCH).await?;
+        std::fs::create_dir_all(parent)?;
+        // The kernel is the image's only file; its last layer has it.
+        for layer in image.layers.iter().rev() {
+            let blob = parent.join("layer.tmp");
+            let found = match registry.blob(kernel, layer, &blob).await {
+                Ok(()) => extract(
+                    &blob,
+                    &layer.media_type,
+                    "vmlinux",
+                    &path.with_extension("tmp"),
+                ),
+                Err(e) => Err(e),
+            };
+            let _ = std::fs::remove_file(&blob);
+            if found? {
+                std::fs::rename(path.with_extension("tmp"), &path)?;
+                return Ok(path.clone());
+            }
         }
-    }
-    bail!("{kernel} has no /vmlinux")
+        bail!("{kernel} has no /vmlinux")
+    };
+    pulled
+        .await
+        .with_context(|| format!("pulling the VMs' kernel, {kernel}"))
 }
 
 /// Copies the file `name` from the layer at `blob` to `to`; whether it was
@@ -296,9 +320,16 @@ mod tests {
             "https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz"
         );
         for arch in ["x86_64", "aarch64"] {
-            let sum = FIRECRACKER_ARCHIVES.iter().find(|(a, _)| *a == arch);
-            assert!(sum.is_some_and(|(_, s)| s.len() == 64), "{arch}");
+            let archive = FIRECRACKER_ARCHIVES.iter().find(|(a, ..)| *a == arch);
+            assert!(
+                archive.is_some_and(|(_, s, id)| s.len() == 64 && *id > 0),
+                "{arch}"
+            );
         }
+        assert_eq!(
+            asset_url(555159508),
+            "https://api.github.com/repos/firecracker-microvm/firecracker/releases/assets/555159508"
+        );
     }
 
     #[test]

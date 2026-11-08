@@ -132,7 +132,11 @@ jobs:
   # crates/fctl-host/src/driver/firecracker), which need KVM: GitHub's x86_64
   # runners have it, for root only. They pull an image from Docker Hub, the
   # kernel hosts pull and Firecracker's release, and run passt under the
-  # AppArmor profile Ubuntu gives it.
+  # AppArmor profile Ubuntu gives it. Firecracker and the kernel come from a
+  # cache, keyed on the ones assets.rs pins, so that fewer downloads can
+  # fail: the tests download them into it when it has none (only main saves
+  # it), and give each test's host a copy, where it would have downloaded
+  # them itself.
   firecracker:
     name: Firecracker sandboxes
     runs-on: ubuntu-24.04
@@ -149,18 +153,38 @@ jobs:
           sudo aa-status 2>/dev/null | grep -i passt || echo "No AppArmor profile confines passt"
           rustup target add x86_64-unknown-linux-musl
           cargo build --release --locked -p fctl-agent --target x86_64-unknown-linux-musl
+      - name: The Firecracker and kernel the host pins
+        id: pinned
+        run: |
+          assets=crates/fctl-host/src/driver/firecracker/assets.rs
+          firecracker=$(sed -n 's/^pub const FIRECRACKER_VERSION: &str = "\(.*\)";$/\1/p' "$assets")
+          kernel=$(sed -n 's/^pub const KERNEL_IMAGE: &str = "\(.*\)";$/\1/p' "$assets")
+          # Each on its own: bash -e stops at neither of `a && b` but the last.
+          test -n "$firecracker"
+          test -n "$kernel"
+          echo "Firecracker $firecracker, kernel $kernel"
+          echo "key=firecracker-$firecracker-kernel-${kernel//[\/:]/-}" >> "$GITHUB_OUTPUT"
+      - name: Firecracker and the kernel from the cache
+        id: vm-assets
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vm-assets
+          key: ${{ steps.pinned.outputs.key }}
       - name: Boot sandboxes
         env:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
+          FCTL_TEST_FIRECRACKER_ASSETS: ${{ runner.temp }}/vm-assets
         run: |
           cargo test --locked -p fctl-host --lib driver::firecracker:: -- --ignored --nocapture --test-threads 1
       - name: Boot sandboxes on a host that runs as root
         env:
           FCTL_TEST_FIRECRACKER_AGENT: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/release/fctl-agent
+          FCTL_TEST_FIRECRACKER_ASSETS: ${{ runner.temp }}/vm-assets
         run: |
           bin=$(CARGO_TERM_COLOR=never cargo test --locked -p fctl-host --lib --no-run 2>&1 | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p')
           test -x "$bin"
           sudo env "FCTL_TEST_FIRECRACKER_AGENT=$FCTL_TEST_FIRECRACKER_AGENT" "FCTL_TEST_FIRECRACKER_DATA=$RUNNER_TEMP/root" \
+            "FCTL_TEST_FIRECRACKER_ASSETS=$FCTL_TEST_FIRECRACKER_ASSETS" \
             "$bin" driver::firecracker::tests::boots_a_sandbox driver::firecracker::tests::sandboxes_of_a_project_share_its_package_caches \
             driver::firecracker::tests::stopped_sandboxes_resume_where_they_were \
             --ignored --nocapture --test-threads 1
@@ -168,6 +192,12 @@ jobs:
           sudo "$bin" driver::firecracker::vm::tests::stale_jails_go \
             driver::firecracker::vm::tests::a_jailed_vms_state_is_saved_and_resumed_through_its_jail \
             --exact --nocapture --test-threads 1
+      - name: Save Firecracker and the kernel
+        if: steps.vm-assets.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/vm-assets
+          key: ${{ steps.vm-assets.outputs.cache-primary-key }}
       # Whiteouts kept as overlayfs reads them, for images that lie over
       # others, need root, which the VMs' init is.
       - name: Unpack layers as root
