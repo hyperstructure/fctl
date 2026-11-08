@@ -1,6 +1,6 @@
-// What a session's agent asks the people who follow it (`fctl ask`), above the composer until
-// someone answers: the question, and the answers it offers to click, each sent as the reply as
-// it is. Any message answers it, and it goes as the control plane says so.
+// What a session's agent asks the people who follow it (`fctl ask`), until someone answers: the
+// question, and the answers it offers to click, each sent as the reply as it is. Any message
+// answers it, and it goes as the control plane says so.
 
 import { MessageCircleQuestion } from "lucide-react";
 import { useState } from "react";
@@ -8,11 +8,28 @@ import { Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import { agoShort } from "@/lib/format";
+import { useMedia } from "@/lib/media";
+
+/**
+ * Where the window has room for the question above the message box, wherever the reader is in
+ * the transcript: at least 768 px wide (md) and 512 px tall. On a phone, either way up, a long
+ * question with its answers would cover most of the transcript there.
+ */
+const FLOATS = "(min-width: 48rem) and (min-height: 32rem)";
+
+/**
+ * Whether the question floats above the message box (`true`), or ends the transcript, scrolling
+ * away with it, where the window has too little room for it to float.
+ */
+export function useQuestionFloats(): boolean {
+  return useMedia(FLOATS);
+}
 
 export function QuestionCard({
   question,
   canAnswer,
   onAnswer,
+  floating = true,
   className,
 }: {
   question: G.SessionQuestion;
@@ -20,6 +37,8 @@ export function QuestionCard({
   canAnswer: boolean;
   /** Sends `text` as their reply. */
   onAnswer: (text: string) => Promise<void>;
+  /** Over the transcript, which scrolls under it, rather than in it. */
+  floating?: boolean;
   className?: string;
 }) {
   const [sending, setSending] = useState<string>();
@@ -39,7 +58,8 @@ export function QuestionCard({
     <section
       aria-label="The agent asks you"
       className={cn(
-        "animate-rise rounded-2xl border border-blue/30 bg-surface/95 p-4 shadow-[0_10px_40px_rgb(0_0_0/0.22)] backdrop-blur-xl",
+        "animate-rise rounded-2xl border border-blue/30 p-4",
+        floating ? "bg-surface/95 shadow-[0_10px_40px_rgb(0_0_0/0.22)] backdrop-blur-xl" : "bg-surface",
         "bg-[linear-gradient(to_bottom,var(--c-blue-soft),transparent_70%)]",
         className,
       )}

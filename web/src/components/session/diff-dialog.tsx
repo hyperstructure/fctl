@@ -50,6 +50,7 @@ import { compare, type DiffMatch, type DiffPlace, type FindOptions } from "@/lib
 import { useHoldPage } from "@/lib/hold-page";
 import { apple, modKey } from "@/lib/hotkeys";
 import { languageOf } from "@/lib/languages";
+import { useMedia } from "@/lib/media";
 import { fileDiffQuery, useFileDiff, useSessionDiffs } from "@/lib/queries";
 import { diffCommand } from "@/lib/shell";
 import {
@@ -86,20 +87,6 @@ function useKept<T extends string>(key: string, initial: T, allowed: readonly T[
     [key],
   );
   return [value, set];
-}
-
-/** Whether the window is at least this wide (px). */
-function useWide(px: number) {
-  const query = `(min-width: ${px}px)`;
-  const [wide, setWide] = useState(() => window.matchMedia?.(query).matches ?? true);
-  useEffect(() => {
-    const m = window.matchMedia?.(query);
-    if (!m) return;
-    const on = () => setWide(m.matches);
-    m.addEventListener("change", on);
-    return () => m.removeEventListener("change", on);
-  }, [query]);
-  return wide;
 }
 
 /** A changed file as the dialog shows it: its key ([`entryKey`]), repository and change. */
@@ -231,9 +218,9 @@ export function DiffDialog({
   };
   // On a phone the list covers the diffs while it is open.
   const [listOpen, setListOpen] = useState(false);
-  const wide = useWide(1024);
+  const wide = useMedia("(min-width: 1024px)");
   // Side by side takes room: below it, lines go one below the other.
-  const roomy = useWide(900);
+  const roomy = useMedia("(min-width: 900px)");
   const shownLayout: DiffLayout = roomy ? layout : "unified";
   const pressedOutside = useRef(false);
 

@@ -3,11 +3,12 @@
 // shortcuts sheet among them.
 
 import { Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
-import { type CSSProperties, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { Logo, toast } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { useFeed } from "@/lib/feed";
 import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
+import { useMedia } from "@/lib/media";
 import { onPushOpen, syncPush } from "@/lib/push";
 import { useMe } from "@/lib/queries";
 import { type GroupId, useShortcut } from "@/lib/shortcuts";
@@ -64,7 +65,8 @@ export function AppShell() {
   const [width, setWidth] = useSidebarWidth();
   const [folded, setFolded] = useSidebarFolded();
   const [resizing, setResizing] = useState(false);
-  const wide = useWide();
+  // Wide enough for the sidebar beside the page (md, 768 px).
+  const wide = useMedia("(min-width: 48rem)");
   // Only where it shows: on a narrow screen the sidebar is a drawer, which doesn't fold. ⌘B, as
   // in code editors, takes no Shift or Option on any layout; ⌘\ too, where \ is a key of its own.
   useShortcut("fold", () => {
@@ -234,19 +236,6 @@ function usePush() {
     if (userId) syncPush(userId).catch((e) => console.warn("fctl: notifications", e));
   }, [userId]);
   useEffect(() => onPushOpen((url) => router.history.push(url)), [router]);
-}
-
-/** Whether the window is wide enough for the sidebar beside the page (md, 768 px). */
-function useWide(): boolean {
-  return useSyncExternalStore(
-    (fn) => {
-      const q = window.matchMedia?.("(min-width: 48rem)");
-      q?.addEventListener?.("change", fn);
-      return () => q?.removeEventListener?.("change", fn);
-    },
-    () => window.matchMedia?.("(min-width: 48rem)").matches ?? true,
-    () => true,
-  );
 }
 
 export { Sidebar };
