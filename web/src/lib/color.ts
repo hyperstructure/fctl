@@ -154,7 +154,10 @@ export function contrast(a: string, b: string): number {
   return ((x ?? 0) + 0.05) / ((y ?? 0) + 0.05);
 }
 
-/** The backgrounds icons sit on, the hardest to read on of each theme: raised rows, and whiteish. */
+/**
+ * The backgrounds icons sit on, the hardest to read on of each theme: on dark the lightest, about a
+ * hovered raised row (raised is #1a1a1a, and hover adds 5% of ink); on light, whiteish.
+ */
 export const THEME_BACKGROUNDS = { dark: "#232323", light: "#fafafa" } as const;
 export type Theme = keyof typeof THEME_BACKGROUNDS;
 

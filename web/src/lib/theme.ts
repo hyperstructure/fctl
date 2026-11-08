@@ -1,5 +1,5 @@
 // Light and dark themes (the pre-paint script in public/theme.js applies the saved one).
-import { palette } from "@hyperstructure/design/brand";
+import { themes } from "@hyperstructure/design/brand";
 import { useSyncExternalStore } from "react";
 
 type Theme = "light" | "dark";
@@ -15,7 +15,7 @@ export function setTheme(t: Theme) {
     // The browser's and the installed app's title bar take the canvas color.
     document
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
-      ?.setAttribute("content", t === "dark" ? palette.blackish : palette.whiteish);
+      ?.setAttribute("content", themes[t].canvas);
     try {
       localStorage.setItem("fctl-theme", t);
     } catch {}

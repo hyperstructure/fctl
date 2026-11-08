@@ -1,6 +1,7 @@
 // A project icon's color of its own: the swatch after the workspace colors that holds it, and how
 // the icon shows in each theme in the popover where it's chosen (components/ui/color-popover.tsx).
 
+import { themes } from "@hyperstructure/design/brand";
 import type { CSSProperties, RefObject } from "react";
 import { RAINBOW } from "@/components/ui/color-popover";
 import type * as G from "@/gen";
@@ -110,7 +111,7 @@ export function IconThemes({ hex, glyph }: { hex: string; glyph: { name: string;
         {(
           [
             ["light", light, THEME_BACKGROUNDS.light],
-            ["dark", dark, "#1c1c1c"],
+            ["dark", dark, themes.dark.surface],
           ] as const
         ).map(([theme, shade, bg]) => (
           <span

@@ -6,5 +6,5 @@ try {
   var dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   document.documentElement.dataset.theme = dark ? "dark" : "light";
   // Each theme's canvas color; src/lib/theme.ts sets it again on a switch.
-  document.querySelector('meta[name="theme-color"]').content = dark ? "#171717" : "#fafafa";
+  document.querySelector('meta[name="theme-color"]').content = dark ? "#0a0a0a" : "#fafafa";
 } catch (e) {}
