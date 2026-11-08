@@ -159,7 +159,9 @@ jobs:
           assets=crates/fctl-host/src/driver/firecracker/assets.rs
           firecracker=$(sed -n 's/^pub const FIRECRACKER_VERSION: &str = "\(.*\)";$/\1/p' "$assets")
           kernel=$(sed -n 's/^pub const KERNEL_IMAGE: &str = "\(.*\)";$/\1/p' "$assets")
-          test -n "$firecracker" && test -n "$kernel"
+          # Each on its own: bash -e stops at neither of `a && b` but the last.
+          test -n "$firecracker"
+          test -n "$kernel"
           echo "Firecracker $firecracker, kernel $kernel"
           echo "key=firecracker-$firecracker-kernel-${kernel//[\/:]/-}" >> "$GITHUB_OUTPUT"
       - name: Firecracker and the kernel from the cache
