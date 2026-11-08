@@ -1003,8 +1003,35 @@ fn first_user_message(ctx: &Ctx, s: &SessionSpec, data: &mut Value) -> Result<()
     } else if s.review.is_some() {
         data["author"] = Value::Null;
         data["source"] = json!("system");
-    } else if s.schedule.is_some() {
-        // fctl started it at the schedule's time: as it was.
+    } else if let Some(name) = &s.schedule {
+        // fctl started it at the schedule's time. Its note says so as fctl
+        // writes it, at the story's time and in the schedule's own rhythm:
+        // the seed ran it once, at the seed's.
+        let (project, _) = cast::session_ref(&s.id)?;
+        let sched = ctx.w.cast.schedule(project, name)?;
+        if let (Some((task, _)), Some(cron)) = (
+            data["text"]
+                .as_str()
+                .and_then(|t| t.split_once("\n\n---\n")),
+            &sched.cron,
+        ) {
+            let when = fctl_domain::cron::Cron::parse(&ctx.story.cron(cron)?)
+                .map_err(anyhow::Error::msg)?
+                .describe();
+            let owner = ctx.w.cast.person(&sched.owner)?.name();
+            let now = ctx.story.stamp(ctx.at(&s.start));
+            let note = fctl_domain::schedules::RunNote {
+                name,
+                when: &when,
+                timezone: ctx.story.zone,
+                owner: &owner,
+                by: fctl_domain::schedules::StartedBy::Time,
+                now: &now,
+                previous: None,
+                context: None,
+            };
+            data["text"] = json!(fctl_domain::schedules::prompt(task, &note));
+        }
     } else {
         data["source"] = json!("web");
     }
