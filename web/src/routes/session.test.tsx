@@ -109,9 +109,12 @@ const turn = (ask: string): G.SessionEvent[] => [
   ev("claude", { type: "result", subtype: "success", duration_ms: 65_000, is_error: false, result: "" }),
 ];
 
-/** The page at `/s/ses_a`, which links to `/s/ses_b`; `go` follows a link (or Back) to another. */
-function page() {
-  queryClient.setQueryData(keys.session("ses_a"), session());
+/**
+ * The page at `/s/ses_a`, which links to `/s/ses_b`; `go` follows a link (or Back) to another.
+ * `first`: the session as the cache has it before its stream says anything.
+ */
+function page(first: G.Session = session()) {
+  queryClient.setQueryData(keys.session("ses_a"), first);
   queryClient.setQueryData(keys.session("ses_b"), {
     ...session(),
     id: "ses_b",
@@ -543,9 +546,12 @@ describe("the session in turns", () => {
     expect(footer(wide.container)?.contains(card(wide.container))).toBe(true);
     expect(card(wide.container)?.className).toContain("backdrop-blur");
     for (const unmount of roots.splice(0)) unmount();
-    // A phone: after the last turn's end, scrolling away with the transcript.
+    // A phone: after the last turn's end, scrolling away with the transcript. While the
+    // transcript loads, under its skeleton.
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q }));
-    const phone = page();
+    const phone = page({ ...session(), question: asked });
+    expect(phone.container.querySelector(".animate-shimmer")).not.toBeNull();
+    expect(card(phone.container)?.textContent).toContain(asked.text);
     phone.snapshot(turn("Price the Danish boxes"), { ...session(), question: asked });
     const inline = card(phone.container);
     expect(inline?.textContent).toContain(asked.text);

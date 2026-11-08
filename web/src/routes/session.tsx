@@ -801,9 +801,10 @@ export function SessionPage() {
                 onDiff={setDiffAt}
                 tasks={s.tasks}
               />
-              {!questionFloats && question}
             </Reveal.Provider>
           )}
+          {/* Also while the transcript loads: the question is known with the session. */}
+          {!questionFloats && question}
         </div>
 
         {/* The message box, and above it what the agent does now and the way back to the newest work. */}
