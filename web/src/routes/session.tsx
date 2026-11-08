@@ -436,10 +436,7 @@ export function SessionPage() {
     <div className="flex min-h-dvh">
       <div className="flex min-w-0 flex-1 flex-col">
         <div ref={header} className="sticky top-(--viewport-shift) z-10">
-          <header
-            ref={bar}
-            className="relative z-2 h-14 border-b border-line bg-canvas/80 backdrop-blur-xl md:h-[60px]"
-          >
+          <header ref={bar} className="relative z-2 h-14 bg-canvas/80 backdrop-blur-xl md:h-[60px]">
             {/* While the agent works, light runs along the header's edge. */}
             {live && <span aria-hidden="true" className="header-live" />}
             <div className="flex h-full items-center gap-2.5 px-2.5 md:gap-3 md:pr-5 md:pl-5">
@@ -729,7 +726,7 @@ export function SessionPage() {
           </header>
           {/* Under the header: finding in the transcript, or the turn the reader is in. */}
           {finder.open ? (
-            <div className="absolute inset-x-0 top-full border-b border-line bg-canvas/85 backdrop-blur-xl">
+            <div className="absolute inset-x-0 top-full bg-canvas/85 backdrop-blur-xl">
               <div className="mx-auto w-full max-w-[760px] px-2.5 py-2 md:px-6 md:py-2.5">
                 <FindBar {...finder.bar} />
               </div>
@@ -880,7 +877,7 @@ export function SessionPage() {
       </div>
 
       {rail && session && (
-        <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface/40 lg:block">
+        <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto bg-surface/40 lg:block">
           <Details
             key={session.id}
             session={session}
@@ -1252,7 +1249,7 @@ function SessionGithub({ session }: { session: G.Session }) {
 
 function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="border-b border-line px-5 py-4 last:border-b-0">
+    <section className="px-5 py-4">
       <h3 className="mb-2.5 text-[12.5px] font-medium text-ink-3">{title}</h3>
       {children}
     </section>
@@ -1424,7 +1421,7 @@ function Overview({
   notes: StatusNote[];
 }) {
   return (
-    <section className="flex flex-col gap-3 border-b border-line px-5 py-4 text-[12.5px]">
+    <section className="flex flex-col gap-3 px-5 py-4 text-[12.5px]">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <StatusPill status={session.status} label={reviewLabel(session)} />
         {notes.map((n) => (

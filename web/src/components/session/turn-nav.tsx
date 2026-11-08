@@ -205,7 +205,7 @@ export function TurnBar({
     <div
       inert={!shown}
       className={cn(
-        "turn-bar absolute inset-x-0 top-full border-b border-line bg-canvas/85 backdrop-blur-xl transition-[translate,opacity] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
+        "turn-bar absolute inset-x-0 top-full bg-canvas/85 backdrop-blur-xl transition-[translate,opacity] duration-200 ease-[var(--ease-out)] motion-reduce:transition-none",
         shown ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-2 opacity-0",
       )}
     >
