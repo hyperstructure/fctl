@@ -125,16 +125,31 @@ async function openDiff(page, file, { phone = false } = {}) {
   await page.waitForTimeout(400);
 }
 
+/**
+ * A card measured from what it shows: `x` and its size as given, in CSS pixels, and its top `dy`
+ * from the first visible element `find` gives (a locator, or the text of one), kept in the window.
+ */
+const near = (find, [x, dy, width, height]) => async (page) => {
+  const el = (typeof find === "string" ? page.getByText(find, { exact: false }) : find(page))
+    .locator("visible=true")
+    .first();
+  const r = await el.boundingBox({ timeout: 10_000 });
+  const y = Math.max(0, Math.min(r.y + dy, page.viewportSize().height - height));
+  return [x, Math.round(y), width, height];
+};
+
 /** Opens the sidebar on a phone, as its menu button does. */
 async function openMenu(page) {
   await page.getByRole("button", { name: "Open menu" }).first().click();
   await page.waitForTimeout(600);
 }
 
-/** Opens the transcript's setup row. */
+/** Opens the transcript's setup row, and brings it up below the page's header, its log under it. */
 async function openSetup(page) {
   await page.locator('button:has-text("Sandbox ready in")').first().click();
   await page.waitForTimeout(500);
+  // Below the page's header, which the turn's bar makes two rows tall once the page scrolls.
+  await scrollTo(page, "Sandbox ready in", 112);
 }
 
 /** Settings' new access token, filled in as Noor makes one for the team's chat bot. */
@@ -155,8 +170,9 @@ async function newToken(page) {
 // show and how to get there. `act` runs once the page has settled, and
 // `size` gives a shot a window of its own size. `card` is the part of a
 // shot that the features overview shows in its page's tile, [x, y, width,
-// height] in CSS pixels, which it writes as `<page>/card-<theme>.webp` at
-// twice that size; a `cardOnly` shot is taken for its card alone.
+// height] in CSS pixels (or measured from an element, `near`), which it
+// writes as `<page>/card-<theme>.webp` at twice that size; a `cardOnly`
+// shot is taken for its card alone.
 const pages = {
   sessions: [
     { name: "floor", path: "/", settle: 3000 },
@@ -164,9 +180,13 @@ const pages = {
     {
       name: "follow-up",
       path: session("driver-app#75"),
-      act: (page) => scrollTo(page, "A check failed", 140),
+      // Its failed check just under the page's header, and Lucía's comment and the answer below.
+      act: (page) => scrollTo(page, "A check failed", 66),
     },
     { name: "phone-floor", path: "/", phone: true, settle: 3000 },
+    // platform#445's agent asks whether a dead letter should page someone, with two answers to click.
+    { name: "asking", path: session("platform#445"), settle: 2500 },
+    { name: "phone-asking", path: session("platform#445"), phone: true, settle: 2500 },
     // What needs Noor, and her workspaces' projects, in the sidebar a phone opens.
     { name: "phone-needs", path: "/", phone: true, settle: 3000, act: openMenu },
     { name: "phone-session", path: session("shop#231"), phone: true, settle: 2500 },
@@ -191,10 +211,18 @@ const pages = {
     { name: "phone-workspace", path: "/w/romanesco", phone: true },
     { name: "phone-project", path: "/p/shop", phone: true },
     // The sidebar's workspaces and their projects' icons, in a window tall enough for all four.
-    { name: "sidebar", path: "/", size: "1440x1400", settle: 3000, card: [0, 370, 287, 920], cardOnly: true },
+    {
+      name: "sidebar",
+      path: "/",
+      size: "1440x1400",
+      settle: 3000,
+      // From the first workspace down, below what needs Noor.
+      card: near((page) => page.locator("aside").getByText("Romanesco", { exact: true }), [0, -14, 287, 800]),
+      cardOnly: true,
+    },
   ],
   sandboxes: [
-    { name: "setup", path: session("shop#231"), act: openSetup, card: [328, 386, 760, 390] },
+    { name: "setup", path: session("shop#231"), act: openSetup, card: near("Sandbox ready in", [328, -14, 760, 390]) },
     { name: "build", path: session("milkfloat#89"), act: openSetup },
     {
       name: "settings",
@@ -209,7 +237,14 @@ const pages = {
       name: "delegated",
       path: session("shop#231"),
       act: (page) => page.evaluate(() => window.scrollTo(0, 0)),
-      card: [318, 146, 620, 270],
+    },
+    // Tomás's delegation and the ticket, near the page's top, clear of what the agent does now.
+    {
+      name: "delegation",
+      path: session("shop#231"),
+      act: (page) => scrollTo(page, "delegated", 140),
+      card: near("delegated", [329, -14, 620, 270]),
+      cardOnly: true,
     },
     {
       name: "exploration",
@@ -377,6 +412,9 @@ const shots = features
       { name: "settings", path: "/settings" },
       { name: "phone-session", path: session("shop#231"), phone: true, settle: 2500 },
       { name: "phone-floor", path: "/", phone: true, settle: 3000 },
+    // platform#445's agent asks whether a dead letter should page someone, with two answers to click.
+    { name: "asking", path: session("platform#445"), settle: 2500 },
+    { name: "phone-asking", path: session("platform#445"), phone: true, settle: 2500 },
     ];
 for (let i = 0; i < args.length; i++) {
   if (args[i] !== "--page" || !args[i + 1]) continue;
@@ -416,6 +454,10 @@ async function noor(browser, { theme, phone, flowing, signedOut }) {
   await context.addInitScript(() => {
     let seed = 42;
     Math.random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    // Sessions in the new view, which reads in turns (web/src/lib/session-view.ts).
+    try {
+      localStorage.setItem("fctl:session-view", "new");
+    } catch {}
   });
   // The cast's avatars in place of GitHub's; bots' logos stay GitHub's.
   await context.route("https://avatars.githubusercontent.com/**", (route) => {
@@ -554,6 +596,15 @@ if (open) {
             console.error(`${shot.name} (${theme}): ${e.message.split("\n")[0]}`);
           }
           await dress(tab);
+          // Where its card is, measured on the page the shot shows: one it can't find is left
+          // out, as a failed act is, and the run goes on.
+          const card =
+            typeof shot.card === "function"
+              ? await shot.card(tab).catch((e) => {
+                  console.error(`${shot.name} (${theme}): no card: ${e.message.split("\n")[0]}`);
+                  return undefined;
+                })
+              : shot.card;
           const png = await tab.screenshot();
           if (features) {
             mkdirSync(path.join(out, shot.page), { recursive: true });
@@ -565,9 +616,9 @@ if (open) {
             }
             // Its page's tile on the features page: the part of it that `card`
             // says, [x, y, width, height] in CSS pixels, at twice that size.
-            if (shot.card) {
+            if (card) {
               const view = tab.viewportSize();
-              const [x, y, w, h] = shot.card;
+              const [x, y, w, h] = card;
               const crop = [x / view.width, y / view.height, w / view.width, h / view.height];
               const c = await webp(converter, png, w * 2, crop);
               const file = path.join(out, shot.page, `card-${theme}.webp`);

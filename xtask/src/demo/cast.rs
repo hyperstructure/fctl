@@ -449,6 +449,10 @@ pub struct SessionSpec {
     /// People watching its page in the shots.
     #[serde(default)]
     pub watching: Vec<String>,
+    /// People who follow it besides whoever started it: its agent's
+    /// question, say, waits for them in their sidebar's Needs you.
+    #[serde(default)]
+    pub followers: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]

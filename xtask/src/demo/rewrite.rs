@@ -462,8 +462,8 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     d1.exec(
         "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
          claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-         pull_requests = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, started_at = ?, ended_at = ?, created_at = ?, runner_id = COALESCE(?, runner_id), \
-         ticket = COALESCE(?, ticket), github_access = COALESCE(?, github_access) WHERE id = ?",
+         pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, started_at = ?, ended_at = ?, created_at = ?, \
+         runner_id = COALESCE(?, runner_id), ticket = COALESCE(?, ticket), github_access = COALESCE(?, github_access) WHERE id = ?",
         vec![
             json!(session.title),
             json!(session.description),
@@ -480,6 +480,8 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             json!(pr.and_then(|p| p.title.clone())),
             json!(pr.and_then(|p| p.state.clone())),
             json!(prs),
+            // Its agent's open question, asked at the story's time.
+            json!(session.question.as_ref().and_then(|q| serde_json::to_string(q).ok())),
             json!(session.updated_at),
             json!(session.last_activity_at),
             json!(session.messaged_at),
@@ -1001,8 +1003,35 @@ fn first_user_message(ctx: &Ctx, s: &SessionSpec, data: &mut Value) -> Result<()
     } else if s.review.is_some() {
         data["author"] = Value::Null;
         data["source"] = json!("system");
-    } else if s.schedule.is_some() {
-        // fctl started it at the schedule's time: as it was.
+    } else if let Some(name) = &s.schedule {
+        // fctl started it at the schedule's time. Its note says so as fctl
+        // writes it, at the story's time and in the schedule's own rhythm:
+        // the seed ran it once, at the seed's.
+        let (project, _) = cast::session_ref(&s.id)?;
+        let sched = ctx.w.cast.schedule(project, name)?;
+        if let (Some((task, _)), Some(cron)) = (
+            data["text"]
+                .as_str()
+                .and_then(|t| t.split_once("\n\n---\n")),
+            &sched.cron,
+        ) {
+            let when = fctl_domain::cron::Cron::parse(&ctx.story.cron(cron)?)
+                .map_err(anyhow::Error::msg)?
+                .describe();
+            let owner = ctx.w.cast.person(&sched.owner)?.name();
+            let now = ctx.story.stamp(ctx.at(&s.start));
+            let note = fctl_domain::schedules::RunNote {
+                name,
+                when: &when,
+                timezone: ctx.story.zone,
+                owner: &owner,
+                by: fctl_domain::schedules::StartedBy::Time,
+                now: &now,
+                previous: None,
+                context: None,
+            };
+            data["text"] = json!(fctl_domain::schedules::prompt(task, &note));
+        }
     } else {
         data["source"] = json!("web");
     }

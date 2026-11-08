@@ -1484,6 +1484,8 @@ model = "sonnet"
 title = "Retry Stripe webhook processing that fails"
 prompt = "When processing a Stripe webhook fails, we drop it. Retry it with backoff, and park it in a dead-letter table after five tries."
 pr = { number = 845, state = "open", passed = 14 }
+# Billing's on Noor's mind since #437: its agent's question waits in her Needs you too.
+followers = ["noor"]
 
 [[session]]
 id = "driver-app#77"

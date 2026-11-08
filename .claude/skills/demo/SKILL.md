@@ -245,7 +245,9 @@ has them, `package.json`.
 
 Worth shooting, as `shoot.mjs` does: the Agent Floor at 09:10, Shop's
 Sessions tab, shop#231's session page mid-turn, platform#445 waiting for
-Asha, shop#224 with its review round, Platform's Reviews and Memory tabs,
+an answer to its agent's question (`fctl ask`: whether a webhook in the
+dead letters should page whoever is on call; Noor follows the session, so
+it leads her sidebar's Needs you), shop#224 with its review round, Platform's Reviews and Memory tabs,
 Shop's Retrospectives, Schedules, Tickets and Repositories tabs,
 Romanesco's Runners and People tabs, the milkfloat workspace, Noor's
 settings, and a session and the Agent Floor at a phone's width.
@@ -273,7 +275,8 @@ node <repo>/xtask/demo/shoot.mjs --features <dir> --only sandboxes,review-agents
 them: a path, and for some an `act` that scrolls to what the shot is about
 or opens a dialog (the sandbox's setup log, a new access token, the
 schedule editor). Shots of a session pick it by the cast's name
-(`shop#231`), so they hold across runs. A page's HTML names its shots by
+(`shop#231`), so they hold across runs, and show it in the new session
+view, which reads in turns (the browser's `fctl:session-view` is `new`). A page's HTML names its shots by
 those names: add a shot to both, and keep the alt texts saying what the
 shot shows. A page shows each shot once: where it needs the same screen
 twice, as when a hero's phone (`only-phone`) and a section's would both be
