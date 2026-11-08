@@ -454,6 +454,24 @@ describe("TranscriptBuilder", () => {
     expect(b.tasks.find((t) => t.id === "w1")?.call).toBe(inner.key);
   });
 
+  it("gives an updated retrospective's notice how it was before", () => {
+    const r = (worked_on: string, updated_at?: number) => ({
+      id: "rtr_1",
+      project_id: "prj_1",
+      session: { id: "ses_1", number: 1, title: "Fix it" },
+      created_at: 1,
+      updated_at,
+      outcome: "completed",
+      worked_on,
+    });
+    const b = new TranscriptBuilder();
+    const items = b.add([
+      ev("notice", { level: "info", code: "retrospective", message: "Recorded", retrospective: r("One") }),
+      ev("notice", { level: "info", code: "retrospective", message: "Updated", retrospective: r("Two", 2) }),
+    ]);
+    expect(items.map((it) => it.kind === "notice" && it.retroBefore?.worked_on)).toEqual([undefined, "One"]);
+  });
+
   it("shows a state when a branch changes, and keeps the newest", () => {
     const b = new TranscriptBuilder();
     const git = (head: string, ahead: number, files: number, pushed = false): G.GitState => ({

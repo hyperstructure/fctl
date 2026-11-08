@@ -23,6 +23,19 @@ export function parts(r: G.Retrospective): { key: string; label: string; text: s
   ].filter((p) => p.text.trim());
 }
 
+/** What an update of a retrospective changed: the parts it says otherwise, and its outcome if that moved. */
+export function changes(
+  before: G.Retrospective,
+  after: G.Retrospective,
+): { parts: ReadonlySet<string>; outcome?: G.RetrospectiveOutcome } {
+  const was = new Map(parts(before).map((p) => [p.key, p.text.trim()]));
+  const changed = parts(after).filter((p) => was.get(p.key) !== p.text.trim());
+  return {
+    parts: new Set(changed.map((p) => p.key)),
+    outcome: before.outcome !== after.outcome ? before.outcome : undefined,
+  };
+}
+
 /** When the agent last said something in a retrospective: recorded it, or updated it. */
 export const changedAt = (r: G.Retrospective) => r.updated_at ?? r.created_at;
 

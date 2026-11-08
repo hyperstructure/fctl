@@ -3,10 +3,10 @@
 // thought that comes under a run's line would shimmer out of step with it;
 // each one starts as if it had been there since the page opened instead. So do
 // the new session page's signs of work: the waves through its dots
-// (components/ui/dot-wave.tsx) and the ring that turns around what the agent
-// does now.
+// (components/ui/dot-wave.tsx), the ring that turns around what the agent
+// does now, and the comet along the thinking mark's trace (ui/icons.tsx).
 
-const SYNCED = new Set(["text-shimmer", "dot-wave", "busy-ring"]);
+const SYNCED = new Set(["text-shimmer", "dot-wave", "busy-ring", "thought-sweep"]);
 
 /** Keeps the labels' shimmers, and the signs of work, in step. Returns what undoes it. */
 export function syncShimmers(target: EventTarget = document) {

@@ -17,7 +17,6 @@ import {
   MessageCircleQuestion,
   Radio,
   Repeat,
-  ScrollText,
   Sparkle,
   Trash2,
   TriangleAlert,
@@ -26,7 +25,6 @@ import {
 import { type MouseEvent, memo, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ImageSizes, Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
-import { OutcomeBadge, RetrospectiveParts } from "@/components/retrospective";
 import { PullRequestSummarizedNotice, ReviewPostedNotice } from "@/components/review";
 import {
   Avatar,
@@ -59,6 +57,7 @@ import { useRevealed } from "./find";
 import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
 import { Busy, Milestone, MilestoneButton, RailIcon, Thread, Tile, Unreadable } from "./lines";
+import { RetrospectiveCard } from "./retrospective";
 import { thinkingNow } from "./thinking";
 import { TicketMessageView, TicketNoticeView } from "./ticket";
 import { Run, SessionImages, ToolRow, WorkDir } from "./tool";
@@ -247,23 +246,6 @@ function MemoryNotice({
           </p>
         )}
       </Thread>
-    </div>
-  );
-}
-
-/**
- * A retrospective the agent recorded as it finished a piece of work, or
- * updated as a later turn carried on with it: as it was then.
- */
-function RetrospectiveNotice({ r, findKey }: { r: G.Retrospective; findKey: string }) {
-  return (
-    <div className="my-2 animate-rise rounded-xl border border-line bg-raised/30 px-4 py-3.5">
-      <div className="mb-3 flex items-center gap-2 text-[12.5px] text-ink-3">
-        <ScrollText className="size-3.5 shrink-0" />
-        <span>{r.updated_at ? "Retrospective updated" : "Retrospective"}</span>
-        <OutcomeBadge outcome={r.outcome} />
-      </div>
-      <RetrospectiveParts r={r} wide findKey={findKey} />
     </div>
   );
 }
@@ -581,7 +563,9 @@ export const ItemView = memo(function ItemView({
       if (item.notice.published && shown(item.notice.published))
         return <PublishedShot file={item.notice.published} canManage={canManage} />;
       if (item.notice.retrospective)
-        return <RetrospectiveNotice r={item.notice.retrospective} findKey={item.key} />;
+        return (
+          <RetrospectiveCard r={item.notice.retrospective} before={item.retroBefore} findKey={item.key} />
+        );
       if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
       if (item.notice.summarized) return <PullRequestSummarizedNotice summarized={item.notice.summarized} />;
       if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
@@ -731,8 +715,8 @@ export function LiveTurnView({
           <LiveText key={`live-${b.index}`} text={b.text} writing={!stall} className={textClassName} />
         ) : inRun || nowLine ? null : b.type === "thinking" ? (
           <div key={`live-${b.index}`} className="flex min-h-8 items-center gap-2.5 py-1 text-[13.5px]">
-            <RailIcon className="text-violet/80">
-              <ThoughtIcon />
+            <RailIcon>
+              <ThoughtIcon live={!stall} />
             </RailIcon>
             <span className={cn("text-ink-3", !stall && "text-shimmer")}>{thinkingNow(b.tokens)}</span>
           </div>

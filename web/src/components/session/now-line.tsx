@@ -94,7 +94,7 @@ function useSeconds(on: boolean): number {
 function icon(now: Now): ReactNode {
   switch (now.kind) {
     case "thinking":
-      return <ThoughtIcon className="size-3.5 text-violet" />;
+      return <ThoughtIcon live className="size-3.5" />;
     case "writing":
       return <PenLine className="size-3.5 text-accent" />;
     case "preparing":

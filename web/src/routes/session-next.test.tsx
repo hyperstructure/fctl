@@ -623,6 +623,29 @@ describe("the new session page", () => {
     expect(line()?.querySelector(".now-row > span:nth-child(2) > span")).toBe(step);
   });
 
+  it("lists the newest turns beside the transcript, and the earlier ones a click away, without a scroll of its own", () => {
+    const p = page();
+    p.snapshot(Array.from({ length: 10 }, (_, i) => turn(`Step ${i + 1} of the migration`)).flat());
+    const rail = () =>
+      [...p.container.querySelectorAll("section")].find((s) => s.textContent?.startsWith("Turns"));
+    const rows = () =>
+      [...(rail()?.querySelectorAll("button") ?? [])].filter((b) => /Step \d+/.test(b.textContent ?? ""));
+    expect(rows().map((b) => b.textContent?.match(/Step (\d+)/)?.[1])).toEqual([
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+    ]);
+    expect(rail()?.querySelector("[class*='overflow-y-auto']")).toBeNull();
+    const more = [...(rail()?.querySelectorAll("button") ?? [])].find(
+      (b) => b.textContent === "Show 4 earlier turns",
+    );
+    act(() => more?.click());
+    expect(rows()).toHaveLength(10);
+  });
+
   it("shows only the conversation when asked: people's messages and the agent's words", () => {
     const p = page();
     p.snapshot(turn("Fix the flaky login test"));

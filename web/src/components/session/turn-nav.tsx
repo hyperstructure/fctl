@@ -2,7 +2,15 @@
 // the reader is in, the bar under the header that says so once the turn's start has scrolled away,
 // the list of every turn it opens, and the keys that go from turn to turn.
 
-import { CircleCheck, CircleSlash, ListTree, OctagonX, Sparkle, TriangleAlert } from "lucide-react";
+import {
+  ChevronsUp,
+  CircleCheck,
+  CircleSlash,
+  ListTree,
+  OctagonX,
+  Sparkle,
+  TriangleAlert,
+} from "lucide-react";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { Avatar, Logo, Menu } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -428,6 +436,9 @@ function TurnRow({
  * Every turn, in the details beside the transcript, as a table of contents: the one the reader is
  * in is marked as they read, and kept in view in the list, which scrolls on its own when long.
  */
+/** How many of the newest turns the rail lists before the earlier ones are a click away. */
+const LISTED = 6;
+
 export function TurnList({
   turns,
   facts,
@@ -443,36 +454,43 @@ export function TurnList({
   hasMoreBefore: boolean;
   onGo: (i: number) => void;
 }) {
-  const list = useRef<HTMLDivElement>(null);
   const shares = sharesOf(turns, facts);
-  // The list scrolls itself, not the rail or the page, to keep the turn the reader is in in view.
-  useEffect(() => {
-    const el = list.current;
-    const row = el?.querySelectorAll<HTMLElement>("button")[at];
-    if (!el || !row) return;
-    const top = row.offsetTop - el.offsetTop;
-    if (top < el.scrollTop) el.scrollTop = top - 4;
-    else if (top + row.offsetHeight > el.scrollTop + el.clientHeight)
-      el.scrollTop = top + row.offsetHeight - el.clientHeight + 4;
-  }, [at]);
+  // In the rail, which scrolls: the newest turns, and the earlier ones a click away, rather than
+  // a list that scrolls in it. The turn the reader is in always shows, the list growing back to it.
+  const [all, setAll] = useState(false);
+  const newest = turns.length - LISTED;
+  const folded = !all && turns.length > LISTED + 2 ? (at >= 0 ? Math.min(newest, at) : newest) : 0;
   return (
-    <div ref={list} className="-mx-2 max-h-[17.5rem] overflow-y-auto overscroll-contain">
+    <div className="-mx-2">
       {hasMoreBefore && (
         <p className="px-2 pb-1 text-[11.5px] text-ink-4">Earlier turns load as you scroll up.</p>
       )}
-      {turns.map((turn, i) => (
-        <TurnRow
-          key={turn.key}
-          turn={turn}
-          facts={facts(turn)}
-          title={turnTitle(turn, i === 0, hasMoreBefore)}
-          current={i === at}
-          live={live && i === turns.length - 1}
-          share={shares[i]}
-          compact
-          onClick={() => onGo(i)}
-        />
-      ))}
+      {folded > 0 && (
+        <button
+          type="button"
+          onClick={() => setAll(true)}
+          className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+        >
+          <ChevronsUp aria-hidden="true" className="size-3.5 shrink-0" />
+          Show {folded} earlier {folded === 1 ? "turn" : "turns"}
+        </button>
+      )}
+      {turns.slice(folded).map((turn, j) => {
+        const i = folded + j;
+        return (
+          <TurnRow
+            key={turn.key}
+            turn={turn}
+            facts={facts(turn)}
+            title={turnTitle(turn, i === 0, hasMoreBefore)}
+            current={i === at}
+            live={live && i === turns.length - 1}
+            share={shares[i]}
+            compact
+            onClick={() => onGo(i)}
+          />
+        );
+      })}
     </div>
   );
 }
