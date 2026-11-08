@@ -462,8 +462,8 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     d1.exec(
         "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
          claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-         pull_requests = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, started_at = ?, ended_at = ?, created_at = ?, runner_id = COALESCE(?, runner_id), \
-         ticket = COALESCE(?, ticket), github_access = COALESCE(?, github_access) WHERE id = ?",
+         pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, started_at = ?, ended_at = ?, created_at = ?, \
+         runner_id = COALESCE(?, runner_id), ticket = COALESCE(?, ticket), github_access = COALESCE(?, github_access) WHERE id = ?",
         vec![
             json!(session.title),
             json!(session.description),
@@ -480,6 +480,8 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
             json!(pr.and_then(|p| p.title.clone())),
             json!(pr.and_then(|p| p.state.clone())),
             json!(prs),
+            // Its agent's open question, asked at the story's time.
+            json!(session.question.as_ref().and_then(|q| serde_json::to_string(q).ok())),
             json!(session.updated_at),
             json!(session.last_activity_at),
             json!(session.messaged_at),

@@ -1,9 +1,9 @@
-# platform#445 · Asha, today 08:31 · Retry Stripe webhook processing that fails (waiting for Asha at 09:10)
+# platform#445 · Asha, today 08:31 · Retry Stripe webhook processing that fails (asking whether a dead letter pages someone at 09:10)
 match = "When processing a Stripe webhook fails, we drop it"
 
 [[turn]]
 duration = "24m"
-result = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. Before I call it done: should a dead letter page whoever is on call, or is the daily summary in #platform enough?"
+result = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. What a dead letter does next is yours to choose: I'll wire it to a page or to the daily summary, whichever you pick."
 
 [[turn.step]]
 run = "fctl edit --title 'Retry Stripe webhook processing that fails' --description 'Webhooks whose processing fails are retried with backoff, and kept in a dead-letter table after five tries. The agent asks whether a dead letter should page someone.'"
@@ -91,4 +91,8 @@ seconds = 10
 output = "All checks were successful\n0 failing, 14 successful, 0 skipped, and 0 pending checks\n\n✓  Clippy                      58s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265721\n✓  Format                      12s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265722\n✓  sqlx offline data           41s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265723\n✓  Tests (billing)           2m10s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265724\n✓  Tests (jobs)              1m34s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265725\n✓  Tests (routes)            2m47s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265726\n✓  Tests (slots)               49s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265727\n✓  Tests (webhooks)          1m12s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265728\n✓  Migrations                  29s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265729\n✓  Migrations, rolled back     33s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265730\n✓  cargo deny                  18s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265731\n✓  Docker image              3m02s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265732\n✓  Deploy preview            1m51s   https://github.com/romanescohq/platform/actions/runs/18421907/job/55265733\n✓  fctl review               1m09s   https://github.com/romanescohq/platform/runs/55265734"
 
 [[turn.step]]
-say = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. Before I call it done: should a dead letter page whoever is on call, or is the daily summary in #platform enough?"
+run = "fctl ask 'Should a webhook that ends up in the dead letters page whoever is on call, or is the daily summary in #platform enough?' -o 'Page whoever is on call' -o 'The daily summary is enough'"
+description = "Ask whether a dead letter should page someone"
+
+[[turn.step]]
+say = "Retries are in platform#845: five tries with backoff from 30 seconds to 40 minutes, then the event goes to `webhook_dead_letters` with its last error. CI passed and the review found nothing. What a dead letter does next is yours to choose: I'll wire it to a page or to the daily summary, whichever you pick."

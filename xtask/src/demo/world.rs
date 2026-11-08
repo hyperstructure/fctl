@@ -1366,6 +1366,14 @@ impl<'a> World<'a> {
         if session["number"].as_u64() != Some(u64::from(number)) {
             bail!("{} started as #{}", s.id, session["number"]);
         }
+        for who in &s.followers {
+            self.api(
+                who,
+                "PUT",
+                &format!("/sessions/{id}/follow"),
+                Some(json!({})),
+            )?;
+        }
         let branch = session["branch"].as_str().map(str::to_owned);
         if let (Some(pr), Some(repo), Some(b)) = (&s.pr, &p.repo, &branch) {
             let pr_title = pr.title.clone().unwrap_or_else(|| title.clone());
