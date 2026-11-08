@@ -337,8 +337,6 @@ export function SessionPage() {
     ? !s.session.review && !s.session.question && waitsForYou(s.session)
     : undefined;
   const invite = useJustNow(handedOver, id);
-  const coverTitle = useRef<HTMLDivElement>(null);
-  const coverShows = useShows(coverTitle, bar, !s.hasMoreBefore && !!session);
 
   if (initial.isError && !session) {
     return (
@@ -432,12 +430,7 @@ export function SessionPage() {
                 <div className="min-w-0 flex-1">
                   {session ? (
                     <>
-                      <h1
-                        className={cn(
-                          "truncate font-display text-[15.5px] leading-5 font-medium tracking-[-0.011em] text-ink transition-[opacity,translate] duration-300 ease-[var(--ease-out)] md:text-[16.5px]",
-                          coverShows && "translate-y-1 opacity-0",
-                        )}
-                      >
+                      <h1 className="truncate font-display text-[15.5px] leading-5 font-medium tracking-[-0.011em] text-ink md:text-[16.5px]">
                         {session.title}
                       </h1>
                       <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-3">
@@ -771,7 +764,6 @@ export function SessionPage() {
                   <Cover
                     session={session}
                     workspace={workspace}
-                    titleRef={coverTitle}
                     glance={
                       <Glance
                         session={session}
@@ -953,18 +945,15 @@ export function SessionPage() {
 
 /**
  * What opens the session, once its start is loaded: where it is, its title and what it is
- * about, and who started it, when, on what branch. The header's title gives way to it while it
- * shows.
+ * about, and who started it, when, on what branch.
  */
 function Cover({
   session,
   workspace,
-  titleRef,
   glance,
 }: {
   session: G.Session;
   workspace?: G.WorkspaceRef;
-  titleRef: RefObject<HTMLDivElement | null>;
   /** The session at a glance: its figures, its turns and its pull requests. */
   glance: React.ReactNode;
 }) {
@@ -995,7 +984,6 @@ function Cover({
       </div>
       {/* The header's title says it to screen readers. */}
       <div
-        ref={titleRef}
         aria-hidden="true"
         className="mt-3 font-display text-[26px] leading-[1.15] font-semibold tracking-[-0.022em] text-balance text-ink md:text-[32px]"
       >
@@ -1076,47 +1064,6 @@ function useFactsOf(cwd?: string): (turn: Turn) => TurnFacts {
     },
     [cwd],
   );
-}
-
-/**
- * Whether `ref` shows below the header: the cover's title, for the header's to give way to it.
- * Measured as the page scrolls; never while not `enabled`.
- */
-function useShows(
-  ref: RefObject<HTMLElement | null>,
-  header: RefObject<HTMLElement | null>,
-  enabled: boolean,
-) {
-  const [shows, setShows] = useState(false);
-  useEffect(() => {
-    if (!enabled) {
-      setShows(false);
-      return;
-    }
-    let raf = 0;
-    const measure = () => {
-      raf = 0;
-      const el = ref.current;
-      const top = header.current?.getBoundingClientRect().bottom ?? 0;
-      setShows(!!el && el.getBoundingClientRect().bottom > top + 4);
-    };
-    const on = () => {
-      if (!raf) raf = requestAnimationFrame(measure);
-    };
-    window.addEventListener("scroll", on, { passive: true });
-    window.addEventListener("resize", on, { passive: true });
-    measure();
-    // Its place changes as the transcript loads.
-    const grown = new ResizeObserver(on);
-    grown.observe(document.documentElement);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("scroll", on);
-      window.removeEventListener("resize", on);
-      grown.disconnect();
-    };
-  }, [ref, header, enabled]);
-  return shows;
 }
 
 /**
