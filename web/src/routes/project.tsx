@@ -2,7 +2,7 @@
 // a tab (lib/project-page.ts says which, and what an address opens).
 
 import { Link, useParams, useSearch } from "@tanstack/react-router";
-import { GitBranch, Pencil } from "lucide-react";
+import { BookMarked, CalendarClock, GitBranch, Pencil, ScanEye, Settings } from "lucide-react";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { AutopilotTab } from "@/components/project/autopilot";
 import { ProjectIconPicker } from "@/components/project/icon-picker";
@@ -28,6 +28,7 @@ import {
 } from "@/components/session/start";
 import { startKeys } from "@/components/session/task-box";
 import {
+  AgentFloorIcon,
   AutopilotIcon,
   Banner,
   Empty,
@@ -60,15 +61,42 @@ const LABELS: Record<ProjectTab, string> = {
   settings: "Settings",
 };
 
-/** The autopilot's mark on its tab, lit while it works and dim while it rests or is paused. */
-function AutopilotTabMark({ a }: { a: G.ProjectAutopilot }) {
-  if (!a.state || a.state === "off") return null;
-  return (
-    <AutopilotIcon
-      live={a.working}
-      className={cn("size-3.5", a.state === "paused" ? "text-pink" : a.working ? "text-ink" : "text-ink-4")}
-    />
+/**
+ * Each tab's icon, as the rest of the app draws what the tab holds: the Agent Floor's mark for its
+ * sessions, the schedule button's calendar, the eye that reviews are, the bookmark of notes kept,
+ * the sidebar's gear. Autopilot draws its own mark (`TabIcon`).
+ */
+const ICONS: Record<Exclude<ProjectTab, "autopilot">, (className: string) => ReactNode> = {
+  sessions: (className) => <AgentFloorIcon className={className} />,
+  schedules: (className) => <CalendarClock className={className} aria-hidden="true" />,
+  reviews: (className) => <ScanEye className={className} aria-hidden="true" />,
+  memory: (className) => <BookMarked className={className} aria-hidden="true" />,
+  settings: (className) => <Settings className={className} aria-hidden="true" />,
+};
+
+/**
+ * A tab's icon: in the accent on the open tab, as its underline is, and lighter as the pointer
+ * comes. The autopilot's says how it is, as its mark does elsewhere: a comet round it while it works,
+ * pink while it's paused.
+ */
+function TabIcon({
+  tab,
+  here,
+  autopilot,
+}: {
+  tab: ProjectTab;
+  here: boolean;
+  autopilot?: G.ProjectAutopilot;
+}) {
+  const on = !!autopilot?.state && autopilot.state !== "off";
+  const paused = tab === "autopilot" && autopilot?.state === "paused";
+  const working = tab === "autopilot" && on && !!autopilot?.working;
+  const className = cn(
+    "size-4 shrink-0 transition-colors duration-150",
+    paused ? "text-pink" : here ? "text-accent" : working ? "text-ink" : "text-ink-4 group-hover:text-ink-3",
   );
+  if (tab === "autopilot") return <AutopilotIcon live={working} className={className} />;
+  return ICONS[tab](className);
 }
 
 /** The project's icon beside its name: its maintainers click it to choose another. */
@@ -244,11 +272,11 @@ function Tabs({
               aria-current={here ? "page" : undefined}
               activeOptions={{ exact: true }}
               className={cn(
-                "relative inline-flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-[13.5px] transition-colors",
+                "group relative inline-flex shrink-0 items-center gap-2 px-3 py-2.5 text-[13.5px] transition-colors duration-150",
                 here ? "text-ink" : "text-ink-3 hover:text-ink",
               )}
             >
-              {t === "autopilot" && autopilot ? <AutopilotTabMark a={autopilot} /> : null}
+              <TabIcon tab={t} here={here} autopilot={autopilot} />
               {LABELS[t]}
               {t === "autopilot" && asks > 0 && (
                 <span

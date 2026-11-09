@@ -11,11 +11,11 @@ import {
   Bot,
   Box,
   ChevronLeft,
-  Settings as Cog,
   FolderGit2,
   GitPullRequest,
   KeyRound,
   type LucideIcon,
+  SlidersHorizontal,
   Ticket,
   Users,
 } from "lucide-react";
@@ -77,7 +77,8 @@ import type { Gist } from "@/lib/settings";
 import type { LinearOutcome } from "@/lib/tickets";
 
 const ICONS: Record<ProjectSettingsPage, LucideIcon> = {
-  general: Cog,
+  // Not the gear: that's the Settings tab right above.
+  general: SlidersHorizontal,
   repositories: FolderGit2,
   members: Users,
   agents: Bot,
