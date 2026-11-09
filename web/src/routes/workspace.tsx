@@ -2110,6 +2110,12 @@ function Autopilots({ w }: { w: G.Workspace }) {
             label="Let projects have an autopilot"
           />
         </div>
+        {w.autopilots && !own && (
+          <p className="text-[12.5px] leading-relaxed text-ink-4">
+            To put all of {w.name} on autopilot, open a project's Autopilot tab and choose that it runs the
+            whole workspace: it works from that project.
+          </p>
+        )}
         {own && (
           <Link
             to="/p/$slug"

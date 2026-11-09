@@ -922,14 +922,26 @@ pub async fn store_secret(
     if value.len() > 64 * 1024 {
         return Err(validation("value", "Secrets can be at most 64 KiB"));
     }
+    let autopilot = ctx.autopilot().is_some();
+    if autopilot {
+        own_secret(ctx, &p.row.id, &name).await?;
+    }
     let sealed = ctx
         .keys()?
         .seal(&secret_aad(&p.row.id, &name), value.as_bytes())?;
     q(
         &ctx.db,
-        "INSERT INTO project_secrets (project_id, name, value_enc, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) \
-         ON CONFLICT (project_id, name) DO UPDATE SET value_enc = excluded.value_enc, updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-        &[s(&p.row.id), s(&name), s(&sealed), s(&ctx.user()?.id), n(ctx.now)],
+        "INSERT INTO project_secrets (project_id, name, value_enc, updated_by, updated_at, autopilot) VALUES (?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (project_id, name) DO UPDATE SET value_enc = excluded.value_enc, updated_by = excluded.updated_by, \
+         updated_at = excluded.updated_at, autopilot = excluded.autopilot",
+        &[
+            s(&p.row.id),
+            s(&name),
+            s(&sealed),
+            s(&ctx.user()?.id),
+            n(ctx.now),
+            crate::db::b(autopilot),
+        ],
     )?
     .run()
     .await?;
@@ -945,9 +957,35 @@ pub async fn store_secret(
     Ok(name)
 }
 
+/// An autopilot replaces and removes only the secrets it set itself: those
+/// people set, or gave it when it asked, stay theirs.
+async fn own_secret(ctx: &Ctx, project_id: &str, name: &str) -> AppResult<()> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        autopilot: bool,
+    }
+    let found: Option<Row> = q(
+        &ctx.db,
+        "SELECT autopilot FROM project_secrets WHERE project_id = ? AND name = ?",
+        &[s(project_id), s(name)],
+    )?
+    .first()
+    .await?;
+    if found.is_some_and(|r| !r.autopilot) {
+        return Err(forbidden(&format!(
+            "{name} is a secret people set, which an autopilot doesn't replace or remove: ask them with fctl autopilot ask --secret {name}."
+        )));
+    }
+    Ok(())
+}
+
 pub async fn delete_secret(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
+    if ctx.autopilot().is_some() {
+        own_secret(ctx, &p.row.id, name).await?;
+    }
     q(
         &ctx.db,
         "DELETE FROM project_secrets WHERE project_id = ? AND name = ?",

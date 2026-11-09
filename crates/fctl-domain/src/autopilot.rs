@@ -59,6 +59,9 @@ pub const SHIFT_MS: i64 = 12 * HOUR_MS;
 /// What its sessions do, gathered this long before it wakes for them: a
 /// review, its comments and a session that ends just after come together.
 pub const CREW_GATHER_MS: i64 = MINUTE_MS;
+/// What people say, gathered this long before it wakes for it: answers
+/// given one after another reach it in one message, still at once to them.
+pub const PEOPLE_GATHER_MS: i64 = 5_000;
 /// After its own session fails, fctl tries again this much later, and
 /// pauses it after as many failures in a row.
 pub const RETRY_MS: [i64; 3] = [5 * MINUTE_MS, 15 * MINUTE_MS, HOUR_MS];

@@ -1527,7 +1527,8 @@ impl Session {
         let brief = self
             .fctl(&["autopilot", "brief"], "Read where things stand")
             .unwrap_or_default();
-        let first = lower.contains("you are the autopilot of") && !brief.contains("## Your plan\n\n- [");
+        let first =
+            lower.contains("you are the autopilot of") && !brief.contains("## Your plan\n\n- [");
         if first {
             self.stream_text(
                 "Nothing is planned yet. I'll write a plan, start the first piece of work in a session of its own, and ask what only people can answer.",
@@ -1581,7 +1582,11 @@ impl Session {
             let n = started
                 .as_deref()
                 .and_then(|o| o.split('#').nth(1))
-                .map(|rest| rest.chars().take_while(char::is_ascii_digit).collect::<String>())
+                .map(|rest| {
+                    rest.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                })
                 .unwrap_or_default();
             return format!(
                 "I wrote a plan and started session #{n} for the pipeline board. I asked you to choose its layout, and for the token that deploys previews; I'll go on meanwhile, and check back in 30 minutes or when the session finishes."
@@ -1589,16 +1594,27 @@ impl Session {
         }
         // Woken: what's new decides what comes next.
         let mut did = Vec::new();
-        if lower.contains("answered") || lower.contains("set the secret") || lower.contains("declined") {
+        if lower.contains("answered")
+            || lower.contains("set the secret")
+            || lower.contains("declined")
+        {
             self.fctl(
-                &["autopilot", "log", "Read the answers, and folded them into the plan."],
+                &[
+                    "autopilot",
+                    "log",
+                    "Read the answers, and folded them into the plan.",
+                ],
                 "Write down the answers",
             );
             did.push("took in your answers");
         }
         if lower.contains("new notes from people") {
             self.fctl(
-                &["autopilot", "log", "Took the new note on board: it reorders what comes next."],
+                &[
+                    "autopilot",
+                    "log",
+                    "Took the new note on board: it reorders what comes next.",
+                ],
                 "Write down the note",
             );
             did.push("followed your note");
@@ -1618,7 +1634,11 @@ impl Session {
                 "Start the next piece of work",
             );
             self.fctl(
-                &["autopilot", "log", "The board is done: started contacts and companies next."],
+                &[
+                    "autopilot",
+                    "log",
+                    "The board is done: started contacts and companies next.",
+                ],
                 "Write down what I did",
             );
             did.push("started the next piece of work");
@@ -1630,7 +1650,10 @@ impl Session {
         }
         let _ = text;
         self.fctl(&["autopilot", "wake", "--in", "30m"], "Say when to wake");
-        format!("Done for now: I {}. I'll check back in 30 minutes.", did.join(", and "))
+        format!(
+            "Done for now: I {}. I'll check back in 30 minutes.",
+            did.join(", and ")
+        )
     }
 }
 

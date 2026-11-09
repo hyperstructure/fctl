@@ -136,6 +136,8 @@ function patched(a: G.Autopilot) {
   queryClient.setQueryData(keys.autopilot(a.project_id), a);
   queryClient.setQueryData(keys.autopilot(a.project_slug), a);
   void queryClient.invalidateQueries({ queryKey: keys.autopilotLog(a.project_id) });
+  // Its tab's mark and count, in the project and the lists.
+  void queryClient.invalidateQueries({ queryKey: ["project"] });
   void queryClient.invalidateQueries({ queryKey: keys.projects });
   void queryClient.invalidateQueries({ queryKey: keys.autopilotAsks });
 }

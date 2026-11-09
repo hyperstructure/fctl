@@ -756,7 +756,11 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
             "Woke for {}",
             parts
                 .iter()
-                .map(|p| if p == "it was put on" { "being put on" } else { p.as_str() })
+                .map(|p| if p == "it was put on" {
+                    "being put on"
+                } else {
+                    p.as_str()
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

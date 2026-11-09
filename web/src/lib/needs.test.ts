@@ -117,6 +117,13 @@ describe("what needs you", () => {
     ]);
   });
 
+  it("leaves out the sessions an autopilot started, which it looks after, unless you follow them", () => {
+    const autopilot = { role: "crew", project_id: "prj_shop", project_slug: "shop" } as const;
+    const crew = session({ status: "idle", autopilot, created_by: { id: "usr_noor", name: "Noor Haddad" } });
+    const followed = session({ status: "idle", autopilot, following: true });
+    expect(needsOf("usr_noor", [crew, followed], NOW).map((x) => x.s.id)).toEqual([followed.id]);
+  });
+
   it("is nothing until it is known who you are, since the lists hold other people's sessions", () => {
     const asking = session({ status: "idle", question: { text: "Keep øre?", asked_at: NOW } });
     expect(needsOf(undefined, [asking], NOW)).toEqual([]);

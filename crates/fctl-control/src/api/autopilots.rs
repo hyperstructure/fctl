@@ -806,7 +806,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     &ctx.db,
                     &row.project_id,
                     AutopilotWakeReason::Steered,
-                    ctx.now,
+                    ctx.now + ap::PEOPLE_GATHER_MS,
                 )
                 .await?;
             }
@@ -1358,7 +1358,7 @@ pub async fn add_note(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<R
             &ctx.db,
             &row.project_id,
             AutopilotWakeReason::Steered,
-            ctx.now,
+            ctx.now + ap::PEOPLE_GATHER_MS,
         )
         .await?;
     }
@@ -1456,7 +1456,7 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
             &ctx.db,
             &row.project_id,
             AutopilotWakeReason::Answered,
-            ctx.now,
+            ctx.now + ap::PEOPLE_GATHER_MS,
         )
         .await?;
     }
@@ -1508,7 +1508,7 @@ pub async fn decline(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> A
             &ctx.db,
             &row.project_id,
             AutopilotWakeReason::Answered,
-            ctx.now,
+            ctx.now + ap::PEOPLE_GATHER_MS,
         )
         .await?;
     }

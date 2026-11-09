@@ -37,7 +37,7 @@ export const POWERS: { power: G.AutopilotPower; label: string; line: string; wor
   {
     power: "secrets",
     label: "Manage secrets",
-    line: "Sets secrets it makes itself, such as a signing key. It never reads their values.",
+    line: "Sets secrets it makes itself, such as a signing key. It never reads their values, nor replaces those people set.",
   },
   {
     power: "repos",

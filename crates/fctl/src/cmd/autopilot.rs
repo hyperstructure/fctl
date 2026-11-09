@@ -648,9 +648,17 @@ fn state_line(a: &Autopilot) -> String {
                 let s = a.session.as_ref().map(|s| s.number).unwrap_or_default();
                 style::accent(&format!("● At work in {}#{s}", a.project_slug))
             } else {
-                match a.wake_at {
-                    Some(at) => style::blue(&format!("○ On · checks in {}", style::until(at))),
-                    None => style::blue("○ On"),
+                match (a.wake_at, a.wake_reason) {
+                    (Some(at), Some(AutopilotWakeReason::CheckIn) | None) => {
+                        style::blue(&format!("○ On · checks in {}", style::until(at)))
+                    }
+                    (Some(at), Some(AutopilotWakeReason::Asked)) => {
+                        style::blue(&format!("○ On · wakes {}, as it asked", style::until(at)))
+                    }
+                    (Some(at), Some(_)) => {
+                        style::blue(&format!("○ On · wakes {} for what's new", style::until(at)))
+                    }
+                    (None, _) => style::blue("○ On"),
                 }
             }
         }

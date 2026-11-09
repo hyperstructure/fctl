@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS autopilot_log (
 );
 CREATE INDEX IF NOT EXISTS autopilot_log_project ON autopilot_log (project_id, at DESC, id DESC);
 
+-- Secrets an autopilot set itself, which it may replace and remove; those
+-- people set, it may not.
+ALTER TABLE project_secrets ADD COLUMN autopilot INTEGER NOT NULL DEFAULT 0;
+
 -- The autopilot a session belongs to (its home project's id), and what it
 -- is to it: pilot (its own) or crew (one it started). Not foreign keys:
 -- sessions keep them once the autopilot is gone.
