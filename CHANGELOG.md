@@ -2,6 +2,20 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.0 (2026-11-09)
+
+### Features
+
+- **web:** Remove the borders around the sidebars and session header ([#490](https://github.com/hyperstructure/fctl/pull/490))
+- **web:** Keep swipes from a phone's screen edges in the app ([#492](https://github.com/hyperstructure/fctl/pull/492))
+- Put a project on autopilot (experimental) ([#494](https://github.com/hyperstructure/fctl/pull/494))
+
+### Fixes
+
+- **web:** Keep New workspace full height in a scrolled sidebar ([#491](https://github.com/hyperstructure/fctl/pull/491))
+- **web:** Keep no page history in the app on an iPhone's Home Screen ([#493](https://github.com/hyperstructure/fctl/pull/493))
+- Leave done sessions out of Needs you after an answer ([#496](https://github.com/hyperstructure/fctl/pull/496))
+
 ## 0.32.2 (2026-11-08)
 
 ### Features
