@@ -1164,6 +1164,14 @@ pub struct ProjectAutopilot {
     /// Its autopilot's own session is at work now.
     #[serde(default)]
     pub working: bool,
+    /// Its autopilot's own session now, the one fctl wakes it in, where
+    /// the caller may open it: absent until it first wakes, for a
+    /// workspace's autopilot to all but the workspace's admins, and from
+    /// control planes before it.
+    pub session: Option<crate::autopilot::AutopilotSession>,
+    /// When fctl wakes it next, unless something wakes it sooner; absent
+    /// while it is paused or off.
+    pub wake_at: Option<Millis>,
 }
 
 /// A pull request of a session, as its agent last looked it up and as

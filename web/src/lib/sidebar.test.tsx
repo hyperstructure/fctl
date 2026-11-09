@@ -137,6 +137,25 @@ describe("the sidebar kept in this browser", () => {
     expect(keptSidebar("usr_grace")).toBeUndefined();
   });
 
+  it("keeps an autopilot's state and its own session, while it isn't off", () => {
+    const session = { id: "ses_pilot", number: 3, status: "running" as const, started_at: 0 };
+    const [web, api] = projects.projects as [G.Project, G.Project];
+    keepSidebar("usr_ada", workspaces, {
+      projects: [
+        { ...web, autopilot: { allowed: true, state: "on", asks: 2, working: true, session, wake_at: 9 } },
+        { ...api, autopilot: { allowed: true, state: "off", asks: 0, working: false } },
+      ],
+    });
+    const [keptWeb, keptApi] = keptSidebar("usr_ada")?.projects ?? [];
+    expect(keptWeb?.autopilot).toEqual({ state: "on", session: { id: "ses_pilot", number: 3 } });
+    expect(keptApi?.autopilot).toBeUndefined();
+    // One it can't read is none.
+    const kept = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");
+    kept.projects[0].autopilot = { state: "flying", session: { id: "ses_pilot", number: 3 } };
+    localStorage.setItem("fctl:sidebar", JSON.stringify(kept));
+    expect(keptSidebar("usr_ada")?.projects?.[0]?.autopilot).toBeUndefined();
+  });
+
   it("reads icons it doesn't know as the ones they can be", () => {
     keepSidebar("usr_ada", workspaces, projects);
     const kept = JSON.parse(localStorage.getItem("fctl:sidebar") ?? "");

@@ -294,7 +294,10 @@ Sessions say what they are to an autopilot (`"autopilot": {"role": "pilot"
 | "crew", "project_slug"}`); its own stay off `GET /api/v1/sessions` unless
 asked (`?hidden=1`), and `?autopilot={project}` lists an autopilot's
 sessions. Its session's other requests reach the API as its owner, held to
-its project or workspace, a maintainer's role and its powers.
+its project or workspace, a maintainer's role and its powers. Projects say
+how their autopilot stands (`"autopilot": {"allowed", "state", "scope",
+"asks", "working", "session", "wake_at"}`), its own `session` (`id`,
+`number`, `status`) only to those who may open it.
 
 ## Projects
 
