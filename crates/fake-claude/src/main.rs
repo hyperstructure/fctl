@@ -1509,6 +1509,23 @@ impl Session {
     }
 }
 
+/// The checklist under an autopilot's brief's "## Your plan": each item and
+/// whether it is ticked.
+fn plan_in(brief: &str) -> Vec<(bool, String)> {
+    let Some(plan) = brief.split("## Your plan").nth(1) else {
+        return Vec::new();
+    };
+    let plan = plan.split("## Your log").next().unwrap_or_default();
+    plan.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("- [x] ")
+                .map(|i| (true, i.to_owned()))
+                .or_else(|| l.strip_prefix("- [ ] ").map(|i| (false, i.to_owned())))
+        })
+        .collect()
+}
+
 /// Whether a turn is an autopilot's: the briefing its own sessions start
 /// with, or the message fctl wakes it with.
 fn is_autopilot(lower: &str) -> bool {
@@ -1620,28 +1637,67 @@ impl Session {
             did.push("followed your note");
         }
         if lower.contains("ended its turn") || lower.contains("stopped (a message resumes it)") {
-            self.bash(
-                "printf '%s\\n' '- [x] Pipeline board: drag deals between stages' '- [ ] Contacts and companies' '- [ ] Import contacts from CSV' '- [ ] Deploy previews of each pull request' | fctl autopilot plan --file -",
-                "Tick off the board",
-            );
-            self.fctl(
-                &[
-                    "run",
-                    "--title",
-                    "Contacts and companies",
-                    "Add contacts and companies, linked to deals. explore 1, then watch 15.",
-                ],
-                "Start the next piece of work",
-            );
-            self.fctl(
-                &[
-                    "autopilot",
-                    "log",
-                    "The board is done: started contacts and companies next.",
-                ],
-                "Write down what I did",
-            );
-            did.push("started the next piece of work");
+            // The item at work is done: tick it, and start the next, or
+            // with none left, say so and pause.
+            let mut plan = plan_in(&brief);
+            if let Some(item) = plan.iter_mut().find(|(done, _)| !*done) {
+                item.0 = true;
+            }
+            let lines: Vec<String> = plan
+                .iter()
+                .map(|(done, item)| {
+                    format!(
+                        "'- [{}] {}'",
+                        if *done { "x" } else { " " },
+                        item.replace('\'', "")
+                    )
+                })
+                .collect();
+            if !lines.is_empty() {
+                self.bash(
+                    &format!(
+                        "printf '%s\\n' {} | fctl autopilot plan --file -",
+                        lines.join(" ")
+                    ),
+                    "Tick off what's done",
+                );
+            }
+            let done = plan.iter().rev().find(|(d, _)| *d).map(|(_, i)| i.clone());
+            match plan.iter().find(|(d, _)| !*d).map(|(_, i)| i.clone()) {
+                Some(next) => {
+                    let task = format!("{next}: build it, with tests. explore 1, then watch 15.");
+                    self.fctl(
+                        &["run", "--title", &next, &task],
+                        "Start the next piece of work",
+                    );
+                    let line = match done {
+                        Some(d) => format!("{d} is done: started {} next.", next.to_lowercase()),
+                        None => format!("Started {} next.", next.to_lowercase()),
+                    };
+                    self.fctl(&["autopilot", "log", &line], "Write down what I did");
+                    did.push("started the next piece of work");
+                }
+                None => {
+                    self.fctl(
+                        &[
+                            "autopilot",
+                            "log",
+                            "Everything in the plan is done and merged: the direction is done.",
+                        ],
+                        "Write down that the direction is done",
+                    );
+                    self.fctl(
+                        &[
+                            "autopilot",
+                            "pause",
+                            "--reason",
+                            "The direction is done: every step of the plan shipped.",
+                        ],
+                        "Pause until people have more",
+                    );
+                    return "The direction is done: I paused myself until you have more.".into();
+                }
+            }
         }
         if did.is_empty() {
             self.stream_text("Nothing new needs me: my sessions are still at work.");
