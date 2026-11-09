@@ -6,7 +6,7 @@
 // cancelling the touch as it starts, which takes away everything else the
 // browser would have done with it. So for a touch that starts at either edge,
 // the app does that itself: a tap clicks what it touched, and a swipe scrolls
-// what is under it, gliding on once the finger lets go.
+// what is under it, gliding on once the finger lets go, until a touch stops it.
 //
 // Other browsers keep their swipes. Android's own back gesture takes the
 // touch before the page could cancel it, and Chrome's swipe from the edge
@@ -30,6 +30,11 @@ const DECAY = 0.998;
 const STILL = 0.02;
 /** The longest step (ms) a glide takes between two frames, after the page stalled. */
 const STEP_MS = 50;
+/**
+ * A press held longer than this (ms) clicks nothing: on a link or on text, Safari
+ * would have shown its menu or selected the text instead.
+ */
+const LONG_MS = 500;
 
 /** What the browser draws controls in, which only its own handling of a touch works. */
 const NATIVE = "video, audio, input[type='range']";
@@ -95,17 +100,29 @@ const UNTYPED = new Set([
   "submit",
 ]);
 
+/** What a press gives the focus to: in Safari, text fields and what has a tabindex, not buttons or links. */
+const FOCUSES = "input, textarea, select, [contenteditable]:not([contenteditable='false']), [tabindex]";
+
 /**
- * A tap on `el` at `at`, as the browser's own would have been: a text field
- * takes the focus (and brings the keyboard up), and it clicks. It clicks as a
- * finger would, at once, so that what a click opens may do what only a
- * person's action lets it.
+ * Moves the focus as a press on `el` does: to the text field it pressed (which
+ * brings the keyboard up), or what else takes it, or else away from what had
+ * it (which takes the keyboard down).
+ */
+function press(el: Element) {
+  const to = el.closest(FOCUSES);
+  const active = document.activeElement;
+  if (to instanceof HTMLElement && !(to instanceof HTMLInputElement && UNTYPED.has(to.type))) to.focus();
+  else if (active instanceof HTMLElement && !active.contains(el)) active.blur();
+}
+
+/**
+ * A tap on `el` at `at`, as the browser's own would have been, after the
+ * touch's events: the mouse goes down, moving the focus unless the page keeps
+ * it (as a Select does on itself), comes up, and clicks. It clicks as a finger
+ * would, at once, so that what a click opens may do what only a person's
+ * action lets it.
  */
 export function tap(el: Element, at: Point) {
-  const field = el.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])");
-  if (field instanceof HTMLElement && !(field instanceof HTMLInputElement && UNTYPED.has(field.type))) {
-    field.focus();
-  }
   const init = {
     bubbles: true,
     cancelable: true,
@@ -117,6 +134,8 @@ export function tap(el: Element, at: Point) {
     clientX: at.x,
     clientY: at.y,
   };
+  if (el.dispatchEvent(new MouseEvent("mousedown", { ...init, buttons: 1 }))) press(el);
+  el.dispatchEvent(new MouseEvent("mouseup", init));
   el.dispatchEvent(
     typeof PointerEvent === "function"
       ? new PointerEvent("click", { ...init, pointerType: "touch", isPrimary: true })
@@ -138,18 +157,22 @@ export function useEdgeSwipes(dragged: () => boolean) {
     if (!("GestureEvent" in window) || !navigator.maxTouchPoints) return;
     const off = new AbortController();
     // The touch the app took, until it lets go: what it touched, where it started and where it is
-    // now. Once it moves further than a tap, the way it scrolls, and what it scrolls, if anything,
-    // from where.
+    // now, when it started and whether it stopped a glide. Once it moves further than a tap, the
+    // way it scrolls, and what it scrolls, if anything, from where.
     let touch:
       | {
           id: number;
           target: Element;
           from: Point;
           at: Point;
+          since: number;
+          stopped: boolean;
           scroll?: { axis: Axis; el?: Element; start: number; from: Point; trail: Trail };
         }
       | undefined;
     let stop: (() => void) | undefined;
+    // What glides on, if anything, and its next frame.
+    let gliding = false;
     let frame = 0;
 
     const finish = () => {
@@ -165,6 +188,7 @@ export function useEdgeSwipes(dragged: () => boolean) {
       e.defaultPrevented || latest.current() || document.documentElement.dataset.dragging !== undefined;
 
     const glideOn = (el: Element, axis: Axis, speed: number) => {
+      if (Math.abs(speed) < STILL) return;
       let then = performance.now();
       const step = (now: number) => {
         const g = glide(speed, Math.min(STEP_MS, Math.max(0, now - then)));
@@ -173,8 +197,10 @@ export function useEdgeSwipes(dragged: () => boolean) {
         const was = position(el, axis);
         put(el, axis, was - g.by);
         // Until it is still, or can't go further.
-        if (speed && position(el, axis) !== was) frame = requestAnimationFrame(step);
+        gliding = !!speed && position(el, axis) !== was;
+        if (gliding) frame = requestAnimationFrame(step);
       };
+      gliding = true;
       frame = requestAnimationFrame(step);
     };
 
@@ -188,8 +214,13 @@ export function useEdgeSwipes(dragged: () => boolean) {
         const dx = at.x - touch.from.x;
         const dy = at.y - touch.from.y;
         if (Math.hypot(dx, dy) < SLOP) return;
-        const axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
-        const el = scrollerOf(touch.target, axis);
+        // What scrolls the way it moves most, or else what scrolls the other way: as under the
+        // browser's own scrolling, a page that scrolls only up and down follows a finger that
+        // starts out partly sideways.
+        const most: Axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+        const other: Axis = most === "x" ? "y" : "x";
+        const first = scrollerOf(touch.target, most);
+        const [axis, el] = first ? [most, first] : [other, scrollerOf(touch.target, other)];
         // From here, so that what it scrolls doesn't jump by as far as the finger went first.
         touch.scroll = { axis, el, start: el ? position(el, axis) : 0, from: at, trail: new Trail() };
       }
@@ -201,10 +232,12 @@ export function useEdgeSwipes(dragged: () => boolean) {
     const end = (e: TouchEvent) => {
       // Another finger let go: this one is still down.
       if (!touch || finger(e)) return;
-      const { target, at, scroll } = touch;
+      const { target, at, since, stopped, scroll } = touch;
       finish();
       if (e.type === "touchcancel" || taken(e)) return;
       if (!scroll) {
+        // A touch that stopped a glide only stopped it, as under the browser's own scrolling.
+        if (stopped || e.timeStamp - since > LONG_MS) return;
         const el = target.isConnected ? target : document.elementFromPoint(at.x, at.y);
         if (el) tap(el, at);
       } else if (scroll.el) {
@@ -213,7 +246,10 @@ export function useEdgeSwipes(dragged: () => boolean) {
     };
 
     const start = (e: TouchEvent) => {
-      // A finger on the screen stops what glides, as it stops the browser's own scrolling.
+      // A finger on the screen stops what glides, as it stops the browser's own scrolling, and
+      // the app keeps that touch too, wherever it is, so that it clicks nothing.
+      const stopped = gliding;
+      gliding = false;
       cancelAnimationFrame(frame);
       // A second finger, or a touch whose end never came (what it touched left the page).
       if (touch) finish();
@@ -222,7 +258,7 @@ export function useEdgeSwipes(dragged: () => boolean) {
       // A touch that starts while the browser scrolls is the browser's whatever it is: it can't
       // be cancelled.
       if (!t || !target || e.touches.length > 1 || !e.cancelable || e.defaultPrevented) return;
-      if (!atEdge(t.clientX, window.innerWidth) || matchMedia(ROOMY).matches) return;
+      if (!(stopped || atEdge(t.clientX, window.innerWidth)) || matchMedia(ROOMY).matches) return;
       // The browser's own controls (a video's, a slider) need the touch itself.
       if (target.closest(NATIVE)) return;
       e.preventDefault();
@@ -231,6 +267,8 @@ export function useEdgeSwipes(dragged: () => boolean) {
         target,
         from: { x: t.clientX, y: t.clientY },
         at: { x: t.clientX, y: t.clientY },
+        since: e.timeStamp,
+        stopped,
       };
       // Only while it lasts, and passive: what the page does with the touch comes first. On the
       // document, which hears its events after everything on the way had its say, and on what it
@@ -255,6 +293,7 @@ export function useEdgeSwipes(dragged: () => boolean) {
     return () => {
       off.abort();
       finish();
+      gliding = false;
       cancelAnimationFrame(frame);
     };
   }, []);

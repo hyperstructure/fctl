@@ -1357,9 +1357,14 @@ describe("swipes from the edges of a phone's screen", () => {
   }
   /**
    * A finger on `el` at (`x0`, `y0`) that moves to each of `to`, 50 ms apart, then lets go 10 ms
-   * later: whether its start was cancelled.
+   * later (or at `lift` ms): whether its start was cancelled.
    */
-  function swipe(el: Element, [x0, y0]: [number, number], to: [number, number][] = []) {
+  function swipe(
+    el: Element,
+    [x0, y0]: [number, number],
+    to: [number, number][] = [],
+    lift = to.length * 50 + 10,
+  ) {
     const touch = (x: number, y: number) => new Touch({ identifier: 7, target: el, clientX: x, clientY: y });
     const at = <E extends Event>(e: E, ms: number) => Object.defineProperty(e, "timeStamp", { value: ms });
     const start = new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch(x0, y0)] });
@@ -1378,7 +1383,7 @@ describe("swipes from the edges of a phone's screen", () => {
     });
     act(() => {
       el.dispatchEvent(
-        at(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [] }), to.length * 50 + 10),
+        at(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [] }), lift),
       );
     });
     return { cancelled: start.defaultPrevented };
@@ -1467,6 +1472,49 @@ describe("swipes from the edges of a phone's screen", () => {
     // A finger on the screen stops it.
     swipe(shell.page(), [200, 300]);
     expect(frames.size).toBe(0);
+  });
+
+  it("scrolls the page under a finger that starts out partly sideways from the edge", () => {
+    const shell = iPhone();
+    swipe(
+      shell.page(),
+      [386, 600],
+      [
+        [376, 596],
+        [370, 500],
+      ],
+    );
+    expect(page().scrollTop).toBe(96);
+  });
+
+  it("stops a glide with a touch anywhere, which clicks nothing", () => {
+    iPhone();
+    const main = document.querySelector("main") as HTMLElement;
+    let clicks = 0;
+    main.addEventListener("click", () => clicks++);
+    swipe(
+      main,
+      [386, 600],
+      [
+        [386, 590],
+        [386, 500],
+        [386, 400],
+      ],
+    );
+    expect(frames.size).toBe(1);
+    // Further in than the edges: the app keeps it, and it only stops the glide.
+    expect(swipe(main, [200, 300]).cancelled).toBe(true);
+    expect(frames.size).toBe(0);
+    expect(clicks).toBe(0);
+    // Then a touch there is the browser's again.
+    expect(swipe(main, [200, 300]).cancelled).toBe(false);
+  });
+
+  it("clicks nothing for a long press at the edge", () => {
+    const shell = iPhone();
+    const button = document.querySelector('button[aria-label="Open menu"]') as HTMLElement;
+    expect(swipe(button, [12, 28], [], 700).cancelled).toBe(true);
+    expect(shell.state().open).toBe(false);
   });
 
   it("leaves the touch to what takes it itself", () => {

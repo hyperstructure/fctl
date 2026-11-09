@@ -130,6 +130,46 @@ describe("tap", () => {
     expect(followed).toBe(true);
   });
 
+  it("presses the mouse down and up before it clicks, as a tap does", () => {
+    const button = document.createElement("button");
+    document.body.append(button);
+    const heard: string[] = [];
+    for (const type of ["mousedown", "mouseup", "click"])
+      button.addEventListener(type, () => heard.push(type));
+    tap(button, { x: 380, y: 10 });
+    expect(heard).toEqual(["mousedown", "mouseup", "click"]);
+  });
+
+  it("closes a dialog that closes on a press and a click beside it", () => {
+    // As the new session dialog and the shortcuts sheet do.
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    let pressedOutside = false;
+    let closed = false;
+    dialog.addEventListener("mousedown", (e) => {
+      pressedOutside = e.target === dialog;
+    });
+    dialog.addEventListener("click", (e) => {
+      if (e.target === dialog && pressedOutside) closed = true;
+    });
+    tap(dialog, { x: 4, y: 500 });
+    expect(closed).toBe(true);
+  });
+
+  it("takes the focus from a text field when it taps something else, but not where the page keeps it", () => {
+    const field = document.createElement("textarea");
+    const button = document.createElement("button");
+    const keeps = document.createElement("button");
+    keeps.addEventListener("mousedown", (e) => e.preventDefault());
+    document.body.append(field, button, keeps);
+    field.focus();
+    tap(keeps, { x: 380, y: 10 });
+    expect(document.activeElement).toBe(field);
+    tap(button, { x: 380, y: 10 });
+    expect(document.activeElement).not.toBe(field);
+    expect(document.activeElement).not.toBe(button);
+  });
+
   it("focuses a text field it touched, and not a checkbox", () => {
     const field = document.createElement("textarea");
     const box = document.createElement("input");
