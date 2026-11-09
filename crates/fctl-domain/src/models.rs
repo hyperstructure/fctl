@@ -1,15 +1,48 @@
 //! The model and the effort level a session's Claude works at, as people
 //! read them when someone changes them while it runs.
 
+use std::borrow::Cow;
+
 /// A model as the web app's lists name it: Claude Code's aliases for the
-/// latest model of a family by the family's name, a model's ID as it is.
-pub fn model_label(model: &str) -> &str {
+/// latest model of a family by the family's name, a Claude model's ID by its
+/// family and version (`claude-sonnet-5-5` is Sonnet 5.5), anything else as
+/// it is.
+pub fn model_label(model: &str) -> Cow<'_, str> {
     match model {
+        "opus" => "Opus".into(),
+        "sonnet" => "Sonnet".into(),
+        "haiku" => "Haiku".into(),
+        "fable" => "Fable".into(),
+        other => id_label(other).map_or(Cow::Borrowed(other), Cow::Owned),
+    }
+}
+
+/// A Claude model's ID (`claude-opus-4-1-20250805`) as its family and
+/// version (Opus 4.1).
+fn id_label(id: &str) -> Option<String> {
+    let rest = id.strip_prefix("claude-")?;
+    let (family, version) = rest.split_once('-')?;
+    let family = match family {
         "opus" => "Opus",
         "sonnet" => "Sonnet",
         "haiku" => "Haiku",
         "fable" => "Fable",
-        other => other,
+        _ => return None,
+    };
+    let digits = |p: &str, n: std::ops::RangeInclusive<usize>| {
+        n.contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit())
+    };
+    let mut parts: Vec<&str> = version.split('-').collect();
+    // A snapshot's date.
+    if parts.len() > 1 && parts.last().is_some_and(|p| digits(p, 8..=8)) {
+        parts.pop();
+    }
+    match parts.as_slice() {
+        [major] if digits(major, 1..=3) => Some(format!("{family} {major}")),
+        [major, minor] if digits(major, 1..=3) && digits(minor, 1..=2) => {
+            Some(format!("{family} {major}.{minor}"))
+        }
+        _ => None,
     }
 }
 
@@ -168,7 +201,29 @@ mod tests {
         );
         assert_eq!(
             changed("Noor Haddad", Some("claude-opus-5-5"), Some("medium")),
-            "Noor Haddad changed the model to claude-opus-5-5 and the effort level to Medium"
+            "Noor Haddad changed the model to Opus 5.5 and the effort level to Medium"
         );
+        assert_eq!(
+            changed("Noor Haddad", Some("opus[1m]"), None),
+            "Noor Haddad changed the model to opus[1m]"
+        );
+    }
+
+    #[test]
+    fn a_model_id_reads_as_its_family_and_version() {
+        assert_eq!(model_label("sonnet"), "Sonnet");
+        assert_eq!(model_label("claude-sonnet-5-5"), "Sonnet 5.5");
+        assert_eq!(model_label("claude-opus-4-1-20250805"), "Opus 4.1");
+        assert_eq!(model_label("claude-opus-4-20250514"), "Opus 4");
+        assert_eq!(model_label("claude-haiku-4-5"), "Haiku 4.5");
+        for as_is in [
+            "claude-sonnet-5-5[1m]",
+            "claude-3-5-sonnet-20241022",
+            "claude-mythos-preview",
+            "claude-opus-",
+            "claude-opus-5-5-5",
+        ] {
+            assert_eq!(model_label(as_is), as_is);
+        }
     }
 }

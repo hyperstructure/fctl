@@ -6,6 +6,7 @@ import {
   costsCache,
   effortOffers,
   modelChoice,
+  modelLabel,
   modelOffers,
   startChoice,
   switchEfforts,
@@ -26,6 +27,20 @@ describe("project models", () => {
     expect(modelChoice("opusplan")).toBe("id");
     expect(modelChoice("opus[1m]")).toBe("id");
     expect(modelChoice("Opus")).toBe("id");
+  });
+
+  it("names a model by its alias, or by its family and version", () => {
+    expect(modelLabel("")).toBe("Claude's default");
+    expect(modelLabel("sonnet")).toBe("Sonnet");
+    expect(modelLabel("claude-sonnet-5-5")).toBe("Sonnet 5.5");
+    expect(modelLabel("claude-opus-4-1-20250805")).toBe("Opus 4.1");
+    expect(modelLabel("claude-opus-4-20250514")).toBe("Opus 4");
+    expect(modelLabel("claude-haiku-4-5")).toBe("Haiku 4.5");
+    // What it can't tell, as it is.
+    expect(modelLabel("opus[1m]")).toBe("opus[1m]");
+    expect(modelLabel("claude-sonnet-5-5[1m]")).toBe("claude-sonnet-5-5[1m]");
+    expect(modelLabel("claude-3-5-sonnet-20241022")).toBe("claude-3-5-sonnet-20241022");
+    expect(modelLabel("claude-mythos-preview")).toBe("claude-mythos-preview");
   });
 
   it("stores the alias, or the model ID typed for it", () => {

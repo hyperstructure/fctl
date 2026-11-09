@@ -2706,7 +2706,11 @@ works on another model (after `/model` in a message). So `opus` stays the
 choice that is checked in the session's list, and D1's `model` keeps it,
 which the session's next run starts on. SessionDO takes the ID from
 `system/init` itself only for a session that names no model (Claude's
-default); agents from before this report the ID. `system/init` in `-p`
+default); agents from before this report the ID. Lists and transcript
+lines name an alias by its family (Sonnet) and a Claude model's ID by its
+family and version (`claude-sonnet-5-5` is Sonnet 5.5); other names show
+as they are. An autopilot's briefing asks it to name its sessions' models
+by alias, as people pick them. `system/init` in `-p`
 mode has no effort level, so fctl-agent asks Claude for it with
 the `get_settings` control request once Claude has started, and again
 after each turn, since it can change during a session: Claude Code's
