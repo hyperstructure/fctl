@@ -47,6 +47,33 @@ export function AgentFloorIcon({ className, live }: { className?: string; live?:
 /** The Agent Floor's traces, from each agent into the core: the outer two turn towards its center. */
 const FLOOR_TRACES = ["M6 6h4.5l2.8 2.8", "M6 12h6", "M6 18h4.5l2.8-2.8"];
 
+/**
+ * An autopilot (experimental): a heading's arrow inside an open ring, as an instrument shows a
+ * course it holds. With `live`, while its own session is at work, a comet runs round the ring in
+ * the accent (styles/app.css), and holds still where motion is reduced.
+ */
+export function AutopilotIcon({ className, live }: { className?: string; live?: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "size-4"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={AUTOPILOT_RING} />
+      <path d="M12 7.25 15.25 15.5 12 13.6 8.75 15.5Z" />
+      {live && <path d={AUTOPILOT_RING} pathLength={1} className="autopilot-comet" />}
+    </svg>
+  );
+}
+
+/** The ring, open below like a gauge: from its lower left round over the top to its lower right. */
+const AUTOPILOT_RING = "M7.5 19.8A9 9 0 1 1 16.5 19.8";
+
 export function GithubIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className ?? "size-4"} fill="currentColor" aria-hidden="true">

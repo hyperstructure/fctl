@@ -301,6 +301,12 @@ pub enum AgentToHost {
 /// Claude and everything it runs.
 pub const SESSION_SOCKET_ENV: &str = "FCTL_SESSION_SOCKET";
 
+/// Set in an autopilot's own session (`SessionSpec::autopilot`) to its
+/// project's slug: the sandbox's `fctl` reaches the API through the session
+/// socket ([`crate::api::AgentCall::Api`]), and `fctl autopilot` is about
+/// that project's autopilot.
+pub const AUTOPILOT_ENV: &str = "FCTL_AUTOPILOT";
+
 /// Longest request the session socket accepts: a screenshot to publish, in
 /// base64.
 pub const MAX_SESSION_REQUEST_BYTES: usize = 8 * 1024 * 1024;

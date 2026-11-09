@@ -78,9 +78,23 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     if p.row.archived_at.is_some() {
         return Err(conflict("This project is archived"));
     }
+    // An autopilot's session works for it (`crate::autopilots`), as many at
+    // once as its people let it.
+    let autopilot = ctx.autopilot().cloned();
+    if let Some(a) = &autopilot {
+        crate::autopilots::crew_room(&ctx.db, a, ctx.now).await?;
+    }
     let user = ctx.user()?.clone();
     let files = validate::attachment_ids(&body.attachments)?;
     let prompt = validate::message_with_files("prompt", &body.prompt, files.len())?;
+    // What its agent is told of the autopilot that starts it, after the task.
+    let prompt = match &autopilot {
+        Some(a) => {
+            let called = user.called().unwrap_or_else(|| user.name.clone());
+            crate::autopilots::crew_prompt(&ctx.db, a, &prompt, &called).await?
+        }
+        None => prompt,
+    };
     let title = body
         .title
         .as_deref()
@@ -157,8 +171,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     q(
         &ctx.db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, prompt_attachments, status, created_by, credential_id, branch, base_branch, model, effort, \
-         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, github_issues) \
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)",
+         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, github_issues, autopilot_id, autopilot_role) \
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&p.row.id),
@@ -178,27 +192,32 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             n(ctx.now),
             s(github_access.as_str()),
             n(i64::from(github_issues)),
+            os(autopilot.as_ref().map(|a| a.project_id.as_str())),
+            os(autopilot.as_ref().map(|_| "crew")),
         ],
     )?
     .run()
     .await?;
     // Following is not worth failing a session over: it can be done later.
     // Sessions a limited token starts, for CI or a bot, notify nobody unless
-    // someone follows them: each review's end would.
+    // someone follows them: each review's end would. Nor do an autopilot's:
+    // it hears of them itself, and asks people what only they can answer.
     if ctx.limits().is_none()
         && let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await
     {
         worker::console_error!("following a new session failed: {}", e.0.message);
     }
-    // Nor is remembering what it asked for.
-    if let Err(e) = remember_choice(
-        ctx,
-        &p.row.id,
-        &user.id,
-        model.as_deref(),
-        effort.as_deref(),
-    )
-    .await
+    // Nor is remembering what it asked for: not an autopilot's choice,
+    // which isn't its person's.
+    if autopilot.is_none()
+        && let Err(e) = remember_choice(
+            ctx,
+            &p.row.id,
+            &user.id,
+            model.as_deref(),
+            effort.as_deref(),
+        )
+        .await
     {
         worker::console_error!("remembering a session's model failed: {}", e.0.message);
     }
@@ -217,6 +236,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     let stub = internal::session_stub(&ctx.env, id.as_str())?;
     let prompt_msg = UserMessage {
         ticket: None,
+        autopilot: autopilot.as_ref().map(|a| a.author()),
+        wake: None,
         id: fctl_domain::ids::delivery_id(ctx.now),
         author: Some(user.to_ref()),
         text: prompt,
@@ -252,7 +273,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             "number": number,
             "github_access": github_access,
             "github_issues": github_issues.then_some(true),
-            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat).map(|a| &a.token_id),
+            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat && a.autopilot.is_none()).map(|a| &a.token_id),
+            "autopilot": autopilot.as_ref().map(|a| &a.project_id),
         })),
     );
     http::created(&session)
@@ -392,8 +414,17 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     }
     // Nor do those of schedules that keep theirs off them, such as an
     // hourly triage's: their runs list them.
+    // Nor do autopilots' own sessions: the Autopilot tab follows them.
     if !http::query(req, "hidden").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND (sc.hide_sessions IS NULL OR sc.hide_sessions = 0)");
+        sql.push_str(" AND (s.autopilot_role IS NULL OR s.autopilot_role != 'pilot')");
+    }
+    // The sessions of one autopilot (its home project, by id or slug): its
+    // own and those it started.
+    if let Some(autopilot) = http::query(req, "autopilot") {
+        let home = access::project(ctx, &autopilot).await?;
+        params.push(s(&home.row.id));
+        sql.push_str(&format!(" AND s.autopilot_id = ?{}", params.len()));
     }
     if !http::query(req, "archived").is_some_and(|v| v == "1" || v == "true") {
         sql.push_str(" AND s.archived = 0");
@@ -567,6 +598,11 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
     http::ok(&SendMessageResponse { delivery_id })
 }
 
+/// The autopilot whose request this is, as a message's author shows it.
+fn message_autopilot(ctx: &Ctx) -> Option<fctl_proto::autopilot::AutopilotAuthor> {
+    ctx.autopilot().map(|a| a.author())
+}
+
 /// Stores a message and queues it for the agent. Shared with SessionDO
 /// viewer messages, which call the DO directly.
 pub async fn deliver_message(
@@ -597,6 +633,8 @@ pub async fn deliver_message(
             client_key,
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
+                autopilot: message_autopilot(ctx),
+                wake: None,
                 id: delivery_id,
                 author: Some(author),
                 text,

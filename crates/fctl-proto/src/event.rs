@@ -122,6 +122,14 @@ pub struct UserMessage {
     /// the message tells the agent. Clients from before it show the
     /// message's text.
     pub ticket: Option<crate::tickets::TicketMessage>,
+    /// For a message an autopilot sent one of its sessions: the autopilot,
+    /// which wrote it as its owner, the message's author. Clients from
+    /// before autopilots show the author.
+    pub autopilot: Option<crate::autopilot::AutopilotAuthor>,
+    /// For a message from fctl that woke an autopilot: what it woke for,
+    /// which the message tells the agent. Clients from before autopilots
+    /// show the message's text.
+    pub wake: Option<crate::autopilot::AutopilotWake>,
 }
 
 /// A review of a pull request a session's agent opened, whose findings
@@ -549,7 +557,7 @@ pub struct Notice {
     /// `pull_request_summarized`, `follow_up_held`, `ticket_created`,
     /// `ticket_commented`, `ticket_updated`, `ticket_replied`,
     /// `ticket_moved`, `ticket_failed`, `question_asked`,
-    /// `question_withdrawn`.
+    /// `question_withdrawn`, `autopilot_action`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).
@@ -580,6 +588,10 @@ pub struct Notice {
     /// The question a `question_asked` notice is about (`fctl ask`), as the
     /// agent asked it. Clients from before it show the message.
     pub question: Option<crate::session::SessionQuestion>,
+    /// What an autopilot did, in an `autopilot_action` notice of its own
+    /// session's transcript: a session it started, a setting it changed.
+    /// Clients from before autopilots show the message.
+    pub autopilot: Option<crate::autopilot::AutopilotNotice>,
 }
 
 impl Notice {
@@ -598,6 +610,7 @@ impl Notice {
             follow_up: None,
             ticket: None,
             question: None,
+            autopilot: None,
         }
     }
 }
@@ -664,6 +677,8 @@ mod tests {
             ts: 1_700_000_000_000,
             body: EventBody::UserMessage(UserMessage {
                 ticket: None,
+                autopilot: None,
+                wake: None,
                 id: DeliveryId("dlv_1".into()),
                 author: Some(UserRef {
                     id: UserId("usr_1".into()),
@@ -752,6 +767,7 @@ mod tests {
             summarized: None,
             follow_up: None,
             question: None,
+            autopilot: None,
         };
         let json = serde_json::to_value(EventBody::Notice(shot.clone()))?;
         assert_eq!(json["kind"], "notice");
@@ -911,6 +927,8 @@ mod tests {
         };
         let m = UserMessage {
             ticket: None,
+            autopilot: None,
+            wake: None,
             id: DeliveryId("dlv_1".into()),
             author: None,
             text: "fctl's review agent reviewed commit 3f2a1c9 …".into(),

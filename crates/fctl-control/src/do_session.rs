@@ -1064,6 +1064,7 @@ impl SessionObject {
                 summarized: None,
                 follow_up: None,
                 question: None,
+                autopilot: None,
             };
             if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                 self.broadcast_events(&[json]);
@@ -1119,6 +1120,8 @@ impl SessionObject {
             client_key: Some(key),
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
+                autopilot: None,
+                wake: None,
                 id,
                 author: None,
                 text,
@@ -1194,6 +1197,7 @@ impl SessionObject {
                 summarized: None,
                 follow_up: None,
                 question: None,
+                autopilot: None,
             };
             if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                 self.broadcast_events(&[json]);
@@ -1462,6 +1466,7 @@ impl SessionObject {
                             ..f.clone()
                         }),
                         question: None,
+                        autopilot: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);
@@ -1500,6 +1505,8 @@ impl SessionObject {
                 client_key: None,
                 event: EventBody::UserMessage(UserMessage {
                     ticket: None,
+                    autopilot: None,
+                    wake: None,
                     id,
                     author: None,
                     text,
@@ -1594,6 +1601,7 @@ impl SessionObject {
             self.publish(&mut s, now).await;
             if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {
                 self.notify(&s, notify::Kind::Asking, now);
+                self.autopilot_moved(&s, now);
             }
         }
         Ok(internal::Ask {
@@ -1714,6 +1722,7 @@ impl SessionObject {
             summarized: None,
             follow_up: None,
             question: None,
+            autopilot: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1784,6 +1793,7 @@ impl SessionObject {
             summarized: None,
             follow_up: None,
             question: None,
+            autopilot: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -1903,6 +1913,7 @@ impl SessionObject {
             summarized: None,
             follow_up: None,
             question: None,
+            autopilot: None,
         };
         if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
             self.broadcast_events(&[json]);
@@ -2368,6 +2379,8 @@ impl SessionObject {
             client_key: Some(format!("{}:{client_id}", author.id)),
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
+                autopilot: None,
+                wake: None,
                 id,
                 author: Some(author),
                 text,
@@ -2805,6 +2818,7 @@ impl SessionObject {
                         summarized: None,
                         follow_up: None,
                         question: None,
+                        autopilot: None,
                     };
                     if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
                         self.broadcast_events(&[json]);
@@ -3583,8 +3597,9 @@ impl SessionObject {
                     }
                 });
             }
-            // Asked once the turn ended, whose end Linear heard of.
-            notify::Kind::Asking => {}
+            // Asked once the turn ended, whose end Linear heard of; an
+            // autopilot's asks are its own business.
+            notify::Kind::Asking | notify::Kind::Autopilot => {}
             notify::Kind::Paused | notify::Kind::Failed => {
                 let status = s.status;
                 let reason = s.status_reason.clone();
@@ -3621,11 +3636,46 @@ impl SessionObject {
             self.review_moved(s, before);
         }
         // A review agent waits for nobody: its turn's end is its review's.
+        // Nor does an autopilot's own session, which fctl wakes again.
+        let pilot = s
+            .autopilot
+            .as_ref()
+            .is_some_and(|a| a.role == fctl_proto::autopilot::AutopilotRole::Pilot);
         let kind = notify::Kind::of(before, s.status)
-            .filter(|k| s.review.is_none() || *k != notify::Kind::Waiting);
+            .filter(|k| (s.review.is_none() && !pilot) || *k != notify::Kind::Waiting);
         if let Some(kind) = kind {
             self.notify(s, kind, now);
         }
+        if s.autopilot.is_some() && s.status != before {
+            self.autopilot_moved(s, now);
+        }
+    }
+
+    /// A session of an autopilot's moved (`crate::autopilots::session_moved`):
+    /// its turn ended, it asks something or failed.
+    fn autopilot_moved(&self, s: &Session, now: i64) {
+        let Some(a) = s.autopilot.clone() else {
+            return;
+        };
+        let env = self.env.clone();
+        let id = s.id.0.clone();
+        let status = s.status;
+        let reason = s.status_reason.clone();
+        self.state.wait_until(async move {
+            if let Err(e) = crate::autopilots::session_moved(
+                &env,
+                a.project_id.as_str(),
+                a.role,
+                &id,
+                status,
+                reason.as_deref(),
+                now,
+            )
+            .await
+            {
+                worker::console_error!("telling {id}'s autopilot: {}", e.0.message);
+            }
+        });
     }
 
     /// A review session's runner took it, or it ended: its review's check
@@ -3672,6 +3722,8 @@ impl SessionObject {
                 }
             }
             notify::Kind::Asking => (kind, s.question.as_ref().map(asked)),
+            // Its autopilot's asks come by themselves (`crate::autopilots`).
+            notify::Kind::Autopilot => return,
             notify::Kind::Paused => (kind, None),
             notify::Kind::Failed => (kind, s.status_reason.clone()),
         };
@@ -3682,6 +3734,7 @@ impl SessionObject {
             kind,
             detail,
             at: now,
+            url: None,
         };
         let env = self.env.clone();
         self.state.wait_until(async move {

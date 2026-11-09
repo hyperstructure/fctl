@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { Building2, GitBranch, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
+import { AutopilotTab } from "@/components/project/autopilot";
 import { IconPicker } from "@/components/project/icon-picker";
 import { MemoryTab } from "@/components/project/memory";
 import { ProjectIcon, ProjectMark } from "@/components/project/project-icon";
@@ -30,6 +31,7 @@ import {
 } from "@/components/session/start";
 import { startKeys } from "@/components/session/task-box";
 import {
+  AutopilotIcon,
   Avatar,
   Banner,
   Button,
@@ -90,6 +92,7 @@ import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 type Tab =
   | "sessions"
+  | "autopilot"
   | "tickets"
   | "schedules"
   | "reviews"
@@ -103,6 +106,7 @@ type Tab =
 /** Everyone in the project sees these; owners and maintainers the rest. */
 const OPEN_TABS: Tab[] = [
   "sessions",
+  "autopilot",
   "tickets",
   "schedules",
   "reviews",
@@ -111,6 +115,17 @@ const OPEN_TABS: Tab[] = [
   "repositories",
   "members",
 ];
+
+/** The autopilot's mark on its tab, lit while it works and dim while it rests or is paused. */
+function AutopilotTabMark({ a }: { a: G.ProjectAutopilot }) {
+  if (!a.state || a.state === "off") return null;
+  return (
+    <AutopilotIcon
+      live={a.working}
+      className={cn("size-3.5", a.state === "paused" ? "text-pink" : a.working ? "text-ink" : "text-ink-4")}
+    />
+  );
+}
 
 /** The project's icon in its settings: saved as it's chosen, apart from the form. */
 function IconField({ project }: { project: G.Project }) {
@@ -289,6 +304,7 @@ export function ProjectPage() {
           {(
             [
               "sessions",
+              "autopilot",
               "tickets",
               "schedules",
               "reviews",
@@ -301,6 +317,8 @@ export function ProjectPage() {
             ] as Tab[]
           )
             .filter((t) => OPEN_TABS.includes(t) || manage)
+            // Autopilots are experimental: the tab shows where the workspace lets projects have one, or it has one.
+            .filter((t) => t !== "autopilot" || !!p?.autopilot)
             .map((t) => (
               <Link
                 key={t}
@@ -308,11 +326,20 @@ export function ProjectPage() {
                 params={{ slug }}
                 search={{ tab: t === "sessions" ? undefined : t }}
                 className={cn(
-                  "relative shrink-0 px-3 py-2.5 text-[13.5px] capitalize transition-colors",
+                  "relative inline-flex shrink-0 items-center gap-1.5 px-3 py-2.5 text-[13.5px] capitalize transition-colors",
                   tab === t ? "text-ink" : "text-ink-3 hover:text-ink",
                 )}
               >
+                {t === "autopilot" && p?.autopilot ? <AutopilotTabMark a={p.autopilot} /> : null}
                 {t}
+                {t === "autopilot" && (p?.autopilot?.asks ?? 0) > 0 && (
+                  <span
+                    title={`It asks you ${p?.autopilot?.asks === 1 ? "one thing" : `${p?.autopilot?.asks} things`}`}
+                    className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold text-white tabular-nums"
+                  >
+                    {p?.autopilot?.asks}
+                  </span>
+                )}
                 {tab === t && (
                   <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />
                 )}
@@ -322,6 +349,7 @@ export function ProjectPage() {
       </nav>
       <div className="mt-8">
         {p && tab === "sessions" && <Sessions project={p} />}
+        {p && tab === "autopilot" && <AutopilotTab key={p.id} project={p} />}
         {p && tab === "tickets" && <TicketsTab key={p.id} project={p} returned={linear} />}
         {p && tab === "schedules" && <SchedulesTab project={p} open={schedule} />}
         {p && tab === "reviews" && <ReviewsTab project={p} />}

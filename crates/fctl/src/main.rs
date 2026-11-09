@@ -202,6 +202,19 @@ Examples:
   fctl schedules runs sch_01JC…"
     )]
     Schedules(cmd::schedules::SchedulesArgs),
+    /// A project's autopilot (experimental): an agent that runs the
+    /// project, or its whole workspace, on its own. People put it on, steer
+    /// it and answer what it asks; in its own session's sandbox, the
+    /// autopilot keeps its plan and log and asks people.
+    #[command(after_help = "Examples:
+  fctl autopilot -p crm                  # where it stands
+  fctl autopilot on -p crm --direction \"Build a CRM for small agencies…\"
+  fctl autopilot steer -p crm \"Focus on the pipeline board this week.\"
+  fctl autopilot answer -p crm apa_01JC… \"Stripe\"
+  fctl autopilot secret -p crm apa_01JC…   # asks for the value without showing it
+  fctl autopilot pause -p crm
+  fctl autopilot brief                   # the autopilot, in its sandbox")]
+    Autopilot(cmd::autopilot::AutopilotArgs),
     /// Follow a session live and message the agent (Ctrl-C detaches).
     Attach {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -478,6 +491,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Retro(args) => cmd::retro::run(server, args, json).await,
         Command::Review(args) => cmd::review::run(server, args, json).await,
         Command::Schedules(args) => cmd::schedules::run(server, args, json).await,
+        Command::Autopilot(args) => cmd::autopilot::run(server, args, json).await,
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }

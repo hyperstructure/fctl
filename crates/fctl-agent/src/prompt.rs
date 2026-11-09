@@ -283,7 +283,9 @@ screenshot shows.
 /// `paths` say where the other repositories go; `sandbox` what the sandbox
 /// is limited to, when its driver limits it; `tickets_cli` whether the
 /// sandbox's fctl has `fctl ticket`, for a project whose tracker it reaches;
-/// `asks_cli` whether it has `fctl ask`.
+/// `asks_cli` whether it has `fctl ask`; `autopilot_cli` whether it has
+/// `fctl autopilot`, for an autopilot's own session.
+#[allow(clippy::too_many_arguments)]
 pub fn system_prompt(
     spec: &SessionSpec,
     workdir: &str,
@@ -292,6 +294,7 @@ pub fn system_prompt(
     cache: Option<&Ready>,
     tickets_cli: bool,
     asks_cli: bool,
+    autopilot_cli: bool,
 ) -> String {
     let mut s = String::new();
     s.push_str("You are running as an autonomous agent in fctl, a software factory. ");
@@ -424,7 +427,12 @@ pub fn system_prompt(
     }
     s.push_str(&people(spec));
     s.push_str("- Never print, log or commit secrets. Project secrets are available as environment variables.\n");
-    if asks_cli {
+    if let Some(a) = spec.autopilot.as_ref().filter(|_| autopilot_cli) {
+        s.push_str(&format!(
+            "- You are the autopilot of {}: your first message says how you work, and `fctl autopilot brief` where things stand. Its `fctl` reaches fctl as the person you act for, without signing in: `fctl run`, `fctl sessions`, `fctl send`, `fctl schedules` and the rest work here. When you need a person (a decision, a credential), ask with `fctl autopilot ask`, which doesn't wait for them, rather than `fctl ask`, and go on with what you can.\n",
+            a.project_slug
+        ));
+    } else if asks_cli {
         s.push_str("- When you need a person's input to go on (a decision only they can make, access, an answer), ask with `fctl ask \"…\"`, with `-o \"…\"` for each answer they could give, and end your turn: the people who follow the session see the question with those answers to click, and hear of it. Their answer comes as a message. Ask one question at a time, and only what you can't find out yourself.\n");
     } else {
         s.push_str("- If you are blocked on a decision only a person can make, say so plainly and stop; someone will answer.\n");
@@ -946,6 +954,7 @@ mod tests {
             github_access: None,
             review: None,
             tickets: None,
+            autopilot: None,
         }
     }
 
@@ -959,7 +968,16 @@ mod tests {
                 "/var/cache/fctl/ms-playwright".into(),
             )],
         };
-        let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache), false, false);
+        let text = system_prompt(
+            &spec(),
+            "/work",
+            &paths(),
+            None,
+            Some(&cache),
+            false,
+            false,
+            false,
+        );
         assert!(
             text.contains("- Package managers keep their downloads in /var/cache/fctl ($FCTL_CACHE_DIR), which this project's sessions on this runner share: npm, pnpm, Yarn, Bun, Cargo, uv, pip, Go and Playwright find there what earlier sessions fetched. Leave it in place; the runner empties it once it takes more than 10 GiB.\n"),
             "{text}"
@@ -967,13 +985,22 @@ mod tests {
         // With an image that comes with browsers, as the default one does,
         // Playwright keeps its own.
         cache.env.clear();
-        let text = system_prompt(&spec(), "/work", &paths(), None, Some(&cache), false, false);
+        let text = system_prompt(
+            &spec(),
+            "/work",
+            &paths(),
+            None,
+            Some(&cache),
+            false,
+            false,
+            false,
+        );
         assert!(
             text.contains("share: npm, pnpm, Yarn, Bun, Cargo, uv, pip and Go find there what earlier sessions fetched."),
             "{text}"
         );
         assert!(
-            !system_prompt(&spec(), "/work", &paths(), None, None, false, false)
+            !system_prompt(&spec(), "/work", &paths(), None, None, false, false, false)
                 .contains("$FCTL_CACHE_DIR")
         );
     }
@@ -984,11 +1011,20 @@ mod tests {
             cpus: 4,
             memory_mb: 8192,
         };
-        let text = system_prompt(&spec(), "/work", &paths(), Some(size), None, false, false);
+        let text = system_prompt(
+            &spec(),
+            "/work",
+            &paths(),
+            Some(size),
+            None,
+            false,
+            false,
+            false,
+        );
         assert!(text.contains("This sandbox has 4 CPUs and 8 GiB of memory"));
         assert!(text.contains("`make -j4`"));
         assert!(
-            !system_prompt(&spec(), "/work", &paths(), None, None, false, false)
+            !system_prompt(&spec(), "/work", &paths(), None, None, false, false, false)
                 .contains("This sandbox has")
         );
         assert_eq!(
@@ -1002,6 +1038,23 @@ mod tests {
     }
 
     #[test]
+    fn an_autopilot_asks_people_without_waiting() {
+        let mut s = spec();
+        s.autopilot = Some(fctl_proto::autopilot::AutopilotSpec {
+            project_id: fctl_proto::ProjectId("prj_1".into()),
+            project_slug: "shop".into(),
+            scope: fctl_proto::autopilot::AutopilotScope::Project,
+        });
+        let text = system_prompt(&s, "/work", &paths(), None, None, false, true, true);
+        assert!(text.contains("You are the autopilot of shop"));
+        assert!(text.contains("`fctl autopilot ask`, which doesn't wait for them"));
+        assert!(!text.contains("ask with `fctl ask"));
+        // Without `fctl autopilot` in the sandbox, it hears what others do.
+        let old = system_prompt(&s, "/work", &paths(), None, None, false, true, false);
+        assert!(old.contains("ask with `fctl ask"));
+    }
+
+    #[test]
     fn says_how_long_background_work_keeps_the_session_up() {
         let text = system_prompt(
             &spec_with(serde_json::Value::Null),
@@ -1011,13 +1064,14 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains("after 10 minutes without one it stops"));
         assert!(text.contains(
             "for up to an hour after your turn ends: you can end your turn to wait for it"
         ));
         // A project that waits longer for messages waits as long for background work.
-        let text = system_prompt(&spec(), "/work", &paths(), None, None, false, false);
+        let text = system_prompt(&spec(), "/work", &paths(), None, None, false, false, false);
         assert!(text.contains("after 2 hours without one it stops"));
         assert!(text.contains("for up to 2 hours after your turn ends"));
     }
@@ -1108,6 +1162,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains("The repository acme/app is cloned at /home/agent/workspace"));
         assert!(text.contains(
@@ -1139,6 +1194,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains("into /home/agent/repos/<owner>/<name> (for example `git clone https://github.com/acme/lib /home/agent/repos/acme/lib`)"));
         assert!(text.contains("  - acme/lib (read and write)\n"));
@@ -1159,6 +1215,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
             false,
             false,
         );
@@ -1185,6 +1242,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains(
             "- Your working directory is /home/agent/workspace, an empty git repository.\n"
@@ -1202,6 +1260,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
             false,
             false,
         );
@@ -1229,6 +1288,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains("  - acme/lib (read and comment)\n"));
         assert!(text.contains("  - acme/docs (read only)\n"));
@@ -1253,6 +1313,7 @@ mod tests {
             &paths(),
             None,
             None,
+            false,
             false,
             false,
         )
@@ -1330,6 +1391,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         // After how to describe pull requests, the tracker's lines, then
         // fctl's defaults, which agree with them; then the project's words.
@@ -1354,6 +1416,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains(&format!(
             "\n## Pull requests and issues\n\n- This project tracks its work in GitHub issues of acme/app.\n\n{OWN_RULES}Never write `Fixes`: we close issues as we deploy.\n"
@@ -1370,6 +1433,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains(
             "\n## Pull requests and issues\n\nNever write `Fixes`: we close issues as we deploy.\n"
@@ -1384,6 +1448,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(!text.contains("## Pull requests and issues"));
         assert!(text.contains("- This project tracks its work in GitHub issues of acme/app.\n"));
@@ -1394,7 +1459,7 @@ mod tests {
             with_access(GithubAccess::Comment),
             with_access(GithubAccess::Read),
         ] {
-            let text = system_prompt(&none, "/work", &paths(), None, None, false, false);
+            let text = system_prompt(&none, "/work", &paths(), None, None, false, false, false);
             assert!(!text.contains("## Pull requests and issues"));
             assert!(!text.contains("`Refs #12`"));
         }
@@ -1413,6 +1478,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(!text.contains("When the task is complete"));
         assert!(text.contains("## Pull request descriptions"));
@@ -1422,7 +1488,7 @@ mod tests {
             with_access(GithubAccess::Comment),
             with_access(GithubAccess::Read),
         ] {
-            let text = system_prompt(&none, "/work", &paths(), None, None, false, false);
+            let text = system_prompt(&none, "/work", &paths(), None, None, false, false, false);
             assert!(!text.contains("Pull request descriptions"));
             assert!(!text.contains("[fctl session]"));
         }
@@ -1446,6 +1512,7 @@ mod tests {
             None,
             None,
             true,
+            false,
             false,
         );
         assert!(text.contains("  - acme/lib (read only)\n"));
@@ -1475,6 +1542,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert!(text.contains("In this session you only read on GitHub"));
         assert!(!text.contains("you triage"));
@@ -1491,6 +1559,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
         assert!(text.contains("  - acme/lib (read only)\n"));
         assert!(text.contains("In this session you only read on GitHub"));
@@ -1505,7 +1574,7 @@ mod tests {
             ..spec()
         };
         assert!(
-            !system_prompt(&none, "/work", &paths(), None, None, false, false)
+            !system_prompt(&none, "/work", &paths(), None, None, false, false, false)
                 .contains("only read on GitHub")
         );
     }
@@ -1768,7 +1837,7 @@ mod tests {
 
     #[test]
     fn says_who_started_the_session_and_what_to_call_them() {
-        let text = system_prompt(&spec(), "/work", &paths(), None, None, false, false);
+        let text = system_prompt(&spec(), "/work", &paths(), None, None, false, false, false);
         assert!(text.contains(
             "- Messages from people other than the session's starter begin with their name.\n"
         ));
@@ -1776,13 +1845,13 @@ mod tests {
         let mut carl = spec();
         carl.author.name = "Carl Oscar Aaro".into();
         carl.author_called = Some("Carl Oscar".into());
-        let text = system_prompt(&carl, "/work", &paths(), None, None, false, false);
+        let text = system_prompt(&carl, "/work", &paths(), None, None, false, false, false);
         assert!(text.contains(
             "- Carl Oscar Aaro started this session. Call them Carl Oscar, the whole name rather than a part of it, when you write to them or about them. Messages from other people begin with their name and what to call them.\n"
         ));
         assert!(!text.contains("the session's starter"));
         carl.author_called = Some("Bob".into());
-        let text = system_prompt(&carl, "/work", &paths(), None, None, false, false);
+        let text = system_prompt(&carl, "/work", &paths(), None, None, false, false, false);
         assert!(text.contains(
             "- Carl Oscar Aaro started this session. Call them Bob when you write to them or about them."
         ));
@@ -1853,10 +1922,10 @@ mod tests {
 
     #[test]
     fn agents_ask_people_with_fctl_ask_where_their_sandbox_has_it() {
-        let asks = system_prompt(&spec(), "/work", &paths(), None, None, false, true);
+        let asks = system_prompt(&spec(), "/work", &paths(), None, None, false, true, false);
         assert!(asks.contains("ask with `fctl ask"), "{asks}");
         assert!(!asks.contains("say so plainly and stop"));
-        let old = system_prompt(&spec(), "/work", &paths(), None, None, false, false);
+        let old = system_prompt(&spec(), "/work", &paths(), None, None, false, false, false);
         assert!(!old.contains("fctl ask"));
         assert!(old.contains("say so plainly and stop"));
     }

@@ -91,6 +91,10 @@ pub enum Sensitive {
     Export,
     /// Deleting your own account.
     DeleteAccount,
+    /// Putting a project on autopilot, or taking its autopilot over: its
+    /// agent then acts as the person, on their subscription, after they're
+    /// gone, as an access token that does everything in the project would.
+    PutOnAutopilot,
 }
 
 impl Sensitive {
@@ -123,6 +127,7 @@ impl Sensitive {
             RemovePasskey => "remove a passkey",
             Export => "export your data",
             DeleteAccount => "delete your account",
+            PutOnAutopilot => "put a project on autopilot",
         }
     }
 }

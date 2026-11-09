@@ -3,6 +3,7 @@ pub mod admin;
 pub mod ask;
 pub mod attach;
 pub mod auth;
+pub mod autopilot;
 pub mod claude;
 pub mod completions;
 pub mod host;

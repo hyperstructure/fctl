@@ -905,13 +905,26 @@ pub async fn set_secret(
     let body: SetSecretRequest = http::body(req).await?;
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
+    store_secret(ctx, &p, name, &body.value).await?;
+    secrets(ctx, &p.row.id).await
+}
+
+/// Seals and keeps a secret of project `p` for the caller, a maintainer
+/// there, and records it in the workspace's audit log: `PUT …/secrets`,
+/// and a secret given to an autopilot that asked for it.
+pub async fn store_secret(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    name: &str,
+    value: &str,
+) -> AppResult<String> {
     let name = validate::env_name("name", name)?;
-    if body.value.len() > 64 * 1024 {
+    if value.len() > 64 * 1024 {
         return Err(validation("value", "Secrets can be at most 64 KiB"));
     }
     let sealed = ctx
         .keys()?
-        .seal(&secret_aad(&p.row.id, &name), body.value.as_bytes())?;
+        .seal(&secret_aad(&p.row.id, &name), value.as_bytes())?;
     q(
         &ctx.db,
         "INSERT INTO project_secrets (project_id, name, value_enc, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) \
@@ -924,9 +937,12 @@ pub async fn set_secret(
         Some(p.workspace_id()),
         "project.secret_set",
         Some(&p.row.id),
-        Some(serde_json::json!({ "name": name })),
+        Some(serde_json::json!({
+            "name": name,
+            "autopilot": ctx.autopilot().map(|a| &a.project_id),
+        })),
     );
-    secrets(ctx, &p.row.id).await
+    Ok(name)
 }
 
 pub async fn delete_secret(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Response> {

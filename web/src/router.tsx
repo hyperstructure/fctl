@@ -131,6 +131,7 @@ const workspace = createRoute({
 });
 type ProjectTab =
   | "sessions"
+  | "autopilot"
   | "tickets"
   | "schedules"
   | "reviews"

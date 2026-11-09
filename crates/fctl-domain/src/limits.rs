@@ -39,6 +39,11 @@ pub struct Limits {
     /// The most the agents of its sessions may do on GitHub: `None`, push.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_access: Option<GithubAccess>,
+    /// The most it does in a project, below what `access` gives: an
+    /// autopilot's limits hold it to a maintainer's
+    /// (`crate::autopilot::ROLE_CAP`). Tokens have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub most: Option<ProjectRole>,
 }
 
 /// The workspaces whose every project a token reaches, and the projects it
@@ -81,6 +86,7 @@ impl Limits {
                 access,
                 places,
                 github_access,
+                most: None,
             },
         )
     }
@@ -94,6 +100,7 @@ impl Limits {
             access: TokenAccess::Read,
             places: Some(Places::default()),
             github_access: Some(GithubAccess::Read),
+            most: None,
         }))
     }
 
@@ -124,10 +131,14 @@ impl Limits {
     /// The most it does in a project: a viewer's, an editor's, or all its
     /// person may.
     pub fn project_cap(&self) -> ProjectRole {
-        match self.access {
+        let cap = match self.access {
             TokenAccess::Read => ProjectRole::Viewer,
             TokenAccess::Run => ProjectRole::Editor,
             TokenAccess::Full => ProjectRole::Owner,
+        };
+        match self.most {
+            Some(most) => lower_project_role(cap, most),
+            None => cap,
         }
     }
 
@@ -331,6 +342,7 @@ mod tests {
             access,
             places: None,
             github_access: None,
+            most: None,
         }
     }
 
@@ -363,6 +375,23 @@ mod tests {
     }
 
     #[test]
+    fn an_autopilot_does_what_a_maintainer_does_at_most() {
+        let l = Limits {
+            most: Some(crate::autopilot::ROLE_CAP),
+            ..limits(TokenAccess::Full)
+        };
+        assert_eq!(l.project_cap(), ProjectRole::Maintainer);
+        assert_eq!(
+            l.project_role("wsp_1", "prj_1", Some(ProjectRole::Owner)),
+            Some(ProjectRole::Maintainer)
+        );
+        assert_eq!(
+            l.project_role("wsp_1", "prj_1", Some(ProjectRole::Editor)),
+            Some(ProjectRole::Editor)
+        );
+    }
+
+    #[test]
     fn stored_limits_round_trip_and_fail_closed() {
         let l = Limits {
             access: TokenAccess::Run,
@@ -371,6 +400,7 @@ mod tests {
                 projects: vec!["prj_2".into()],
             }),
             github_access: Some(GithubAccess::Comment),
+            most: None,
         };
         assert_eq!(Limits::parse(Some(&l.to_json())), Some(l));
         assert_eq!(Limits::parse(None), None);
@@ -483,6 +513,7 @@ mod tests {
             access: TokenAccess::Run,
             places: None,
             github_access: Some(GithubAccess::Comment),
+            most: None,
         };
         let theirs = SessionAccess {
             is_creator: true,
@@ -661,6 +692,7 @@ mod tests {
             access: TokenAccess::Run,
             places: None,
             github_access: Some(Triage),
+            most: None,
         };
         assert_eq!(
             triage.session_role("wsp_1", "prj_1", admin(), Comment),

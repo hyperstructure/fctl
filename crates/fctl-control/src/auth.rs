@@ -355,6 +355,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         two_factor_setup_required,
         settings,
         limits,
+        autopilot: None,
     });
     Ok(())
 }

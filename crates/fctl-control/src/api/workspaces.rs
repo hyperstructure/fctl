@@ -254,7 +254,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         &ctx.db,
         "UPDATE workspaces SET name = COALESCE(?, name), slug = COALESCE(?, slug), color = COALESCE(?, color), \
          base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), \
-         skip_invites = COALESCE(?, skip_invites), updated_at = ? WHERE id = ?",
+         skip_invites = COALESCE(?, skip_invites), autopilots = COALESCE(?, autopilots), updated_at = ? WHERE id = ?",
         &[
             os(name.as_deref()),
             os(slug.as_deref()),
@@ -262,12 +262,18 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             os(body.base_role.map(BaseRole::as_str)),
             body.require_two_factor.map_or(crate::db::null(), crate::db::b),
             body.skip_invites.map_or(crate::db::null(), crate::db::b),
+            body.autopilots.map_or(crate::db::null(), crate::db::b),
             n(ctx.now),
             s(a.id()),
         ],
     )?
     .run()
     .await;
+    // Autopilots turned off: those it has pause, and their own sessions
+    // stop with their turn (their requests are refused from now on).
+    if updated.is_ok() && body.autopilots == Some(false) {
+        crate::autopilots::pause_workspace(&ctx.db, a.id(), &user.id, ctx.now).await?;
+    }
     if let Err(e) = updated {
         if let Some(sl) = &slug
             && slugs::taken(&ctx.db, Of::Workspace, sl, Some(a.id())).await?

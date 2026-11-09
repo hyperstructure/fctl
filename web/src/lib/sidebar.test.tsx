@@ -35,6 +35,7 @@ const workspace = (w: Partial<G.Workspace> & Pick<G.Workspace, "id" | "name">): 
   github: ["acme"],
   skip_invites: false,
   own_runners: false,
+  autopilots: false,
   created_at: 0,
   ...w,
 });

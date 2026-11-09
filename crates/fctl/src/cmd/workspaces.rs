@@ -148,7 +148,7 @@ pub enum WorkspacesCmd {
     },
     /// Change a workspace's name, address, avatar, rules or setup (admins).
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites"])),
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "slug", "color", "avatar", "base_role", "require_two_factor", "skip_invites", "autopilots"])),
         after_help = "Examples:\n  fctl workspaces set --name hyperstructure --avatar logo.png\n  fctl workspaces set --color '#2a9d8f'           # a color of its own\n  fctl workspaces set -w side-project --base-role editor\n  fctl workspaces set --require-two-factor on\n  fctl workspaces set -w side-project --skip-invites on"
     )]
     Set {
@@ -181,6 +181,11 @@ pub enum WorkspacesCmd {
         /// workspace for one; `off` asks for it again.
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         skip_invites: Option<bool>,
+        /// Let its projects have autopilots (experimental), agents that run
+        /// a project, or the workspace, on their own; `off` pauses those it
+        /// has.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        autopilots: Option<bool>,
     },
     /// Use this workspace by default.
     Use {
@@ -660,6 +665,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             base_role,
             require_two_factor,
             skip_invites,
+            autopilots,
         } => {
             let w = resolve(&api, workspace).await?;
             let mut out = w.clone();
@@ -669,6 +675,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 || base_role.is_some()
                 || require_two_factor.is_some()
                 || skip_invites.is_some()
+                || autopilots.is_some()
             {
                 let (color, hex) = color.as_ref().map(Color::request).unzip();
                 out = api
@@ -682,6 +689,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                             base_role: base_role.map(Into::into),
                             require_two_factor,
                             skip_invites,
+                            autopilots,
                         },
                     )
                     .await?;

@@ -436,6 +436,18 @@ pub struct ProjectRow {
     pub last_model: Option<String>,
     #[serde(default)]
     pub last_effort: Option<String>,
+    /// Its workspace lets projects have autopilots, and its own autopilot,
+    /// if it has one (LEFT JOINs).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub workspace_autopilots: bool,
+    #[serde(default)]
+    pub autopilot_state: Option<String>,
+    #[serde(default)]
+    pub autopilot_scope: Option<String>,
+    #[serde(deserialize_with = "int", default)]
+    pub autopilot_asks: i64,
+    #[serde(default)]
+    pub autopilot_session_status: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -463,6 +475,35 @@ impl ProjectRow {
 
     pub fn member_role(&self) -> Option<ProjectRole> {
         self.member_role.as_deref().and_then(ProjectRole::parse)
+    }
+
+    /// Its autopilot as lists show it, or whether it may have one; `None`
+    /// where neither is so.
+    pub fn autopilot(&self) -> Option<fctl_proto::session::ProjectAutopilot> {
+        use fctl_proto::autopilot::{AutopilotScope, AutopilotState};
+        let state = self
+            .autopilot_state
+            .as_deref()
+            .and_then(AutopilotState::parse);
+        if state.is_none() && !self.workspace_autopilots {
+            return None;
+        }
+        let working = state == Some(AutopilotState::On)
+            && self
+                .autopilot_session_status
+                .as_deref()
+                .and_then(SessionStatus::parse)
+                .is_some_and(fctl_domain::autopilot::at_work);
+        Some(fctl_proto::session::ProjectAutopilot {
+            allowed: self.workspace_autopilots,
+            state,
+            scope: self
+                .autopilot_scope
+                .as_deref()
+                .and_then(AutopilotScope::parse),
+            asks: u32::try_from(self.autopilot_asks.max(0)).unwrap_or(0),
+            working,
+        })
     }
 
     pub fn to_project(&self, effective_role: Option<ProjectRole>) -> Project {
@@ -497,6 +538,7 @@ impl ProjectRow {
             last_activity_at: self.last_activity_at,
             last_model: self.last_model.clone(),
             last_effort: self.last_effort.clone(),
+            autopilot: self.autopilot(),
         }
     }
 }
@@ -562,25 +604,33 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
     cu.avatar_url AS creator_avatar, p.created_at, p.updated_at, p.archived_at, m.role AS member_role, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id AND s.status IN ('provisioning','preparing','running','idle','paused','stopping') \
       AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
-      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1)) AS active_sessions, \
+      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1) \
+      AND (s.autopilot_role IS NULL OR s.autopilot_role != 'pilot')) AS active_sessions, \
     (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id \
       AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
-      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1)) AS total_sessions, \
+      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1) \
+      AND (s.autopilot_role IS NULL OR s.autopilot_role != 'pilot')) AS total_sessions, \
     (SELECT MAX(COALESCE(s.last_activity_at, s.created_at)) FROM sessions s WHERE s.project_id = p.id \
       AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id) \
-      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1)) AS last_activity_at, \
+      AND NOT EXISTS (SELECT 1 FROM schedules sc WHERE sc.id = s.schedule_id AND sc.hide_sessions = 1) \
+      AND (s.autopilot_role IS NULL OR s.autopilot_role != 'pilot')) AS last_activity_at, \
     (SELECT COUNT(*) FROM project_repos r WHERE r.project_id = p.id AND r.name != '*') AS other_repos, \
     (SELECT r.owner FROM project_repos r WHERE r.project_id = p.id AND r.name = '*' LIMIT 1) AS all_repos_of, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role, \
-    c.model AS last_model, c.effort AS last_effort \
+    c.model AS last_model, c.effort AS last_effort, \
+    w.autopilots AS workspace_autopilots, ap.state AS autopilot_state, ap.scope AS autopilot_scope, \
+    (SELECT COUNT(*) FROM autopilot_asks aa WHERE aa.project_id = ap.project_id AND aa.status = 'open') AS autopilot_asks, \
+    aps.status AS autopilot_session_status \
     FROM projects p \
     LEFT JOIN users cu ON cu.id = p.created_by \
     LEFT JOIN workspaces w ON w.id = p.workspace_id \
     LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
     LEFT JOIN project_members m ON m.project_id = p.id AND m.user_id = ?1 \
-    LEFT JOIN project_choices c ON c.project_id = p.id AND c.user_id = ?1";
+    LEFT JOIN project_choices c ON c.project_id = p.id AND c.user_id = ?1 \
+    LEFT JOIN autopilots ap ON ap.project_id = p.id \
+    LEFT JOIN sessions aps ON aps.id = ap.session_id";
 
 /// What lets the caller see a project, for `WHERE` clauses with
 /// [`PROJECT_SELECT`] (or [`SESSION_SELECT`]): they are in its workspace,
@@ -713,11 +763,33 @@ pub struct SessionRow {
     /// Its agent's open question, as JSON (`SessionQuestion`).
     #[serde(default)]
     pub question: Option<String>,
+    /// The autopilot it belongs to (its home project's id and slug) and
+    /// what it is to it: `pilot` or `crew`.
+    #[serde(default)]
+    pub autopilot_id: Option<String>,
+    #[serde(default)]
+    pub autopilot_role: Option<String>,
+    #[serde(default)]
+    pub autopilot_slug: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
 
 impl SessionRow {
+    /// The autopilot it belongs to; `None` for other sessions.
+    pub fn autopilot(&self) -> Option<fctl_proto::autopilot::SessionAutopilot> {
+        Some(fctl_proto::autopilot::SessionAutopilot {
+            role: fctl_proto::autopilot::AutopilotRole::parse(self.autopilot_role.as_deref()?),
+            project_id: ProjectId(self.autopilot_id.clone()?),
+            project_slug: self.autopilot_slug.clone().unwrap_or_default(),
+        })
+    }
+
+    /// Whether it is an autopilot's own session.
+    pub fn is_pilot(&self) -> bool {
+        self.autopilot_role.as_deref() == Some("pilot")
+    }
+
     /// The pull request a review agent's session reviews; `None` for other
     /// sessions.
     pub fn review(&self) -> Option<SessionReview> {
@@ -851,6 +923,7 @@ impl SessionRow {
                 question: self.question.as_deref().and_then(|j| {
                     serde_json::from_str::<fctl_proto::session::SessionQuestion>(j).ok()
                 }),
+                autopilot: self.autopilot(),
             };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -870,6 +943,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
     rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.question, \
+    s.autopilot_id, s.autopilot_role, (SELECT ap.slug FROM projects ap WHERE ap.id = s.autopilot_id) AS autopilot_slug, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \

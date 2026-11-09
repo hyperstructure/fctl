@@ -52,8 +52,13 @@ pub const WORKSPACE_SELECT: &str = concat!(
     crate::serves!(),
     ") AS runner_ids, \
     (SELECT json_group_array(g.account) FROM workspace_github g WHERE g.workspace_id = w.id AND g.status = 'active') AS github, \
-    pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar, pu.status AS primary_status \
+    pu.id AS primary_id, pu.name AS primary_name, pu.avatar_url AS primary_avatar, pu.status AS primary_status, \
+    w.autopilots AS autopilots, wa.project_id AS autopilot_project_id, wap.slug AS autopilot_project_slug, \
+    wap.name AS autopilot_project_name, wa.state AS autopilot_state, \
+    (SELECT COUNT(*) FROM autopilot_asks k WHERE k.project_id = wa.project_id AND k.status = 'open') AS autopilot_asks \
     FROM workspaces w \
+    LEFT JOIN autopilots wa ON wa.workspace_id = w.id AND wa.scope = 'workspace' AND wa.state != 'off' \
+    LEFT JOIN projects wap ON wap.id = wa.project_id \
     LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?1 \
     LEFT JOIN workspace_members po ON po.workspace_id = w.id AND po.role = 'owner' \
     LEFT JOIN users pu ON pu.id = po.user_id"
@@ -94,6 +99,19 @@ pub struct WorkspaceRow {
     pub primary_avatar: Option<String>,
     #[serde(default)]
     pub primary_status: Option<String>,
+    /// Its admins let its projects have autopilots, and its own autopilot.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub autopilots: bool,
+    #[serde(default)]
+    pub autopilot_project_id: Option<String>,
+    #[serde(default)]
+    pub autopilot_project_slug: Option<String>,
+    #[serde(default)]
+    pub autopilot_project_name: Option<String>,
+    #[serde(default)]
+    pub autopilot_state: Option<String>,
+    #[serde(deserialize_with = "int", default)]
+    pub autopilot_asks: i64,
 }
 
 /// A JSON array of strings from `json_group_array` (nulls left out).
@@ -179,8 +197,21 @@ impl WorkspaceRow {
             github: strings(self.github.as_deref()),
             skip_invites: self.skip_invites,
             own_runners: self.own_runners,
+            autopilots: self.autopilots,
+            autopilot: self.autopilot(),
             created_at: self.created_at,
         }
+    }
+
+    /// Its own autopilot, which works in all its projects.
+    pub fn autopilot(&self) -> Option<fctl_proto::api::WorkspaceAutopilot> {
+        Some(fctl_proto::api::WorkspaceAutopilot {
+            project_id: fctl_proto::ProjectId(self.autopilot_project_id.clone()?),
+            project_slug: self.autopilot_project_slug.clone()?,
+            project_name: self.autopilot_project_name.clone()?,
+            state: fctl_proto::autopilot::AutopilotState::parse(self.autopilot_state.as_deref()?)?,
+            asks: u32::try_from(self.autopilot_asks.max(0)).unwrap_or(0),
+        })
     }
 }
 

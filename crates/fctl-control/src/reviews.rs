@@ -1109,6 +1109,8 @@ pub async fn start(
             session,
             prompt: UserMessage {
                 ticket: None,
+                autopilot: None,
+                wake: None,
                 id: fctl_domain::ids::delivery_id(ctx.now),
                 author: None,
                 text: task,

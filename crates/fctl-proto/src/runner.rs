@@ -453,6 +453,12 @@ pub struct SessionSpec {
     /// out of the agent's configuration, and their agents hear nothing of
     /// it, while their GitHub tokens still follow the tracker.
     pub tickets: Option<crate::tickets::TicketsSpec>,
+    /// For an autopilot's own session: the autopilot, whose agent reaches
+    /// the API through fctl-agent (`AgentCall::Api`). Absent for other
+    /// sessions and from older control planes; older hosts leave it out of
+    /// the agent's configuration, and their agents' `fctl` can't reach the
+    /// API.
+    pub autopilot: Option<crate::autopilot::AutopilotSpec>,
 }
 
 /// What hosts whose agents run review sessions announce in their hello

@@ -9,7 +9,7 @@ pub mod api;
 pub mod http;
 pub mod ws;
 
-pub use api::Api;
+pub use api::{Api, Relay};
 pub use http::{Error, HttpClient};
 
 use std::sync::{Arc, OnceLock};

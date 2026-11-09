@@ -479,6 +479,13 @@ pub async fn build(
         github_access: (!github_access.pushes()).then_some(github_access),
         review: None,
         tickets: Some(tickets),
+        // An autopilot's current own session reaches the API through its
+        // agent (`crate::autopilots::relay`).
+        autopilot: if row.is_pilot() {
+            crate::autopilots::spec(db, session_id).await?
+        } else {
+            None
+        },
     })
 }
 
@@ -670,6 +677,7 @@ async fn review_spec(
         github_access: Some(GithubAccess::Read),
         review: spec_review,
         tickets: None,
+        autopilot: None,
     })
 }
 

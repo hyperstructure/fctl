@@ -48,9 +48,23 @@ pub struct NewSession<'a> {
     pub schedule_id: Option<&'a str>,
     /// The ticket it starts from (`sessions.ticket`, JSON).
     pub ticket: Option<Value>,
+    /// The autopilot it belongs to (`sessions.autopilot_id`).
+    pub autopilot: Option<AutopilotStart<'a>>,
     /// Its person follows it, as starting a session does.
     pub follow: bool,
     pub now: i64,
+}
+
+/// What a new session is to an autopilot.
+pub struct AutopilotStart<'a> {
+    /// The autopilot's home project.
+    pub project_id: &'a str,
+    pub role: fctl_proto::autopilot::AutopilotRole,
+    /// What woke the autopilot, for its own session's first message.
+    pub wake: Option<fctl_proto::autopilot::AutopilotWake>,
+    /// For a session it started: the autopilot, as the first message's
+    /// author shows it.
+    pub author: Option<fctl_proto::autopilot::AutopilotAuthor>,
 }
 
 /// Starts a session: its row, its SessionObject with the first message,
@@ -78,8 +92,9 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
     q(
         db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, branch, base_branch, \
-         model, effort, claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, schedule_id, ticket) \
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)",
+         model, effort, claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, schedule_id, ticket, \
+         autopilot_id, autopilot_role) \
+         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&st.project.id),
@@ -99,6 +114,8 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
             s(st.github_access.as_str()),
             os(st.schedule_id),
             os(ticket.as_deref()),
+            os(st.autopilot.as_ref().map(|a| a.project_id)),
+            os(st.autopilot.as_ref().map(|a| a.role.as_str())),
         ],
     )?
     .run()
@@ -126,6 +143,8 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
                 follow_up: None,
                 review: None,
                 ticket: st.ticket_message,
+                autopilot: st.autopilot.as_ref().and_then(|a| a.author.clone()),
+                wake: st.autopilot.and_then(|a| a.wake),
             },
         },
     )

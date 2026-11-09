@@ -25,4 +25,9 @@ require_two_factor?: boolean,
  * Leave inviting people out of the app's setup checklist, or (`false`)
  * ask for it again.
  */
-skip_invites?: boolean, };
+skip_invites?: boolean, 
+/**
+ * Let its projects have autopilots (experimental). Turning it off
+ * pauses those it has.
+ */
+autopilots?: boolean, };
