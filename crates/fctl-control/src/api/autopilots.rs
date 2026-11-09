@@ -25,7 +25,7 @@ use crate::model::{PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
 use fctl_domain::autopilot as ap;
 use fctl_domain::verify::Sensitive;
 use fctl_proto::autopilot::*;
-use fctl_proto::session::{SessionRef, SessionStatus, WorkspaceRole};
+use fctl_proto::session::{SessionRef, WorkspaceRole};
 use fctl_proto::{ProjectId, SessionId};
 use serde::Deserialize;
 use worker::{Request, Response};
@@ -1571,6 +1571,5 @@ pub async fn open_asks(ctx: &mut Ctx) -> AppResult<Response> {
         }
     }
     out.sort_by_key(|x| std::cmp::Reverse(x.ask.created_at));
-    let _ = SessionStatus::Idle;
     http::ok(&AutopilotAsksList { asks: out })
 }

@@ -186,6 +186,23 @@ describe("a project's Autopilot tab", () => {
     expect(toast).toHaveBeenCalledWith("Answered: it hears now");
   });
 
+  it("tells people who can't answer a workspace's autopilot that its admins do", async () => {
+    const asked = on({
+      scope: "workspace",
+      can: { steer: false, secrets: true },
+      asks: [
+        { id: "apa_1", kind: "question", text: "Which domain?", status: "open", created_at: Date.now() },
+      ],
+    });
+    autopilot.mockResolvedValue(asked);
+    queryClient.setQueryData(keys.autopilot("prj_1"), asked);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    expect(page.textContent).toContain("Which domain?");
+    expect(page.textContent).toContain("The workspace's admins answer it.");
+    expect([...page.querySelectorAll("button")].some((b) => b.textContent === "Wake now")).toBe(false);
+  });
+
   it("shows its plan's progress, and that it's paused, and by whom", async () => {
     const paused = on({
       state: "paused",

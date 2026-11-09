@@ -1211,7 +1211,11 @@ function AskCard({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
               <QuestionAnswer a={a} ask={ask} />
             )
           ) : (
-            <p className="mt-2.5 text-[12px] text-ink-4">The project's maintainers and owners answer it.</p>
+            <p className="mt-2.5 text-[12px] text-ink-4">
+              {a.scope === "workspace"
+                ? "The workspace's admins answer it."
+                : "The project's maintainers and owners answer it."}
+            </p>
           )}
         </div>
       </div>
