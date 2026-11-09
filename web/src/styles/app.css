@@ -25,6 +25,18 @@
   }
 }
 
+/* On a phone, Chrome's own swipe from the edge of the screen doesn't go back
+   or forward. Android's back gesture, where it has one, comes before the page
+   sees the touch; Safari's is kept in the app by
+   components/shell/edge-swipes.ts. */
+@layer base {
+  @media (pointer: coarse) and (width < 48rem), (pointer: coarse) and (height < 48rem) {
+    :root {
+      overscroll-behavior-x: none;
+    }
+  }
+}
+
 /* Editorial prose: agent answers, project descriptions. */
 .prose-fctl {
   font-family: var(--font-sans);

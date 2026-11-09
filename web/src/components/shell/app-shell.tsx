@@ -17,6 +17,7 @@ import { focusPageTaskBox, focusTaskBox } from "@/lib/task-box";
 import { useFactorsWatch } from "@/lib/workspaces";
 import { CommandPalette, usePaletteKeys } from "./command-palette";
 import { useDrawerDrag } from "./drawer-drag";
+import { useEdgeSwipes } from "./edge-swipes";
 import { MenuButton, ShellContext, useHeaderButtons } from "./menu-button";
 import { NewSessionDialog } from "./new-session";
 import { SequenceHint, ShortcutsDialog } from "./shortcuts";
@@ -40,7 +41,7 @@ export function AppShell() {
   const root = useRef<HTMLDivElement>(null);
   const aside = useRef<HTMLElement>(null);
   const shade = useRef<HTMLButtonElement>(null);
-  useDrawerDrag({
+  const dragged = useDrawerDrag({
     page: root,
     drawer: aside,
     shade,
@@ -48,6 +49,8 @@ export function AppShell() {
     onDrag: () => setDrawer("dragged"),
     onLetGo: (open) => setDrawer(open ? "open" : "closed"),
   });
+  // On a phone, swipes from the screen's edges stay in the app rather than going back or forward.
+  useEdgeSwipes(dragged);
   const shown = drawer === "open" || drawer === "dragged";
   // A page whose header holds the menu button (the session's) takes the top bar's place.
   const [headerButton, shell] = useHeaderButtons(openDrawer);

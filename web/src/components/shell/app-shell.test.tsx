@@ -1328,3 +1328,231 @@ describe("the drawer under a finger", () => {
     expect(shade.classList).toContain("invisible");
   });
 });
+
+describe("swipes from the edges of a phone's screen", () => {
+  // The frames asked for, until they come (`next`).
+  const frames = new Map<number, FrameRequestCallback>();
+  let frame = 0;
+  const next = (now: number) =>
+    act(() => {
+      const [id, f] = [...frames][0] ?? [];
+      if (id === undefined) return;
+      frames.delete(id);
+      f?.(now);
+    });
+  /** The shell on a phone in WebKit (Safari, or any browser on an iPhone), 390 px wide. */
+  function iPhone({ wide = false, webKit = true } = {}) {
+    if (webKit) vi.stubGlobal("GestureEvent", class {});
+    vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => {
+      frames.set(++frame, f);
+      return frame;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    vi.stubGlobal("innerWidth", 390);
+    Object.defineProperty(navigator, "maxTouchPoints", { value: 5, configurable: true });
+    cleanups.push(() => {
+      delete (navigator as { maxTouchPoints?: number }).maxTouchPoints;
+    });
+    return phone({ wide });
+  }
+  /**
+   * A finger on `el` at (`x0`, `y0`) that moves to each of `to`, 50 ms apart, then lets go 10 ms
+   * later (or at `lift` ms): whether its start was cancelled.
+   */
+  function swipe(
+    el: Element,
+    [x0, y0]: [number, number],
+    to: [number, number][] = [],
+    lift = to.length * 50 + 10,
+  ) {
+    const touch = (x: number, y: number) => new Touch({ identifier: 7, target: el, clientX: x, clientY: y });
+    const at = <E extends Event>(e: E, ms: number) => Object.defineProperty(e, "timeStamp", { value: ms });
+    const start = new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch(x0, y0)] });
+    act(() => {
+      el.dispatchEvent(at(start, 0));
+    });
+    to.forEach(([x, y], i) => {
+      act(() => {
+        el.dispatchEvent(
+          at(
+            new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch(x, y)] }),
+            (i + 1) * 50,
+          ),
+        );
+      });
+    });
+    act(() => {
+      el.dispatchEvent(
+        at(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [] }), lift),
+      );
+    });
+    return { cancelled: start.defaultPrevented };
+  }
+  const page = () => document.scrollingElement as HTMLElement;
+  afterEach(() => {
+    page().scrollTop = 0;
+    frames.clear();
+  });
+
+  it("keeps a touch that starts at the left or right edge from going back or forward", () => {
+    const shell = iPhone();
+    expect(swipe(shell.page(), [4, 300]).cancelled).toBe(true);
+    expect(swipe(shell.page(), [386, 300]).cancelled).toBe(true);
+    expect(swipe(shell.page(), [40, 300]).cancelled).toBe(false);
+    expect(swipe(shell.page(), [340, 300]).cancelled).toBe(false);
+    // The browser's own controls need the touch.
+    const video = document.createElement("video");
+    shell.page().append(video);
+    expect(swipe(video, [4, 300]).cancelled).toBe(false);
+    video.remove();
+  });
+
+  it("leaves them to the browser on a tablet's or a computer's screen, and outside WebKit", () => {
+    expect(swipe(iPhone({ wide: true }).page(), [4, 300]).cancelled).toBe(false);
+    cleanups.splice(0).forEach((clean) => {
+      clean();
+    });
+    expect(swipe(iPhone({ webKit: false }).page(), [4, 300]).cancelled).toBe(false);
+  });
+
+  it("clicks what a tap at the edge touched", () => {
+    const shell = iPhone();
+    const button = document.querySelector('button[aria-label="Open menu"]') as HTMLElement;
+    expect(swipe(button, [12, 28]).cancelled).toBe(true);
+    expect(shell.state().open).toBe(true);
+  });
+
+  it("drags the drawer in from the very edge, and the touch clicks nothing", () => {
+    const shell = iPhone();
+    let clicked = false;
+    shell.page().addEventListener("click", () => {
+      clicked = true;
+    });
+    const { cancelled } = swipe(
+      shell.page(),
+      [2, 300],
+      [
+        [60, 300],
+        [240, 300],
+        [240, 300],
+        [240, 300],
+      ],
+    );
+    expect(cancelled).toBe(true);
+    expect(shell.state().open).toBe(true);
+    expect(page().scrollTop).toBe(0);
+    expect(clicked).toBe(false);
+  });
+
+  it("scrolls the page under a finger that swipes up or down from the edge, and glides on as it lets go", () => {
+    const shell = iPhone();
+    swipe(
+      shell.page(),
+      [386, 600],
+      [
+        [386, 590],
+        [386, 500],
+        [386, 400],
+      ],
+    );
+    // From where it moved further than a tap: the page doesn't jump.
+    expect(page().scrollTop).toBe(190);
+    expect(shell.state().open).toBe(false);
+    // It goes on at the finger's speed, slowing down.
+    let now = performance.now();
+    const steps: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const before = page().scrollTop;
+      now += 16;
+      next(now);
+      steps.push(page().scrollTop - before);
+    }
+    expect(steps[1]).toBeGreaterThan(0);
+    expect(steps[2]).toBeLessThan(steps[1] as number);
+    // A finger on the screen stops it.
+    swipe(shell.page(), [200, 300]);
+    expect(frames.size).toBe(0);
+  });
+
+  it("scrolls the page under a finger that starts out partly sideways from the edge", () => {
+    const shell = iPhone();
+    swipe(
+      shell.page(),
+      [386, 600],
+      [
+        [376, 596],
+        [370, 500],
+      ],
+    );
+    expect(page().scrollTop).toBe(96);
+  });
+
+  it("stops a glide with a touch anywhere, which clicks nothing", () => {
+    iPhone();
+    const main = document.querySelector("main") as HTMLElement;
+    let clicks = 0;
+    main.addEventListener("click", () => clicks++);
+    swipe(
+      main,
+      [386, 600],
+      [
+        [386, 590],
+        [386, 500],
+        [386, 400],
+      ],
+    );
+    expect(frames.size).toBe(1);
+    // Further in than the edges: the app keeps it, and it only stops the glide.
+    expect(swipe(main, [200, 300]).cancelled).toBe(true);
+    expect(frames.size).toBe(0);
+    expect(clicks).toBe(0);
+    // Then a touch there is the browser's again.
+    expect(swipe(main, [200, 300]).cancelled).toBe(false);
+  });
+
+  it("clicks nothing for a long press on a link at the edge, and clicks for one elsewhere", () => {
+    const shell = iPhone();
+    const link = document.createElement("a");
+    link.href = "#held";
+    shell.page().append(link);
+    let followed = false;
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      followed = true;
+    });
+    expect(swipe(link, [12, 300], [], 700).cancelled).toBe(true);
+    expect(followed).toBe(false);
+    link.remove();
+    const button = document.querySelector('button[aria-label="Open menu"]') as HTMLElement;
+    expect(swipe(button, [12, 28], [], 700).cancelled).toBe(true);
+    expect(shell.state().open).toBe(true);
+  });
+
+  it("leaves the touch to what takes it itself", () => {
+    const shell = iPhone();
+    const own = (e: Event) => e.preventDefault();
+    shell.page().addEventListener("touchmove", own);
+    swipe(
+      shell.page(),
+      [386, 600],
+      [
+        [386, 500],
+        [386, 400],
+      ],
+    );
+    expect(page().scrollTop).toBe(0);
+    shell.page().removeEventListener("touchmove", own);
+    // A row of the sidebar lifted to be moved.
+    document.documentElement.dataset.dragging = "";
+    swipe(
+      shell.page(),
+      [386, 600],
+      [
+        [386, 500],
+        [386, 400],
+      ],
+    );
+    delete document.documentElement.dataset.dragging;
+    expect(page().scrollTop).toBe(0);
+  });
+});
