@@ -2429,11 +2429,14 @@ Claude about `fctl ask`, in place of saying so and stopping, where the
 sandbox's fctl has it. Review agents ask nobody.
 
 As it delivers a message with an author, SessionDO also notes when
-(`Session.messaged_at`, written through to `sessions.messaged_at`). The
-web app's Needs you lists a session that waits for a message as waiting
-for a reply unless its pull requests are all merged or closed and nobody
-wrote to it after the last of them was: then its agent has finished, and
-waits only until its idle timeout stops the session.
+(`Session.messaged_at`, written through to `sessions.messaged_at`), and,
+when the message answers the agent's question, notes that too
+(`Session.answered_at`, the same time). The web app's Needs you lists a
+session that waits for a message as waiting for a reply unless its pull
+requests are all merged or closed and nobody wrote to it after the last
+of them was, or the last message only answered the agent's question
+(whether to re-run a failed deploy, say): then its agent has finished,
+and waits only until its idle timeout stops the session.
 
 ### Titles
 

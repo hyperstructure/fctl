@@ -26,8 +26,9 @@ export const FAILED_FOR = 24 * 3_600_000;
  * a question its agent asks, a failure in the last day, a pull request whose checks failed, a pull
  * request its agent finished (it waits for a reply, or ended, and the pull request is open and
  * not a draft), a reply it waits for, a pause on a usage limit. A session whose pull requests are
- * all merged or closed, and that nobody wrote to since, waits for no reply: its work is done, and
- * its agent waits for a message until the session stops only in case someone has more for it.
+ * all merged or closed, and that nobody wrote to since but to answer its agent's question, waits for
+ * no reply: its work is done, and its agent waits for a message until the session stops only in
+ * case someone has more for it.
  * Nothing until it is known who `me` is: the lists hold other people's sessions too.
  */
 export function needsOf(me: string | undefined, sessions: readonly G.Session[], now: number): Need[] {
@@ -65,11 +66,14 @@ function needOf(s: G.Session, now: number): Need | undefined {
 
 /**
  * Whether a session's work is done: it has pull requests, all merged or closed, and nobody has sent it a message
- * since the last of them was. One merged or closed at a time nobody knows counts as before any message.
+ * since the last of them was, or the last message answered its agent's question: that asks nothing new of it, and
+ * the agent carries on with what it asked for (whether to re-run a failed deploy, say). One merged or closed at a
+ * time nobody knows counts as before any message.
  */
 function finished(s: G.Session, pulls: readonly G.PullRequestRef[]): boolean {
   if (!pulls.length || !pulls.every((pr) => ["merged", "closed"].includes(prState(pr)))) return false;
-  if (s.messaged_at === undefined) return true;
+  if (s.messaged_at === undefined || (s.answered_at ?? Number.NEGATIVE_INFINITY) >= s.messaged_at)
+    return true;
   const landed = pulls.map((pr) => pr.state_changed_at ?? Number.NEGATIVE_INFINITY);
   return Math.max(...landed) >= s.messaged_at;
 }

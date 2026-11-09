@@ -672,6 +672,10 @@ pub struct SessionRow {
     /// column).
     #[serde(deserialize_with = "opt_int", default)]
     pub messaged_at: Option<i64>,
+    /// When a person's message last answered its agent's question (NULL:
+    /// nobody has since the column).
+    #[serde(deserialize_with = "opt_int", default)]
+    pub answered_at: Option<i64>,
     /// What its agent may do on GitHub, as it started (NULL: push).
     #[serde(default)]
     pub github_access: Option<String>,
@@ -807,6 +811,7 @@ impl SessionRow {
                 ended_at: self.ended_at,
                 last_activity_at: self.last_activity_at,
                 messaged_at: self.messaged_at,
+                answered_at: self.answered_at,
                 branch: self.branch.clone(),
                 base_branch: self.base_branch.clone(),
                 pull_request: match (self.pr_number, &self.pr_url) {
@@ -866,7 +871,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_effort, s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
     s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, s.github_issues, \
-    s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, s.messaged_at, \
+    s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, s.messaged_at, s.answered_at, \
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
     rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.question, \

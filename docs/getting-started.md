@@ -466,7 +466,8 @@ started.
   sessions you started or follow, most pressing first: what an agent asks
   you, a failure, failed checks, a pull request an agent finished, a reply
   it waits for (unless its pull requests are all merged or closed and
-  nobody wrote to it since: its work is done). Its count shows in the
+  nobody wrote to it since, or only to answer what it asked: its work is
+  done). Its count shows in the
   browser's tab, and on fctl's icon where you installed it. **Pull requests** opens the pull requests agents
   opened in the sessions you started, sorted by what each needs next; turn
   **Mine** off there for everyone's, and the sidebar counts them too. The

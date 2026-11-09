@@ -44,7 +44,15 @@ resume_at?: number, created_by: UserRef, created_at: number, updated_at: number,
  * people's). Absent until someone does, and from control planes
  * before it.
  */
-messaged_at?: number, branch?: string, base_branch?: string, 
+messaged_at?: number, 
+/**
+ * When a person's message last answered its agent's question
+ * (`question`). Equal to `messaged_at` when the last message answered
+ * one: the turn it starts carries on with what the agent asked for,
+ * rather than with something new. Absent until someone answers one,
+ * and from control planes before it.
+ */
+answered_at?: number, branch?: string, base_branch?: string, 
 /**
  * The pull request of its branch in the primary repository, or in
  * another repository when that has none: the last one its agent found.
