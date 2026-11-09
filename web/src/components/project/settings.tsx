@@ -1,9 +1,9 @@
 // A project's Settings tab: its pages, listed beside the one open where both fit, else the list
-// alone (a phone), which opens one with the way back to it. General, Repositories and Members;
-// Agents, Pull requests and Tickets; Sandbox and Secrets. Owners and maintainers see them all;
-// everyone else in the project reads Repositories, Members and Tickets. Each page that edits saves
-// on its own, once something changed, and asks before someone leaves it with changes unsaved. Which
-// pages there are, who sees them and what the list says of each: lib/project-page.ts.
+// alone (a phone), which opens one with the way back to it. General; Agents, Pull requests and
+// Tickets; Sandbox and Secrets. Owners and maintainers see them all; everyone else in the project
+// reads Tickets, which shows alone. Each page that edits saves on its own, once something changed,
+// and asks before someone leaves it with changes unsaved. Which pages there are, who sees them and
+// what the list says of each: lib/project-page.ts.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -11,20 +11,16 @@ import {
   Bot,
   Box,
   ChevronLeft,
-  FolderGit2,
   GitPullRequest,
   KeyRound,
   type LucideIcon,
   SlidersHorizontal,
   Ticket,
-  Users,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { ProjectIconPicker } from "@/components/project/icon-picker";
-import { Members } from "@/components/project/members";
 import { ProjectIcon } from "@/components/project/project-icon";
-import { Repositories } from "@/components/project/repositories";
 import { Secrets } from "@/components/project/secrets";
 import { TicketsSettings } from "@/components/project/tickets";
 import { SwitchRow, SwitchRows, sameDraft, UnsavedGuard, useDraft } from "@/components/settings/form";
@@ -64,6 +60,7 @@ import { areDefaults, shownInstructions } from "@/lib/pr-instructions";
 import { ICON_COLORS, iconDef, iconOf } from "@/lib/project-icons";
 import {
   isSettingsPage,
+  manages,
   type ProjectSettingsPage,
   type ProjectView,
   placeOf,
@@ -80,8 +77,6 @@ import type { LinearOutcome } from "@/lib/tickets";
 const ICONS: Record<ProjectSettingsPage, LucideIcon> = {
   // Not the gear: that's the Settings tab right above.
   general: SlidersHorizontal,
-  repositories: FolderGit2,
-  members: Users,
   agents: Bot,
   "pull-requests": GitPullRequest,
   tickets: Ticket,
@@ -125,6 +120,13 @@ export function ProjectSettings({
     <Link to="/p/$slug" params={{ slug: project.slug }} search={{ tab: page }} {...props} />
   );
   if (!open) return null;
+  // One page to read (Tickets, for those who don't manage the project): that page alone.
+  if (pages.length === 1)
+    return (
+      <SectionLayout value="subpage">
+        <SettingsBody key={`${project.id}:${open}`} page={open} project={project} linear={linear} />
+      </SectionLayout>
+    );
   return (
     // Its own width (a container query) decides how it shows, as Settings' does (routes/settings.tsx):
     // the list of pages beside the page open where both fit; else the list, or the page it opened
@@ -173,17 +175,12 @@ function PageList({
   link: (page: ProjectSettingsPage, props: NavLinkProps) => ReactNode;
   className?: string;
 }) {
-  const manage = project.role === "owner" || project.role === "maintainer";
-  const members = useQuery({ queryKey: keys.members(project.id), queryFn: () => api.members(project.id) });
   const secrets = useQuery({
     queryKey: keys.secrets(project.id),
     queryFn: () => api.secrets(project.id),
-    enabled: manage,
+    enabled: manages(project.role),
   });
-  const said = settingsGists(project, {
-    members: members.data?.members.length,
-    secrets: secrets.data?.secrets.length,
-  });
+  const said = settingsGists(project, { secrets: secrets.data?.secrets.length });
   const gists: Partial<Record<ProjectSettingsPage, Gist>> = Object.fromEntries(
     Object.entries(said).flatMap(([page, text]) => (text ? [[page, { text }]] : [])),
   );
@@ -210,10 +207,6 @@ function SettingsBody({
   switch (page) {
     case "general":
       return <General project={project} />;
-    case "repositories":
-      return <Repositories project={project} />;
-    case "members":
-      return <Members project={project} />;
     case "agents":
       return <Agents project={project} />;
     case "pull-requests":

@@ -1,10 +1,10 @@
-// A project's members (Settings → Members): who works in it and what each may do. Everyone in the
+// A project's Members tab: who works in it and what each may do. Everyone in the
 // project sees them; its maintainers add people and change roles, and anyone can leave.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Avatar, Button, Field, Input, Section, Select, type SelectOption, toast } from "@/components/ui";
+import { Avatar, Button, Field, Input, Select, type SelectOption, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { manages } from "@/lib/project-page";
@@ -23,7 +23,7 @@ const projectRoles = (actor?: G.ProjectRole): SelectOption<G.ProjectRole>[] => [
   },
 ];
 
-/** Settings → Members: who is in the project and their roles, which its maintainers change. */
+/** The Members tab: who is in the project and their roles, which its maintainers change. */
 export function Members({ project }: { project: G.Project }) {
   const { data: me } = useMe();
   const members = useQuery({ queryKey: keys.members(project.id), queryFn: () => api.members(project.id) });
@@ -49,7 +49,7 @@ export function Members({ project }: { project: G.Project }) {
     onError: (e) => toast(e.message, "error"),
   });
   return (
-    <Section title="Members" description="Who works in the project, and what each of them may do in it.">
+    <div>
       {manage && (
         <form
           className="mb-6"
@@ -130,6 +130,6 @@ export function Members({ project }: { project: G.Project }) {
         Viewers follow sessions. Editors also start sessions and message agents. Maintainers manage settings,
         secrets and members.
       </p>
-    </Section>
+    </div>
   );
 }

@@ -51,9 +51,11 @@ describe("a project's page", () => {
     expect(tabOf("tickets")).toBe("settings");
     expect(tabOf("secrets")).toBe("settings");
     expect(tabOf("pull-requests")).toBe("settings");
+    expect(tabOf("repositories")).toBe("repositories");
+    expect(tabOf("members")).toBe("members");
   });
 
-  it("still opens what the tabs it had are called: they're pages of Memory and Settings now", () => {
+  it("still opens what the tabs it had are called: some are pages of Memory and Settings now", () => {
     for (const old of [
       "tickets",
       "retrospectives",
@@ -80,6 +82,7 @@ describe("a project's page", () => {
     expect(shownView("agents", editor)).toBe("settings");
     expect(shownView("tickets", editor)).toBe("tickets");
     expect(shownView("members", editor)).toBe("members");
+    expect(shownView("repositories", editor)).toBe("repositories");
     // Where the workspace lets it have no autopilot, Sessions.
     expect(shownView("autopilot", p)).toBe("sessions");
     expect(shownView("autopilot", project({ autopilot: { state: "off" } as G.ProjectAutopilot }))).toBe(
@@ -90,8 +93,6 @@ describe("a project's page", () => {
   it("shows owners and maintainers every page of Settings, and the rest what everyone reads", () => {
     expect(settingsPagesFor("owner")).toEqual([
       "general",
-      "repositories",
-      "members",
       "agents",
       "pull-requests",
       "tickets",
@@ -99,11 +100,11 @@ describe("a project's page", () => {
       "secrets",
     ]);
     expect(settingsPagesFor("maintainer")).toEqual(settingsPagesFor("owner"));
-    expect(settingsPagesFor("editor")).toEqual(["repositories", "members", "tickets"]);
-    expect(settingsPagesFor("viewer")).toEqual(["repositories", "members", "tickets"]);
+    expect(settingsPagesFor("editor")).toEqual(["tickets"]);
+    expect(settingsPagesFor("viewer")).toEqual(["tickets"]);
     // Settings itself opens its first page beside the list.
     expect(settingsPageOf("settings", "maintainer")).toBe("general");
-    expect(settingsPageOf("settings", "viewer")).toBe("repositories");
+    expect(settingsPageOf("settings", "viewer")).toBe("tickets");
     expect(settingsPageOf("sandbox", "maintainer")).toBe("sandbox");
   });
 });
@@ -119,7 +120,7 @@ describe("where an address takes someone", () => {
     expect(placeOf(p, at({}))).toBe(placeOf(p, at({ tab: "sessions" })));
     // Below maintainer, a page they can't see is Settings' first one.
     const editor = project({ role: "editor" });
-    expect(placeOf(editor, at({ tab: "secrets" }))).toBe(placeOf(editor, at({ tab: "repositories" })));
+    expect(placeOf(editor, at({ tab: "secrets" }))).toBe(placeOf(editor, at({ tab: "tickets" })));
   });
 
   it("tells pages apart, and other pages of the app", () => {
@@ -177,18 +178,11 @@ describe("what the list of Settings' pages says", () => {
     );
   });
 
-  it("counts members and secrets once they're loaded", () => {
+  it("counts secrets once they're loaded", () => {
     const loading = settingsGists(project());
-    expect(loading.members).toBeUndefined();
     expect(loading.secrets).toBeUndefined();
     expect(loading.general).toBe("Sessions start from main");
-    expect(loading.repositories).toBe("No repository");
-    const loaded = settingsGists(project({ repo: { owner: "acme", name: "shop" }, other_repos: 2 }), {
-      members: 1,
-      secrets: 0,
-    });
-    expect(loaded.members).toBe("1 member");
-    expect(loaded.secrets).toBe("None yet");
-    expect(loaded.repositories).toBe("acme/shop (+2 more)");
+    expect(settingsGists(project(), { secrets: 0 }).secrets).toBe("None yet");
+    expect(settingsGists(project(), { secrets: 2 }).secrets).toBe("2 secrets");
   });
 });

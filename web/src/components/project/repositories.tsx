@@ -1,4 +1,4 @@
-// A project's repositories (Settings → Repositories): where its agents work, the primary one first,
+// A project's Repositories tab: where its agents work, the primary one first,
 // and what they may do in each. Everyone in the project sees them; its maintainers add and remove
 // them, and change what agents may do.
 
@@ -6,16 +6,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Building2, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { RepoPicker } from "@/components/project/repo-picker";
-import {
-  Button,
-  Field,
-  GithubIcon,
-  Section,
-  Select,
-  type SelectOption,
-  Skeleton,
-  toast,
-} from "@/components/ui";
+import { Button, Field, GithubIcon, Select, type SelectOption, Skeleton, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { ago } from "@/lib/format";
@@ -32,7 +23,7 @@ const accessLabel = (a: G.RepoAccess) => (a === "write" ? "Read and write" : "Re
 /** GitHub names ignore case. */
 const same = (a: string, b?: string) => a.toLowerCase() === b?.toLowerCase();
 
-/** Settings → Repositories: the ones its agents work in, and for its maintainers, adding and removing them. */
+/** The Repositories tab: the ones its agents work in, and for its maintainers, adding and removing them. */
 export function Repositories({ project }: { project: G.Project }) {
   const manage = manages(project.role);
   const { data: instance } = useInstance();
@@ -115,17 +106,13 @@ export function Repositories({ project }: { project: G.Project }) {
     </>
   ) : undefined;
   return (
-    <Section
-      title="Repositories"
-      description={
-        <>
-          Agents start in the primary repository and clone the others when they need them, into{" "}
-          <code className="font-mono text-[13px] text-ink-2">~/repos/&lt;owner&gt;/&lt;name&gt;</code>. They
-          push and open pull requests only where they can write. All of a project's repositories belong to one
-          GitHub account, and changes apply to sessions that start afterwards.
-        </>
-      }
-    >
+    <div>
+      <p className="mb-6 max-w-2xl text-[13.5px] leading-relaxed text-ink-3">
+        Agents start in the primary repository and clone the others when they need them, into{" "}
+        <code className="font-mono text-[12.5px] text-ink-2">~/repos/&lt;owner&gt;/&lt;name&gt;</code>. They
+        push and open pull requests only where they can write. All of a project's repositories belong to one
+        GitHub account, and changes apply to sessions that start afterwards.
+      </p>
       {manage && (
         <form
           className="mb-6"
@@ -254,6 +241,6 @@ export function Repositories({ project }: { project: G.Project }) {
           })}
         </ul>
       )}
-    </Section>
+    </div>
   );
 }

@@ -257,7 +257,7 @@ pub async fn status(ctx: &Ctx, project: &ProjectRow) -> AppResult<ProjectTickets
                 t.repo.as_ref().map(RepoRef::full_name).unwrap_or_default()
             )),
             GithubIssues::None => Some(
-                "The project has no repository, so its agents reach no issues: link one in its settings, under Repositories."
+                "The project has no repository, so its agents reach no issues: link one under Repositories."
                     .to_owned(),
             ),
             _ => None,

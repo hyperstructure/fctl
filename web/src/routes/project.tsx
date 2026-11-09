@@ -2,12 +2,23 @@
 // a tab (lib/project-page.ts says which, and what an address opens).
 
 import { Link, useParams, useSearch } from "@tanstack/react-router";
-import { BookMarked, CalendarClock, GitBranch, Pencil, ScanEye, Settings } from "lucide-react";
+import {
+  BookMarked,
+  CalendarClock,
+  FolderGit2,
+  GitBranch,
+  Pencil,
+  ScanEye,
+  Settings,
+  Users,
+} from "lucide-react";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { AutopilotTab } from "@/components/project/autopilot";
 import { ProjectIconPicker } from "@/components/project/icon-picker";
+import { Members } from "@/components/project/members";
 import { MemoryTab } from "@/components/project/memory";
 import { ProjectMark } from "@/components/project/project-icon";
+import { Repositories } from "@/components/project/repositories";
 import { ReviewsTab } from "@/components/project/reviews";
 import { ScheduleButton, SchedulesTab } from "@/components/project/schedules";
 import { ProjectSettings } from "@/components/project/settings";
@@ -58,19 +69,24 @@ const LABELS: Record<ProjectTab, string> = {
   schedules: "Schedules",
   reviews: "Reviews",
   memory: "Memory",
+  repositories: "Repositories",
+  members: "Members",
   settings: "Settings",
 };
 
 /**
  * Each tab's icon, as the rest of the app draws what the tab holds: the Agent Floor's mark for its
- * sessions, the schedule button's calendar, the eye that reviews are, the bookmark of notes kept,
- * the sidebar's gear. Autopilot draws its own mark (`TabIcon`).
+ * sessions, the schedule button's calendar, the eye that reviews are, the bookmark of notes kept, a
+ * folder of git for its repositories, people for its members, the sidebar's gear. Autopilot draws
+ * its own mark (`TabIcon`).
  */
 const ICONS: Record<Exclude<ProjectTab, "autopilot">, (className: string) => ReactNode> = {
   sessions: (className) => <AgentFloorIcon className={className} />,
   schedules: (className) => <CalendarClock className={className} aria-hidden="true" />,
   reviews: (className) => <ScanEye className={className} aria-hidden="true" />,
   memory: (className) => <BookMarked className={className} aria-hidden="true" />,
+  repositories: (className) => <FolderGit2 className={className} aria-hidden="true" />,
+  members: (className) => <Users className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
 };
 
@@ -221,6 +237,8 @@ export function ProjectPage() {
         {p && tab === "memory" && (
           <MemoryTab project={p} part={view === "retrospectives" ? "retrospectives" : "notes"} />
         )}
+        {p && view === "repositories" && <Repositories key={p.id} project={p} />}
+        {p && view === "members" && <Members key={p.id} project={p} />}
         {p && tab === "settings" && <ProjectSettings project={p} view={view} linear={linear} />}
       </div>
     </div>
@@ -272,7 +290,7 @@ function Tabs({
               aria-current={here ? "page" : undefined}
               activeOptions={{ exact: true }}
               className={cn(
-                "group relative inline-flex shrink-0 items-center gap-2 px-3 py-2.5 text-[13.5px] transition-colors duration-150",
+                "group relative inline-flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 text-[13.5px] transition-colors duration-150",
                 here ? "text-ink" : "text-ink-3 hover:text-ink",
               )}
             >
@@ -287,7 +305,7 @@ function Tabs({
                 </span>
               )}
               {here && (
-                <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent forced-colors:bg-[CanvasText] forced-color-adjust-none" />
+                <span className="absolute inset-x-1.5 -bottom-px h-[2px] rounded-full bg-accent forced-colors:bg-[CanvasText] forced-color-adjust-none" />
               )}
             </Link>
           );

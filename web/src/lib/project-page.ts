@@ -5,18 +5,24 @@
 import type * as G from "@/gen";
 import { imageSource } from "./images";
 import { effortLabel, modelLabel } from "./models";
-import { repoLabel } from "./repos";
 import { TRACKERS, trackerOf } from "./tickets";
 
-/** The tabs under the project's header, in their order. */
-export const PROJECT_TABS = ["sessions", "autopilot", "schedules", "reviews", "memory", "settings"] as const;
+/** The tabs under the project's header, in their order: what its agents do, who and what it has, its settings. */
+export const PROJECT_TABS = [
+  "sessions",
+  "autopilot",
+  "schedules",
+  "reviews",
+  "memory",
+  "repositories",
+  "members",
+  "settings",
+] as const;
 export type ProjectTab = (typeof PROJECT_TABS)[number];
 
 /** Settings' pages, in the order its navigation lists them. */
 export const SETTINGS_PAGES = [
   "general",
-  "repositories",
-  "members",
   "agents",
   "pull-requests",
   "tickets",
@@ -28,8 +34,8 @@ export type ProjectSettingsPage = (typeof SETTINGS_PAGES)[number];
 /**
  * What the page's address takes as `?tab=`: a tab; Memory's retrospectives (`memory` is its notes);
  * or a page of Settings (`settings` is Settings itself: the list of its pages on a phone, the first
- * of them beside it elsewhere). Tickets, Retrospectives, Repositories, Members and Secrets were
- * tabs of their own, so their old addresses land where they are now.
+ * of them beside it elsewhere). Tickets, Retrospectives and Secrets were tabs of their own, so their
+ * old addresses land where they are now.
  */
 export const PROJECT_VIEWS = [...PROJECT_TABS, "retrospectives", ...SETTINGS_PAGES] as const;
 export type ProjectView = (typeof PROJECT_VIEWS)[number];
@@ -46,8 +52,8 @@ export function tabOf(view: ProjectView): ProjectTab {
 /** Owners and maintainers change a project's settings, secrets and members. */
 export const manages = (role?: G.ProjectRole) => role === "owner" || role === "maintainer";
 
-/** Pages everyone in the project reads: who is in it, where its agents work and track their work. */
-const OPEN_PAGES: readonly ProjectSettingsPage[] = ["repositories", "members", "tickets"];
+/** Pages everyone in the project reads: where its agents track their work. */
+const OPEN_PAGES: readonly ProjectSettingsPage[] = ["tickets"];
 
 /** The pages of Settings someone in the project sees, in their order. */
 export function settingsPagesFor(role?: G.ProjectRole): ProjectSettingsPage[] {
@@ -61,11 +67,7 @@ export interface SettingsEntry {
 
 /** Settings' pages in their groups: the project, how its agents work, where they run. */
 export const SETTINGS_GROUPS: readonly (readonly SettingsEntry[])[] = [
-  [
-    { page: "general", label: "General" },
-    { page: "repositories", label: "Repositories" },
-    { page: "members", label: "Members" },
-  ],
+  [{ page: "general", label: "General" }],
   [
     { page: "agents", label: "Agents" },
     { page: "pull-requests", label: "Pull requests" },
@@ -167,13 +169,11 @@ export function sandboxGist(s: G.ProjectSettings): string {
 /** What the list of Settings' pages says about each, under its name, from what has loaded. */
 export function settingsGists(
   project: G.Project,
-  loaded: { members?: number; secrets?: number } = {},
+  loaded: { secrets?: number } = {},
 ): Partial<Record<ProjectSettingsPage, string>> {
   const s = project.settings;
   return {
     general: `Sessions start from ${project.default_branch}`,
-    repositories: repoLabel(project) ?? "No repository",
-    members: loaded.members === undefined ? undefined : count(loaded.members, "member", "members"),
     agents: agentsGist(s),
     "pull-requests": pullRequestsGist(s),
     tickets: ticketsGist(s),

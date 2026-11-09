@@ -1,4 +1,4 @@
-// The field that adds repositories to a project, in Settings → Repositories: it lists every
+// The field that adds repositories to a project, in its Repositories tab: it lists every
 // repository of the account and the repositories the workspace may use, to tick several of, and
 // shows the ticked ones in the field. One typed whole (owner/name, or its address on github.com)
 // that isn't on the list can be ticked too.

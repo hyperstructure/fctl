@@ -139,16 +139,7 @@ function open(view: ProjectView, p = project()) {
 describe("a project's Settings", () => {
   it("lists every page for its maintainers, in groups, with General beside them", () => {
     const s = open("settings");
-    expect(s.nav()).toEqual([
-      "General (open)",
-      "Repositories",
-      "Members",
-      "Agents",
-      "Pull requests",
-      "Tickets",
-      "Sandbox",
-      "Secrets",
-    ]);
+    expect(s.nav()).toEqual(["General (open)", "Agents", "Pull requests", "Tickets", "Sandbox", "Secrets"]);
     expect(s.heading()).toBe("General");
     // In groups: the project, how its agents work, where they run.
     expect(
@@ -156,10 +147,11 @@ describe("a project's Settings", () => {
     ).toBe(3);
   });
 
-  it("shows the rest of the project what everyone reads", () => {
+  it("shows the rest of the project the one page everyone reads, alone", () => {
     const s = open("settings", project({ role: "editor" }));
-    expect(s.nav()).toEqual(["Repositories (open)", "Members", "Tickets"]);
-    expect(s.heading()).toBe("Repositories");
+    expect(s.nav()).toEqual([]);
+    expect(s.heading()).toBe("Tickets");
+    expect([...s.container.querySelectorAll("a")].some((a) => a.textContent === "Settings")).toBe(false);
   });
 
   it("opens the page its address names, with the way back to the list on a phone", () => {
