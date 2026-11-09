@@ -243,7 +243,7 @@ const sent = () =>
   (calls.find((x) => x.name === "updateProject")?.args[1] as { settings: G.ProjectSettings } | undefined)
     ?.settings.tickets;
 
-describe("the Tickets tab", () => {
+describe("Settings → Tickets", () => {
   it("offers the three trackers, with GitHub Issues for a project from before them", () => {
     const c = tab(project());
     expect(radios(c).map((r) => r.value)).toEqual(["none", "github", "linear"]);

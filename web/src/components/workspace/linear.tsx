@@ -53,7 +53,7 @@ export function LinearTab({ w, returned }: { w: G.Workspace; returned?: LinearOu
       {outcome && (
         <Banner tone={outcome.tone} className="-mb-4">
           {returned === "connected"
-            ? `Linear is connected: fctl's app is installed in your Linear workspace. Choose the teams each project takes tickets from, in its Tickets tab.`
+            ? `Linear is connected: fctl's app is installed in your Linear workspace. Choose the teams each project takes tickets from, in its settings under Tickets.`
             : outcome.text}
         </Banner>
       )}
@@ -302,7 +302,7 @@ function OnceConnected() {
   const steps: { icon: ReactNode; text: ReactNode }[] = [
     {
       icon: <Ticket />,
-      text: "Each project chooses the Linear teams it takes tickets from, in its Tickets tab.",
+      text: "Each project chooses the Linear teams it takes tickets from, in its settings under Tickets.",
     },
     {
       icon: <Link2 />,
@@ -348,7 +348,7 @@ function OnceConnected() {
 
 /**
  * For a Linear workspace no project takes tickets from yet: the workspace's projects whose tracker
- * the caller chooses, each a click from its Tickets tab.
+ * the caller chooses, each a click from its settings' Tickets page.
  */
 function NoProjectYet({ w }: { w: G.Workspace }) {
   const projects = (useProjects().data?.projects ?? []).filter(
@@ -357,7 +357,7 @@ function NoProjectYet({ w }: { w: G.Workspace }) {
   return (
     <div className="mt-1.5">
       <p className="text-[12.5px] text-ink-4">
-        No project takes its tickets yet: choose Linear in a project's Tickets tab.
+        No project takes its tickets yet: choose Linear in a project's settings, under Tickets.
       </p>
       {projects.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-1.5">

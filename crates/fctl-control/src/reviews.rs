@@ -655,7 +655,7 @@ pub async fn find_bot(ctx: &Ctx, project: &ProjectRow, name: &str) -> AppResult<
     Err(why.unwrap_or_else(|| {
         AppError(ApiError::validation(
             "bots",
-            "This project has no repository its agents may write to, through which fctl would ask GitHub. Link one under Repositories.",
+            "This project has no repository its agents may write to, through which fctl would ask GitHub. Link one in its settings, under Repositories.",
         ))
     }))
 }
@@ -676,7 +676,7 @@ pub async fn problem(
     let repos = repos(db, project, conf).await?;
     if repos.reviewed.is_empty() && repos.skipped.is_empty() {
         return Ok(Some(
-            "This project has no repository its agents may write to, whose pull requests they would review. Link one under Repositories.".into(),
+            "This project has no repository its agents may write to, whose pull requests they would review. Link one in its settings, under Repositories.".into(),
         ));
     }
     if repos.reviewed.is_empty() {

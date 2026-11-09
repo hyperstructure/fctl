@@ -1,5 +1,5 @@
 // A retrospective, as the session page, its transcript and the project's
-// Retrospectives tab show it: how the work ended, what the agent wrote of
+// Memory tab show it: how the work ended, what the agent wrote of
 // it, and when. An insight can go into the project's memory from here.
 
 import { BookMarked, CircleCheck, CircleDashed, Hand } from "lucide-react";

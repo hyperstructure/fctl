@@ -248,7 +248,7 @@ Sessions tab, shop#231's session page mid-turn, platform#445 waiting for
 an answer to its agent's question (`fctl ask`: whether a webhook in the
 dead letters should page whoever is on call; Noor follows the session, so
 it leads her sidebar's Needs you), shop#224 with its review round, Platform's Reviews and Memory tabs,
-Shop's Retrospectives, Schedules, Tickets and Repositories tabs,
+Shop's retrospectives (in Memory) and Schedules tab, and its settings' Tickets and Repositories pages,
 Romanesco's Runners and People tabs, the milkfloat workspace, Noor's
 settings, and a session and the Agent Floor at a phone's width.
 

@@ -789,10 +789,10 @@ reach your instance from the internet.
    cargo xtask deploy acme
    ```
 3. A workspace's admin connects their Linear workspace under the
-   workspace's **Linear** tab, or a project's **Tickets** tab: Linear asks
+   workspace's **Linear** tab, or a project's **Settings → Tickets**: Linear asks
    one of its admins to install the app and to choose the teams it sees.
    Each project then chooses its teams. People link their Linear accounts
-   (Settings, the project's Tickets tab, or Linear's own button the first
+   (Settings, the project's Settings → Tickets, or Linear's own button the first
    time they delegate an issue), and fctl starts sessions only for people
    it knows there, as them.
 
@@ -807,7 +807,7 @@ Let Linear's GitHub integration link the Linear workspace to your GitHub
 organizations too: sessions' branches carry their ticket's key, so it
 links their pull requests to the tickets. fctl moves the tickets to In
 Progress, In Review and Done itself as their sessions work, which each
-project's Tickets tab can turn off where a team's own automation in Linear
+project's Settings → Tickets can turn off where a team's own automation in Linear
 moves them otherwise. fctl hears of merges through the GitHub App's
 webhook ([Pull request state and checks](#pull-request-state-and-checks)).
 

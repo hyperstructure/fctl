@@ -293,10 +293,13 @@ function Sessions({ project }: { project: G.Project }) {
             <button
               key={f}
               type="button"
+              aria-pressed={filter === f}
               onClick={() => setFilter(f)}
               className={cn(
                 "rounded-full px-3 py-1 text-[12.5px] capitalize transition-colors",
-                filter === f ? "bg-raised text-ink" : "text-ink-3 hover:text-ink",
+                filter === f
+                  ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+                  : "text-ink-3 hover:text-ink",
               )}
             >
               {f}

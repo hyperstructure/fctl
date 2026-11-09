@@ -6,7 +6,7 @@
  */
 export type ConnectLinearRequest = { 
 /**
- * The project whose Tickets tab it started from, by slug: the browser
+ * The project whose settings' Tickets page it started from, by slug: the browser
  * comes back there.
  */
 project?: string, };

@@ -148,7 +148,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         if writable.is_empty() {
             return Err(validation(
                 "enabled",
-                "This project has no repository its agents may write to: link one under Repositories first.",
+                "This project has no repository its agents may write to: link one in its settings, under Repositories.",
             ));
         }
         if crate::api::sessions::credential_for(&ctx.db, &me, p.workspace_id())

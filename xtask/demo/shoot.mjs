@@ -226,7 +226,7 @@ const pages = {
     { name: "build", path: session("milkfloat#89"), act: openSetup },
     {
       name: "settings",
-      path: "/p/milkfloat?tab=settings",
+      path: "/p/milkfloat?tab=sandbox",
       act: (page) => scrollTo(page, "Setup script", 180),
     },
     { name: "runners", path: "/w/romanesco?tab=runners" },

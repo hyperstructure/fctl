@@ -94,7 +94,7 @@ export const sameRepo = (a: G.RepoRef, b: G.RepoRef) =>
 
 /**
  * The repositories a project's review agents review or skip (those its agents may write to), as its
- * Repositories tab lists them: its primary repository first, then the others by name.
+ * Settings → Repositories lists them: its primary repository first, then the others by name.
  */
 export function reviewRepos(
   agents: Pick<G.ReviewAgents, "repos" | "skipped_repos">,

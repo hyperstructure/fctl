@@ -533,7 +533,7 @@ and what a future agent should know. One for each piece of work, not for
 each turn: when a later turn carries on with it, the agent updates the one
 it recorded. Session pages show them (in the transcript, a line for each
 part that opens to all of it, an update marking what it changed), and the
-project's Retrospectives tab lists them all:
+project's Memory tab lists them all, under Retrospectives:
 
 ```sh
 fctl retro list -p my-app              # newest first, with how many ended each way

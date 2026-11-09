@@ -1723,7 +1723,7 @@ async fn tracker(
             (several, _) => several
                 .iter()
                 .find(|x| t.linear.as_ref().is_some_and(|l| l.organization == x.organization))
-                .context("the workspace works in several Linear workspaces: connect only the one, or choose in the project's Tickets tab")?,
+                .context("the workspace works in several Linear workspaces: connect only the one, or choose in the project's settings, under Tickets")?,
         };
         let teams = api.linear_teams(w.id.as_str(), &conn.organization).await?;
         let current = t
