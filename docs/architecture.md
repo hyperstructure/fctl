@@ -1013,7 +1013,8 @@ standalone server runs it outside Cloudflare) retries what failed and
 deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
-published screenshots, abandoned Claude logins, and audit
+published screenshots, abandoned Claude logins, what autopilots asked 90
+days after people answered or declined it, and audit
 log entries older than a year. It removes the runners that waited a week
 for approval or stayed offline longer than their enrollment token lets
 them, and revoked or expired enrollment tokens 90 days on, once no runner
