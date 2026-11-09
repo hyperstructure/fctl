@@ -310,7 +310,8 @@ function Intro({
               </h3>
               {before && (
                 <p className="mt-1 text-[12.5px] text-ink-3">
-                  It keeps the direction, notes and log it had: change them as you put it on.
+                  It keeps the direction, notes, plan and log it had, and what it still asks: change the
+                  direction as you put it on.
                 </p>
               )}
             </div>

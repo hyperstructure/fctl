@@ -88,8 +88,8 @@ pub enum AutopilotCmd {
         #[arg(long)]
         mine: bool,
     },
-    /// Take the project off autopilot. It keeps its direction, notes and
-    /// log for when it's put on again.
+    /// Take the project off autopilot. It keeps its direction, notes, plan,
+    /// log and open asks for when it's put on again.
     Off {
         /// Stop the sessions it started that still work, too.
         #[arg(long)]
@@ -278,7 +278,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                 return style::print_json(&answer);
             }
             println!(
-                "{} {p} is off autopilot. Its direction, notes and log stay for when it's put on again.",
+                "{} {p} is off autopilot. Its direction, notes, plan, log and open asks stay for when it's put on again.",
                 style::accent("✓")
             );
         }
