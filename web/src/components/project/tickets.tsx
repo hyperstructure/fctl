@@ -1177,7 +1177,10 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
           </ol>
           <YourAccount project={project} status={status} />
         </div>
-        <DelegatedTicket team={team} project={project.slug} app={app} />
+        {/* Under the steps, as large as it was drawn: a ticket, not a card the column's width. */}
+        <div className="@max-3xl:max-w-sm">
+          <DelegatedTicket team={team} project={project.slug} app={app} />
+        </div>
       </div>
     </Section>
   );
