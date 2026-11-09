@@ -366,7 +366,8 @@ pub async fn owner(
             "The account it ran for is gone: someone who manages the project takes it over.".into(),
         ));
     };
-    let name = row.owner_name.clone().unwrap_or_else(|| "its owner".into());
+    // Why it stops, kept in its log and pause, says "its owner" rather
+    // than their name, which leaves with their account.
     let user: Option<UserRow> = q(
         db,
         &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
@@ -375,9 +376,10 @@ pub async fn owner(
     .first()
     .await?;
     let Some(user) = user.filter(UserRow::is_active) else {
-        return Ok(Err(format!(
-            "It acts as {name}, whose account is gone or disabled: someone who manages the project takes it over."
-        )));
+        return Ok(Err(
+            "It acts as its owner, whose account is gone or disabled: someone who manages the project takes it over."
+                .into(),
+        ));
     };
     let theirs: Option<ProjectRow> = q(
         db,
@@ -390,7 +392,7 @@ pub async fn owner(
     let role = theirs.and_then(|r| access::project_role(&user, &settings, None, &r));
     if !fctl_domain::perm::can_manage_project(role) {
         return Ok(Err(format!(
-            "It acts as {name}, who no longer manages {}: someone who does takes it over.",
+            "It acts as its owner, who no longer manages {}: someone who does takes it over.",
             project.name
         )));
     }
@@ -400,17 +402,19 @@ pub async fn owner(
             .and_then(|m| WorkspaceRole::parse(&m.role))
             .is_some_and(|r| matches!(r, WorkspaceRole::Owner | WorkspaceRole::Admin));
         if !admin {
-            return Ok(Err(format!(
-                "It runs the workspace as {name}, who is no longer one of its admins: an admin takes it over."
-            )));
+            return Ok(Err(
+                "It runs the workspace as its owner, who is no longer one of its admins: an admin takes it over."
+                    .into(),
+            ));
         }
     }
     let credential =
         crate::api::sessions::credential_for(db, &user, project.workspace_id()).await?;
     let Some(credential) = credential else {
-        return Ok(Err(format!(
-            "It runs on {name}'s Claude subscription, and {name} has no Claude connection."
-        )));
+        return Ok(Err(
+            "It runs on its owner's Claude subscription, and its owner has no Claude connection: they connect one in Settings → Claude, or someone who manages the project takes it over."
+                .into(),
+        ));
     };
     Ok(Ok(Owner { user, credential }))
 }
@@ -1374,6 +1378,12 @@ pub async fn session_moved(
     Ok(())
 }
 
+/// Its sessions (`sessions`, unaliased) that work, or that a message sent
+/// them will set working: one that rests says so only once the runner
+/// reports, and its last message came after it last changed.
+const CREW_WORKING: &str = "(status IN ('queued','provisioning','preparing','running','paused','stopping') \
+     OR (status = 'idle' AND messaged_at IS NOT NULL AND messaged_at >= updated_at))";
+
 /// Whether an autopilot may start another session now: fewer than its
 /// people allow work at once, and fewer than [`ap::CREW_PER_HOUR`] started
 /// in the last hour.
@@ -1402,10 +1412,11 @@ async fn crew_room_for(
     }
     let counts: Option<Counts> = q(
         db,
-        "SELECT \
-           (SELECT COUNT(*) FROM sessions WHERE autopilot_id = ?1 AND autopilot_role = 'crew' \
-             AND status IN ('queued','provisioning','preparing','running','paused','stopping')) AS working, \
-           (SELECT COUNT(*) FROM sessions WHERE autopilot_id = ?1 AND autopilot_role = 'crew' AND created_at > ?2) AS lately",
+        &format!(
+            "SELECT \
+           (SELECT COUNT(*) FROM sessions WHERE autopilot_id = ?1 AND autopilot_role = 'crew' AND {CREW_WORKING}) AS working, \
+           (SELECT COUNT(*) FROM sessions WHERE autopilot_id = ?1 AND autopilot_role = 'crew' AND created_at > ?2) AS lately"
+        ),
         &[s(&caller.project_id), n(now - 3_600_000)],
     )?
     .first()
@@ -1849,11 +1860,15 @@ pub async fn gate(ctx: &Ctx, method: &str, segs: &[&str], body: Option<&Value>) 
         Gate::Crew(session) => {
             #[derive(Deserialize)]
             struct Found {
-                status: String,
+                #[serde(deserialize_with = "int_bool")]
+                working: bool,
             }
             let found: Option<Found> = q(
                 &ctx.db,
-                "SELECT status FROM sessions WHERE id = ? AND autopilot_id = ? AND autopilot_role = 'crew'",
+                &format!(
+                    "SELECT {CREW_WORKING} AS working FROM sessions WHERE id = ? AND autopilot_id = ? \
+                     AND autopilot_role = 'crew'"
+                ),
                 &[s(&session), s(&caller.project_id)],
             )?
             .first()
@@ -1867,8 +1882,7 @@ pub async fn gate(ctx: &Ctx, method: &str, segs: &[&str], body: Option<&Value>) 
             // only with room for it, as many at once as its people allow.
             let sets_working =
                 method == "POST" && matches!(segs.get(2), Some(&("messages" | "resume")));
-            let working = SessionStatus::parse(&found.status).is_some_and(ap::crew_working);
-            if sets_working && !working {
+            if sets_working && !found.working {
                 crew_room_for(&ctx.db, caller, ctx.now, false).await?;
             }
             Ok(())

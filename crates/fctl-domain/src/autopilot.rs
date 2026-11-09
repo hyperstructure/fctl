@@ -506,6 +506,21 @@ pub fn describe(
     })
 }
 
+/// Where a line of its log names the person who did it ("{who} resumed
+/// it"): their name goes in as the log is read ([`said`]), so that it
+/// leaves with their account.
+pub const WHO: &str = "{who}";
+
+/// A line of its log as people and the autopilot read it: [`WHO`] at its
+/// start becomes the name of `who`, the person who did it, or "Someone"
+/// once their account is gone.
+pub fn said(text: &str, who: Option<&str>) -> String {
+    match text.strip_prefix(WHO) {
+        Some(rest) => format!("{}{rest}", who.unwrap_or("Someone")),
+        None => text.to_owned(),
+    }
+}
+
 /// "a, b and c".
 fn list(items: &[String]) -> String {
     match items {
@@ -1254,6 +1269,14 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn names_who_did_it_as_the_log_is_read() {
+        let line = format!("{WHO} resumed it");
+        assert_eq!(said(&line, Some("Ada")), "Ada resumed it");
+        assert_eq!(said(&line, None), "Someone resumed it");
+        assert_eq!(said("It paused itself", Some("Ada")), "It paused itself");
     }
 
     #[test]

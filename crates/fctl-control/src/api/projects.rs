@@ -921,33 +921,53 @@ pub async fn store_secret(
     name: &str,
     value: &str,
 ) -> AppResult<String> {
-    let name = validate::env_name("name", name)?;
-    if value.len() > 64 * 1024 {
-        return Err(validation("value", "Secrets can be at most 64 KiB"));
-    }
-    let autopilot = ctx.autopilot().is_some();
-    if autopilot {
-        own_secret(ctx, &p.row.id, &name).await?;
-    }
-    let sealed = ctx
-        .keys()?
-        .seal(&secret_aad(&p.row.id, &name), value.as_bytes())?;
+    let (name, sealed) = seal_secret(ctx, p, name, value).await?;
     q(
         &ctx.db,
-        "INSERT INTO project_secrets (project_id, name, value_enc, updated_by, updated_at, autopilot) VALUES (?, ?, ?, ?, ?, ?) \
-         ON CONFLICT (project_id, name) DO UPDATE SET value_enc = excluded.value_enc, updated_by = excluded.updated_by, \
-         updated_at = excluded.updated_at, autopilot = excluded.autopilot",
+        &format!(
+            "INSERT INTO project_secrets {SECRET_COLUMNS} VALUES (?, ?, ?, ?, ?, ?) {SECRET_UPSERT}"
+        ),
         &[
             s(&p.row.id),
             s(&name),
             s(&sealed),
             s(&ctx.user()?.id),
             n(ctx.now),
-            crate::db::b(autopilot),
+            crate::db::b(ctx.autopilot().is_some()),
         ],
     )?
     .run()
     .await?;
+    secret_set(ctx, p, &name);
+    Ok(name)
+}
+
+const SECRET_COLUMNS: &str = "(project_id, name, value_enc, updated_by, updated_at, autopilot)";
+const SECRET_UPSERT: &str = "ON CONFLICT (project_id, name) DO UPDATE SET value_enc = excluded.value_enc, \
+     updated_by = excluded.updated_by, updated_at = excluded.updated_at, autopilot = excluded.autopilot";
+
+/// A secret's name, checked, and its value sealed for project `p`: what
+/// storing it takes, once whoever stores it may.
+async fn seal_secret(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    name: &str,
+    value: &str,
+) -> AppResult<(String, String)> {
+    let name = validate::env_name("name", name)?;
+    if value.len() > 64 * 1024 {
+        return Err(validation("value", "Secrets can be at most 64 KiB"));
+    }
+    if ctx.autopilot().is_some() {
+        own_secret(ctx, &p.row.id, &name).await?;
+    }
+    let sealed = ctx
+        .keys()?
+        .seal(&secret_aad(&p.row.id, &name), value.as_bytes())?;
+    Ok((name, sealed))
+}
+
+fn secret_set(ctx: &Ctx, p: &access::ProjectAccess, name: &str) {
     ctx.audit_in(
         Some(p.workspace_id()),
         "project.secret_set",
@@ -957,7 +977,47 @@ pub async fn store_secret(
             "autopilot": ctx.autopilot().map(|a| &a.project_id),
         })),
     );
-    Ok(name)
+}
+
+/// Stores the secret a person gives an autopilot that asked for it
+/// (`ask`), together with `claim`, which marks the ask answered by them at
+/// `ctx.now`: both, or neither when someone answered it first or it was
+/// taken back (`None`). So a wake never tells the autopilot of a secret
+/// that isn't there, and a later answer replaces nothing.
+pub async fn store_asked_secret(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    name: &str,
+    value: &str,
+    ask: &str,
+    claim: crate::db::Query,
+) -> AppResult<Option<String>> {
+    let (name, sealed) = seal_secret(ctx, p, name, value).await?;
+    let me = ctx.user()?.id.clone();
+    let store = q(
+        &ctx.db,
+        &format!(
+            "INSERT INTO project_secrets {SECRET_COLUMNS} SELECT ?, ?, ?, ?, ?, 0 WHERE EXISTS \
+             (SELECT 1 FROM autopilot_asks WHERE id = ? AND status = 'answered' AND answered_by = ? AND answered_at = ?) \
+             {SECRET_UPSERT}"
+        ),
+        &[
+            s(&p.row.id),
+            s(&name),
+            s(&sealed),
+            s(&me),
+            n(ctx.now),
+            s(ask),
+            s(&me),
+            n(ctx.now),
+        ],
+    )?;
+    let changed = crate::db::batch_changes(&ctx.db, vec![claim, store]).await?;
+    if changed.first().copied().unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    secret_set(ctx, p, &name);
+    Ok(Some(name))
 }
 
 /// An autopilot replaces and removes only the secrets it set itself: those

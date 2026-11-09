@@ -384,7 +384,7 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
                 id: r.id,
                 at: r.at,
                 kind: AutopilotEntryKind::parse(&r.kind),
-                text: r.text,
+                text: ap::said(&r.text, r.user_name.as_deref()),
                 project_slug: r.project_slug,
                 from: r.from_session_id.map(SessionId),
             })
@@ -509,12 +509,22 @@ async fn brief_of(
             v
         })
         .collect();
+    // People's lines name them as they read ([`ap::said`]); their notes,
+    // which don't, say who wrote them beside the note.
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|e| ap::said(&e.text, e.user_name.as_deref()))
+        .collect();
     let log_views: Vec<ap::EntryView> = entries
         .iter()
-        .map(|e| ap::EntryView {
+        .zip(lines.iter())
+        .map(|(e, text)| ap::EntryView {
             at: e.at,
-            text: &e.text,
-            by: e.user_name.as_deref(),
+            text,
+            by: e
+                .user_name
+                .as_deref()
+                .filter(|_| !e.text.starts_with(ap::WHO)),
             session: match (&e.session_slug, e.session_number) {
                 (Some(slug), Some(n)) => Some(format!(
                     "{slug}#{n} “{}”",
@@ -711,8 +721,13 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             .await;
             if let Err(e) = written {
                 // Another project of the workspace was put on autopilot as a
-                // whole meanwhile (autopilots_one_per_workspace).
-                if e.0.message.contains("UNIQUE") {
+                // whole meanwhile, which autopilots_one_per_workspace keeps
+                // to one: asked again, as D1's errors don't say which.
+                if scope == AutopilotScope::Workspace
+                    && engine::of_workspace(&ctx.db, l.p.workspace_id())
+                        .await?
+                        .is_some_and(|other| other.project_id != l.p.row.id)
+                {
                     return Err(conflict(
                         "This workspace has an autopilot already, which works in all its projects: take it off first.",
                     ));
@@ -727,10 +742,10 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     AutopilotEntryKind::State,
                     match scope {
                         AutopilotScope::Project => {
-                            format!("{} put the project on autopilot{again}", me.name)
+                            format!("{} put the project on autopilot{again}", ap::WHO)
                         }
                         AutopilotScope::Workspace => {
-                            format!("{} put the workspace on autopilot{again}", me.name)
+                            format!("{} put the workspace on autopilot{again}", ap::WHO)
                         }
                     },
                 )
@@ -825,7 +840,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     &row.project_id,
                     Entry::new(
                         AutopilotEntryKind::Direction,
-                        format!("{} changed its direction", me.name),
+                        format!("{} changed its direction", ap::WHO),
                     )
                     .by(&me.id),
                     ctx.now,
@@ -868,9 +883,9 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             .collect();
             if !changed.is_empty() || take_over {
                 let mut text = if changed.is_empty() {
-                    format!("{} took it over", me.name)
+                    format!("{} took it over", ap::WHO)
                 } else {
-                    format!("{} changed {}", me.name, join(&changed))
+                    format!("{} changed {}", ap::WHO, join(&changed))
                 };
                 if take_over && !changed.is_empty() {
                     text.push_str(": it runs on their subscription from now on");
@@ -935,10 +950,10 @@ pub async fn off(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
         Entry::new(
             AutopilotEntryKind::State,
             match stopped {
-                0 => format!("{} took it off autopilot", me.name),
+                0 => format!("{} took it off autopilot", ap::WHO),
                 n => format!(
                     "{} took it off autopilot, and stopped {n} of its sessions",
-                    me.name
+                    ap::WHO
                 ),
             },
         )
@@ -1051,8 +1066,8 @@ pub async fn pause(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Resp
         Entry::new(
             AutopilotEntryKind::State,
             match &reason {
-                Some(why) => format!("{} paused it: {why}", me.name),
-                None => format!("{} paused it", me.name),
+                Some(why) => format!("{} paused it: {why}", ap::WHO),
+                None => format!("{} paused it", ap::WHO),
             },
         )
         .by(&me.id),
@@ -1115,9 +1130,9 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         Entry::new(
             AutopilotEntryKind::State,
             if take_over {
-                format!("{} resumed it, on their subscription from now on", me.name)
+                format!("{} resumed it, on their subscription from now on", ap::WHO)
             } else {
-                format!("{} resumed it", me.name)
+                format!("{} resumed it", ap::WHO)
             },
         )
         .by(&me.id),
@@ -1460,43 +1475,33 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
         }
     };
     // It's theirs to answer once they claim it: two people at once, or one
-    // after it was taken back, get told so before a secret is stored.
-    let done = q(
+    // after it was taken back, are told so, and store nothing.
+    let claim = q(
         &ctx.db,
         "UPDATE autopilot_asks SET status = 'answered', answer = ?, answered_by = ?, answered_at = ? WHERE id = ? \
          AND status = 'open'",
         &[os(answer.as_deref()), s(&me.id), n(ctx.now), s(ask)],
-    )?
-    .run()
-    .await?;
-    if done == 0 {
-        return Err(conflict(
-            "Someone answered it already, or it was taken back.",
-        ));
-    }
+    )?;
+    let taken = || conflict("Someone answered it already, or it was taken back.");
     let line = match (secret, &answer) {
+        // The secret goes in with the claim, in one transaction.
         (Some((target, name, value)), _) => {
-            match crate::api::projects::store_secret(ctx, &target, &name, &value).await {
-                Ok(name) => format!("{} set the secret `{name}` for it", me.name),
-                Err(e) => {
-                    // Open again, for someone to give it.
-                    q(
-                        &ctx.db,
-                        "UPDATE autopilot_asks SET status = 'open', answer = NULL, answered_by = NULL, \
-                         answered_at = NULL, seen_at = NULL WHERE id = ? AND answered_by = ? AND answered_at = ?",
-                        &[s(ask), s(&me.id), n(ctx.now)],
-                    )?
-                    .run()
-                    .await?;
-                    return Err(e);
-                }
-            }
+            let stored =
+                crate::api::projects::store_asked_secret(ctx, &target, &name, &value, ask, claim)
+                    .await?
+                    .ok_or_else(taken)?;
+            format!("{} set the secret `{stored}` for it", ap::WHO)
         }
-        (None, text) => format!(
-            "{} answered “{}”",
-            me.name,
-            short(text.as_deref().unwrap_or_default())
-        ),
+        (None, text) => {
+            if claim.run().await? == 0 {
+                return Err(taken());
+            }
+            format!(
+                "{} answered “{}”",
+                ap::WHO,
+                short(text.as_deref().unwrap_or_default())
+            )
+        }
     };
     engine::log(
         &ctx.db,
@@ -1549,8 +1554,8 @@ pub async fn decline(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> A
         Entry::new(
             AutopilotEntryKind::Answered,
             match &reason {
-                Some(why) => format!("{} declined: “{}”", me.name, short(why)),
-                None => format!("{} declined what it asked", me.name),
+                Some(why) => format!("{} declined: “{}”", ap::WHO, short(why)),
+                None => format!("{} declined what it asked", ap::WHO),
             },
         )
         .by(&me.id),

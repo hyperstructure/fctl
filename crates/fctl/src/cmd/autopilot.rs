@@ -918,8 +918,10 @@ fn print_log(log: &AutopilotLog) {
         println!("Nothing yet.");
     }
     for e in &log.entries {
+        // Who did it, unless the line names them already.
         let by =
             e.by.as_ref()
+                .filter(|u| !e.text.starts_with(u.name.as_str()))
                 .map(|u| format!(" · {}", u.name))
                 .unwrap_or_default();
         // A session in another of its projects goes by that project's slug.
