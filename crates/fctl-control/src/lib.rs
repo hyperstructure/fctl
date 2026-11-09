@@ -150,29 +150,33 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         fctl_domain::limits::allows(limits.access, method.as_ref(), segs.as_slice())
             .map_err(AppError)?;
     }
+    // What agents ask of the control plane through their host, ahead of the
+    // routes: an autopilot's requests to the API come this way, and go
+    // through `dispatch` themselves (`route_autopilot`), which so runs once
+    // at a time on the stack, as its frames are large.
+    if let (Method::Post, ["runner", "sessions", id, "calls"]) = (&method, segs.as_slice()) {
+        return api::calls::runner_call(ctx, req, id).await;
+    }
     dispatch(ctx, req, method, segs.as_slice()).await
 }
 
 /// An autopilot's request, from its own session's sandbox
 /// (`crate::autopilots::relay`), for `ctx`, whose caller is the autopilot
 /// acting as its owner: what `fctl_domain::autopilot::allows` lets it do,
-/// in place of the checks of `route`, then the same handlers. Boxed: the
-/// call that brings it comes through `dispatch` too.
-pub(crate) fn route_autopilot<'a>(
-    ctx: &'a mut Ctx,
-    req: &'a mut Request,
-    path: &'a str,
-    body: Option<&'a serde_json::Value>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<Response>> + 'a>> {
-    Box::pin(async move {
-        let method = req.method();
-        if !path.starts_with("/api/v1/") {
-            return Err(AppError(ApiError::not_found("Endpoint")));
-        }
-        let segs: Vec<&str> = path.trim_end_matches('/').split('/').skip(3).collect();
-        crate::autopilots::gate(ctx, method.as_ref(), segs.as_slice(), body).await?;
-        dispatch(ctx, req, method, segs.as_slice()).await
-    })
+/// in place of the checks of `route`, then the same handlers.
+pub(crate) async fn route_autopilot(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> AppResult<Response> {
+    let method = req.method();
+    if !path.starts_with("/api/v1/") {
+        return Err(AppError(ApiError::not_found("Endpoint")));
+    }
+    let segs: Vec<&str> = path.trim_end_matches('/').split('/').skip(3).collect();
+    crate::autopilots::gate(ctx, method.as_ref(), segs.as_slice(), body).await?;
+    dispatch(ctx, req, method, segs.as_slice()).await
 }
 
 async fn dispatch(
@@ -363,7 +367,6 @@ async fn dispatch(
         (Post, ["runner", "sessions", id, "published"]) => {
             api::published::runner_publish(ctx, req, id).await
         }
-        (Post, ["runner", "sessions", id, "calls"]) => api::calls::runner_call(ctx, req, id).await,
         (Get, ["feed", "ws"]) => api::runners::feed(ctx, req).await,
 
         // Projects

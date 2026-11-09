@@ -750,8 +750,16 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
     }
     match parts.as_slice() {
         [] => "Woke".into(),
+        [one] if one == "it was put on" => "Woke as it was put on".into(),
         [one] => format!("Woke for {one}"),
-        _ => format!("Woke for {}", parts.join(", ")),
+        _ => format!(
+            "Woke for {}",
+            parts
+                .iter()
+                .map(|p| if p == "it was put on" { "being put on" } else { p.as_str() })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -1794,10 +1802,17 @@ pub async fn gate(ctx: &Ctx, method: &str, segs: &[&str], body: Option<&Value>) 
 
 // ───────────────────────────── for its session's spec ─────────────────────────────
 
-/// What a session's spec says of its autopilot: for its current own
-/// session only, whose sandbox's `fctl` then reaches the API.
-pub async fn spec(db: &D1Database, session_id: &str) -> AppResult<Option<AutopilotSpec>> {
-    let Some(row) = by_pilot(db, session_id).await? else {
+/// What the spec of an autopilot's own session says of it (`autopilot`:
+/// the session's `autopilot_id`, its home project), so that its sandbox's
+/// `fctl` reaches the API: while it is on or paused, and only its current
+/// session's requests get answers (`relay`).
+pub async fn spec(db: &D1Database, autopilot: &str) -> AppResult<Option<AutopilotSpec>> {
+    // By the session's own column: FleetObject may build its spec before
+    // the autopilot records it as its session.
+    let Some(row) = row(db, autopilot)
+        .await?
+        .filter(|r| r.state() != AutopilotState::Off)
+    else {
         return Ok(None);
     };
     #[derive(Deserialize)]

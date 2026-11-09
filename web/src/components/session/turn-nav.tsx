@@ -12,7 +12,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import { Avatar, Logo, Menu } from "@/components/ui";
+import { AutopilotIcon, Avatar, Logo, Menu } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { findables } from "@/lib/find";
 import { agoShort, duration, stamp } from "@/lib/format";
@@ -173,6 +173,16 @@ export function useGoToCall(
 /** Who started a turn, as its lines say: a person, fctl, or the agent going on by itself. */
 function Starter({ turn, size = 18 }: { turn: Turn; size?: number }) {
   const author = turn.ask?.author;
+  // The autopilot's words, or fctl waking it: its mark.
+  if (turn.ask?.autopilot || turn.ask?.wake)
+    return (
+      <span
+        className="flex shrink-0 items-center justify-center rounded-full bg-raised text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line-strong)]"
+        style={{ width: size, height: size }}
+      >
+        <AutopilotIcon className="size-3" />
+      </span>
+    );
   if (author) return <Avatar user={author} size={size} />;
   if (turn.ask) return <Logo withWord={false} className="[&_svg]:size-[18px]" />;
   return (
@@ -219,7 +229,11 @@ export function TurnBar({
           >
             <Starter turn={turn} />
             {turn.ask && (
-              <span className="shrink-0 font-medium text-ink-2">{turn.ask.author?.name ?? "fctl"}</span>
+              <span className="shrink-0 font-medium text-ink-2">
+                {turn.ask.autopilot
+                  ? `${turn.ask.autopilot.project_slug}'s autopilot`
+                  : (turn.ask.author?.name ?? "fctl")}
+              </span>
             )}
             <span className="min-w-0 truncate text-ink-3">{title}</span>
           </button>

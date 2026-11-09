@@ -8,6 +8,7 @@
 // started in the background ended), starts a turn of its own. What only comes after the end (the
 // branch's new state, a stop after being idle) stays with the turn it follows.
 
+import { wakeText } from "./autopilot";
 import type { Json } from "./claude-types";
 import { parts as followUpParts, happenedText, pullRef } from "./follow-ups";
 import { changed, type Lines, type Part, shownPath } from "./runs";
@@ -248,6 +249,11 @@ export function turnTitle(turn: Turn, first: boolean, hasMoreBefore: boolean): s
     const r = ask.review;
     const n = r.findings.length;
     return `${r.repo.name}#${r.number}: the review found ${n === 1 ? "1 issue" : `${n} issues`}`;
+  }
+  // An autopilot woke: what for, rather than its briefing's first line.
+  if (ask.wake) {
+    const briefed = ask.text.startsWith("You are the autopilot of ");
+    return briefed ? "Woke as it was put on" : `Woke for ${wakeText(ask.wake)}`;
   }
   return firstLine(ask.text) || (ask.attachments?.length ? "Sent files" : "An empty message");
 }

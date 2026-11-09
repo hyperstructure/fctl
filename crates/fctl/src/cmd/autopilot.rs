@@ -248,15 +248,8 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             if workspace {
                 req.scope = Some(AutopilotScope::Workspace);
             }
-            if req.direction.is_none() {
-                // On again keeps the direction it had.
-                let before = api.autopilot(p).await.ok();
-                if before.is_none() {
-                    bail!(
-                        "Say where it should take the project: --direction \"…\", or --direction-file direction.md"
-                    );
-                }
-            }
+            // On again keeps the direction it had, unless given another;
+            // the control plane asks for one where it had none.
             let a = api.put_autopilot(p, &req).await?;
             if json {
                 return style::print_json(&a);

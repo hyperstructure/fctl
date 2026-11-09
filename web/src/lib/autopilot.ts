@@ -259,3 +259,26 @@ When two directions are equally good, show me both with screenshots and ask me t
 
 /** Whether a direction still holds an idea's placeholders, which say what to fill in. */
 export const hasPlaceholders = (direction: string) => /\[[^\]\n]{3,}\]/.test(direction);
+
+/**
+ * A task an autopilot gave one of its sessions: the task, then fctl's note of who started it
+ * (`crate::autopilots::crew_prompt`), which the page shows apart.
+ */
+export function splitCrewNote(text: string): { task: string; note?: string } {
+  const m = /\n\n---\n(?=The autopilot of [^\n]* started this session: )/.exec(text);
+  if (!m) return { task: text };
+  return { task: text.slice(0, m.index), note: text.slice(m.index + m[0].length) };
+}
+
+/**
+ * The first message of an autopilot's own session: its briefing (`fctl_domain::autopilot::briefing`),
+ * the direction in it, then what woke it. Any later message of fctl's is what woke it alone.
+ */
+export function splitBriefing(text: string): { briefing?: string; direction?: string; news: string } {
+  if (!text.startsWith("You are the autopilot of ")) return { news: text };
+  const cut = text.indexOf("\n---\n\n");
+  const briefing = cut === -1 ? text : text.slice(0, cut);
+  const news = cut === -1 ? "" : text.slice(cut + 6);
+  const d = /## Where to take it\n\n([\s\S]*?)\n\n## How you work/.exec(briefing);
+  return { briefing, direction: d?.[1]?.trim(), news };
+}

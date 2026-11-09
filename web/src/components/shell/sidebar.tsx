@@ -12,6 +12,7 @@ import {
   CirclePause,
   FolderPlus,
   Inbox,
+  KeyRound,
   Lock,
   MessageCircleQuestion,
   MessageSquareReply,
@@ -27,7 +28,7 @@ import {
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import { IconPicker } from "@/components/project/icon-picker";
 import { ProjectIcon, ProjectMark } from "@/components/project/project-icon";
-import { AgentFloorIcon, Logo, PullRequestIcon, StatusDot, toast } from "@/components/ui";
+import { AgentFloorIcon, AutopilotIcon, Logo, PullRequestIcon, StatusDot, toast } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -94,7 +95,7 @@ export interface SidebarProps {
 
 export function Sidebar(props: SidebarProps) {
   const data = useSidebarData(props.path, props.scope);
-  useAttention(data.needs.length);
+  useAttention(data.needs.length + data.autopilotAsks.length);
   useNextNeed(data.needs, data.session);
   return props.folded ? <Rail {...props} data={data} /> : <Tree {...props} data={data} />;
 }
@@ -170,6 +171,18 @@ function useSidebarData(path: string, scope?: string) {
       enabled: isAdmin && !!instance?.features.early_access,
       staleTime: 60_000,
     }).data?.waiting ?? 0;
+  // What autopilots ask that you may answer, where one of your projects has an autopilot: decisions
+  // and secrets, which wait on their tab.
+  const anyAutopilot = (projectList?.projects ?? []).some(
+    (p) => !!p.autopilot?.state && p.autopilot.state !== "off",
+  );
+  const autopilotAsks =
+    useQuery({
+      queryKey: keys.autopilotAsks,
+      queryFn: api.autopilotAsks,
+      enabled: !!me && anyAutopilot,
+      refetchInterval: 30_000,
+    }).data?.asks ?? NO_ASKS;
   // Each session at work lights a thread on the Agent Floor's row.
   const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
   const session = path.startsWith("/s/") ? path.slice(3) : undefined;
@@ -201,6 +214,8 @@ function useSidebarData(path: string, scope?: string) {
     /** Hides a session from the sidebar while its agent rests. */
     hide,
     needs,
+    /** What autopilots ask you, newest first. */
+    autopilotAsks: anyAutopilot ? autopilotAsks : NO_ASKS,
     pulls,
     ready: pulls.filter((l) => pullNeed(l) === "ready"),
     /** Whether `pulls` are only those of sessions you started (Mine, on the pull requests page). */
@@ -214,6 +229,8 @@ function useSidebarData(path: string, scope?: string) {
     now,
   };
 }
+
+const NO_ASKS: G.OpenAutopilotAsk[] = [];
 
 /** Sessions by their project's id, in the order they come. */
 function byProject(sessions: G.Session[]): Map<string, G.Session[]> {
@@ -295,6 +312,7 @@ function Tree({
         <FloorLink active={path === "/"} working={data.working} onClick={onNavigate} />
         <NeedsYou
           needs={data.needs}
+          asks={data.autopilotAsks}
           open={needsOpen}
           onToggle={() => setNeedsOpen(!needsOpen)}
           session={data.session}
@@ -418,6 +436,7 @@ function useNeedsOpen(): [boolean, (open: boolean) => void] {
 /** What needs you, which opens into its list in place: each with what it needs, where, and since when. */
 function NeedsYou({
   needs,
+  asks: autopilotAsks,
   open,
   onToggle,
   session,
@@ -426,6 +445,8 @@ function NeedsYou({
   onNavigate,
 }: {
   needs: Need[];
+  /** What autopilots ask you, which come first: like a session's question, it's what people answer. */
+  asks: G.OpenAutopilotAsk[];
   open: boolean;
   onToggle: () => void;
   session?: string;
@@ -433,8 +454,8 @@ function NeedsYou({
   projects?: SidebarProject[];
   onNavigate: () => void;
 }) {
-  const n = needs.length;
-  const asks = needs.filter((x) => x.kind === "asking").length;
+  const n = needs.length + autopilotAsks.length;
+  const asks = needs.filter((x) => x.kind === "asking").length + autopilotAsks.length;
   return (
     <div>
       <button
@@ -480,6 +501,16 @@ function NeedsYou({
               aria-label="What needs you"
               className="mt-0.5 mb-1 flex flex-col gap-px rounded-lg bg-sunken/50 p-1 shadow-[inset_0_0_0_1px_var(--c-line)]"
             >
+              {autopilotAsks.map((x) => (
+                <li key={x.ask.id}>
+                  <AutopilotAskLink
+                    ask={x}
+                    project={projects?.find((p) => p.id === x.project_id)}
+                    now={now}
+                    onNavigate={onNavigate}
+                  />
+                </li>
+              ))}
               {needs.map((x) => (
                 <li key={x.s.id}>
                   <NeedLink
@@ -561,6 +592,57 @@ function NeedLink({
         <span className={cn("flex min-w-0 items-start gap-1 text-[11.5px] leading-4", look.text)}>
           <span className="mt-0.5 shrink-0">{look.icon}</span>
           <span className={need.kind === "asking" ? "line-clamp-2 break-words" : "truncate"}>{says}</span>
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+/**
+ * What an autopilot asks you, as Needs you lists it: its project, since when, and the question, or
+ * the secret it needs, which its tab takes.
+ */
+function AutopilotAskLink({
+  ask,
+  project,
+  now,
+  onNavigate,
+}: {
+  ask: G.OpenAutopilotAsk;
+  project?: SidebarProject;
+  now: number;
+  onNavigate: () => void;
+}) {
+  const says = ask.ask.secret ? `Needs the secret ${ask.ask.secret.name}` : ask.ask.text;
+  return (
+    <Link
+      to="/p/$slug"
+      params={{ slug: ask.project_slug }}
+      search={{ tab: "autopilot" }}
+      onClick={onNavigate}
+      title={`${ask.project_name}'s autopilot\n${says}`}
+      className="group flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors duration-150 hover:bg-hover"
+    >
+      <span className="relative mt-[5px] shrink-0">
+        <ProjectMark project={project ?? { id: ask.project_id, name: ask.project_name }} tile={26} />
+        <span className="absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full bg-raised text-ink-2 shadow-[0_0_0_1.5px_var(--c-canvas)]">
+          <AutopilotIcon className="size-2.5" />
+        </span>
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-ink-2 group-hover:text-ink">
+            {ask.project_name}'s autopilot
+          </span>
+          <span className="shrink-0 text-[11px] text-ink-4 tabular-nums">
+            {agoShort(ask.ask.created_at, now)}
+          </span>
+        </span>
+        <span className="flex min-w-0 items-start gap-1 text-[11.5px] leading-4 text-blue">
+          <span className="mt-0.5 shrink-0">
+            {ask.ask.secret ? <KeyRound className="size-3" /> : <MessageCircleQuestion className="size-3" />}
+          </span>
+          <span className="line-clamp-2 break-words">{says}</span>
         </span>
       </span>
     </Link>
@@ -918,6 +1000,7 @@ function SubLink({
 
 /** Folded: a rail of the workspaces' avatars and their projects' icons, each lit by its work. */
 function Rail({ onPalette, onShortcuts, onNavigate, onFold, path, data }: SidebarProps & { data: Data }) {
+  const needCount = data.needs.length + data.autopilotAsks.length;
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex h-14 shrink-0 items-center">
@@ -946,12 +1029,12 @@ function Rail({ onPalette, onShortcuts, onNavigate, onFold, path, data }: Sideba
       >
         <PullRequestIcon state="open" className="size-4" />
       </RailLink>
-      {data.needs.length > 0 && (
+      {needCount > 0 && (
         <span
           className="mt-1 mb-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-blue px-1.5 text-[10.5px] font-semibold text-white tabular-nums"
-          title={`${data.needs.length} ${data.needs.length === 1 ? "thing needs" : "things need"} you`}
+          title={`${needCount} ${needCount === 1 ? "thing needs" : "things need"} you`}
         >
-          {data.needs.length}
+          {needCount}
         </span>
       )}
       <div className="mt-2 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto pb-3">

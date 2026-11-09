@@ -331,7 +331,9 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         )),
         style::dim(&format!("{}/s/{}", api.base(), session.id))
     );
-    if args.detach {
+    // An autopilot doesn't follow its sessions live: fctl wakes it when
+    // they move on.
+    if args.detach || api.is_relayed() {
         return Ok(());
     }
     crate::cmd::attach::follow(&api, &session.id.0, false).await
@@ -890,6 +892,11 @@ pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: boo
         }
     }
     if follow {
+        if api.is_relayed() {
+            bail!(
+                "An autopilot doesn't follow sessions live: fctl wakes you when they move on, and fctl logs reads them then."
+            );
+        }
         return crate::cmd::attach::follow_after(&api, &s.id.0, true, Some(after), r).await;
     }
     Ok(())

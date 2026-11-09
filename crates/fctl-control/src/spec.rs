@@ -481,10 +481,9 @@ pub async fn build(
         tickets: Some(tickets),
         // An autopilot's current own session reaches the API through its
         // agent (`crate::autopilots::relay`).
-        autopilot: if row.is_pilot() {
-            crate::autopilots::spec(db, session_id).await?
-        } else {
-            None
+        autopilot: match row.autopilot_id.as_deref().filter(|_| row.is_pilot()) {
+            Some(autopilot) => crate::autopilots::spec(db, autopilot).await?,
+            None => None,
         },
     })
 }

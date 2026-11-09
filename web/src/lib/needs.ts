@@ -40,6 +40,9 @@ export function needsOf(me: string | undefined, sessions: readonly G.Session[], 
   const out: Need[] = [];
   for (const s of newest.values()) {
     if (s.archived || s.review) continue;
+    // An autopilot's sessions are its own to look after: it hears when they wait or ask, and asks
+    // people itself (its tab, Needs you's own list). Those someone follows still count for them.
+    if (s.autopilot && !s.following) continue;
     if (s.created_by?.id !== me && !s.following) continue;
     const need = needOf(s, now);
     if (need) out.push(need);

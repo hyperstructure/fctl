@@ -28,6 +28,7 @@ import { Markdown } from "@/components/markdown";
 import { NoteLink } from "@/components/project/memory";
 import { PullRequestSummarizedNotice, ReviewPostedNotice } from "@/components/review";
 import {
+  AutopilotIcon,
   Avatar,
   Button,
   CopyButton,
@@ -51,6 +52,7 @@ import { splitRunNote } from "@/lib/schedules";
 import { type DiskShort, diskText, type Stall, stallText } from "@/lib/stall";
 import { findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
 import { MessageFiles } from "./attachments";
+import { AutopilotAction, WakeCard } from "./autopilot";
 import { useRevealed } from "./find";
 import { FindingsMessage } from "./findings";
 import { FollowUpMessage, HeldFollowUp } from "./follow-up";
@@ -84,13 +86,22 @@ export const UserMessage = memo(function UserMessage({
     );
   if (item.review)
     return <FindingsMessage review={item.review} text={item.text} ts={item.ts} findKey={item.key} />;
+  if (item.wake) return <WakeCard item={item} />;
   return (
     <div className={cn("group/msg animate-rise py-3", item.pending && "opacity-70")}>
       <div className="mb-1.5 flex items-center gap-2.5 text-[12.5px]">
         <RailIcon>
-          {author ? <Avatar user={author} size={20} /> : <Logo withWord={false} className="[&_svg]:size-5" />}
+          {item.autopilot ? (
+            <AutopilotIcon className="size-4" />
+          ) : author ? (
+            <Avatar user={author} size={20} />
+          ) : (
+            <Logo withWord={false} className="[&_svg]:size-5" />
+          )}
         </RailIcon>
-        <span className="font-medium text-ink">{author?.name ?? "fctl"}</span>
+        <span className="font-medium text-ink">
+          {item.autopilot ? `${item.autopilot.project_slug}'s autopilot` : (author?.name ?? "fctl")}
+        </span>
         <span className="text-ink-4 opacity-0 transition-opacity group-hover/msg:opacity-100">
           {item.pending ? "Sending…" : clock(item.ts)}
           {item.source === "cli" && " · from the CLI"}
@@ -568,6 +579,7 @@ export const ItemView = memo(function ItemView({
       if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
       if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
       if (item.notice.question) return <QuestionNotice question={item.notice.question} findKey={item.key} />;
+      if (item.notice.autopilot) return <AutopilotAction notice={item.notice} />;
       if (item.notice.memory)
         return (
           <MemoryNotice

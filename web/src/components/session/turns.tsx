@@ -35,6 +35,7 @@ import {
 import { ImageSizes } from "@/components/markdown";
 import { Avatar, Gallery, Logo, Menu, MenuItem, toast } from "@/components/ui";
 import type * as G from "@/gen";
+import { splitCrewNote } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { duration, stamp, when } from "@/lib/format";
 import { useKeepPlace } from "@/lib/keep-place";
@@ -57,6 +58,7 @@ import {
   turnTook,
 } from "@/lib/turns";
 import { MessageFiles } from "./attachments";
+import { AutopilotAuthorLine, WakeCard } from "./autopilot";
 import type { DiffGroup, DiffTarget } from "./diff-files";
 import { Chevron, Milestone, RailIcon, Unreadable } from "./lines";
 import { CallTasks, SessionImages, WorkDir } from "./tool";
@@ -423,9 +425,13 @@ function NewLine({ thread, className }: { thread: boolean; className?: string })
  */
 export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
   if (item.followUp || item.ticket || item.review) return <UserMessage item={item} sessionId={sessionId} />;
+  // fctl woke an autopilot: what for, in a card of its own.
+  if (item.wake) return <WakeCard item={item} />;
   const author = item.author;
   const files = item.attachments ?? [];
-  const { task, note } = splitRunNote(item.text);
+  // An autopilot's task for one of its sessions ends with fctl's note of who started it, as a
+  // schedule's run does with the run's.
+  const { task, note } = item.autopilot ? splitCrewNote(item.text) : splitRunNote(item.text);
   return (
     <article
       className={cn(
@@ -433,18 +439,26 @@ export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
         item.pending && "opacity-70",
       )}
     >
-      <header className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
-        <span className="flex size-5 shrink-0 items-center justify-center">
-          {author ? <Avatar user={author} size={20} /> : <Logo withWord={false} className="[&_svg]:size-5" />}
-        </span>
-        <span className="truncate font-medium text-ink">{author?.name ?? "fctl"}</span>
-        <span className="min-w-0 truncate text-ink-4" title={item.pending ? undefined : stamp(item.ts)}>
-          {item.pending ? "Sending…" : when(item.ts)}
-          {item.source === "cli" && " · from the CLI"}
-          {item.source === "remote_control" && " · from the Claude app"}
-        </span>
-        {item.text && !item.pending && <CopyAsk text={item.text} />}
-      </header>
+      {item.autopilot ? (
+        <AutopilotAuthorLine author={item.autopilot} owner={author} ts={item.ts} pending={item.pending} />
+      ) : (
+        <header className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            {author ? (
+              <Avatar user={author} size={20} />
+            ) : (
+              <Logo withWord={false} className="[&_svg]:size-5" />
+            )}
+          </span>
+          <span className="truncate font-medium text-ink">{author?.name ?? "fctl"}</span>
+          <span className="min-w-0 truncate text-ink-4" title={item.pending ? undefined : stamp(item.ts)}>
+            {item.pending ? "Sending…" : when(item.ts)}
+            {item.source === "cli" && " · from the CLI"}
+            {item.source === "remote_control" && " · from the Claude app"}
+          </span>
+          {item.text && !item.pending && <CopyAsk text={item.text} />}
+        </header>
+      )}
       {item.text && (
         <div className="mt-2 text-[15px] leading-[1.6] whitespace-pre-wrap wrap-anywhere text-ink md:text-[15.5px]">
           {findingsBefore(item) ? (

@@ -17,7 +17,16 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { PullRequestChecksIcon, PullRequestStateIcon } from "@/components/session/pull-request";
-import { Avatar, Kbd, Menu, MenuItem, MenuSeparator, StatusDot, statusLabel } from "@/components/ui";
+import {
+  AutopilotIcon,
+  Avatar,
+  Kbd,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  StatusDot,
+  statusLabel,
+} from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { clearAttention } from "@/lib/attention";
@@ -96,7 +105,9 @@ export function SessionLine({
         to="/s/$id"
         params={{ id: s.id }}
         onClick={onNavigate}
-        title={s.question ? `${s.title}\nAsks: ${s.question.text}` : `${s.title} · ${statusLabel(s.status)}`}
+        title={`${s.question ? `${s.title}\nAsks: ${s.question.text}` : `${s.title} · ${statusLabel(s.status)}`}${
+          s.autopilot ? `\nStarted by ${s.autopilot.project_slug}'s autopilot` : ""
+        }`}
         className={cn(
           "flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
           here
@@ -117,6 +128,15 @@ export function SessionLine({
         <span className="sr-only">: {s.question ? "asks you something" : statusLabel(s.status)}</span>
         {s.question ? (
           <MessageCircleQuestion className="size-3.5 shrink-0 text-blue" aria-hidden="true" />
+        ) : !pr && s.autopilot ? (
+          // Its autopilot's: the autopilot looks after it.
+          <AutopilotIcon
+            className={cn(
+              "size-3 shrink-0 text-ink-4",
+              canHide &&
+                "transition-opacity duration-150 group-hover/line:opacity-0 group-has-[:focus-visible]/line:opacity-0",
+            )}
+          />
         ) : (
           pr && (
             <span

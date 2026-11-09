@@ -106,7 +106,9 @@ fn require_pilot(ctx: &Ctx, l: &Loaded) -> AppResult<()> {
 /// `GET /api/v1/projects/{id}/autopilot`.
 pub async fn get(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
-    let row = require(l.row.clone())?;
+    // One that is off too: it keeps its direction, notes and log for when
+    // the project is put on autopilot again.
+    let row = l.row.clone().ok_or_else(|| not_found("Autopilot"))?;
     http::ok(&view(ctx, &l.p, &row, l.can).await?)
 }
 

@@ -79,7 +79,7 @@ import {
   wakeWords,
 } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
-import { agoShort, clock, day, stamp } from "@/lib/format";
+import { ago, agoShort, clock, day, stamp } from "@/lib/format";
 import { EFFORTS, effortLabel, modelLabel, modelOffers } from "@/lib/models";
 import { keys, queryClient, useMe, useWorkspace } from "@/lib/queries";
 
@@ -880,9 +880,11 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
     >
       <div aria-hidden="true" className={cn("pointer-events-none absolute inset-0", tone.glow)} />
       <div className="relative flex flex-wrap items-start gap-x-4 gap-y-4 px-5 py-4.5">
-        <AutopilotTile live={live} size={44} />
+        {/* On a phone its mark sits beside its name, rather than in a row of its own. */}
+        <AutopilotTile live={live} size={44} className="max-sm:hidden" />
         <div className="min-w-[min(100%,16rem)] flex-1">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <AutopilotTile live={live} size={28} className="rounded-lg sm:hidden" />
             <h2 className="text-[15px] font-semibold text-ink">
               {a.scope === "workspace"
                 ? `${project.workspace?.name ?? "The workspace"}'s autopilot`
@@ -913,7 +915,7 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
               : "Its owner is gone"}
             {" · "}
             {a.check_ins === 1 ? "1 check-in" : `${a.check_ins} check-ins`}
-            {a.woken_at ? `, the last ${agoShort(a.woken_at, now)} ago` : ""}
+            {a.woken_at ? `, the last ${ago(a.woken_at, now)}` : ""}
             {a.session && (
               <>
                 {" · "}
@@ -1225,7 +1227,7 @@ function AskDetail({ text }: { text: string }) {
   return (
     <div className="mt-3 rounded-xl border border-line bg-canvas/40 px-3.5 py-3">
       <div className={cn("relative text-[13.5px]", !open && "max-h-48 overflow-hidden")}>
-        <Markdown text={text} />
+        <Markdown text={text} className="prose-note" />
         {!open && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-surface to-transparent" />
         )}
@@ -1356,7 +1358,7 @@ function SecretAnswer({ a, ask, secret }: { a: G.Autopilot; ask: G.AutopilotAsk;
   return (
     <div className="mt-3">
       <form
-        className="flex items-start gap-2"
+        className="flex flex-col gap-2 sm:flex-row sm:items-start"
         onSubmit={(e) => {
           e.preventDefault();
           if (value) give.mutate();
@@ -1537,7 +1539,7 @@ function NoteRow({ a, note }: { a: G.Autopilot; note: G.AutopilotNote }) {
           )}
         </p>
         <div className="mt-0.5 text-[13.5px] leading-relaxed text-ink">
-          <Markdown text={note.text} />
+          <Markdown text={note.text} className="prose-note" />
         </div>
       </div>
       <IconButton
@@ -1594,7 +1596,7 @@ function Clamped({ text, lines = 8 }: { text: string; lines?: number }) {
           long && !open && "max-h-44 overflow-hidden",
         )}
       >
-        <Markdown text={text} />
+        <Markdown text={text} className="prose-note" />
         {long && !open && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface to-transparent" />
         )}
@@ -1999,16 +2001,12 @@ function EntryRow({
           <div
             className={cn("min-w-0 flex-1 text-[13.5px] leading-relaxed", note ? "text-ink" : "text-ink-2")}
           >
-            {note ? (
-              <Markdown text={e.text} />
-            ) : (
-              <p className="[overflow-wrap:anywhere]">
-                {e.text}
-                {e.project_slug && e.project_slug !== home && !e.session && (
-                  <span className="text-ink-4"> in {e.project_slug}</span>
-                )}
-              </p>
-            )}
+            <div className="[overflow-wrap:anywhere]">
+              <Markdown text={e.text} className={cn("prose-note", !note && "[&>*:last-child]:inline")} />
+              {!note && e.project_slug && e.project_slug !== home && !e.session && (
+                <span className="text-ink-4"> in {e.project_slug}</span>
+              )}
+            </div>
           </div>
           <time title={stamp(e.at)} className="mt-0.5 shrink-0 text-[11.5px] text-ink-4 tabular-nums">
             {clock(e.at)}

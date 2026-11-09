@@ -43,6 +43,10 @@ export type Item =
       review?: G.PassedOnReview;
       /** For a message from a ticket tracker: the ticket, and who did what there. */
       ticket?: G.TicketMessage;
+      /** For a message an autopilot sent one of its sessions: the autopilot, which wrote it as its owner. */
+      autopilot?: G.AutopilotAuthor;
+      /** For a message from fctl that woke an autopilot: what it woke for. */
+      wake?: G.AutopilotWake;
     })
   | (Base & { kind: "prose"; text: string })
   | (Base & { kind: "thinking"; text: string })
@@ -340,6 +344,8 @@ export class TranscriptBuilder {
           followUp: ev.data.follow_up,
           review: ev.data.review,
           ticket: ev.data.ticket,
+          autopilot: ev.data.autopilot,
+          wake: ev.data.wake,
         });
         return;
       case "status": {

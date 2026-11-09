@@ -29,7 +29,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { DotWave, ThoughtIcon } from "@/components/ui";
+import { AutopilotIcon, DotWave, ThoughtIcon } from "@/components/ui";
+import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
 import type { Now, Waiting } from "@/lib/now";
 import type { Plan } from "@/lib/plan";
@@ -368,8 +369,14 @@ export function NowLine({
   plan,
   onReply,
   background,
+  autopilot,
 }: {
   now?: Now;
+  /**
+   * The session's autopilot, where it has one: once the agent does nothing, it's not the reader's
+   * turn but the autopilot's, or for its own session, fctl's to wake it.
+   */
+  autopilot?: G.SessionAutopilot;
   /** The plan of the turn the agent works on. */
   plan?: Plan;
   /** It's the reader's turn while the agent does nothing: the line says so, and goes to their reply. */
@@ -493,12 +500,24 @@ export function NowLine({
         </span>
       )}
     </>
+  ) : autopilot?.role === "pilot" ? (
+    <>
+      <span className="shrink-0 font-medium text-ink">Resting</span>
+      <span className="min-w-0 truncate text-ink-3 max-sm:hidden">fctl wakes it when something needs it</span>
+    </>
+  ) : autopilot?.role === "crew" ? (
+    <>
+      <span className="shrink-0 font-medium text-ink">The autopilot's turn</span>
+      <span className="min-w-0 truncate text-ink-3 max-sm:hidden">It hears that the agent waits</span>
+    </>
   ) : (
     <>
       <span className="shrink-0 font-medium text-ink">Your turn</span>
       <span className="min-w-0 truncate text-ink-3 max-sm:hidden">The agent waits for your reply</span>
     </>
   );
+  // Whose turn it is: the reader's (blue, their move), or the autopilot's.
+  const yours = turn && !autopilot;
   return (
     <div ref={wrap} className="relative flex min-w-0 max-w-full">
       <output
@@ -506,7 +525,7 @@ export function NowLine({
         aria-live="polite"
         className={cn(
           "now-line pointer-events-auto relative flex h-8 max-w-full min-w-0 animate-rise overflow-hidden rounded-full border bg-surface/85 text-[12.5px] shadow-[0_6px_24px_rgb(0_0_0/0.18)] backdrop-blur-xl transition-[border-color] duration-300",
-          turn ? "your-turn border-blue/30 hover:border-blue/60" : "border-line",
+          yours ? "your-turn border-blue/30 hover:border-blue/60" : "border-line",
           waiting && "hover:border-line-strong",
           open && "border-line-strong",
           // The button over it takes the focus: the ring goes around the line.
@@ -518,13 +537,19 @@ export function NowLine({
             data-busy={busy || undefined}
             className={cn(
               "busy-ring relative flex size-6 shrink-0 items-center justify-center rounded-full transition-colors duration-300",
-              turn ? "bg-blue-soft" : "bg-raised",
+              yours ? "bg-blue-soft" : "bg-raised",
             )}
           >
             {/* The icon rolls inside its circle, which the ring goes around. */}
             <span className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-full">
               <Roll step={shown ? iconOf(shown) : "turn"} className="justify-center">
-                {shown ? icon(shown) : <MessageSquareReply className="size-3.5 text-blue" />}
+                {shown ? (
+                  icon(shown)
+                ) : autopilot ? (
+                  <AutopilotIcon className="size-3.5 text-ink-2" />
+                ) : (
+                  <MessageSquareReply className="size-3.5 text-blue" />
+                )}
               </Roll>
             </span>
           </span>
@@ -562,7 +587,7 @@ export function NowLine({
         {turn ? (
           <button
             type="button"
-            aria-label="Your turn: reply to the agent"
+            aria-label={autopilot ? "Message the agent" : "Your turn: reply to the agent"}
             onClick={onReply}
             className="absolute inset-0 rounded-full focus-visible:outline-none"
           />
