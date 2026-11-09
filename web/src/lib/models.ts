@@ -43,12 +43,16 @@ export const EFFORTS = [
   { value: "max", label: "Max" },
 ] as const;
 
-/** A Claude model's ID (`claude-sonnet-5-5`, `claude-opus-4-20250514`): its family and version. */
-const MODEL_ID = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/;
+/**
+ * A Claude model's ID (`claude-sonnet-5-5`): its family and version. A snapshot's ID, dated
+ * (`claude-opus-4-1-20250805`), doesn't match: by its version alone, it would read as the
+ * undated one.
+ */
+const MODEL_ID = /^claude-(opus|sonnet|haiku|fable)-(\d{1,3})(?:-(\d{1,2}))?$/;
 
 /**
- * A model by its alias's name, by its family and version where it is named by a Claude model's ID
- * (`claude-sonnet-5-5` is Sonnet 5.5), or as it is; "" is Claude's default.
+ * A model by its alias's name, by its family and version where it is named by a Claude model's
+ * undated ID (`claude-sonnet-5-5` is Sonnet 5.5), or as it is; "" is Claude's default.
  */
 export function modelLabel(model: string): string {
   if (!model) return "Claude's default";

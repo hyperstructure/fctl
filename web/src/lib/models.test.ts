@@ -33,9 +33,11 @@ describe("project models", () => {
     expect(modelLabel("")).toBe("Claude's default");
     expect(modelLabel("sonnet")).toBe("Sonnet");
     expect(modelLabel("claude-sonnet-5-5")).toBe("Sonnet 5.5");
-    expect(modelLabel("claude-opus-4-1-20250805")).toBe("Opus 4.1");
-    expect(modelLabel("claude-opus-4-20250514")).toBe("Opus 4");
+    expect(modelLabel("claude-opus-4")).toBe("Opus 4");
     expect(modelLabel("claude-haiku-4-5")).toBe("Haiku 4.5");
+    // A snapshot's ID would read as the undated one's.
+    expect(modelLabel("claude-opus-4-1-20250805")).toBe("claude-opus-4-1-20250805");
+    expect(modelLabel("claude-opus-20250514")).toBe("claude-opus-20250514");
     // What it can't tell, as it is.
     expect(modelLabel("opus[1m]")).toBe("opus[1m]");
     expect(modelLabel("claude-sonnet-5-5[1m]")).toBe("claude-sonnet-5-5[1m]");
