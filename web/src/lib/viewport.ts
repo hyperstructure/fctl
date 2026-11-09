@@ -67,7 +67,7 @@ function takesKeyboard(el: EventTarget | null): boolean {
 }
 
 /** Whether the app was opened from the home screen rather than in a browser's tab. */
-function installed(): boolean {
+export function installed(): boolean {
   return (
     window.matchMedia("(display-mode: standalone)").matches ||
     (navigator as { standalone?: boolean }).standalone === true
