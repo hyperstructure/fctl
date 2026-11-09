@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appHistory, goTo, keepsNoHistory } from "./history";
+import { appHistory, goTo, keepsNoHistory, linksInPlace } from "./history";
 
 /** WebKit on a touch screen (an iPhone or iPad), and the app opened from the home screen or not. */
 function apple({ webKit = true, touch = true, home = true } = {}) {
@@ -76,5 +76,59 @@ describe("goTo", () => {
     apple({ home: false });
     goTo("/");
     expect(assign).toHaveBeenCalledWith("/");
+  });
+});
+
+describe("linksInPlace", () => {
+  /** A click on a link to `href`, with `init`; whether it went on, and where it loaded in place. */
+  function click(href: string, init: MouseEventInit = {}, link: Partial<HTMLAnchorElement> = {}) {
+    const a = Object.assign(document.createElement("a"), { href }, link);
+    const label = document.createElement("span");
+    a.append(label);
+    document.body.append(a);
+    const replace = vi.spyOn(window.location, "replace").mockImplementation(() => {});
+    const e = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init });
+    label.dispatchEvent(e);
+    a.remove();
+    const loaded = replace.mock.calls[0]?.[0];
+    replace.mockRestore();
+    return { loaded, wentOn: !e.defaultPrevented };
+  }
+
+  it("loads a link's page in place of this one on an iPhone's or iPad's Home Screen", () => {
+    apple();
+    const undo = linksInPlace();
+    expect(click("/api/v1/auth/google/start?intent=login")).toEqual({
+      loaded: `${window.location.origin}/api/v1/auth/google/start?intent=login`,
+      wentOn: false,
+    });
+    expect(click("https://github.com/apps/fctl/installations/new").loaded).toBe(
+      "https://github.com/apps/fctl/installations/new",
+    );
+    undo();
+  });
+
+  it("leaves the router's links, new tabs and windows, and other kinds of link alone", () => {
+    apple();
+    const undo = linksInPlace();
+    // The router's links cancel their clicks first.
+    const routed = (e: Event) => e.preventDefault();
+    document.addEventListener("click", routed, { capture: true });
+    expect(click("/pulls").loaded).toBeUndefined();
+    document.removeEventListener("click", routed, { capture: true });
+    expect(click("/pulls", { metaKey: true })).toEqual({ loaded: undefined, wentOn: true });
+    expect(click("https://github.com", {}, { target: "_blank" })).toEqual({
+      loaded: undefined,
+      wentOn: true,
+    });
+    expect(click("mailto:ada@example.com")).toEqual({ loaded: undefined, wentOn: true });
+    undo();
+  });
+
+  it("leaves links to the browser in its tabs", () => {
+    apple({ home: false });
+    const undo = linksInPlace();
+    expect(click("/api/v1/auth/google/start").loaded).toBeUndefined();
+    undo();
   });
 });

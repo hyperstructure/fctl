@@ -7,9 +7,11 @@
 // links, so there each page takes the place of the one before in the
 // browser's history rather than adding to it: the swipes have nowhere to go,
 // and a finger at the left edge drags the sidebar's drawer in instead
-// (components/shell/drawer-drag.ts). Browsers' tabs keep their history, with
-// their back buttons and swipes, and so does the app installed on Android,
-// whose back gesture and button go back through it.
+// (components/shell/drawer-drag.ts). Pages that load in full, the app's and
+// other sites' (signing in with Google, installing the GitHub App), take its
+// place too, though another site's own pages may still add to it. Browsers'
+// tabs keep their history, with their back buttons and swipes, and so does
+// the app installed on Android, whose back gesture and button go through it.
 
 import { createBrowserHistory, type RouterHistory } from "@tanstack/react-router";
 import { installed } from "./viewport";
@@ -27,8 +29,32 @@ export function appHistory(): RouterHistory {
   return history;
 }
 
-/** Loads `href` as a new page (signing in or out): in place of this one where the app keeps no history. */
+/**
+ * Loads `href` as a new page (signing in or out, going to Linear to link it): in place of this
+ * one where the app keeps no history.
+ */
 export function goTo(href: string) {
   if (keepsNoHistory()) window.location.replace(href);
   else window.location.assign(href);
+}
+
+/**
+ * Where the app keeps no history, a link that loads a page in this window (signing in with
+ * Google, installing the GitHub App) loads it in place of this one. The router's links, and
+ * what else handles its own clicks, have cancelled them by then; one that opens a new tab or
+ * window, with a modifier key or its target, goes on as the browser does. Returns what undoes it.
+ */
+export function linksInPlace(): () => void {
+  if (!keepsNoHistory()) return () => {};
+  const click = (e: MouseEvent) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (!(a instanceof HTMLAnchorElement) || (a.target && a.target !== "_self") || a.hasAttribute("download"))
+      return;
+    if (a.protocol !== "http:" && a.protocol !== "https:") return;
+    e.preventDefault();
+    window.location.replace(a.href);
+  };
+  document.addEventListener("click", click);
+  return () => document.removeEventListener("click", click);
 }

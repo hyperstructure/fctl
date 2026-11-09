@@ -10,6 +10,7 @@ import { DelegatedTicket } from "@/components/project/tickets";
 import { Banner, Button, Dialog, LinearIcon, Skeleton, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { workspaces } from "@/lib/api";
+import { goTo } from "@/lib/history";
 import { keys, queryClient, useProjects } from "@/lib/queries";
 import { type LinearOutcome, linearOutcome } from "@/lib/tickets";
 
@@ -19,7 +20,7 @@ export function LinearTab({ w, returned }: { w: G.Workspace; returned?: LinearOu
   const connect = useMutation({
     mutationFn: () => workspaces.connectLinear(w.id),
     // On to Linear, which brings the browser back here.
-    onSuccess: (link) => window.location.assign(link.url),
+    onSuccess: (link) => goTo(link.url),
     onError: (e) => toast(e.message, "error"),
   });
   const [dropping, setDropping] = useState<G.LinearConnection | null>(null);
