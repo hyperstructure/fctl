@@ -782,6 +782,16 @@ fn print_status(a: &Autopilot) {
         println!("  {}", style::amber(problem));
     }
     print_rules(a);
+    if !a.can.read {
+        println!();
+        println!(
+            "{}",
+            style::dim(
+                "It works across the workspace, in projects you may not see: its plan, sessions, asks and log are for the workspace's admins, who steer it."
+            )
+        );
+        return;
+    }
     println!();
     let by = a
         .direction_by

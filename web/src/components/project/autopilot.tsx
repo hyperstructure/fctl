@@ -559,7 +559,13 @@ function Engage({
               : "Markdown. The more it knows of why, the better it decides what you didn't say."}
           </p>
         </div>
-        {admin && !taken && (
+        {before?.scope === "workspace" && (
+          <p className="text-[12.5px] text-ink-3">
+            It ran all of {workspace.data?.name ?? "the workspace"} before, and what it kept reaches every
+            project: it stays the workspace's.
+          </p>
+        )}
+        {admin && !taken && before?.scope !== "workspace" && (
           <fieldset>
             <legend className="mb-2 text-[12.5px] font-medium text-ink-2">What it runs</legend>
             <div className="grid gap-2 sm:grid-cols-2">

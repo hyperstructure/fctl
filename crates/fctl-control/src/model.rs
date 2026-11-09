@@ -621,7 +621,9 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role, \
     c.model AS last_model, c.effort AS last_effort, \
     w.autopilots AS workspace_autopilots, ap.state AS autopilot_state, ap.scope AS autopilot_scope, \
-    (SELECT COUNT(*) FROM autopilot_asks aa WHERE aa.project_id = ap.project_id AND aa.status = 'open') AS autopilot_asks, \
+    CASE WHEN ap.scope = 'workspace' AND COALESCE(wm.role, '') NOT IN ('owner', 'admin') THEN 0 \
+      ELSE (SELECT COUNT(*) FROM autopilot_asks aa WHERE aa.project_id = ap.project_id AND aa.status = 'open') END \
+      AS autopilot_asks, \
     aps.status AS autopilot_session_status \
     FROM projects p \
     LEFT JOIN users cu ON cu.id = p.created_by \

@@ -2073,7 +2073,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    without waking), how many of its sessions work at once (1 to 8) and the
    model of its own sessions. A workspace's admins put the whole workspace
    on autopilot from one of its projects (`scope: workspace`, one per
-   workspace). It runs on the Claude subscription of whoever put it on, its
+   workspace, `autopilots_one_per_workspace`); put on again, it stays the
+   workspace's, as what it kept reaches all its projects. It runs on the
+   Claude subscription of whoever put it on, its
    owner, as whom it acts; that is a [sensitive action](#confirming-its-you),
    as is resuming or taking it over, which, as for schedules, runs it on
    the taker's subscription from then on, as does changing how much it

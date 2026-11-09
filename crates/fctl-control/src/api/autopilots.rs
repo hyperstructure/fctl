@@ -5,7 +5,11 @@
 //! its own session writes; and what waits for the caller across their
 //! workspaces (`/api/v1/autopilots/asks`).
 //!
-//! Everyone who sees the project sees its autopilot. Those who may steer
+//! Everyone who sees the project sees its autopilot, except that what a
+//! workspace's autopilot does (its plan, notes, asks, sessions, log, brief
+//! and own session) reaches projects some of them don't see: it is its
+//! workspace's admins' ([`AutopilotCan::read`]), and others see only that
+//! it runs, and how; it stays a workspace's autopilot. Those who may steer
 //! it ([`AutopilotCan::steer`]: the project's maintainers and owners, and
 //! for a workspace's autopilot its workspace's admins) steer it, answer
 //! it, wake, pause and resume it, change and take it off. It runs on its
@@ -205,8 +209,10 @@ async fn view(
     if can.read {
         return Ok(a);
     }
-    // Who doesn't see what it does sees that it runs, and how.
+    // Who doesn't see what it does sees that it runs, and how: not why it
+    // paused, which can tell of its work.
     Ok(Autopilot {
+        paused_reason: None,
         direction: String::new(),
         direction_by: None,
         plan: None,
@@ -675,6 +681,16 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 .scope
                 .or(before.as_ref().map(AutopilotRow::scope))
                 .unwrap_or_default();
+            // What a workspace's autopilot kept (its plan, notes, asks, log
+            // and own sessions) reaches the whole workspace: it stays one,
+            // its admins', rather than open up as a project's.
+            if scope == AutopilotScope::Project
+                && before.as_ref().map(AutopilotRow::scope) == Some(AutopilotScope::Workspace)
+            {
+                return Err(conflict(
+                    "This project's autopilot ran the whole workspace, and what it kept reaches all its projects: it stays the workspace's. Its admins put it on again for the workspace.",
+                ));
+            }
             let direction = match (direction, &before) {
                 (Some(d), _) => d,
                 (None, Some(b)) => b.direction.clone(),
@@ -818,7 +834,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             }
             if body.scope.is_some_and(|sc| sc != row.scope()) {
                 return Err(conflict(
-                    "An autopilot keeps its scope: take it off, then put it on again as the other.",
+                    "An autopilot keeps its scope while it's on. A project's autopilot can be put on again for the whole workspace once taken off; a workspace's stays the workspace's.",
                 ));
             }
             let powers = body
