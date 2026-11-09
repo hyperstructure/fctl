@@ -366,7 +366,7 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             needs(Projects, Gate::NewProject)
         }
         _ => Err(ApiError::forbidden(
-            "An autopilot can't do that: it reads its projects, starts and steers sessions, and changes settings, secrets, repositories, schedules and projects as far as its powers go. People do the rest.",
+            "An autopilot can't do that: people do. It reads its projects, starts and steers its own sessions, and as far as its powers go changes settings, secrets, repositories and schedules, and creates projects; never people, roles, shares, tokens, runners, GitHub accounts, the workspace's settings, or deleting a project.",
         )),
     }
 }
@@ -395,15 +395,21 @@ fn refused_power(power: AutopilotPower) -> ApiError {
 
 /// What a request the autopilot made did, for its log: the entry's kind
 /// and line, from the request (`method`, `segs`, `body`) and the API's
-/// answer. `None` for what changes nothing worth a line (reads, the
-/// project's memory, its own endpoints, which log themselves).
+/// answer; `elsewhere` is the slug of the project it changed when that
+/// isn't its home, which the line names. `None` for what changes nothing
+/// worth a line (reads, the project's memory, its own endpoints, which log
+/// themselves).
 pub fn describe(
     method: &str,
     segs: &[&str],
     body: &Value,
     answer: &Value,
+    elsewhere: Option<&str>,
 ) -> Option<(AutopilotEntryKind, String)> {
     let str_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
+    // Its home goes without saying; another project is named.
+    let whose = elsewhere.map_or_else(|| "the project's".to_owned(), |p| format!("{p}'s"));
+    let in_it = elsewhere.map(|p| format!(" in {p}")).unwrap_or_default();
     // The session it concerns goes with the entry, which names it.
     use AutopilotEntryKind as K;
     Some(match (method, segs) {
@@ -429,48 +435,49 @@ pub fn describe(
             if body.get("settings").is_some_and(Value::is_object) {
                 what.push("settings".to_owned());
             }
-            if let Some(archived) = body.get("archived").and_then(Value::as_bool) {
-                what.push(
-                    if archived {
-                        "archived it"
-                    } else {
-                        "unarchived it"
-                    }
-                    .to_owned(),
-                );
-            }
-            if what.is_empty() {
-                return None;
-            }
-            (K::Settings, format!("Changed its {}", list(&what)))
+            let changed = (!what.is_empty()).then(|| format!("Changed {whose} {}", list(&what)));
+            let archived = body.get("archived").and_then(Value::as_bool);
+            let line = match (changed, archived) {
+                (Some(changed), Some(true)) => format!("{changed}, and archived it"),
+                (Some(changed), Some(false)) => format!("{changed}, and unarchived it"),
+                (Some(changed), None) => changed,
+                (None, Some(true)) => format!("Archived {}", elsewhere.unwrap_or("the project")),
+                (None, Some(false)) => {
+                    format!("Unarchived {}", elsewhere.unwrap_or("the project"))
+                }
+                (None, None) => return None,
+            };
+            (K::Settings, line)
         }
         ("PATCH", ["projects", _, "review-agents"]) => {
-            (K::Settings, "Changed its review agents".to_owned())
+            (K::Settings, format!("Changed {whose} review agents"))
         }
         ("PUT", ["projects", _, "secrets", name]) => {
-            (K::Secret, format!("Set the secret `{name}`"))
+            (K::Secret, format!("Set the secret `{name}`{in_it}"))
         }
         ("DELETE", ["projects", _, "secrets", name]) => {
-            (K::Secret, format!("Removed the secret `{name}`"))
+            (K::Secret, format!("Removed the secret `{name}`{in_it}"))
         }
         ("POST", ["projects", _, "repos"]) => {
             let repo = str_of(body, "repo").unwrap_or_else(|| "a repository".to_owned());
             let access = match str_of(body, "access").as_deref() {
-                Some("write") => " to work in",
-                _ => " to read",
+                Some("write") => "for sessions to work in",
+                _ => "for sessions to read",
             };
-            (K::Repository, format!("Added {repo}{access}"))
+            let to = elsewhere.map(|p| format!(" to {p},")).unwrap_or_default();
+            (K::Repository, format!("Added {repo}{to} {access}"))
         }
         ("DELETE", ["projects", _, "repos", owner, name]) => {
-            (K::Repository, format!("Removed {owner}/{name}"))
+            let from = elsewhere.map(|p| format!(" from {p}")).unwrap_or_default();
+            (K::Repository, format!("Removed {owner}/{name}{from}"))
         }
         ("POST", ["projects", _, "schedules"]) => {
             let name = str_of(answer, "name").or_else(|| str_of(body, "name"));
             (
                 K::Schedule,
                 match name {
-                    Some(n) => format!("Set up the schedule “{n}”"),
-                    None => "Set up a schedule".to_owned(),
+                    Some(n) => format!("Set up the schedule “{n}”{in_it}"),
+                    None => format!("Set up a schedule{in_it}"),
                 },
             )
         }
@@ -481,10 +488,11 @@ pub fn describe(
                 Some(true) => "Resumed",
                 None => "Changed",
             };
-            (K::Schedule, format!("{what} the schedule “{name}”"))
+            (K::Schedule, format!("{what} the schedule “{name}”{in_it}"))
         }
-        ("DELETE", ["schedules", _]) => (K::Schedule, "Deleted a schedule".to_owned()),
-        ("POST", ["schedules", _, "runs"]) => (K::Schedule, "Ran a schedule now".to_owned()),
+        ("DELETE", ["schedules", _]) => (K::Schedule, format!("Deleted a schedule{in_it}")),
+        ("POST", ["schedules", _, "runs"]) => (K::Schedule, format!("Ran a schedule now{in_it}")),
+        // The project it created goes with the entry, which links to it.
         ("POST", ["projects"]) => {
             let name = str_of(answer, "name").or_else(|| str_of(body, "name"));
             (
@@ -951,7 +959,8 @@ pub fn wake_message(news: &News<'_>) -> String {
         .reasons
         .iter()
         .map(|r| match r {
-            AutopilotWakeReason::Started => "you were put on, or resumed",
+            AutopilotWakeReason::Started => "you were put on",
+            AutopilotWakeReason::Resumed => "people resumed you after a pause",
             AutopilotWakeReason::CheckIn => "it's time for your check-in",
             AutopilotWakeReason::Asked => "you asked to wake now",
             AutopilotWakeReason::Woken => "someone woke you",
@@ -1198,6 +1207,7 @@ mod tests {
             &["projects", "shop", "sessions"],
             &serde_json::json!({"prompt": "x"}),
             &serde_json::json!({"number": 41, "title": "Add Apple Pay"}),
+            None,
         );
         assert_eq!(
             started,
@@ -1208,12 +1218,13 @@ mod tests {
             &["projects", "shop"],
             &serde_json::json!({"settings": {}, "default_branch": "main"}),
             &Value::Null,
+            None,
         );
         assert_eq!(
             settings,
             Some((
                 AutopilotEntryKind::Settings,
-                "Changed its default branch and settings".into()
+                "Changed the project's default branch and settings".into()
             ))
         );
         assert_eq!(
@@ -1221,7 +1232,8 @@ mod tests {
                 "PUT",
                 &["projects", "shop", "secrets", "STRIPE_KEY"],
                 &Value::Null,
-                &Value::Null
+                &Value::Null,
+                None,
             ),
             Some((
                 AutopilotEntryKind::Secret,
@@ -1229,8 +1241,86 @@ mod tests {
             ))
         );
         assert_eq!(
-            describe("GET", &["projects", "shop"], &Value::Null, &Value::Null),
+            describe(
+                "GET",
+                &["projects", "shop"],
+                &Value::Null,
+                &Value::Null,
+                None
+            ),
             None
+        );
+    }
+
+    #[test]
+    fn names_another_project_it_changed() {
+        let line = |method: &str, segs: &[&str], body: Value| {
+            describe(method, segs, &body, &Value::Null, Some("blog")).map(|(_, l)| l)
+        };
+        assert_eq!(
+            line(
+                "PATCH",
+                &["projects", "blog"],
+                serde_json::json!({"description": "x"})
+            )
+            .as_deref(),
+            Some("Changed blog's description")
+        );
+        assert_eq!(
+            line(
+                "PATCH",
+                &["projects", "blog"],
+                serde_json::json!({"archived": true})
+            )
+            .as_deref(),
+            Some("Archived blog")
+        );
+        assert_eq!(
+            line("PUT", &["projects", "blog", "secrets", "KEY"], Value::Null).as_deref(),
+            Some("Set the secret `KEY` in blog")
+        );
+        assert_eq!(
+            line(
+                "POST",
+                &["projects", "blog", "repos"],
+                serde_json::json!({"repo": "acme/blog", "access": "write"})
+            )
+            .as_deref(),
+            Some("Added acme/blog to blog, for sessions to work in")
+        );
+        assert_eq!(
+            line(
+                "DELETE",
+                &["projects", "blog", "repos", "acme", "blog"],
+                Value::Null
+            )
+            .as_deref(),
+            Some("Removed acme/blog from blog")
+        );
+        // Its home goes without saying.
+        assert_eq!(
+            describe(
+                "PATCH",
+                &["projects", "shop"],
+                &serde_json::json!({"name": "Shop", "archived": false}),
+                &Value::Null,
+                None
+            )
+            .map(|(_, l)| l)
+            .as_deref(),
+            Some("Changed the project's name, and unarchived it")
+        );
+        assert_eq!(
+            describe(
+                "POST",
+                &["projects", "shop", "repos"],
+                &serde_json::json!({"repo": "acme/shop"}),
+                &Value::Null,
+                None
+            )
+            .map(|(_, l)| l)
+            .as_deref(),
+            Some("Added acme/shop for sessions to read")
         );
     }
 

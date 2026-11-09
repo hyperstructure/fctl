@@ -2134,9 +2134,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    and remove the secrets it set itself (`project_secrets.autopilot`;
    those people set, or gave it, it neither replaces nor removes), add and
    remove repositories, set up, change, run and delete schedules, and
-   create projects in its workspace. Never people, roles, shares, tokens,
-   runners, GitHub accounts, the workspace's settings, deleting a project,
-   or anything that takes [confirming it's you](#confirming-its-you).
+   create projects in its workspace (a request that names no workspace
+   means its own). Never people, roles, shares, tokens, runners, GitHub
+   accounts, the workspace's settings, deleting a project, or anything
+   that takes [confirming it's you](#confirming-its-you).
    At most as many of its sessions work at once as people allow, and it
    starts at most 20 an hour. What it did goes in its log, in its own
    transcript (an `autopilot_action` notice, with the session it started or

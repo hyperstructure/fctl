@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
+import { ProjectMark } from "@/components/project/project-icon";
 import {
   AutopilotIcon,
   Avatar,
@@ -81,7 +82,7 @@ import {
 import { cn } from "@/lib/cn";
 import { ago, agoShort, clock, day, stamp } from "@/lib/format";
 import { EFFORTS, effortLabel, modelLabel, modelOffers } from "@/lib/models";
-import { keys, queryClient, useMe, useWorkspace } from "@/lib/queries";
+import { keys, queryClient, useMe, useProjects, useWorkspace } from "@/lib/queries";
 
 // ───────────────────────────── the tab ─────────────────────────────
 
@@ -2000,9 +2001,6 @@ function EntryRow({
           >
             <div className="[overflow-wrap:anywhere]">
               <Markdown text={e.text} className={cn("prose-note", !note && "[&>*:last-child]:inline")} />
-              {!note && e.project_slug && e.project_slug !== home && !e.session && (
-                <span className="text-ink-4"> in {e.project_slug}</span>
-              )}
             </div>
           </div>
           <time title={stamp(e.at)} className="mt-0.5 shrink-0 text-[11.5px] text-ink-4 tabular-nums">
@@ -2027,8 +2025,31 @@ function EntryRow({
             {live && <span className="shrink-0 text-[11.5px] text-ink-4">{statusLabel(live.status)}</span>}
           </Link>
         )}
+        {!note && !e.session && e.project_slug && e.project_slug !== home && (
+          <ProjectCard slug={e.project_slug} />
+        )}
       </div>
     </li>
+  );
+}
+
+/** Another project an entry concerns (one it created, or changed), as the sidebar shows it. */
+function ProjectCard({ slug }: { slug: string }) {
+  const p = useProjects().data?.projects.find((x) => x.slug === slug);
+  return (
+    <Link
+      to="/p/$slug"
+      params={{ slug }}
+      className="mt-1.5 inline-flex max-w-full items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] transition-colors hover:border-line-strong hover:bg-hover/40"
+    >
+      {p ? (
+        <ProjectMark project={p} size={14} />
+      ) : (
+        <FolderPlus className="size-3 text-ink-4" aria-hidden="true" />
+      )}
+      <span className="min-w-0 truncate text-ink-2">{p?.name ?? slug}</span>
+      {p && <span className="shrink-0 font-mono text-[11.5px] text-ink-4">{slug}</span>}
+    </Link>
   );
 }
 

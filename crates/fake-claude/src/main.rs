@@ -1535,9 +1535,10 @@ fn is_autopilot(lower: &str) -> bool {
 /// What an autopilot does, as fake-claude plays one
 /// (docs/development.md#autopilots): as it's put on, it reads its brief,
 /// writes a plan, starts a session for the first item, asks a question and
-/// for a secret, and says when to wake; woken, it reads what's new, logs
-/// it, ticks off what its sessions finished, starts the next item and
-/// pauses itself once the plan is done.
+/// for a secret, and says when to wake; woken, it reads what's new, runs
+/// each note that is an `fctl` command, logs the rest, ticks off what its
+/// sessions finished, starts the next item and pauses itself once the
+/// plan is done.
 impl Session {
     fn autopilot(&mut self, text: &str, lower: &str) -> String {
         self.think("Let me read where things stand before I decide anything.");
@@ -1611,6 +1612,18 @@ impl Session {
         }
         // Woken: what's new decides what comes next.
         let mut did = Vec::new();
+        // A note that is an `fctl` command runs as it is: how one tries,
+        // in the dev stack, what an autopilot may and may not do through
+        // its session.
+        for command in text
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- ")?.split_once(": "))
+            .map(|(_, note)| note.trim())
+            .filter(|note| note.starts_with("fctl "))
+        {
+            self.bash(command, "Do what the note says");
+            did.push("ran the command in your note");
+        }
         if lower.contains("answered")
             || lower.contains("set the secret")
             || lower.contains("declined")

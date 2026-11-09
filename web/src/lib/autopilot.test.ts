@@ -10,6 +10,7 @@ import {
   splitBriefing,
   splitCrewNote,
   wakeText,
+  wokeLine,
 } from "./autopilot";
 
 const NOW = Date.UTC(2026, 10, 9, 14, 0);
@@ -103,6 +104,9 @@ describe("what woke it", () => {
 
   it("names notes, answers and sessions", () => {
     expect(wakeText(wake({ reasons: ["check_in"] }))).toBe("its check-in");
+    expect(wakeText(wake({ reasons: ["resumed", "steered"], notes: 1 }))).toBe(
+      "being resumed and a new note",
+    );
     expect(wakeText(wake({ reasons: ["steered"], notes: 2 }))).toBe("2 new notes");
     expect(wakeText(wake({ reasons: ["steered"], direction: true }))).toBe("a new direction");
     expect(
@@ -115,6 +119,15 @@ describe("what woke it", () => {
       ),
     ).toBe("an answer and session #41");
     expect(wakeText(wake({}))).toBe("its check-in");
+  });
+
+  it("says a start or a resume alone as its log does", () => {
+    expect(wokeLine(wake({ reasons: ["resumed"] }))).toBe("Woke as it was resumed");
+    expect(wokeLine(wake({ reasons: ["started"] }))).toBe("Woke as it was put on");
+    expect(wokeLine(wake({ reasons: ["resumed", "steered"], notes: 2 }))).toBe(
+      "Woke for being resumed and 2 new notes",
+    );
+    expect(wokeLine(wake({ reasons: ["check_in"] }))).toBe("Woke for its check-in");
   });
 });
 

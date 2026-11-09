@@ -723,6 +723,7 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
     for r in reasons {
         parts.push(match r {
             AutopilotWakeReason::Started => "it was put on".into(),
+            AutopilotWakeReason::Resumed => "it was resumed".into(),
             AutopilotWakeReason::CheckIn => "its check-in".into(),
             AutopilotWakeReason::Asked => "the time it asked for".into(),
             AutopilotWakeReason::Woken => "someone woke it".into(),
@@ -750,17 +751,16 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
     }
     match parts.as_slice() {
         [] => "Woke".into(),
-        [one] if one == "it was put on" => "Woke as it was put on".into(),
+        // "Woke as it was put on", alone; "being put on" among others.
+        [one] if one.starts_with("it was ") => format!("Woke as {one}"),
         [one] => format!("Woke for {one}"),
         _ => format!(
             "Woke for {}",
             parts
                 .iter()
-                .map(|p| if p == "it was put on" {
-                    "being put on"
-                } else {
-                    p.as_str()
-                })
+                .map(|p| p
+                    .strip_prefix("it was ")
+                    .map_or_else(|| p.clone(), |p| format!("being {p}")))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -1511,6 +1511,19 @@ pub async fn relay(
     };
     let (route_path, _) = path.split_once('?').unwrap_or((path, ""));
     let route_path = route_path.to_owned();
+    // A project it creates without naming a workspace goes into its own,
+    // rather than the owner's only one.
+    let mut body = body;
+    if method == "POST"
+        && route_path.trim_end_matches('/') == "/api/v1/projects"
+        && let Some(Value::Object(fields)) = body.as_mut()
+        && fields.get("workspace").is_none_or(Value::is_null)
+    {
+        fields.insert(
+            "workspace".to_owned(),
+            Value::String(row.workspace_id.clone()),
+        );
+    }
     let raw = match &body {
         Some(b) => Some(serde_json::to_string(b)?),
         None => None,
@@ -1539,17 +1552,24 @@ pub async fn relay(
             serde_json::to_value(&e.0).unwrap_or(Value::Null),
         ),
     };
-    if (200..300).contains(&status) {
-        let segs: Vec<&str> = route_path
-            .trim_end_matches('/')
-            .split('/')
-            .skip(3)
-            .collect();
-        let empty = Value::Null;
+    let segs: Vec<&str> = route_path
+        .trim_end_matches('/')
+        .split('/')
+        .skip(3)
+        .collect();
+    let empty = Value::Null;
+    let sent = body.as_ref().unwrap_or(&empty);
+    // Only what changed something gets a line, and the lookups for it.
+    if (200..300).contains(&status) && ap::describe(&method, &segs, sent, &answer, None).is_some() {
+        let about = about(&ctx.db, &segs, &answer).await;
+        // Another project it changed, by its slug, which the line names.
+        let elsewhere = match about.1.as_deref() {
+            Some(other) if other != row.project_id => slug_of(&ctx.db, other).await,
+            _ => None,
+        };
         if let Some((kind, text)) =
-            ap::describe(&method, &segs, body.as_ref().unwrap_or(&empty), &answer)
+            ap::describe(&method, &segs, sent, &answer, elsewhere.as_deref())
         {
-            let about = about(&ctx.db, &segs, &answer).await;
             // Its own transcript shows what it did, the session it started
             // or steered with it.
             transcript(
@@ -1725,6 +1745,16 @@ async fn project_of(db: &D1Database, key: &str) -> Option<String> {
     )
     .ok()?;
     query.first::<Found>().await.ok().flatten().map(|f| f.id)
+}
+
+/// A project's slug, by its id.
+async fn slug_of(db: &D1Database, id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Found {
+        slug: String,
+    }
+    let query = q(db, "SELECT slug FROM projects WHERE id = ?", &[s(id)]).ok()?;
+    query.first::<Found>().await.ok().flatten().map(|f| f.slug)
 }
 
 /// What a request from an autopilot still needs checked, once

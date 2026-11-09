@@ -336,9 +336,11 @@ or a wake (`fctl woke you, the autopilot`): put on, it reads its brief,
 writes a plan, starts a session for the first item, asks a question with
 answers to click and for a secret, and says when to wake; woken, it logs
 the answers and notes it got, and once a session of its own ends a turn,
-ticks it off the plan and starts the next. Its sandbox's `fctl` (the dev
-build, on the process driver's `PATH`) reaches the API through fctl-agent,
-so a run shows the whole loop in a minute:
+ticks it off the plan and starts the next. A note that is an `fctl`
+command (`fctl projects create "Marketing site"`) runs as it is at the
+next wake, to try what an autopilot may and may not do. Its sandbox's
+`fctl` (the dev build, on the process driver's `PATH`) reaches the API
+through fctl-agent, so a run shows the whole loop in a minute:
 
 ```sh
 cargo run -p fctl -- workspaces set -w development --autopilots on

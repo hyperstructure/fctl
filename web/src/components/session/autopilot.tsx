@@ -21,6 +21,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { type ReactNode, useId, useMemo, useState } from "react";
+import { ProjectMark } from "@/components/project/project-icon";
 import { AutopilotIcon, StatusDot, statusLabel } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -58,6 +59,8 @@ export function WakeCard({ item }: { item: UserItem }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const crew = wake?.crew ?? [];
+  // A start or a resume alone says so in a sentence of its own.
+  const lone = wake?.reasons.length === 1 ? wake.reasons[0] : undefined;
   return (
     <article className="ask-card animate-rise rounded-[18px] rounded-bl-[7px] border border-line bg-surface px-4 pt-3 pb-3.5 md:px-5 md:pt-3.5 md:pb-4">
       <header className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
@@ -70,7 +73,11 @@ export function WakeCard({ item }: { item: UserItem }) {
       <p className="mt-2 text-[15px] leading-[1.6] text-ink md:text-[15.5px]" data-find={`msg:${item.key}`}>
         {briefing
           ? "It was put on autopilot: it reads its brief, then plans the work."
-          : `For ${wake ? wakeText(wake) : "its check-in"}.`}
+          : lone === "resumed"
+            ? "People resumed it: it reads what's new, then goes on."
+            : lone === "started"
+              ? "It was put on autopilot again: it reads what's new, then goes on."
+              : `For ${wake ? wakeText(wake) : "its check-in"}.`}
       </p>
       {(crew.length > 0 || (wake?.notes ?? 0) > 0 || (wake?.answers ?? 0) > 0) && (
         <ul className="mt-2.5 flex flex-wrap gap-1.5" aria-label="What woke it">
@@ -195,6 +202,15 @@ export function AutopilotAction({ notice }: { notice: G.Notice }) {
   const a = notice.autopilot;
   if (!a) return null;
   const icon = ACTION_ICONS[a.kind] ?? <AutopilotIcon />;
+  if (!a.session && a.kind === "project" && a.project_slug)
+    return (
+      <div className="animate-rise py-1.5">
+        <Milestone icon={icon}>{notice.message}</Milestone>
+        <Thread>
+          <CreatedProject slug={a.project_slug} />
+        </Thread>
+      </div>
+    );
   if (!a.session)
     return (
       <Milestone icon={icon} tone="info">
@@ -210,6 +226,38 @@ export function AutopilotAction({ notice }: { notice: G.Notice }) {
         <SpawnedSession session={a.session} projectSlug={a.project_slug} />
       </Thread>
     </div>
+  );
+}
+
+/** A project an autopilot created, as a card a click from it. */
+function CreatedProject({ slug }: { slug: string }) {
+  const p = useQuery({
+    queryKey: keys.project(slug),
+    queryFn: () => api.project(slug),
+    staleTime: 30_000,
+  }).data;
+  return (
+    <Link
+      to="/p/$slug"
+      params={{ slug }}
+      className="group flex max-w-xl items-center gap-3 rounded-xl border border-line bg-surface px-3.5 py-2.5 transition-[border-color,background-color] duration-150 hover:border-line-strong hover:bg-hover/30"
+    >
+      {p ? (
+        <ProjectMark project={p} tile={28} />
+      ) : (
+        <span className="size-7 shrink-0 rounded-[8px] bg-raised" aria-hidden="true" />
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-[14px] text-ink">{p?.name ?? slug}</span>
+          <ArrowUpRight
+            className="size-3.5 shrink-0 self-center text-ink-4 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+            aria-hidden="true"
+          />
+        </span>
+        <span className="mt-0.5 block truncate font-mono text-[12px] text-ink-3">{slug}</span>
+      </span>
+    </Link>
   );
 }
 

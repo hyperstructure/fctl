@@ -1068,7 +1068,7 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     q(
         &ctx.db,
         "UPDATE autopilots SET state = 'on', paused_reason = NULL, paused_by = NULL, paused_at = NULL, failures = 0, \
-         wake_at = ?1, wake_reasons = 'started', asked_wake_at = NULL, owner_id = CASE WHEN ?2 THEN ?3 ELSE owner_id END, \
+         wake_at = ?1, wake_reasons = 'resumed', asked_wake_at = NULL, owner_id = CASE WHEN ?2 THEN ?3 ELSE owner_id END, \
          updated_at = ?1 WHERE project_id = ?4",
         &[
             n(ctx.now),

@@ -3,4 +3,4 @@
 /**
  * Why fctl wakes an autopilot.
  */
-export type AutopilotWakeReason = "started" | "check_in" | "asked" | "woken" | "steered" | "answered" | "crew" | "retry" | "other";
+export type AutopilotWakeReason = "started" | "resumed" | "check_in" | "asked" | "woken" | "steered" | "answered" | "crew" | "retry" | "other";

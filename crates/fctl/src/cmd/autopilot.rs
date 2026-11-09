@@ -883,10 +883,17 @@ fn print_log(log: &AutopilotLog) {
             e.by.as_ref()
                 .map(|u| format!(" · {}", u.name))
                 .unwrap_or_default();
+        // A session in another of its projects goes by that project's slug.
         let session = e
             .session
             .as_ref()
-            .map(|s| format!(" · #{}", s.number))
+            .map(|s| {
+                format!(
+                    " · {}#{}",
+                    e.project_slug.as_deref().unwrap_or_default(),
+                    s.number
+                )
+            })
             .unwrap_or_default();
         println!(
             "{} {}",

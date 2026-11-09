@@ -708,7 +708,7 @@ fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it
 fctl autopilot wake -p crm                     # now, with what's new
 fctl autopilot pause -p crm --reason "Launch week"
 fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's
-fctl autopilot off -p crm --stop-sessions      # its direction, notes and log stay
+fctl autopilot off -p crm --stop-sessions      # its direction, notes, plan, log and asks stay
 ```
 
 `--check-in` is how long it goes without waking, at most: 15m, 30m, 1h,

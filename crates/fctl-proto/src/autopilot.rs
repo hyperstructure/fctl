@@ -236,8 +236,10 @@ pub struct AutopilotSession {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum AutopilotWakeReason {
-    /// It was put on, or resumed.
+    /// It was put on.
     Started,
+    /// People resumed it after a pause.
+    Resumed,
     /// Its check-in time came.
     CheckIn,
     /// The time it asked to wake at came.
@@ -261,6 +263,7 @@ impl AutopilotWakeReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Started => "started",
+            Self::Resumed => "resumed",
             Self::CheckIn => "check_in",
             Self::Asked => "asked",
             Self::Woken => "woken",
@@ -275,6 +278,7 @@ impl AutopilotWakeReason {
     pub fn parse(s: &str) -> Option<Self> {
         [
             Self::Started,
+            Self::Resumed,
             Self::CheckIn,
             Self::Asked,
             Self::Woken,

@@ -146,6 +146,14 @@ export function wakeWords(a: Pick<G.Autopilot, "wake_at" | "wake_reason">, now =
   }
 }
 
+/** What woke it, as a line, as its log says it: "Woke for its check-in", "Woke as it was resumed". */
+export function wokeLine(w: G.AutopilotWake): string {
+  const [only, more] = w.reasons;
+  if (!more && only === "started") return "Woke as it was put on";
+  if (!more && only === "resumed") return "Woke as it was resumed";
+  return `Woke for ${wakeText(w)}`;
+}
+
 /** What woke it, in a few words: "its check-in", "a note and session #41". */
 export function wakeText(w: G.AutopilotWake): string {
   const parts: string[] = [];
@@ -153,6 +161,9 @@ export function wakeText(w: G.AutopilotWake): string {
     switch (r) {
       case "started":
         parts.push("being put on");
+        break;
+      case "resumed":
+        parts.push("being resumed");
         break;
       case "check_in":
         parts.push("its check-in");
