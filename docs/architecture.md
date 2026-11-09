@@ -15,7 +15,8 @@ boundary.
                 │        │   ├─ FilesDO (per project): attachments,   │
                 │        │   │  published screenshots                 │
                 │        │   ├─ NotifyDO (per person): notifications  │
-                │        │   ├─ ScheduleDO: schedules' alarm          │
+                │        │   ├─ ScheduleDO: schedules' and            │
+                │        │   │  autopilots' alarm                     │
                 │        │   ├─ SearchDO (per workspace): the index   │
                 │        │   │  that searches sessions                │
                 │        │   └─ SessionDO (one per session): events,  │
@@ -965,7 +966,9 @@ which session,
 notification settings and browsers (push subscriptions), runners, encrypted
 credentials and project secrets, the latest plan usage of each Claude
 credential, the links of published screenshots, projects' memories and
-sessions' retrospectives, projects' schedules and their runs, the Linear
+sessions' retrospectives, projects' schedules and their runs, projects'
+autopilots with the notes people steer them with, what they ask and their
+logs, the Linear
 workspaces fctl's app is installed in (with their sealed tokens), the
 fctl workspaces connected to each, people's Linear accounts, Linear's
 agent sessions and the fctl sessions they reach, what agents wrote in
@@ -991,8 +994,9 @@ while they wait to go out, and forgets them once sent (see
 [Notifications](#notifications)).
 
 **ScheduleDO** (one per instance) holds nothing but an alarm, for the
-earliest schedule that is due, when it starts its session (see
-[Schedules](#schedules)).
+earliest schedule or autopilot that is due, when it starts the schedule's
+session or wakes the autopilot (see [Schedules](#schedules) and
+[Autopilots](#autopilots)).
 
 **SearchDO** (one per workspace, SQLite storage) holds the search index of
 its sessions: their titles and descriptions, people's messages and the
@@ -2045,6 +2049,130 @@ agents this way ([Automation](automation.md#start-agents-from-other-tools));
 Linear's tickets start them through fctl's own integration
 ([Linear](#linear)), which starts sessions as schedules do
 (`crate::starts`), one for each ticket rather than one at a time.
+
+### Autopilots
+
+An autopilot (experimental) runs a project on its own, or its whole
+workspace: people give it a direction, and it plans the work, starts
+sessions to do it, and sets up what the work needs, as far as they let it
+([ADR 0080](adr/0080-autopilots-run-a-project-on-their-own-through-the-api-their-session-relays.md)).
+
+1. **Putting it on** (a project's **Autopilot** tab, `fctl autopilot on`,
+   `PUT /api/v1/projects/{id}/autopilot`). A workspace's admins let its
+   projects have autopilots first (its settings, `fctl workspaces set
+   --autopilots on`, `workspaces.autopilots`); turning that off pauses the
+   ones it has. A project's maintainers and owners put it on autopilot
+   with a direction (Markdown), its **powers** (changing the projects'
+   settings, secrets, repositories and schedules, and for a workspace's
+   autopilot creating projects; starting and steering sessions it always
+   does), its **check-in** (15 minutes to a day: the longest it goes
+   without waking), how many of its sessions work at once (1 to 8) and the
+   model of its own sessions. A workspace's admins put the whole workspace
+   on autopilot from one of its projects (`scope: workspace`, one per
+   workspace). It runs on the Claude subscription of whoever put it on, its
+   owner, as whom it acts; that is a [sensitive action](#confirming-its-you),
+   as is resuming or taking it over, which, as for schedules, runs it on
+   the taker's subscription from then on, as does changing how much it
+   works (check-in, sessions at once, model). D1 keeps it (`autopilots`, one
+   per project, its home) with the notes people steer it with
+   (`autopilot_notes`), what it asks them (`autopilot_asks`) and its log
+   (`autopilot_log`, its newest 1,000 entries).
+2. **Its own sessions** (`sessions.autopilot_role = 'pilot'`, in its home
+   project, off session lists unless asked with `?hidden=1`). fctl wakes
+   it in its current one with a message (`UserMessage.wake`, what woke it),
+   which resumes it if it stopped, while that started less than 12 hours
+   ago (`fctl_domain::autopilot::SHIFT_MS`) and didn't fail; otherwise it
+   starts a fresh one, whose first message is its briefing
+   (`fctl_domain::autopilot::briefing`): who it is and for whom, the
+   direction, and how it works. So no conversation grows for ever, and
+   what must outlast one is where people see it too: its plan (Markdown it
+   writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and
+   the project's memory. `fctl autopilot brief` gives it where things
+   stand: the direction, people's notes (the new ones marked), its asks
+   and their answers, its sessions, its plan and log
+   (`fctl_domain::autopilot::brief`). Its owner follows its sessions, which
+   notify of failures and asks, not of turns that end.
+3. **Waking** (`crate::autopilots`). ScheduleObject's alarm, which starts
+   schedules' runs, wakes autopilots too: at the earliest of the two, each
+   wake claimed in D1 (`autopilots.wake_at`) as a run is. It wakes at its
+   check-in, counted from its last turn's end; at the time it asked for
+   (`fctl autopilot wake --in 30m`, 5 minutes to a day ahead); 5 seconds
+   after people steer or answer it, so that answers given one after another
+   reach it together; a minute after one of its sessions ends a turn, asks
+   something or fails, gathered likewise (SessionObject tells it,
+   `autopilots::session_moved`); and at once when someone wakes it. A wake
+   while its session works tells it what's new at its next step, and a
+   check-in waits. The message says why it woke and what is new since it
+   last did: notes, a changed direction, answers, its sessions that moved
+   (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
+   its limit it waits for the reset. Its own session failing makes fctl
+   try again 5, 15 and 60 minutes later, then pauses it and says why;
+   its owner can no longer manage its project (or, for a workspace's, is
+   no longer an admin), has no Claude connection or is gone, its project
+   is archived, or its workspace turned autopilots off: fctl pauses it
+   at its next wake and says why (`Autopilot.problem` beforehand). It
+   pauses itself once its direction is done (`fctl autopilot pause
+   --reason …`), and people pause, resume and take it off.
+4. **Acting** (`AgentCall::Api`). Its own session's spec says it is the
+   autopilot's (`SessionSpec.autopilot`); fctl-agent then sets
+   `FCTL_AUTOPILOT` to its project's slug, and the sandbox's `fctl`, which
+   has no token, sends its API requests over the session socket: fctl-agent
+   passes them to its host, which sends them to the control plane with its
+   runner token (`POST /api/v1/runner/sessions/{id}/calls`, ahead of the
+   other routes: they go through them themselves). The control plane
+   answers a request for the autopilot's current own session alone, while
+   it is on, as its owner (`Authed.autopilot`), held to its places (its
+   project, or its workspace's projects, new ones too), a maintainer's role
+   at most (`Limits.most`) and what an autopilot does
+   (`fctl_domain::autopilot::allows`), and through the same handlers as
+   anyone's request (`route_autopilot`): read its projects, their
+   sessions, schedules, repositories, secrets' names and memory; start
+   sessions, which are its crew (`autopilot_role = 'crew'`), and message,
+   interrupt, stop, resume or archive only those; keep the memory; and as
+   far as its powers go, change projects' settings and review agents, set
+   and remove the secrets it set itself (`project_secrets.autopilot`;
+   those people set, or gave it, it neither replaces nor removes), add and
+   remove repositories, set up, change, run and delete schedules, and
+   create projects in its workspace. Never people, roles, shares, tokens,
+   runners, GitHub accounts, the workspace's settings, deleting a project,
+   or anything that takes [confirming it's you](#confirming-its-you).
+   At most as many of its sessions work at once as people allow, and it
+   starts at most 20 an hour. What it did goes in its log, in its own
+   transcript (an `autopilot_action` notice, with the session it started or
+   steered) and in the workspace's audit log, as its owner, with the
+   autopilot named. `fctl run` there returns at once, and nothing follows
+   sessions live over the relay: wakes tell it when they move on.
+5. **Its sessions.** A session it starts gets the task, then fctl's note
+   of who started it and how to reach it (`fctl ask` in that session wakes
+   the autopilot). Its messages to them carry it as their author's
+   autopilot (`UserMessage.autopilot`), which the apps show; their agents
+   see them as their starter's, its owner's. Nobody follows them, so they
+   notify nobody, and *Needs you* leaves them to the autopilot unless
+   someone follows one. They show the autopilot's mark in lists and link
+   back to its tab.
+6. **Asking people** (`fctl autopilot ask`). A question of at most 500
+   characters with up to six answers to click and Markdown that helps
+   answer (`detail`, such as screenshots of two designs it published), or
+   a secret by its name, for a project it reaches; ten at most open at
+   once. It doesn't wait: it works on what it can, and fctl wakes it with
+   the answer. The people who follow its session hear of each (a
+   notification that opens its tab, `notify::Kind::Autopilot`), and
+   *Needs you* lists them (`GET /api/v1/autopilots/asks`). Those who may
+   steer it answer or decline, saying why; a secret goes into its
+   project's secrets, sealed, for those who may set them, and the
+   autopilot hears only that it is set: sessions that start from then on
+   have it. It takes back what it no longer needs.
+7. **Steering.** Notes (`POST …/autopilot/notes`, at most 30 kept) stay
+   with it until someone removes them; a newer one wins over an older one
+   and over the direction, which people change too. Each reaches it at
+   once, and says on the tab when it saw it.
+
+The tab shows where it stands (at work, waking, waiting for people, on
+and when it next checks in, paused and why), what it asks, the notes, its
+direction, plan and sessions (live), how it works, and its log by day, with
+its wakes between what it did. Everyone who sees the project sees it;
+those who may steer it (the project's maintainers and owners, and for a
+workspace's autopilot the workspace's admins) steer it.
 
 ### Ticket trackers
 

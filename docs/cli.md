@@ -683,6 +683,63 @@ from an access token, its agent takes it as information, not instructions
 ([Automation](automation.md#start-agents-from-other-tools)). A project
 keeps at most 50 schedules.
 
+### Autopilots
+
+An autopilot (experimental) runs a project, or its whole workspace, on its
+own: from a direction, it plans the work, starts sessions to do it, and
+sets up what they need, as far as its powers go, on the Claude
+subscription of whoever puts it on. Its workspace's admins let projects
+have one; its maintainers and owners put it on and steer it
+([Architecture](architecture.md#autopilots)):
+
+```sh
+fctl workspaces set -w acme --autopilots on    # admins: projects may have an autopilot
+fctl autopilot on -p crm --direction "Build a CRM for small agencies: contacts, deals and a pipeline board."
+fctl autopilot on -p crm --direction-file direction.md --check-in 30m --sessions 4 --powers settings,schedules
+fctl autopilot on -p ops --workspace --direction-file ops.md   # admins: the whole workspace, from ops
+fctl autopilot -p crm                          # where it stands: what it asks, notes, sessions, plan
+fctl autopilot steer -p crm "Focus on the pipeline board this week."
+fctl autopilot asks --all                      # what autopilots ask you, across your workspaces
+fctl autopilot answer -p crm apa_01JC… "Stripe"
+fctl autopilot secret -p crm apa_01JC…         # the value it asked for, without showing it (or from stdin)
+fctl autopilot decline -p crm apa_01JC… --reason "Not yet: after launch"
+fctl autopilot log -p crm --limit 100
+fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it works, or its direction
+fctl autopilot wake -p crm                     # now, with what's new
+fctl autopilot pause -p crm --reason "Launch week"
+fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's
+fctl autopilot off -p crm --stop-sessions      # its direction, notes and log stay
+```
+
+`--check-in` is how long it goes without waking, at most: 15m, 30m, 1h,
+2h, 4h, 8h, 12h or 1d; it wakes sooner when one of its sessions ends a
+turn, asks something or fails, and when people steer or answer it.
+`--sessions` is how many of its sessions work at once (1 to 8).
+`--powers` lists what it may do besides starting and steering sessions:
+`settings`, `secrets` (those it makes itself, never those people set),
+`repos`, `schedules`, and for a workspace's autopilot `projects`; `all`
+or `none`. Changing how much it works, resuming it or `--mine` runs it on
+your subscription from then on.
+
+In its own session's sandbox, the autopilot's `fctl` reaches the API as
+the person it acts for, without signing in (`FCTL_AUTOPILOT` names its
+project, the default for `-p`): `fctl run`, `fctl sessions`, `fctl show`,
+`fctl logs`, `fctl send`, `fctl stop`, `fctl projects set`, `fctl
+projects secrets`, `fctl projects repos`, `fctl schedules` and `fctl
+projects create`, as far as its powers go. `fctl run` returns at once
+there; fctl wakes it when its sessions move on.
+
+```sh
+fctl autopilot brief                           # where things stand, as it wakes
+fctl autopilot plan --file plan.md             # its plan, whole (Markdown; - for stdin)
+fctl autopilot log "Started crm#12 for the board; imports wait for the CSV format."
+fctl autopilot ask "Which layout should the board use?" --detail-file options.md -o Compact -o Roomy
+fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"
+fctl autopilot withdraw apa_01JC…              # found out itself
+fctl autopilot wake --in 45m                   # when to wake next, 5m to 1d
+fctl autopilot pause --reason "The direction is done: all four features shipped."
+```
+
 ## Notifications
 
 A session you follow notifies you when it waits for your reply, pauses on a
