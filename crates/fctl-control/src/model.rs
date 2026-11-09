@@ -771,6 +771,9 @@ pub struct SessionRow {
     pub autopilot_role: Option<String>,
     #[serde(default)]
     pub autopilot_slug: Option<String>,
+    /// For an autopilot's own session, its scope: `project` or `workspace`.
+    #[serde(default)]
+    pub autopilot_scope: Option<String>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -944,6 +947,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
     rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.question, \
     s.autopilot_id, s.autopilot_role, (SELECT ap.slug FROM projects ap WHERE ap.id = s.autopilot_id) AS autopilot_slug, \
+    CASE WHEN s.autopilot_role = 'pilot' THEN (SELECT a.scope FROM autopilots a WHERE a.project_id = s.autopilot_id) END AS autopilot_scope, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
     w.avatar_updated_at AS workspace_avatar_at, w.base_role AS workspace_base_role, \
     w.require_two_factor AS workspace_two_factor, wm.role AS workspace_role \

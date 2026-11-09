@@ -2079,13 +2079,17 @@ sessions to do it, and sets up what the work needs, as far as they let it
    (`autopilot_notes`), what it asks them (`autopilot_asks`) and its log
    (`autopilot_log`, its newest 1,000 entries).
 2. **Its own sessions** (`sessions.autopilot_role = 'pilot'`, in its home
-   project, off session lists unless asked with `?hidden=1`). fctl wakes
+   project, off session lists unless asked with `?hidden=1`). A workspace's
+   autopilot's, which show what it does across the workspace, are its
+   admins' only (`access::session_role`), as is its brief; its tab shows
+   others its sessions and log in the projects they see. fctl wakes
    it in its current one with a message (`UserMessage.wake`, what woke it),
    which resumes it if it stopped, while that started less than 12 hours
-   ago (`fctl_domain::autopilot::SHIFT_MS`) and didn't fail; otherwise it
-   starts a fresh one, whose first message is its briefing
-   (`fctl_domain::autopilot::briefing`): who it is and for whom, the
-   direction, and how it works. So no conversation grows for ever, and
+   ago (`fctl_domain::autopilot::SHIFT_MS`) and didn't fail, or works now.
+   Otherwise it stops that one and starts a fresh one, whose first message
+   is its briefing (`fctl_domain::autopilot::briefing`): who it is and for
+   whom, the direction, and how it works. So no conversation grows for
+   ever, and
    what must outlast one is where people see it too: its plan (Markdown it
    writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and
    the project's memory. `fctl autopilot brief` gives it where things

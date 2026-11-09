@@ -134,6 +134,16 @@ async fn view(
     )?
     .all()
     .await?;
+    // A workspace's autopilot works in projects some who read its tab
+    // don't see: they see its sessions in theirs.
+    let seen = seen_projects(ctx, row, crew.iter().map(|c| c.project_id.clone())).await?;
+    let crew: Vec<engine::CrewRow> = crew
+        .into_iter()
+        .filter(|c| {
+            seen.as_ref()
+                .is_none_or(|seen| seen.contains(&c.project_id))
+        })
+        .collect();
     #[derive(Deserialize)]
     struct Count {
         #[serde(deserialize_with = "int", default)]
@@ -210,6 +220,36 @@ fn crew_of(c: &engine::CrewRow) -> AutopilotCrew {
         created_at: c.created_at,
         last_activity_at: c.last_activity_at,
     }
+}
+
+/// Of `projects`, those whoever reads a workspace's autopilot sees (its
+/// sessions and log reach projects some of them don't); `None` for one
+/// that sees them all: a project's autopilot, or the autopilot itself.
+async fn seen_projects(
+    ctx: &Ctx,
+    row: &AutopilotRow,
+    projects: impl Iterator<Item = String>,
+) -> AppResult<Option<Vec<String>>> {
+    if row.scope() != AutopilotScope::Workspace || ctx.autopilot().is_some() {
+        return Ok(None);
+    }
+    let mut ids: Vec<String> = projects.collect();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(Some(ids));
+    }
+    let user = ctx.user()?;
+    let rows: Vec<ProjectRow> = q(
+        &ctx.db,
+        &format!(
+            "{PROJECT_SELECT} WHERE p.id IN (SELECT value FROM json_each(?2)) AND {PROJECT_VISIBLE}"
+        ),
+        &[s(&user.id), s(&serde_json::to_string(&ids)?)],
+    )?
+    .all()
+    .await?;
+    Ok(Some(rows.into_iter().map(|r| r.id).collect()))
 }
 
 #[derive(Deserialize)]
@@ -347,10 +387,13 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
         session_title: Option<String>,
         project_slug: Option<String>,
         from_session_id: Option<String>,
+        other_project_id: Option<String>,
+        session_project_id: Option<String>,
     }
     let mut params = vec![s(&row.project_id)];
     let mut sql = "SELECT e.id, e.at, e.kind, e.text, e.user_id, u.name AS user_name, u.avatar_url AS user_avatar, \
-         e.session_id, es.number AS session_number, es.title AS session_title, op.slug AS project_slug, e.from_session_id \
+         e.session_id, es.number AS session_number, es.title AS session_title, op.slug AS project_slug, e.from_session_id, \
+         e.other_project_id, es.project_id AS session_project_id \
          FROM autopilot_log e LEFT JOIN users u ON u.id = e.user_id LEFT JOIN sessions es ON es.id = e.session_id \
          LEFT JOIN projects op ON op.id = e.other_project_id WHERE e.project_id = ?1"
         .to_owned();
@@ -368,6 +411,17 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
     let mut rows: Vec<EntryRow> = q(&ctx.db, &sql, &params)?.all().await?;
     let has_more = rows.len() as i64 > limit;
     rows.truncate(usize::try_from(limit).unwrap_or(50));
+    // What a workspace's autopilot did in projects the reader doesn't see
+    // stays out of their page of it.
+    let places = |r: &EntryRow| {
+        [r.other_project_id.clone(), r.session_project_id.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+    };
+    if let Some(seen) = seen_projects(ctx, &row, rows.iter().flat_map(places)).await? {
+        rows.retain(|r| places(r).iter().all(|p| seen.contains(p)));
+    }
     http::ok(&AutopilotLog {
         entries: rows
             .into_iter()
@@ -399,6 +453,13 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
 pub async fn brief(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
     let row = require(l.row.clone())?;
+    // A workspace's autopilot's whole picture reaches across the
+    // workspace: for those who steer it, its admins.
+    if row.scope() == AutopilotScope::Workspace && ctx.autopilot().is_none() && !l.can.steer {
+        return Err(forbidden(
+            "A workspace's autopilot's brief is for the workspace's admins, as it reaches all its projects.",
+        ));
+    }
     let (text, shown) = brief_of(ctx, &l.p.row, &row).await?;
     if ctx.autopilot().is_some() {
         engine::mark_seen(&ctx.db, &row.project_id, &shown.notes, &shown.asks, ctx.now).await?;
@@ -713,8 +774,16 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     s(&ap::store_powers(&powers)),
                     n(i64::from(check_in)),
                     n(i64::from(crew)),
-                    os(model.flatten().as_deref().or(before.as_ref().and_then(|b| b.model.as_deref()))),
-                    os(effort.flatten().as_deref().or(before.as_ref().and_then(|b| b.effort.as_deref()))),
+                    // Given, the one asked for (`default`: the project's);
+                    // else the one it had.
+                    os(match &model {
+                        Some(m) => m.as_deref(),
+                        None => before.as_ref().and_then(|b| b.model.as_deref()),
+                    }),
+                    os(match &effort {
+                        Some(e) => e.as_deref(),
+                        None => before.as_ref().and_then(|b| b.effort.as_deref()),
+                    }),
                 ],
             )?
             .run()
@@ -1110,11 +1179,12 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         }
         ctx.verified(Sensitive::PutOnAutopilot)?;
     }
-    q(
+    // Only one still paused: one taken off meanwhile stays off.
+    let resumed = q(
         &ctx.db,
         "UPDATE autopilots SET state = 'on', paused_reason = NULL, paused_by = NULL, paused_at = NULL, failures = 0, \
          wake_at = ?1, wake_reasons = 'resumed', asked_wake_at = NULL, owner_id = CASE WHEN ?2 THEN ?3 ELSE owner_id END, \
-         updated_at = ?1 WHERE project_id = ?4",
+         updated_at = ?1 WHERE project_id = ?4 AND state = 'paused'",
         &[
             n(ctx.now),
             crate::db::b(take_over),
@@ -1124,6 +1194,11 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     )?
     .run()
     .await?;
+    if resumed == 0 {
+        return Err(conflict(
+            "It isn't paused any more: someone resumed it, or took it off autopilot, meanwhile.",
+        ));
+    }
     engine::log(
         &ctx.db,
         &row.project_id,

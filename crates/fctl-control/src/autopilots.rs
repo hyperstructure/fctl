@@ -620,111 +620,138 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
     if took == 0 {
         return Ok(false);
     }
-    let mut reasons = row.reasons();
-    if reasons.is_empty() {
-        reasons.push(row.wake_reason().unwrap_or(AutopilotWakeReason::CheckIn));
-    }
-    let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
-        return Ok(false);
-    };
-    if project.archived_at.is_some() {
-        stop_for(db, row, "Its project is archived.", now).await?;
-        return Ok(true);
-    }
-    if !workspace_allows(db, &row.workspace_id).await? {
-        stop_for(
-            db,
-            row,
-            "Its workspace's admins turned autopilots off.",
-            now,
-        )
-        .await?;
-        return Ok(true);
-    }
-    let owner = match owner(db, &project, row).await? {
-        Ok(o) => o,
-        Err(why) => {
-            stop_for(db, row, &why, now).await?;
+    // Once claimed, what woke it is gone from its row: should waking it
+    // fail, it goes back, for a retry soon rather than at the next check-in.
+    let woke: AppResult<bool> = async {
+        let mut reasons = row.reasons();
+        if reasons.is_empty() {
+            reasons.push(row.wake_reason().unwrap_or(AutopilotWakeReason::CheckIn));
+        }
+        let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
+            return Ok(false);
+        };
+        if project.archived_at.is_some() {
+            stop_for(db, row, "Its project is archived.", now).await?;
             return Ok(true);
         }
-    };
-    // Its owner's plan at its limit: it wakes once the limit resets, with
-    // what it would have woken for.
-    let limits = crate::schedules::usage_of(db, &owner.credential.id).await?;
-    if let Some(limit) = fctl_domain::schedules::at_limit(&limits, now) {
-        let resets = limit
-            .resets_at
-            .filter(|r| *r > now)
-            .map_or(now + 3_600_000, |r| r.min(now + 8 * 86_400_000))
-            + 60_000;
+        if !workspace_allows(db, &row.workspace_id).await? {
+            stop_for(
+                db,
+                row,
+                "Its workspace's admins turned autopilots off.",
+                now,
+            )
+            .await?;
+            return Ok(true);
+        }
+        let owner = match owner(db, &project, row).await? {
+            Ok(o) => o,
+            Err(why) => {
+                stop_for(db, row, &why, now).await?;
+                return Ok(true);
+            }
+        };
+        // Its owner's plan at its limit: it wakes once the limit resets, with
+        // what it would have woken for.
+        let limits = crate::schedules::usage_of(db, &owner.credential.id).await?;
+        if let Some(limit) = fctl_domain::schedules::at_limit(&limits, now) {
+            let resets = limit
+                .resets_at
+                .filter(|r| *r > now)
+                .map_or(now + 3_600_000, |r| r.min(now + 8 * 86_400_000))
+                + 60_000;
+            q(
+                db,
+                "UPDATE autopilots SET wake_at = ?, wake_reasons = ? WHERE project_id = ? AND state = 'on'",
+                &[
+                    n(resets),
+                    s(&reasons.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(",")),
+                    s(&row.project_id),
+                ],
+            )?
+            .run()
+            .await?;
+            return Ok(true);
+        }
+        let news = News::gather(db, row, now).await?;
+        let status = row.session_status();
+        let working = status.is_some_and(ap::at_work);
+        // At work already: a check-in can wait; news reaches it at its next
+        // step.
+        let only_time = reasons
+            .iter()
+            .all(|r| matches!(r, AutopilotWakeReason::CheckIn | AutopilotWakeReason::Asked));
+        if working && only_time && news.is_empty() {
+            return Ok(true);
+        }
+        let wake = news.wake(&reasons);
+        let text = news.message(&reasons, now);
+        let carries_on = match (row.session_id.as_deref(), status, row.session_created_at) {
+            (Some(_), Some(st), Some(started)) => {
+                ap::carries_on(st, started, now) && (st.accepts_messages() || st.resumes_for_messages())
+            }
+            _ => false,
+        };
+        let session = match (carries_on, row.session_id.as_deref()) {
+            (true, Some(id)) => {
+                deliver(env, id, &text, wake.clone(), now).await?;
+                id.to_owned()
+            }
+            _ => {
+                let briefing = briefing(db, row, &project, &owner.user).await?;
+                let first = format!("{briefing}\n---\n\n{text}");
+                let (id, _) =
+                    start_pilot(env, db, row, &project, &owner, first, wake.clone(), now).await?;
+                // The session it leaves stops, rather than keep its sandbox
+                // while it waits for a message that won't come.
+                if let (Some(old), Some(st)) = (row.session_id.as_deref(), status)
+                    && !st.is_terminal()
+                {
+                    stop_session(env, old).await;
+                }
+                id.0
+            }
+        };
+        news.mark_seen(db, row, now).await?;
+        // A direction changed since it was read says so at the next wake.
         q(
             db,
-            "UPDATE autopilots SET wake_at = ?, wake_reasons = ? WHERE project_id = ? AND state = 'on'",
-            &[
-                n(resets),
-                s(&reasons.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(",")),
-                s(&row.project_id),
-            ],
+            "UPDATE autopilots SET woken_at = ?1, check_ins = check_ins + 1, \
+             direction_new = CASE WHEN direction_at = ?2 THEN 0 ELSE direction_new END, updated_at = ?1 \
+             WHERE project_id = ?3",
+            &[n(now), n(row.direction_at), s(&row.project_id)],
         )?
         .run()
         .await?;
-        return Ok(true);
+        log(
+            db,
+            &row.project_id,
+            Entry::new(AutopilotEntryKind::Woke, woke_line(&reasons, &wake)).about(Some(&session)),
+            now,
+        )
+        .await;
+        Ok(true)
     }
-    let news = News::gather(db, row, now).await?;
-    let status = row.session_status();
-    let working = status.is_some_and(ap::at_work);
-    // At work already: a check-in can wait; news reaches it at its next
-    // step.
-    let only_time = reasons
-        .iter()
-        .all(|r| matches!(r, AutopilotWakeReason::CheckIn | AutopilotWakeReason::Asked));
-    if working && only_time && news.is_empty() {
-        return Ok(true);
-    }
-    let wake = news.wake(&reasons);
-    let text = news.message(&reasons, now);
-    let carries_on = match (row.session_id.as_deref(), status, row.session_created_at) {
-        (Some(_), Some(st), Some(started)) => {
-            ap::carries_on(st, started, now) && (st.accepts_messages() || st.resumes_for_messages())
-        }
-        _ => false,
-    };
-    let session = match (carries_on, row.session_id.as_deref()) {
-        (true, Some(id)) => {
-            deliver(env, id, &text, wake.clone(), now).await?;
-            id.to_owned()
-        }
-        _ => {
-            let briefing = briefing(db, row, &project, &owner.user).await?;
-            let first = format!("{briefing}\n---\n\n{text}");
-            let (id, _) =
-                start_pilot(env, db, row, &project, &owner, first, wake.clone(), now).await?;
-            // The session it leaves stops, rather than keep its sandbox
-            // while it waits for a message that won't come.
-            if let (Some(old), Some(st)) = (row.session_id.as_deref(), status)
-                && !st.is_terminal()
-            {
-                stop_session(env, old).await;
-            }
-            id.0
-        }
-    };
-    news.mark_seen(db, row, now).await?;
-    q(
-        db,
-        "UPDATE autopilots SET woken_at = ?, check_ins = check_ins + 1, direction_new = 0, updated_at = ? WHERE project_id = ?",
-        &[n(now), n(now), s(&row.project_id)],
-    )?
-    .run()
-    .await?;
-    log(
-        db,
-        &row.project_id,
-        Entry::new(AutopilotEntryKind::Woke, woke_line(&reasons, &wake)).about(Some(&session)),
-        now,
-    )
     .await;
-    Ok(true)
+    if woke.is_err() {
+        let retry = q(
+            db,
+            "UPDATE autopilots SET wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
+             WHEN ?1 = '' THEN wake_reasons ELSE wake_reasons || ',' || ?1 END, \
+             wake_at = MIN(COALESCE(wake_at, ?2), ?2) WHERE project_id = ?3 AND state = 'on'",
+            &[
+                s(&row.wake_reasons),
+                n(now + ap::RETRY_MS[0]),
+                s(&row.project_id),
+            ],
+        );
+        if let Ok(retry) = retry
+            && let Err(e) = retry.run().await
+        {
+            worker::console_error!("autopilot {}: {}", row.project_id, e.0.message);
+        }
+    }
+    woke
 }
 
 /// What a wake says in the log: "Woke for its check-in", "Woke: Ada's

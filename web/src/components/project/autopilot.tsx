@@ -915,7 +915,8 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
             {" · "}
             {a.check_ins === 1 ? "1 check-in" : `${a.check_ins} check-ins`}
             {a.woken_at ? `, the last ${ago(a.woken_at, now)}` : ""}
-            {a.session && (
+            {/* A workspace's autopilot's own session is its admins', who steer it. */}
+            {a.session && (a.scope === "project" || a.can.steer) && (
               <>
                 {" · "}
                 <Link
