@@ -25,6 +25,16 @@
   }
 }
 
+/* On a phone, a swipe from the edge of the screen doesn't go back or forward
+   in Chrome (in Safari, components/shell/edge-swipes.ts keeps it in the app). */
+@layer base {
+  @media (pointer: coarse) and (width < 48rem), (pointer: coarse) and (height < 48rem) {
+    :root {
+      overscroll-behavior-x: none;
+    }
+  }
+}
+
 /* Editorial prose: agent answers, project descriptions. */
 .prose-fctl {
   font-family: var(--font-sans);
