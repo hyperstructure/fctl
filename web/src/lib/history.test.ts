@@ -136,6 +136,28 @@ describe("linksInPlace", () => {
     }
   });
 
+  it("finds a place by its name as written, or decoded, and takes a malformed one in its stride", () => {
+    apple();
+    const undo = linksInPlace();
+    window.history.replaceState(null, "", "/w/acme");
+    const spaced = Object.assign(document.createElement("h2"), { id: "two words" });
+    const percent = Object.assign(document.createElement("h2"), { id: "100%" });
+    document.body.append(spaced, percent);
+    const scrolled: string[] = [];
+    for (const el of [spaced, percent]) el.scrollIntoView = () => scrolled.push(el.id);
+    try {
+      expect(click("#two%20words").wentOn).toBe(false);
+      expect(click("#100%").wentOn).toBe(false);
+      expect(click("#%E0%A4%A").wentOn).toBe(false);
+      expect(scrolled).toEqual(["two words", "100%"]);
+      expect(window.location.hash).toBe("#%E0%A4%A");
+    } finally {
+      spaced.remove();
+      percent.remove();
+      undo();
+    }
+  });
+
   it("leaves the router's links, new tabs and windows, and other kinds of link alone", () => {
     apple();
     const undo = linksInPlace();

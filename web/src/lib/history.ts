@@ -63,10 +63,15 @@ export function linksInPlace(): () => void {
       // A place on this page: there, in place of where it was, keeping the router's state, which
       // a page load would lose.
       window.history.replaceState(window.history.state, "", a.href);
-      const id = decodeURIComponent(a.hash.slice(1));
-      const to = id ? document.getElementById(id) : null;
+      // As browsers find it: the place named as written, or else as decoded, where it decodes.
+      const id = a.hash.slice(1);
+      let decoded = id;
+      try {
+        decoded = decodeURIComponent(id);
+      } catch {}
+      const to = (id && document.getElementById(id)) || (decoded && document.getElementById(decoded));
       if (to) to.scrollIntoView();
-      else if (!id || id.toLowerCase() === "top") window.scrollTo(0, 0);
+      else if (!decoded || decoded.toLowerCase() === "top") window.scrollTo(0, 0);
       return;
     }
     window.location.replace(a.href);
