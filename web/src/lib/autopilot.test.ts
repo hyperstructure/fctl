@@ -5,6 +5,7 @@ import {
   checkInWords,
   DIRECTIONS,
   defaultPowers,
+  glance,
   hasPlaceholders,
   phase,
   splitBriefing,
@@ -173,5 +174,62 @@ describe("how people set it up", () => {
     expect(build && hasPlaceholders(build.direction)).toBe(true);
     expect(hasPlaceholders("Ship [x]")).toBe(false);
     expect(hasPlaceholders("Ship the checkout.")).toBe(false);
+  });
+});
+
+describe("an autopilot at a glance, in the sidebar", () => {
+  const session = { id: "ses_1", number: 7, status: "running" as const, started_at: NOW };
+  const on = (more: Partial<G.ProjectAutopilot> = {}): G.ProjectAutopilot => ({
+    allowed: true,
+    state: "on",
+    asks: 0,
+    working: false,
+    session,
+    ...more,
+  });
+
+  it("shows none while it is off or there is none", () => {
+    expect(glance(undefined, NOW)).toBeUndefined();
+    expect(glance({ allowed: true, asks: 0, working: false } as G.ProjectAutopilot, NOW)).toBeUndefined();
+    expect(glance(on({ state: "off" }), NOW)).toBeUndefined();
+  });
+
+  it("runs the comet while its session works or starts", () => {
+    expect(glance(on({ working: true }), NOW)).toMatchObject({
+      live: true,
+      words: "At work in its session #7.",
+    });
+    expect(glance(on({ working: true, session: { ...session, status: "provisioning" } }), NOW)?.words).toBe(
+      "Waking: its session #7 is starting.",
+    );
+  });
+
+  it("says when it wakes while it rests", () => {
+    const g = glance(on({ wake_at: NOW + 25 * 60_000 }), NOW);
+    expect(g?.live).toBe(false);
+    expect(g?.wake).toMatch(/\d/);
+    expect(g?.words).toMatch(/^Resting: it wakes at .*, unless something needs it sooner\.$/);
+    // A day off, the day; a minute off, none: it wakes now.
+    expect(glance(on({ wake_at: NOW + 3 * 86_400_000 }), NOW)?.words).toMatch(/^Resting: it wakes on /);
+    const soon = glance(on({ wake_at: NOW + 10_000 }), NOW);
+    expect(soon?.wake).toBeUndefined();
+    expect(soon?.words).toBe("Resting: it wakes now.");
+    expect(glance(on(), NOW)?.words).toBe("Resting: it wakes when something needs it.");
+  });
+
+  it("says it is paused, and what it asks", () => {
+    expect(glance(on({ state: "paused", asks: 2, wake_at: undefined }), NOW)).toEqual({
+      live: false,
+      paused: true,
+      asks: 2,
+      words: "Paused: it wakes again once someone resumes it. It asks you 2 things.",
+    });
+  });
+
+  it("reads what the sidebar kept of it", () => {
+    expect(glance({ state: "on", session: { id: "ses_1", number: 7 } }, NOW)).toMatchObject({
+      live: false,
+      asks: 0,
+    });
   });
 });

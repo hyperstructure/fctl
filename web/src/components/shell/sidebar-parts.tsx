@@ -3,6 +3,7 @@
 
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
+  AlarmClock,
   ChevronsUpDown,
   Cpu,
   EyeOff,
@@ -30,6 +31,7 @@ import {
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { clearAttention } from "@/lib/attention";
+import { type AutopilotGlance, glance } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { hideable } from "@/lib/hidden-sessions";
@@ -166,6 +168,111 @@ export function SessionLine({
         >
           <EyeOff className="size-3.5" />
         </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A project's autopilot, at the head of its project's lines while it is on or paused: its mark,
+ * whose comet runs while its own session works, and when it wakes next, or that it is paused. It
+ * opens its own session, or its Autopilot tab until it has one (and for those it doesn't show its
+ * session to). What it asks you shows in blue at its end, a link to the tab, where people answer.
+ */
+export function AutopilotLine({
+  project,
+  autopilot,
+  here,
+  now,
+  onNavigate,
+}: {
+  project: { slug: string; name: string };
+  autopilot?: AutopilotGlance;
+  /** The page shows its session, or its project's Autopilot tab. */
+  here: boolean;
+  now: number;
+  onNavigate: () => void;
+}) {
+  const g = glance(autopilot, now);
+  if (!g) return null;
+  const session = autopilot?.session;
+  const asks = g.asks > 0;
+  const props = {
+    onClick: onNavigate,
+    "aria-current": here ? ("page" as const) : undefined,
+    title: `${project.name}'s autopilot\n${g.words}${session ? `\nOpens its session #${session.number}` : ""}`,
+    className: cn(
+      "flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150",
+      here
+        ? "bg-raised text-ink shadow-[inset_0_0_0_1px_var(--c-line)]"
+        : cn(
+            g.paused ? "text-ink-4" : g.live ? "text-ink-2" : "text-ink-3",
+            "group-hover/line:bg-hover group-hover/line:text-ink",
+          ),
+      // Room for what it asks, which sits over its end.
+      asks && "pr-11",
+    ),
+  };
+  const body = (
+    <>
+      <span className="flex w-3.5 shrink-0 justify-center">
+        <AutopilotIcon
+          live={g.live}
+          className={cn(
+            "size-3.5 transition-colors duration-150",
+            // While it works, its comet runs in the accent round a dim ring.
+            here && !g.live ? "text-accent" : "text-ink-4 group-hover/line:text-ink-3",
+          )}
+        />
+      </span>
+      <span className="min-w-0 flex-1 truncate">Autopilot</span>
+      <span className="sr-only">. {g.words}</span>
+      {!asks &&
+        (g.live ? (
+          <span className="shrink-0 text-[11.5px] text-accent" aria-hidden="true">
+            {g.waking ? "Waking" : "At work"}
+          </span>
+        ) : g.paused ? (
+          <span className="shrink-0 text-[11.5px] text-pink" aria-hidden="true">
+            Paused
+          </span>
+        ) : (
+          g.wake && (
+            <span
+              className="flex shrink-0 items-center gap-1 text-[11.5px] text-ink-4 tabular-nums"
+              aria-hidden="true"
+            >
+              <AlarmClock className="size-3" />
+              {g.wake}
+            </span>
+          )
+        ))}
+    </>
+  );
+  return (
+    <div className="group/line relative flex items-center">
+      {session ? (
+        <Link to="/s/$id" params={{ id: session.id }} {...props}>
+          {body}
+        </Link>
+      ) : (
+        <Link to="/p/$slug" params={{ slug: project.slug }} search={{ tab: "autopilot" }} {...props}>
+          {body}
+        </Link>
+      )}
+      {asks && (
+        <Link
+          to="/p/$slug"
+          params={{ slug: project.slug }}
+          search={{ tab: "autopilot" }}
+          onClick={onNavigate}
+          aria-label={`Answer what ${project.name}'s autopilot asks you (${g.asks})`}
+          title={g.asks === 1 ? "It asks you one thing" : `It asks you ${g.asks} things`}
+          className="absolute right-1 flex h-5 items-center gap-1 rounded px-1.5 text-[11.5px] text-blue tabular-nums transition-colors duration-150 hover:bg-blue/12"
+        >
+          <MessageCircleQuestion className="size-3.5" aria-hidden="true" />
+          {g.asks}
+        </Link>
       )}
     </div>
   );

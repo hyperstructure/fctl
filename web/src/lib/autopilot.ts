@@ -132,6 +132,74 @@ export function phase(a: G.Autopilot, now = Date.now()): Phase {
   };
 }
 
+/**
+ * A project's autopilot as the sidebar shows it: the project list's summary (`G.ProjectAutopilot`),
+ * or what the sidebar kept of one, which has its state and session alone.
+ */
+export type AutopilotGlance = Pick<G.ProjectAutopilot, "state"> &
+  Partial<Pick<G.ProjectAutopilot, "working" | "asks" | "wake_at">> & {
+    session?: Pick<G.AutopilotSession, "id" | "number"> & Partial<Pick<G.AutopilotSession, "status">>;
+  };
+
+/** Where an autopilot stands, as its line in the sidebar says it. */
+export interface Glance {
+  /** Its own session works, or is starting: the comet runs round its mark. */
+  live: boolean;
+  /** Its own session is starting. */
+  waking?: boolean;
+  paused: boolean;
+  /** When it wakes next, as a time ("14:20") or a day ("Nov 12"), while it rests. */
+  wake?: string;
+  /** What it asks people now. */
+  asks: number;
+  /** A sentence of where it stands, for the line's tooltip. */
+  words: string;
+}
+
+/** Where `a` stands at a glance; none while it is off, or the project has none. */
+export function glance(a: AutopilotGlance | undefined, now = Date.now()): Glance | undefined {
+  if (!a?.state || a.state === "off") return;
+  const asks = a.asks ?? 0;
+  const asking = asks > 0 ? ` It asks you ${asks === 1 ? "one thing" : `${asks} things`}.` : "";
+  if (a.state === "paused")
+    return {
+      live: false,
+      paused: true,
+      asks,
+      words: `Paused: it wakes again once someone resumes it.${asking}`,
+    };
+  const n = a.session ? ` #${a.session.number}` : "";
+  if (a.working) {
+    const s = a.session?.status;
+    const starting = s === "queued" || s === "provisioning" || s === "preparing";
+    return {
+      live: true,
+      waking: starting,
+      paused: false,
+      asks,
+      words: starting
+        ? `Waking: its session${n} is starting.${asking}`
+        : `At work in its session${n}.${asking}`,
+    };
+  }
+  const at = a.wake_at;
+  if (at == null || at - now < 60_000)
+    return {
+      live: false,
+      paused: false,
+      asks,
+      words: `Resting: it wakes ${at == null ? "when something needs it" : "now"}.${asking}`,
+    };
+  const today = at - now < 86_400_000;
+  return {
+    live: false,
+    paused: false,
+    asks,
+    wake: today ? clock(at) : day(at),
+    words: `Resting: it wakes ${today ? `at ${clock(at)}` : `on ${day(at)} at ${clock(at)}`}, unless something needs it sooner.${asking}`,
+  };
+}
+
 /** "It checks in at 14:20, unless something needs it sooner." */
 export function wakeWords(a: Pick<G.Autopilot, "wake_at" | "wake_reason">, now = Date.now()): string {
   if (!a.wake_at) return "";

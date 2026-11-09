@@ -460,7 +460,10 @@ started.
   project's sessions under it, in all your workspaces: those that haven't
   ended (starting, at work, waiting or paused), and for an hour those that
   stopped or failed, dimmer, the one you are on marked, so a click switches
-  to another. On a computer, hover one that waits for a message, stopped
+  to another. A project on autopilot has its **Autopilot** above them,
+  which opens the autopilot's own session: it says when it is at work,
+  when it wakes next or that it is paused, and in blue how many things it
+  asks you, which opens its Autopilot tab. On a computer, hover one that waits for a message, stopped
   or failed and click its eye to hide it from the sidebar in that browser,
   until its agent works again. Above them, **Needs you** gathers what waits on you in the
   sessions you started or follow, most pressing first: what an agent asks

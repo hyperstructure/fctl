@@ -3,11 +3,12 @@
 // lists the control plane sends take their place once both have come. Only
 // what the sidebar shows is kept (names, colors and avatars, projects'
 // icons and the descriptions that pick the ones nobody chose, your role, how
-// many sessions each project has going), for the person signed in; signing
-// out forgets it.
+// many sessions each project has going, and whether an autopilot runs it,
+// with its own session), for the person signed in; signing out forgets it.
 
 import { useEffect, useMemo } from "react";
 import type * as G from "@/gen";
+import type { AutopilotGlance } from "./autopilot";
 import { parseHex } from "./color";
 import { forgetHiddenSessions } from "./hidden-sessions";
 
@@ -26,6 +27,8 @@ export type SidebarProject = Pick<
   "id" | "slug" | "name" | "active_sessions" | "icon" | "description"
 > & {
   workspace?: Pick<G.WorkspaceRef, "id">;
+  /** Its autopilot: the list's, or, kept, its state and its own session. */
+  autopilot?: AutopilotGlance;
 };
 /** An invitation to a workspace, as the sidebar shows it. */
 export type SidebarInvitation = Pick<G.WorkspaceInvitation, "id" | "workspace">;
@@ -79,6 +82,7 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
       icon: p.icon,
       description: p.description,
       workspace: p.workspace && { id: p.workspace.id },
+      autopilot: keptAutopilot(p.autopilot),
     })),
   };
   try {
@@ -86,6 +90,12 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
   } catch {
     // Private browsing without storage, or no room: the sidebar waits for the lists.
   }
+}
+
+/** What is kept of a project's autopilot, while it has one that isn't off. */
+function keptAutopilot(a: G.ProjectAutopilot | undefined): AutopilotGlance | undefined {
+  if (!a?.state || a.state === "off") return;
+  return { state: a.state, session: a.session && { id: a.session.id, number: a.session.number } };
 }
 
 /** Forgets the lists kept, and the sessions hidden from it (signing out). */
@@ -151,6 +161,20 @@ function readProject(v: unknown): SidebarProject | undefined {
     icon: readIcon(v.icon),
     description: isText(v.description) ? v.description : undefined,
     workspace: isObject(w) && isText(w.id) ? { id: w.id } : undefined,
+    // Lists kept before the sidebar showed autopilots have none.
+    autopilot: readAutopilot(v.autopilot),
+  };
+}
+
+function readAutopilot(v: unknown): AutopilotGlance | undefined {
+  if (!isObject(v) || (v.state !== "on" && v.state !== "paused")) return;
+  const s = v.session;
+  return {
+    state: v.state,
+    session:
+      isObject(s) && isText(s.id) && typeof s.number === "number"
+        ? { id: s.id, number: s.number }
+        : undefined,
   };
 }
 

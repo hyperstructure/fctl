@@ -719,6 +719,100 @@ describe("the project a page is about", () => {
   });
 });
 
+describe("a project's autopilot", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const pilot = { id: "ses_pilot", number: 9, status: "running" as const, started_at: NOW - HOUR };
+  const piloted = (autopilot: Partial<G.ProjectAutopilot>): G.ProjectList => ({
+    projects: [
+      {
+        ...project("web", acme),
+        autopilot: { allowed: true, state: "on", asks: 0, working: false, ...autopilot },
+      },
+      project("api", acme),
+    ],
+  });
+  /** Its line: where it leads, what it says, whether it is lit, and its tooltip. */
+  const line = (c: HTMLElement) => {
+    const a = [...c.querySelectorAll<HTMLAnchorElement>("section a")].find((x) =>
+      x.textContent?.startsWith("Autopilot"),
+    );
+    return (
+      a && {
+        href: a.getAttribute("href"),
+        text: shownText(a),
+        here: a.getAttribute("aria-current"),
+        title: a.title,
+      }
+    );
+  };
+
+  it("heads its project's lines on every page, and opens its own session", async () => {
+    for (const path of ["/", "/w/acme", "/p/api"]) {
+      const sidebar = reload(path);
+      await sidebar.come({ workspaces, projects: piloted({ working: true, session: pilot }) });
+      expect(line(sidebar.container)).toMatchObject({
+        href: "/s/ses_pilot",
+        // With where it stands, for screen readers.
+        text: "Autopilot. At work in its session #9.",
+        here: null,
+      });
+      expect(line(sidebar.container)?.title).toBe(
+        "web's autopilot\nAt work in its session #9.\nOpens its session #9",
+      );
+      // Its comet runs round its mark.
+      expect(sidebar.container.querySelector(".autopilot-comet")).not.toBeNull();
+    }
+  });
+
+  it("is lit on its session's page and on its project's Autopilot tab", async () => {
+    const onSession = reload("/s/ses_pilot");
+    await onSession.come({ workspaces, projects: piloted({ session: pilot }) });
+    expect(line(onSession.container)?.here).toBe("page");
+    const onTab = reload("/p/web", () => {}, { tab: "autopilot" } as never);
+    await onTab.come({ workspaces, projects: piloted({ session: pilot }) });
+    expect(line(onTab.container)?.here).toBe("page");
+  });
+
+  it("says when it wakes while it rests, and that it is paused", async () => {
+    const resting = reload();
+    await resting.come({ workspaces, projects: piloted({ session: pilot, wake_at: NOW + 30 * MINUTE }) });
+    expect(line(resting.container)?.title).toMatch(/^web's autopilot\nResting: it wakes at /);
+    expect(resting.container.querySelector(".autopilot-comet")).toBeNull();
+    const paused = reload();
+    await paused.come({ workspaces, projects: piloted({ state: "paused", session: pilot }) });
+    expect(line(paused.container)?.title).toContain("Paused: it wakes again once someone resumes it.");
+  });
+
+  it("opens its Autopilot tab until it has a session, and from what it asks", async () => {
+    const sidebar = reload();
+    await sidebar.come({ workspaces, projects: piloted({ asks: 2 }) });
+    expect(line(sidebar.container)?.href).toBe("/p/web");
+    const asks = sidebar.container.querySelector<HTMLAnchorElement>('a[aria-label^="Answer what"]');
+    expect(asks?.getAttribute("aria-label")).toBe("Answer what web's autopilot asks you (2)");
+    expect(asks?.getAttribute("href")).toBe("/p/web");
+  });
+
+  it("isn't there while it is off", async () => {
+    const sidebar = reload();
+    await sidebar.come({ workspaces, projects: piloted({ state: "off", session: pilot }) });
+    expect(line(sidebar.container)).toBeUndefined();
+  });
+
+  it("shows at once as this browser kept it", async () => {
+    keepSidebar("usr_ada", workspaces, piloted({ working: true, session: pilot }));
+    const sidebar = reload();
+    expect(line(sidebar.container)).toMatchObject({
+      href: "/s/ses_pilot",
+      text: "Autopilot. Resting: it wakes when something needs it.",
+    });
+  });
+});
+
 /** The shell at a phone's width, where the sidebar is a drawer (or `wide`, from 768 px, beside the page). */
 function phone({ wide = false } = {}) {
   vi.stubGlobal("matchMedia", (query: string) => ({

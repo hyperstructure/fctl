@@ -448,6 +448,15 @@ pub struct ProjectRow {
     pub autopilot_asks: i64,
     #[serde(default)]
     pub autopilot_session_status: Option<String>,
+    /// Its own session, where the caller may open it.
+    #[serde(default)]
+    pub autopilot_session_id: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub autopilot_session_number: Option<i64>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub autopilot_session_created_at: Option<i64>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub autopilot_wake_at: Option<i64>,
     #[serde(flatten)]
     pub workspace: WorkspaceCols,
 }
@@ -503,6 +512,27 @@ impl ProjectRow {
                 .and_then(AutopilotScope::parse),
             asks: u32::try_from(self.autopilot_asks.max(0)).unwrap_or(0),
             working,
+            session: match (
+                &self.autopilot_session_id,
+                self.autopilot_session_number,
+                self.autopilot_session_status
+                    .as_deref()
+                    .and_then(SessionStatus::parse),
+                self.autopilot_session_created_at,
+            ) {
+                (Some(id), Some(number), Some(status), Some(started_at)) => {
+                    Some(fctl_proto::autopilot::AutopilotSession {
+                        id: SessionId(id.clone()),
+                        number: u32::try_from(number).unwrap_or(0),
+                        status,
+                        started_at,
+                    })
+                }
+                _ => None,
+            },
+            wake_at: self
+                .autopilot_wake_at
+                .filter(|_| state == Some(AutopilotState::On)),
         })
     }
 
@@ -624,7 +654,11 @@ pub const PROJECT_SELECT: &str = "SELECT p.id, p.slug, p.name, p.description, p.
     CASE WHEN ap.scope = 'workspace' AND COALESCE(wm.role, '') NOT IN ('owner', 'admin') THEN 0 \
       ELSE (SELECT COUNT(*) FROM autopilot_asks aa WHERE aa.project_id = ap.project_id AND aa.status = 'open') END \
       AS autopilot_asks, \
-    aps.status AS autopilot_session_status \
+    aps.status AS autopilot_session_status, \
+    CASE WHEN ap.scope = 'workspace' AND COALESCE(wm.role, '') NOT IN ('owner', 'admin') THEN NULL ELSE aps.id END \
+      AS autopilot_session_id, \
+    aps.number AS autopilot_session_number, aps.created_at AS autopilot_session_created_at, \
+    ap.wake_at AS autopilot_wake_at \
     FROM projects p \
     LEFT JOIN users cu ON cu.id = p.created_by \
     LEFT JOIN workspaces w ON w.id = p.workspace_id \

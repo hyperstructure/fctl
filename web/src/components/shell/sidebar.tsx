@@ -33,6 +33,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { useAttention } from "@/lib/attention";
+import { glance } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { agoShort } from "@/lib/format";
 import { useHiddenSessions } from "@/lib/hidden-sessions";
@@ -66,6 +67,7 @@ import {
 } from "@/lib/workspaces";
 import { FloorLink } from "./floor-link";
 import {
+  AutopilotLine,
   Count,
   SearchButton,
   SessionLine,
@@ -834,7 +836,12 @@ function ProjectRow({
   const manage = full?.role === "owner" || full?.role === "maintainer";
   const sessions = data.recent.get(p.id) ?? [];
   const open = data.here?.id === p.id;
+  // Its autopilot heads its lines while it is on or paused, whether or not the page is about it.
+  const autopilot = full?.autopilot ?? p.autopilot;
+  const piloted = !!glance(autopilot, data.now);
   const page = path === `/p/${p.slug}`;
+  const pilotHere =
+    (!!autopilot?.session && path === `/s/${autopilot.session.id}`) || (page && tab === "autopilot");
   const pulls = data.pulls.filter((l) => l.sessions.some((s) => s.project_id === p.id)).length;
   const lifted = sort.lifted === p.id;
   const row = useRef<HTMLDivElement>(null);
@@ -901,19 +908,30 @@ function ProjectRow({
           </button>
         )}
       </div>
-      {(open || sessions.length > 0) && (
+      {(open || piloted || sessions.length > 0) && (
         <div className="relative mt-px mb-1 pl-[30px] before:absolute before:top-0 before:bottom-1.5 before:left-[18.5px] before:w-px before:bg-line">
-          {open && (
+          {(open || piloted) && (
             <div className="flex flex-col gap-px">
-              <SubLink
-                to="/pulls"
-                search={{ scope: `p:${p.slug}` }}
-                active={path === "/pulls"}
-                icon={<PullRequestIcon state="open" className="size-3.5" />}
-                label="Pull requests"
-                n={pulls}
-                onNavigate={onNavigate}
-              />
+              {piloted && (
+                <AutopilotLine
+                  project={p}
+                  autopilot={autopilot}
+                  here={pilotHere}
+                  now={data.now}
+                  onNavigate={onNavigate}
+                />
+              )}
+              {open && (
+                <SubLink
+                  to="/pulls"
+                  search={{ scope: `p:${p.slug}` }}
+                  active={path === "/pulls"}
+                  icon={<PullRequestIcon state="open" className="size-3.5" />}
+                  label="Pull requests"
+                  n={pulls}
+                  onNavigate={onNavigate}
+                />
+              )}
               {sessions.length > 0 && <div className="mx-2 my-1 h-px bg-line" />}
             </div>
           )}

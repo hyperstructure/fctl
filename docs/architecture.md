@@ -569,7 +569,8 @@ five or more. Anyone on the instance creates one, as its primary admin.
   they folded it into its rail and whether Needs you is open
   (`web/src/lib/sidebar-layout.ts`), and so does a copy of what the sidebar
   last showed them (names, colors and avatars, their role, each project's
-  icon, description and active sessions; `web/src/lib/sidebar.ts`): when the app opens, the
+  icon, description and active sessions, and its autopilot's state and own
+  session; `web/src/lib/sidebar.ts`): when the app opens, the
   sidebar shows it at once, until the lists of workspaces and projects
   have both come. The sessions they hide from it stay there too, each with
   how many turns it had ended and the `updated_at` of the summary it was
