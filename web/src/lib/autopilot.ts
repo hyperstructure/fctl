@@ -151,6 +151,7 @@ export function wokeLine(w: G.AutopilotWake): string {
   const [only, more] = w.reasons;
   if (!more && only === "started") return "Woke as it was put on";
   if (!more && only === "resumed") return "Woke as it was resumed";
+  if (!more && only === "woken") return "Woke as someone woke it";
   return `Woke for ${wakeText(w)}`;
 }
 

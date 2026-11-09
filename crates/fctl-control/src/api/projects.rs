@@ -198,7 +198,10 @@ async fn target_workspace(
         return ws::load(ctx, w.trim()).await;
     }
     let user = ctx.user()?;
-    let mine = ws::mine(&ctx.db, &user.id).await?;
+    let mut mine = ws::mine(&ctx.db, &user.id).await?;
+    if let Some(reached) = ws::reached(ctx).await? {
+        mine.retain(|w| reached.contains(&w.id));
+    }
     let candidates: Vec<&ws::WorkspaceRow> = mine
         .iter()
         .filter(|w| !admin || w.role().is_some_and(WorkspaceRole::is_admin))
@@ -1087,11 +1090,13 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
         account: String,
     }
     // Of the workspaces open to them: not one its two-factor requirement
-    // closes to them.
+    // closes to them, nor, for a caller held to places, one it doesn't reach.
+    let reached = ws::reached(ctx).await?;
     let open: Vec<String> = ws::mine(&ctx.db, &user.id)
         .await?
         .into_iter()
         .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
+        .filter(|w| reached.as_ref().is_none_or(|r| r.contains(&w.id)))
         .map(|w| w.id)
         .collect();
     let accounts: Vec<A> = q(

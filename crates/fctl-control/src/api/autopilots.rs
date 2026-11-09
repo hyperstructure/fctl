@@ -399,14 +399,25 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
 pub async fn brief(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
     let row = require(l.row.clone())?;
-    let text = brief_of(ctx, &l.p.row, &row).await?;
+    let (text, shown) = brief_of(ctx, &l.p.row, &row).await?;
     if ctx.autopilot().is_some() {
-        engine::mark_seen(&ctx.db, &row.project_id, ctx.now).await?;
+        engine::mark_seen(&ctx.db, &row.project_id, &shown.notes, &shown.asks, ctx.now).await?;
     }
     http::ok(&AutopilotBrief { brief: text })
 }
 
-async fn brief_of(ctx: &Ctx, project: &ProjectRow, row: &AutopilotRow) -> AppResult<String> {
+/// What a brief showed of what people told the autopilot: its notes, and
+/// the closed asks, whose answers it has then heard of.
+struct Shown {
+    notes: Vec<String>,
+    asks: Vec<String>,
+}
+
+async fn brief_of(
+    ctx: &Ctx,
+    project: &ProjectRow,
+    row: &AutopilotRow,
+) -> AppResult<(String, Shown)> {
     let db = &ctx.db;
     let notes = notes(ctx, &row.project_id).await?;
     let ask_rows: Vec<engine::AskRow> = q(
@@ -515,7 +526,15 @@ async fn brief_of(ctx: &Ctx, project: &ProjectRow, row: &AutopilotRow) -> AppRes
         .collect();
     let powers = row.powers();
     let direction_by = row.direction_by_name.clone();
-    Ok(ap::brief(&ap::Brief {
+    let shown = Shown {
+        notes: notes.iter().map(|n| n.id.clone()).collect(),
+        asks: ask_rows
+            .iter()
+            .filter(|a| a.status() != AutopilotAskStatus::Open)
+            .map(|a| a.id.clone())
+            .collect(),
+    };
+    let text = ap::brief(&ap::Brief {
         place: ap::Place {
             project: &project.name,
             project_slug: &project.slug,
@@ -540,7 +559,8 @@ async fn brief_of(ctx: &Ctx, project: &ProjectRow, row: &AutopilotRow) -> AppRes
         projects: &projects,
         wake_at: row.wake_at,
         now: ctx.now,
-    }))
+    });
+    Ok((text, shown))
 }
 
 // ───────────────────────────── putting it on, and changing it ─────────────────────────────
@@ -658,7 +678,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             let crew = crew
                 .or(before.as_ref().map(AutopilotRow::crew_max))
                 .unwrap_or(ap::DEFAULT_CREW);
-            q(
+            let written = q(
                 &ctx.db,
                 "INSERT INTO autopilots (project_id, workspace_id, scope, state, owner_id, direction, direction_by, direction_at, \
                  direction_new, powers, check_in_minutes, crew_max, model, effort, wake_at, wake_reasons, failures, \
@@ -688,7 +708,17 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 ],
             )?
             .run()
-            .await?;
+            .await;
+            if let Err(e) = written {
+                // Another project of the workspace was put on autopilot as a
+                // whole meanwhile (autopilots_one_per_workspace).
+                if e.0.message.contains("UNIQUE") {
+                    return Err(conflict(
+                        "This workspace has an autopilot already, which works in all its projects: take it off first.",
+                    ));
+                }
+                return Err(e);
+            }
             let again = if before.is_some() { " again" } else { "" };
             engine::log(
                 &ctx.db,
@@ -1405,7 +1435,8 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
         ));
     }
     let me = ctx.user()?.clone();
-    let (answer, line) = match (found.kind(), &found.secret_name, &found.secret_project_id) {
+    // A secret, and where it goes; else the answer.
+    let (answer, secret) = match (found.kind(), &found.secret_name, &found.secret_project_id) {
         (AutopilotAskKind::Secret, Some(name), Some(project)) => {
             let value = body
                 .secret
@@ -1415,21 +1446,21 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
             // Those who may set the project's secrets give them.
             let target = access::project(ctx, project).await?;
             target.require_maintainer()?;
-            let name = crate::api::projects::store_secret(ctx, &target, name, value).await?;
-            (None, format!("{} set the secret `{name}` for it", me.name))
+            (None, Some((target, name.clone(), value.to_owned())))
         }
         _ => {
             let text = body.answer.as_deref().map(str::trim).unwrap_or_default();
             if text.is_empty() {
                 return Err(validation("answer", "Write an answer, or pick one"));
             }
-            let text = fctl_domain::validate::text("answer", text, 4_000)?;
             (
-                Some(text.clone()),
-                format!("{} answered “{}”", me.name, short(&text)),
+                Some(fctl_domain::validate::text("answer", text, 4_000)?),
+                None,
             )
         }
     };
+    // It's theirs to answer once they claim it: two people at once, or one
+    // after it was taken back, get told so before a secret is stored.
     let done = q(
         &ctx.db,
         "UPDATE autopilot_asks SET status = 'answered', answer = ?, answered_by = ?, answered_at = ? WHERE id = ? \
@@ -1443,6 +1474,30 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
             "Someone answered it already, or it was taken back.",
         ));
     }
+    let line = match (secret, &answer) {
+        (Some((target, name, value)), _) => {
+            match crate::api::projects::store_secret(ctx, &target, &name, &value).await {
+                Ok(name) => format!("{} set the secret `{name}` for it", me.name),
+                Err(e) => {
+                    // Open again, for someone to give it.
+                    q(
+                        &ctx.db,
+                        "UPDATE autopilot_asks SET status = 'open', answer = NULL, answered_by = NULL, \
+                         answered_at = NULL, seen_at = NULL WHERE id = ? AND answered_by = ? AND answered_at = ?",
+                        &[s(ask), s(&me.id), n(ctx.now)],
+                    )?
+                    .run()
+                    .await?;
+                    return Err(e);
+                }
+            }
+        }
+        (None, text) => format!(
+            "{} answered “{}”",
+            me.name,
+            short(text.as_deref().unwrap_or_default())
+        ),
+    };
     engine::log(
         &ctx.db,
         &row.project_id,

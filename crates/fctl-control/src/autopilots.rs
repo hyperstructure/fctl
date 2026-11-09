@@ -695,6 +695,13 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             let first = format!("{briefing}\n---\n\n{text}");
             let (id, _) =
                 start_pilot(env, db, row, &project, &owner, first, wake.clone(), now).await?;
+            // The session it leaves stops, rather than keep its sandbox
+            // while it waits for a message that won't come.
+            if let (Some(old), Some(st)) = (row.session_id.as_deref(), status)
+                && !st.is_terminal()
+            {
+                stop_session(env, old).await;
+            }
             id.0
         }
     };
@@ -752,15 +759,17 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
     match parts.as_slice() {
         [] => "Woke".into(),
         // "Woke as it was put on", alone; "being put on" among others.
-        [one] if one.starts_with("it was ") => format!("Woke as {one}"),
+        [one] if one.starts_with("it was ") || one == "someone woke it" => format!("Woke as {one}"),
         [one] => format!("Woke for {one}"),
         _ => format!(
             "Woke for {}",
             parts
                 .iter()
-                .map(|p| p
-                    .strip_prefix("it was ")
-                    .map_or_else(|| p.clone(), |p| format!("being {p}")))
+                .map(|p| match p.strip_prefix("it was ") {
+                    Some(was) => format!("being {was}"),
+                    None if p == "someone woke it" => "someone waking it".to_owned(),
+                    None => p.clone(),
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -901,6 +910,28 @@ async fn start_pilot(
     Ok(started)
 }
 
+/// Stops a session of its own that rests and that a fresh one replaced, as
+/// its idle timeout would; a failure is logged, as nothing hangs on it.
+async fn stop_session(env: &Env, id: &str) {
+    let stopped: AppResult<Value> = async {
+        let fleet = crate::internal::fleet_stub(env)?;
+        crate::internal::post(
+            &fleet,
+            "/stop",
+            &crate::internal::Stop {
+                session_id: SessionId(id.to_owned()),
+                reason: fctl_proto::runner::StopReason::Idle,
+                destroy: false,
+            },
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = stopped {
+        worker::console_error!("stopping the autopilot's session {id}: {}", e.0.message);
+    }
+}
+
 /// The briefing its own sessions start with.
 async fn briefing(
     db: &D1Database,
@@ -933,6 +964,7 @@ async fn briefing(
 
 #[derive(Deserialize)]
 struct NoteRow {
+    id: String,
     text: String,
     author_name: Option<String>,
     #[serde(deserialize_with = "int")]
@@ -1071,7 +1103,7 @@ impl News {
     async fn gather(db: &D1Database, row: &AutopilotRow, now: i64) -> AppResult<Self> {
         let notes: Vec<NoteRow> = q(
             db,
-            "SELECT n.text, u.name AS author_name, n.created_at, n.seen_at FROM autopilot_notes n \
+            "SELECT n.id, n.text, u.name AS author_name, n.created_at, n.seen_at FROM autopilot_notes n \
              LEFT JOIN users u ON u.id = n.author_id WHERE n.project_id = ? AND n.seen_at IS NULL ORDER BY n.created_at",
             &[s(&row.project_id)],
         )?
@@ -1169,28 +1201,44 @@ impl News {
         })
     }
 
-    /// It has heard of these now.
+    /// It has heard of these now: what it was told, and no more, as people
+    /// may have written meanwhile.
     async fn mark_seen(&self, db: &D1Database, row: &AutopilotRow, now: i64) -> AppResult<()> {
-        mark_seen(db, &row.project_id, now).await
+        let notes: Vec<String> = self.notes.iter().map(|n| n.id.clone()).collect();
+        let answers: Vec<String> = self.answers.iter().map(|a| a.id.clone()).collect();
+        mark_seen(db, &row.project_id, &notes, &answers, now).await
     }
 }
 
-/// Marks what people told it seen: its notes, and the answers to its asks.
-pub async fn mark_seen(db: &D1Database, project_id: &str, now: i64) -> AppResult<()> {
-    q(
-        db,
-        "UPDATE autopilot_notes SET seen_at = ? WHERE project_id = ? AND seen_at IS NULL",
-        &[n(now), s(project_id)],
-    )?
-    .run()
-    .await?;
-    q(
-        db,
-        "UPDATE autopilot_asks SET seen_at = ? WHERE project_id = ? AND seen_at IS NULL AND status != 'open'",
-        &[n(now), s(project_id)],
-    )?
-    .run()
-    .await?;
+/// Marks what people told it seen once it heard of them: the notes
+/// `notes`, and the answers to its asks `asks`.
+pub async fn mark_seen(
+    db: &D1Database,
+    project_id: &str,
+    notes: &[String],
+    asks: &[String],
+    now: i64,
+) -> AppResult<()> {
+    if !notes.is_empty() {
+        q(
+            db,
+            "UPDATE autopilot_notes SET seen_at = ? WHERE project_id = ? AND seen_at IS NULL \
+             AND id IN (SELECT value FROM json_each(?))",
+            &[n(now), s(project_id), s(&serde_json::to_string(notes)?)],
+        )?
+        .run()
+        .await?;
+    }
+    if !asks.is_empty() {
+        q(
+            db,
+            "UPDATE autopilot_asks SET seen_at = ? WHERE project_id = ? AND seen_at IS NULL AND status != 'open' \
+             AND id IN (SELECT value FROM json_each(?))",
+            &[n(now), s(project_id), s(&serde_json::to_string(asks)?)],
+        )?
+        .run()
+        .await?;
+    }
     Ok(())
 }
 
@@ -1330,6 +1378,18 @@ pub async fn session_moved(
 /// people allow work at once, and fewer than [`ap::CREW_PER_HOUR`] started
 /// in the last hour.
 pub async fn crew_room(db: &D1Database, caller: &AutopilotCaller, now: i64) -> AppResult<()> {
+    crew_room_for(db, caller, now, true).await
+}
+
+/// [`crew_room`], for a session of its own that a message or a resume sets
+/// working again (`new` false): only the room at once counts, as it starts
+/// nothing new.
+async fn crew_room_for(
+    db: &D1Database,
+    caller: &AutopilotCaller,
+    now: i64,
+    new: bool,
+) -> AppResult<()> {
     let Some(row) = row(db, &caller.project_id).await? else {
         return Err(forbidden("This autopilot is gone."));
     };
@@ -1363,7 +1423,7 @@ pub async fn crew_room(db: &D1Database, caller: &AutopilotCaller, now: i64) -> A
             ),
         )));
     }
-    if counts.lately >= i64::from(ap::CREW_PER_HOUR) {
+    if new && counts.lately >= i64::from(ap::CREW_PER_HOUR) {
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::RateLimited,
             format!(
@@ -1789,23 +1849,29 @@ pub async fn gate(ctx: &Ctx, method: &str, segs: &[&str], body: Option<&Value>) 
         Gate::Crew(session) => {
             #[derive(Deserialize)]
             struct Found {
-                #[allow(dead_code)]
-                id: String,
+                status: String,
             }
             let found: Option<Found> = q(
                 &ctx.db,
-                "SELECT id FROM sessions WHERE id = ? AND autopilot_id = ? AND autopilot_role = 'crew'",
+                "SELECT status FROM sessions WHERE id = ? AND autopilot_id = ? AND autopilot_role = 'crew'",
                 &[s(&session), s(&caller.project_id)],
             )?
             .first()
             .await?;
-            if found.is_some() {
-                Ok(())
-            } else {
-                Err(forbidden(
+            let Some(found) = found else {
+                return Err(forbidden(
                     "An autopilot steers only the sessions it started: people steer theirs. Read this one with fctl show or fctl logs.",
-                ))
+                ));
+            };
+            // A message or a resume sets one that rests working again:
+            // only with room for it, as many at once as its people allow.
+            let sets_working =
+                method == "POST" && matches!(segs.get(2), Some(&("messages" | "resume")));
+            let working = SessionStatus::parse(&found.status).is_some_and(ap::crew_working);
+            if sets_working && !working {
+                crew_room_for(&ctx.db, caller, ctx.now, false).await?;
             }
+            Ok(())
         }
         Gate::NewProject => {
             let asked = body

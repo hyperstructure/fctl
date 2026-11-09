@@ -147,14 +147,22 @@ function useSidebarData(path: string, scope?: string) {
     () => byProject(recentSessions(listed ?? [], now).filter((s) => !hidden.has(s.id))),
     [listed, now, hidden],
   );
+  // The projects whose autopilot is on, which looks after the sessions it started.
+  const piloted = useMemo(
+    () =>
+      projectList &&
+      new Set(projectList.projects.filter((p) => p.autopilot?.state === "on").map((p) => p.id)),
+    [projectList],
+  );
   const needs = useMemo(
     () =>
       needsOf(
         me?.user.id,
         [...(yours ?? []), ...(listed ?? []), ...(active ?? []), ...(ended ?? []), ...(open ?? [])],
         now,
+        piloted,
       ),
-    [me?.user.id, yours, listed, active, ended, open, now],
+    [me?.user.id, yours, listed, active, ended, open, now, piloted],
   );
   // The open pull requests, each once: those ready for review, and each project's.
   const pulls = useMemo(

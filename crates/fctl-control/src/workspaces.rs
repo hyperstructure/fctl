@@ -278,8 +278,40 @@ pub async fn load(ctx: &Ctx, id_or_slug: &str) -> AppResult<WorkspaceAccess> {
     if role.is_none() {
         return Err(not_found("Workspace"));
     }
+    // A caller held to places (an autopilot) reaches only their workspaces.
+    if let Some(reached) = reached(ctx).await?
+        && !reached.contains(&row.id)
+    {
+        return Err(not_found("Workspace"));
+    }
     let blocked = blocked_for(ctx, user, row.require_two_factor);
     Ok(WorkspaceAccess { row, role, blocked })
+}
+
+/// The workspaces a caller held to places reaches (a limited token, an
+/// autopilot): those its places name, and those of the projects they name.
+/// `None` for a caller that reaches all of theirs.
+pub async fn reached(ctx: &Ctx) -> AppResult<Option<Vec<String>>> {
+    let Some(places) = ctx.limits().and_then(|l| l.places.as_ref()) else {
+        return Ok(None);
+    };
+    #[derive(Deserialize)]
+    struct Id {
+        workspace_id: String,
+    }
+    let of_projects: Vec<Id> = q(
+        &ctx.db,
+        "SELECT DISTINCT workspace_id FROM projects WHERE id IN (SELECT value FROM json_each(?)) \
+         AND workspace_id IS NOT NULL",
+        &[s(&serde_json::to_string(&places.projects)?)],
+    )?
+    .all()
+    .await?;
+    let mut out = places.workspaces.clone();
+    out.extend(of_projects.into_iter().map(|p| p.workspace_id));
+    out.sort();
+    out.dedup();
+    Ok(Some(out))
 }
 
 /// A workspace by id or slug, whoever asks (`user_id` for the membership

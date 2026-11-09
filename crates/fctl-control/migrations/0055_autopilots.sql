@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS autopilots (
 );
 CREATE INDEX IF NOT EXISTS autopilots_due ON autopilots (wake_at) WHERE wake_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS autopilots_workspace ON autopilots (workspace_id, scope);
+-- One workspace's autopilot at a time, on or paused, whoever puts it on.
+CREATE UNIQUE INDEX IF NOT EXISTS autopilots_one_per_workspace ON autopilots (workspace_id)
+  WHERE scope = 'workspace' AND state != 'off';
 
 -- What people tell it to steer it; each stays until someone removes it.
 CREATE TABLE IF NOT EXISTS autopilot_notes (

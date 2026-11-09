@@ -248,10 +248,12 @@ pub fn retry_in(failures: u32) -> Option<i64> {
 
 /// Whether a wake goes to its session as it is, a message to it, rather
 /// than to a fresh session: one that can take a message (waiting for one,
-/// at work, or stopped), started less than [`SHIFT_MS`] ago.
+/// at work, or stopped), started less than [`SHIFT_MS`] ago, or at work
+/// whenever it started, which hears at its next step rather than stop
+/// halfway.
 pub fn carries_on(status: SessionStatus, started_at: Millis, now: Millis) -> bool {
     let takes_messages = !matches!(status, SessionStatus::Failed);
-    takes_messages && now - started_at < SHIFT_MS
+    takes_messages && (now - started_at < SHIFT_MS || at_work(status))
 }
 
 /// Whether its session is at work, so that a check-in can wait.
@@ -1188,6 +1190,8 @@ mod tests {
         assert!(carries_on(SessionStatus::Stopped, now - HOUR_MS, now));
         assert!(!carries_on(SessionStatus::Failed, now - HOUR_MS, now));
         assert!(!carries_on(SessionStatus::Idle, now - 13 * HOUR_MS, now));
+        // At work, it finishes what it does first; the next wake moves on.
+        assert!(carries_on(SessionStatus::Running, now - 13 * HOUR_MS, now));
     }
 
     #[test]

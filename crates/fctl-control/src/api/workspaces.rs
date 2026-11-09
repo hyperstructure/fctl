@@ -46,21 +46,8 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     let mut rows = ws::mine(&ctx.db, &user.id).await?;
     // A limited token sees the workspaces of the projects it reaches, and
     // no invitations.
-    if let Some(places) = ctx.limits().and_then(|l| l.places.as_ref()) {
-        #[derive(serde::Deserialize)]
-        struct Id {
-            workspace_id: String,
-        }
-        let of_projects: Vec<Id> = q(
-            &ctx.db,
-            "SELECT DISTINCT workspace_id FROM projects WHERE id IN (SELECT value FROM json_each(?)) AND workspace_id IS NOT NULL",
-            &[s(&serde_json::to_string(&places.projects)?)],
-        )?
-        .all()
-        .await?;
-        rows.retain(|r| {
-            places.workspaces.contains(&r.id) || of_projects.iter().any(|p| p.workspace_id == r.id)
-        });
+    if let Some(reached) = ws::reached(ctx).await? {
+        rows.retain(|r| reached.contains(&r.id));
     }
     let live = live(ctx).await;
     let invitations = if ctx.limits().is_some() {

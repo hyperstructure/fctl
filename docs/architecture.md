@@ -1014,7 +1014,7 @@ deletes expired tokens, password resets, sign-ins waiting for a code,
 passkey challenges, device codes and invites, early access requests whose
 address has an account or that are a year old, the links of expired
 published screenshots, abandoned Claude logins, what autopilots asked 90
-days after people answered or declined it, and audit
+days after they heard the answer or took it back, and audit
 log entries older than a year. It removes the runners that waited a week
 for approval or stayed offline longer than their enrollment token lets
 them, and revoked or expired enrollment tokens 90 days on, once no runner
@@ -2149,9 +2149,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the autopilot). Its messages to them carry it as their author's
    autopilot (`UserMessage.autopilot`), which the apps show; their agents
    see them as their starter's, its owner's. Nobody follows them, so they
-   notify nobody, and *Needs you* leaves them to the autopilot unless
-   someone follows one. They show the autopilot's mark in lists and link
-   back to its tab.
+   notify nobody, and *Needs you* leaves them to the autopilot while it is
+   on, unless someone follows one; while it is paused or off, they are its
+   owner's there as any session they started. They show the autopilot's
+   mark in lists and link back to its tab.
 6. **Asking people** (`fctl autopilot ask`). A question of at most 500
    characters with up to six answers to click and Markdown that helps
    answer (`detail`, such as screenshots of two designs it published), or

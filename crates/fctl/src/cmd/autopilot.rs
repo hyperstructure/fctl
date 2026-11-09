@@ -46,7 +46,7 @@ pub struct Settings {
     pub sessions: Option<u32>,
     /// What it may do besides starting and steering sessions, a list:
     /// settings, secrets, repos, schedules and projects (a workspace's), or
-    /// all or none.
+    /// all (every power its scope has) or none.
     #[arg(long, value_name = "POWERS")]
     pub powers: Option<String>,
     /// The model of its own sessions (opus, sonnet…); `default` for the
@@ -244,7 +244,12 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             settings,
             workspace,
         } => {
-            let mut req = settings.request()?;
+            let scope = if workspace {
+                AutopilotScope::Workspace
+            } else {
+                scope_for_all(&api, p, &settings).await
+            };
+            let mut req = settings.request(scope)?;
             if workspace {
                 req.scope = Some(AutopilotScope::Workspace);
             }
@@ -261,7 +266,8 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             );
         }
         AutopilotCmd::Set { settings, mine } => {
-            let mut req = settings.request()?;
+            let scope = scope_for_all(&api, p, &settings).await;
+            let mut req = settings.request(scope)?;
             req.take_over = mine;
             let a = api.put_autopilot(p, &req).await?;
             if json {
@@ -309,6 +315,11 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             println!("{} Resumed: it wakes now", style::accent("✓"));
         }
         AutopilotCmd::Wake { after } => {
+            if after.is_some() && !in_its_sandbox() {
+                bail!(
+                    "--in is for the autopilot, in its sandbox, to say when to wake next: people wake it now (fctl autopilot wake -p {p})"
+                );
+            }
             let req = match after.as_deref() {
                 Some(d) => {
                     let ms = crate::cmd::schedules::duration_ms(d).with_context(|| {
@@ -325,13 +336,18 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             if json {
                 return style::print_json(&answer);
             }
-            match answer.get("wake_at").and_then(serde_json::Value::as_i64) {
+            // The autopilot hears when it wakes next; people, that it wakes.
+            match answer
+                .get("wake_at")
+                .and_then(serde_json::Value::as_i64)
+                .filter(|_| in_its_sandbox())
+            {
                 Some(at) => println!(
                     "{} fctl wakes you {}, unless something needs you sooner",
                     style::accent("✓"),
                     style::until(at)
                 ),
-                None => println!("{} It wakes now", style::accent("✓")),
+                None => println!("{} It wakes now, for what's new", style::accent("✓")),
             }
         }
         AutopilotCmd::Steer { note } => {
@@ -560,8 +576,26 @@ fn in_its_sandbox() -> bool {
     std::env::var(AUTOPILOT_ENV).is_ok_and(|p| !p.is_empty())
 }
 
+/// The scope whose every power `--powers all` asks for: that of the
+/// project's autopilot, as it keeps it when put on again, else a
+/// project's. Asked only for `all`.
+async fn scope_for_all(
+    api: &fctl_client::Api,
+    project: &str,
+    settings: &Settings,
+) -> AutopilotScope {
+    match settings.powers.as_deref().map(str::trim) {
+        Some("all") => api
+            .autopilot(project)
+            .await
+            .map_or(AutopilotScope::Project, |a| a.scope),
+        _ => AutopilotScope::Project,
+    }
+}
+
 impl Settings {
-    fn request(self) -> Result<PutAutopilotRequest> {
+    /// The request, `--powers all` meaning every power of `scope`.
+    fn request(self, scope: AutopilotScope) -> Result<PutAutopilotRequest> {
         let direction = match (self.direction, self.direction_file) {
             (Some(d), _) => Some(d),
             (None, Some(f)) => Some(read_file_or_stdin(&f)?),
@@ -576,7 +610,11 @@ impl Settings {
                     .with_context(|| format!("{c:?} isn't a duration fctl reads: 30m, 1h, 1d"))
             })
             .transpose()?;
-        let powers = self.powers.as_deref().map(parse_powers).transpose()?;
+        let powers = self
+            .powers
+            .as_deref()
+            .map(|p| parse_powers(p, scope))
+            .transpose()?;
         Ok(PutAutopilotRequest {
             direction,
             scope: None,
@@ -590,10 +628,11 @@ impl Settings {
     }
 }
 
-/// `settings,repos`, `all` or `none`.
-fn parse_powers(s: &str) -> Result<Vec<AutopilotPower>> {
+/// `settings,repos`, `all` (every power of `scope`: a project's autopilot
+/// creates no projects) or `none`.
+fn parse_powers(s: &str, scope: AutopilotScope) -> Result<Vec<AutopilotPower>> {
     match s.trim() {
-        "all" => return Ok(AutopilotPower::ALL.to_vec()),
+        "all" => return Ok(fctl_domain::autopilot::default_powers(scope)),
         "none" | "" => return Ok(Vec::new()),
         _ => {}
     }
@@ -923,12 +962,25 @@ mod tests {
 
     #[test]
     fn powers_read_as_people_type_them() {
+        let project = AutopilotScope::Project;
         assert_eq!(
-            parse_powers("settings, repositories").ok(),
+            parse_powers("settings, repositories", project).ok(),
             Some(vec![AutopilotPower::Settings, AutopilotPower::Repos])
         );
-        assert_eq!(parse_powers("all").ok().map(|p| p.len()), Some(5));
-        assert_eq!(parse_powers("none").ok(), Some(Vec::new()));
-        assert!(parse_powers("fly").is_err());
+        assert_eq!(parse_powers("none", project).ok(), Some(Vec::new()));
+        assert!(parse_powers("fly", project).is_err());
+    }
+
+    #[test]
+    fn all_is_every_power_of_its_scope() {
+        let all = |scope| parse_powers("all", scope).ok().unwrap_or_default();
+        assert!(!all(AutopilotScope::Project).contains(&AutopilotPower::Projects));
+        assert_eq!(all(AutopilotScope::Project).len(), 4);
+        assert_eq!(all(AutopilotScope::Workspace).len(), 5);
+        // What the control plane takes for a project's autopilot.
+        assert!(
+            fctl_domain::autopilot::powers(AutopilotScope::Project, &all(AutopilotScope::Project))
+                .is_ok()
+        );
     }
 }

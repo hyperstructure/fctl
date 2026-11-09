@@ -77,7 +77,9 @@ export function WakeCard({ item }: { item: UserItem }) {
             ? "People resumed it: it reads what's new, then goes on."
             : lone === "started"
               ? "It was put on autopilot again: it reads what's new, then goes on."
-              : `For ${wake ? wakeText(wake) : "its check-in"}.`}
+              : lone === "woken"
+                ? "Someone woke it: it reads what's new, then goes on."
+                : `For ${wake ? wakeText(wake) : "its check-in"}.`}
       </p>
       {(crew.length > 0 || (wake?.notes ?? 0) > 0 || (wake?.answers ?? 0) > 0) && (
         <ul className="mt-2.5 flex flex-wrap gap-1.5" aria-label="What woke it">

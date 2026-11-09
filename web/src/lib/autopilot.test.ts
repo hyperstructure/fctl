@@ -128,6 +128,7 @@ describe("what woke it", () => {
       "Woke for being resumed and 2 new notes",
     );
     expect(wokeLine(wake({ reasons: ["check_in"] }))).toBe("Woke for its check-in");
+    expect(wokeLine(wake({ reasons: ["woken"] }))).toBe("Woke as someone woke it");
   });
 });
 

@@ -28,9 +28,16 @@ export const FAILED_FOR = 24 * 3_600_000;
  * not a draft), a reply it waits for, a pause on a usage limit. A session whose pull requests are
  * all merged or closed, and that nobody wrote to since, waits for no reply: its work is done, and
  * its agent waits for a message until the session stops only in case someone has more for it.
- * Nothing until it is known who `me` is: the lists hold other people's sessions too.
+ * Nothing until it is known who `me` is: the lists hold other people's sessions too. An autopilot
+ * that is on looks after the sessions it started (`piloted`: the ids of its home projects; while
+ * they aren't known, every autopilot is taken to be on); those of one paused or off are anyone's.
  */
-export function needsOf(me: string | undefined, sessions: readonly G.Session[], now: number): Need[] {
+export function needsOf(
+  me: string | undefined,
+  sessions: readonly G.Session[],
+  now: number,
+  piloted?: ReadonlySet<string>,
+): Need[] {
   if (!me) return [];
   const newest = new Map<string, G.Session>();
   for (const s of sessions) {
@@ -40,9 +47,10 @@ export function needsOf(me: string | undefined, sessions: readonly G.Session[], 
   const out: Need[] = [];
   for (const s of newest.values()) {
     if (s.archived || s.review) continue;
-    // An autopilot's sessions are its own to look after: it hears when they wait or ask, and asks
-    // people itself (its tab, Needs you's own list). Those someone follows still count for them.
-    if (s.autopilot && !s.following) continue;
+    // An autopilot's sessions are its own to look after while it's on: it hears when they wait or
+    // ask, and asks people itself (its tab, Needs you's own list). Those someone follows still count
+    // for them, and those of an autopilot that is paused or off for whoever started them.
+    if (s.autopilot && !s.following && (!piloted || piloted.has(s.autopilot.project_id))) continue;
     if (s.created_by?.id !== me && !s.following) continue;
     const need = needOf(s, now);
     if (need) out.push(need);

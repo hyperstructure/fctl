@@ -718,8 +718,8 @@ turn, asks something or fails, and when people steer or answer it.
 `--powers` lists what it may do besides starting and steering sessions:
 `settings`, `secrets` (those it makes itself, never those people set),
 `repos`, `schedules`, and for a workspace's autopilot `projects`; `all`
-or `none`. Changing how much it works, resuming it or `--mine` runs it on
-your subscription from then on.
+(every power its scope has) or `none`. Changing how much it works,
+resuming it or `--mine` runs it on your subscription from then on.
 
 In its own session's sandbox, the autopilot's `fctl` reaches the API as
 the person it acts for, without signing in (`FCTL_AUTOPILOT` names its
