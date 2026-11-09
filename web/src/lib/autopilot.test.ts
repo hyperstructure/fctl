@@ -34,7 +34,7 @@ function autopilot(more: Partial<G.Autopilot> = {}): G.Autopilot {
     asks: [],
     crew: [],
     crew_total: 0,
-    can: { steer: true, secrets: true },
+    can: { steer: true, secrets: true, read: true },
     created_at: NOW - 86_400_000,
     updated_at: NOW,
     ...more,
@@ -158,7 +158,7 @@ describe("an autopilot's messages", () => {
 
 describe("how people set it up", () => {
   it("offers a workspace's autopilot projects too", () => {
-    expect(defaultPowers("project")).toEqual(["settings", "secrets", "repos", "schedules"]);
+    expect(defaultPowers("project")).toEqual(["merge", "settings", "secrets", "repos", "schedules"]);
     expect(defaultPowers("workspace")).toContain("projects");
   });
 

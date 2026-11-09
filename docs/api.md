@@ -264,16 +264,19 @@ shows a tool's request.
 An autopilot (experimental) runs a project, or its whole workspace, on its
 own ([Architecture](architecture.md#autopilots)). Its workspace's admins
 let projects have one first (`PATCH /api/v1/workspaces/{id}` with
-`{"autopilots": true}`). Everyone who sees the project reads it; its
-maintainers and owners (for a workspace's autopilot, the workspace's admins)
-put it on, steer, answer, wake, pause, resume and take it off. Its own
+`{"autopilots": true}`). Everyone who sees the project reads it, except
+that what a workspace's autopilot does (its plan, notes, asks, sessions,
+log and brief, `can.read`) is for the workspace's admins: others see only
+that it runs, and how. Its maintainers and owners (for a workspace's
+autopilot, the workspace's admins) put it on, steer, answer, wake, pause,
+resume and take it off. Its own
 session calls the endpoints marked *autopilot*, through its sandbox's
 `fctl`, which reaches them without a token.
 
 | Request | What it does |
 |---|---|
 | `GET /api/v1/projects/{project}/autopilot` | `{"state": "on" \| "paused" \| "off", "scope", "direction", "plan", "powers", "check_in_minutes", "crew_max", "owner", "session", "wake_at", "wake_reason", "problem", "notes", "asks", "crew", "can"…}`; 404 for a project that never had one |
-| `PUT /api/v1/projects/{project}/autopilot` | `{"direction", "scope": "project" \| "workspace", "powers": ["settings", "secrets", "repos", "schedules", "projects"], "check_in_minutes", "crew_max", "model", "effort", "take_over": true}`: puts it on (a [sensitive action](architecture.md#confirming-its-you); `direction` needed the first time), or changes it (absent fields stay) |
+| `PUT /api/v1/projects/{project}/autopilot` | `{"direction", "scope": "project" \| "workspace", "powers": ["merge", "settings", "secrets", "repos", "schedules", "projects"], "check_in_minutes", "crew_max", "model", "effort", "take_over": true}`: puts it on (a [sensitive action](architecture.md#confirming-its-you); `direction` needed the first time), or changes it (absent fields stay) |
 | `POST …/autopilot/off` | `{"stop_sessions": true}`: takes it off, and with that stops the sessions it started that still work |
 | `POST …/autopilot/pause`, `…/resume` | `{"reason"}`: pauses it (*autopilot* too: it pauses itself); resuming wakes it at once, on the resumer's subscription |
 | `POST …/autopilot/wake` | wakes it now; *autopilot*: `{"in_minutes": 30}` or `{"at": …}`, when it wakes next unless something needs it sooner |

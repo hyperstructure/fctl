@@ -374,6 +374,7 @@ pub const ROLE_CAP: fctl_proto::session::ProjectRole = fctl_proto::session::Proj
 
 fn refused_power(power: AutopilotPower) -> ApiError {
     let what = match power {
+        AutopilotPower::Merge => "merge pull requests",
         AutopilotPower::Settings => "change projects' settings",
         AutopilotPower::Secrets => {
             "set secrets: ask people for one with `fctl autopilot ask --secret`"
@@ -575,6 +576,11 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         rules.crew_max
     ));
     s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
+    s.push_str(if rules.powers.contains(&AutopilotPower::Merge) {
+        "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`).\n"
+    } else {
+        "- Your sessions open pull requests and leave merging to people. When the next piece of work waits on one, ask people to merge it (`fctl autopilot ask`), and go on meanwhile with what doesn't.\n"
+    });
     s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well, written whole each time. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them: what you don't write down, it won't know.\n");
     let powers = powers_line(rules.powers, scope);
     if !powers.is_empty() {
@@ -600,6 +606,8 @@ fn powers_line(powers: &[AutopilotPower], scope: AutopilotScope) -> String {
     let mut can: Vec<String> = Vec::new();
     for p in powers {
         can.push(match p {
+            // Its own line: it changes how the work goes.
+            AutopilotPower::Merge => continue,
             AutopilotPower::Settings => format!(
                 "change {projects} settings (`fctl projects set`), such as their agents' instructions and setup script"
             ),
@@ -624,6 +632,25 @@ fn powers_line(powers: &[AutopilotPower], scope: AutopilotScope) -> String {
     format!(
         "You may also {}. Do so when the work needs it, and log why.",
         list(&can)
+    )
+}
+
+/// fctl's note after the task of a session an autopilot starts: who
+/// started it and how to reach it, and whether to merge its pull request
+/// (`merges`: the autopilot has [`AutopilotPower::Merge`]). The apps set it
+/// apart from the task where it starts, at "\n\n---\nThe autopilot of ".
+pub fn crew_note(project: &str, scope: AutopilotScope, owner: &str, merges: bool) -> String {
+    let what = match scope {
+        AutopilotScope::Project => "the project",
+        AutopilotScope::Workspace => "its workspace's projects",
+    };
+    let merge = if merges {
+        "It asks you to merge your pull request yourself (`gh pr merge`) once its checks pass, review findings are answered and the work is done, so that its next piece of work builds on it; where the repository's own instructions or rules don't let you, say so when you end your turn."
+    } else {
+        "Leave merging your pull request to people: once its checks pass and the work is done, end your turn saying so."
+    };
+    format!(
+        "\n\n---\nThe autopilot of {project} started this session: an agent that runs {what} on its own (an experimental feature of fctl), for {owner}, as whom it acts, so its messages come to you as {owner}'s. It follows this session and hears when your turn ends. {merge} When you're done, or need a decision to go on, end your turn saying so plainly; ask what you need answered with `fctl ask`, and the autopilot answers, or asks people."
     )
 }
 
@@ -1025,7 +1052,7 @@ mod tests {
     use super::*;
     use AutopilotPower::*;
 
-    const ALL: [AutopilotPower; 5] = [Settings, Secrets, Repos, Schedules, Projects];
+    const ALL: [AutopilotPower; 6] = [Merge, Settings, Secrets, Repos, Schedules, Projects];
 
     fn project_pilot() -> Caller<'static> {
         Caller {
@@ -1157,8 +1184,9 @@ mod tests {
             Some(vec![Settings, Schedules])
         );
         assert!(powers(AutopilotScope::Project, &[Projects]).is_err());
-        assert_eq!(default_powers(AutopilotScope::Project).len(), 4);
-        assert_eq!(default_powers(AutopilotScope::Workspace).len(), 5);
+        assert_eq!(default_powers(AutopilotScope::Project).len(), 5);
+        assert_eq!(default_powers(AutopilotScope::Workspace).len(), 6);
+        assert!(default_powers(AutopilotScope::Project).contains(&Merge));
         assert_eq!(parse_powers(&store_powers(&ALL)), ALL.to_vec());
         assert_eq!(parse_powers("settings,fly,repos"), vec![Settings, Repos]);
     }
@@ -1264,6 +1292,34 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn tells_its_sessions_whether_to_merge() {
+        let note = crew_note("Shop", AutopilotScope::Project, "Ada", true);
+        assert!(note.starts_with("\n\n---\nThe autopilot of Shop started this session"));
+        assert!(note.contains("merge your pull request yourself (`gh pr merge`)"));
+        let note = crew_note("Shop", AutopilotScope::Workspace, "Ada", false);
+        assert!(note.contains("runs its workspace's projects"));
+        assert!(note.contains("Leave merging your pull request to people"));
+    }
+
+    #[test]
+    fn its_briefing_says_who_merges() {
+        let b = |powers: &[AutopilotPower]| {
+            briefing(
+                place(),
+                Rules {
+                    powers,
+                    crew_max: 3,
+                    check_in_minutes: 60,
+                },
+                "Ship it.",
+            )
+        };
+        assert!(b(&[Merge]).contains("Your sessions merge their own pull requests"));
+        assert!(b(&[Settings]).contains("leave merging to people"));
+        assert!(!b(&[Merge]).contains("You may also"));
     }
 
     #[test]

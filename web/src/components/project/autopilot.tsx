@@ -202,7 +202,8 @@ const POINTS: { key: string; icon: ReactNode; text: (crew: number, every: string
     text: (crew) => (
       <>
         <span className="text-ink">Plans and delegates.</span> It keeps a plan, and starts up to {crew}{" "}
-        sessions at a time to work through it, each on its own branch with its own pull request.
+        sessions at a time to work through it, each with a pull request it merges once checks pass, so the
+        next builds on it.
       </>
     ),
   },
@@ -778,6 +779,23 @@ function ModelFields({
 function Cockpit({ project, a }: { project: G.Project; a: G.Autopilot }) {
   const asks = openAsks(a);
   const can = a.can.steer;
+  // A workspace's autopilot works across the workspace: what it does is its admins' to see.
+  if (!a.can.read)
+    return (
+      <div className="flex animate-rise flex-col gap-6">
+        <Header project={project} a={a} />
+        <div className="grid gap-x-8 gap-y-6 md:grid-cols-[minmax(0,1fr)_288px]">
+          <Card title="What it does" icon={<ShieldCheck />}>
+            <p className="text-[13.5px] leading-relaxed text-ink-3">
+              It works across {project.workspace?.name ?? "the workspace"}, in projects you may not see, so
+              its plan, sessions, asks and log are for the workspace's admins, who steer it. Its sessions in
+              your projects show there, with its mark.
+            </p>
+          </Card>
+          <Rules a={a} project={project} />
+        </div>
+      </div>
+    );
   return (
     <div className="flex animate-rise flex-col gap-6">
       <Header project={project} a={a} />
@@ -1833,9 +1851,11 @@ function Rules({ a, project }: { a: G.Autopilot; project: G.Project }) {
         </li>
         <li className="flex gap-2">
           <UserRoundCheck className="mt-[2px] size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
-          Starts and steers sessions
-          {a.powers.length > 0 &&
+          Starts and steers sessions,{" "}
+          {a.powers.includes("merge") ? "which merge their pull requests" : "which leave merging to people"}
+          {a.powers.some((p) => p !== "merge") &&
             `; ${a.powers
+              .filter((p) => p !== "merge")
               .map((p) => POWERS.find((x) => x.power === p)?.label.toLowerCase())
               .filter(Boolean)
               .join(", ")}`}

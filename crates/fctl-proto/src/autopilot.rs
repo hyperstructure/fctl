@@ -59,6 +59,11 @@ impl AutopilotScope {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum AutopilotPower {
+    /// Have its sessions merge their own pull requests once their checks
+    /// pass and the work is done, so that the next piece of work builds on
+    /// it: through their own GitHub access, as far as the repository's
+    /// rules let them.
+    Merge,
     /// Change its projects' settings: their agents' instructions, model,
     /// setup, image, follow-ups, review agents and the rest.
     Settings,
@@ -79,7 +84,8 @@ pub enum AutopilotPower {
 
 impl AutopilotPower {
     /// The powers there are, in the order people see them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::Merge,
         Self::Settings,
         Self::Secrets,
         Self::Repos,
@@ -89,6 +95,7 @@ impl AutopilotPower {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Merge => "merge",
             Self::Settings => "settings",
             Self::Secrets => "secrets",
             Self::Repos => "repos",
@@ -218,6 +225,12 @@ pub struct AutopilotCan {
     pub steer: bool,
     /// Give it the secrets it asks for: those who may set them.
     pub secrets: bool,
+    /// See what it does (its plan, notes, asks, sessions and log, its own
+    /// session and brief): everyone who sees its project, except for a
+    /// workspace's autopilot, whose work reaches all the workspace's
+    /// projects: its admins. Others see only that it runs, and how.
+    #[serde(default)]
+    pub read: bool,
 }
 
 /// An autopilot's own session.

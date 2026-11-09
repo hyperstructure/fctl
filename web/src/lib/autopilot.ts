@@ -30,6 +30,11 @@ export function checkInWords(minutes: number): string {
 /** What each power lets it do, in the order people see them. */
 export const POWERS: { power: G.AutopilotPower; label: string; line: string; workspace?: boolean }[] = [
   {
+    power: "merge",
+    label: "Merge pull requests",
+    line: "Its sessions merge their own once checks pass and the work is done, so the next builds on it. Repositories' rules still apply.",
+  },
+  {
     power: "settings",
     label: "Change settings",
     line: "The agents' instructions, setup script, image, model, follow-ups and review agents.",

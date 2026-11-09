@@ -45,6 +45,7 @@ pub struct Settings {
     #[arg(long, value_name = "N")]
     pub sessions: Option<u32>,
     /// What it may do besides starting and steering sessions, a list:
+    /// merge (its sessions merge their pull requests once checks pass),
     /// settings, secrets, repos, schedules and projects (a workspace's), or
     /// all (every power its scope has) or none.
     #[arg(long, value_name = "POWERS")]
@@ -69,7 +70,7 @@ pub enum AutopilotCmd {
   fctl autopilot on -p crm --direction \"Build a CRM for small agencies: contacts, deals and a pipeline board. Ship it to crm.example.com.\"
   fctl autopilot on -p crm --direction-file direction.md --check-in 30m --sessions 4
   fctl autopilot on -p ops --workspace --direction \"Keep every project's dependencies, CI and docs healthy.\"
-  fctl autopilot on -p crm --powers settings,schedules   # no secrets or repositories")]
+  fctl autopilot on -p crm --powers settings,schedules   # no merging, secrets or repositories")]
     On {
         #[command(flatten)]
         settings: Settings,
@@ -644,7 +645,7 @@ fn parse_powers(s: &str, scope: AutopilotScope) -> Result<Vec<AutopilotPower>> {
                 other => other,
             })
             .with_context(|| {
-                format!("{p:?} isn't a power: settings, secrets, repos, schedules, projects, all or none")
+                format!("{p:?} isn't a power: merge, settings, secrets, repos, schedules, projects, all or none")
             })
         })
         .collect()
@@ -737,29 +738,33 @@ fn print_rules(a: &Autopilot) {
             fctl_domain::autopilot::duration(a.check_in_minutes)
         ))
     );
-    let powers: Vec<&str> = a
+    let changes: Vec<&str> = a
         .powers
         .iter()
-        .map(|p| match p {
-            AutopilotPower::Settings => "settings",
-            AutopilotPower::Secrets => "secrets",
-            AutopilotPower::Repos => "repositories",
-            AutopilotPower::Schedules => "schedules",
-            AutopilotPower::Projects => "projects",
-            AutopilotPower::Other => "other",
+        .filter_map(|p| match p {
+            AutopilotPower::Settings => Some("settings"),
+            AutopilotPower::Secrets => Some("secrets"),
+            AutopilotPower::Repos => Some("repositories"),
+            AutopilotPower::Schedules => Some("schedules"),
+            AutopilotPower::Merge | AutopilotPower::Projects | AutopilotPower::Other => None,
         })
         .collect();
-    println!(
-        "  {}",
-        style::dim(&format!(
-            "Starts and steers sessions{}",
-            if powers.is_empty() {
-                String::new()
-            } else {
-                format!("; changes {}", powers.join(", "))
-            }
-        ))
-    );
+    let mut line = String::from(if a.powers.contains(&AutopilotPower::Merge) {
+        "Starts and steers sessions, which merge their pull requests"
+    } else {
+        "Starts and steers sessions, which leave merging to people"
+    });
+    if let Some((last, rest)) = changes.split_last() {
+        line.push_str("; changes ");
+        if !rest.is_empty() {
+            line.push_str(&format!("{} and ", rest.join(", ")));
+        }
+        line.push_str(last);
+    }
+    if a.powers.contains(&AutopilotPower::Projects) {
+        line.push_str("; creates projects");
+    }
+    println!("  {}", style::dim(&line));
 }
 
 fn print_status(a: &Autopilot) {
@@ -977,8 +982,9 @@ mod tests {
     fn all_is_every_power_of_its_scope() {
         let all = |scope| parse_powers("all", scope).ok().unwrap_or_default();
         assert!(!all(AutopilotScope::Project).contains(&AutopilotPower::Projects));
-        assert_eq!(all(AutopilotScope::Project).len(), 4);
-        assert_eq!(all(AutopilotScope::Workspace).len(), 5);
+        assert!(all(AutopilotScope::Project).contains(&AutopilotPower::Merge));
+        assert_eq!(all(AutopilotScope::Project).len(), 5);
+        assert_eq!(all(AutopilotScope::Workspace).len(), 6);
         // What the control plane takes for a project's autopilot.
         assert!(
             fctl_domain::autopilot::powers(AutopilotScope::Project, &all(AutopilotScope::Project))

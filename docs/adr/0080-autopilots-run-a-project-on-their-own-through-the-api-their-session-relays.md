@@ -54,7 +54,10 @@ agent that manages a project needs most of the API besides.
   (`fctl_domain::autopilot::allows`): read its projects and sessions,
   start sessions and steer only those it started, and as far as its powers
   go (settings, secrets, repositories, schedules, projects) change the
-  rest. Never people, roles, shares, tokens, runners, GitHub accounts, the
+  rest. One more power, merging, isn't the API's: fctl's note on each
+  session it starts asks that session to merge its own pull request once
+  checks pass and the work is done, through its own GitHub access, so
+  that work builds on work. Never people, roles, shares, tokens, runners, GitHub accounts, the
   workspace's settings, deleting a project, or anything that takes
   confirming it's you. It replaces or removes only the secrets it set.
   The alternative, a short-lived token in the sandbox, would have put a

@@ -56,9 +56,16 @@ async fn can(ctx: &Ctx, p: &ProjectAccess, row: Option<&AutopilotRow>) -> AppRes
         Some(AutopilotScope::Workspace) => manages && is_admin(ctx, p.workspace_id()).await?,
         _ => manages,
     };
+    // A workspace's autopilot works across the workspace: what it does is
+    // for its admins, who steer it. The autopilot sees its own.
+    let read = match row.map(AutopilotRow::scope) {
+        Some(AutopilotScope::Workspace) => ctx.autopilot().is_some() || steer,
+        _ => true,
+    };
     Ok(AutopilotCan {
         steer: steer && ctx.autopilot().is_none(),
         secrets: manages && ctx.autopilot().is_none(),
+        read,
     })
 }
 
@@ -134,16 +141,6 @@ async fn view(
     )?
     .all()
     .await?;
-    // A workspace's autopilot works in projects some who read its tab
-    // don't see: they see its sessions in theirs.
-    let seen = seen_projects(ctx, row, crew.iter().map(|c| c.project_id.clone())).await?;
-    let crew: Vec<engine::CrewRow> = crew
-        .into_iter()
-        .filter(|c| {
-            seen.as_ref()
-                .is_none_or(|seen| seen.contains(&c.project_id))
-        })
-        .collect();
     #[derive(Deserialize)]
     struct Count {
         #[serde(deserialize_with = "int", default)]
@@ -157,7 +154,7 @@ async fn view(
     .first()
     .await?;
     let problem = engine::problem(db, &p.row, row, ctx.now).await?;
-    Ok(Autopilot {
+    let a = Autopilot {
         project_id: ProjectId(row.project_id.clone()),
         project_slug: p.row.slug.clone(),
         scope: row.scope(),
@@ -204,7 +201,34 @@ async fn view(
         can,
         created_at: row.created_at,
         updated_at: row.updated_at,
+    };
+    if can.read {
+        return Ok(a);
+    }
+    // Who doesn't see what it does sees that it runs, and how.
+    Ok(Autopilot {
+        direction: String::new(),
+        direction_by: None,
+        plan: None,
+        plan_at: None,
+        session: None,
+        notes: Vec::new(),
+        asks: Vec::new(),
+        crew: Vec::new(),
+        crew_total: 0,
+        ..a
     })
+}
+
+/// What it does, for those who see it ([`AutopilotCan::read`]).
+fn require_read(l: &Loaded) -> AppResult<()> {
+    if l.can.read {
+        Ok(())
+    } else {
+        Err(forbidden(
+            "What a workspace's autopilot does reaches all the workspace's projects: its admins see it.",
+        ))
+    }
 }
 
 fn crew_of(c: &engine::CrewRow) -> AutopilotCrew {
@@ -220,36 +244,6 @@ fn crew_of(c: &engine::CrewRow) -> AutopilotCrew {
         created_at: c.created_at,
         last_activity_at: c.last_activity_at,
     }
-}
-
-/// Of `projects`, those whoever reads a workspace's autopilot sees (its
-/// sessions and log reach projects some of them don't); `None` for one
-/// that sees them all: a project's autopilot, or the autopilot itself.
-async fn seen_projects(
-    ctx: &Ctx,
-    row: &AutopilotRow,
-    projects: impl Iterator<Item = String>,
-) -> AppResult<Option<Vec<String>>> {
-    if row.scope() != AutopilotScope::Workspace || ctx.autopilot().is_some() {
-        return Ok(None);
-    }
-    let mut ids: Vec<String> = projects.collect();
-    ids.sort();
-    ids.dedup();
-    if ids.is_empty() {
-        return Ok(Some(ids));
-    }
-    let user = ctx.user()?;
-    let rows: Vec<ProjectRow> = q(
-        &ctx.db,
-        &format!(
-            "{PROJECT_SELECT} WHERE p.id IN (SELECT value FROM json_each(?2)) AND {PROJECT_VISIBLE}"
-        ),
-        &[s(&user.id), s(&serde_json::to_string(&ids)?)],
-    )?
-    .all()
-    .await?;
-    Ok(Some(rows.into_iter().map(|r| r.id).collect()))
 }
 
 #[derive(Deserialize)]
@@ -366,6 +360,7 @@ async fn ask_of(ctx: &Ctx, r: &engine::AskRow) -> AppResult<AutopilotAsk> {
 /// (`?before=` the last entry's id, `?limit=` up to 200).
 pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
+    require_read(&l)?;
     let row = l.row.ok_or_else(|| not_found("Autopilot"))?;
     let limit = http::query(req, "limit")
         .and_then(|v| v.parse::<i64>().ok())
@@ -387,13 +382,10 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
         session_title: Option<String>,
         project_slug: Option<String>,
         from_session_id: Option<String>,
-        other_project_id: Option<String>,
-        session_project_id: Option<String>,
     }
     let mut params = vec![s(&row.project_id)];
     let mut sql = "SELECT e.id, e.at, e.kind, e.text, e.user_id, u.name AS user_name, u.avatar_url AS user_avatar, \
-         e.session_id, es.number AS session_number, es.title AS session_title, op.slug AS project_slug, e.from_session_id, \
-         e.other_project_id, es.project_id AS session_project_id \
+         e.session_id, es.number AS session_number, es.title AS session_title, op.slug AS project_slug, e.from_session_id \
          FROM autopilot_log e LEFT JOIN users u ON u.id = e.user_id LEFT JOIN sessions es ON es.id = e.session_id \
          LEFT JOIN projects op ON op.id = e.other_project_id WHERE e.project_id = ?1"
         .to_owned();
@@ -411,17 +403,6 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
     let mut rows: Vec<EntryRow> = q(&ctx.db, &sql, &params)?.all().await?;
     let has_more = rows.len() as i64 > limit;
     rows.truncate(usize::try_from(limit).unwrap_or(50));
-    // What a workspace's autopilot did in projects the reader doesn't see
-    // stays out of their page of it.
-    let places = |r: &EntryRow| {
-        [r.other_project_id.clone(), r.session_project_id.clone()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-    };
-    if let Some(seen) = seen_projects(ctx, &row, rows.iter().flat_map(places)).await? {
-        rows.retain(|r| places(r).iter().all(|p| seen.contains(p)));
-    }
     http::ok(&AutopilotLog {
         entries: rows
             .into_iter()
@@ -453,13 +434,7 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
 pub async fn brief(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
     let row = require(l.row.clone())?;
-    // A workspace's autopilot's whole picture reaches across the
-    // workspace: for those who steer it, its admins.
-    if row.scope() == AutopilotScope::Workspace && ctx.autopilot().is_none() && !l.can.steer {
-        return Err(forbidden(
-            "A workspace's autopilot's brief is for the workspace's admins, as it reaches all its projects.",
-        ));
-    }
+    require_read(&l)?;
     let (text, shown) = brief_of(ctx, &l.p.row, &row).await?;
     if ctx.autopilot().is_some() {
         engine::mark_seen(&ctx.db, &row.project_id, &shown.notes, &shown.asks, ctx.now).await?;

@@ -2063,10 +2063,13 @@ sessions to do it, and sets up what the work needs, as far as they let it
    projects have autopilots first (its settings, `fctl workspaces set
    --autopilots on`, `workspaces.autopilots`); turning that off pauses the
    ones it has. A project's maintainers and owners put it on autopilot
-   with a direction (Markdown), its **powers** (changing the projects'
-   settings, secrets, repositories and schedules, and for a workspace's
-   autopilot creating projects; starting and steering sessions it always
-   does), its **check-in** (15 minutes to a day: the longest it goes
+   with a direction (Markdown), its **powers** (having its sessions merge
+   their pull requests once checks pass and the work is done, which fctl's
+   note on their task asks them to, through their own GitHub access;
+   changing the projects' settings, secrets, repositories and schedules,
+   and for a workspace's autopilot creating projects; starting and
+   steering sessions it always does), its **check-in** (15 minutes to a
+   day: the longest it goes
    without waking), how many of its sessions work at once (1 to 8) and the
    model of its own sessions. A workspace's admins put the whole workspace
    on autopilot from one of its projects (`scope: workspace`, one per
@@ -2081,8 +2084,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
 2. **Its own sessions** (`sessions.autopilot_role = 'pilot'`, in its home
    project, off session lists unless asked with `?hidden=1`). A workspace's
    autopilot's, which show what it does across the workspace, are its
-   admins' only (`access::session_role`), as is its brief; its tab shows
-   others its sessions and log in the projects they see. fctl wakes
+   admins' only (`access::session_role`), as is what its tab shows of it.
+   fctl wakes
    it in its current one with a message (`UserMessage.wake`, what woke it),
    which resumes it if it stopped, while that started less than 12 hours
    ago (`fctl_domain::autopilot::SHIFT_MS`) and didn't fail, or works now.
@@ -2177,9 +2180,12 @@ sessions to do it, and sets up what the work needs, as far as they let it
 The tab shows where it stands (at work, waking, waiting for people, on
 and when it next checks in, paused and why), what it asks, the notes, its
 direction, plan and sessions (live), how it works, and its log by day, with
-its wakes between what it did. Everyone who sees the project sees it;
-those who may steer it (the project's maintainers and owners, and for a
-workspace's autopilot the workspace's admins) steer it.
+its wakes between what it did. Everyone who sees the project sees it,
+except that what a workspace's autopilot does reaches projects some of
+them don't see: its plan, notes, asks, sessions, log, brief and own
+session are its admins' (`AutopilotCan::read`), and others see only that
+it runs, and how. Those who may steer it (the project's maintainers and
+owners, and for a workspace's autopilot the workspace's admins) steer it.
 
 ### Ticket trackers
 

@@ -13,4 +13,11 @@ steer: boolean,
 /**
  * Give it the secrets it asks for: those who may set them.
  */
-secrets: boolean, };
+secrets: boolean, 
+/**
+ * See what it does (its plan, notes, asks, sessions and log, its own
+ * session and brief): everyone who sees its project, except for a
+ * workspace's autopilot, whose work reaches all the workspace's
+ * projects: its admins. Others see only that it runs, and how.
+ */
+read: boolean, };

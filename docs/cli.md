@@ -716,6 +716,8 @@ fctl autopilot off -p crm --stop-sessions      # its direction, notes, plan, log
 turn, asks something or fails, and when people steer or answer it.
 `--sessions` is how many of its sessions work at once (1 to 8).
 `--powers` lists what it may do besides starting and steering sessions:
+`merge` (its sessions merge their own pull requests once checks pass and
+the work is done, as far as the repository's rules let them),
 `settings`, `secrets` (those it makes itself, never those people set),
 `repos`, `schedules`, and for a workspace's autopilot `projects`; `all`
 (every power its scope has) or `none`. Changing how much it works,

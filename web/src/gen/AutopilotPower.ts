@@ -4,4 +4,4 @@
  * What an autopilot may do besides starting and steering sessions, which
  * every autopilot does.
  */
-export type AutopilotPower = "settings" | "secrets" | "repos" | "schedules" | "projects" | "other";
+export type AutopilotPower = "merge" | "settings" | "secrets" | "repos" | "schedules" | "projects" | "other";

@@ -103,7 +103,7 @@ const on = (more: Partial<G.Autopilot> = {}): G.Autopilot => ({
   asks: [],
   crew: [],
   crew_total: 0,
-  can: { steer: true, secrets: true },
+  can: { steer: true, secrets: true, read: true },
   created_at: 0,
   updated_at: 0,
   ...more,
@@ -186,10 +186,21 @@ describe("a project's Autopilot tab", () => {
     expect(toast).toHaveBeenCalledWith("Answered: it hears now");
   });
 
+  it("shows those who can't steer a workspace's autopilot that it runs, and not what it does", async () => {
+    const runs = on({ scope: "workspace", can: { steer: false, secrets: false, read: false } });
+    autopilot.mockResolvedValue(runs);
+    queryClient.setQueryData(keys.autopilot("prj_1"), runs);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    expect(page.textContent).toContain("its plan, sessions, asks and log are for the workspace's admins");
+    expect(page.textContent).not.toContain("Ship the");
+    expect(page.textContent).toContain("Checks in every hour");
+  });
+
   it("tells people who can't answer a workspace's autopilot that its admins do", async () => {
     const asked = on({
       scope: "workspace",
-      can: { steer: false, secrets: true },
+      can: { steer: false, secrets: true, read: true },
       asks: [
         { id: "apa_1", kind: "question", text: "Which domain?", status: "open", created_at: Date.now() },
       ],

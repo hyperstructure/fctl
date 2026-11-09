@@ -621,7 +621,8 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
         return Ok(false);
     }
     // Once claimed, what woke it is gone from its row: should waking it
-    // fail, it goes back, for a retry soon rather than at the next check-in.
+    // fail, it goes back for a retry soon ([`wake_failed`]), rather than
+    // wait for the next check-in.
     let woke: AppResult<bool> = async {
         let mut reasons = row.reasons();
         if reasons.is_empty() {
@@ -733,25 +734,61 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
         Ok(true)
     }
     .await;
-    if woke.is_err() {
-        let retry = q(
-            db,
-            "UPDATE autopilots SET wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
-             WHEN ?1 = '' THEN wake_reasons ELSE wake_reasons || ',' || ?1 END, \
-             wake_at = MIN(COALESCE(wake_at, ?2), ?2) WHERE project_id = ?3 AND state = 'on'",
-            &[
-                s(&row.wake_reasons),
-                n(now + ap::RETRY_MS[0]),
-                s(&row.project_id),
-            ],
-        );
-        if let Ok(retry) = retry
-            && let Err(e) = retry.run().await
-        {
-            worker::console_error!("autopilot {}: {}", row.project_id, e.0.message);
-        }
+    if let Err(e) = &woke
+        && let Err(again) = wake_failed(env, db, row, &e.0.message, now).await
+    {
+        worker::console_error!("autopilot {}: {}", row.project_id, again.0.message);
     }
     woke
+}
+
+/// After waking it failed once claimed (`why`): what woke it goes back
+/// for a retry, 5, 15 and 60 minutes on, as for its session failing, each
+/// in its log; then it pauses, saying why.
+async fn wake_failed(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    why: &str,
+    now: i64,
+) -> AppResult<()> {
+    let failures = u32::try_from(row.failures + 1).unwrap_or(u32::MAX);
+    let Some(after) = ap::retry_in(failures) else {
+        let why = format!(
+            "fctl couldn't wake it {} times in a row, the last because: {why} Resume it once that's fixed.",
+            ap::RETRY_MS.len() + 1
+        );
+        return stop_for(db, row, &why, now).await;
+    };
+    q(
+        db,
+        "UPDATE autopilots SET failures = ?4, wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
+         WHEN ?1 = '' THEN wake_reasons ELSE wake_reasons || ',' || ?1 END, \
+         wake_at = MIN(COALESCE(wake_at, ?2), ?2) WHERE project_id = ?3 AND state = 'on'",
+        &[
+            s(&row.wake_reasons),
+            n(now + after),
+            s(&row.project_id),
+            n(i64::from(failures)),
+        ],
+    )?
+    .run()
+    .await?;
+    log(
+        db,
+        &row.project_id,
+        Entry::new(
+            AutopilotEntryKind::Problem,
+            format!(
+                "fctl couldn't wake it: {why} It tries again in {} minutes.",
+                after / 60_000
+            ),
+        ),
+        now,
+    )
+    .await;
+    ring(env).await;
+    Ok(())
 }
 
 /// What a wake says in the log: "Woke for its check-in", "Woke: Ada's
@@ -1489,13 +1526,15 @@ pub async fn crew_prompt(
     .first()
     .await?;
     let project = name.map_or_else(|| caller.project_slug.clone(), |n| n.name);
-    let what = match caller.scope {
-        AutopilotScope::Project => "the project",
-        AutopilotScope::Workspace => "its workspace's projects",
-    };
     Ok(format!(
-        "{}\n\n---\nThe autopilot of {project} started this session: an agent that runs {what} on its own (an experimental feature of fctl), for {owner_called}, as whom it acts, so its messages come to you as {owner_called}'s. It follows this session and hears when your turn ends. When you're done, or need a decision to go on, end your turn saying so plainly; ask what you need answered with `fctl ask`, and the autopilot answers, or asks people.",
-        task.trim_end()
+        "{}{}",
+        task.trim_end(),
+        ap::crew_note(
+            &project,
+            caller.scope,
+            owner_called,
+            caller.powers.contains(&AutopilotPower::Merge),
+        )
     ))
 }
 
