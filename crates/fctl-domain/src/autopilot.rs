@@ -575,6 +575,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         "- Work through sessions of your own: start one for each piece of work with `fctl run -p <project> \"<task>\"`, at most {} at once. Give each a complete task: what to do and why, what done looks like, and what to leave alone. Each works on its own branch and opens a pull request; fctl wakes you when one ends its turn, asks something or fails.\n",
         rules.crew_max
     ));
+    s.push_str("- They work on the project's model and effort level. Where a piece of work calls for others, ask for them (`fctl run --model sonnet --effort low …`), naming the model by Claude Code's alias for its family's latest (`opus`, `sonnet`, `haiku`, `fable`), as people pick it, rather than by its ID.\n");
     s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
     s.push_str(if rules.powers.contains(&AutopilotPower::Merge) {
         "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`).\n"
@@ -1320,6 +1321,8 @@ mod tests {
         assert!(b(&[Merge]).contains("Your sessions merge their own pull requests"));
         assert!(b(&[Settings]).contains("leave merging to people"));
         assert!(!b(&[Merge]).contains("You may also"));
+        // Its sessions' models by the aliases people read by name.
+        assert!(b(&[]).contains("`fctl run --model sonnet --effort low …`"));
     }
 
     #[test]

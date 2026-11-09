@@ -43,9 +43,27 @@ export const EFFORTS = [
   { value: "max", label: "Max" },
 ] as const;
 
-/** A model by its alias's name, or by its ID; "" is Claude's default. */
-export const modelLabel = (model: string) =>
-  model ? (ALIASES.find((a) => a.value === model)?.label ?? model) : "Claude's default";
+/**
+ * A Claude model's ID (`claude-sonnet-5-5`): its family and version. A snapshot's ID, dated
+ * (`claude-opus-4-1-20250805`), doesn't match: by its version alone, it would read as the
+ * undated one.
+ */
+const MODEL_ID = /^claude-(opus|sonnet|haiku|fable)-(\d{1,3})(?:-(\d{1,2}))?$/;
+
+/**
+ * A model by its alias's name, by its family and version where it is named by a Claude model's
+ * undated ID (`claude-sonnet-5-5` is Sonnet 5.5), or as it is; "" is Claude's default.
+ */
+export function modelLabel(model: string): string {
+  if (!model) return "Claude's default";
+  const alias = ALIASES.find((a) => a.value === model);
+  if (alias) return alias.label;
+  const id = MODEL_ID.exec(model);
+  if (!id) return model;
+  const [, family = "", major, minor] = id;
+  const name = ALIASES.find((a) => a.value === family)?.label ?? family;
+  return `${name} ${major}${minor ? `.${minor}` : ""}`;
+}
 
 /** An effort level by its name; "" is Claude's default. */
 export const effortLabel = (effort: string) =>

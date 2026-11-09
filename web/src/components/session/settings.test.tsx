@@ -71,7 +71,7 @@ describe("a session's model and effort level", () => {
     act(() => container.querySelectorAll<HTMLElement>("[role=combobox]")[0]?.click());
     expect(
       [...container.querySelectorAll("[role=option]")].map((o) => o.querySelector(".truncate")?.textContent),
-    ).toEqual(["claude-opus-5-5", "Opus", "Sonnet", "Haiku", "Fable"]);
+    ).toEqual(["Opus 5.5", "Opus", "Sonnet", "Haiku", "Fable"]);
   });
 
   it("changes the effort level at once where Claude keeps its cache", async () => {
