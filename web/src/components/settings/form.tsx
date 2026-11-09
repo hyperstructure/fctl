@@ -3,7 +3,7 @@
 // changes unsaved; and switches whose words name them and turn them too.
 
 import { type ShouldBlockFn, useBlocker } from "@tanstack/react-router";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useId, useState } from "react";
 import { Button, Dialog, Switch } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
@@ -52,10 +52,26 @@ const leaves: ShouldBlockFn = ({ current, next }) =>
 
 /**
  * Asks before someone leaves a page whose changes aren't saved: for another page, another tab or
- * anywhere else in the app, and, as browsers ask it, before the tab closes or reloads.
+ * anywhere else in the app, and, as browsers ask it, before the tab closes or reloads. Not once the
+ * page says it leaves on purpose (`leaving`): for a sign-in elsewhere that brings the browser back
+ * to what it left, as connecting Linear does.
  */
-export function UnsavedGuard({ dirty, page }: { dirty: boolean; page: string }) {
-  const blocker = useBlocker({ shouldBlockFn: leaves, disabled: !dirty, withResolver: true });
+export function UnsavedGuard({
+  dirty,
+  page,
+  leaving,
+}: {
+  dirty: boolean;
+  page: string;
+  leaving?: RefObject<boolean>;
+}) {
+  const unload = useCallback(() => !leaving?.current, [leaving]);
+  const blocker = useBlocker({
+    shouldBlockFn: leaves,
+    enableBeforeUnload: unload,
+    disabled: !dirty,
+    withResolver: true,
+  });
   return (
     <Dialog
       open={blocker.status === "blocked"}

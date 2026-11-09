@@ -228,13 +228,21 @@ function SettingsBody({
 /**
  * Saves what a page changed, as `body` has it when saving, and shows the project as the control
  * plane has it now. A check of the page's own fails in `body` as the control plane's would, with
- * the field it names.
+ * the field it names. `saved` hands the page what was stored, which becomes its draft: the control
+ * plane tidies what it stores (it trims text), and a draft that kept what was typed would still
+ * differ from it, with nothing left to save.
  */
-function useSave(project: G.Project, done: string, body: () => G.UpdateProjectRequest) {
+function useSave(
+  project: G.Project,
+  done: string,
+  body: () => G.UpdateProjectRequest,
+  saved: (p: G.Project) => void,
+) {
   return useMutation({
     mutationFn: () => api.updateProject(project.id, body()),
     onSuccess: (p) => {
       queryClient.setQueryData(keys.project(project.slug), p);
+      saved(p);
       void queryClient.invalidateQueries({ queryKey: keys.projects });
       toast(done);
     },
@@ -298,14 +306,22 @@ function Parts({ children }: { children: ReactNode }) {
 
 // ───────────────────────────── general ─────────────────────────────
 
+/** What the General page edits. */
+const generalFields = (p: G.Project) => ({
+  name: p.name,
+  description: p.description ?? "",
+  default_branch: p.default_branch,
+});
+
 /** Settings → General: its name, description, icon and default branch, and for owners deleting it. */
 function General({ project }: { project: G.Project }) {
-  const { draft, set, dirty, reset } = useDraft({
-    name: project.name,
-    description: project.description ?? "",
-    default_branch: project.default_branch,
-  });
-  const save = useSave(project, "Saved", () => draft);
+  const { draft, set, setDraft, dirty, reset } = useDraft(generalFields(project));
+  const save = useSave(
+    project,
+    "Saved",
+    () => draft,
+    (p) => setDraft(generalFields(p)),
+  );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   const branch = draft.default_branch.trim();
   return (
@@ -388,21 +404,29 @@ const agentSettings = (s: G.ProjectSettings) => ({
  * GitHub, the Claude apps, and what agents leave the agents after them.
  */
 function Agents({ project }: { project: G.Project }) {
-  const { draft: s, set, dirty, reset } = useDraft(agentSettings(project.settings));
+  const { draft: s, set, setDraft, dirty, reset } = useDraft(agentSettings(project.settings));
   const [model, setModel] = useState<ModelChoice>(modelChoice(project.settings.model));
   /** The model ID typed last, so that choosing Model ID again brings it back. */
   const typedModel = useRef<string>(undefined);
   // What is saved shows again after a save, Cancel, or someone's change elsewhere.
   useEffect(() => setModel(modelChoice(project.settings.model)), [project.settings.model]);
-  const save = useSave(project, "Saved: sessions that start from now on take it", () => {
-    if (model === "id" && !s.model?.trim())
-      throw new ApiFailure(400, {
-        code: "validation",
-        field: "model",
-        message: "Type a model ID, or choose another model",
-      });
-    return { settings: { ...project.settings, ...s } };
-  });
+  const save = useSave(
+    project,
+    "Saved: sessions that start from now on take it",
+    () => {
+      if (model === "id" && !s.model?.trim())
+        throw new ApiFailure(400, {
+          code: "validation",
+          field: "model",
+          message: "Type a model ID, or choose another model",
+        });
+      return { settings: { ...project.settings, ...s } };
+    },
+    (p) => {
+      setDraft(agentSettings(p.settings));
+      setModel(modelChoice(p.settings.model));
+    },
+  );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   return (
     <Section title="Agents" description="What Claude is told and how it works in this project.">
@@ -572,8 +596,13 @@ const pullRequestSettings = (s: G.ProjectSettings) => ({
 function PullRequests({ project }: { project: G.Project }) {
   const { data: instance } = useInstance();
   const { data: me } = useMe();
-  const { draft: s, set, dirty, reset } = useDraft(pullRequestSettings(project.settings));
-  const save = useSave(project, "Saved", () => ({ settings: { ...project.settings, ...s } }));
+  const { draft: s, set, setDraft, dirty, reset } = useDraft(pullRequestSettings(project.settings));
+  const save = useSave(
+    project,
+    "Saved",
+    () => ({ settings: { ...project.settings, ...s } }),
+    (p) => setDraft(pullRequestSettings(p.settings)),
+  );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   const followUps = s.follow_ups;
   const follow = (f: Partial<G.FollowUps>) => set({ follow_ups: { ...followUps, ...f } });
@@ -811,7 +840,7 @@ const sandboxSettings = (s: G.ProjectSettings) => ({
  */
 function Sandbox({ project }: { project: G.Project }) {
   const saved = sandboxSettings(project.settings);
-  const { draft: s, set, dirty: changed, reset } = useDraft(saved);
+  const { draft: s, set, setDraft, dirty: changed, reset } = useDraft(saved);
   // Lines that set the same variables are no change: a blank line, a comment.
   const dirty =
     changed && (sameEnv(s.env, saved.env) ? !sameDraft({ ...s, env: "" }, { ...saved, env: "" }) : true);
@@ -822,9 +851,15 @@ function Sandbox({ project }: { project: G.Project }) {
   useEffect(() => setSource(savedSource), [savedSource]);
   /** What was typed for each image source, so that switching back brings it back. */
   const typed = useRef<Typed>({});
-  const save = useSave(project, "Saved: sessions that start from now on take it", () => ({
-    settings: { ...project.settings, ...s, env: parseEnv(s.env) },
-  }));
+  const save = useSave(
+    project,
+    "Saved: sessions that start from now on take it",
+    () => ({ settings: { ...project.settings, ...s, env: parseEnv(s.env) } }),
+    (p) => {
+      setDraft(sandboxSettings(p.settings));
+      setSource(imageSource(p.settings));
+    },
+  );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   const number = (v: string) => (v ? Number(v) : undefined);
   return (

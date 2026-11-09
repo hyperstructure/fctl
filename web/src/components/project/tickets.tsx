@@ -91,11 +91,15 @@ export function TicketsSettings({ project, returned }: { project: G.Project; ret
   }
   const tracker = draft.tracker ?? "github";
   const dirty = JSON.stringify(comparable(draft)) !== JSON.stringify(comparable(saved));
+  /** Set as the page leaves for Linear on purpose, which brings the browser back here. */
+  const leaving = useRef(false);
   const save = useMutation({
     mutationFn: () =>
       api.updateProject(project.id, { settings: { ...project.settings, tickets: normalized(draft) } }),
     onSuccess: (p) => {
       queryClient.setQueryData(keys.project(project.slug), p);
+      // What was stored, as the control plane tidied it: nothing is left to save.
+      setDraft(p.settings.tickets ?? {});
       void queryClient.invalidateQueries({ queryKey: keys.projects });
       void queryClient.invalidateQueries({ queryKey: keys.projectTickets(project.id) });
       toast("Saved: agents take it from their next session, and their GitHub tokens within the hour");
@@ -152,10 +156,14 @@ export function TicketsSettings({ project, returned }: { project: G.Project; ret
                   onChange={setDraft}
                   disabled={!manage}
                   error={save.error}
+                  // Off to Linear with the choice unsaved: it comes back to it, so nothing asks first.
+                  onLeave={() => {
+                    leaving.current = true;
+                  }}
                 />
               )}
             </div>
-            <UnsavedGuard dirty={manage && dirty && !save.isPending} page="Tickets" />
+            <UnsavedGuard dirty={manage && dirty && !save.isPending} page="Tickets" leaving={leaving} />
             {manage && (dirty || save.isPending) && (
               <SaveBar
                 pending={save.isPending}
@@ -508,6 +516,7 @@ function LinearDetails({
   onChange,
   disabled,
   error,
+  onLeave,
 }: {
   project: G.Project;
   instance?: G.InstanceInfo;
@@ -521,11 +530,16 @@ function LinearDetails({
   onChange: (t: G.Tickets) => void;
   disabled: boolean;
   error: Error | null;
+  /** Called as the page leaves for Linear. */
+  onLeave: () => void;
 }) {
   const connect = useMutation({
     mutationFn: () => workspaces.connectLinear(project.workspace?.id ?? "", { project: project.slug }),
     // On to Linear, which brings the browser back here.
-    onSuccess: (link) => goTo(link.url),
+    onSuccess: (link) => {
+      onLeave();
+      goTo(link.url);
+    },
     onError: (e) => toast(e.message, "error"),
   });
   if (instance && !instance.features.linear)

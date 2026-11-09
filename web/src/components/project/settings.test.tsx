@@ -20,7 +20,9 @@ vi.mock("@/lib/api", async (real) => {
           ? (id: string, body: G.UpdateProjectRequest) => {
               updates.push({ id, body });
               const before = queryClient.getQueryData<G.Project>(keys.project("shop"));
-              return Promise.resolve({ ...before, ...body });
+              // As the control plane stores it: its text trimmed.
+              const name = body.name?.trim();
+              return Promise.resolve({ ...before, ...body, ...(name !== undefined && { name }) });
             }
           : () => new Promise(() => {}),
     },
@@ -188,6 +190,23 @@ describe("a project's Settings", () => {
     // What other pages edit goes back as it was: a PATCH replaces all of them.
     expect(sent?.instructions).toBe("Run the tests first.");
     expect(sent?.env).toEqual({ NODE_ENV: "development" });
+  });
+
+  it("has nothing left to save once saved, though the control plane tidied what it stored", async () => {
+    const s = open("general");
+    const name = s.container.querySelector("input") as HTMLInputElement;
+    act(() => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      set?.call(name, "Shop ");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(s.button("Save")).toBeDefined();
+    await act(async () => s.button("Save").click());
+    expect(updates[0]?.body.name).toBe("Shop ");
+    // It stored "Shop", as it was: the page shows that, and asks nothing before leaving.
+    expect(name.value).toBe("Shop");
+    expect(s.button("Save")).toBeUndefined();
+    expect(blocker.disabled.at(-1)).toBe(true);
   });
 
   it("drops the changes Cancel throws away", () => {

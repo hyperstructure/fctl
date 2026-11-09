@@ -7,8 +7,13 @@ import { keys, queryClient } from "@/lib/queries";
 import type { LinearOutcome } from "@/lib/tickets";
 import { TicketsSettings } from "./tickets";
 
-// No request is answered: the tab shows what the cache holds. Each call is noted.
+// No request is answered but connecting Linear, which answers with where to go: the page shows what
+// the cache holds. Each call is noted, leaving the page too.
 const calls = vi.hoisted(() => [] as { name: string; args: unknown[] }[]);
+/** What the page asks the router's blocker for: whether it asks before someone leaves. */
+const blocker = vi.hoisted(
+  () => ({}) as { opts?: { disabled?: boolean; enableBeforeUnload?: boolean | (() => boolean) } },
+);
 vi.mock("@/lib/api", () => {
   const never = new Proxy(
     {},
@@ -17,7 +22,9 @@ vi.mock("@/lib/api", () => {
         (_, name) =>
         (...args: unknown[]) => {
           calls.push({ name: String(name), args });
-          return new Promise(() => {});
+          return name === "connectLinear"
+            ? Promise.resolve({ url: "https://linear.app/oauth/authorize" })
+            : new Promise(() => {});
         },
     },
   );
@@ -35,7 +42,14 @@ vi.mock("@/lib/api", () => {
 });
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a href="/">{children}</a>,
-  useBlocker: () => ({ status: "idle" }),
+  useBlocker: (opts: typeof blocker.opts) => {
+    blocker.opts = opts;
+    return { status: "idle" };
+  },
+}));
+vi.mock("@/lib/history", async (real) => ({
+  ...(await real<typeof import("@/lib/history")>()),
+  goTo: (href: string) => calls.push({ name: "goTo", args: [href] }),
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -313,6 +327,22 @@ describe("Settings → Tickets", () => {
     const c = tab(project(), { role: "admin", connections: [], returned: "denied" });
     expect(checked(c)).toBe("linear");
     expect([...c.querySelectorAll("button")].some((b) => b.textContent === "Connect Linear")).toBe(true);
+  });
+
+  it("leaves for Linear without the browser asking first, though choosing Linear isn't saved yet", async () => {
+    const c = tab(project(), { role: "admin", connections: [], returned: "denied" });
+    // Linear is chosen and not saved: leaving the app, or closing the tab, asks first.
+    const unload = () => {
+      const e = blocker.opts?.enableBeforeUnload;
+      return typeof e === "function" ? e() : e;
+    };
+    expect(blocker.opts?.disabled).toBe(false);
+    expect(unload()).toBe(true);
+    // Connecting leaves for Linear on purpose, which brings the browser back with Linear chosen.
+    const connect = [...c.querySelectorAll("button")].find((b) => b.textContent === "Connect Linear");
+    await act(async () => connect?.click());
+    expect(calls.find((x) => x.name === "goTo")?.args).toEqual(["https://linear.app/oauth/authorize"]);
+    expect(unload()).toBe(false);
   });
 
   it("shows those who can't choose what is stored, back from Linear too", () => {
