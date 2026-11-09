@@ -268,11 +268,6 @@ pub fn at_work(status: SessionStatus) -> bool {
     )
 }
 
-/// Whether one of its sessions counts towards how many work at once.
-pub fn crew_working(status: SessionStatus) -> bool {
-    at_work(status) || status == SessionStatus::Paused
-}
-
 // ───────────────────────────── what it may do ─────────────────────────────
 
 /// The autopilot whose session asks.
