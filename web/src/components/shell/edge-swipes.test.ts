@@ -67,15 +67,30 @@ describe("scrollerOf", () => {
     const row = scroller("x", text);
     const list = scroller("y", row);
     document.body.append(list);
-    expect(scrollerOf(text, "x")).toBe(row);
-    expect(scrollerOf(text, "y")).toBe(list);
+    expect(scrollerOf(text, "x", -10)).toBe(row);
+    expect(scrollerOf(text, "y", -10)).toBe(list);
   });
 
   it("scrolls the page up and down when nothing else scrolls, but never sideways", () => {
     const text = document.createElement("span");
     document.body.append(scroller("y", text, false));
-    expect(scrollerOf(text, "y")).toBe(document.scrollingElement);
-    expect(scrollerOf(text, "x")).toBeUndefined();
+    expect(scrollerOf(text, "y", -10)).toBe(document.scrollingElement);
+    expect(scrollerOf(text, "x", -10)).toBeUndefined();
+  });
+
+  it("hands a swipe on to the page from something at its limit, unless it keeps its scrolling to itself", () => {
+    const text = document.createElement("span");
+    const list = scroller("y", text);
+    document.body.append(list);
+    // At its top: a finger moving down scrolls the page, and one moving up the list.
+    expect(scrollerOf(text, "y", 10)).toBe(document.scrollingElement);
+    expect(scrollerOf(text, "y", -10)).toBe(list);
+    // At its bottom, the other way round.
+    list.scrollTop = 600;
+    expect(scrollerOf(text, "y", 10)).toBe(list);
+    expect(scrollerOf(text, "y", -10)).toBe(document.scrollingElement);
+    list.style.setProperty("overscroll-behavior-y", "contain");
+    expect(scrollerOf(text, "y", -10)).toBe(list);
   });
 
   it("scrolls what is in a dialog, but not the page under it", () => {
@@ -84,10 +99,10 @@ describe("scrollerOf", () => {
     const list = scroller("y", text);
     dialog.append(list);
     document.body.append(dialog);
-    expect(scrollerOf(text, "y")).toBe(list);
+    expect(scrollerOf(text, "y", -10)).toBe(list);
     const other = document.createElement("span");
     dialog.append(other);
-    expect(scrollerOf(other, "y")).toBeUndefined();
+    expect(scrollerOf(other, "y", -10)).toBeUndefined();
   });
 
   it("scrolls nothing where touch-action keeps fingers to the page's own handling", () => {
@@ -96,10 +111,10 @@ describe("scrollerOf", () => {
     track.style.touchAction = "none";
     track.append(text);
     document.body.append(scroller("y", track));
-    expect(scrollerOf(text, "y")).toBeUndefined();
+    expect(scrollerOf(text, "y", -10)).toBeUndefined();
     track.style.touchAction = "pan-y";
-    expect(scrollerOf(text, "y")).not.toBeUndefined();
-    expect(scrollerOf(text, "x")).toBeUndefined();
+    expect(scrollerOf(text, "y", -10)).not.toBeUndefined();
+    expect(scrollerOf(text, "x", -10)).toBeUndefined();
   });
 });
 

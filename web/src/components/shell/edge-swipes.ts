@@ -31,8 +31,8 @@ const STILL = 0.02;
 /** The longest step (ms) a glide takes between two frames, after the page stalled. */
 const STEP_MS = 50;
 /**
- * A press held longer than this (ms) clicks nothing: on a link or on text, Safari
- * would have shown its menu or selected the text instead.
+ * A press on a link held longer than this (ms) clicks nothing: Safari would
+ * have shown the link's menu instead. Elsewhere a slow press still clicks.
  */
 const LONG_MS = 500;
 
@@ -64,18 +64,26 @@ const pans = (touchAction: string, axis: Axis) =>
   touchAction.includes(`pan-${axis}`);
 
 /**
- * What a finger moving along `axis` from `el` scrolls, as the browser would
- * have: the nearest thing that scrolls that way, or else the page. Never the
- * page under a dialog or a popover, and nothing where `touch-action` keeps
- * fingers to what the page does with them itself.
+ * What a finger moving `by` px along `axis` from `el` scrolls, as the browser
+ * would have: the nearest thing that scrolls that way with room to go the way
+ * the finger takes it, or that keeps its scrolling to itself
+ * (`overscroll-behavior`), or else the page. Never the page under a dialog or
+ * a popover, and nothing where `touch-action` keeps fingers to what the page
+ * does with them itself.
  */
-export function scrollerOf(el: Element, axis: Axis): Element | undefined {
+export function scrollerOf(el: Element, axis: Axis, by: number): Element | undefined {
   for (let at: Element | null = el; at && at !== document.documentElement; at = at.parentElement) {
     const style = getComputedStyle(at);
     if (!pans(style.touchAction, axis)) return undefined;
     const overflow = axis === "x" ? style.overflowX : style.overflowY;
-    const more = axis === "x" ? at.scrollWidth > at.clientWidth : at.scrollHeight > at.clientHeight;
-    if ((overflow === "auto" || overflow === "scroll") && more) return at;
+    const end = axis === "x" ? at.scrollWidth - at.clientWidth : at.scrollHeight - at.clientHeight;
+    if ((overflow === "auto" || overflow === "scroll") && end > 0) {
+      // A finger moving down or right takes it back toward its start.
+      const now = position(at, axis);
+      const room = by > 0 ? now > 0 : by < 0 ? now < end - 0.5 : true;
+      const keeps = axis === "x" ? style.overscrollBehaviorX : style.overscrollBehaviorY;
+      if (room || (keeps && keeps !== "auto")) return at;
+    }
     if (at.tagName === "DIALOG" || at.hasAttribute("popover")) return undefined;
   }
   // The page never scrolls sideways: what is wider scrolls in its own row.
@@ -219,8 +227,9 @@ export function useEdgeSwipes(dragged: () => boolean) {
         // starts out partly sideways.
         const most: Axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
         const other: Axis = most === "x" ? "y" : "x";
-        const first = scrollerOf(touch.target, most);
-        const [axis, el] = first ? [most, first] : [other, scrollerOf(touch.target, other)];
+        const along = (a: Axis) => (a === "x" ? dx : dy);
+        const first = scrollerOf(touch.target, most, along(most));
+        const [axis, el] = first ? [most, first] : [other, scrollerOf(touch.target, other, along(other))];
         // From here, so that what it scrolls doesn't jump by as far as the finger went first.
         touch.scroll = { axis, el, start: el ? position(el, axis) : 0, from: at, trail: new Trail() };
       }
@@ -237,7 +246,7 @@ export function useEdgeSwipes(dragged: () => boolean) {
       if (e.type === "touchcancel" || taken(e)) return;
       if (!scroll) {
         // A touch that stopped a glide only stopped it, as under the browser's own scrolling.
-        if (stopped || e.timeStamp - since > LONG_MS) return;
+        if (stopped || (e.timeStamp - since > LONG_MS && target.closest("a[href]"))) return;
         const el = target.isConnected ? target : document.elementFromPoint(at.x, at.y);
         if (el) tap(el, at);
       } else if (scroll.el) {

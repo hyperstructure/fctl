@@ -1510,11 +1510,22 @@ describe("swipes from the edges of a phone's screen", () => {
     expect(swipe(main, [200, 300]).cancelled).toBe(false);
   });
 
-  it("clicks nothing for a long press at the edge", () => {
+  it("clicks nothing for a long press on a link at the edge, and clicks for one elsewhere", () => {
     const shell = iPhone();
+    const link = document.createElement("a");
+    link.href = "#held";
+    shell.page().append(link);
+    let followed = false;
+    link.addEventListener("click", (e) => {
+      e.preventDefault();
+      followed = true;
+    });
+    expect(swipe(link, [12, 300], [], 700).cancelled).toBe(true);
+    expect(followed).toBe(false);
+    link.remove();
     const button = document.querySelector('button[aria-label="Open menu"]') as HTMLElement;
     expect(swipe(button, [12, 28], [], 700).cancelled).toBe(true);
-    expect(shell.state().open).toBe(false);
+    expect(shell.state().open).toBe(true);
   });
 
   it("leaves the touch to what takes it itself", () => {
