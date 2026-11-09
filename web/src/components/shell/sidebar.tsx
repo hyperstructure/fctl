@@ -371,7 +371,8 @@ function Tree({
             to="/w/new"
             onClick={onNavigate}
             className={cn(
-              "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
+              // shrink-0: once the list scrolls, its flex column would squeeze it to its text.
+              "flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
               data.workspaces.workspaces.length === 0
                 ? "text-ink-2 hover:bg-hover hover:text-ink"
                 : "text-ink-4 hover:bg-hover hover:text-ink-2",
