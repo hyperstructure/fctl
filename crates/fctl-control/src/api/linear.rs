@@ -59,7 +59,7 @@ struct SignIn {
     /// person's account.
     #[serde(default)]
     workspace: Option<String>,
-    /// The project whose Tickets tab it started from, by slug.
+    /// The project whose settings' Tickets page it started from, by slug.
     #[serde(default)]
     project: Option<String>,
     /// The agent session in Linear that asked them to link it.
@@ -357,7 +357,7 @@ pub async fn connect_link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 }
 
 /// `GET /api/v1/linear/link[?project=…][&thread=…]`: links the signed-in
-/// person's Linear account, from Settings, a project's Tickets tab, or
+/// person's Linear account, from Settings, a project's settings (Tickets), or
 /// Linear's own button in an agent session that waits for it. Anyone can
 /// send anyone this link: it only ever links the account they sign in to
 /// Linear with to their own.
@@ -397,12 +397,12 @@ pub async fn link(ctx: &mut Ctx, req: &Request) -> AppResult<Response> {
 
 /// Where the browser goes back to after a Linear sign-in.
 enum Back {
-    /// The project's Tickets tab, else the workspace's Linear tab.
+    /// The project's settings (Tickets), else the workspace's Linear tab.
     Workspace {
         slug: String,
         project: Option<String>,
     },
-    /// The project's Tickets tab, else Settings.
+    /// The project's settings (Tickets), else Settings.
     Person { project: Option<String> },
 }
 

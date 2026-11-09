@@ -2216,7 +2216,8 @@ so the issues of one repository among several go on no session token;
 the control plane reaches them for the agent instead. A public
 repository's issues are public: GitHub serves them to any token, so there
 the instructions keep agents away. A repository chosen that agents no
-longer write to reaches nothing, and the Tickets tab says so. Running
+longer write to reaches nothing, and the project's settings say so under
+Tickets. Running
 sessions get the tracker's permissions with their next token, within the
 hour, as with `github_access`. Review agents read issues only where the
 project's tracker lets agents, and never reach Linear.
@@ -2346,7 +2347,7 @@ issue's delegate (the person stays its assignee), and mention.
 3. **Knowing people.** fctl starts sessions only for people it knows in
    the Linear workspace, as them: on their Claude subscription, while they
    may start sessions in the project. People link their Linear account
-   (Settings, a project's Tickets tab, `fctl account linear connect`, or
+   (Settings, a project's settings under Tickets, `fctl account linear connect`, or
    Linear's own button in an agent session that waits for it): a Linear
    sign-in of theirs, with `read` alone, shows fctl who they are there
    (`viewer`), which D1 keeps (`linear_accounts`: their Linear id, name,
@@ -3157,7 +3158,7 @@ asks instead for one for each follow-up that changes the work.
 
 The session page shows the newest beside the transcript and all of them a
 click away, each saying when its agent last updated it, and the project's
-Retrospectives tab lists the project's, newest first (as they were
+Memory tab lists the project's under Retrospectives, newest first (as they were
 recorded), with how many ended each way and a filter by outcome,
 leaving out those of archived sessions (`GET
 /api/v1/projects/{id}/retrospectives`, a page at a time after the id of

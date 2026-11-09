@@ -572,7 +572,7 @@ async fn take_up(
         lin::Takers::Nobody => {
             let team_name = team_name();
             return refuse(format!(
-                "No fctl project takes {team_name}'s tickets yet. In fctl, a project's maintainers add {team_name} to its Linear teams in its Tickets tab: {}",
+                "No fctl project takes {team_name}'s tickets yet. In fctl, a project's maintainers add {team_name} to its Linear teams in its settings, under Tickets: {}",
                 cfg.url("/")
             ))
             .await;

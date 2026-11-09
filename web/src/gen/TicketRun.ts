@@ -5,7 +5,7 @@ import type { SessionTicket } from "./SessionTicket";
 import type { UserRef } from "./UserRef";
 
 /**
- * A session that started from a ticket, as a project's Tickets tab lists
+ * A session that started from a ticket, as a project's Tickets page lists
  * it.
  */
 export type TicketRun = { ticket: SessionTicket, session: SessionRef, status: SessionStatus, 

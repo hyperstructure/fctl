@@ -2,7 +2,7 @@
 // Linear sign-in came back with.
 import type * as G from "@/gen";
 
-/** The trackers a project chooses from, in the order the Tickets tab shows them. */
+/** The trackers a project chooses from, in the order Settings → Tickets shows them. */
 export const TRACKERS: { value: G.Tracker; label: string; summary: string }[] = [
   {
     value: "none",

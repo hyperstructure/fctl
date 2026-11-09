@@ -923,7 +923,7 @@ impl Supervisor {
                     .is_none_or(|t| t.via == fctl_proto::tickets::TicketsVia::Nothing) =>
             {
                 return Err(ApiError::forbidden(
-                    "This project's agents reach no ticket tracker: its maintainers choose one in the project's Tickets tab.",
+                    "This project's agents reach no ticket tracker: its maintainers choose one in the project's settings, under Tickets.",
                 ));
             }
             // Only an autopilot's own session reaches the API from its

@@ -8,7 +8,7 @@ import type { WorkspaceId } from "./WorkspaceId";
 
 /**
  * `GET /api/v1/projects/{id}/tickets`: the project's tracker as it works
- * now, for its Tickets tab.
+ * now, for its settings' Tickets page.
  */
 export type ProjectTickets = { tracker: Tracker, 
 /**

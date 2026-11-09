@@ -1,5 +1,5 @@
 //! `GET /api/v1/projects/{id}/tickets`: a project's ticket tracker as it
-//! works now (`crate::tickets::status`), for its Tickets tab and `fctl
+//! works now (`crate::tickets::status`), for its settings' Tickets page and `fctl
 //! projects tickets`.
 
 use crate::access;

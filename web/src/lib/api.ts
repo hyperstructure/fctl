@@ -588,7 +588,7 @@ export const emails = {
 
 /**
  * Where the browser links your Linear account, by signing in to Linear, and comes back to: the
- * project's Tickets tab, else Settings.
+ * project's settings (Tickets), else Settings.
  */
 export function linearLinkUrl(project?: string): string {
   return `/api/v1/linear/link${project ? `?project=${enc(project)}` : ""}`;

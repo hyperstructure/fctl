@@ -1,11 +1,12 @@
-// A project's retrospectives: what its agents recorded as they finished
-// pieces of work, newest first, by outcome. What a future agent should know
-// goes into the project's memory from here.
+// A project's retrospectives, the second part of its Memory tab (memory.tsx): what its agents
+// recorded as they finished pieces of work, newest first, by outcome. What a future agent should
+// know goes into the project's memory from here.
 
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Ellipsis, ScrollText, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { TurnOn } from "@/components/project/turn-on";
 import { OutcomeIcon, RetrospectiveParts, RetrospectiveTime } from "@/components/retrospective";
 import {
   Avatar,
@@ -23,10 +24,11 @@ import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { canEditMemory } from "@/lib/memory";
+import { manages } from "@/lib/project-page";
 import { keys, queryClient, useMe } from "@/lib/queries";
 import { canDelete, OUTCOMES, outcomeLabel, total } from "@/lib/retrospectives";
 
-export function RetrospectivesTab({ project }: { project: G.Project }) {
+export function Retrospectives({ project }: { project: G.Project }) {
   const { data: me } = useMe();
   const [outcome, setOutcome] = useState<G.RetrospectiveOutcome>();
   const list = useInfiniteQuery({
@@ -39,7 +41,7 @@ export function RetrospectivesTab({ project }: { project: G.Project }) {
   const counts = pages[0]?.outcomes;
   const all = total(counts);
   const items = pages.flatMap((p) => p.retrospectives);
-  const manage = project.role === "owner" || project.role === "maintainer";
+  const manage = manages(project.role);
   // Insights go into the memory for people who may change it.
   const remember = canEditMemory(project.role) ? project : undefined;
   return (
@@ -53,18 +55,13 @@ export function RetrospectivesTab({ project }: { project: G.Project }) {
         <Banner tone="info">
           This project doesn't ask its agents for retrospectives.{" "}
           {manage ? (
-            <>
-              Turn them on under{" "}
-              <Link
-                to="/p/$slug"
-                params={{ slug: project.slug }}
-                search={{ tab: "settings" }}
-                className="underline underline-offset-2"
-              >
-                Settings
-              </Link>
-              .
-            </>
+            <TurnOn
+              project={project}
+              setting="retrospectives"
+              done="Retrospectives on: agents record one as they finish a piece of work"
+            >
+              Turn them on
+            </TurnOn>
           ) : (
             "Its maintainers can turn them on."
           )}

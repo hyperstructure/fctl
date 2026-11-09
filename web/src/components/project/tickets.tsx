@@ -1,7 +1,8 @@
-// A project's ticket tracker: where its agents read and write tickets (none, GitHub Issues or
-// Linear), and for Linear, the teams whose issues people delegate to fctl there, how a ticket
-// becomes a session, and the sessions tickets started lately. The project's maintainers choose;
-// everyone in it sees what was chosen, and links their own Linear account here.
+// A project's ticket tracker (Settings → Tickets): where its agents read and write tickets (none,
+// GitHub Issues or Linear), and for Linear, the teams whose issues people delegate to fctl there, how
+// a ticket becomes a session, and the sessions tickets started lately. The project's maintainers
+// choose; everyone in it sees what was chosen, and links their own Linear account here. It lays out
+// by the width of its page's column (a container), which shares the screen with Settings' pages.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -19,6 +20,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StateDot } from "@/components/session/ticket";
+import { UnsavedGuard } from "@/components/settings/form";
 import {
   Avatar,
   Banner,
@@ -29,6 +31,9 @@ import {
   Input,
   LinearIcon,
   Logo,
+  SaveBar,
+  Section,
+  SectionLayout,
   Select,
   type SelectOption,
   Skeleton,
@@ -43,6 +48,7 @@ import { ApiFailure, api, clickConfirmed, linearLinkUrl, workspaces } from "@/li
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
 import { goTo } from "@/lib/history";
+import { manages, placeOf } from "@/lib/project-page";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 import { type LinearOutcome, linearOutcome, stateTone, TRACKERS, trackerOf } from "@/lib/tickets";
 import { useWorkspaceIndex } from "@/lib/workspaces";
@@ -55,8 +61,8 @@ const ALL = "all";
 /** The most Linear teams a project takes tickets from (`fctl_domain::tickets::MAX_TEAMS`). */
 export const MAX_TEAMS = 20;
 
-export function TicketsTab({ project, returned }: { project: G.Project; returned?: LinearOutcome }) {
-  const manage = project.role === "owner" || project.role === "maintainer";
+export function TicketsSettings({ project, returned }: { project: G.Project; returned?: LinearOutcome }) {
+  const manage = manages(project.role);
   const status = useQuery({
     queryKey: keys.projectTickets(project.id),
     queryFn: () => api.projectTickets(project.id),
@@ -85,11 +91,15 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
   }
   const tracker = draft.tracker ?? "github";
   const dirty = JSON.stringify(comparable(draft)) !== JSON.stringify(comparable(saved));
+  /** Set as the page leaves for Linear on purpose, which brings the browser back here. */
+  const leaving = useRef(false);
   const save = useMutation({
     mutationFn: () =>
       api.updateProject(project.id, { settings: { ...project.settings, tickets: normalized(draft) } }),
     onSuccess: (p) => {
       queryClient.setQueryData(keys.project(project.slug), p);
+      // What was stored, as the control plane tidied it: nothing is left to save.
+      setDraft(p.settings.tickets ?? {});
       void queryClient.invalidateQueries({ queryKey: keys.projects });
       void queryClient.invalidateQueries({ queryKey: keys.projectTickets(project.id) });
       toast("Saved: agents take it from their next session, and their GitHub tokens within the hour");
@@ -98,96 +108,101 @@ export function TicketsTab({ project, returned }: { project: G.Project; returned
   const outcome = returned && linearOutcome(returned);
   const s = status.data;
   return (
-    <div className="flex flex-col gap-10">
-      {outcome && (
-        <Banner tone={outcome.tone} className="-mb-4">
-          {outcome.text}
-        </Banner>
-      )}
-      <section aria-labelledby="tracker-heading" className="animate-rise">
-        <h2
-          id="tracker-heading"
-          className="font-display text-[26px] leading-[1.15] font-medium tracking-[-0.018em] text-ink sm:text-[28px]"
-        >
-          Where agents track their work
-        </h2>
-        <p className="mt-2 max-w-2xl text-[14.5px] leading-relaxed text-ink-3">
-          The project's ticket tracker is where its agents read what a ticket asks, file what they find and
-          answer the people there. Agents reach this one alone: fctl holds its credentials, and their GitHub
-          tokens reach issues only where it says.
-        </p>
-        <TrackerPicker
-          value={tracker}
-          onChange={(t) => setDraft((d) => ({ ...d, tracker: t }))}
-          disabled={!manage}
-          linear={!!instance?.features.linear}
-          className="mt-6"
-        />
-        {!manage && (
-          <p className="mt-3 text-[12.5px] text-ink-4">
-            The project's owners and maintainers choose its tracker.
-          </p>
-        )}
-        <div key={tracker} className="mt-6 animate-rise">
-          {tracker === "none" && <NoneDetails />}
-          {tracker === "github" && (
-            <GithubDetails
-              project={project}
-              status={s}
-              draft={draft}
-              onChange={setDraft}
+    <Section
+      title="Tickets"
+      description="Where agents track their work: they read what a ticket asks, file what they find and answer the people there. Agents reach this tracker alone: fctl holds its credentials, and their GitHub tokens reach issues only where it says."
+    >
+      <SectionLayout value="part">
+        <div className="@container flex flex-col">
+          <div>
+            {outcome && (
+              <Banner tone={outcome.tone} className="mb-6">
+                {outcome.text}
+              </Banner>
+            )}
+            <TrackerPicker
+              value={tracker}
+              onChange={(t) => setDraft((d) => ({ ...d, tracker: t }))}
               disabled={!manage}
-              error={fieldError(save.error, "settings.tickets.repo")}
+              linear={!!instance?.features.linear}
             />
-          )}
-          {tracker === "linear" && (
-            <LinearDetails
-              project={project}
-              instance={instance}
-              connections={linear.data}
-              loading={linear.isPending && !!instance?.features.linear}
-              admin={admin}
-              workspaceName={workspace?.name ?? project.workspace?.name ?? "the workspace"}
-              draft={draft}
-              saved={saved}
-              onChange={setDraft}
-              disabled={!manage}
-              error={save.error}
+            {!manage && (
+              <p className="mt-3 text-[12.5px] text-ink-4">
+                The project's owners and maintainers choose its tracker.
+              </p>
+            )}
+            <div key={tracker} className="mt-6 animate-rise">
+              {tracker === "none" && <NoneDetails />}
+              {tracker === "github" && (
+                <GithubDetails
+                  project={project}
+                  status={s}
+                  draft={draft}
+                  onChange={setDraft}
+                  disabled={!manage}
+                  error={fieldError(save.error, "settings.tickets.repo")}
+                />
+              )}
+              {tracker === "linear" && (
+                <LinearDetails
+                  project={project}
+                  instance={instance}
+                  connections={linear.data}
+                  loading={linear.isPending && !!instance?.features.linear}
+                  admin={admin}
+                  workspaceName={workspace?.name ?? project.workspace?.name ?? "the workspace"}
+                  draft={draft}
+                  saved={saved}
+                  onChange={setDraft}
+                  disabled={!manage}
+                  error={save.error}
+                  // Off to Linear with the choice unsaved: it comes back to it, so nothing asks first.
+                  onLeave={() => {
+                    leaving.current = true;
+                  }}
+                />
+              )}
+            </div>
+            <UnsavedGuard
+              dirty={manage && dirty && !save.isPending}
+              page="Tickets"
+              leaving={leaving}
+              at={(l) => placeOf(project, l)}
             />
+            {manage && (dirty || save.isPending) && (
+              <SaveBar
+                pending={save.isPending}
+                disabled={tracker === "linear" && !draft.linear?.team}
+                hint={
+                  tracker === "linear" && !draft.linear?.team
+                    ? "Choose a team first."
+                    : "Running sessions take it within the hour."
+                }
+                onSave={() => save.mutate()}
+                onReset={() => {
+                  setDraft(saved);
+                  save.reset();
+                }}
+              />
+            )}
+            {save.error && !fieldError(save.error, "settings.tickets.repo") && (
+              <Banner tone="error" className="mt-4">
+                {save.error.message}
+              </Banner>
+            )}
+            {!dirty && s?.problem && (
+              <Banner tone="warn" className="mt-4">
+                {s.problem}
+              </Banner>
+            )}
+          </div>
+          {!dirty && trackerOf(project.settings) === "linear" && project.settings.tickets?.linear && (
+            <Delegating project={project} status={s} />
           )}
+          <Recent project={project} status={s} loading={status.isPending} />
         </div>
-        {manage && (dirty || save.isPending) && (
-          <SaveBar
-            pending={save.isPending}
-            disabled={tracker === "linear" && !draft.linear?.team}
-            hint={
-              tracker === "linear" && !draft.linear?.team
-                ? "Choose a team first."
-                : "Running sessions take it within the hour."
-            }
-            onSave={() => save.mutate()}
-            onReset={() => {
-              setDraft(saved);
-              save.reset();
-            }}
-          />
-        )}
-        {save.error && !fieldError(save.error, "settings.tickets.repo") && (
-          <Banner tone="error" className="mt-4">
-            {save.error.message}
-          </Banner>
-        )}
-        {!dirty && s?.problem && (
-          <Banner tone="warn" className="mt-4">
-            {s.problem}
-          </Banner>
-        )}
-      </section>
-      {!dirty && trackerOf(project.settings) === "linear" && project.settings.tickets?.linear && (
-        <Delegating project={project} status={s} />
-      )}
-      <Recent project={project} status={s} loading={status.isPending} />
-    </div>
+      </SectionLayout>
+    </Section>
   );
 }
 
@@ -288,7 +303,7 @@ function TrackerPicker({
 }) {
   const name = useId();
   return (
-    <fieldset className={cn("grid gap-2.5 sm:grid-cols-3", className)}>
+    <fieldset className={cn("grid gap-2.5 @xl:grid-cols-3", className)}>
       <legend className="sr-only">Ticket tracker</legend>
       {TRACKERS.map((t) => {
         const checked = value === t.value;
@@ -441,7 +456,7 @@ function GithubDetails({
       </Banner>
     );
   return (
-    <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] md:gap-10">
+    <div className="grid gap-6 @xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] @xl:gap-10">
       <Field
         label="Issues of"
         error={error}
@@ -465,7 +480,7 @@ function GithubDetails({
           />
         )}
       </Field>
-      <ul className="flex flex-col gap-3 md:pt-6">
+      <ul className="flex flex-col gap-3 @xl:pt-6">
         {one && writable.length > 1 ? (
           <>
             <Point icon={<Logo withWord={false} className="[&_svg]:size-4" />}>
@@ -506,6 +521,7 @@ function LinearDetails({
   onChange,
   disabled,
   error,
+  onLeave,
 }: {
   project: G.Project;
   instance?: G.InstanceInfo;
@@ -519,11 +535,16 @@ function LinearDetails({
   onChange: (t: G.Tickets) => void;
   disabled: boolean;
   error: Error | null;
+  /** Called as the page leaves for Linear. */
+  onLeave: () => void;
 }) {
   const connect = useMutation({
     mutationFn: () => workspaces.connectLinear(project.workspace?.id ?? "", { project: project.slug }),
     // On to Linear, which brings the browser back here.
-    onSuccess: (link) => goTo(link.url),
+    onSuccess: (link) => {
+      onLeave();
+      goTo(link.url);
+    },
     onError: (e) => toast(e.message, "error"),
   });
   if (instance && !instance.features.linear)
@@ -642,7 +663,7 @@ function ConnectCard({
   onConnect: () => void;
 }) {
   return (
-    <div className="grid items-center gap-6 rounded-xl border border-line bg-surface/60 p-5 md:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="grid items-center gap-6 rounded-xl border border-line bg-surface/60 p-5 @lg:grid-cols-[minmax(0,1fr)_auto]">
       <div>
         <p className="flex items-center gap-2 text-[14px] font-semibold text-ink">
           <LinearIcon className="size-4" /> Connect a Linear workspace
@@ -1106,34 +1127,6 @@ function TeamRow({
 
 // ───────────────────────────── saving ─────────────────────────────
 
-function SaveBar({
-  pending,
-  disabled,
-  hint,
-  onSave,
-  onReset,
-}: {
-  pending: boolean;
-  disabled: boolean;
-  hint: string;
-  onSave: () => void;
-  onReset: () => void;
-}) {
-  return (
-    <div className="sticky bottom-[calc(1rem-var(--viewport-shift))] z-10 mt-8 flex animate-rise flex-wrap items-center justify-between gap-3 rounded-xl border border-line-strong bg-surface/95 px-4 py-3 shadow-[0_18px_50px_-24px_rgb(0_0_0/0.45)] backdrop-blur max-sm:bottom-[calc(0.5rem-var(--viewport-shift))]">
-      <span className="text-[12.5px] text-ink-3">{hint}</span>
-      <div className="flex items-center gap-2">
-        <Button variant="ghost" onClick={onReset} disabled={pending}>
-          Cancel
-        </Button>
-        <Button variant="primary" loading={pending} disabled={disabled} onClick={onSave}>
-          Save
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // ───────────────────────────── delegating ─────────────────────────────
 
 /** How a Linear ticket becomes a session, with a picture of it in Linear, and the caller's own link. */
@@ -1184,11 +1177,9 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
     },
   ];
   return (
-    <section aria-labelledby="delegating-heading" className="animate-rise">
-      <h2 id="delegating-heading" className="text-[14px] font-semibold text-ink">
-        Delegating a ticket
-      </h2>
-      <div className="mt-4 grid items-start gap-x-12 gap-y-8 md:grid-cols-[minmax(0,1fr)_320px]">
+    <Section title="Delegating a ticket">
+      {/* The ticket beside the steps where the page's column has room for both. */}
+      <div className="grid animate-rise items-start gap-x-12 gap-y-8 @3xl:grid-cols-[minmax(0,1fr)_320px]">
         <div>
           <ol className="flex flex-col gap-3.5">
             {steps.map((s, i) => (
@@ -1205,9 +1196,12 @@ function Delegating({ project, status }: { project: G.Project; status?: G.Projec
           </ol>
           <YourAccount project={project} status={status} />
         </div>
-        <DelegatedTicket team={team} project={project.slug} app={app} />
+        {/* Under the steps, as large as it was drawn: a ticket, not a card the column's width. */}
+        <div className="@max-3xl:max-w-sm">
+          <DelegatedTicket team={team} project={project.slug} app={app} />
+        </div>
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -1417,17 +1411,13 @@ function Recent({
   status?: G.ProjectTickets;
   loading: boolean;
 }) {
-  const heading = useId();
   const runs = status?.recent ?? [];
   const linear = trackerOf(project.settings) === "linear";
   const items = useMemo(() => runs.slice(0, 10), [runs]);
   if (loading) return <Skeleton className="h-24" />;
   if (items.length === 0 && !linear) return null;
   return (
-    <section aria-labelledby={heading}>
-      <h2 id={heading} className="mb-2 text-[14px] font-semibold text-ink">
-        Tickets lately
-      </h2>
+    <Section title="Tickets lately">
       {items.length === 0 ? (
         <p className="border-t border-line py-6 text-[13.5px] text-ink-4">
           No ticket has started a session yet. The first one you delegate shows here.
@@ -1485,6 +1475,6 @@ function Recent({
           ))}
         </ul>
       )}
-    </section>
+    </Section>
   );
 }

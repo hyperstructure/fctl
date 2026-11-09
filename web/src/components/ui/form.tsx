@@ -169,18 +169,26 @@ export function Switch({
   onChange,
   label,
   disabled,
+  id,
+  describedBy,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   disabled?: boolean;
+  /** For a `<label>` whose words turn it too. */
+  id?: string;
+  /** The id of what says what it does. */
+  describedBy?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
+      id={id}
       aria-checked={checked}
       aria-label={label}
+      aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(

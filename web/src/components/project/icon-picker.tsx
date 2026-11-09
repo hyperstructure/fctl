@@ -6,7 +6,7 @@
 
 import { Search, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Button, Dialog, Kbd } from "@/components/ui";
+import { Button, Dialog, Kbd, toast } from "@/components/ui";
 import { ColorPopover } from "@/components/ui/color-popover";
 import type * as G from "@/gen";
 import { cn } from "@/lib/cn";
@@ -29,6 +29,7 @@ import {
   searchIcons,
   suggestIcons,
   toSave,
+  useSaveIcon,
 } from "@/lib/project-icons";
 import { keys, queryClient } from "@/lib/queries";
 import { touchDevice } from "@/lib/two-factor";
@@ -537,5 +538,35 @@ function Picker({
         </div>
       </div>
     </div>
+  );
+}
+
+/** The picker for a project's icon, which saves it as it's chosen: its header's tile, its settings. */
+export function ProjectIconPicker({
+  project,
+  open,
+  onClose,
+}: {
+  project: G.Project;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const save = useSaveIcon(project);
+  return (
+    <IconPicker
+      open={open}
+      onClose={onClose}
+      project={project}
+      saving={save.isPending}
+      onSave={(icon) =>
+        save.mutate(icon, {
+          onSuccess: () => {
+            onClose();
+            toast(icon ? `${project.name} has its icon` : `${project.name} shows the icon that fits it`);
+          },
+          onError: (e) => toast(`The icon wasn't saved: ${e.message}`, "error"),
+        })
+      }
+    />
   );
 }

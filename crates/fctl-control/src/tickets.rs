@@ -1,7 +1,7 @@
 //! A project's ticket tracker (docs/architecture.md#ticket-trackers): what
 //! its sessions' agents are told of it (`SessionSpec::tickets`), what they
 //! read and write with `fctl ticket` (`AgentCall::Ticket`), and how it
-//! works now, for its Tickets tab. The control plane holds the tracker's
+//! works now, for its settings' Tickets page. The control plane holds the tracker's
 //! credentials: fctl's Linear app in the project's Linear workspace
 //! (`crate::linear`), or a token of the GitHub App's for one repository's
 //! issues alone, which never leaves it and which it revokes at once. Every
@@ -539,7 +539,7 @@ pub async fn call(ctx: &Ctx, session: &RunnerSession, request: Value) -> AppResu
             }
             None => {
                 return Err(forbidden(
-                    "This project hasn't chosen its Linear team yet: its maintainers choose it in the project's Tickets tab.",
+                    "This project hasn't chosen its Linear team yet: its maintainers choose it in the project's settings, under Tickets.",
                 ));
             }
         },

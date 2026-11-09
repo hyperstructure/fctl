@@ -32,13 +32,14 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CONNECT_ID, ConnectClaude, EndedLogin, type Way } from "@/components/claude/connect";
 import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { KeepTokenOut } from "@/components/claude/stand-in";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
 import { SettingsIcon } from "@/components/settings/icon";
+import { type NavEntry, type NavLinkProps, SettingsList, SettingsNav } from "@/components/settings/nav";
 import { AccessTokens } from "@/components/tokens";
 import { ConfirmWithCode } from "@/components/two-factor/confirm-code";
 import { RecoveryCodes } from "@/components/two-factor/recovery-codes";
@@ -206,6 +207,24 @@ function useAttention(me: G.Me): Partial<Record<SettingsTab, Gist>> {
   };
 }
 
+/** Settings' pages in their groups, as the lists show them: those this instance has. */
+function entries(has: (t: SettingsTab) => boolean, but?: SettingsTab): NavEntry<SettingsTab>[][] {
+  return SETTINGS_GROUPS.map((group) =>
+    group
+      .filter((p) => p.tab !== but && has(p.tab))
+      .map((p) => ({
+        key: p.tab,
+        label: p.label,
+        icon: (className: string) => <SettingsIcon tab={p.tab} className={className} />,
+      })),
+  );
+}
+
+/** A link to one of Settings' pages, as the lists draw it. */
+const pageLink = (tab: SettingsTab, props: NavLinkProps) => (
+  <Link to="/settings" search={{ tab }} {...props} />
+);
+
 /** The pages beside the one open: each with its icon, and a mark on what needs the person. */
 function Pages({
   me,
@@ -218,97 +237,15 @@ function Pages({
   has: (t: SettingsTab) => boolean;
   className?: string;
 }) {
-  const attention = useAttention(me);
-  const nav = useRef<HTMLElement>(null);
-  // The highlight under the page open, which slides to the page chosen. Where it was first
-  // measured it shows at once: it moves only from one page to another.
-  const [mark, setMark] = useState<{ top: number; height: number; moved: boolean }>();
-  const shown = SETTINGS_GROUPS.flat()
-    .filter((p) => has(p.tab))
-    .map((p) => p.tab)
-    .join();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: again as another page opens, or the list changes
-  useLayoutEffect(() => {
-    const list = nav.current;
-    if (!list) return;
-    const measure = () => {
-      const here = list.querySelector<HTMLElement>('[aria-current="page"]');
-      // Hidden, where the window is narrow: measured once it shows.
-      if (!here || !list.offsetHeight) return;
-      // From the top of the list, past the groups above.
-      const top = here.getBoundingClientRect().top - list.getBoundingClientRect().top;
-      const height = here.offsetHeight;
-      setMark((m) => (m?.top === top && m.height === height ? m : { top, height, moved: !!m }));
-    };
-    measure();
-    const resized = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
-    resized?.observe(list);
-    return () => resized?.disconnect();
-  }, [tab, shown]);
   return (
-    // Its icons line up with the page's title, their highlight in the margin beside it. The
-    // router's view transition leaves it out of its cross-fade (styles/app.css), so that the
-    // highlight slides rather than fading out in one place and in at another.
-    <nav
-      ref={nav}
-      aria-label="Settings"
-      className={cn("sticky top-8 -ml-2.5 [view-transition-name:settings-pages] max-md:top-20", className)}
-    >
-      {mark && (
-        <span
-          aria-hidden="true"
-          className={cn(
-            "absolute inset-x-0 top-0 rounded-md bg-raised shadow-[inset_0_0_0_1px_var(--c-line)]",
-            mark.moved && "transition-[translate] duration-[260ms] ease-[var(--ease-out)]",
-          )}
-          style={{ translate: `0 ${mark.top}px`, height: mark.height }}
-        />
-      )}
-      {SETTINGS_GROUPS.map((group, i) => (
-        <ul
-          key={group[0]?.tab}
-          // Over the highlight, which is positioned (absolute): so are the groups (relative).
-          className={cn("relative flex flex-col gap-0.5", i > 0 && "mt-3 border-t border-line pt-3")}
-        >
-          {group
-            .filter((p) => has(p.tab))
-            .map((p) => {
-              const here = p.tab === tab;
-              const needs = attention[p.tab];
-              return (
-                <li key={p.tab}>
-                  <Link
-                    to="/settings"
-                    search={{ tab: p.tab }}
-                    aria-current={here ? "page" : undefined}
-                    className={cn(
-                      "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
-                      here ? "text-ink" : "text-ink-3 hover:bg-hover hover:text-ink",
-                    )}
-                  >
-                    <SettingsIcon
-                      tab={p.tab}
-                      className={cn(
-                        "size-4 shrink-0 transition-colors duration-150",
-                        here ? "text-accent" : "text-ink-4 group-hover:text-ink-3",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{p.label}</span>
-                    {needs && (
-                      <span
-                        title={needs.text}
-                        className="size-1.5 shrink-0 rounded-full bg-amber shadow-[0_0_6px_var(--c-amber)]"
-                      >
-                        <span className="sr-only">: {needs.text}</span>
-                      </span>
-                    )}
-                  </Link>
-                </li>
-              );
-            })}
-        </ul>
-      ))}
-    </nav>
+    <SettingsNav
+      label="Settings"
+      groups={entries(has)}
+      current={tab}
+      attention={useAttention(me)}
+      link={pageLink}
+      className={className}
+    />
   );
 }
 
@@ -325,61 +262,28 @@ function PageList({
   has: (t: SettingsTab) => boolean;
   className?: string;
 }) {
-  const gists = useGists(me, has);
   return (
-    <nav aria-label="Settings" className={cn("flex flex-col gap-5", className)}>
-      <Link
-        to="/settings"
-        search={{ tab: "profile" }}
-        className="flex items-center gap-3.5 rounded-xl border border-line bg-surface px-4 py-3.5 transition-colors hover:bg-hover active:bg-hover"
-      >
-        <Avatar user={me.user} size={44} />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[15.5px] font-medium text-ink">{me.user.name}</span>
-          <span className="block truncate text-[12.5px] text-ink-3">Profile · {me.user.email}</span>
-        </span>
-        <ChevronRight className="size-4 shrink-0 text-ink-4" />
-      </Link>
-      {SETTINGS_GROUPS.map((group) => (
-        <ul
-          key={group[0]?.tab}
-          className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface"
+    <SettingsList
+      label="Settings"
+      head={
+        <Link
+          to="/settings"
+          search={{ tab: "profile" }}
+          className="flex items-center gap-3.5 rounded-xl border border-line bg-surface px-4 py-3.5 transition-colors hover:bg-hover active:bg-hover"
         >
-          {group
-            .filter((p) => p.tab !== "profile" && has(p.tab))
-            .map((p) => {
-              const gist = gists[p.tab];
-              return (
-                <li key={p.tab}>
-                  <Link
-                    to="/settings"
-                    search={{ tab: p.tab }}
-                    className="flex min-h-[58px] items-center gap-3 py-2.5 pr-3.5 pl-3 transition-colors hover:bg-hover active:bg-hover"
-                  >
-                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised text-ink-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
-                      <SettingsIcon tab={p.tab} className="size-4" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[14.5px] text-ink">{p.label}</span>
-                      {gist && (
-                        <span
-                          className={cn(
-                            "block truncate text-[12.5px]",
-                            gist.attention ? "text-amber" : "text-ink-4",
-                          )}
-                        >
-                          {gist.text}
-                        </span>
-                      )}
-                    </span>
-                    <ChevronRight className="size-4 shrink-0 text-ink-4" />
-                  </Link>
-                </li>
-              );
-            })}
-        </ul>
-      ))}
-    </nav>
+          <Avatar user={me.user} size={44} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[15.5px] font-medium text-ink">{me.user.name}</span>
+            <span className="block truncate text-[12.5px] text-ink-3">Profile · {me.user.email}</span>
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-ink-4" />
+        </Link>
+      }
+      groups={entries(has, "profile")}
+      gists={useGists(me, has)}
+      link={pageLink}
+      className={className}
+    />
   );
 }
 

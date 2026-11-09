@@ -141,8 +141,8 @@ agents reach their project's tracker,
 back, streamed in pieces (the host redacts the Claude token in both),
 `retro`
 records a retrospective with `fctl retro` (completed, or `partial` or
-`blocked` when the message says so; the project's Memory and
-Retrospectives tabs, and the session page, show them), `revise` updates
+`blocked` when the message says so; the project's Memory tab, under
+Retrospectives, and the session page show them), `revise` updates
 the session's newest retrospective to completed with `fctl retro list` and
 `fctl retro update`, as agents do when a later turn carries on with the
 same work,
@@ -232,7 +232,7 @@ activity that Linear wouldn't take fails there too. `cargo xtask dev`
 connects the dev workspace to Acme through the redirects a browser follows,
 has Playground take Engineering's tickets and links the dev owner's
 account, unless they are already. The workspace's Linear tab, Playground's
-Tickets tab and Settings show them as they would with Linear, and connect
+settings (Tickets) and Settings show them as they would with Linear, and connect
 and link through the stand-in. Acme, and a log of every request, live in
 `.fctl-dev/linear/`.
 

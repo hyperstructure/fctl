@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { MemoryTab } from "./memory";
-import { RetrospectivesTab } from "./retrospectives";
 
 // No request is answered: the tabs show what the cache holds.
 vi.mock("@/lib/api", () => ({
@@ -94,13 +93,13 @@ const notes: G.Memory[] = [
 
 function memoryTab(p: G.Project, memories = notes) {
   queryClient.setQueryData<G.MemoryList>(keys.memories(p.id), { memories });
-  return render(<MemoryTab project={p} />);
+  return render(<MemoryTab project={p} part="notes" />);
 }
 
 const button = (c: HTMLElement, text: string) =>
   [...c.querySelectorAll("button")].find((b) => b.textContent?.startsWith(text)) as HTMLButtonElement;
 
-describe("the Memory tab", () => {
+describe("Memory's notes", () => {
   it("lists the current notes with where each came from", () => {
     const c = memoryTab(project());
     expect(c.textContent).toContain("Deploys happen on Fridays.");
@@ -173,7 +172,8 @@ describe("the Memory tab", () => {
   it("says when the project's agents keep no memory", () => {
     const c = memoryTab(project({ role: "maintainer", settings: { ...settings, project_memory: false } }));
     expect(c.textContent).toContain("This project's agents keep no memory");
-    expect(c.textContent).toContain("Turn it on under Settings");
+    // Its maintainers turn it on from here.
+    expect(button(c, "Turn it on")).toBeDefined();
   });
 
   it("has a word for a memory without notes", () => {
@@ -183,7 +183,7 @@ describe("the Memory tab", () => {
   });
 });
 
-describe("the Retrospectives tab", () => {
+describe("Memory's retrospectives", () => {
   const retros: G.Retrospective[] = [
     {
       id: "rtr_2",
@@ -212,7 +212,7 @@ describe("the Retrospectives tab", () => {
       pages: [{ retrospectives: retros, outcomes: { completed: 1, partial: 0, blocked: 1 } }],
       pageParams: [undefined],
     });
-    return render(<RetrospectivesTab project={p} />);
+    return render(<MemoryTab project={p} part="retrospectives" />);
   }
 
   it("lists them with how many ended each way", () => {

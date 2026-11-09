@@ -273,9 +273,11 @@ export function CodeBox({ value, className }: { value: string; className?: strin
 /**
  * How the Sections in it lay out. `beside`, the default: the title and description in a column
  * beside what the section holds, from 768 px. Settings' pages stack them instead: `page`, a
- * section that is a page of its own, under the page's title; `part`, one of several on a page.
+ * section that is a page of its own, under the page's title, which grows where the page heads the
+ * screen (Settings on a phone); `subpage`, the same under a page's own header, where the title
+ * stays as it is (a project's settings); `part`, one of several on a page.
  */
-export const SectionLayout = createContext<"beside" | "page" | "part">("beside");
+export const SectionLayout = createContext<"beside" | "page" | "subpage" | "part">("beside");
 
 export function Section({
   id,
@@ -306,7 +308,7 @@ export function Section({
         <div className="min-w-0">{children}</div>
       </section>
     );
-  const page = layout === "page";
+  const page = layout === "page" || layout === "subpage";
   return (
     <section id={id} className={cn("scroll-mt-6", !page && "not-first:mt-14")}>
       {/* Its actions beside the title, or under the description where they don't fit. */}
@@ -314,7 +316,12 @@ export function Section({
         <div className="min-w-[min(100%,18rem)] flex-1">
           {page ? (
             // The page's heading: larger where it heads the screen, as on a phone (routes/settings.tsx).
-            <h2 className="font-display text-[22px] leading-[1.15] font-medium tracking-[-0.018em] text-ink @max-2xl:text-[28px]">
+            <h2
+              className={cn(
+                "font-display text-[22px] leading-[1.15] font-medium tracking-[-0.018em] text-ink",
+                layout === "page" && "@max-2xl:text-[28px]",
+              )}
+            >
               {title}
             </h2>
           ) : (

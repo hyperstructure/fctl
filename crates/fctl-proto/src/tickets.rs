@@ -631,13 +631,13 @@ pub struct LinearLink {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct ConnectLinearRequest {
-    /// The project whose Tickets tab it started from, by slug: the browser
+    /// The project whose settings' Tickets page it started from, by slug: the browser
     /// comes back there.
     pub project: Option<String>,
 }
 
 /// `GET /api/v1/projects/{id}/tickets`: the project's tracker as it works
-/// now, for its Tickets tab.
+/// now, for its settings' Tickets page.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -667,7 +667,7 @@ pub struct ProjectTickets {
     pub recent: Vec<TicketRun>,
 }
 
-/// A session that started from a ticket, as a project's Tickets tab lists
+/// A session that started from a ticket, as a project's Tickets page lists
 /// it.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

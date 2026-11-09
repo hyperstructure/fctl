@@ -78,7 +78,7 @@ describe("LinearTab", () => {
     );
     expect(admin.textContent).not.toContain("People in");
     expect(admin.textContent).toContain("Once Linear is connected");
-    expect(admin.textContent).toContain("in its Tickets tab");
+    expect(admin.textContent).toContain("in its settings under Tickets");
     const button = [...admin.querySelectorAll("button")].find((b) => b.textContent === "Connect Linear");
     expect(button?.className).toContain("bg-highlight");
     expect(admin.textContent).not.toContain("Connect another");
