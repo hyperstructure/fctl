@@ -163,7 +163,7 @@ describe("a project's Autopilot tab", () => {
           id: "apa_2",
           kind: "secret",
           text: "To charge cards in tests",
-          secret: { name: "STRIPE_KEY", project_id: "prj_1", project_slug: "shop" },
+          secret: { name: "STRIPE_KEY", project_id: "prj_1", project_slug: "shop", exists: false },
           status: "open",
           created_at: Date.now(),
         },

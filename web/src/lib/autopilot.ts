@@ -32,7 +32,7 @@ export const POWERS: { power: G.AutopilotPower; label: string; line: string; wor
   {
     power: "settings",
     label: "Change settings",
-    line: "Its agents' instructions, setup script, image, model, follow-ups and review agents.",
+    line: "The agents' instructions, setup script, image, model, follow-ups and review agents.",
   },
   {
     power: "secrets",

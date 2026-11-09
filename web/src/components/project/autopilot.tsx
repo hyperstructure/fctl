@@ -598,7 +598,7 @@ function Engage({
             </div>
           </fieldset>
         )}
-        <PowersField scope={scope} powers={powers} onChange={setPowers} project={project} />
+        <PowersField scope={scope} powers={powers} onChange={setPowers} />
         <div className="grid gap-5 sm:grid-cols-2">
           <RhythmFields checkIn={checkIn} setCheckIn={setCheckIn} crew={crew} setCrew={setCrew} />
         </div>
@@ -637,12 +637,10 @@ function PowersField({
   scope,
   powers,
   onChange,
-  project,
 }: {
   scope: G.AutopilotScope;
   powers: G.AutopilotPower[];
   onChange: (p: G.AutopilotPower[]) => void;
-  project: G.Project;
 }) {
   const shown = POWERS.filter((p) => scope === "workspace" || !p.workspace);
   return (
@@ -677,10 +675,7 @@ function PowersField({
                 />
                 <span className="min-w-0">
                   <span className="block text-[13.5px] text-ink">{p.label}</span>
-                  <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">
-                    {p.power === "settings" ? `${project.name}'s agents' ` : ""}
-                    {p.power === "settings" ? p.line.charAt(0).toLowerCase() + p.line.slice(1) : p.line}
-                  </span>
+                  <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">{p.line}</span>
                 </span>
               </label>
             </li>
@@ -1143,7 +1138,7 @@ function SettingsDialog({
   return (
     <Dialog open={open} onClose={onClose} title="How it works" wide>
       <div className="flex flex-col gap-6">
-        <PowersField scope={a.scope} powers={powers} onChange={setPowers} project={project} />
+        <PowersField scope={a.scope} powers={powers} onChange={setPowers} />
         <div className="grid gap-5 sm:grid-cols-2">
           <RhythmFields checkIn={checkIn} setCheckIn={setCheckIn} crew={crew} setCrew={setCrew} />
         </div>

@@ -93,18 +93,28 @@ describe("where an autopilot stands", () => {
 });
 
 describe("what woke it", () => {
+  const wake = (more: Partial<G.AutopilotWake>): G.AutopilotWake => ({
+    reasons: [],
+    notes: 0,
+    answers: 0,
+    direction: false,
+    ...more,
+  });
+
   it("names notes, answers and sessions", () => {
-    expect(wakeText({ reasons: ["check_in"] })).toBe("its check-in");
-    expect(wakeText({ reasons: ["steered"], notes: 2 })).toBe("2 new notes");
-    expect(wakeText({ reasons: ["steered"], direction: true })).toBe("a new direction");
+    expect(wakeText(wake({ reasons: ["check_in"] }))).toBe("its check-in");
+    expect(wakeText(wake({ reasons: ["steered"], notes: 2 }))).toBe("2 new notes");
+    expect(wakeText(wake({ reasons: ["steered"], direction: true }))).toBe("a new direction");
     expect(
-      wakeText({
-        reasons: ["answered", "crew"],
-        answers: 1,
-        crew: [{ id: "ses_9", number: 41, title: "Board" }],
-      }),
+      wakeText(
+        wake({
+          reasons: ["answered", "crew"],
+          answers: 1,
+          crew: [{ id: "ses_9", number: 41, title: "Board" }],
+        }),
+      ),
     ).toBe("an answer and session #41");
-    expect(wakeText({ reasons: [] })).toBe("its check-in");
+    expect(wakeText(wake({}))).toBe("its check-in");
   });
 });
 
