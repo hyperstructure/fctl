@@ -48,7 +48,7 @@ import { ApiFailure, api, clickConfirmed, linearLinkUrl, workspaces } from "@/li
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
 import { goTo } from "@/lib/history";
-import { manages } from "@/lib/project-page";
+import { manages, placeOf } from "@/lib/project-page";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 import { type LinearOutcome, linearOutcome, stateTone, TRACKERS, trackerOf } from "@/lib/tickets";
 import { useWorkspaceIndex } from "@/lib/workspaces";
@@ -163,7 +163,12 @@ export function TicketsSettings({ project, returned }: { project: G.Project; ret
                 />
               )}
             </div>
-            <UnsavedGuard dirty={manage && dirty && !save.isPending} page="Tickets" leaving={leaving} />
+            <UnsavedGuard
+              dirty={manage && dirty && !save.isPending}
+              page="Tickets"
+              leaving={leaving}
+              at={(l) => placeOf(project, l)}
+            />
             {manage && (dirty || save.isPending) && (
               <SaveBar
                 pending={save.isPending}

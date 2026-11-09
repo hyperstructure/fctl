@@ -10,7 +10,18 @@ import { ProjectSettings } from "./settings";
 // No request is answered, but a project's update, which answers with what it was sent: the pages
 // show what the cache holds. Each update is noted.
 const updates = vi.hoisted(() => [] as { id: string; body: G.UpdateProjectRequest }[]);
-const blocker = vi.hoisted(() => ({ disabled: [] as boolean[] }));
+const blocker = vi.hoisted(
+  () =>
+    ({ disabled: [] }) as {
+      disabled: boolean[];
+      opts?: {
+        shouldBlockFn: (a: {
+          current: { pathname: string; search: unknown };
+          next: { pathname: string; search: unknown };
+        }) => boolean;
+      };
+    },
+);
 vi.mock("@/lib/api", async (real) => {
   const pending = new Proxy(
     {},
@@ -45,8 +56,9 @@ vi.mock("@tanstack/react-router", () => ({
     </a>
   ),
   useNavigate: () => vi.fn(),
-  useBlocker: ({ disabled }: { disabled?: boolean }) => {
-    blocker.disabled.push(!!disabled);
+  useBlocker: (opts: { disabled?: boolean } & NonNullable<typeof blocker.opts>) => {
+    blocker.disabled.push(!!opts.disabled);
+    blocker.opts = opts;
     return { status: "idle" };
   },
 }));
@@ -207,6 +219,47 @@ describe("a project's Settings", () => {
     expect(name.value).toBe("Shop");
     expect(s.button("Save")).toBeUndefined();
     expect(blocker.disabled.at(-1)).toBe(true);
+  });
+
+  it("asks before leaving for another page, not for an address that shows this one", () => {
+    open("settings");
+    const leaves = (search: unknown, pathname = "/p/shop") =>
+      blocker.opts?.shouldBlockFn({
+        current: { pathname: "/p/shop", search: { tab: "settings" } },
+        next: { pathname, search },
+      });
+    // Settings itself shows General: its own entry in the list stays on it.
+    expect(leaves({ tab: "general" })).toBe(false);
+    expect(leaves({ tab: "agents" })).toBe(true);
+    expect(leaves({ tab: "memory" })).toBe(true);
+    expect(leaves({}, "/")).toBe(true);
+  });
+
+  it("puts the model chosen back with the rest of the draft when someone saves elsewhere", () => {
+    vi.useFakeTimers();
+    try {
+      const s = open("agents");
+      const model = s.container.querySelector('[role="combobox"]') as HTMLButtonElement;
+      // What the Model list shows chosen (ui/select.test.tsx): its trigger holds the options too.
+      const shown = () =>
+        model.querySelector("span:not([aria-hidden]) > span:not([aria-hidden])")?.textContent;
+      expect(shown()).toBe("Claude's default");
+      act(() => model.click());
+      const sonnet = [...s.container.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+        o.textContent?.startsWith("Sonnet"),
+      );
+      act(() => sonnet?.click());
+      act(() => vi.advanceTimersByTime(1000));
+      expect(shown()).toBe("Sonnet");
+      expect(s.button("Save")).toBeDefined();
+      // Someone saves Remote Control meanwhile: the page starts again from what is saved, its model too.
+      s.show(project({ settings: { ...settings, remote_control: true } }));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(shown()).toBe("Claude's default");
+      expect(s.button("Save")).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("drops the changes Cancel throws away", () => {

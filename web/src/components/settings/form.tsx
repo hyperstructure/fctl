@@ -3,7 +3,7 @@
 // changes unsaved; and switches whose words name them and turn them too.
 
 import { type ShouldBlockFn, useBlocker } from "@tanstack/react-router";
-import { type ReactNode, type RefObject, useCallback, useEffect, useId, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, Dialog, Switch } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
@@ -46,9 +46,11 @@ export function useDraft<T>(saved: T) {
   };
 }
 
-// Another address, or this one with another `?tab=`: a page of its own, which drops the draft.
-const leaves: ShouldBlockFn = ({ current, next }) =>
-  current.pathname !== next.pathname || JSON.stringify(current.search) !== JSON.stringify(next.search);
+/** An address, as the router's blocker hands them over. */
+type At = { pathname: string; search: unknown };
+
+/** Where an address takes someone, unless the page says (`at`): its path and everything it asks for. */
+const exactly = (l: At) => `${l.pathname}?${JSON.stringify(l.search)}`;
 
 /**
  * Asks before someone leaves a page whose changes aren't saved: for another page, another tab or
@@ -62,11 +64,24 @@ export function UnsavedGuard({
   dirty,
   page,
   leaving,
+  at,
 }: {
   dirty: boolean;
   page: string;
   leaving?: RefObject<boolean>;
+  /**
+   * Where an address takes someone, so that one that shows this page too asks nothing: on a project's
+   * page, `?tab=settings` opens the page `?tab=general` names, which stays as it is.
+   */
+  at?: (l: At) => string;
 }) {
+  const place = useRef(at ?? exactly);
+  place.current = at ?? exactly;
+  // Another page, of the app or of the same area, drops the draft: only that asks.
+  const leaves = useCallback<ShouldBlockFn>(
+    ({ current, next }) => place.current(current) !== place.current(next),
+    [],
+  );
   // Read once for each page the browser is to leave for (TanStack's history asks as it leaves).
   const unload = useCallback(() => {
     if (!leaving?.current) return true;

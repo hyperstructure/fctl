@@ -66,6 +66,7 @@ import {
   isSettingsPage,
   type ProjectSettingsPage,
   type ProjectView,
+  placeOf,
   SETTINGS_GROUPS,
   settingsGists,
   settingsLabel,
@@ -258,6 +259,7 @@ const failedField = (e: Error | null) => (e as { field?: string } | null)?.field
  * plane said of no field the page shows.
  */
 function PageFoot({
+  project,
   page,
   dirty,
   save,
@@ -265,6 +267,7 @@ function PageFoot({
   fields,
   onReset,
 }: {
+  project: G.Project;
   page: ProjectSettingsPage;
   dirty: boolean;
   save: { isPending: boolean; error: Error | null; reset: () => void };
@@ -276,7 +279,11 @@ function PageFoot({
   const field = failedField(save.error);
   return (
     <>
-      <UnsavedGuard dirty={dirty && !save.isPending} page={settingsLabel(page)} />
+      <UnsavedGuard
+        dirty={dirty && !save.isPending}
+        page={settingsLabel(page)}
+        at={(l) => placeOf(project, l)}
+      />
       {(dirty || save.isPending) && (
         <SaveBar
           pending={save.isPending}
@@ -369,6 +376,7 @@ function General({ project }: { project: G.Project }) {
           </Field>
         </div>
         <PageFoot
+          project={project}
           page="general"
           dirty={dirty}
           save={save}
@@ -390,6 +398,8 @@ function General({ project }: { project: G.Project }) {
 
 /** What the Agents page edits. */
 const agentSettings = (s: G.ProjectSettings) => ({
+  /** The model as chosen in its list: Model ID before one is typed sets none yet. */
+  choice: modelChoice(s.model),
   instructions: s.instructions,
   model: s.model,
   effort: s.effort,
@@ -405,28 +415,26 @@ const agentSettings = (s: G.ProjectSettings) => ({
  * GitHub, the Claude apps, and what agents leave the agents after them.
  */
 function Agents({ project }: { project: G.Project }) {
+  // The model's choice is part of the draft, so that it goes back with the rest of it: after a save,
+  // Cancel, or someone's change elsewhere.
   const { draft: s, set, setDraft, dirty, reset } = useDraft(agentSettings(project.settings));
-  const [model, setModel] = useState<ModelChoice>(modelChoice(project.settings.model));
+  const model = s.choice;
   /** The model ID typed last, so that choosing Model ID again brings it back. */
   const typedModel = useRef<string>(undefined);
-  // What is saved shows again after a save, Cancel, or someone's change elsewhere.
-  useEffect(() => setModel(modelChoice(project.settings.model)), [project.settings.model]);
   const save = useSave(
     project,
     "Saved: sessions that start from now on take it",
     () => {
-      if (model === "id" && !s.model?.trim())
+      const { choice, ...settings } = s;
+      if (choice === "id" && !settings.model?.trim())
         throw new ApiFailure(400, {
           code: "validation",
           field: "model",
           message: "Type a model ID, or choose another model",
         });
-      return { settings: { ...project.settings, ...s } };
+      return { settings: { ...project.settings, ...settings } };
     },
-    (p) => {
-      setDraft(agentSettings(p.settings));
-      setModel(modelChoice(p.settings.model));
-    },
+    (p) => setDraft(agentSettings(p.settings)),
   );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   return (
@@ -466,8 +474,7 @@ function Agents({ project }: { project: G.Project }) {
                       value={model}
                       onChange={(v) => {
                         if (model === "id") typedModel.current = s.model;
-                        setModel(v);
-                        set({ model: chosenModel(v, typedModel.current) });
+                        set({ choice: v, model: chosenModel(v, typedModel.current) });
                       }}
                       options={MODELS}
                       className="w-full"
@@ -561,15 +568,13 @@ function Agents({ project }: { project: G.Project }) {
           </Section>
         </Parts>
         <PageFoot
+          project={project}
           page="agents"
           dirty={dirty}
           save={save}
           hint="Sessions that start from now on take it."
           fields={["settings.instructions", "effort", "model"]}
-          onReset={() => {
-            reset();
-            setModel(modelChoice(project.settings.model));
-          }}
+          onReset={reset}
         />
       </form>
     </Section>
@@ -784,6 +789,7 @@ function PullRequests({ project }: { project: G.Project }) {
           </Section>
         </Parts>
         <PageFoot
+          project={project}
           page="pull-requests"
           dirty={dirty}
           save={save}
@@ -825,6 +831,8 @@ function parseEnv(text: string): Record<string, string> {
 
 /** What the Sandbox page edits; the environment as its field's text. */
 const sandboxSettings = (s: G.ProjectSettings) => ({
+  /** Where sessions start from, as chosen: an image from a registry, before one is typed, sets none yet. */
+  source: imageSource(s),
   setup_script: s.setup_script,
   package_caches: s.package_caches,
   image: s.image,
@@ -845,21 +853,25 @@ function Sandbox({ project }: { project: G.Project }) {
   // Lines that set the same variables are no change: a blank line, a comment.
   const dirty =
     changed && (sameEnv(s.env, saved.env) ? !sameDraft({ ...s, env: "" }, { ...saved, env: "" }) : true);
-  // Chosen apart from what it sets: an image from a registry, before one is typed, sets nothing yet.
-  const [source, setSource] = useState<ImageSource>(imageSource(project.settings));
-  // What is saved shows again after a save, Cancel, or someone's change elsewhere.
-  const savedSource = imageSource(project.settings);
-  useEffect(() => setSource(savedSource), [savedSource]);
+  // The image's source is part of the draft, so that it goes back with the rest of it: after a save,
+  // Cancel, or someone's change elsewhere.
+  const source = s.source;
   /** What was typed for each image source, so that switching back brings it back. */
   const typed = useRef<Typed>({});
   const save = useSave(
     project,
     "Saved: sessions that start from now on take it",
-    () => ({ settings: { ...project.settings, ...s, env: parseEnv(s.env) } }),
-    (p) => {
-      setDraft(sandboxSettings(p.settings));
-      setSource(imageSource(p.settings));
+    () => {
+      const { source: from, env, ...settings } = s;
+      if (from === "image" && !settings.image?.trim())
+        throw new ApiFailure(400, {
+          code: "validation",
+          field: "image",
+          message: "Name the image, or choose where else sessions start from",
+        });
+      return { settings: { ...project.settings, ...settings, env: parseEnv(env) } };
     },
+    (p) => setDraft(sandboxSettings(p.settings)),
   );
   const err = (f: string) => (failedField(save.error) === f ? save.error?.message : undefined);
   const number = (v: string) => (v ? Number(v) : undefined);
@@ -915,8 +927,7 @@ function Sandbox({ project }: { project: G.Project }) {
                       const now = { ...project.settings, ...s, env: {} };
                       typed.current = remember(now, typed.current);
                       const next = withSource(now, v, typed.current);
-                      setSource(v);
-                      set({ image: next.image, image_build: next.image_build ?? null });
+                      set({ source: v, image: next.image, image_build: next.image_build ?? null });
                     }}
                     options={imageSources(project)}
                     className="w-full"
@@ -1045,6 +1056,7 @@ function Sandbox({ project }: { project: G.Project }) {
           </Section>
         </Parts>
         <PageFoot
+          project={project}
           page="sandbox"
           dirty={dirty}
           save={save}
@@ -1058,10 +1070,7 @@ function Sandbox({ project }: { project: G.Project }) {
             "settings.idle_timeout_minutes",
             "settings.env",
           ]}
-          onReset={() => {
-            reset();
-            setSource(savedSource);
-          }}
+          onReset={reset}
         />
       </form>
     </Section>

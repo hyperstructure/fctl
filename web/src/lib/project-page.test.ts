@@ -3,6 +3,7 @@ import type * as G from "@/gen";
 import {
   agentsGist,
   PROJECT_VIEWS,
+  placeOf,
   pullRequestsGist,
   sandboxGist,
   settingsGists,
@@ -104,6 +105,29 @@ describe("a project's page", () => {
     expect(settingsPageOf("settings", "maintainer")).toBe("general");
     expect(settingsPageOf("settings", "viewer")).toBe("repositories");
     expect(settingsPageOf("sandbox", "maintainer")).toBe("sandbox");
+  });
+});
+
+describe("where an address takes someone", () => {
+  const at = (search: unknown, pathname = "/p/shop") => ({ pathname, search });
+  it("calls addresses that show the same page one place", () => {
+    const p = project();
+    // Settings itself opens General beside its list.
+    expect(placeOf(p, at({ tab: "settings" }))).toBe(placeOf(p, at({ tab: "general" })));
+    // Back from Linear is Tickets too.
+    expect(placeOf(p, at({ tab: "tickets", linear: "connected" }))).toBe(placeOf(p, at({ tab: "tickets" })));
+    expect(placeOf(p, at({}))).toBe(placeOf(p, at({ tab: "sessions" })));
+    // Below maintainer, a page they can't see is Settings' first one.
+    const editor = project({ role: "editor" });
+    expect(placeOf(editor, at({ tab: "secrets" }))).toBe(placeOf(editor, at({ tab: "repositories" })));
+  });
+
+  it("tells pages apart, and other pages of the app", () => {
+    const p = project();
+    expect(placeOf(p, at({ tab: "general" }))).not.toBe(placeOf(p, at({ tab: "agents" })));
+    expect(placeOf(p, at({ tab: "memory" }))).not.toBe(placeOf(p, at({ tab: "retrospectives" })));
+    expect(placeOf(p, at({ tab: "general" }))).not.toBe(placeOf(p, at({ tab: "general" }, "/p/web")));
+    expect(placeOf(p, at({}, "/settings"))).toBe("/settings");
   });
 });
 

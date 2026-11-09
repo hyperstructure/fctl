@@ -100,6 +100,23 @@ export function settingsPageOf(view: ProjectView, role?: G.ProjectRole): Project
   return isSettingsPage(view) ? view : settingsPagesFor(role)[0];
 }
 
+const isView = (v: unknown): v is ProjectView => PROJECT_VIEWS.some((x) => x === v);
+
+/**
+ * Where an address takes someone, as a project's page shows it: the tab, Memory's part or Settings'
+ * page open there. Two addresses that show the same are one place: Settings itself and the page it
+ * opens beside its list, Tickets with Linear's way back and without it.
+ */
+export function placeOf(
+  project: Pick<G.Project, "slug" | "role" | "autopilot">,
+  at: { pathname: string; search: unknown },
+): string {
+  if (at.pathname !== `/p/${project.slug}`) return at.pathname;
+  const tab = (at.search as { tab?: unknown } | undefined)?.tab;
+  const view = shownView(isView(tab) ? tab : undefined, project);
+  return tabOf(view) === "settings" ? `settings/${settingsPageOf(view, project.role)}` : view;
+}
+
 const count = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
 
 /** The model and effort agents work with: "Opus · high effort", "Claude's default model". */
