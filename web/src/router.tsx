@@ -4,6 +4,7 @@
 
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
 import { api } from "@/lib/api";
+import { appHistory } from "@/lib/history";
 import { fetchMe, keys, queryClient } from "@/lib/queries";
 import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings";
 import { routerScrolls } from "@/lib/stick-to-bottom";
@@ -238,6 +239,8 @@ const tree = root.addChildren([
 
 export const router = createRouter({
   routeTree: tree,
+  // On an iPhone's or iPad's Home Screen, with no history for iOS's edge swipes to go through.
+  history: appHistory(),
   defaultPreload: "intent",
   defaultViewTransition: true,
   // A session's page opens at its newest work by itself (lib/stick-to-bottom.ts).

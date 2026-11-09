@@ -37,7 +37,10 @@ The app installs on your phone and computer and then opens in its own
 window, from the home screen or the Dock: in Safari on an iPhone or iPad,
 choose **Share → Add to Home Screen**; in Safari on a Mac, **File → Add to
 Dock**; in Chrome or Edge, the install button in the address bar (on
-Android, **⋮ → Add to home screen**).
+Android, **⋮ → Add to home screen**). On an iPhone or iPad, the app on the
+Home Screen keeps no history of the pages you open, so a swipe from the
+edge of the screen doesn't go back or forward: you move about with the
+sidebar and links.
 
 To hear when a session waits for your reply, pauses on a usage limit or
 fails, turn on notifications in **Settings → Notifications**, in each

@@ -74,6 +74,7 @@ import { exported, exportHint, nextExport } from "@/lib/data-export";
 import { forgetDraft } from "@/lib/draft";
 import { ago, browserName } from "@/lib/format";
 import { gravatarNews, gravatarPicture } from "@/lib/gravatar";
+import { goTo } from "@/lib/history";
 import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
@@ -2120,7 +2121,7 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
       await forgetDraft();
       queryClient.clear();
       forgetSidebar(); // last, so that no list that comes is kept again
-      window.location.assign("/login?deleted=1");
+      goTo("/login?deleted=1");
     },
   });
   useEffect(() => {

@@ -2,21 +2,21 @@
 // screen while it is closed, and back out by the drawer or the shade while it
 // is open. It follows the finger, and letting go opens or closes it.
 
-import { type RefObject, useCallback, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 
 /** From here up (Tailwind's `md`) the sidebar stays beside the page: there is no drawer. */
 const WIDE = "(min-width: 48rem)";
 /**
  * How far from the left edge of the screen (px) a finger may touch to drag
- * the drawer in. On an iPhone the app keeps the band at the very edge, which
- * the browser would take for going back (./edge-swipes.ts); Android takes it
- * for its own back gesture whatever the page does, so the band is wider than
- * that, for a finger to start just inside it.
+ * the drawer in. Wider than the band at the very edge where phones take the
+ * finger for going back, so that it starts just inside it. In the app on an
+ * iPhone's or iPad's Home Screen there is no page to go back to
+ * (lib/history.ts), and it comes in from the very edge too.
  */
 export const EDGE = 32;
 /** How far a finger moves (px) before it drags: less, and it taps. */
-export const SLOP = 8;
+const SLOP = 8;
 /**
  * A finger that lets go of the drawer dragged this far open (a fraction of
  * its width), or moving this fast (px/ms) over its last moments, leaves it
@@ -97,7 +97,6 @@ export function drags(open: boolean, dx: number, dy: number): boolean | undefine
  * open or not.
  * Meanwhile the drawer and the shade follow the finger through their inline
  * styles, and slide on from there, at their own pace, once it lets go.
- * Returns whether a finger drags the drawer now.
  */
 export function useDrawerDrag({
   page,
@@ -113,10 +112,9 @@ export function useDrawerDrag({
   open: boolean;
   onDrag: () => void;
   onLetGo: (open: boolean) => void;
-}): () => boolean {
+}) {
   const latest = useRef({ open, onDrag, onLetGo });
   latest.current = { open, onDrag, onLetGo };
-  const dragged = useRef<() => boolean>(() => false);
 
   useEffect(() => {
     const off = new AbortController();
@@ -124,7 +122,6 @@ export function useDrawerDrag({
     let touched: { id: number; x: number; y: number; at: number; open: boolean } | undefined;
     let slide: Slide | undefined;
     let stop: (() => void) | undefined;
-    dragged.current = () => slide !== undefined;
 
     const place = (s: Slide) => {
       const d = drawer.current;
@@ -248,8 +245,6 @@ export function useDrawerDrag({
       stop?.();
       // Unmounted mid-drag: the drawer goes back to its own styles.
       if (slide) unstyle();
-      dragged.current = () => false;
     };
   }, [page, drawer, shade]);
-  return useCallback(() => dragged.current(), []);
 }

@@ -14,6 +14,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api, emails } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { saveSent } from "@/lib/early-access";
+import { goTo } from "@/lib/history";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { appPath } from "@/lib/paths";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
@@ -146,7 +147,7 @@ function useSubmit<T>(fn: () => Promise<T>, done: (r: T) => void) {
 function signedIn(me: G.Me, next?: string, { passkey = false } = {}) {
   queryClient.setQueryData(keys.me, me);
   if (!passkey) sessionStorage.setItem(OFFER_PASSKEY, "1");
-  window.location.assign(appPath(next));
+  goTo(appPath(next));
 }
 
 /** Signs in with what the second step answered, and remembers to say how many recovery codes are left. */
@@ -537,12 +538,7 @@ export function InvitePage() {
         title="This invitation has expired."
         subtitle="Ask the person who invited you for a new link."
       >
-        <Button
-          variant="secondary"
-          size="lg"
-          className="w-full"
-          onClick={() => window.location.assign("/login")}
-        >
+        <Button variant="secondary" size="lg" className="w-full" onClick={() => goTo("/login")}>
           Go to sign-in
         </Button>
       </AuthFrame>
@@ -763,7 +759,7 @@ export function TwoFactorPage() {
     retry: false,
     refetchOnWindowFocus: false,
   });
-  const restart = () => window.location.assign("/login");
+  const restart = () => goTo("/login");
   if (challenge.isPending)
     return (
       <AuthFrame title="One more step." subtitle="Checking your sign-in…">
