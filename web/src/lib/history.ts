@@ -53,6 +53,22 @@ export function linksInPlace(): () => void {
       return;
     if (a.protocol !== "http:" && a.protocol !== "https:") return;
     e.preventDefault();
+    const here = window.location;
+    if (
+      a.origin === here.origin &&
+      a.pathname === here.pathname &&
+      a.search === here.search &&
+      a.href.includes("#")
+    ) {
+      // A place on this page: there, in place of where it was, keeping the router's state, which
+      // a page load would lose.
+      window.history.replaceState(window.history.state, "", a.href);
+      const id = decodeURIComponent(a.hash.slice(1));
+      const to = id ? document.getElementById(id) : null;
+      if (to) to.scrollIntoView();
+      else if (!id || id.toLowerCase() === "top") window.scrollTo(0, 0);
+      return;
+    }
     window.location.replace(a.href);
   };
   document.addEventListener("click", click);

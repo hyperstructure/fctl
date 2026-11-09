@@ -14,6 +14,10 @@ function apple({ webKit = true, touch = true, home = true } = {}) {
 }
 
 afterEach(() => {
+  // A link a test clicked may have taken happy-dom elsewhere.
+  (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(
+    "http://localhost:3000/",
+  );
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   delete (navigator as { maxTouchPoints?: number }).maxTouchPoints;
@@ -80,15 +84,17 @@ describe("goTo", () => {
 });
 
 describe("linksInPlace", () => {
-  /** A click on a link to `href`, with `init`; whether it went on, and where it loaded in place. */
+  /**
+   * A click on a link to `href`, with `init`; whether it went on, and where it loaded in place.
+   * On the link itself: happy-dom follows a link as a click on something in it bubbles through
+   * it, before the document hears it, where a browser waits for the click to end.
+   */
   function click(href: string, init: MouseEventInit = {}, link: Partial<HTMLAnchorElement> = {}) {
     const a = Object.assign(document.createElement("a"), { href }, link);
-    const label = document.createElement("span");
-    a.append(label);
     document.body.append(a);
     const replace = vi.spyOn(window.location, "replace").mockImplementation(() => {});
     const e = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0, ...init });
-    label.dispatchEvent(e);
+    a.dispatchEvent(e);
     a.remove();
     const loaded = replace.mock.calls[0]?.[0];
     replace.mockRestore();
@@ -106,6 +112,28 @@ describe("linksInPlace", () => {
       "https://github.com/apps/fctl/installations/new",
     );
     undo();
+  });
+
+  it("moves to a place on this page in place of where it was, keeping the router's state", () => {
+    apple();
+    const undo = linksInPlace();
+    window.history.replaceState({ __TSR_index: 3, __TSR_key: "k" }, "", "/w/acme");
+    const place = Object.assign(document.createElement("h2"), { id: "enrollment-tokens" });
+    document.body.append(place);
+    const scrolled = vi.fn();
+    place.scrollIntoView = scrolled;
+    const before = window.history.length;
+    try {
+      // A page load would lose the router's state.
+      expect(click("#enrollment-tokens")).toEqual({ loaded: undefined, wentOn: false });
+      expect(window.location.pathname + window.location.hash).toBe("/w/acme#enrollment-tokens");
+      expect(window.history.state).toEqual({ __TSR_index: 3, __TSR_key: "k" });
+      expect(window.history.length).toBe(before);
+      expect(scrolled).toHaveBeenCalled();
+    } finally {
+      place.remove();
+      undo();
+    }
   });
 
   it("leaves the router's links, new tabs and windows, and other kinds of link alone", () => {
