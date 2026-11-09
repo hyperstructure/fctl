@@ -222,6 +222,12 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
         // Their links stopped working at expiry; their FilesObject deletes
         // the bytes on its own alarm.
         ("DELETE FROM published_files WHERE expires_at < ?", now),
+        // What autopilots asked that people answered, declined or that
+        // they took back, a quarter on: their logs say it.
+        (
+            "DELETE FROM autopilot_asks WHERE status != 'open' AND COALESCE(answered_at, created_at) < ?",
+            now - 90 * 86_400_000,
+        ),
         (
             "DELETE FROM claude_login_jobs WHERE updated_at < ?",
             now - LOGIN_JOB_RETENTION_MS,
