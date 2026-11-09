@@ -157,8 +157,8 @@ pub enum AutopilotCmd {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Its log, newest first. In its sandbox, with text, the autopilot
-    /// writes down what it did, decided or plans.
+    /// Its log, newest first. In its sandbox, with text (`-` to read it
+    /// from stdin), the autopilot writes down what it did, decided or plans.
     #[command(after_help = "Examples:
   fctl autopilot log -p crm --limit 100
   fctl autopilot log \"Started crm#12 for the pipeline board; the import work waits for the CSV format.\"")]
@@ -432,8 +432,13 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             println!("{} Declined: it hears now", style::accent("✓"));
         }
         AutopilotCmd::Log { text, limit } => {
-            if !text.is_empty() || (!std::io::stdin().is_terminal() && in_its_sandbox()) {
-                let text = words_or_stdin(text, "Write what to log: fctl autopilot log \"…\"")?;
+            // Text writes an entry (`-` reads it from stdin); none lists them.
+            if !text.is_empty() {
+                let text = if text == ["-"] {
+                    words_or_stdin(Vec::new(), "Pipe in what to log: … | fctl autopilot log -")?
+                } else {
+                    words_or_stdin(text, "Write what to log: fctl autopilot log \"…\"")?
+                };
                 let answer = api.write_autopilot_log(p, &text).await?;
                 if json {
                     return style::print_json(&answer);
@@ -473,7 +478,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                     }));
                 }
                 match &a.plan {
-                    Some(plan) => println!("{}", style::plain(plan)),
+                    Some(plan) => println!("{}", block(plan)),
                     None => println!("No plan yet."),
                 }
             }
@@ -533,7 +538,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             if json {
                 return style::print_json(&b);
             }
-            println!("{}", style::plain(&b.brief));
+            println!("{}", block(&b.brief));
         }
     }
     Ok(())
@@ -631,6 +636,16 @@ fn read_file_or_stdin(f: &std::path::Path) -> Result<String> {
 }
 
 // ───────────────────────────── printing ─────────────────────────────
+
+/// Text from the control plane, its lines as they are: Markdown the
+/// autopilot reads (its brief, its plan), each line kept to what a
+/// terminal shows plainly.
+fn block(text: &str) -> String {
+    text.lines()
+        .map(style::plain)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 fn state_line(a: &Autopilot) -> String {
     match a.state {
@@ -890,6 +905,14 @@ fn print_log(log: &AutopilotLog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_brief_keeps_its_lines() {
+        assert_eq!(
+            block("# Autopilot\n\n- [ ] One\n- [x] Two\u{202E}"),
+            "# Autopilot\n\n- [ ] One\n- [x] Two"
+        );
+    }
 
     #[test]
     fn powers_read_as_people_type_them() {

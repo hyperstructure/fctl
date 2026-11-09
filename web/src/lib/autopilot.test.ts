@@ -87,7 +87,7 @@ describe("where an autopilot stands", () => {
     });
     expect(phase(a, NOW)).toMatchObject({ tone: "pink", word: "Paused" });
     expect(phase(a, NOW).line).toBe(
-      "Noor Haddad paused it 2m ago: Launch week It wakes again once someone resumes it.",
+      "Noor Haddad paused it 2 minutes ago: Launch week It wakes again once someone resumes it.",
     );
   });
 });

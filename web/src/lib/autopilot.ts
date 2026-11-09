@@ -3,7 +3,7 @@
 // how often it wakes, and the directions to start from.
 
 import type * as G from "@/gen";
-import { agoShort, clock, day } from "./format";
+import { ago, clock, day } from "./format";
 
 /** How long it goes without waking, at most, as people choose it (the control plane's CHECK_INS). */
 export const CHECK_INS: { minutes: number; label: string }[] = [
@@ -96,7 +96,7 @@ export function phase(a: G.Autopilot, now = Date.now()): Phase {
     return {
       tone: "pink",
       word: "Paused",
-      line: `${who}${a.paused_at ? ` ${agoShort(a.paused_at, now)} ago` : ""}${why} It wakes again once someone resumes it.`,
+      line: `${who}${a.paused_at ? ` ${ago(a.paused_at, now)}` : ""}${why} It wakes again once someone resumes it.`,
     };
   }
   if (atWork(a)) {
