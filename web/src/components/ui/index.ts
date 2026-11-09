@@ -11,5 +11,6 @@ export * from "./lightbox";
 export * from "./misc";
 export * from "./name-fields";
 export * from "./overlay";
+export * from "./save-bar";
 export * from "./select";
 export * from "./sheet";

@@ -1,6 +1,7 @@
-// A project's memory: the notes its agents, and its people, keep for the
-// agents of later sessions. Everyone in the project reads them; editors
-// add notes, change them, mark them stale and delete them.
+// A project's Memory tab: its notes, which its agents, and its people, keep for the agents of later
+// sessions; and its retrospectives, what agents recorded as they finished their work
+// (retrospectives.tsx). Everyone in the project reads them; editors add notes, change them, mark
+// them stale and delete them.
 
 import { useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
@@ -11,14 +12,18 @@ import {
   BookMarked,
   Copy,
   Ellipsis,
+  type LucideIcon,
   Pencil,
   Plus,
+  ScrollText,
   Search,
   Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
+import { Retrospectives } from "@/components/project/retrospectives";
+import { TurnOn } from "@/components/project/turn-on";
 import {
   Avatar,
   Banner,
@@ -49,6 +54,7 @@ import {
   original,
   replacement,
 } from "@/lib/memory";
+import { manages } from "@/lib/project-page";
 import { keys, queryClient, useMemories } from "@/lib/queries";
 
 /** Puts a changed note in the cached list, or takes a deleted one out. */
@@ -61,10 +67,60 @@ function saved(project: string, note: G.Memory, removed?: boolean) {
   void queryClient.invalidateQueries({ queryKey: keys.memories(project) });
 }
 
-export function MemoryTab({ project }: { project: G.Project }) {
+/** Memory's two parts, each an address of its own: its notes (`?tab=memory`), its retrospectives. */
+export type MemoryPart = "notes" | "retrospectives";
+
+const PARTS: { part: MemoryPart; tab: "memory" | "retrospectives"; label: string; icon: LucideIcon }[] = [
+  { part: "notes", tab: "memory", label: "Notes", icon: BookMarked },
+  { part: "retrospectives", tab: "retrospectives", label: "Retrospectives", icon: ScrollText },
+];
+
+/** The Memory tab: what agents know, in notes, and what they did, in retrospectives, one at a time. */
+export function MemoryTab({ project, part }: { project: G.Project; part: MemoryPart }) {
+  return (
+    <div className="flex flex-col gap-6">
+      <nav
+        aria-label="Memory"
+        className="inline-flex self-start rounded-[10px] bg-sunken/70 p-0.5 shadow-[inset_0_0_0_1px_var(--c-line)]"
+      >
+        {PARTS.map((p) => {
+          const here = p.part === part;
+          const Icon = p.icon;
+          return (
+            <Link
+              key={p.part}
+              to="/p/$slug"
+              params={{ slug: project.slug }}
+              search={{ tab: p.tab }}
+              aria-current={here ? "page" : undefined}
+              className={cn(
+                "inline-flex h-8 items-center gap-2 rounded-lg px-3 text-[13px] transition-[background-color,color,box-shadow] duration-150",
+                here
+                  ? "bg-raised text-ink shadow-[0_1px_2px_rgb(0_0_0/0.12),inset_0_0_0_1px_var(--c-line)]"
+                  : "text-ink-3 hover:text-ink",
+              )}
+            >
+              <Icon className={cn("size-3.5 transition-colors", here ? "text-accent" : "text-ink-4")} />
+              {p.label}
+            </Link>
+          );
+        })}
+      </nav>
+      {/* Another project's starts afresh: its filters and what was typed stay with the one they were in. */}
+      {part === "notes" ? (
+        <Notes key={project.id} project={project} />
+      ) : (
+        <Retrospectives key={project.id} project={project} />
+      )}
+    </div>
+  );
+}
+
+/** Memory's notes: the current ones and the stale, a way to find one, and for editors a new one. */
+export function Notes({ project }: { project: G.Project }) {
   const memories = useMemories(project.id);
   const edit = canEditMemory(project.role);
-  const manage = project.role === "owner" || project.role === "maintainer";
+  const manage = manages(project.role);
   const [view, setView] = useState<"current" | "stale">("current");
   const [query, setQuery] = useState("");
   const all = memories.data?.memories ?? [];
@@ -85,18 +141,13 @@ export function MemoryTab({ project }: { project: G.Project }) {
         <Banner tone="info">
           This project's agents keep no memory: they don't start with these notes or add any.{" "}
           {manage ? (
-            <>
-              Turn it on under{" "}
-              <Link
-                to="/p/$slug"
-                params={{ slug: project.slug }}
-                search={{ tab: "settings" }}
-                className="underline underline-offset-2"
-              >
-                Settings
-              </Link>
-              .
-            </>
+            <TurnOn
+              project={project}
+              setting="project_memory"
+              done="Memory on: sessions that start from now on keep it"
+            >
+              Turn it on
+            </TurnOn>
           ) : (
             "Its maintainers can turn it on."
           )}
@@ -695,7 +746,7 @@ function DeleteNote({
   );
 }
 
-/** A link to a project's Memory tab, which scrolls to the note `id` names. */
+/** A link to a project's Memory notes, which scrolls to the note `id` names. */
 export function NoteLink({
   slug,
   id,

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import type { LinearOutcome } from "@/lib/tickets";
-import { TicketsTab } from "./tickets";
+import { TicketsSettings } from "./tickets";
 
 // No request is answered: the tab shows what the cache holds. Each call is noted.
 const calls = vi.hoisted(() => [] as { name: string; args: unknown[] }[]);
@@ -35,6 +35,7 @@ vi.mock("@/lib/api", () => {
 });
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: ReactNode }) => <a href="/">{children}</a>,
+  useBlocker: () => ({ status: "idle" }),
 }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -198,7 +199,7 @@ function tab(
     writable: [{ owner: "acme", name: "web" }],
     ...status,
   });
-  return render(<TicketsTab project={p} returned={returned} />);
+  return render(<TicketsSettings project={p} returned={returned} />);
 }
 
 const radios = (c: HTMLElement) => [...c.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
@@ -289,10 +290,12 @@ describe("the Tickets tab", () => {
     const c = tab(project());
     act(() => radios(c)[0]?.click());
     expect(checked(c)).toBe("none");
-    c.show(<TicketsTab project={project({ total_sessions: 4 })} />);
+    c.show(<TicketsSettings project={project({ total_sessions: 4 })} />);
     expect(checked(c)).toBe("none");
     c.show(
-      <TicketsTab project={project({ settings: { ...settings, tickets: { tracker: "linear", linear } } })} />,
+      <TicketsSettings
+        project={project({ settings: { ...settings, tickets: { tracker: "linear", linear } } })}
+      />,
     );
     expect(checked(c)).toBe("linear");
     expect(c.textContent).not.toContain("Save");
