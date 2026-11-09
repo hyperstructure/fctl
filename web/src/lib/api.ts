@@ -1,5 +1,6 @@
 // The REST client. Types come from the Rust protocol (src/gen, `cargo xtask gen`).
 import type * as G from "@/gen";
+import { goTo } from "./history";
 
 export class ApiFailure extends Error {
   readonly status: number;
@@ -48,7 +49,7 @@ export async function confirmFirst(): Promise<boolean> {
  * navigation can't go again by itself once the server refuses it.
  */
 export async function goConfirmed(href: string): Promise<void> {
-  if (await confirmFirst()) location.assign(href);
+  if (await confirmFirst()) goTo(href);
 }
 
 /**

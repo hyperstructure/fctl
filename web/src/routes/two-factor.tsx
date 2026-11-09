@@ -14,6 +14,7 @@ import { api, TWO_FACTOR_REQUIRED } from "@/lib/api";
 import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
+import { goTo } from "@/lib/history";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { forgetPush } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
@@ -73,7 +74,7 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
     queryClient.clear();
     clearAttention();
     forgetSidebar(); // last, so that no list that comes is kept again
-    window.location.assign("/login");
+    goTo("/login");
   };
   // Without passkeys there is nothing to choose.
   const app = way === "app" || support?.supported === false;

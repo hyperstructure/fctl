@@ -5,6 +5,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { VerifyDialog } from "@/components/two-factor/verify";
 import { Toaster } from "@/components/ui";
+import { linksInPlace } from "@/lib/history";
 import { queryClient } from "@/lib/queries";
 import { syncShimmers } from "@/lib/shimmer";
 import { watchViewport } from "@/lib/viewport";
@@ -14,6 +15,8 @@ import { router } from "./router";
 stopPinchZoom();
 syncShimmers();
 watchViewport();
+// On an iPhone's or iPad's Home Screen, links load their pages without adding to the history.
+linksInPlace();
 
 // Sessions have one view since the classic one went: browsers that kept which of the two to show
 // (fctl:session-view) forget it.

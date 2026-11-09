@@ -42,6 +42,7 @@ import type * as G from "@/gen";
 import { ApiFailure, api, clickConfirmed, linearLinkUrl, workspaces } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ago, agoShort, stamp } from "@/lib/format";
+import { goTo } from "@/lib/history";
 import { keys, queryClient, useInstance } from "@/lib/queries";
 import { type LinearOutcome, linearOutcome, stateTone, TRACKERS, trackerOf } from "@/lib/tickets";
 import { useWorkspaceIndex } from "@/lib/workspaces";
@@ -522,7 +523,7 @@ function LinearDetails({
   const connect = useMutation({
     mutationFn: () => workspaces.connectLinear(project.workspace?.id ?? "", { project: project.slug }),
     // On to Linear, which brings the browser back here.
-    onSuccess: (link) => window.location.assign(link.url),
+    onSuccess: (link) => goTo(link.url),
     onError: (e) => toast(e.message, "error"),
   });
   if (instance && !instance.features.linear)

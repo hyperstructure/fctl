@@ -61,6 +61,7 @@ import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { approvedBy, minutesText } from "@/lib/enrollment";
 import { ago, agoShort, driverProblem } from "@/lib/format";
+import { goTo } from "@/lib/history";
 import { BREW_INSTALL, installCommand } from "@/lib/install";
 import {
   keys,
@@ -1545,7 +1546,7 @@ function Github({
   const connect = useMutation({
     mutationFn: (account?: string) => workspaces.connectGithub(w.id, { account }),
     // On to GitHub, which brings the browser back here.
-    onSuccess: (link) => window.location.assign(link.url),
+    onSuccess: (link) => goTo(link.url),
     onError: (e) => toast(e.message, "error"),
   });
   const signingIn = (account?: string) =>

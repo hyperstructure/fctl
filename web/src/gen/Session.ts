@@ -45,7 +45,14 @@ resume_at?: number, created_by: UserRef, created_at: number, updated_at: number,
  * people's). Absent until someone does, and from control planes
  * before it.
  */
-messaged_at?: number, branch?: string, base_branch?: string, 
+messaged_at?: number, 
+/**
+ * When a person last sent it a message that didn't answer its agent's
+ * question (`question`): one that asks it for more, where an answer
+ * only lets the agent carry on with what it asked for. Absent until
+ * someone does, and from control planes before it.
+ */
+requested_at?: number, branch?: string, base_branch?: string, 
 /**
  * The pull request of its branch in the primary repository, or in
  * another repository when that has none: the last one its agent found.

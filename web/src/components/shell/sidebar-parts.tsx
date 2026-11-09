@@ -33,6 +33,7 @@ import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
 import { hideable } from "@/lib/hidden-sessions";
+import { goTo } from "@/lib/history";
 import { pullRequests } from "@/lib/pulls";
 import { forgetPush } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
@@ -342,7 +343,7 @@ export function UserMenu({
               queryClient.clear();
               clearAttention();
               forgetSidebar(); // last, so that no list that comes is kept again
-              window.location.assign("/login");
+              goTo("/login");
             }}
           >
             Sign out

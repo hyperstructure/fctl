@@ -37,7 +37,10 @@ The app installs on your phone and computer and then opens in its own
 window, from the home screen or the Dock: in Safari on an iPhone or iPad,
 choose **Share → Add to Home Screen**; in Safari on a Mac, **File → Add to
 Dock**; in Chrome or Edge, the install button in the address bar (on
-Android, **⋮ → Add to home screen**).
+Android, **⋮ → Add to home screen**). On an iPhone or iPad, the app on the
+Home Screen keeps no history of the pages you open, so a swipe from the
+edge of the screen doesn't go back or forward: you move about with the
+sidebar and links.
 
 To hear when a session waits for your reply, pauses on a usage limit or
 fails, turn on notifications in **Settings → Notifications**, in each
@@ -463,7 +466,8 @@ started.
   sessions you started or follow, most pressing first: what an agent asks
   you, a failure, failed checks, a pull request an agent finished, a reply
   it waits for (unless its pull requests are all merged or closed and
-  nobody wrote to it since: its work is done). Its count shows in the
+  nobody wrote to it since but to answer what it asked: its work is
+  done). Its count shows in the
   browser's tab, and on fctl's icon where you installed it. **Pull requests** opens the pull requests agents
   opened in the sessions you started, sorted by what each needs next; turn
   **Mine** off there for everyone's, and the sidebar counts them too. The
