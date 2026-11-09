@@ -36,6 +36,10 @@ pub enum Kind {
     Paused,
     /// It failed.
     Failed,
+    /// An autopilot whose own session it is asks people something
+    /// (`fctl autopilot ask`): a decision, or a secret. It goes on with
+    /// other work meanwhile, so it says this whatever the session's state.
+    Autopilot,
 }
 
 impl Kind {
@@ -55,7 +59,7 @@ impl Kind {
     /// Whether `settings` ask for it.
     pub fn wanted(self, settings: &NotificationSettings) -> bool {
         match self {
-            Self::Waiting | Self::Asking => settings.waiting,
+            Self::Waiting | Self::Asking | Self::Autopilot => settings.waiting,
             Self::Paused => settings.paused,
             Self::Failed => settings.failed,
         }
@@ -69,6 +73,7 @@ impl Kind {
                 Self::Waiting | Self::Asking => SessionStatus::Idle,
                 Self::Paused => SessionStatus::Paused,
                 Self::Failed => SessionStatus::Failed,
+                Self::Autopilot => return true,
             }
     }
 }
@@ -85,6 +90,10 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub at: Millis,
+    /// Where the notification leads, in place of the session's page: an
+    /// autopilot's tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// Someone who follows a session.
@@ -213,6 +222,7 @@ fn says(kind: Kind) -> &'static str {
         Kind::Asking => "asks you",
         Kind::Paused => "paused on a usage limit",
         Kind::Failed => "failed",
+        Kind::Autopilot => "asks you",
     }
 }
 
@@ -247,12 +257,24 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
         ),
         (Kind::Failed, Some(why)) => format!("{} failed: {why}", only.reference),
         (Kind::Failed, None) => format!("{} failed", only.reference),
+        (Kind::Autopilot, _) => match only
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+        {
+            Some(q) => format!("It asks you\n{}", question_lines(q)),
+            None => "It asks you something".to_owned(),
+        },
     };
     Some(PushMessage {
         title: only.title.clone(),
         body,
         tag: only.session_id.0.clone(),
-        url: format!("/s/{}", only.session_id),
+        url: only
+            .url
+            .clone()
+            .unwrap_or_else(|| format!("/s/{}", only.session_id)),
         replaces: Vec::new(),
         at: only.at,
     })
@@ -318,6 +340,25 @@ mod tests {
     use fctl_proto::api::BaseRole;
     use fctl_proto::session::WorkspaceRole;
 
+    #[test]
+    fn an_autopilots_ask_leads_to_its_tab() {
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            url: Some("/p/shop?tab=autopilot".into()),
+            ..event(3, Kind::Autopilot, Some("Which payment provider?"))
+        };
+        let m = compose(&[e]);
+        assert_eq!(
+            m.as_ref().map(|m| m.url.as_str()),
+            Some("/p/shop?tab=autopilot")
+        );
+        assert_eq!(
+            m.map(|m| m.body),
+            Some("It asks you\nWhich payment provider?".into())
+        );
+        assert!(Kind::Autopilot.still(SessionStatus::Running));
+    }
+
     fn event(n: u32, kind: Kind, detail: Option<&str>) -> Event {
         Event {
             session_id: SessionId(format!("ses_{n}")),
@@ -326,6 +367,7 @@ mod tests {
             kind,
             detail: detail.map(str::to_owned),
             at: i64::from(n) * 1000,
+            url: None,
         }
     }
 

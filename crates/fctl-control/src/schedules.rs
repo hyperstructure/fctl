@@ -972,6 +972,7 @@ pub async fn start_session(
             ticket_message: None,
             schedule_id: Some(&st.schedule.id),
             ticket: None,
+            autopilot: None,
             follow: st.follow,
             now: st.now,
         },

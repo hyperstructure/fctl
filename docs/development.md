@@ -329,6 +329,32 @@ still works (`watch 90`) is skipped. A row in `claude_usage` with a
 at its limit, which skips the runs of a schedule until then. The dev
 `.fctl-dev/token` is an access token, so its runs count as a tool's.
 
+### Autopilots
+
+fake-claude plays an autopilot when its message is an autopilot's briefing
+or a wake (`fctl woke you, the autopilot`): put on, it reads its brief,
+writes a plan, starts a session for the first item, asks a question with
+answers to click and for a secret, and says when to wake; woken, it logs
+the answers and notes it got, and once a session of its own ends a turn,
+ticks it off the plan and starts the next. A note that is an `fctl`
+command (`fctl projects create "Marketing site"`) runs as it is at the
+next wake, to try what an autopilot may and may not do. Its sandbox's
+`fctl` (the dev build, on the process driver's `PATH`) reaches the API
+through fctl-agent, so a run shows the whole loop in a minute:
+
+```sh
+cargo run -p fctl -- workspaces set -w development --autopilots on
+cargo run -p fctl -- autopilot on -p playground --direction "Build a CRM for small agencies." --check-in 30m
+cargo run -p fctl -- autopilot -p playground            # its plan, sessions and what it asks
+cargo run -p fctl -- autopilot answer -p playground apa_… "Roomy"
+cargo run -p fctl -- autopilot steer -p playground "Keyboard first: arrows move a deal."
+cargo run -p fctl -- autopilot off -p playground --stop-sessions   # then on again: a fresh first turn
+```
+
+The project's Autopilot tab (`/p/playground?tab=autopilot`) shows the
+same, live. The local D1 keeps its wakes: `UPDATE autopilots SET wake_at =
+0` in `crates/fctl-control` makes it due, as for schedules.
+
 ## The demo stack
 
 ```sh

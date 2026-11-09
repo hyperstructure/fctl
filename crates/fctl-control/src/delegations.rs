@@ -785,6 +785,7 @@ async fn take_up(
             }),
             schedule_id: None,
             ticket: Some(serde_json::to_value(&column)?),
+            autopilot: None,
             follow: true,
             now,
         },
@@ -1220,6 +1221,8 @@ async fn deliver(
                 follow_up: None,
                 review: None,
                 ticket: Some(ticket),
+                autopilot: None,
+                wake: None,
             }),
         },
     )
@@ -1393,6 +1396,7 @@ pub async fn notice(
         summarized: None,
         follow_up: None,
         question: None,
+        autopilot: None,
         ticket: Some(ticket),
     };
     let sent = async {

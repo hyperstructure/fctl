@@ -11,9 +11,23 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
             $( <$t as TS>::export_all(&cfg)?; )*
         };
     }
-    use crate::{agent, api, event, runner, session, tickets, uplink, viewer};
+    use crate::{agent, api, autopilot, event, runner, session, tickets, uplink, viewer};
     export!(
         crate::ApiError,
+        autopilot::Autopilot,
+        autopilot::AutopilotLog,
+        autopilot::AutopilotBrief,
+        autopilot::AutopilotAsksList,
+        autopilot::PutAutopilotRequest,
+        autopilot::AutopilotOffRequest,
+        autopilot::PauseAutopilotRequest,
+        autopilot::WakeAutopilotRequest,
+        autopilot::AddAutopilotNoteRequest,
+        autopilot::CreateAutopilotAskRequest,
+        autopilot::AnswerAutopilotAskRequest,
+        autopilot::DeclineAutopilotAskRequest,
+        autopilot::AutopilotLogRequest,
+        autopilot::AutopilotPlanRequest,
         crate::ErrorCode,
         event::SessionEvent,
         event::EventBody,

@@ -80,6 +80,7 @@ const side: G.Workspace = {
   github: [],
   skip_invites: false,
   own_runners: false,
+  autopilots: false,
   created_at: 0,
 };
 const member: G.Workspace = { ...side, role: "member", email: "grace@example.com" };

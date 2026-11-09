@@ -728,6 +728,8 @@ async fn ask(
             serde_json::from_value::<fctl_proto::tickets::TicketRequest>(request.clone())
                 .is_ok_and(|r| r.reads())
         }
+        // An autopilot's reads of the API.
+        AgentCall::Api { method, .. } => method.eq_ignore_ascii_case("GET"),
         _ => false,
     };
     let mut delay = Duration::from_secs(1);

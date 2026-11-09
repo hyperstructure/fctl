@@ -292,6 +292,36 @@ export const api = {
   /** Reviews a pull request's head now: `owner/name#12`, its URL, or its number in the project's repository. */
   startReview: (project: string, b: G.StartReviewRequest) =>
     request<G.Review>("POST", `/projects/${enc(project)}/reviews`, b),
+  /** A project's autopilot (experimental); refused with 404 while it has none. */
+  autopilot: (project: string) => request<G.Autopilot>("GET", `/projects/${enc(project)}/autopilot`),
+  /** Puts the project on autopilot, or changes its autopilot. */
+  putAutopilot: (project: string, b: G.PutAutopilotRequest) =>
+    request<G.Autopilot>("PUT", `/projects/${enc(project)}/autopilot`, b),
+  autopilotOff: (project: string, b: G.AutopilotOffRequest) =>
+    request<G.Ok>("POST", `/projects/${enc(project)}/autopilot/off`, b),
+  pauseAutopilot: (project: string, b: G.PauseAutopilotRequest = {}) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/pause`, b),
+  resumeAutopilot: (project: string) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/resume`, {}),
+  wakeAutopilot: (project: string) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/wake`, {}),
+  /** Its log, newest first, a page at a time. */
+  autopilotLog: (project: string, before?: string, limit = 50) => {
+    const p = new URLSearchParams({ limit: String(limit) });
+    if (before) p.set("before", before);
+    return request<G.AutopilotLog>("GET", `/projects/${enc(project)}/autopilot/log?${p}`);
+  },
+  addAutopilotNote: (project: string, text: string) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/notes`, { text }),
+  removeAutopilotNote: (project: string, note: string) =>
+    request<G.Autopilot>("DELETE", `/projects/${enc(project)}/autopilot/notes/${enc(note)}`),
+  /** Answers what it asked, or gives the secret it asked for. */
+  answerAutopilot: (project: string, ask: string, b: G.AnswerAutopilotAskRequest) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/asks/${enc(ask)}/answer`, b),
+  declineAutopilot: (project: string, ask: string, b: G.DeclineAutopilotAskRequest = {}) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/asks/${enc(ask)}/decline`, b),
+  /** What autopilots ask that you may answer, across your workspaces. */
+  autopilotAsks: () => request<G.AutopilotAsksList>("GET", "/autopilots/asks"),
   /** A project's schedules, in the order they were made, each with its latest run. */
   schedules: (project: string) => request<G.ScheduleList>("GET", `/projects/${enc(project)}/schedules`),
   /** Sets up a schedule, on your Claude subscription. */

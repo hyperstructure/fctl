@@ -30,10 +30,17 @@ pub fn dir() -> PathBuf {
 
 impl CliConfig {
     pub fn load() -> Self {
-        std::fs::read_to_string(dir().join("config.toml"))
+        let mut config: Self = std::fs::read_to_string(dir().join("config.toml"))
             .ok()
             .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // In an autopilot's own session, its project is the default.
+        if config.project.is_none() {
+            config.project = std::env::var(fctl_proto::agent::AUTOPILOT_ENV)
+                .ok()
+                .filter(|p| !p.is_empty());
+        }
+        config
     }
 
     pub fn save(&self) -> Result<()> {
@@ -92,8 +99,16 @@ pub fn token(server: &str) -> Option<String> {
 }
 
 /// An API client, signed in. Where a sensitive action needs you to
-/// confirm it's you first, it asks in a terminal (`crate::verify`).
+/// confirm it's you first, it asks in a terminal (`crate::verify`). In an
+/// autopilot's own session's sandbox, where nobody signed in, its requests
+/// go through fctl-agent, as the autopilot.
 pub fn api(flag: Option<&str>) -> Result<fctl_client::Api> {
+    if flag.is_none()
+        && std::env::var("FCTL_TOKEN").is_err()
+        && let Some(api) = crate::cmd::sessions::autopilot_api()
+    {
+        return Ok(api);
+    }
     let server = server(flag)?;
     let token =
         token(&server).with_context(|| format!("Not signed in to {server}. Run `fctl login`."))?;

@@ -2,6 +2,7 @@
 import type { BaseRole } from "./BaseRole";
 import type { CredentialId } from "./CredentialId";
 import type { UserRef } from "./UserRef";
+import type { WorkspaceAutopilot } from "./WorkspaceAutopilot";
 import type { WorkspaceColor } from "./WorkspaceColor";
 import type { WorkspaceId } from "./WorkspaceId";
 import type { WorkspaceRole } from "./WorkspaceRole";
@@ -86,4 +87,15 @@ skip_invites: boolean,
  * ones of its other people, which see a session's Claude token. False
  * from control planes before it.
  */
-own_runners: boolean, created_at: number, };
+own_runners: boolean, 
+/**
+ * Its admins let its projects have autopilots (experimental): agents
+ * that run a project, or the workspace, on their own. False from
+ * control planes before autopilots.
+ */
+autopilots: boolean, 
+/**
+ * Its own autopilot, which works in all its projects: the project it
+ * works from, and how it stands. Absent while it has none.
+ */
+autopilot?: WorkspaceAutopilot, created_at: number, };

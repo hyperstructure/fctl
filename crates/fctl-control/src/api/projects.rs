@@ -198,7 +198,10 @@ async fn target_workspace(
         return ws::load(ctx, w.trim()).await;
     }
     let user = ctx.user()?;
-    let mine = ws::mine(&ctx.db, &user.id).await?;
+    let mut mine = ws::mine(&ctx.db, &user.id).await?;
+    if let Some(reached) = ws::reached(ctx).await? {
+        mine.retain(|w| reached.contains(&w.id));
+    }
     let candidates: Vec<&ws::WorkspaceRow> = mine
         .iter()
         .filter(|w| !admin || w.role().is_some_and(WorkspaceRole::is_admin))
@@ -905,33 +908,147 @@ pub async fn set_secret(
     let body: SetSecretRequest = http::body(req).await?;
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
-    let name = validate::env_name("name", name)?;
-    if body.value.len() > 64 * 1024 {
-        return Err(validation("value", "Secrets can be at most 64 KiB"));
-    }
-    let sealed = ctx
-        .keys()?
-        .seal(&secret_aad(&p.row.id, &name), body.value.as_bytes())?;
+    store_secret(ctx, &p, name, &body.value).await?;
+    secrets(ctx, &p.row.id).await
+}
+
+/// Seals and keeps a secret of project `p` for the caller, a maintainer
+/// there, and records it in the workspace's audit log: `PUT …/secrets`,
+/// and a secret given to an autopilot that asked for it.
+pub async fn store_secret(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    name: &str,
+    value: &str,
+) -> AppResult<String> {
+    let (name, sealed) = seal_secret(ctx, p, name, value).await?;
     q(
         &ctx.db,
-        "INSERT INTO project_secrets (project_id, name, value_enc, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) \
-         ON CONFLICT (project_id, name) DO UPDATE SET value_enc = excluded.value_enc, updated_by = excluded.updated_by, updated_at = excluded.updated_at",
-        &[s(&p.row.id), s(&name), s(&sealed), s(&ctx.user()?.id), n(ctx.now)],
+        &format!(
+            "INSERT INTO project_secrets {SECRET_COLUMNS} VALUES (?, ?, ?, ?, ?, ?) {SECRET_UPSERT}"
+        ),
+        &[
+            s(&p.row.id),
+            s(&name),
+            s(&sealed),
+            s(&ctx.user()?.id),
+            n(ctx.now),
+            crate::db::b(ctx.autopilot().is_some()),
+        ],
     )?
     .run()
     .await?;
+    secret_set(ctx, p, &name);
+    Ok(name)
+}
+
+const SECRET_COLUMNS: &str = "(project_id, name, value_enc, updated_by, updated_at, autopilot)";
+const SECRET_UPSERT: &str = "ON CONFLICT (project_id, name) DO UPDATE SET value_enc = excluded.value_enc, \
+     updated_by = excluded.updated_by, updated_at = excluded.updated_at, autopilot = excluded.autopilot";
+
+/// A secret's name, checked, and its value sealed for project `p`: what
+/// storing it takes, once whoever stores it may.
+async fn seal_secret(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    name: &str,
+    value: &str,
+) -> AppResult<(String, String)> {
+    let name = validate::env_name("name", name)?;
+    if value.len() > 64 * 1024 {
+        return Err(validation("value", "Secrets can be at most 64 KiB"));
+    }
+    if ctx.autopilot().is_some() {
+        own_secret(ctx, &p.row.id, &name).await?;
+    }
+    let sealed = ctx
+        .keys()?
+        .seal(&secret_aad(&p.row.id, &name), value.as_bytes())?;
+    Ok((name, sealed))
+}
+
+fn secret_set(ctx: &Ctx, p: &access::ProjectAccess, name: &str) {
     ctx.audit_in(
         Some(p.workspace_id()),
         "project.secret_set",
         Some(&p.row.id),
-        Some(serde_json::json!({ "name": name })),
+        Some(serde_json::json!({
+            "name": name,
+            "autopilot": ctx.autopilot().map(|a| &a.project_id),
+        })),
     );
-    secrets(ctx, &p.row.id).await
+}
+
+/// Stores the secret a person gives an autopilot that asked for it
+/// (`ask`), together with `claim`, which marks the ask answered by them at
+/// `ctx.now`: both, or neither when someone answered it first or it was
+/// taken back (`None`). So a wake never tells the autopilot of a secret
+/// that isn't there, and a later answer replaces nothing.
+pub async fn store_asked_secret(
+    ctx: &Ctx,
+    p: &access::ProjectAccess,
+    name: &str,
+    value: &str,
+    ask: &str,
+    claim: crate::db::Query,
+) -> AppResult<Option<String>> {
+    let (name, sealed) = seal_secret(ctx, p, name, value).await?;
+    let me = ctx.user()?.id.clone();
+    let store = q(
+        &ctx.db,
+        &format!(
+            "INSERT INTO project_secrets {SECRET_COLUMNS} SELECT ?, ?, ?, ?, ?, 0 WHERE EXISTS \
+             (SELECT 1 FROM autopilot_asks WHERE id = ? AND status = 'answered' AND answered_by = ? AND answered_at = ?) \
+             {SECRET_UPSERT}"
+        ),
+        &[
+            s(&p.row.id),
+            s(&name),
+            s(&sealed),
+            s(&me),
+            n(ctx.now),
+            s(ask),
+            s(&me),
+            n(ctx.now),
+        ],
+    )?;
+    let changed = crate::db::batch_changes(&ctx.db, vec![claim, store]).await?;
+    if changed.first().copied().unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    secret_set(ctx, p, &name);
+    Ok(Some(name))
+}
+
+/// An autopilot replaces and removes only the secrets it set itself: those
+/// people set, or gave it when it asked, stay theirs.
+async fn own_secret(ctx: &Ctx, project_id: &str, name: &str) -> AppResult<()> {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        #[serde(deserialize_with = "crate::db::int_bool", default)]
+        autopilot: bool,
+    }
+    let found: Option<Row> = q(
+        &ctx.db,
+        "SELECT autopilot FROM project_secrets WHERE project_id = ? AND name = ?",
+        &[s(project_id), s(name)],
+    )?
+    .first()
+    .await?;
+    if found.is_some_and(|r| !r.autopilot) {
+        return Err(forbidden(&format!(
+            "{name} is a secret people set, which an autopilot doesn't replace or remove: ask them with fctl autopilot ask --secret {name}."
+        )));
+    }
+    Ok(())
 }
 
 pub async fn delete_secret(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Response> {
     let p = access::project(ctx, id).await?;
     p.require_maintainer()?;
+    if ctx.autopilot().is_some() {
+        own_secret(ctx, &p.row.id, name).await?;
+    }
     q(
         &ctx.db,
         "DELETE FROM project_secrets WHERE project_id = ? AND name = ?",
@@ -1033,11 +1150,13 @@ pub async fn github_info(ctx: &Ctx) -> AppResult<Response> {
         account: String,
     }
     // Of the workspaces open to them: not one its two-factor requirement
-    // closes to them.
+    // closes to them, nor, for a caller held to places, one it doesn't reach.
+    let reached = ws::reached(ctx).await?;
     let open: Vec<String> = ws::mine(&ctx.db, &user.id)
         .await?
         .into_iter()
         .filter(|w| !ws::blocked_for(ctx, user, w.require_two_factor))
+        .filter(|w| reached.as_ref().is_none_or(|r| r.contains(&w.id)))
         .map(|w| w.id)
         .collect();
     let accounts: Vec<A> = q(

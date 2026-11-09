@@ -647,6 +647,8 @@ mod tests {
                 follow_up: None,
                 review: None,
                 ticket: None,
+                autopilot: None,
+                wake: None,
             })
         };
         assert!(searchable(&message("Fix it")));

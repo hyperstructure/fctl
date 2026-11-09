@@ -2,6 +2,7 @@
 
 use crate::http::{Error, HttpClient, Result};
 use fctl_proto::api::*;
+use fctl_proto::autopilot::*;
 use fctl_proto::event::{Attachment, PublishedFile};
 use fctl_proto::session::{Memory, Project, Session};
 use fctl_proto::tickets::{
@@ -21,12 +22,28 @@ use std::sync::Arc;
 /// request goes again. Without one, the error is the answer.
 pub type Verifier = Arc<dyn Fn(Api, ApiError) -> BoxFuture<'static, Result<bool>> + Send + Sync>;
 
+/// Sends a request to the API other than over HTTP, and gives its status
+/// and JSON body back: in an autopilot's own session, the sandbox's `fctl`
+/// hands its requests to fctl-agent over the session socket, which has the
+/// control plane answer them (`AgentCall::Api`), with no token in the
+/// sandbox. The path is the whole one, `/api/v1/…` with its query.
+pub type Relay = Arc<
+    dyn Fn(
+            Method,
+            String,
+            Option<serde_json::Value>,
+        ) -> BoxFuture<'static, Result<(u16, serde_json::Value)>>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub struct Api {
     base: String,
     token: Option<String>,
     http: HttpClient,
     verifier: Option<Verifier>,
+    relay: Option<Relay>,
 }
 
 fn enc(s: &str) -> String {
@@ -41,7 +58,52 @@ impl Api {
             token,
             http: HttpClient::default(),
             verifier: None,
+            relay: None,
         }
+    }
+
+    /// A client whose JSON requests go through `relay` rather than over
+    /// HTTP: an autopilot's, in its own session's sandbox. `base` is the
+    /// instance's address, for links. Uploads and live connections, which
+    /// need HTTP, don't work through it.
+    pub fn relayed(base: &str, relay: Relay) -> Self {
+        Self {
+            relay: Some(relay),
+            ..Self::new(base, None)
+        }
+    }
+
+    /// Whether its requests go through a relay.
+    pub fn is_relayed(&self) -> bool {
+        self.relay.is_some()
+    }
+
+    /// Sends a JSON request: through the relay where there is one.
+    async fn json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<T> {
+        let Some(relay) = &self.relay else {
+            let url = self.url(path);
+            return self.http.json(method, &url, self.token(), body).await;
+        };
+        let body = body
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| Error::Other(e.to_string()))?;
+        let (status, value) = relay(method, format!("/api/v1{path}"), body).await?;
+        if !(200..300).contains(&status) {
+            if let Ok(e) = serde_json::from_value::<ApiError>(value.clone()) {
+                return Err(Error::Api(e));
+            }
+            return Err(Error::Status {
+                status,
+                body: value.to_string().chars().take(500).collect(),
+            });
+        }
+        serde_json::from_value(value).map_err(|e| Error::Decode(e.to_string()))
     }
 
     /// The same client, asking `verifier` when a sensitive action needs the
@@ -91,42 +153,28 @@ impl Api {
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = self.url(path);
-        self.confirming(|| {
-            self.http
-                .json::<(), T>(Method::GET, &url, self.token(), None)
-        })
-        .await
+        self.confirming(|| self.json::<(), T>(Method::GET, path, None))
+            .await
     }
 
     async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        let url = self.url(path);
-        self.confirming(|| self.http.json(Method::POST, &url, self.token(), Some(body)))
+        self.confirming(|| self.json(Method::POST, path, Some(body)))
             .await
     }
 
     async fn patch<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        let url = self.url(path);
-        self.confirming(|| {
-            self.http
-                .json(Method::PATCH, &url, self.token(), Some(body))
-        })
-        .await
+        self.confirming(|| self.json(Method::PATCH, path, Some(body)))
+            .await
     }
 
     async fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
-        let url = self.url(path);
-        self.confirming(|| self.http.json(Method::PUT, &url, self.token(), Some(body)))
+        self.confirming(|| self.json(Method::PUT, path, Some(body)))
             .await
     }
 
     async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = self.url(path);
-        self.confirming(|| {
-            self.http
-                .json::<(), T>(Method::DELETE, &url, self.token(), None)
-        })
-        .await
+        self.confirming(|| self.json::<(), T>(Method::DELETE, path, None))
+            .await
     }
 
     // ── instance and auth ──
@@ -956,6 +1004,188 @@ impl Api {
     pub async fn start_review(&self, project: &str, req: &StartReviewRequest) -> Result<Review> {
         self.post(&format!("/projects/{}/reviews", enc(project)), req)
             .await
+    }
+
+    // ── autopilots ──
+
+    /// A project's autopilot (experimental).
+    pub async fn autopilot(&self, project: &str) -> Result<Autopilot> {
+        self.get(&format!("/projects/{}/autopilot", enc(project)))
+            .await
+    }
+
+    /// Puts a project on autopilot, or changes its autopilot.
+    pub async fn put_autopilot(
+        &self,
+        project: &str,
+        req: &PutAutopilotRequest,
+    ) -> Result<Autopilot> {
+        self.put(&format!("/projects/{}/autopilot", enc(project)), req)
+            .await
+    }
+
+    /// Takes a project off autopilot.
+    pub async fn autopilot_off(
+        &self,
+        project: &str,
+        req: &AutopilotOffRequest,
+    ) -> Result<serde_json::Value> {
+        self.post(&format!("/projects/{}/autopilot/off", enc(project)), req)
+            .await
+    }
+
+    /// Pauses it: a person, or the autopilot itself.
+    pub async fn pause_autopilot(
+        &self,
+        project: &str,
+        req: &PauseAutopilotRequest,
+    ) -> Result<serde_json::Value> {
+        self.post(&format!("/projects/{}/autopilot/pause", enc(project)), req)
+            .await
+    }
+
+    pub async fn resume_autopilot(&self, project: &str) -> Result<Autopilot> {
+        self.post(
+            &format!("/projects/{}/autopilot/resume", enc(project)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Wakes it now (a person), or says when it wakes next (the autopilot).
+    pub async fn wake_autopilot(
+        &self,
+        project: &str,
+        req: &WakeAutopilotRequest,
+    ) -> Result<serde_json::Value> {
+        self.post(&format!("/projects/{}/autopilot/wake", enc(project)), req)
+            .await
+    }
+
+    /// Where things stand, as Markdown for the autopilot.
+    pub async fn autopilot_brief(&self, project: &str) -> Result<AutopilotBrief> {
+        self.get(&format!("/projects/{}/autopilot/brief", enc(project)))
+            .await
+    }
+
+    /// Its log, newest first.
+    pub async fn autopilot_log(
+        &self,
+        project: &str,
+        before: Option<&str>,
+        limit: u32,
+    ) -> Result<AutopilotLog> {
+        let mut path = format!("/projects/{}/autopilot/log?limit={limit}", enc(project));
+        if let Some(b) = before {
+            path.push_str(&format!("&before={}", enc(b)));
+        }
+        self.get(&path).await
+    }
+
+    /// The autopilot writes down what it did, decided or plans.
+    pub async fn write_autopilot_log(
+        &self,
+        project: &str,
+        text: &str,
+    ) -> Result<serde_json::Value> {
+        self.post(
+            &format!("/projects/{}/autopilot/log", enc(project)),
+            &AutopilotLogRequest {
+                text: text.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// The autopilot's plan, whole.
+    pub async fn set_autopilot_plan(&self, project: &str, plan: &str) -> Result<serde_json::Value> {
+        self.put(
+            &format!("/projects/{}/autopilot/plan", enc(project)),
+            &AutopilotPlanRequest {
+                plan: plan.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Steers it with a note.
+    pub async fn add_autopilot_note(&self, project: &str, text: &str) -> Result<Autopilot> {
+        self.post(
+            &format!("/projects/{}/autopilot/notes", enc(project)),
+            &AddAutopilotNoteRequest {
+                text: text.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_autopilot_note(&self, project: &str, note: &str) -> Result<Autopilot> {
+        self.delete(&format!(
+            "/projects/{}/autopilot/notes/{}",
+            enc(project),
+            enc(note)
+        ))
+        .await
+    }
+
+    /// The autopilot asks people a question, or for a secret.
+    pub async fn ask_people(
+        &self,
+        project: &str,
+        req: &CreateAutopilotAskRequest,
+    ) -> Result<AutopilotAsk> {
+        self.post(&format!("/projects/{}/autopilot/asks", enc(project)), req)
+            .await
+    }
+
+    /// The autopilot takes back what it asked.
+    pub async fn withdraw_ask(&self, project: &str, ask: &str) -> Result<serde_json::Value> {
+        self.delete(&format!(
+            "/projects/{}/autopilot/asks/{}",
+            enc(project),
+            enc(ask)
+        ))
+        .await
+    }
+
+    /// Answers what it asked, or gives the secret it asked for.
+    pub async fn answer_ask(
+        &self,
+        project: &str,
+        ask: &str,
+        req: &AnswerAutopilotAskRequest,
+    ) -> Result<Autopilot> {
+        self.post(
+            &format!(
+                "/projects/{}/autopilot/asks/{}/answer",
+                enc(project),
+                enc(ask)
+            ),
+            req,
+        )
+        .await
+    }
+
+    pub async fn decline_ask(
+        &self,
+        project: &str,
+        ask: &str,
+        req: &DeclineAutopilotAskRequest,
+    ) -> Result<Autopilot> {
+        self.post(
+            &format!(
+                "/projects/{}/autopilot/asks/{}/decline",
+                enc(project),
+                enc(ask)
+            ),
+            req,
+        )
+        .await
+    }
+
+    /// What autopilots ask that you may answer, across your workspaces.
+    pub async fn autopilot_asks(&self) -> Result<AutopilotAsksList> {
+        self.get("/autopilots/asks").await
     }
 
     // ── schedules ──

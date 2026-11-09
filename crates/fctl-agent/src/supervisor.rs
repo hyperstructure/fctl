@@ -25,8 +25,8 @@ use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
 use fctl_domain::models::ModelName;
 use fctl_domain::{files, published, validate};
 use fctl_proto::agent::{
-    AgentConfig, AgentHello, AgentToHost, FEATURE_CLAUDE_RELAY, HostToAgent, SESSION_SOCKET_ENV,
-    SessionReply, SessionRequest,
+    AUTOPILOT_ENV, AgentConfig, AgentHello, AgentToHost, FEATURE_CLAUDE_RELAY, HostToAgent,
+    SESSION_SOCKET_ENV, SessionReply, SessionRequest,
 };
 use fctl_proto::api::{AgentAnswer, AgentCall};
 use fctl_proto::event::{
@@ -265,6 +265,8 @@ pub struct Supervisor {
     told_old_fctl: bool,
     /// Logged once: the sandbox's fctl has no `fctl ticket`.
     told_old_fctl_tickets: bool,
+    /// It said once that the sandbox's fctl has no `fctl autopilot`.
+    told_old_fctl_autopilot: bool,
     /// When the sandbox's disk last turned out full: a write of the journal
     /// or the state failed for want of room, or Claude said so.
     disk_full_at: Cell<Option<Instant>>,
@@ -365,6 +367,7 @@ impl Supervisor {
                 late_calls: VecDeque::new(),
                 told_old_fctl: false,
                 told_old_fctl_tickets: false,
+                told_old_fctl_autopilot: false,
                 disk_full_at: Cell::new(None),
                 told_disk_full: Cell::new(false),
                 cache: None,
@@ -648,6 +651,7 @@ impl Supervisor {
             summarized: None,
             follow_up: None,
             question: None,
+            autopilot: None,
         }));
     }
 
@@ -920,6 +924,13 @@ impl Supervisor {
             {
                 return Err(ApiError::forbidden(
                     "This project's agents reach no ticket tracker: its maintainers choose one in the project's Tickets tab.",
+                ));
+            }
+            // Only an autopilot's own session reaches the API from its
+            // sandbox; the control plane checks it again.
+            AgentCall::Api { .. } if spec.autopilot.is_none() => {
+                return Err(ApiError::forbidden(
+                    "Only an autopilot's own session reaches fctl's API from its sandbox. Elsewhere, sign in with `fctl login`.",
                 ));
             }
             _ => {}
@@ -1677,6 +1688,11 @@ impl Supervisor {
         env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
         env.insert("FCTL_SESSION_ID".into(), spec.session_id.0.clone());
         env.insert("FCTL_SESSION_URL".into(), spec.web_url.clone());
+        // An autopilot's own session: its `fctl` reaches the API through
+        // this agent (`AgentCall::Api`), as the autopilot of this project.
+        if let Some(a) = &spec.autopilot {
+            env.insert(AUTOPILOT_ENV.into(), a.project_slug.clone());
+        }
         if keeps_memory {
             env.insert(claude::DISABLE_AUTO_MEMORY_ENV.into(), "1".into());
         }
@@ -1707,9 +1723,21 @@ impl Supervisor {
             }
             _ => false,
         };
-        // `fctl ask` asks people, where the sandbox's fctl has it.
+        // `fctl ask` asks people, where the sandbox's fctl has it, and an
+        // autopilot asks with `fctl autopilot ask`.
         let asks_cli =
             spec.review.is_none() && self.session_socket.is_some() && fctl_can(&paths, "ask").await;
+        let autopilot_cli = spec.autopilot.is_some()
+            && self.session_socket.is_some()
+            && fctl_can(&paths, "autopilot").await;
+        if spec.autopilot.is_some() && !autopilot_cli && !self.told_old_fctl_autopilot {
+            self.told_old_fctl_autopilot = true;
+            self.log(
+                LogSource::Agent,
+                LogLevel::Info,
+                "This sandbox's fctl has no `fctl autopilot`, so the autopilot can't reach fctl from it. The default image, ghcr.io/hyperstructure/sandbox, has it; an image of your own needs a recent fctl on the PATH.",
+            );
+        }
         let system = match &spec.review {
             Some(review) => {
                 let previous_here = match review.previous_sha.as_deref() {
@@ -1734,6 +1762,7 @@ impl Supervisor {
                 self.cache.as_ref(),
                 tickets_cli,
                 asks_cli,
+                autopilot_cli,
             ),
         };
         let launch = LaunchSpec {
@@ -2802,6 +2831,7 @@ fn published_notice(file: &PublishedFile, now: i64) -> Notice {
         summarized: None,
         follow_up: None,
         question: None,
+        autopilot: None,
     }
 }
 
@@ -2825,6 +2855,7 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         summarized: None,
         follow_up: None,
         question: None,
+        autopilot: None,
     };
     match answer {
         AgentAnswer::Memories { .. } | AgentAnswer::Retrospectives { .. } => vec![],
@@ -2875,8 +2906,9 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
             summarized: Some(summarized.clone()),
             ..notice("pull_request_summarized", summarized_message(summarized))
         }],
-        // The control plane adds what fctl did in the tracker itself.
-        AgentAnswer::Ticket { .. } => vec![],
+        // The control plane adds what fctl did in the tracker itself, and
+        // what an autopilot did.
+        AgentAnswer::Ticket { .. } | AgentAnswer::Api { .. } => vec![],
         // What the agent asked people stays in the transcript, after the
         // question itself is answered.
         AgentAnswer::Asked { question: Some(q) } => vec![Notice {

@@ -17,6 +17,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub async fn attach(server: Option<&str>, reference: &str, read_only: bool) -> Result<()> {
     let api = config::api(server)?;
+    if api.is_relayed() {
+        anyhow::bail!(
+            "An autopilot doesn't attach to sessions: fctl wakes you when they move on. Read one with fctl logs, and message it with fctl send."
+        );
+    }
     let s = crate::cmd::sessions::resolve(&api, reference).await?;
     follow(&api, &s.id.0, read_only).await
 }

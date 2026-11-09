@@ -13,7 +13,7 @@ use crate::model::{
 use fctl_domain::limits::Limits;
 use fctl_domain::perm::{self, SessionAccess};
 use fctl_proto::api::InstanceSettings;
-use fctl_proto::session::{GithubAccess, ProjectRole, SessionRole};
+use fctl_proto::session::{GithubAccess, ProjectRole, SessionRole, WorkspaceRole};
 use worker::D1Database;
 
 pub struct ProjectAccess {
@@ -180,6 +180,18 @@ pub fn session_role(
         share_role: row.share_role.as_deref().and_then(SessionRole::parse),
         is_creator: row.created_by == user.id,
     };
+    // A workspace's autopilot's own session shows what it does across the
+    // workspace, in projects some of its members don't see: it is its
+    // admins', who steer it.
+    if row.autopilot_role.as_deref() == Some("pilot")
+        && row.autopilot_scope.as_deref() == Some("workspace")
+        && !access
+            .membership
+            .as_ref()
+            .is_some_and(|m| matches!(m.role, WorkspaceRole::Owner | WorkspaceRole::Admin))
+    {
+        return None;
+    }
     match limits {
         Some(l) => l.session_role(
             row.workspace.workspace_id.as_deref().unwrap_or_default(),

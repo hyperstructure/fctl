@@ -1567,7 +1567,30 @@ pub struct Workspace {
     /// from control planes before it.
     #[serde(default)]
     pub own_runners: bool,
+    /// Its admins let its projects have autopilots (experimental): agents
+    /// that run a project, or the workspace, on their own. False from
+    /// control planes before autopilots.
+    #[serde(default)]
+    pub autopilots: bool,
+    /// Its own autopilot, which works in all its projects: the project it
+    /// works from, and how it stands. Absent while it has none.
+    pub autopilot: Option<WorkspaceAutopilot>,
     pub created_at: Millis,
+}
+
+/// A workspace's autopilot, as its page shows it.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct WorkspaceAutopilot {
+    /// The project it works from, whose Autopilot tab shows it.
+    pub project_id: ProjectId,
+    pub project_slug: String,
+    pub project_name: String,
+    pub state: crate::autopilot::AutopilotState,
+    /// How many things it asks people now.
+    #[serde(default)]
+    pub asks: u32,
 }
 
 impl Workspace {
@@ -1637,6 +1660,9 @@ pub struct UpdateWorkspaceRequest {
     /// Leave inviting people out of the app's setup checklist, or (`false`)
     /// ask for it again.
     pub skip_invites: Option<bool>,
+    /// Let its projects have autopilots (experimental). Turning it off
+    /// pauses those it has.
+    pub autopilots: Option<bool>,
 }
 
 /// Someone in a workspace.
@@ -3744,6 +3770,20 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(type = "TicketRequest"))]
         request: serde_json::Value,
     },
+    /// A request to the REST API, from an autopilot's own session (its
+    /// sandbox's `fctl`, which has no token): the control plane answers it
+    /// as the autopilot's owner, within what the autopilot may do
+    /// (`fctl_domain::autopilot::allows`). Hosts, fctl-agents and control
+    /// planes from before autopilots refuse it.
+    Api {
+        /// `GET`, `POST`, `PUT`, `PATCH` or `DELETE`.
+        method: String,
+        /// The path after the instance's address, with its query:
+        /// `/api/v1/projects/my-app/sessions`.
+        path: String,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        body: Option<serde_json::Value>,
+    },
 }
 
 /// The control plane's answer to an [`AgentCall`].
@@ -3801,6 +3841,13 @@ pub enum AgentAnswer {
     Ticket {
         #[cfg_attr(feature = "ts", ts(type = "TicketAnswer"))]
         answer: serde_json::Value,
+    },
+    /// The API's answer to an [`AgentCall::Api`]: its HTTP status, and its
+    /// body (an [`crate::ApiError`] for a status of 400 or more).
+    Api {
+        status: u16,
+        #[serde(default)]
+        body: serde_json::Value,
     },
 }
 

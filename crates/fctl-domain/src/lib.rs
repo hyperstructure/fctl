@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod allowlist;
+pub mod autopilot;
 pub mod avatar;
 pub mod base_branch;
 pub mod branches;

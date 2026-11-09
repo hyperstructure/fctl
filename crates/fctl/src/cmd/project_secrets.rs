@@ -136,7 +136,7 @@ fn print(list: &SecretList) {
 
 /// A secret's value: asked for in a terminal, without showing it, else
 /// read from stdin.
-fn value(name: &str) -> Result<String> {
+pub(crate) fn value(name: &str) -> Result<String> {
     let value = if std::io::stdin().is_terminal() {
         crate::prompt::read_secret(&format!("Value of {name} (input hidden): "))?
     } else {

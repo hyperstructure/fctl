@@ -1141,6 +1141,29 @@ pub struct Project {
     pub last_model: Option<String>,
     /// The effort level they asked for then, as `last_model`.
     pub last_effort: Option<String>,
+    /// Its autopilot (experimental), or whether its workspace lets it have
+    /// one. Absent where neither is so, and from control planes before
+    /// autopilots.
+    pub autopilot: Option<ProjectAutopilot>,
+}
+
+/// A project's autopilot as lists show it: whether it has one and how it
+/// stands, or may have one.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ProjectAutopilot {
+    /// Its workspace lets projects have autopilots.
+    pub allowed: bool,
+    /// Its autopilot's state; absent while it has none.
+    pub state: Option<crate::autopilot::AutopilotState>,
+    pub scope: Option<crate::autopilot::AutopilotScope>,
+    /// How many things its autopilot asks people now.
+    #[serde(default)]
+    pub asks: u32,
+    /// Its autopilot's own session is at work now.
+    #[serde(default)]
+    pub working: bool,
 }
 
 /// A pull request of a session, as its agent last looked it up and as
@@ -1415,6 +1438,10 @@ pub struct Session {
     /// someone answers: a person's next message does. Absent while it
     /// asks nothing, and from control planes before questions.
     pub question: Option<SessionQuestion>,
+    /// The autopilot it belongs to: an autopilot's own session, or one it
+    /// started. Absent for other sessions, and from control planes before
+    /// autopilots.
+    pub autopilot: Option<crate::autopilot::SessionAutopilot>,
 }
 
 /// A question a session's agent asks people, when it needs their input to

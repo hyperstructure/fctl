@@ -1071,6 +1071,31 @@
    flashes as they land, and the label stands out from the threads behind it: a
    halo of the sidebar's color and a drop shadow, faint on light backgrounds.
    Where motion is reduced, the icon holds still. */
+/* An autopilot at work: a comet round its ring (components/ui/icons.tsx AutopilotIcon). */
+@keyframes autopilot-comet {
+  from {
+    stroke-dashoffset: 0.3;
+  }
+  to {
+    stroke-dashoffset: -1;
+  }
+}
+.autopilot-comet {
+  stroke: var(--c-accent);
+  stroke-dasharray: 0.22 1;
+  stroke-dashoffset: 0.3;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .autopilot-comet {
+    animation: autopilot-comet 1.6s var(--ease-in-out) infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .autopilot-comet {
+    stroke-dashoffset: -0.39;
+  }
+}
+
 @keyframes floor-packet {
   from {
     stroke-dashoffset: 0.5;

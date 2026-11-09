@@ -612,4 +612,35 @@ fctl review summarize summary.json           # review agents, first, where the p
 - Agents in a session can't start other sessions: they hold no fctl
   credentials. A project secret with an access token would let them, on
   that token's person's subscription; treat that as giving every agent of
-  the project that person's access.
+  the project that person's access. An autopilot's own session is the
+  exception (experimental): its `fctl` reaches the API as the person who
+  put the project on autopilot, without a token, as far as the autopilot's
+  powers go ([The CLI](cli.md#autopilots)).
+
+### An autopilot's session
+
+An autopilot (experimental) runs a project, or a workspace, on its own:
+its sessions start with a briefing that says who it is, where to take the
+project and how it works, and fctl wakes them with what's new. There,
+`FCTL_AUTOPILOT` names its project, and `fctl` reaches the API through
+fctl-agent as its owner, held to its project or workspace, a maintainer's
+role and its powers:
+
+```sh
+fctl autopilot brief                         # where things stand: direction, notes, asks, sessions, plan, log
+fctl run --title "Pipeline board" "Build the pipeline board: …"   # a session of its own; returns at once
+fctl show crm#12 && fctl logs crm#12         # what one did
+fctl send crm#12 "Use the existing Card component."   # answer it, steer it
+fctl autopilot plan --file plan.md           # its plan, whole
+fctl autopilot log "Started crm#12 for the board: everything else builds on deals moving."
+fctl autopilot ask "Which layout?" --detail-file options.md -o Compact -o Roomy   # doesn't wait
+fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"
+fctl projects set --setup-script 'npm ci'    # with the settings power
+fctl schedules add "Weekly dependencies" --cron "0 9 * * 1" -m "…"   # with the schedules power
+fctl autopilot wake --in 45m                 # when to wake next, if not at its check-in
+fctl autopilot pause --reason "The direction is done."
+```
+
+It never manages people, roles, shares, tokens, runners, GitHub accounts or
+the workspace's settings, deletes projects, or replaces the secrets people
+set, and steers only the sessions it started.

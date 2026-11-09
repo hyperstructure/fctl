@@ -259,6 +259,43 @@ People and tools run one schedule at most 20 times an hour, and a paused
 schedule runs not even then. [Automation](automation.md#start-agents-from-other-tools)
 shows a tool's request.
 
+## Autopilots
+
+An autopilot (experimental) runs a project, or its whole workspace, on its
+own ([Architecture](architecture.md#autopilots)). Its workspace's admins
+let projects have one first (`PATCH /api/v1/workspaces/{id}` with
+`{"autopilots": true}`). Everyone who sees the project reads it, except
+that what a workspace's autopilot does (its plan, notes, asks, sessions,
+log and brief, `can.read`) is for the workspace's admins: others see only
+that it runs, and how. Its maintainers and owners (for a workspace's
+autopilot, the workspace's admins) put it on, steer, answer, wake, pause,
+resume and take it off. Its own
+session calls the endpoints marked *autopilot*, through its sandbox's
+`fctl`, which reaches them without a token.
+
+| Request | What it does |
+|---|---|
+| `GET /api/v1/projects/{project}/autopilot` | `{"state": "on" \| "paused" \| "off", "scope", "direction", "plan", "powers", "check_in_minutes", "crew_max", "owner", "session", "wake_at", "wake_reason", "problem", "notes", "asks", "crew", "can"…}`; 404 for a project that never had one |
+| `PUT /api/v1/projects/{project}/autopilot` | `{"direction", "scope": "project" \| "workspace", "powers": ["merge", "settings", "secrets", "repos", "schedules", "projects"], "check_in_minutes", "crew_max", "model", "effort", "take_over": true}`: puts it on (a [sensitive action](architecture.md#confirming-its-you); `direction` needed the first time), or changes it (absent fields stay) |
+| `POST …/autopilot/off` | `{"stop_sessions": true}`: takes it off, and with that stops the sessions it started that still work |
+| `POST …/autopilot/pause`, `…/resume` | `{"reason"}`: pauses it (*autopilot* too: it pauses itself); resuming wakes it at once, on the resumer's subscription |
+| `POST …/autopilot/wake` | wakes it now; *autopilot*: `{"in_minutes": 30}` or `{"at": …}`, when it wakes next unless something needs it sooner |
+| `POST …/autopilot/notes`, `DELETE …/autopilot/notes/{note}` | `{"text"}` (Markdown, at most 2,000 characters): steers it, at once |
+| `POST …/autopilot/asks/{ask}/answer` | `{"answer"}`, or `{"secret"}` for a secret it asked for, which goes into the project's secrets |
+| `POST …/autopilot/asks/{ask}/decline` | `{"reason"}` |
+| `GET …/autopilot/log` | `{"entries": […], "has_more"}`, newest first (`?before=` an entry's id, `?limit=` up to 200) |
+| `GET …/autopilot/brief` | `{"brief"}`: where things stand, as Markdown for its session |
+| `POST …/autopilot/log` | *autopilot*: `{"text"}`, what it did, decided or plans |
+| `PUT …/autopilot/plan` | *autopilot*: `{"plan"}`, whole (Markdown) |
+| `POST …/autopilot/asks`, `DELETE …/autopilot/asks/{ask}` | *autopilot*: `{"text", "options", "detail", "secret": "NAME", "project"}`, takes it back |
+| `GET /api/v1/autopilots/asks` | `{"asks": […]}`: what autopilots ask that the caller may answer, across their workspaces |
+
+Sessions say what they are to an autopilot (`"autopilot": {"role": "pilot"
+| "crew", "project_slug"}`); its own stay off `GET /api/v1/sessions` unless
+asked (`?hidden=1`), and `?autopilot={project}` lists an autopilot's
+sessions. Its session's other requests reach the API as its owner, held to
+its project or workspace, a maintainer's role and its powers.
+
 ## Projects
 
 | Request | What it does |

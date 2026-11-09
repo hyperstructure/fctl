@@ -4,7 +4,7 @@
 import { Link } from "@tanstack/react-router";
 import { MessageCircleQuestion, Repeat } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
-import { Avatar, GithubIcon, LinearIcon, StatusDot, statusLabel } from "@/components/ui";
+import { AutopilotIcon, Avatar, GithubIcon, LinearIcon, StatusDot, statusLabel } from "@/components/ui";
 import { ROW, ROW_ABOVE, ROW_COVER } from "@/components/ui/list-row";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
@@ -133,7 +133,16 @@ function Moved({ s }: { s: G.Session }) {
       >
         {agoShort(at)}
       </time>
-      <Avatar user={s.created_by} size={18} title={`Started by ${s.created_by.name}`} />
+      {s.autopilot ? (
+        <span
+          title={`Started by ${s.autopilot.project_slug}'s autopilot, for ${s.created_by.name}`}
+          className="flex size-[18px] items-center justify-center rounded-full bg-raised text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line-strong)]"
+        >
+          <AutopilotIcon className="size-3" />
+        </span>
+      ) : (
+        <Avatar user={s.created_by} size={18} title={`Started by ${s.created_by.name}`} />
+      )}
     </span>
   );
 }
@@ -142,7 +151,9 @@ function Moved({ s }: { s: G.Session }) {
 function MovedText({ s }: { s: G.Session }) {
   return (
     <span className="sr-only">
-      {statusLabel(s.status)}. Started by {s.created_by.name}, last active {ago(lastMoved(s))}.
+      {statusLabel(s.status)}. Started by{" "}
+      {s.autopilot ? `${s.autopilot.project_slug}'s autopilot, for ${s.created_by.name}` : s.created_by.name},
+      last active {ago(lastMoved(s))}.
     </span>
   );
 }

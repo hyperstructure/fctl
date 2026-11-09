@@ -5,6 +5,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
+  ArrowRight,
   Check,
   Cpu,
   ExternalLink,
@@ -22,10 +23,12 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
+import { ExperimentalPill } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { DriverLine } from "@/components/runner-driver";
 import { SessionRow } from "@/components/session/row";
 import {
+  AutopilotIcon,
   Avatar,
   Banner,
   Button,
@@ -1789,6 +1792,7 @@ function WorkspaceSettings({ w }: { w: G.Workspace }) {
       <You w={w} />
       {admin && <General w={w} />}
       {admin && <Access w={w} />}
+      {admin && <Autopilots w={w} />}
       {w.role === "owner" && <Primary w={w} />}
     </>
   );
@@ -2055,6 +2059,100 @@ function General({ w }: { w: G.Workspace }) {
           </div>
         </form>
       </div>
+    </Section>
+  );
+}
+
+/**
+ * Autopilots (experimental): whether the workspace's projects may have one, an agent that runs a
+ * project, or the workspace, on its own. Off pauses those it has.
+ */
+function Autopilots({ w }: { w: G.Workspace }) {
+  const [confirm, setConfirm] = useState(false);
+  const save = useMutation({
+    mutationFn: (on: boolean) => workspaces.update(w.id, { autopilots: on }),
+    onSuccess: (_, on) => {
+      refresh();
+      void queryClient.invalidateQueries({ queryKey: keys.projects });
+      setConfirm(false);
+      toast(
+        on
+          ? `${w.name}'s projects may have autopilots: their maintainers put them on from the Autopilot tab`
+          : `Autopilots are off in ${w.name}: those it had are paused`,
+      );
+    },
+    onError: (e) => toast(e.message, "error"),
+  });
+  const own = w.autopilot;
+  return (
+    <Section
+      title={
+        <span className="inline-flex flex-wrap items-center gap-2">
+          Autopilots <ExperimentalPill />
+        </span>
+      }
+      description="Agents that run a project, or the whole workspace, on their own."
+    >
+      <div className="flex flex-col gap-5">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Let projects have an autopilot
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              A project's maintainers then give it a direction, and an agent works towards it: it plans,
+              starts sessions, and changes the project's settings, secrets, repositories and schedules as far
+              as they let it, on their Claude subscription. Admins can put the whole workspace on autopilot,
+              which also creates projects. Experimental: it may change, and it acts on its own.
+            </span>
+          </span>
+          <Switch
+            checked={w.autopilots}
+            disabled={save.isPending}
+            onChange={(v) => (v ? save.mutate(true) : setConfirm(true))}
+            label="Let projects have an autopilot"
+          />
+        </div>
+        {w.autopilots && !own && (
+          <p className="text-[12.5px] leading-relaxed text-ink-4">
+            To put all of {w.name} on autopilot, open a project's Autopilot tab and choose that it runs the
+            whole workspace: it works from that project.
+          </p>
+        )}
+        {own && (
+          <Link
+            to="/p/$slug"
+            params={{ slug: own.project_slug }}
+            search={{ tab: "autopilot" }}
+            className="flex items-center gap-3 rounded-xl border border-line px-4 py-3 transition-colors hover:border-line-strong hover:bg-hover/30"
+          >
+            <AutopilotIcon className="size-4 text-ink-2" />
+            <span className="min-w-0 flex-1 text-[13px] text-ink-2">
+              {w.name} is on autopilot, from {own.project_name}
+              {own.state === "paused" && <span className="text-pink"> · paused</span>}
+            </span>
+            {own.asks > 0 && (
+              <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-blue px-1.5 text-[10.5px] font-semibold text-white tabular-nums">
+                {own.asks}
+              </span>
+            )}
+            <ArrowRight className="size-3.5 text-ink-4" />
+          </Link>
+        )}
+      </div>
+      <Dialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        title="Turn autopilots off?"
+        description={`Every autopilot in ${w.name} pauses, and its own session stops at its next request. The sessions they started carry on. Their maintainers resume them once autopilots are on again.`}
+      >
+        <div className="mt-2 flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setConfirm(false)}>
+            Keep them on
+          </Button>
+          <Button variant="danger" loading={save.isPending} onClick={() => save.mutate(false)}>
+            Turn them off
+          </Button>
+        </div>
+      </Dialog>
     </Section>
   );
 }

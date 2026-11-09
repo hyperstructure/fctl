@@ -4,6 +4,7 @@ import type { ProjectId } from "./ProjectId";
 import type { PullRequestRef } from "./PullRequestRef";
 import type { RemoteControlState } from "./RemoteControlState";
 import type { RunnerRef } from "./RunnerRef";
+import type { SessionAutopilot } from "./SessionAutopilot";
 import type { SessionId } from "./SessionId";
 import type { SessionQuestion } from "./SessionQuestion";
 import type { SessionReview } from "./SessionReview";
@@ -127,4 +128,10 @@ ticket?: SessionTicket,
  * someone answers: a person's next message does. Absent while it
  * asks nothing, and from control planes before questions.
  */
-question?: SessionQuestion, };
+question?: SessionQuestion, 
+/**
+ * The autopilot it belongs to: an autopilot's own session, or one it
+ * started. Absent for other sessions, and from control planes before
+ * autopilots.
+ */
+autopilot?: SessionAutopilot, };

@@ -1210,6 +1210,14 @@ impl Session {
             self.result(started, &done, "success");
             return;
         }
+        // An autopilot's briefing, or fctl waking it: it plays the part with
+        // the sandbox's fctl, which reaches the API through fctl-agent.
+        if is_autopilot(&lower) {
+            self.usage(false);
+            let done = self.autopilot(text, &lower);
+            self.result(started, &done, "success");
+            return;
+        }
         if lower.contains("crash") {
             eprintln!("fake-claude: crashing as asked");
             std::process::exit(3);
@@ -1498,6 +1506,223 @@ impl Session {
         let done = "Done. Everything looks good: the change is committed and ready for review.";
         self.stream_text(done);
         self.result(started, done, "success");
+    }
+}
+
+/// The checklist under an autopilot's brief's "## Your plan": each item and
+/// whether it is ticked.
+fn plan_in(brief: &str) -> Vec<(bool, String)> {
+    let Some(plan) = brief.split("## Your plan").nth(1) else {
+        return Vec::new();
+    };
+    let plan = plan.split("## Your log").next().unwrap_or_default();
+    plan.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("- [x] ")
+                .map(|i| (true, i.to_owned()))
+                .or_else(|| l.strip_prefix("- [ ] ").map(|i| (false, i.to_owned())))
+        })
+        .collect()
+}
+
+/// Whether a turn is an autopilot's: the briefing its own sessions start
+/// with, or the message fctl wakes it with.
+fn is_autopilot(lower: &str) -> bool {
+    lower.contains("you are the autopilot of") || lower.starts_with("fctl woke you, the autopilot")
+}
+
+/// What an autopilot does, as fake-claude plays one
+/// (docs/development.md#autopilots): as it's put on, it reads its brief,
+/// writes a plan, starts a session for the first item, asks a question and
+/// for a secret, and says when to wake; woken, it reads what's new, runs
+/// each note that is an `fctl` command, logs the rest, ticks off what its
+/// sessions finished, starts the next item and pauses itself once the
+/// plan is done.
+impl Session {
+    fn autopilot(&mut self, text: &str, lower: &str) -> String {
+        self.think("Let me read where things stand before I decide anything.");
+        let brief = self
+            .fctl(&["autopilot", "brief"], "Read where things stand")
+            .unwrap_or_default();
+        let first =
+            lower.contains("you are the autopilot of") && !brief.contains("## Your plan\n\n- [");
+        if first {
+            self.stream_text(
+                "Nothing is planned yet. I'll write a plan, start the first piece of work in a session of its own, and ask what only people can answer.",
+            );
+            self.bash(
+                "printf '%s\\n' '- [ ] Pipeline board: drag deals between stages' '- [ ] Contacts and companies' '- [ ] Import contacts from CSV' '- [ ] Deploy previews of each pull request' | fctl autopilot plan --file -",
+                "Write the plan",
+            );
+            let started = self.fctl(
+                &[
+                    "run",
+                    "--title",
+                    "Pipeline board: drag deals between stages",
+                    "Build the pipeline board: a column per stage, deals as cards you drag between them. explore 2, then watch 20.",
+                ],
+                "Start a session for the pipeline board",
+            );
+            self.fctl(
+                &[
+                    "autopilot",
+                    "log",
+                    "Planned four steps and started the pipeline board first: everything else builds on deals moving through stages.",
+                ],
+                "Write down what I decided",
+            );
+            self.fctl(
+                &[
+                    "autopilot",
+                    "ask",
+                    "Which layout should the pipeline board use?",
+                    "--detail",
+                    "**Compact** fits ten stages on a laptop's screen; **Roomy** shows each deal's value and owner on its card.",
+                    "-o",
+                    "Compact",
+                    "-o",
+                    "Roomy",
+                ],
+                "Ask people to choose the board's layout",
+            );
+            self.fctl(
+                &[
+                    "autopilot",
+                    "ask",
+                    "--secret",
+                    "PREVIEW_DEPLOY_TOKEN",
+                    "To deploy a preview of each pull request, so you can try changes before they merge",
+                ],
+                "Ask for the token that deploys previews",
+            );
+            self.fctl(&["autopilot", "wake", "--in", "30m"], "Say when to wake");
+            let n = started
+                .as_deref()
+                .and_then(|o| o.split('#').nth(1))
+                .map(|rest| {
+                    rest.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+            return format!(
+                "I wrote a plan and started session #{n} for the pipeline board. I asked you to choose its layout, and for the token that deploys previews; I'll go on meanwhile, and check back in 30 minutes or when the session finishes."
+            );
+        }
+        // Woken: what's new decides what comes next.
+        let mut did = Vec::new();
+        // A note that is an `fctl` command runs as it is: how one tries,
+        // in the dev stack, what an autopilot may and may not do through
+        // its session.
+        for command in text
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- ")?.split_once(": "))
+            .map(|(_, note)| note.trim())
+            .filter(|note| note.starts_with("fctl "))
+        {
+            self.bash(command, "Do what the note says");
+            did.push("ran the command in your note");
+        }
+        if lower.contains("answered")
+            || lower.contains("set the secret")
+            || lower.contains("declined")
+        {
+            self.fctl(
+                &[
+                    "autopilot",
+                    "log",
+                    "Read the answers, and folded them into the plan.",
+                ],
+                "Write down the answers",
+            );
+            did.push("took in your answers");
+        }
+        if lower.contains("new notes from people") {
+            self.fctl(
+                &[
+                    "autopilot",
+                    "log",
+                    "Took the new note on board: it reorders what comes next.",
+                ],
+                "Write down the note",
+            );
+            did.push("followed your note");
+        }
+        if lower.contains("ended its turn") || lower.contains("stopped (a message resumes it)") {
+            // The item at work is done: tick it, and start the next, or
+            // with none left, say so and pause.
+            let mut plan = plan_in(&brief);
+            if let Some(item) = plan.iter_mut().find(|(done, _)| !*done) {
+                item.0 = true;
+            }
+            let lines: Vec<String> = plan
+                .iter()
+                .map(|(done, item)| {
+                    format!(
+                        "'- [{}] {}'",
+                        if *done { "x" } else { " " },
+                        item.replace('\'', "")
+                    )
+                })
+                .collect();
+            if !lines.is_empty() {
+                self.bash(
+                    &format!(
+                        "printf '%s\\n' {} | fctl autopilot plan --file -",
+                        lines.join(" ")
+                    ),
+                    "Tick off what's done",
+                );
+            }
+            let done = plan.iter().rev().find(|(d, _)| *d).map(|(_, i)| i.clone());
+            match plan.iter().find(|(d, _)| !*d).map(|(_, i)| i.clone()) {
+                Some(next) => {
+                    let task = format!("{next}: build it, with tests. explore 1, then watch 15.");
+                    self.fctl(
+                        &["run", "--title", &next, &task],
+                        "Start the next piece of work",
+                    );
+                    let line = match done {
+                        Some(d) => format!("{d} is done: started {} next.", next.to_lowercase()),
+                        None => format!("Started {} next.", next.to_lowercase()),
+                    };
+                    self.fctl(&["autopilot", "log", &line], "Write down what I did");
+                    did.push("started the next piece of work");
+                }
+                None => {
+                    self.fctl(
+                        &[
+                            "autopilot",
+                            "log",
+                            "Everything in the plan is done and merged: the direction is done.",
+                        ],
+                        "Write down that the direction is done",
+                    );
+                    self.fctl(
+                        &[
+                            "autopilot",
+                            "pause",
+                            "--reason",
+                            "The direction is done: every step of the plan shipped.",
+                        ],
+                        "Pause until people have more",
+                    );
+                    return "The direction is done: I paused myself until you have more.".into();
+                }
+            }
+        }
+        if did.is_empty() {
+            self.stream_text("Nothing new needs me: my sessions are still at work.");
+            self.fctl(&["autopilot", "wake", "--in", "1h"], "Say when to wake");
+            return "Nothing new needs me yet; I'll check back in an hour.".into();
+        }
+        let _ = text;
+        self.fctl(&["autopilot", "wake", "--in", "30m"], "Say when to wake");
+        format!(
+            "Done for now: I {}. I'll check back in 30 minutes.",
+            did.join(", and ")
+        )
     }
 }
 

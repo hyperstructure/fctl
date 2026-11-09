@@ -331,7 +331,9 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         )),
         style::dim(&format!("{}/s/{}", api.base(), session.id))
     );
-    if args.detach {
+    // An autopilot doesn't follow its sessions live: fctl wakes it when
+    // they move on.
+    if args.detach || api.is_relayed() {
         return Ok(());
     }
     crate::cmd::attach::follow(&api, &session.id.0, false).await
@@ -803,6 +805,51 @@ async fn edit_here(socket: &Path, id: String, args: EditArgs, json: bool) -> Res
     }
 }
 
+/// In an autopilot's own session's sandbox (`FCTL_AUTOPILOT`), a client
+/// whose requests fctl-agent hands to the control plane, which answers them
+/// as the autopilot (`AgentCall::Api`): no token enters the sandbox.
+pub(crate) fn autopilot_api() -> Option<fctl_client::Api> {
+    std::env::var(fctl_proto::agent::AUTOPILOT_ENV)
+        .ok()
+        .filter(|p| !p.is_empty())?;
+    let (socket, session) = this_sandbox(None)?;
+    // Links name the instance the session runs on.
+    let base = std::env::var("FCTL_SESSION_URL")
+        .ok()
+        .and_then(|u| fctl_client::http::origin(&u))
+        .unwrap_or_else(|| "https://app.fctl.sh".to_owned());
+    let relay: fctl_client::Relay = std::sync::Arc::new(move |method, path, body| {
+        let socket = socket.clone();
+        let session = session.clone();
+        Box::pin(async move {
+            let request = SessionRequest::Call {
+                session_id: Some(SessionId(session)),
+                call: fctl_proto::api::AgentCall::Api {
+                    method: method.as_str().to_owned(),
+                    path,
+                    body,
+                },
+            };
+            // fctl-agent waits up to two minutes for the control plane.
+            let reply =
+                tokio::time::timeout(Duration::from_secs(180), ask_agent(&socket, &request))
+                    .await
+                    .map_err(|_| fctl_client::Error::Timeout(Duration::from_secs(180)))?
+                    .map_err(|e| fctl_client::Error::Other(format!("{e:#}")))?;
+            match reply {
+                SessionReply::Answer {
+                    answer: fctl_proto::api::AgentAnswer::Api { status, body },
+                } => Ok((status, body)),
+                SessionReply::Error { error } => Err(fctl_client::Error::Api(error)),
+                _ => Err(fctl_client::Error::Other(
+                    "This sandbox's fctl-agent can't reach fctl for the autopilot: its runner needs a newer fctl (`fctl self update` there)".to_owned(),
+                )),
+            }
+        })
+    });
+    Some(fctl_client::Api::relayed(&base, relay))
+}
+
 pub(crate) async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result<SessionReply> {
     let stream = UnixStream::connect(socket)
         .await
@@ -845,6 +892,11 @@ pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: boo
         }
     }
     if follow {
+        if api.is_relayed() {
+            bail!(
+                "An autopilot doesn't follow sessions live: fctl wakes you when they move on, and fctl logs reads them then."
+            );
+        }
         return crate::cmd::attach::follow_after(&api, &s.id.0, true, Some(after), r).await;
     }
     Ok(())

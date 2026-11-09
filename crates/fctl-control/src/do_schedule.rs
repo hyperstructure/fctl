@@ -1,5 +1,6 @@
 //! ScheduleObject: one Durable Object per instance, whose alarm starts the
-//! sessions of schedules that are due (`crate::schedules`).
+//! sessions of schedules that are due (`crate::schedules`), and wakes the
+//! autopilots that are (`crate::autopilots`).
 //!
 //! D1 keeps the schedules; the object keeps nothing but its alarm, which
 //! it sets for the earliest next run when schedules change (`/wake`, from
@@ -44,6 +45,12 @@ impl DurableObject for ScheduleObject {
             Ok(n) => worker::console_log!("schedules: took up {n}"),
             Err(e) => worker::console_error!("schedules: {}", e.0.message),
         }
+        // Autopilots wake on the same alarm, each wake claimed as a run is.
+        match crate::autopilots::run_due(&self.env, now_ms()).await {
+            Ok(0) => {}
+            Ok(n) => worker::console_log!("autopilots: woke {n}"),
+            Err(e) => worker::console_error!("autopilots: {}", e.0.message),
+        }
         self.arm(true).await;
         Response::ok("ok")
     }
@@ -59,7 +66,16 @@ impl ScheduleObject {
         let storage = self.state.storage();
         let now = now_ms();
         let earliest = match self.env.d1("DB") {
-            Ok(db) => crate::schedules::earliest(&db).await,
+            Ok(db) => match (
+                crate::schedules::earliest(&db).await,
+                crate::autopilots::earliest(&db).await,
+            ) {
+                (Ok(a), Ok(b)) => Ok(match (a, b) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            },
             Err(e) => Err(e.into()),
         };
         let at = match earliest {

@@ -34,6 +34,35 @@ pub struct Authed {
     /// What the access token is limited to, when it is
     /// (`fctl_domain::limits`).
     pub limits: Option<Limits>,
+    /// For an autopilot's request from its own session's sandbox
+    /// (`crate::autopilots::relay`): the autopilot, which acts as its
+    /// owner, the `user` here, within `limits` and what
+    /// `fctl_domain::autopilot::allows` lets it do.
+    pub autopilot: Option<AutopilotCaller>,
+}
+
+/// The autopilot a request comes from.
+#[derive(Clone, Debug)]
+pub struct AutopilotCaller {
+    /// Its home project.
+    pub project_id: String,
+    pub project_slug: String,
+    pub workspace_id: String,
+    pub scope: fctl_proto::autopilot::AutopilotScope,
+    pub powers: Vec<fctl_proto::autopilot::AutopilotPower>,
+    /// Its own session, whose sandbox asks.
+    pub session_id: String,
+}
+
+impl AutopilotCaller {
+    /// The autopilot as the author of a message it sends one of its
+    /// sessions.
+    pub fn author(&self) -> fctl_proto::autopilot::AutopilotAuthor {
+        fctl_proto::autopilot::AutopilotAuthor {
+            project_id: fctl_proto::ProjectId(self.project_id.clone()),
+            project_slug: self.project_slug.clone(),
+        }
+    }
 }
 
 impl Authed {
@@ -55,6 +84,7 @@ impl Authed {
             two_factor_setup_required: false,
             settings,
             limits: None,
+            autopilot: None,
         }
     }
 }
@@ -140,6 +170,13 @@ impl Ctx {
             .auth
             .as_ref()
             .ok_or_else(|| AppError(ApiError::unauthorized()))?;
+        // An autopilot confirms nothing: what takes confirming is people's.
+        if a.autopilot.is_some() {
+            return Err(AppError(ApiError::forbidden(format!(
+                "An autopilot can't {}: people do that.",
+                action.doing()
+            ))));
+        }
         let factors = a.user.factors();
         if !verify::needed(&a.settings, factors, a.verified_at, self.now) {
             return Ok(());
@@ -159,6 +196,12 @@ impl Ctx {
     /// What the caller's access token is limited to, when it is.
     pub fn limits(&self) -> Option<&Limits> {
         self.auth.as_ref().and_then(|a| a.limits.as_ref())
+    }
+
+    /// The autopilot the request comes from, when an autopilot's session
+    /// makes it.
+    pub fn autopilot(&self) -> Option<&AutopilotCaller> {
+        self.auth.as_ref().and_then(|a| a.autopilot.as_ref())
     }
 
     /// The instance's settings, as read with the caller's token (defaults

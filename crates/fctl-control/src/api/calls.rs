@@ -2,7 +2,8 @@
 //! ([`AgentCall`]): `fctl memory`, `fctl retro`, `fctl resolve`, `fctl
 //! review` and `fctl ticket` in a sandbox go through fctl-agent to its
 //! host, which sends them here with its runner token, for a session it
-//! runs. Each needs its project's setting: `project_memory` for the memory,
+//! runs, and so does an autopilot's own session's `fctl`, whose requests to
+//! the API come as [`AgentCall::Api`] (`crate::autopilots::relay`). Each needs its project's setting: `project_memory` for the memory,
 //! `retrospectives` for retrospectives, a ticket tracker for tickets
 //! (`crate::tickets`); resolving review threads needs an agent that may
 //! comment on GitHub, and reviews a review agent's session
@@ -278,6 +279,9 @@ pub async fn runner_call(
         AgentCall::SummarizePullRequest { summary } => AgentAnswer::PullRequestSummarized {
             summarized: crate::reviews::summarize(ctx, &session.id, &summary).await?,
         },
+        AgentCall::Api { method, path, body } => {
+            crate::autopilots::relay(ctx, &session.id, &method, &path, body).await?
+        }
     };
     http::ok(&answer)
 }

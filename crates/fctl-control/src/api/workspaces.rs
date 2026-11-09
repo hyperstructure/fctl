@@ -46,21 +46,8 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     let mut rows = ws::mine(&ctx.db, &user.id).await?;
     // A limited token sees the workspaces of the projects it reaches, and
     // no invitations.
-    if let Some(places) = ctx.limits().and_then(|l| l.places.as_ref()) {
-        #[derive(serde::Deserialize)]
-        struct Id {
-            workspace_id: String,
-        }
-        let of_projects: Vec<Id> = q(
-            &ctx.db,
-            "SELECT DISTINCT workspace_id FROM projects WHERE id IN (SELECT value FROM json_each(?)) AND workspace_id IS NOT NULL",
-            &[s(&serde_json::to_string(&places.projects)?)],
-        )?
-        .all()
-        .await?;
-        rows.retain(|r| {
-            places.workspaces.contains(&r.id) || of_projects.iter().any(|p| p.workspace_id == r.id)
-        });
+    if let Some(reached) = ws::reached(ctx).await? {
+        rows.retain(|r| reached.contains(&r.id));
     }
     let live = live(ctx).await;
     let invitations = if ctx.limits().is_some() {
@@ -254,7 +241,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         &ctx.db,
         "UPDATE workspaces SET name = COALESCE(?, name), slug = COALESCE(?, slug), color = COALESCE(?, color), \
          base_role = COALESCE(?, base_role), require_two_factor = COALESCE(?, require_two_factor), \
-         skip_invites = COALESCE(?, skip_invites), updated_at = ? WHERE id = ?",
+         skip_invites = COALESCE(?, skip_invites), autopilots = COALESCE(?, autopilots), updated_at = ? WHERE id = ?",
         &[
             os(name.as_deref()),
             os(slug.as_deref()),
@@ -262,12 +249,18 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             os(body.base_role.map(BaseRole::as_str)),
             body.require_two_factor.map_or(crate::db::null(), crate::db::b),
             body.skip_invites.map_or(crate::db::null(), crate::db::b),
+            body.autopilots.map_or(crate::db::null(), crate::db::b),
             n(ctx.now),
             s(a.id()),
         ],
     )?
     .run()
     .await;
+    // Autopilots turned off: those it has pause, and their own sessions
+    // stop with their turn (their requests are refused from now on).
+    if updated.is_ok() && body.autopilots == Some(false) {
+        crate::autopilots::pause_workspace(&ctx.db, a.id(), &user.id, ctx.now).await?;
+    }
     if let Err(e) = updated {
         if let Some(sl) = &slug
             && slugs::taken(&ctx.db, Of::Workspace, sl, Some(a.id())).await?

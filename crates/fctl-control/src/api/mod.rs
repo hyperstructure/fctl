@@ -2,6 +2,7 @@ pub mod account;
 pub mod admin;
 pub mod attachments;
 pub mod auth;
+pub mod autopilots;
 pub mod avatars;
 pub mod calls;
 pub mod claude;

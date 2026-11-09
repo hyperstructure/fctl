@@ -8,6 +8,7 @@
 //! | Module | Between |
 //! |---|---|
 //! | [`api`] | REST clients ⇄ control plane |
+//! | [`autopilot`] | autopilots (experimental), through the REST API |
 //! | [`event`] | the session event model used everywhere |
 //! | [`viewer`] | SessionDO ⇄ browsers and the CLI |
 //! | [`runner`] | FleetDO ⇄ hosts (control connection) |
@@ -18,6 +19,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod autopilot;
 pub mod error;
 pub mod event;
 pub mod ids;

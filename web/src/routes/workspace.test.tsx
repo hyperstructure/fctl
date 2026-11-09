@@ -72,6 +72,7 @@ const side: G.Workspace = {
   github: [],
   skip_invites: false,
   own_runners: false,
+  autopilots: false,
   created_at: 0,
 };
 

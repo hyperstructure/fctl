@@ -30,6 +30,7 @@ import {
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access";
 import { ReviewFacts, ReviewFooter, useSessionReview } from "@/components/review";
+import { AutopilotLink, AutopilotStarter } from "@/components/session/autopilot";
 import { Changes } from "@/components/session/changes";
 import { Composer } from "@/components/session/composer";
 import { DiffDialog, type DiffGroup, type DiffTarget } from "@/components/session/diff-dialog";
@@ -815,6 +816,7 @@ export function SessionPage() {
                 now={now}
                 plan={planNow}
                 onReply={yourTurn ? focusReply : undefined}
+                autopilot={session?.autopilot}
                 background={
                   waiting && {
                     waiting,
@@ -997,14 +999,19 @@ function Cover({
         </p>
       )}
       <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12.5px] text-ink-3">
-        <span className="inline-flex min-w-0 items-center gap-1.5">
-          <Avatar user={session.created_by} size={16} />
-          <span className="truncate">
-            {session.review ? "On " : "Started by "}
-            <span className="text-ink-2">{session.created_by.name}</span>
-            {session.review && "'s Claude subscription"}
+        {session.autopilot ? (
+          // Its autopilot's, which acts as the person it runs for.
+          <AutopilotStarter session={session} />
+        ) : (
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <Avatar user={session.created_by} size={16} />
+            <span className="truncate">
+              {session.review ? "On " : "Started by "}
+              <span className="text-ink-2">{session.created_by.name}</span>
+              {session.review && "'s Claude subscription"}
+            </span>
           </span>
-        </span>
+        )}
         <span className="inline-flex items-center gap-1.5" title={stamp(session.created_at)}>
           <Clock className="size-3.5 text-ink-4" />
           {when(session.created_at)}
@@ -1642,6 +1649,9 @@ function Details({
           <Row k="Schedule" v={<ScheduleLink session={session} className="justify-end" />} />
         )}
         {session.ticket && <Row k="Ticket" v={<TicketLink session={session} className="justify-end" />} />}
+        {session.autopilot && (
+          <Row k="Autopilot" v={<AutopilotLink session={session} className="justify-end" />} />
+        )}
         {session.base_branch && <Row k="From" v={<span className="font-mono">{session.base_branch}</span>} />}
         {/* What its agent says, also after a switch, which no new `init` says until the next turn. */}
         {(session.model ?? model) && <Row k="Model" v={session.model ?? model} />}

@@ -4,6 +4,7 @@
 mod access;
 mod api;
 mod auth;
+mod autopilots;
 mod config;
 mod crypto;
 mod ctx;
@@ -149,8 +150,43 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         fctl_domain::limits::allows(limits.access, method.as_ref(), segs.as_slice())
             .map_err(AppError)?;
     }
+    // What agents ask of the control plane through their host, ahead of the
+    // routes: an autopilot's requests to the API come this way, and go
+    // through `dispatch` themselves (`route_autopilot`), which so runs once
+    // at a time on the stack, as its frames are large.
+    if let (Method::Post, ["runner", "sessions", id, "calls"]) = (&method, segs.as_slice()) {
+        return api::calls::runner_call(ctx, req, id).await;
+    }
+    dispatch(ctx, req, method, segs.as_slice()).await
+}
+
+/// An autopilot's request, from its own session's sandbox
+/// (`crate::autopilots::relay`), for `ctx`, whose caller is the autopilot
+/// acting as its owner: what `fctl_domain::autopilot::allows` lets it do,
+/// in place of the checks of `route`, then the same handlers.
+pub(crate) async fn route_autopilot(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> AppResult<Response> {
+    let method = req.method();
+    if !path.starts_with("/api/v1/") {
+        return Err(AppError(ApiError::not_found("Endpoint")));
+    }
+    let segs: Vec<&str> = path.trim_end_matches('/').split('/').skip(3).collect();
+    crate::autopilots::gate(ctx, method.as_ref(), segs.as_slice(), body).await?;
+    dispatch(ctx, req, method, segs.as_slice()).await
+}
+
+async fn dispatch(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    method: Method,
+    segs: &[&str],
+) -> AppResult<Response> {
     use Method::*;
-    match (method, segs.as_slice()) {
+    match (method, segs) {
         (Get, ["instance"]) => api::auth::instance(ctx).await,
         (Post, ["setup"]) => api::auth::setup(ctx, req).await,
         (Get, ["invites", token]) => api::auth::invite_preview(ctx, token).await,
@@ -331,7 +367,6 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
         (Post, ["runner", "sessions", id, "published"]) => {
             api::published::runner_publish(ctx, req, id).await
         }
-        (Post, ["runner", "sessions", id, "calls"]) => api::calls::runner_call(ctx, req, id).await,
         (Get, ["feed", "ws"]) => api::runners::feed(ctx, req).await,
 
         // Projects
@@ -361,6 +396,38 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
             api::repos::remove(ctx, id, owner, name).await
         }
         (Post, ["projects", id, "sessions"]) => api::sessions::create(ctx, req, id).await,
+        // Autopilots (experimental)
+        (Get, ["autopilots", "asks"]) => api::autopilots::open_asks(ctx).await,
+        (Get, ["projects", id, "autopilot"]) => api::autopilots::get(ctx, id).await,
+        (Put, ["projects", id, "autopilot"]) => api::autopilots::put(ctx, req, id).await,
+        (Post, ["projects", id, "autopilot", "off"]) => api::autopilots::off(ctx, req, id).await,
+        (Post, ["projects", id, "autopilot", "pause"]) => {
+            api::autopilots::pause(ctx, req, id).await
+        }
+        (Post, ["projects", id, "autopilot", "resume"]) => api::autopilots::resume(ctx, id).await,
+        (Post, ["projects", id, "autopilot", "wake"]) => api::autopilots::wake(ctx, req, id).await,
+        (Get, ["projects", id, "autopilot", "brief"]) => api::autopilots::brief(ctx, id).await,
+        (Get, ["projects", id, "autopilot", "log"]) => api::autopilots::log(ctx, req, id).await,
+        (Post, ["projects", id, "autopilot", "log"]) => {
+            api::autopilots::write_log(ctx, req, id).await
+        }
+        (Put, ["projects", id, "autopilot", "plan"]) => api::autopilots::plan(ctx, req, id).await,
+        (Post, ["projects", id, "autopilot", "notes"]) => {
+            api::autopilots::add_note(ctx, req, id).await
+        }
+        (Delete, ["projects", id, "autopilot", "notes", note]) => {
+            api::autopilots::remove_note(ctx, id, note).await
+        }
+        (Post, ["projects", id, "autopilot", "asks"]) => api::autopilots::ask(ctx, req, id).await,
+        (Delete, ["projects", id, "autopilot", "asks", ask]) => {
+            api::autopilots::withdraw(ctx, id, ask).await
+        }
+        (Post, ["projects", id, "autopilot", "asks", ask, "answer"]) => {
+            api::autopilots::answer(ctx, req, id, ask).await
+        }
+        (Post, ["projects", id, "autopilot", "asks", ask, "decline"]) => {
+            api::autopilots::decline(ctx, req, id, ask).await
+        }
         (Get, ["projects", id, "memories"]) => api::memories::project_list(ctx, req, id).await,
         (Post, ["projects", id, "memories"]) => api::memories::add(ctx, req, id).await,
         (Get, ["memories", id]) => api::memories::get(ctx, id).await,
