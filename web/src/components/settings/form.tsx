@@ -3,7 +3,7 @@
 // changes unsaved; and switches whose words name them and turn them too.
 
 import { type ShouldBlockFn, useBlocker } from "@tanstack/react-router";
-import { type ReactNode, type RefObject, useCallback, useId, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useId, useState } from "react";
 import { Button, Dialog, Switch } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
@@ -52,9 +52,11 @@ const leaves: ShouldBlockFn = ({ current, next }) =>
 
 /**
  * Asks before someone leaves a page whose changes aren't saved: for another page, another tab or
- * anywhere else in the app, and, as browsers ask it, before the tab closes or reloads. Not once the
- * page says it leaves on purpose (`leaving`): for a sign-in elsewhere that brings the browser back
- * to what it left, as connecting Linear does.
+ * anywhere else in the app, and, as browsers ask it, before the tab closes or reloads. Not as the
+ * page leaves on purpose (`leaving`, set just before): for a sign-in elsewhere that brings the
+ * browser back to what it left, as connecting Linear does. That holds for that leave alone: the
+ * browser asks again after it, should it be cancelled, or should Back bring the page back from the
+ * browser's cache with its changes still unsaved.
  */
 export function UnsavedGuard({
   dirty,
@@ -65,7 +67,21 @@ export function UnsavedGuard({
   page: string;
   leaving?: RefObject<boolean>;
 }) {
-  const unload = useCallback(() => !leaving?.current, [leaving]);
+  // Read once for each page the browser is to leave for (TanStack's history asks as it leaves).
+  const unload = useCallback(() => {
+    if (!leaving?.current) return true;
+    leaving.current = false;
+    return false;
+  }, [leaving]);
+  // Back from the browser's cache, with no leave read: it wasn't this one.
+  useEffect(() => {
+    if (!leaving) return;
+    const shown = (e: Event) => {
+      if ((e as PageTransitionEvent).persisted) leaving.current = false;
+    };
+    window.addEventListener("pageshow", shown);
+    return () => window.removeEventListener("pageshow", shown);
+  }, [leaving]);
   const blocker = useBlocker({
     shouldBlockFn: leaves,
     enableBeforeUnload: unload,

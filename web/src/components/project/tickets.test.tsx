@@ -343,6 +343,21 @@ describe("Settings → Tickets", () => {
     await act(async () => connect?.click());
     expect(calls.find((x) => x.name === "goTo")?.args).toEqual(["https://linear.app/oauth/authorize"]);
     expect(unload()).toBe(false);
+    // For that leave alone: should it be cancelled, the next one asks again.
+    expect(unload()).toBe(true);
+  });
+
+  it("asks again before leaving once Back brings it back from the browser's cache", async () => {
+    const c = tab(project(), { role: "admin", connections: [], returned: "denied" });
+    const unload = () => {
+      const e = blocker.opts?.enableBeforeUnload;
+      return typeof e === "function" ? e() : e;
+    };
+    const connect = [...c.querySelectorAll("button")].find((b) => b.textContent === "Connect Linear");
+    await act(async () => connect?.click());
+    // Back from Linear's page before any leave was read: the page is as it was left.
+    window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    expect(unload()).toBe(true);
   });
 
   it("shows those who can't choose what is stored, back from Linear too", () => {
