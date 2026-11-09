@@ -933,13 +933,13 @@ impl SessionObject {
             self.end_reviews_in_a_row(now).await;
             self.delete_meta(CHECKS_IN_A_ROW);
             self.delete_meta(CONFLICTS_IN_A_ROW);
-            // It answers the agent's question, if it asks one. The reply that
-            // ends the turn it starts is theirs (`Session::messaged_at`),
-            // unless it answered (`Session::answered_at`): then that turn
-            // carries on with what the agent asked for.
+            // It answers the agent's question, if it asks one: then the turn
+            // it starts carries on with what the agent asked for. Otherwise
+            // it asks for more, and the reply that ends that turn is theirs
+            // (`Session::requested_at`).
             if let Some(mut s) = self.summary() {
-                if s.question.take().is_some() {
-                    s.answered_at = Some(now);
+                if s.question.take().is_none() {
+                    s.requested_at = Some(now);
                 }
                 s.messaged_at = Some(now);
                 self.publish(&mut s, now).await;
@@ -4319,11 +4319,13 @@ impl SessionObject {
             .question
             .as_ref()
             .and_then(|q| serde_json::to_string(q).ok());
+        // `requested_at` stays D1's while the summary has none: sessions from
+        // before it took their `messaged_at` there (migration 0056).
         let res = crate::db::q(
             &db,
             "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
              claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-             pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, answered_at = ?, started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+             pull_requests = ?, question = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, requested_at = COALESCE(?, requested_at), started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
                 crate::db::s(&s.title),
                 crate::db::os(s.description.as_deref()),
@@ -4344,7 +4346,7 @@ impl SessionObject {
                 crate::db::n(s.updated_at),
                 crate::db::on(s.last_activity_at),
                 crate::db::on(s.messaged_at),
-                crate::db::on(s.answered_at),
+                crate::db::on(s.requested_at),
                 crate::db::on(s.started_at),
                 crate::db::on(s.ended_at),
                 crate::db::s(s.id.as_str()),

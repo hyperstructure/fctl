@@ -1349,12 +1349,11 @@ pub struct Session {
     /// people's). Absent until someone does, and from control planes
     /// before it.
     pub messaged_at: Option<Millis>,
-    /// When a person's message last answered its agent's question
-    /// (`question`). Equal to `messaged_at` when the last message answered
-    /// one: the turn it starts carries on with what the agent asked for,
-    /// rather than with something new. Absent until someone answers one,
-    /// and from control planes before it.
-    pub answered_at: Option<Millis>,
+    /// When a person last sent it a message that didn't answer its agent's
+    /// question (`question`): one that asks it for more, where an answer
+    /// only lets the agent carry on with what it asked for. Absent until
+    /// someone does, and from control planes before it.
+    pub requested_at: Option<Millis>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,
     /// The pull request of its branch in the primary repository, or in
