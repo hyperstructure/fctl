@@ -406,7 +406,7 @@ const agentSettings = (s: G.ProjectSettings) => ({
   instructions: s.instructions,
   model: s.model,
   effort: s.effort,
-  /** Where sessions compact, as chosen in its list; the size typed for Another size stays as others are chosen. */
+  /** Where sessions compact, as chosen in its list, and the size typed for Another size: "" for another choice. */
   compact: compactChoice(s.compact_window),
   compactTyped:
     s.compact_window != null && compactChoice(s.compact_window) === "other"
@@ -430,6 +430,11 @@ function Agents({ project }: { project: G.Project }) {
   const model = s.choice;
   /** The model ID typed last, so that choosing Model ID again brings it back. */
   const typedModel = useRef<string>(undefined);
+  /**
+   * The size typed for Another size while another is chosen, out of the draft (as the model ID is), so
+   * that going back to the saved choice leaves nothing to save; choosing Another size brings it back.
+   */
+  const typedCompact = useRef<string>(undefined);
   const save = useSave(
     project,
     "Saved: sessions that start from now on take it",
@@ -536,7 +541,10 @@ function Agents({ project }: { project: G.Project }) {
                   <Select
                     id={id}
                     value={s.compact}
-                    onChange={(v) => set({ compact: v })}
+                    onChange={(v) => {
+                      if (s.compact === "other") typedCompact.current = s.compactTyped;
+                      set({ compact: v, compactTyped: v === "other" ? (typedCompact.current ?? "") : "" });
+                    }}
                     options={COMPACT_OPTIONS}
                     className="w-full"
                   />
