@@ -9,24 +9,29 @@ import { Link, useSearch } from "@tanstack/react-router";
 import {
   Cpu,
   Crown,
+  DoorOpen,
   Ellipsis,
   ExternalLink,
   Fingerprint,
   Globe,
+  History,
   Inbox,
+  LayoutGrid,
   Link2,
   Mail,
   MailPlus,
   Plus,
+  Settings,
   ShieldCheck,
   ShieldOff,
   Trash2,
   Users as UsersIcon,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
+import { PageTabs, TabCount } from "@/components/page-tabs";
 import { DriverLine } from "@/components/runner-driver";
 import {
   Avatar,
@@ -38,6 +43,7 @@ import {
   Dialog,
   Empty,
   Field,
+  GithubIcon,
   IconButton,
   Input,
   Menu,
@@ -84,6 +90,22 @@ const TABS: { tab: Tab; label: string }[] = [
   { tab: "audit", label: "Audit log" },
 ];
 
+/**
+ * Each tab's icon, as the rest of the app draws what it holds: people, the grid Settings draws
+ * workspaces with, GitHub's mark, the chip runners are, a door for who gets in, the inbox requests
+ * land in, the sidebar's gear, and a clock turning back for what happened.
+ */
+const ICONS: Record<Tab, (className: string) => ReactNode> = {
+  people: (className) => <UsersIcon className={className} aria-hidden="true" />,
+  workspaces: (className) => <LayoutGrid className={className} aria-hidden="true" />,
+  github: (className) => <GithubIcon className={className} />,
+  runners: (className) => <Cpu className={className} aria-hidden="true" />,
+  access: (className) => <DoorOpen className={className} aria-hidden="true" />,
+  "early-access": (className) => <Inbox className={className} aria-hidden="true" />,
+  settings: (className) => <Settings className={className} aria-hidden="true" />,
+  audit: (className) => <History className={className} aria-hidden="true" />,
+};
+
 export function Admin() {
   const { tab = "people" } = useSearch({ from: "/app/admin" });
   const early = !!useInstance().data?.features.early_access;
@@ -104,31 +126,19 @@ export function Admin() {
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
-      <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
-        <div className="flex w-max min-w-full gap-1 border-b border-line">
-          {TABS.filter((t) => t.tab !== "early-access" || early).map((t) => (
-            <Link
-              key={t.tab}
-              to="/admin"
-              search={{ tab: t.tab === "people" ? undefined : t.tab }}
-              className={cn(
-                "relative shrink-0 px-3 py-2.5 text-[13.5px] transition-colors",
-                tab === t.tab ? "text-ink" : "text-ink-3 hover:text-ink",
-              )}
-            >
-              {t.label}
-              {t.tab === "early-access" && asking > 0 && (
-                <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 text-[10.5px] font-semibold text-highlight-ink tabular-nums">
-                  {asking}
-                </span>
-              )}
-              {tab === t.tab && (
-                <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />
-              )}
-            </Link>
-          ))}
-        </div>
-      </nav>
+      <PageTabs
+        label="Admin"
+        open={tab}
+        link={(t) => ({ to: "/admin", search: { tab: t === "people" ? undefined : t } })}
+        tabs={TABS.filter((t) => t.tab !== "early-access" || early).map((t) => ({
+          id: t.tab,
+          label: t.label,
+          icon: ICONS[t.tab],
+          badge: t.tab === "early-access" && asking > 0 && (
+            <TabCount n={asking} label={`${asking} waiting for an invitation`} />
+          ),
+        }))}
+      />
       <div className="mt-8">
         {tab === "people" && <Users />}
         {tab === "workspaces" && <Workspaces />}

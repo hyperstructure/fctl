@@ -10,19 +10,24 @@ import {
   Cpu,
   ExternalLink,
   FolderPlus,
+  Folders,
+  History,
   ImageUp,
   KeyRound,
   LogOut,
   MailPlus,
   Pencil,
   Plus,
+  Settings,
   ShieldCheck,
   Trash2,
+  Users,
 } from "lucide-react";
 import { type ReactNode, useId, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
+import { PageTabs, TabCount } from "@/components/page-tabs";
 import { ExperimentalPill } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { DriverLine } from "@/components/runner-driver";
@@ -39,6 +44,7 @@ import {
   Field,
   GithubIcon,
   Input,
+  LinearIcon,
   Section,
   Select,
   type SelectOption,
@@ -87,6 +93,22 @@ const TABS: { tab: WorkspaceTab; label: string; admin?: boolean; linear?: boolea
   { tab: "settings", label: "Settings" },
   { tab: "audit", label: "Audit log", admin: true },
 ];
+
+/**
+ * Each tab's icon, as the rest of the app draws what it holds: folders of projects (a new one is a
+ * folder with a plus), people, the chip runners are, GitHub's and Linear's marks, the sidebar's gear,
+ * and a clock turning back for what happened.
+ */
+const ICONS: Record<WorkspaceTab, (className: string) => ReactNode> = {
+  projects: (className) => <Folders className={className} aria-hidden="true" />,
+  people: (className) => <Users className={className} aria-hidden="true" />,
+  runners: (className) => <Cpu className={className} aria-hidden="true" />,
+  github: (className) => <GithubIcon className={className} />,
+  // Linear's mark is filled: a little smaller, it weighs as much as the outlined icons.
+  linear: (className) => <LinearIcon className={cn(className, "scale-[0.85]")} />,
+  settings: (className) => <Settings className={className} aria-hidden="true" />,
+  audit: (className) => <History className={className} aria-hidden="true" />,
+};
 
 /** Refetches what a change to a workspace touches: the page caches it by its slug, its parts by its id. */
 function refresh() {
@@ -194,36 +216,23 @@ export function WorkspacePage() {
         </div>
       ) : (
         <>
-          <nav className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
-            <div className="flex w-max min-w-full gap-1 border-b border-line">
-              {TABS.filter(has).map((t) => (
-                <Link
-                  key={t.tab}
-                  to="/w/$slug"
-                  params={{ slug }}
-                  search={{ tab: t.tab === "projects" ? undefined : t.tab }}
-                  className={cn(
-                    "relative shrink-0 px-3 py-2.5 text-[13.5px] transition-colors",
-                    tab === t.tab ? "text-ink" : "text-ink-3 hover:text-ink",
-                  )}
-                >
-                  {t.label}
-                  {t.tab === "runners" && waiting > 0 && (
-                    <span
-                      role="img"
-                      aria-label={`${waiting} waiting for approval`}
-                      className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-highlight px-1 align-[1px] text-[10.5px] font-semibold text-highlight-ink tabular-nums"
-                    >
-                      {waiting}
-                    </span>
-                  )}
-                  {tab === t.tab && (
-                    <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full bg-accent" />
-                  )}
-                </Link>
-              ))}
-            </div>
-          </nav>
+          <PageTabs
+            label="Workspace"
+            open={tab}
+            link={(t) => ({
+              to: "/w/$slug",
+              params: { slug },
+              search: { tab: t === "projects" ? undefined : t },
+            })}
+            tabs={TABS.filter(has).map((t) => ({
+              id: t.tab,
+              label: t.label,
+              icon: ICONS[t.tab],
+              badge: t.tab === "runners" && waiting > 0 && (
+                <TabCount n={waiting} label={`${waiting} waiting for approval`} />
+              ),
+            }))}
+          />
           <div className="mt-8">
             {w && tab === "projects" && <Projects w={w} />}
             {w && tab === "people" && <People w={w} />}
