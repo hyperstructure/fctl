@@ -318,99 +318,103 @@ function Tree({
       <div className="px-3">
         <SearchButton onPalette={onPalette} />
       </div>
-      <nav aria-label="Views" className="mt-3 flex flex-col gap-px px-3">
-        <FloorLink active={path === "/"} working={data.working} onClick={onNavigate} />
-        <NeedsYou
-          needs={data.needs}
-          asks={data.autopilotAsks}
-          open={needsOpen}
-          onToggle={() => setNeedsOpen(!needsOpen)}
-          session={data.session}
-          now={data.now}
-          projects={data.projects}
-          onNavigate={onNavigate}
-        />
-        <Link
-          to="/pulls"
-          search={{}}
-          onClick={onNavigate}
-          aria-current={allPulls ? "page" : undefined}
-          title={`${
-            data.ready.length
-              ? `${data.ready.length} ready for review, of ${data.pulls.length} open`
-              : `${data.pulls.length} open`
-          }${data.mine ? " from your sessions" : ""}`}
-          className={cn(
-            "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
-            allPulls ? HERE : "text-ink-3 hover:bg-hover hover:text-ink",
-          )}
-        >
-          <PullRequestIcon
-            state="open"
-            className={cn("size-4", allPulls ? "text-accent" : "text-ink-4 group-hover:text-ink-3")}
-          />
-          <span className="flex-1">Pull requests</span>
-          {data.ready.length > 0 ? (
-            <span className="text-[11.5px] text-pr-open tabular-nums">{data.ready.length}</span>
-          ) : (
-            data.pulls.length > 0 && (
-              <span className="text-[11.5px] text-ink-4 tabular-nums">{data.pulls.length}</span>
-            )
-          )}
-        </Link>
-      </nav>
-      <nav
-        aria-label="Workspaces"
-        className="mt-4 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-3 pb-4"
-      >
-        {data.workspaces?.invitations.map((i) => (
-          <Link
-            key={i.id}
-            to="/"
-            onClick={onNavigate}
-            className="group flex items-center gap-2.5 rounded-lg border border-accent/25 bg-accent-soft px-2.5 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-accent/45"
-          >
-            <WorkspaceAvatar workspace={i.workspace} size={20} />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-ink">{i.workspace.name}</span>
-              <span className="block truncate text-[11.5px] text-ink-3">Invited · join on Agent Floor</span>
-            </span>
-          </Link>
-        ))}
-        {data.groups.map(({ workspace, projects }) => (
-          <WorkspaceGroup
-            key={workspace.id}
-            workspace={workspace}
-            projects={projects}
-            data={data}
-            path={path}
-            tab={tab}
-            folded={folded.has(workspace.id)}
-            onFold={() => toggleFold(workspace.id)}
+      {/* On phones the views scroll with the workspaces, as Needs you open can fill much of the
+          drawer; wider, they stay put above the workspaces, which scroll on their own. */}
+      <div className="flex min-h-0 flex-1 flex-col max-md:overflow-y-auto max-md:overscroll-contain">
+        <nav aria-label="Views" className="mt-3 flex shrink-0 flex-col gap-px px-3">
+          <FloorLink active={path === "/"} working={data.working} onClick={onNavigate} />
+          <NeedsYou
+            needs={data.needs}
+            asks={data.autopilotAsks}
+            open={needsOpen}
+            onToggle={() => setNeedsOpen(!needsOpen)}
+            session={data.session}
+            now={data.now}
+            projects={data.projects}
             onNavigate={onNavigate}
-            sort={sort}
           />
-        ))}
-        <p id={ORDER_HELP} hidden>
-          Drag to move it, or press Alt or Option with the up or down arrow.
-        </p>
-        {data.workspaces && roomForAnother(data.workspaces) && (
           <Link
-            to="/w/new"
+            to="/pulls"
+            search={{}}
             onClick={onNavigate}
+            aria-current={allPulls ? "page" : undefined}
+            title={`${
+              data.ready.length
+                ? `${data.ready.length} ready for review, of ${data.pulls.length} open`
+                : `${data.pulls.length} open`
+            }${data.mine ? " from your sessions" : ""}`}
             className={cn(
-              // shrink-0: once the list scrolls, its flex column would squeeze it to its text.
-              "flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
-              data.workspaces.workspaces.length === 0
-                ? "text-ink-2 hover:bg-hover hover:text-ink"
-                : "text-ink-4 hover:bg-hover hover:text-ink-2",
+              "group flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13.5px] transition-colors duration-150",
+              allPulls ? HERE : "text-ink-3 hover:bg-hover hover:text-ink",
             )}
           >
-            <Plus className="size-3.5" />
-            {data.workspaces.workspaces.length === 0 ? "Create a workspace" : "New workspace"}
+            <PullRequestIcon
+              state="open"
+              className={cn("size-4", allPulls ? "text-accent" : "text-ink-4 group-hover:text-ink-3")}
+            />
+            <span className="flex-1">Pull requests</span>
+            {data.ready.length > 0 ? (
+              <span className="text-[11.5px] text-pr-open tabular-nums">{data.ready.length}</span>
+            ) : (
+              data.pulls.length > 0 && (
+                <span className="text-[11.5px] text-ink-4 tabular-nums">{data.pulls.length}</span>
+              )
+            )}
           </Link>
-        )}
-      </nav>
+        </nav>
+        <nav
+          aria-label="Workspaces"
+          className="mt-4 flex flex-1 flex-col gap-4 px-3 pb-4 md:min-h-0 md:overflow-y-auto"
+        >
+          {data.workspaces?.invitations.map((i) => (
+            <Link
+              key={i.id}
+              to="/"
+              onClick={onNavigate}
+              className="group flex items-center gap-2.5 rounded-lg border border-accent/25 bg-accent-soft px-2.5 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-accent/45"
+            >
+              <WorkspaceAvatar workspace={i.workspace} size={20} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-ink">{i.workspace.name}</span>
+                <span className="block truncate text-[11.5px] text-ink-3">Invited · join on Agent Floor</span>
+              </span>
+            </Link>
+          ))}
+          {data.groups.map(({ workspace, projects }) => (
+            <WorkspaceGroup
+              key={workspace.id}
+              workspace={workspace}
+              projects={projects}
+              data={data}
+              path={path}
+              tab={tab}
+              folded={folded.has(workspace.id)}
+              onFold={() => toggleFold(workspace.id)}
+              onNavigate={onNavigate}
+              sort={sort}
+            />
+          ))}
+          <p id={ORDER_HELP} hidden>
+            Drag to move it, or press Alt or Option with the up or down arrow.
+          </p>
+          {data.workspaces && roomForAnother(data.workspaces) && (
+            <Link
+              to="/w/new"
+              onClick={onNavigate}
+              className={cn(
+                // shrink-0: once the list scrolls, its flex column would squeeze it to its text.
+                "flex h-8 shrink-0 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
+                data.workspaces.workspaces.length === 0
+                  ? "text-ink-2 hover:bg-hover hover:text-ink"
+                  : "text-ink-4 hover:bg-hover hover:text-ink-2",
+              )}
+            >
+              <Plus className="size-3.5" />
+              {data.workspaces.workspaces.length === 0 ? "Create a workspace" : "New workspace"}
+            </Link>
+          )}
+        </nav>
+      </div>
       <div className="flex flex-col gap-0.5 border-t border-line px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <SettingsRows isAdmin={data.isAdmin} asking={data.asking} path={path} onNavigate={onNavigate} />
         <div className="mt-1">
