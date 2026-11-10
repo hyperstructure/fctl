@@ -83,6 +83,62 @@ fn docker_layer(line: &str) -> Option<(&str, &str)> {
     hex.then_some((layer, status))
 }
 
+/// Whether a pull that failed saying `why` lost its connection to the
+/// registry, which another try may not: a stream or connection that closed
+/// or reset, a read that ran out of time. Not a full disk, a refused login
+/// or a registry's rate limit, which another try only repeats.
+pub fn broke_off(why: &str) -> bool {
+    const NETWORK: &[&str] = &[
+        // Apple's `container` (SwiftNIO, AsyncHTTPClient).
+        "streamclosed",
+        "remoteconnectionclosed",
+        "ioonclosedchannel",
+        "readtimeout",
+        "deadlineexceeded",
+        "network connection was lost",
+        // Docker (Go's net/http).
+        "connection reset",
+        "unexpected eof",
+        "broken pipe",
+        "goaway",
+        "stream error",
+        "i/o timeout",
+        "tls handshake timeout",
+        "connection closed",
+    ];
+    let why = why.to_lowercase();
+    NETWORK.iter().any(|n| why.contains(n))
+}
+
+/// The lines of what a CLI printed, `chunk`, without the escape sequences
+/// of a redrawn progress bar: a carriage return starts a line too.
+pub fn lines(chunk: &str) -> impl Iterator<Item = String> + '_ {
+    chunk
+        .split('\r')
+        .map(strip_escapes)
+        .filter(|line| !line.trim().is_empty())
+}
+
+/// `line` without ANSI escape sequences (`ESC [ … letter`).
+fn strip_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// How long a pull took, as the log says it: `45 s`, `3 min 12 s`.
 pub fn took(elapsed: Duration) -> String {
     let s = elapsed.as_secs();
@@ -138,6 +194,36 @@ mod tests {
         assert_eq!(p.summary().as_deref(), Some("2 of 3 layers pulled"));
         assert!(!p.read("Error response from daemon: manifest unknown"));
         assert!(!p.read("Digest: sha256:0123"));
+    }
+
+    #[test]
+    fn tells_a_lost_connection_from_other_failures() {
+        assert!(broke_off(
+            "Error: StreamClosed(streamID: HTTP2StreamID(7), errorCode: HTTP2ErrorCode<0x1 ProtocolError>)"
+        ));
+        assert!(broke_off(
+            "read tcp 10.0.0.2:51234->140.82.113.33:443: read: connection reset by peer"
+        ));
+        assert!(broke_off("unexpected EOF"));
+        assert!(!broke_off(
+            "failed to register layer: write /usr/lib/x.so: no space left on device"
+        ));
+        assert!(!broke_off("toomanyrequests: retry-after: 60"));
+        assert!(!broke_off("unauthorized: authentication required"));
+    }
+
+    #[test]
+    fn reads_lines_that_a_progress_bar_redraws() {
+        let chunk = "\u{1b}[2K[1/2] Fetching image 3% (5 of 7 blobs) [2s]\r\u{1b}[2K[1/2] Fetching image 4% (5 of 7 blobs) [3s]\r";
+        let read: Vec<String> = lines(chunk).collect();
+        assert_eq!(
+            read,
+            [
+                "[1/2] Fetching image 3% (5 of 7 blobs) [2s]",
+                "[1/2] Fetching image 4% (5 of 7 blobs) [3s]"
+            ]
+        );
+        assert_eq!(lines("Error: x").collect::<Vec<_>>(), ["Error: x"]);
     }
 
     #[test]

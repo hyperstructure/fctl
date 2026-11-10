@@ -19,7 +19,8 @@ use std::sync::{Mutex, PoisonError};
 /// fails; `size` holds the size images have (1000 bytes without it). With
 /// `fail_run`, `run` fails, and with `full_disk` as for a full disk. With
 /// `slow_pull`, pulls print their progress as Apple's `container` does and
-/// take most of a second; `breaks` holds how many more pulls break off.
+/// take most of a second; `breaks` holds how many more pulls break off, and
+/// `break_error` what they say then.
 /// `network create` makes `network`, which holds whether its containers
 /// reach each other, unless `no_networks` is there. Each volume is a file in
 /// `volumes` holding the KiB it takes, which `run` makes when a container
@@ -64,7 +65,9 @@ pull() {
     echo $((breaks - 1)) > "$d/breaks"
     echo "[1/2] Fetching image 76% (6 of 7 blobs, 981,6 MB/1,25 GB, 233 KB/s) [9m 47s]" >&2
     echo "[1/2] Fetching image 100% (7 blobs, 1,25 GB) [10m 0s]" >&2
-    echo 'Error: StreamClosed(streamID: HTTP2StreamID(5), errorCode: HTTP2ErrorCode<0x1 ProtocolError>, location: "NIOHTTP2/HTTP2StreamChannel.swift:892")' >&2
+    if [ -e "$d/break_error" ]; then cat "$d/break_error" >&2; else
+      echo 'Error: StreamClosed(streamID: HTTP2StreamID(5), errorCode: HTTP2ErrorCode<0x1 ProtocolError>, location: "NIOHTTP2/HTTP2StreamChannel.swift:892")' >&2
+    fi
     exit 1
   fi
   cp "$d/registry/$(key "$last")" "$(file "$last")"
@@ -284,6 +287,12 @@ impl FakeCli {
     /// streams did for Apple's `container`.
     pub fn break_pulls(&self, times: u32) -> Result<()> {
         std::fs::write(self.dir.path().join("breaks"), format!("{times}\n"))?;
+        Ok(())
+    }
+
+    /// Makes the pulls that break off fail with `error` instead.
+    pub fn break_with(&self, error: &str) -> Result<()> {
+        std::fs::write(self.dir.path().join("break_error"), format!("{error}\n"))?;
         Ok(())
     }
 

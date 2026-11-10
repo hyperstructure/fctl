@@ -53,6 +53,27 @@ struct Pulling {
     /// How far along it is, as it last said: pulls that wait for it say so
     /// too.
     progress: Mutex<Option<String>>,
+    /// Why it failed, when it did: pulls that waited for it fail with it,
+    /// rather than each try again after it, one after the other.
+    failed: Mutex<Option<Failure>>,
+}
+
+/// Why a pull failed, for the pulls that waited for it.
+#[derive(Clone)]
+struct Failure {
+    why: String,
+    /// How often its download broke off, when that is why ([`BrokeOff`]).
+    broke_off: Option<u32>,
+}
+
+impl Failure {
+    fn error(&self) -> anyhow::Error {
+        let e = anyhow::anyhow!("{}", self.why);
+        match self.broke_off {
+            Some(tries) => e.context(BrokeOff { tries }),
+            None => e,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -513,8 +534,9 @@ impl ContainerDriver {
         let missing = format!("{} is not on this host and can't be pulled", spec.image);
         // A download that broke off would for the fallback too, whose
         // blobs are mostly the same: only one that is here takes its place.
+        // Nor would a runtime that couldn't start or answer pull it.
         let fallback = match &spec.fallback_image {
-            Some(f) if pull_error.is::<BrokeOff>() && !self.has_image(f).await => None,
+            Some(f) if !may_fall_back(&pull_error) && !self.has_image(f).await => None,
             f => f.as_ref(),
         };
         if let Some(fallback) = fallback {
@@ -576,7 +598,7 @@ impl ContainerDriver {
         // that doesn't answer isn't missing the image.
         if !self.find_image(image).await.map_err(failed)? {
             log(format!("Pulling {image}"));
-            self.pull_logged(image, log, true)
+            self.pull_logged(image, log, true, false)
                 .await
                 .map_err(Create::NoImage)?;
         }
@@ -899,8 +921,14 @@ impl ContainerDriver {
     /// runtime's own output; else the host's log says how far along it is
     /// ([`Self::pull_logged`]).
     pub async fn pull(&self, image: &str, progress: bool) -> Result<()> {
-        self.pull_with(image, progress, &|line| tracing::info!("{line}"))
-            .await
+        let say = |line: String| {
+            if progress {
+                println!("{line}");
+            } else {
+                tracing::info!("{line}");
+            }
+        };
+        self.pull_with(image, progress, &say).await
     }
 
     async fn pull_with(
@@ -909,21 +937,7 @@ impl ContainerDriver {
         progress: bool,
         log: &(dyn Fn(String) + Send + Sync),
     ) -> Result<()> {
-        if !progress {
-            return self.pull_logged(image, log, false).await;
-        }
-        let platform = self.platform();
-        let args = self.pull_args(image, &platform);
-        let status = tokio::process::Command::new(&self.bin)
-            .args(&args)
-            .stdin(Stdio::null())
-            .status()
-            .await
-            .map_err(|e| super::spawn_error(&self.bin, e))?;
-        if !status.success() {
-            anyhow::bail!("{} {} failed ({status})", self.bin, args.join(" "));
-        }
-        Ok(())
+        self.pull_logged(image, log, false, progress).await
     }
 
     fn platform(&self) -> String {
@@ -949,12 +963,14 @@ impl ContainerDriver {
     /// then with `unless_here` this one pulls nothing when that one
     /// brought the image. A download that broke off is tried again, up to
     /// [`pulls::PULL_TRIES`] times in all, and then fails with
-    /// [`BrokeOff`].
+    /// [`BrokeOff`]. With `show`, a person at a terminal watches it: its
+    /// progress shows on stderr rather than in `log`.
     async fn pull_logged(
         &self,
         image: &str,
         log: &(dyn Fn(String) + Send + Sync),
         unless_here: bool,
+        show: bool,
     ) -> Result<()> {
         let pulling = self.pulling(image);
         let _held = match pulling.held.try_lock() {
@@ -968,14 +984,32 @@ impl ContainerDriver {
                     log(format!("{image} is here"));
                     return Ok(());
                 }
+                let failed = pulling
+                    .failed
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                if let Some(failure) = failed {
+                    return Err(failure.error());
+                }
                 held
             }
         };
+        let fail = |failure: Failure| {
+            *pulling
+                .failed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+        };
+        *pulling
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         let started = Instant::now();
         let mut said = false;
         let mut failed = 0;
         loop {
-            let attempt = self.pull_once(image, &pulling, log).await;
+            let attempt = self.pull_once(image, &pulling, log, show).await;
             said |= attempt.said;
             let e = match attempt.result {
                 Ok(()) => {
@@ -989,21 +1023,33 @@ impl ContainerDriver {
                 }
                 Err(e) => e,
             };
+            let message = format!("{e:#}");
+            let why = message
+                .split_once(" failed: ")
+                .map_or(message.as_str(), |(_, why)| why);
             // Before it reached the image's content, the registry hasn't
-            // the image, or doesn't let this host have it.
-            if !attempt.fetching || unanswered(&e) {
+            // the image, or doesn't let this host have it; and a full disk,
+            // say, would fail another try too.
+            if !attempt.fetching || unanswered(&e) || !pulls::broke_off(why) {
+                fail(Failure {
+                    why: message,
+                    broke_off: None,
+                });
                 return Err(e);
             }
             failed += 1;
             if failed >= pulls::PULL_TRIES {
+                fail(Failure {
+                    why: message,
+                    broke_off: Some(failed),
+                });
                 return Err(e.context(BrokeOff { tries: failed }));
             }
             let wait = self
                 .pace
                 .first_wait
                 .saturating_mul(3u32.saturating_pow(failed - 1));
-            let why = format!("{e:#}");
-            let why = brief(why.split_once(" failed: ").map_or(&why, |(_, why)| why));
+            let why = brief(why);
             log(format!(
                 "The download of {image} broke off ({why}): trying again in {} s",
                 wait.as_secs_f64().ceil()
@@ -1051,6 +1097,7 @@ impl ContainerDriver {
         image: &str,
         pulling: &Pulling,
         log: &(dyn Fn(String) + Send + Sync),
+        show: bool,
     ) -> Attempt {
         let platform = self.platform();
         let args = self.pull_args(image, &platform);
@@ -1087,12 +1134,21 @@ impl ContainerDriver {
         // failed, without the progress lines around it.
         let mut said: Option<String> = None;
         let mut errors: VecDeque<String> = VecDeque::new();
+        let mut bar = Bar::new(show);
         let run = async {
             loop {
                 tokio::select! {
                     line = rx.recv() => {
                         let Some((stderr, line)) = line else { break };
-                        if !progress.read(&line) && stderr && !line.trim().is_empty() {
+                        let far = progress.read(&line);
+                        if far {
+                            if let Some(now) = progress.summary() {
+                                bar.draw(&now);
+                            }
+                        } else {
+                            bar.print(&line);
+                        }
+                        if !far && stderr && !line.trim().is_empty() {
                             if errors.len() == 20 {
                                 errors.pop_front();
                             }
@@ -1101,7 +1157,7 @@ impl ContainerDriver {
                         *pulling.progress.lock().unwrap_or_else(PoisonError::into_inner) =
                             progress.summary();
                     }
-                    _ = tick.tick() => {
+                    _ = tick.tick(), if !show => {
                         let now = progress.summary();
                         if let Some(p) = &now
                             && now != said
@@ -1115,6 +1171,7 @@ impl ContainerDriver {
             child.wait().await
         };
         let status = tokio::time::timeout(SLOW_COMMAND_TIMEOUT, run).await;
+        bar.end();
         *pulling
             .progress
             .lock()
@@ -1531,13 +1588,62 @@ fn forward_tagged<R: AsyncRead + Unpin + Send + 'static>(
     tx: tokio::sync::mpsc::UnboundedSender<(bool, String)>,
 ) {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(r).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx.send((stderr, line)).is_err() {
-                break;
+        let mut chunks = BufReader::new(r).split(b'\n');
+        while let Ok(Some(chunk)) = chunks.next_segment().await {
+            for line in pulls::lines(&String::from_utf8_lossy(&chunk)) {
+                if tx.send((stderr, line)).is_err() {
+                    return;
+                }
             }
         }
     });
+}
+
+/// What a person at a terminal sees of a pull: its progress on one line of
+/// stderr, drawn again as it changes, and what else the runtime prints.
+struct Bar {
+    show: bool,
+    /// Whether stderr is a terminal, where the line is drawn over.
+    terminal: bool,
+    /// Whether the progress line is on the screen.
+    drawn: bool,
+}
+
+impl Bar {
+    fn new(show: bool) -> Self {
+        use std::io::IsTerminal;
+        Self {
+            show,
+            terminal: std::io::stderr().is_terminal(),
+            drawn: false,
+        }
+    }
+
+    fn draw(&mut self, progress: &str) {
+        if !self.show {
+            return;
+        }
+        if self.terminal {
+            eprint!("\r\u{1b}[2K{progress}");
+            self.drawn = true;
+        } else {
+            eprintln!("{progress}");
+        }
+    }
+
+    fn print(&mut self, line: &str) {
+        if self.show {
+            self.end();
+            eprintln!("{line}");
+        }
+    }
+
+    fn end(&mut self) {
+        if self.drawn {
+            eprintln!();
+            self.drawn = false;
+        }
+    }
 }
 
 /// Whether a line of a build's output starts one of its steps, or says it
@@ -1979,6 +2085,26 @@ mod tests {
                 .any(|c| c.starts_with("run ") && c.contains(LATEST_IMAGE))
         );
 
+        // So is one that a person watches, `fctl host image pull`.
+        let cli = FakeCli::new(&[], &[VERSION_IMAGE])?;
+        cli.break_pulls(1)?;
+        let driver = quick(&cli, Flavor::Apple);
+        driver.pull_with(VERSION_IMAGE, true, &|_| {}).await?;
+        assert!(cli.images()?.iter().any(|(name, _)| name == VERSION_IMAGE));
+
+        // A full disk would fail another try too, and isn't the network's.
+        let cli = FakeCli::new(&[], &[VERSION_IMAGE])?;
+        cli.break_pulls(9)?;
+        let full = "Error: failed to write /var/lib/blobs/sha256/4f1c: no space left on device";
+        cli.break_with(full)?;
+        let driver = quick(&cli, Flavor::Apple);
+        let lines = Lines::default();
+        let error = error_of(driver.pull_with(VERSION_IMAGE, false, &lines.log()).await);
+        assert!(error.ends_with(&format!("failed: {full}")), "{error}");
+        assert!(!error.contains("broke off"), "{error}");
+        assert_eq!(cli.calls().len(), 1, "{:?}", cli.calls());
+        assert!(!lines.all().iter().any(|l| l.contains("trying again")));
+
         // An image the registry doesn't have is tried once.
         let cli = FakeCli::new(&[], &[LATEST_IMAGE])?;
         cli.break_pulls(9)?;
@@ -2002,8 +2128,12 @@ mod tests {
         other.name = "fctl-ses-2".into();
         let one = spec(VERSION_IMAGE, None);
         let (log_one, log_other) = (first.log(), second.log());
+        // The second starts once the first is pulling.
+        let pulling = || cli.calls().iter().any(|c| c.starts_with("image pull"));
         let (a, b) = tokio::join!(driver.ensure(&one, &log_one), async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            while !pulling() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             driver.ensure(&other, &log_other).await
         });
         a?;
@@ -2017,6 +2147,39 @@ mod tests {
         let far = format!("{VERSION_IMAGE}: Fetching image ");
         assert!(log.iter().any(|l| l.starts_with(&far)), "{log:?}");
         assert_eq!(log.last(), Some(&format!("{VERSION_IMAGE} is here")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sandboxes_that_waited_for_a_failed_pull_fail_with_it() -> Result<()> {
+        let cli = FakeCli::new(&[], &[VERSION_IMAGE])?;
+        cli.slow_pulls()?;
+        cli.break_pulls(9)?;
+        let driver = quick(&cli, Flavor::Apple);
+        let one = spec(VERSION_IMAGE, None);
+        let mut other = spec(VERSION_IMAGE, None);
+        other.name = "fctl-ses-2".into();
+        let pulling = || cli.calls().iter().any(|c| c.starts_with("image pull"));
+        let (a, b) = tokio::join!(driver.ensure(&one, &|_| {}), async {
+            while !pulling() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            driver.ensure(&other, &|_| {}).await
+        });
+        let (a, b) = (error_of(a), error_of(b));
+        assert!(a.contains("its download broke off 3 times"), "{a}");
+        assert_eq!(a, b);
+        // Only the first one's three tries.
+        let pulls = cli
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("image pull"))
+            .count();
+        assert_eq!(pulls, 3, "{:?}", cli.calls());
+
+        // A later session tries again.
+        cli.break_pulls(0)?;
+        driver.ensure(&other, &|_| {}).await?;
         Ok(())
     }
 

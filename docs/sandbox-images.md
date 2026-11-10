@@ -54,8 +54,10 @@ it starts, and a session that starts before it has the image waits for that
 pull, or pulls it itself when none is under way: one pull of an image at a
 time. A session's log says every 30 seconds how far along the pull is
 (with Apple's `container`, its percentage and speed; with Docker, its
-layers), and how long it took. A pull whose download breaks off partway is
-tried again, three times in all. When the image can't be pulled, as in the
+layers), and how long it took. A pull whose connection to the registry
+breaks off partway is tried again, three times in all, as is one that
+`fctl host image pull` shows; sessions that waited for a pull that failed
+fail with it. When the image can't be pulled, as in the
 minutes after a release before its image is published, the host pulls
 `latest` instead, and sessions start from it and say so in their log; not
 when the image's download broke off, as `latest`'s, of mostly the same
