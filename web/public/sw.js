@@ -14,6 +14,12 @@ const CACHE = "fctl-offline-v2";
 // public/offline.html, at the URL Workers static assets serve it from (they
 // redirect /offline.html there, and a navigation cannot take a redirect).
 const OFFLINE = "/offline";
+// What the last click on a notification opens, kept for the app to pick up
+// (src/lib/push.ts takeOpening): an iPhone's Home Screen app may open at its
+// start page whatever openWindow asks for, and may miss a message sent as it
+// comes back to the front, so the app looks here too as it starts and shows.
+const OPENING = "fctl-opening";
+const OPENING_KEY = "/fctl-opening";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -28,7 +34,9 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+      .then((keys) =>
+        Promise.all(keys.filter((key) => key !== CACHE && key !== OPENING).map((key) => caches.delete(key))),
+      )
       .then(() => self.clients.claim()),
   );
 });
@@ -87,14 +95,30 @@ async function show(data) {
 async function open(path) {
   const url = new URL(path, self.location.origin);
   if (url.origin !== self.location.origin) return;
+  const to = url.pathname + url.search;
+  await remember(to);
   const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  const showing = windows.find((w) => new URL(w.url).pathname === url.pathname);
-  if (showing) return showing.focus();
-  const app = windows[0];
+  const app = windows.find((w) => new URL(w.url).pathname === url.pathname) ?? windows[0];
   if (app) {
-    // The app navigates itself (src/lib/push.ts), without reloading.
-    app.postMessage({ type: "open", url: url.pathname + url.search });
-    return app.focus();
+    // The app navigates itself (src/lib/push.ts), without reloading, unless it shows `to`
+    // already; either way it forgets what remember() kept, so no other window takes it later.
+    app.postMessage({ type: "open", url: to });
+    // WebKit may refuse to focus; the system brings the app forward for the click anyway.
+    return app.focus().catch(() => null);
   }
-  return self.clients.openWindow(url.href);
+  return self.clients.openWindow(url.href).catch(() => null);
+}
+
+async function remember(to) {
+  try {
+    const cache = await caches.open(OPENING);
+    await cache.put(
+      OPENING_KEY,
+      new Response(JSON.stringify({ url: to, at: Date.now() }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  } catch {
+    // The message and openWindow still do on other browsers.
+  }
 }

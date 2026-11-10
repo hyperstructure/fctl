@@ -12,6 +12,26 @@ interface FakeWindow {
   postMessage: ReturnType<typeof vi.fn>;
 }
 
+/** Cache Storage, as far as the worker uses it, keyed by path. */
+function fakeCaches() {
+  const stores = new Map<string, Map<string, Response>>();
+  const store = (name: string) => {
+    const s = stores.get(name) ?? new Map<string, Response>();
+    stores.set(name, s);
+    return s;
+  };
+  return {
+    stores,
+    open: async (name: string) => ({
+      put: async (key: string, res: Response) => void store(name).set(key, res),
+      add: async () => {},
+    }),
+    keys: async () => [...stores.keys()],
+    delete: async (name: string) => stores.delete(name),
+    match: async () => undefined,
+  };
+}
+
 function worker(windows: FakeWindow[] = []) {
   const listeners = new Map<string, Listener>();
   const shown = [
@@ -32,7 +52,8 @@ function worker(windows: FakeWindow[] = []) {
       openWindow: vi.fn(async () => null),
     },
   };
-  new Function("self", source)(self);
+  const caches = fakeCaches();
+  new Function("self", "caches", source)(self, caches);
   /** Dispatches an event and waits for what it asked to wait for. */
   const dispatch = async (type: string, event: Record<string, unknown>) => {
     let wait: Promise<unknown> = Promise.resolve();
@@ -55,7 +76,12 @@ function worker(windows: FakeWindow[] = []) {
     });
   const click = (url?: string) =>
     dispatch("notificationclick", { notification: { close: vi.fn(), data: url ? { url } : undefined } });
-  return { self, shown, push, click };
+  /** What the worker kept for the app to open. */
+  const opening = async () => {
+    const res = caches.stores.get("fctl-opening")?.get("/fctl-opening");
+    return res ? ((await res.clone().json()) as { url: string; at: number }) : undefined;
+  };
+  return { self, shown, push, click, opening, dispatch, caches };
 }
 
 const message: G.PushMessage = {
@@ -115,8 +141,38 @@ describe("the service worker", () => {
     const w = worker([other, showing]);
     await w.click("/s/ses_12");
     expect(showing.focus).toHaveBeenCalled();
+    // It takes what the click opens, so that no other window does later.
+    expect(showing.postMessage).toHaveBeenCalledWith({ type: "open", url: "/s/ses_12" });
     expect(other.focus).not.toHaveBeenCalled();
+    expect(other.postMessage).not.toHaveBeenCalled();
     expect(w.self.clients.openWindow).not.toHaveBeenCalled();
+  });
+
+  it("keeps what a click opens for the app to take as it starts or shows", async () => {
+    const w = worker();
+    const before = Date.now();
+    await w.click("/s/ses_12?tab=files");
+    const kept = await w.opening();
+    expect(kept?.url).toBe("/s/ses_12?tab=files");
+    expect(kept?.at).toBeGreaterThanOrEqual(before);
+    await w.click("https://evil.example/");
+    expect((await w.opening())?.url).toBe("/s/ses_12?tab=files");
+  });
+
+  it("keeps the click's page when the app was installed with an older worker", async () => {
+    const w = worker();
+    w.caches.stores.set("fctl-offline-v1", new Map());
+    w.caches.stores.set("fctl-opening", new Map());
+    await w.dispatch("activate", {});
+    expect([...w.caches.stores.keys()]).toEqual(["fctl-opening"]);
+  });
+
+  it("still opens the page when the window can't be focused", async () => {
+    const app = win("https://app.fctl.test/");
+    app.focus.mockRejectedValue(new Error("Not allowed"));
+    const w = worker([app]);
+    await expect(w.click("/s/ses_12")).resolves.toBeUndefined();
+    expect(app.postMessage).toHaveBeenCalledWith({ type: "open", url: "/s/ses_12" });
   });
 
   it("asks another app window to open the session", async () => {
