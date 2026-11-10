@@ -53,22 +53,65 @@ struct Pulling {
     /// How far along it is, as it last said: pulls that wait for it say so
     /// too.
     progress: Mutex<Option<String>>,
-    /// Why it failed, when it did: pulls that waited for it fail with it,
-    /// rather than each try again after it, one after the other.
-    failed: Mutex<Option<Failure>>,
+    /// Which pulls started and ended, and why the last one failed.
+    state: Mutex<PullState>,
 }
 
-/// Why a pull failed, for the pulls that waited for it.
-#[derive(Clone)]
+impl Pulling {
+    fn state(&self) -> std::sync::MutexGuard<'_, PullState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The pulls of an image, numbered as they start: pulls that waited for one
+/// that failed fail with it, rather than each try again after it, one
+/// after the other. One that starts waiting once it ended pulls again.
+#[derive(Default)]
+struct PullState {
+    started: u64,
+    ended: u64,
+    /// The pull that failed last, and why.
+    failed: Option<(u64, Failure)>,
+}
+
+impl PullState {
+    /// The pull under way, if one is.
+    fn under_way(&self) -> Option<u64> {
+        (self.started > self.ended).then_some(self.started)
+    }
+}
+
+/// Why a pull failed, for the pulls that waited for it: what it said, and
+/// what it was (a broken-off download, a runtime that didn't answer), as
+/// [`may_fall_back`] tells.
+#[derive(Clone, Debug)]
 struct Failure {
     why: String,
     /// How often its download broke off, when that is why ([`BrokeOff`]).
     broke_off: Option<u32>,
+    /// Whether the session may start from the fallback image instead.
+    falls_back: bool,
 }
 
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
+impl std::error::Error for Failure {}
+
 impl Failure {
+    fn of(e: &anyhow::Error) -> Self {
+        Self {
+            why: format!("{e:#}"),
+            broke_off: None,
+            falls_back: may_fall_back(e),
+        }
+    }
+
     fn error(&self) -> anyhow::Error {
-        let e = anyhow::anyhow!("{}", self.why);
+        let e = anyhow::Error::new(self.clone());
         match self.broke_off {
             Some(tries) => e.context(BrokeOff { tries }),
             None => e,
@@ -979,32 +1022,32 @@ impl ContainerDriver {
                 log(format!(
                     "Another pull of {image} is under way: waiting for it"
                 ));
+                let waited_for = pulling.state().under_way();
                 let held = self.wait_for(&pulling, image, log).await;
                 if unless_here && self.find_image(image).await? {
                     log(format!("{image} is here"));
                     return Ok(());
                 }
-                let failed = pulling
-                    .failed
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
+                let failed = match &pulling.state().failed {
+                    Some((n, failure)) if Some(*n) == waited_for => Some(failure.clone()),
+                    _ => None,
+                };
                 if let Some(failure) = failed {
                     return Err(failure.error());
                 }
                 held
             }
         };
-        let fail = |failure: Failure| {
-            *pulling
-                .failed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+        let number = {
+            let mut state = pulling.state();
+            state.started += 1;
+            state.started
         };
-        *pulling
-            .failed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+        let end = |failure: Option<Failure>| {
+            let mut state = pulling.state();
+            state.ended = number;
+            state.failed = failure.map(|f| (number, f));
+        };
         let started = Instant::now();
         let mut said = false;
         let mut failed = 0;
@@ -1019,6 +1062,7 @@ impl ContainerDriver {
                             pulls::took(started.elapsed())
                         ));
                     }
+                    end(None);
                     return Ok(());
                 }
                 Err(e) => e,
@@ -1031,18 +1075,16 @@ impl ContainerDriver {
             // the image, or doesn't let this host have it; and a full disk,
             // say, would fail another try too.
             if !attempt.fetching || unanswered(&e) || !pulls::broke_off(why) {
-                fail(Failure {
-                    why: message,
-                    broke_off: None,
-                });
+                end(Some(Failure::of(&e)));
                 return Err(e);
             }
             failed += 1;
             if failed >= pulls::PULL_TRIES {
-                fail(Failure {
-                    why: message,
+                end(Some(Failure {
                     broke_off: Some(failed),
-                });
+                    falls_back: false,
+                    ..Failure::of(&e)
+                }));
                 return Err(e.context(BrokeOff { tries: failed }));
             }
             let wait = self
@@ -1134,7 +1176,7 @@ impl ContainerDriver {
         // failed, without the progress lines around it.
         let mut said: Option<String> = None;
         let mut errors: VecDeque<String> = VecDeque::new();
-        let mut bar = Bar::new(show);
+        let mut bar = Bar::new(show, self.pace.progress_every);
         let run = async {
             loop {
                 tokio::select! {
@@ -1581,21 +1623,37 @@ fn brief(why: &str) -> String {
     }
 }
 
-/// Sends each line `r` reads to `tx`, with whether it came from stderr.
+/// Sends each line `r` reads to `tx` as it comes, with whether it came
+/// from stderr.
 fn forward_tagged<R: AsyncRead + Unpin + Send + 'static>(
     r: R,
     stderr: bool,
     tx: tokio::sync::mpsc::UnboundedSender<(bool, String)>,
 ) {
+    use tokio::io::AsyncReadExt;
+    let send = move |bytes: &[u8]| {
+        pulls::lines(&String::from_utf8_lossy(bytes)).all(|line| tx.send((stderr, line)).is_ok())
+    };
     tokio::spawn(async move {
-        let mut chunks = BufReader::new(r).split(b'\n');
-        while let Ok(Some(chunk)) = chunks.next_segment().await {
-            for line in pulls::lines(&String::from_utf8_lossy(&chunk)) {
-                if tx.send((stderr, line)).is_err() {
+        // A progress bar redrawn with carriage returns ends no line with a
+        // newline: each return ends one too, as it comes.
+        let mut r = r;
+        let mut buf = [0u8; 8192];
+        let mut pending: Vec<u8> = Vec::new();
+        loop {
+            let n = match r.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            pending.extend_from_slice(&buf[..n]);
+            while let Some(at) = pending.iter().position(|b| matches!(b, b'\n' | b'\r')) {
+                let line: Vec<u8> = pending.drain(..=at).collect();
+                if !send(&line[..at]) {
                     return;
                 }
             }
         }
+        send(&pending);
     });
 }
 
@@ -1607,15 +1665,21 @@ struct Bar {
     terminal: bool,
     /// Whether the progress line is on the screen.
     drawn: bool,
+    /// Elsewhere (a file), a line every `every` at most, and when the last
+    /// one was.
+    every: Duration,
+    printed: Option<Instant>,
 }
 
 impl Bar {
-    fn new(show: bool) -> Self {
+    fn new(show: bool, every: Duration) -> Self {
         use std::io::IsTerminal;
         Self {
             show,
             terminal: std::io::stderr().is_terminal(),
             drawn: false,
+            every,
+            printed: None,
         }
     }
 
@@ -1626,8 +1690,9 @@ impl Bar {
         if self.terminal {
             eprint!("\r\u{1b}[2K{progress}");
             self.drawn = true;
-        } else {
+        } else if self.printed.is_none_or(|at| at.elapsed() >= self.every) {
             eprintln!("{progress}");
+            self.printed = Some(Instant::now());
         }
     }
 
@@ -1780,7 +1845,10 @@ fn installed(bin: &str) -> bool {
 /// fallback's would. One that ran out of time may, as after any other
 /// failure.
 fn may_fall_back(e: &anyhow::Error) -> bool {
-    !(e.is::<NotStarted>() || e.is::<Unreachable>() || e.is::<BrokeOff>())
+    !(e.is::<NotStarted>()
+        || e.is::<Unreachable>()
+        || e.is::<BrokeOff>()
+        || e.downcast_ref::<Failure>().is_some_and(|f| !f.falls_back))
 }
 
 #[cfg(test)]
@@ -2371,9 +2439,39 @@ mod tests {
             error: std::io::ErrorKind::PermissionDenied.into(),
         });
         assert!(!may_fall_back(&not_started));
+        // Nor for the sessions that waited for such a pull.
+        assert!(!may_fall_back(&Failure::of(&not_started).error()));
+        assert!(may_fall_back(&Failure::of(&timed_out).error()));
         let refused = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
         let unreachable = Unreachable::from_output(refused).map(anyhow::Error::new);
         assert!(unreachable.is_some_and(|e| !may_fall_back(&e)));
+    }
+
+    #[tokio::test]
+    async fn pull_output_comes_line_by_line_also_when_redrawn() -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let (mut cli, out) = tokio::io::duplex(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        forward_tagged(out, true, tx);
+        // A redrawn bar: no newline comes until the pull ends.
+        cli.write_all(b"[1/2] Fetching image 3% (5 of 7 blobs) [2s]\r")
+            .await?;
+        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await?;
+        assert_eq!(
+            first,
+            Some((
+                true,
+                "[1/2] Fetching image 3% (5 of 7 blobs) [2s]".to_owned()
+            ))
+        );
+        cli.write_all(b"Error: StreamClosed").await?;
+        drop(cli);
+        assert_eq!(
+            rx.recv().await,
+            Some((true, "Error: StreamClosed".to_owned()))
+        );
+        assert_eq!(rx.recv().await, None);
+        Ok(())
     }
 
     #[tokio::test]

@@ -105,9 +105,15 @@ pub fn broke_off(why: &str) -> bool {
         "i/o timeout",
         "tls handshake timeout",
         "connection closed",
+        "deadline exceeded",
+        "connection timed out",
+        "client.timeout",
+        "request canceled",
     ];
     let why = why.to_lowercase();
-    NETWORK.iter().any(|n| why.contains(n))
+    // Go's io.EOF, said alone: `…/blobs/sha256:4f1c: EOF`.
+    let eof = why.trim_end() == "eof" || why.trim_end().ends_with(": eof");
+    eof || NETWORK.iter().any(|n| why.contains(n))
 }
 
 /// The lines of what a CLI printed, `chunk`, without the escape sequences
@@ -205,6 +211,16 @@ mod tests {
             "read tcp 10.0.0.2:51234->140.82.113.33:443: read: connection reset by peer"
         ));
         assert!(broke_off("unexpected EOF"));
+        assert!(broke_off(
+            "Get \"https://pkg-containers.githubusercontent.com/ghcr1/blobs/sha256:4f1c\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+        ));
+        assert!(broke_off(
+            "dial tcp 140.82.113.33:443: connect: connection timed out"
+        ));
+        assert!(broke_off(
+            "failed to copy: httpReadSeeker: failed open: sha256:4f1c: EOF"
+        ));
+        assert!(!broke_off("open /var/lib/geoffrey: no such file"));
         assert!(!broke_off(
             "failed to register layer: write /usr/lib/x.so: no space left on device"
         ));
