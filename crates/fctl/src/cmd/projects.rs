@@ -193,8 +193,8 @@ pub enum ProjectsCmd {
     /// (maintainers). Sessions take a change of settings when they next
     /// start or resume.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
-        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["name", "description", "icon", "icon_color", "icon_style", "default_branch", "model", "effort", "compact_window", "instructions", "instructions_file", "auto_pull_request", "remote_control", "connectors", "credit_people", "credit_claude", "idle_timeout", "publish_screenshots", "screenshot_days", "project_memory", "retrospectives", "github", "pr_descriptions", "pr_instructions", "pr_instructions_file", "follow_ups", "tickets", "tickets_repo", "linear_team", "linear_project", "linear_start", "linear_review", "linear_done", "explore_label", "image", "build", "build_context", "setup_script", "package_caches", "env", "unset_env", "cpus", "memory"])),
+        after_help = "Examples:\n  fctl projects set --name \"Web app\" --description \"The storefront\"   # its slug stays\n  fctl projects set --description \"\"            # no description\n  fctl projects set --icon store --icon-color yellow --icon-style duotone\n  fctl projects set --icon-color '#2a9d8f'       # a color of its own\n  fctl projects set --icon \"\"                   # the icon that fits its name again\n  fctl projects set --default-branch develop     # sessions start from develop\n  fctl projects set --model opus --effort high    # \"default\" for Claude's own\n  fctl projects set --compact-window 400k        # Claude compacts as its context nears 400K tokens\n  fctl projects set --instructions-file agents.md   # what agents are told in every session\n  fctl projects set --instructions \"\"           # nothing besides fctl's own\n  fctl projects set --auto-pull-request off      # agents open pull requests when asked to\n  fctl projects set --remote-control off --connectors on\n  fctl projects set --credit-claude off          # no Claude trailer\n  fctl projects set -p my-app --credit-people off --credit-claude off   # no trailers at all\n  fctl projects set --idle-timeout 30            # idle sessions keep their sandbox for 30 minutes\n  fctl projects set --publish-screenshots on --screenshot-days 7\n  fctl projects set --project-memory off --retrospectives off   # agents keep neither\n  fctl projects set -p web --github comment    # its agents review and comment, and never push\n  fctl projects set -p web --github triage     # its agents only label tickets and comment on them\n  fctl projects set --pr-descriptions brief      # pull requests described in a few sentences\n  fctl projects set --pr-instructions-file prs.md   # how agents handle pull requests and issues\n  fctl projects set --pr-instructions default    # fctl's rules for them (\"\" for none)\n  fctl projects set --follow-ups comments,checks,conflicts   # agents come back for @fctl, failed checks and conflicts\n  fctl projects set --tickets linear --linear-team ENG   # tickets in Linear: delegate them to fctl there\n  fctl projects set --linear-team ENG,DES --linear-project DES:Website   # two teams, one of them narrowed\n  fctl projects set --tickets github --tickets-repo acme/web   # one repository's GitHub issues\n  fctl projects set --tickets none               # agents use no ticket tracker\n  fctl projects set --image ghcr.io/acme/agent:1  # sessions start from this image\n  fctl projects set --build .devcontainer/devcontainer.json  # or one built from the repository\n  fctl projects set --setup-script @setup.sh --env NODE_ENV=test\n  fctl projects set --package-caches on          # sessions on a runner share their downloads\n  fctl projects set --cpus 8 --memory 16g"
     )]
     Set {
         /// The project (slug or id); default from `fctl projects use`.
@@ -223,6 +223,12 @@ pub enum ProjectsCmd {
         /// for Claude's own.
         #[arg(long, value_name = "LEVEL")]
         effort: Option<String>,
+        /// The context size Claude compacts the conversation near, from
+        /// 100k to 1m tokens ("default" for Claude's own, near the model's
+        /// whole window). A smaller one spends less of the plan on each step
+        /// of a long session.
+        #[arg(long, value_name = "TOKENS|default", value_parser = compact_window_arg)]
+        compact_window: Option<OrDefault>,
         /// What its agents are told in every session, after fctl's own
         /// instructions ("" for nothing). They read the repository's
         /// CLAUDE.md too.
@@ -723,7 +729,7 @@ fn credit(s: &ProjectSettings) -> &'static str {
     }
 }
 
-/// A number, or `None` for `default`: each runner's own.
+/// A number, or `None` for `default`: each runner's own, or Claude's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrDefault(Option<u32>);
 
@@ -744,6 +750,25 @@ fn memory_arg(s: &str) -> std::result::Result<OrDefault, String> {
         return Ok(OrDefault(None));
     }
     fctl_domain::size::parse_memory_mb(s).map(|m| OrDefault(Some(m)))
+}
+
+/// `--compact-window`: a number of tokens like 400k, or `default`.
+fn compact_window_arg(s: &str) -> std::result::Result<OrDefault, String> {
+    use fctl_domain::context;
+    if s.trim().eq_ignore_ascii_case("default") {
+        return Ok(OrDefault(None));
+    }
+    context::parse(s)
+        .and_then(|t| u32::try_from(t).ok())
+        .filter(|&t| context::valid(t))
+        .map(|t| OrDefault(Some(t)))
+        .ok_or_else(|| {
+            format!(
+                "use {} to {} tokens (like 400k), or default",
+                context::short(context::MIN_TOKENS).to_lowercase(),
+                context::short(context::MAX_TOKENS).to_lowercase()
+            )
+        })
 }
 
 /// `--setup-script`: the script, `@FILE`, `-` for stdin; `""` for none.
@@ -1044,6 +1069,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                 );
             }
             println!("model:   {}", model(&p.settings));
+            println!("context: {}", fctl_domain::context::describe(&p.settings));
             println!("claude:  {}", claude_apps(&p.settings));
             println!("github:  agents {}", on_github(&p.settings));
             println!("prs:     agents {}", pull_requests(&p.settings));
@@ -1110,6 +1136,7 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             default_branch,
             model: new_model,
             effort,
+            compact_window,
             instructions,
             instructions_file,
             auto_pull_request,
@@ -1183,6 +1210,9 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
             }
             if let Some(e) = &effort {
                 settings.effort = or_claudes(e);
+            }
+            if let Some(OrDefault(t)) = compact_window {
+                settings.compact_window = t;
             }
             let instructions = match &instructions_file {
                 Some(path) => Some(read_text(path)?),
@@ -1344,6 +1374,14 @@ pub async fn run(server: Option<&str>, cmd: ProjectsCmd, json: bool) -> Result<(
                     style::accent("✓"),
                     style::bold(&p.slug),
                     model(&p.settings)
+                );
+            }
+            if compact_window.is_some() {
+                println!(
+                    "{} In {}'s sessions, {}",
+                    style::accent("✓"),
+                    style::bold(&p.slug),
+                    fctl_domain::context::describe(&p.settings)
                 );
             }
             if instructions.is_some() {
@@ -2069,8 +2107,13 @@ mod tests {
             "--auto-pull-request",
             "--remote-control",
             "--connectors",
+            "--compact-window",
         ] {
-            let value = if flag.ends_with("-file") { "-" } else { "on" };
+            let value = match flag {
+                f if f.ends_with("-file") => "-",
+                "--compact-window" => "default",
+                _ => "on",
+            };
             assert!(set(&[flag, value]).is_some(), "{flag}");
         }
         assert!(set(&[]).is_none());
@@ -2084,6 +2127,18 @@ mod tests {
             .is_none()
         );
         assert!(set(&["--connectors", "maybe"]).is_none());
+        // The context size Claude compacts near, as people write it.
+        let window = |arg: &str| match set(&["--compact-window", arg]) {
+            Some(ProjectsCmd::Set { compact_window, .. }) => compact_window.map(|OrDefault(t)| t),
+            _ => None,
+        };
+        assert_eq!(window("400k"), Some(Some(400_000)));
+        assert_eq!(window("1M"), Some(Some(1_000_000)));
+        assert_eq!(window("250000"), Some(Some(250_000)));
+        assert_eq!(window("default"), Some(None));
+        for wrong in ["50k", "2m", "lots", ""] {
+            assert!(set(&["--compact-window", wrong]).is_none(), "{wrong}");
+        }
         assert_eq!(or_claudes(" Default "), None);
         assert_eq!(
             or_claudes("claude-opus-5-5"),

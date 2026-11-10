@@ -254,6 +254,60 @@ describe("a project's Settings", () => {
     }
   });
 
+  it("saves where sessions compact: Claude's default, a size offered, or one typed", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = open("agents");
+      const field = (label: string) => {
+        const l = [...s.container.querySelectorAll("label")].find((e) => e.textContent === label);
+        return s.container.querySelector(`[id="${l?.htmlFor}"]`) as HTMLElement | null;
+      };
+      const choose = (text: string) => {
+        act(() => field("Compact near")?.click());
+        const option = [...s.container.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+          o.textContent?.startsWith(text),
+        );
+        act(() => option?.click());
+        act(() => vi.advanceTimersByTime(1000));
+      };
+      const type = (text: string) =>
+        act(() => {
+          const input = field("Tokens") as HTMLInputElement;
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+      // The mutation tells the page on a timer; the page then gets the project as saved, as the
+      // route gives it from the cache.
+      const save = async () => {
+        await act(async () => s.button("Save").click());
+        await act(async () => vi.advanceTimersByTime(1000));
+        const saved = queryClient.getQueryData<G.Project>(keys.project("shop"));
+        if (saved) s.show(saved);
+      };
+      expect(field("Tokens")).toBeNull();
+      choose("Another size");
+      // Nothing typed yet: it says so rather than save.
+      await save();
+      expect(updates).toHaveLength(0);
+      expect(s.container.textContent).toContain("Type a size from 100K to 1M tokens, like 300K");
+      type("300k");
+      await save();
+      expect(updates.at(-1)?.body.settings?.compact_window).toBe(300_000);
+      expect(updates.at(-1)?.body.settings?.instructions).toBe("Run the tests first.");
+      // Saved, the field shows it as it'd be typed.
+      expect((field("Tokens") as HTMLInputElement).value).toBe("300K");
+      choose("400K");
+      await save();
+      expect(updates.at(-1)?.body.settings?.compact_window).toBe(400_000);
+      choose("Claude's default");
+      await save();
+      // Sent as null, which the control plane reads as Claude's default rather than as unsent.
+      expect(updates.at(-1)?.body.settings?.compact_window).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("drops the changes Cancel throws away", () => {
     const s = open("agents");
     act(() => s.toggle("Project memory").click());

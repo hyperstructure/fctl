@@ -138,6 +138,9 @@ describe("what the list of Settings' pages says", () => {
     expect(agentsGist({ ...settings, model: "opus", effort: "xhigh" })).toBe("Opus · extra high effort");
     expect(agentsGist({ ...settings, effort: "low" })).toBe("Claude's default model · low effort");
     expect(agentsGist({ ...settings, model: "claude-opus-5-5" })).toBe("Opus 5.5");
+    expect(agentsGist({ ...settings, model: "opus", compact_window: 400_000 })).toBe(
+      "Opus · compacts near 400K",
+    );
   });
 
   it("says whether agents open pull requests, and what brings them back", () => {

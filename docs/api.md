@@ -345,7 +345,9 @@ curl -sS "${auth[@]}" -X PATCH -d "{\"settings\": $settings}" "$API/projects/my-
 ```
 
 The settings: `setup_script`, `instructions` (what agents are told after
-fctl's own), `model`, `effort`, `image` or `image_build`, `cpus`,
+fctl's own), `model`, `effort`, `compact_window` (the context size, 100K
+to 1M tokens, that Claude compacts the conversation near: `null` for
+Claude's default), `image` or `image_build`, `cpus`,
 `memory_mb`, `package_caches`, `env` (not secret), `idle_timeout_minutes`,
 `auto_pull_request` (agents open a pull request when they finish),
 `pull_request_descriptions` (`brief`, `balanced`, `full`),

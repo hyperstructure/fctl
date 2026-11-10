@@ -628,6 +628,20 @@ pub struct ProjectSettings {
     pub model: Option<String>,
     /// Claude effort level (`low` … `max`).
     pub effort: Option<String>,
+    /// The context size, in tokens, that Claude compacts the conversation
+    /// near on its own: Claude Code's auto-compact window
+    /// (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `fctl_domain::context`), which
+    /// it compacts a little before, capped at the model's own window. 100K
+    /// to 1M. Absent: Claude's default, near the model's whole window. A
+    /// smaller one spends less of the plan on each step of a long session.
+    /// Always sent, as `null` for Claude's default: an update without it
+    /// keeps what was stored (see `fctl_domain::settings::keep_unsent`).
+    /// The control plane passes it on in the project's variables
+    /// (`fctl_domain::settings::session_env`), which agents from before it
+    /// pass to Claude too.
+    #[serialize_always]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub compact_window: Option<u32>,
     /// Text appended to Claude's system prompt for every session.
     pub instructions: Option<String>,
     /// CPUs per sandbox.
@@ -1043,6 +1057,7 @@ impl Default for ProjectSettings {
             package_caches: false,
             model: None,
             effort: None,
+            compact_window: None,
             instructions: None,
             cpus: None,
             memory_mb: None,

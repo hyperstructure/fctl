@@ -3,6 +3,7 @@
 // phone says about each.
 
 import type * as G from "@/gen";
+import { compactGist } from "./context";
 import { imageSource } from "./images";
 import { effortLabel, modelLabel } from "./models";
 import { TRACKERS, trackerOf } from "./tickets";
@@ -121,13 +122,17 @@ export function placeOf(
 
 const count = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
 
-/** The model and effort agents work with: "Opus · high effort", "Claude's default model". */
+/**
+ * The model and effort agents work with, and where they compact: "Opus · high effort",
+ * "Claude's default model · compacts near 400K".
+ */
 export function agentsGist(s: G.ProjectSettings): string {
   const model = s.model?.trim();
   const effort = s.effort?.trim();
   return [
     model ? modelLabel(model) : "Claude's default model",
     effort && `${effortLabel(effort).toLowerCase()} effort`,
+    compactGist(s),
   ]
     .filter(Boolean)
     .join(" · ");

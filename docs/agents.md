@@ -518,6 +518,7 @@ fctl projects set -p my-app --github push --pr-descriptions balanced --follow-up
 fctl projects set -p my-app --pr-instructions-file prs.md   # how they handle pull requests and issues
 fctl projects set -p my-app --tickets github
 fctl projects set -p my-app --model opus --effort high --instructions-file agents.md
+fctl projects set -p my-app --compact-window 400k   # Claude compacts long sessions as they near 400K tokens
 fctl projects set -p my-app --auto-pull-request on --remote-control on --connectors off
 printenv STRIPE_KEY | fctl projects secrets set STRIPE_KEY -p my-app
 fctl projects members add grace@example.com --role maintainer -p my-app
