@@ -12,7 +12,8 @@ import {
   Settings,
   Users,
 } from "lucide-react";
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
+import { PageTabs, TabCount } from "@/components/page-tabs";
 import { AutopilotTab } from "@/components/project/autopilot";
 import { ProjectIconPicker } from "@/components/project/icon-picker";
 import { Members } from "@/components/project/members";
@@ -78,7 +79,7 @@ const LABELS: Record<ProjectTab, string> = {
  * Each tab's icon, as the rest of the app draws what the tab holds: the Agent Floor's mark for its
  * sessions, the schedule button's calendar, the eye that reviews are, the bookmark of notes kept, a
  * folder of git for its repositories, people for its members, the sidebar's gear. Autopilot draws
- * its own mark (`TabIcon`).
+ * its own mark (`Tabs`).
  */
 const ICONS: Record<Exclude<ProjectTab, "autopilot">, (className: string) => ReactNode> = {
   sessions: (className) => <AgentFloorIcon className={className} />,
@@ -89,31 +90,6 @@ const ICONS: Record<Exclude<ProjectTab, "autopilot">, (className: string) => Rea
   members: (className) => <Users className={className} aria-hidden="true" />,
   settings: (className) => <Settings className={className} aria-hidden="true" />,
 };
-
-/**
- * A tab's icon: in the accent on the open tab, as its underline is, and lighter as the pointer
- * comes. The autopilot's says how it is, as its mark does elsewhere: a comet round it while it works,
- * pink while it's paused.
- */
-function TabIcon({
-  tab,
-  here,
-  autopilot,
-}: {
-  tab: ProjectTab;
-  here: boolean;
-  autopilot?: G.ProjectAutopilot;
-}) {
-  const on = !!autopilot?.state && autopilot.state !== "off";
-  const paused = tab === "autopilot" && autopilot?.state === "paused";
-  const working = tab === "autopilot" && on && !!autopilot?.working;
-  const className = cn(
-    "size-4 shrink-0 transition-colors duration-150",
-    paused ? "text-pink" : here ? "text-accent" : working ? "text-ink" : "text-ink-4 group-hover:text-ink-3",
-  );
-  if (tab === "autopilot") return <AutopilotIcon live={working} className={className} />;
-  return ICONS[tab](className);
-}
 
 /** The project's icon beside its name: its maintainers click it to choose another. */
 function HeaderIcon({ project, manage }: { project: G.Project; manage: boolean }) {
@@ -247,7 +223,8 @@ export function ProjectPage() {
 
 /**
  * The project's tabs, each an address: the default, Sessions, has none, so the page's address stays
- * clean. Where they don't fit (phones) they scroll sideways, and the open one scrolls into view.
+ * clean. The autopilot's icon says how it is, as its mark does elsewhere: a comet round it while it
+ * works, pink while it's paused.
  */
 function Tabs({
   slug,
@@ -260,58 +237,32 @@ function Tabs({
   tab: ProjectTab;
   autopilot?: G.ProjectAutopilot;
 }) {
-  const strip = useRef<HTMLElement>(null);
-  const shown = tabs.join();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: again as another tab opens, or the tabs change
-  useLayoutEffect(() => {
-    const nav = strip.current;
-    const here = nav?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (!nav || !here || nav.scrollWidth <= nav.clientWidth) return;
-    const a = here.getBoundingClientRect();
-    const v = nav.getBoundingClientRect();
-    if (a.left >= v.left && a.right <= v.right) return;
-    // Sideways only: the page stays where it is.
-    nav.scrollLeft += a.left + a.width / 2 - (v.left + v.width / 2);
-  }, [tab, shown]);
   const asks = autopilot?.asks ?? 0;
+  const working = !!autopilot?.state && autopilot.state !== "off" && !!autopilot.working;
+  const paused = autopilot?.state === "paused";
   return (
-    <nav ref={strip} aria-label="Project" className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
-      <div className="flex w-max min-w-full gap-1 border-b border-line">
-        {tabs.map((t) => {
-          const here = tab === t;
-          return (
-            <Link
-              key={t}
-              to="/p/$slug"
-              params={{ slug }}
-              search={{ tab: t === "sessions" ? undefined : t }}
-              // The page says which tab is open: a page of Memory or Settings is under its tab, and
-              // TanStack's Link, matching search partly, would call Sessions open on every tab.
-              aria-current={here ? "page" : undefined}
-              activeOptions={{ exact: true }}
-              className={cn(
-                "group relative inline-flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 text-[13.5px] transition-colors duration-150",
-                here ? "text-ink" : "text-ink-3 hover:text-ink",
-              )}
-            >
-              <TabIcon tab={t} here={here} autopilot={autopilot} />
-              {LABELS[t]}
-              {t === "autopilot" && asks > 0 && (
-                <span
-                  title={`It asks you ${asks === 1 ? "one thing" : `${asks} things`}`}
-                  className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-blue px-1 text-[10px] font-semibold text-white tabular-nums"
-                >
-                  {asks}
-                </span>
-              )}
-              {here && (
-                <span className="absolute inset-x-1.5 -bottom-px h-[2px] rounded-full bg-accent forced-colors:bg-[CanvasText] forced-color-adjust-none" />
-              )}
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
+    <PageTabs
+      label="Project"
+      open={tab}
+      link={(t) => ({ to: "/p/$slug", params: { slug }, search: { tab: t === "sessions" ? undefined : t } })}
+      tabs={tabs.map((t) =>
+        t === "autopilot"
+          ? {
+              id: t,
+              label: LABELS[t],
+              icon: (className) => <AutopilotIcon live={working} className={className} />,
+              tint: paused ? "text-pink" : working && tab !== t ? "text-ink" : undefined,
+              badge: asks > 0 && (
+                <TabCount
+                  n={asks}
+                  tone="blue"
+                  label={`It asks you ${asks === 1 ? "one thing" : `${asks} things`}`}
+                />
+              ),
+            }
+          : { id: t, label: LABELS[t], icon: ICONS[t] },
+      )}
+    />
   );
 }
 
