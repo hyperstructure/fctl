@@ -41,6 +41,9 @@ pub enum Kind {
     /// (`fctl autopilot ask`): a decision, or a secret. It goes on with
     /// other work meanwhile, so it says this whatever the session's state.
     Autopilot,
+    /// fctl paused an autopilot whose sessions kept failing, which its
+    /// own session's failures don't say: people resume it once that's fixed.
+    AutopilotPaused,
 }
 
 impl Kind {
@@ -62,7 +65,7 @@ impl Kind {
     /// something, and a review's not when its turn ends.
     pub fn notifies(self, audience: Audience) -> bool {
         match self {
-            Self::Asking | Self::Autopilot => true,
+            Self::Asking | Self::Autopilot | Self::AutopilotPaused => true,
             Self::Waiting => audience == Audience::People,
             Self::Paused | Self::Failed => audience != Audience::Autopilot,
         }
@@ -73,7 +76,7 @@ impl Kind {
         match self {
             Self::Waiting | Self::Asking | Self::Autopilot => settings.waiting,
             Self::Paused => settings.paused,
-            Self::Failed => settings.failed,
+            Self::Failed | Self::AutopilotPaused => settings.failed,
         }
     }
 
@@ -85,7 +88,7 @@ impl Kind {
                 Self::Waiting | Self::Asking => SessionStatus::Idle,
                 Self::Paused => SessionStatus::Paused,
                 Self::Failed => SessionStatus::Failed,
-                Self::Autopilot => return true,
+                Self::Autopilot | Self::AutopilotPaused => return true,
             }
     }
 }
@@ -100,8 +103,12 @@ pub enum Audience {
     /// nobody.
     Review,
     /// An autopilot's: its own session, which fctl wakes again, or one it
-    /// started while it is on. It hears when they finish a turn, pause or
-    /// fail, and goes on by itself; people hear only what they ask.
+    /// started while it is on. People hear only what they ask: the
+    /// autopilot hears when they finish a turn or fail, and goes on by
+    /// itself; a pause on a usage limit continues by itself when the limit
+    /// resets. Should its own sessions keep failing, fctl pauses it and says
+    /// so ([`Kind::AutopilotPaused`]); its own session's other failures, while
+    /// the autopilot is paused or off, go unheard.
     Autopilot,
 }
 
@@ -266,6 +273,7 @@ fn says(kind: Kind) -> &'static str {
         Kind::Paused => "paused on a usage limit",
         Kind::Failed => "failed",
         Kind::Autopilot => "asks you",
+        Kind::AutopilotPaused => "is paused",
     }
 }
 
@@ -308,6 +316,14 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
         {
             Some(q) => format!("It asks you\n{}", question_lines(q)),
             None => "It asks you something".to_owned(),
+        },
+        (Kind::AutopilotPaused, _) => match only
+            .detail
+            .as_deref()
+            .and_then(|why| excerpt(why, QUESTION_CHARS))
+        {
+            Some(why) => format!("fctl paused it\n{why}"),
+            None => "fctl paused it".to_owned(),
         },
     };
     Some(PushMessage {
@@ -400,6 +416,26 @@ mod tests {
             Some("It asks you\nWhich payment provider?".into())
         );
         assert!(Kind::Autopilot.still(SessionStatus::Running));
+    }
+
+    #[test]
+    fn an_autopilot_fctl_paused_says_why() {
+        let why = "Its last 3 sessions failed, the last because the runner is gone. Resume it once that's fixed.";
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            url: Some("/p/shop?tab=autopilot".into()),
+            ..event(3, Kind::AutopilotPaused, Some(why))
+        };
+        assert_eq!(
+            compose(&[e]).map(|m| m.body),
+            Some(format!("fctl paused it\n{why}"))
+        );
+        assert!(Kind::AutopilotPaused.notifies(Audience::Autopilot));
+        assert!(Kind::AutopilotPaused.still(SessionStatus::Failed));
+        assert!(!Kind::AutopilotPaused.wanted(&NotificationSettings {
+            failed: false,
+            ..Default::default()
+        }));
     }
 
     fn event(n: u32, kind: Kind, detail: Option<&str>) -> Event {
