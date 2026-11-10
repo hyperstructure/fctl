@@ -56,6 +56,8 @@ pub struct AutopilotRow {
     #[serde(deserialize_with = "opt_int", default)]
     pub paused_at: Option<i64>,
     pub owner_id: Option<String>,
+    #[serde(deserialize_with = "int_bool", default)]
+    pub keep_owner: bool,
     pub direction: String,
     pub direction_by: Option<String>,
     #[serde(deserialize_with = "int")]
@@ -104,7 +106,7 @@ pub struct AutopilotRow {
 }
 
 pub const AUTOPILOT_SELECT: &str = "SELECT a.project_id, a.workspace_id, a.scope, a.state, a.paused_reason, \
-    a.paused_by, a.paused_at, a.owner_id, a.direction, a.direction_by, a.direction_at, a.direction_new, a.plan, \
+    a.paused_by, a.paused_at, a.owner_id, a.keep_owner, a.direction, a.direction_by, a.direction_at, a.direction_new, a.plan, \
     a.plan_at, a.powers, a.check_in_minutes, a.crew_max, a.model, a.effort, a.session_id, a.wake_at, a.wake_reasons, \
     a.asked_wake_at, a.woken_at, a.check_ins, a.failures, a.created_at, a.updated_at, \
     ou.name AS owner_name, ou.avatar_url AS owner_avatar, pu.name AS paused_by_name, pu.avatar_url AS paused_by_avatar, \

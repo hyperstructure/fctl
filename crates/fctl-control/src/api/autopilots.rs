@@ -37,6 +37,12 @@ use worker::{Request, Response};
 /// How long answered asks stay in the autopilot's list.
 const ASKS_KEPT_MS: i64 = 7 * 86_400_000;
 
+/// Why a change or a resume that started from whose it was didn't happen:
+/// someone took it over, or its owner changed whether they keep it,
+/// meanwhile.
+const MOVED_ON: &str =
+    "Whose subscription it runs on changed meanwhile: look again, then try again.";
+
 /// The project and its autopilot, if it has one, with what the caller may
 /// do.
 struct Loaded {
@@ -167,6 +173,7 @@ async fn view(
         paused_by: row.paused_by_ref(),
         paused_at: row.paused_at,
         owner: row.owner_ref(),
+        keep_owner: row.keep_owner,
         direction: row.direction.clone(),
         direction_by: row.direction_by_ref(),
         direction_at: row.direction_at,
@@ -740,14 +747,22 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             let crew = crew
                 .or(before.as_ref().map(AutopilotRow::crew_max))
                 .unwrap_or(ap::DEFAULT_CREW);
+            // Theirs to choose, who own it from now on: what its owner
+            // before them chose isn't.
+            let keep_owner = body.keep_owner.unwrap_or_else(|| {
+                before
+                    .as_ref()
+                    .is_some_and(|b| b.keep_owner && b.owner_id.as_deref() == Some(me.id.as_str()))
+            });
             let written = q(
                 &ctx.db,
-                "INSERT INTO autopilots (project_id, workspace_id, scope, state, owner_id, direction, direction_by, direction_at, \
-                 direction_new, powers, check_in_minutes, crew_max, model, effort, wake_at, wake_reasons, failures, \
+                "INSERT INTO autopilots (project_id, workspace_id, scope, state, owner_id, keep_owner, direction, direction_by, \
+                 direction_at, direction_new, powers, check_in_minutes, crew_max, model, effort, wake_at, wake_reasons, failures, \
                  created_by, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, 'on', ?4, ?5, ?4, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?6, 'started', 0, ?4, ?6, ?6) \
+                 VALUES (?1, ?2, ?3, 'on', ?4, ?12, ?5, ?4, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?6, 'started', 0, ?4, ?6, ?6) \
                  ON CONFLICT (project_id) DO UPDATE SET workspace_id = excluded.workspace_id, scope = excluded.scope, \
                  state = 'on', paused_reason = NULL, paused_by = NULL, paused_at = NULL, owner_id = excluded.owner_id, \
+                 keep_owner = excluded.keep_owner, \
                  direction = excluded.direction, direction_by = CASE WHEN autopilots.direction = excluded.direction \
                    THEN autopilots.direction_by ELSE excluded.direction_by END, \
                  direction_at = CASE WHEN autopilots.direction = excluded.direction THEN autopilots.direction_at \
@@ -775,6 +790,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                         Some(e) => e.as_deref(),
                         None => before.as_ref().and_then(|b| b.effort.as_deref()),
                     }),
+                    crate::db::b(keep_owner),
                 ],
             )?
             .run()
@@ -822,6 +838,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     "powers": ap::store_powers(&powers),
                     "check_in_minutes": check_in,
                     "crew_max": crew,
+                    "keep_owner": keep_owner,
                 })),
             );
             crate::schedules::wake(&ctx.env).await;
@@ -844,7 +861,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 .transpose()
                 .map_err(AppError)?;
             // What spends its owner's subscription, changed by someone else,
-            // runs it on theirs from now on.
+            // runs it on theirs from now on, unless its owner keeps it.
             let costs = check_in.is_some_and(|c| c != row.check_in())
                 || crew.is_some_and(|c| c != row.crew_max())
                 || model
@@ -853,8 +870,22 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 || effort
                     .as_ref()
                     .is_some_and(|e| e.as_deref() != row.effort.as_deref());
-            let take_over =
-                (body.take_over || costs) && row.owner_id.as_deref() != Some(me.id.as_str());
+            let mine = row.owner_id.as_deref() == Some(me.id.as_str());
+            let take_over = takes_over(ctx, &l.p, &row, mine, body.take_over, costs).await?;
+            // Whether it stays on its owner's subscription is theirs to
+            // choose: the new owner's, once someone takes it over, who
+            // starts without it unless they ask.
+            let keep_owner = if take_over {
+                body.keep_owner.unwrap_or(false)
+            } else if mine {
+                body.keep_owner.unwrap_or(row.keep_owner)
+            } else if body.keep_owner.is_some_and(|k| k != row.keep_owner) {
+                return Err(forbidden(
+                    "Only its owner chooses whether it stays on their subscription when others change it: take it over to choose for yours.",
+                ));
+            } else {
+                row.keep_owner
+            };
             if take_over {
                 if crate::api::sessions::credential_for(&ctx.db, &me, l.p.workspace_id())
                     .await?
@@ -866,8 +897,22 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 }
                 ctx.verified(Sensitive::PutOnAutopilot)?;
             }
+            // Keeping it lets others spend its owner's plan: theirs to
+            // confirm, as putting it on is. What the log says of it: a new
+            // owner's choice to keep it, or the owner's change.
+            let keeps = if take_over {
+                keep_owner.then_some(true)
+            } else {
+                (keep_owner != row.keep_owner).then_some(keep_owner)
+            };
+            if keeps == Some(true) {
+                ctx.verified(Sensitive::KeepAutopilot)?;
+            }
             let new_direction = direction.filter(|d| *d != row.direction);
-            q(
+            // Only while whose it is, and whether they keep it, are as read:
+            // what was decided from them (taking it over or not, keeping it)
+            // holds then, and nothing writes back what changed meanwhile.
+            let written = q(
                 &ctx.db,
                 "UPDATE autopilots SET direction = COALESCE(?1, direction), \
                  direction_by = CASE WHEN ?1 IS NULL THEN direction_by ELSE ?2 END, \
@@ -876,7 +921,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                  powers = COALESCE(?4, powers), check_in_minutes = COALESCE(?5, check_in_minutes), \
                  crew_max = COALESCE(?6, crew_max), \
                  model = CASE WHEN ?7 THEN ?8 ELSE model END, effort = CASE WHEN ?9 THEN ?10 ELSE effort END, \
-                 owner_id = CASE WHEN ?11 THEN ?2 ELSE owner_id END, updated_at = ?3 WHERE project_id = ?12",
+                 owner_id = CASE WHEN ?11 THEN ?2 ELSE owner_id END, keep_owner = ?13, updated_at = ?3 \
+                 WHERE project_id = ?12 AND owner_id IS ?14 AND keep_owner = ?15",
                 &[
                     os(new_direction.as_deref()),
                     s(&me.id),
@@ -890,10 +936,16 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     os(effort.clone().flatten().as_deref()),
                     crate::db::b(take_over),
                     s(&row.project_id),
+                    crate::db::b(keep_owner),
+                    os(row.owner_id.as_deref()),
+                    crate::db::b(row.keep_owner),
                 ],
             )?
             .run()
             .await?;
+            if written == 0 {
+                return Err(conflict(MOVED_ON));
+            }
             if new_direction.is_some() {
                 engine::log(
                     &ctx.db,
@@ -949,6 +1001,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 };
                 if take_over && !changed.is_empty() {
                     text.push_str(": it runs on their subscription from now on");
+                } else if !mine && !take_over && costs {
+                    text.push_str(": it stays on its owner's subscription, as they keep it");
                 }
                 engine::log(
                     &ctx.db,
@@ -966,12 +1020,69 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                         "check_in_minutes": check_in,
                         "crew_max": crew,
                         "taken_over": take_over,
+                        "keep_owner": keep_owner,
                     })),
                 );
+            } else if keeps.is_some() {
+                ctx.audit_in(
+                    Some(l.p.workspace_id()),
+                    "autopilot.changed",
+                    Some(&row.project_id),
+                    Some(serde_json::json!({ "keep_owner": keep_owner })),
+                );
+            }
+            if let Some(keeps) = keeps {
+                engine::log(
+                    &ctx.db,
+                    &row.project_id,
+                    Entry::new(
+                        AutopilotEntryKind::State,
+                        if keeps {
+                            format!(
+                                "{} chose to keep it on their subscription when others change or resume it",
+                                ap::WHO
+                            )
+                        } else {
+                            format!(
+                                "{} no longer keeps it on their subscription: others who change or resume it take it over",
+                                ap::WHO
+                            )
+                        },
+                    )
+                    .by(&me.id),
+                    ctx.now,
+                )
+                .await;
             }
         }
     }
     get(ctx, &l.p.row.id).await
+}
+
+/// Whether what the caller does to `row` runs it on their subscription
+/// from now on (`ap::takes_over`): asking to; or changing how much it
+/// works, or resuming it, unless its owner keeps it and can still run it.
+async fn takes_over(
+    ctx: &Ctx,
+    p: &ProjectAccess,
+    row: &AutopilotRow,
+    mine: bool,
+    asks: bool,
+    costs: bool,
+) -> AppResult<bool> {
+    // Whether its owner can run it matters only where they keep it.
+    let owner_runs = !mine
+        && !asks
+        && costs
+        && row.keep_owner
+        && engine::owner(&ctx.db, &p.row, row).await?.is_ok();
+    Ok(ap::takes_over(ap::Change {
+        by_owner: mine,
+        asks,
+        costs,
+        kept: row.keep_owner,
+        owner_runs,
+    }))
 }
 
 fn join(items: &[&str]) -> String {
@@ -1158,7 +1269,8 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         ));
     }
     let me = ctx.user()?.clone();
-    let take_over = row.owner_id.as_deref() != Some(me.id.as_str());
+    let mine = row.owner_id.as_deref() == Some(me.id.as_str());
+    let take_over = takes_over(ctx, &l.p, &row, mine, false, true).await?;
     if take_over {
         if crate::api::sessions::credential_for(&ctx.db, &me, l.p.workspace_id())
             .await?
@@ -1170,24 +1282,33 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         }
         ctx.verified(Sensitive::PutOnAutopilot)?;
     }
-    // Only one still paused: one taken off meanwhile stays off.
+    // Only one still paused: one taken off meanwhile stays off. Taken
+    // over, it's no longer kept: its new owner chooses that for theirs.
     let resumed = q(
         &ctx.db,
         "UPDATE autopilots SET state = 'on', paused_reason = NULL, paused_by = NULL, paused_at = NULL, failures = 0, \
          wake_at = ?1, wake_reasons = 'resumed', asked_wake_at = NULL, owner_id = CASE WHEN ?2 THEN ?3 ELSE owner_id END, \
-         updated_at = ?1 WHERE project_id = ?4 AND state = 'paused'",
+         keep_owner = CASE WHEN ?2 THEN 0 ELSE keep_owner END, updated_at = ?1 \
+         WHERE project_id = ?4 AND state = 'paused' AND owner_id IS ?5 AND keep_owner = ?6",
         &[
             n(ctx.now),
             crate::db::b(take_over),
             s(&me.id),
             s(&row.project_id),
+            os(row.owner_id.as_deref()),
+            crate::db::b(row.keep_owner),
         ],
     )?
     .run()
     .await?;
     if resumed == 0 {
+        let now = engine::row(&ctx.db, &row.project_id).await?;
         return Err(conflict(
-            "It isn't paused any more: someone resumed it, or took it off autopilot, meanwhile.",
+            if now.is_some_and(|n| n.state() == AutopilotState::Paused) {
+                MOVED_ON
+            } else {
+                "It isn't paused any more: someone resumed it, or took it off autopilot, meanwhile."
+            },
         ));
     }
     engine::log(
@@ -1197,6 +1318,11 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
             AutopilotEntryKind::State,
             if take_over {
                 format!("{} resumed it, on their subscription from now on", ap::WHO)
+            } else if !mine {
+                format!(
+                    "{} resumed it, on its owner's subscription, as they keep it",
+                    ap::WHO
+                )
             } else {
                 format!("{} resumed it", ap::WHO)
             },

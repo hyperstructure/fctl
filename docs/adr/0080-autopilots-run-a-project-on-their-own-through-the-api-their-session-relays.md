@@ -89,7 +89,10 @@ agent that manages a project needs most of the API besides.
 - A project on autopilot spends its owner's Claude plan without anyone
   starting sessions: its check-in, crew size and model are theirs to
   choose, a change by anyone else runs it on theirs, and runs wait while
-  the plan is at its limit.
+  the plan is at its limit. Its owner can keep it on theirs when others
+  change or resume it (`keep_owner`, added later), in a project whose
+  people they all trust: whoever steers it then spends their plan, as
+  them.
 - Its sessions' events go through SessionDO as any session's; the
   autopilot's log, notes and asks are rows in D1, kept per project and
   deleted with it.

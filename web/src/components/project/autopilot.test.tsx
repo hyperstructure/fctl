@@ -6,16 +6,23 @@ import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { AutopilotTab } from "./autopilot";
 
-const { answer, autopilot, toast } = vi.hoisted(() => ({
+const { answer, autopilot, put, resume, toast } = vi.hoisted(() => ({
   answer: vi.fn(),
   autopilot: vi.fn(),
+  put: vi.fn(),
+  resume: vi.fn(),
   toast: vi.fn(),
 }));
-// The autopilot and answering it are answered; other requests wait.
+// The autopilot, answering, changing and resuming it are answered; other requests wait.
+const answered: Record<string, unknown> = {
+  autopilot,
+  answerAutopilot: answer,
+  putAutopilot: put,
+  resumeAutopilot: resume,
+};
 vi.mock("@/lib/api", () => ({
   api: new Proxy({} as Record<string, unknown>, {
-    get: (_, k) =>
-      k === "autopilot" ? autopilot : k === "answerAutopilot" ? answer : () => new Promise(() => {}),
+    get: (_, k) => answered[k as string] ?? (() => new Promise(() => {})),
   }),
   ApiFailure: class extends Error {
     status: number;
@@ -58,6 +65,20 @@ function render(node: ReactNode) {
 
 const settle = () => act(() => new Promise((r) => setTimeout(r, 10)));
 
+/** Signs in as `id`. */
+const signIn = (id: string) =>
+  queryClient.setQueryData(keys.me, { user: { id, name: id === "usr_ada" ? "Ada" : "Bo" } } as G.Me);
+
+/** Clicks the button or menu item that reads `text`, wherever it shows (dialogs show in the body). */
+async function click(text: string) {
+  const found = [...document.body.querySelectorAll<HTMLElement>("button, [role=menuitem]")].find(
+    (b) => b.textContent?.trim() === text || b.getAttribute("aria-label") === text,
+  );
+  expect(found, text).toBeTruthy();
+  await act(async () => found?.click());
+  await settle();
+}
+
 const project = (more: Partial<G.Project> = {}): G.Project => ({
   id: "prj_1",
   slug: "shop",
@@ -91,6 +112,7 @@ const on = (more: Partial<G.Autopilot> = {}): G.Autopilot => ({
   scope: "project",
   state: "on",
   owner: { id: "usr_ada", name: "Ada" },
+  keep_owner: false,
   direction: "Ship the **checkout**.",
   direction_at: Date.now() - 3_600_000,
   powers: ["settings"],
@@ -212,6 +234,71 @@ describe("a project's Autopilot tab", () => {
     expect(page.textContent).toContain("Which domain?");
     expect(page.textContent).toContain("The workspace's admins answer it.");
     expect([...page.querySelectorAll("button")].some((b) => b.textContent === "Wake now")).toBe(false);
+  });
+
+  it("lets its owner keep it on their subscription when others change it, warning them first", async () => {
+    signIn("usr_ada");
+    const mine = on();
+    autopilot.mockResolvedValue(mine);
+    put.mockResolvedValue(on({ keep_owner: true }));
+    queryClient.setQueryData(keys.autopilot("prj_1"), mine);
+    render(<AutopilotTab project={project()} />);
+    await settle();
+    await click("More");
+    await click("Change how it works…");
+    expect(document.body.textContent).toContain("Only for a project whose people you all trust.");
+    expect(document.body.textContent).not.toContain("Run it on your subscription…");
+    const keep = document.getElementById("autopilot-keep") as HTMLInputElement;
+    expect(keep.checked).toBe(false);
+    await act(async () => keep.click());
+    expect(document.body.textContent).toContain(
+      "Any of them can then run it as hard as they choose on your plan",
+    );
+    await click("Save");
+    expect(put).toHaveBeenCalledWith("prj_1", expect.objectContaining({ keep_owner: true }));
+    expect(toast).toHaveBeenCalledWith("Changed");
+    expect(document.body.textContent).toContain("Stays on your subscription when others change or resume it");
+  });
+
+  it("tells others whose subscription a kept one stays on, and lets them take it over", async () => {
+    signIn("usr_bo");
+    const kept = on({ keep_owner: true, crew_max: 3 });
+    autopilot.mockResolvedValue(kept);
+    put.mockResolvedValue(kept);
+    queryClient.setQueryData(keys.autopilot("prj_1"), kept);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    expect(page.textContent).toContain("Stays on Ada's subscription when others change or resume it");
+    await click("More");
+    await click("Change how it works…");
+    // Not theirs to choose.
+    expect(document.getElementById("autopilot-keep")).toBeNull();
+    await click("Cancel");
+    await click("More");
+    await click("Run it on your subscription…");
+    expect(document.body.textContent).toContain("Ada no longer runs it");
+    put.mockResolvedValue(on({ owner: { id: "usr_bo", name: "Bo" } }));
+    await click("Run it on mine");
+    expect(put).toHaveBeenCalledWith("prj_1", { take_over: true });
+    expect(toast).toHaveBeenCalledWith("It runs on your subscription now");
+  });
+
+  it("says a resume by someone else keeps a kept one on its owner's subscription", async () => {
+    signIn("usr_bo");
+    const paused = on({ state: "paused", keep_owner: true, paused_at: Date.now() - 60_000 });
+    autopilot.mockResolvedValue(paused);
+    resume.mockResolvedValue(on({ keep_owner: true }));
+    queryClient.setQueryData(keys.autopilot("prj_1"), paused);
+    render(<AutopilotTab project={project()} />);
+    await settle();
+    await click("Resume");
+    expect(toast).toHaveBeenCalledWith("Resumed: it wakes now");
+    // Its owner couldn't run it any more, so it became theirs.
+    resume.mockResolvedValue(on({ owner: { id: "usr_bo", name: "Bo" } }));
+    queryClient.setQueryData(keys.autopilot("prj_1"), paused);
+    await settle();
+    await click("Resume");
+    expect(toast).toHaveBeenCalledWith("Resumed, on your subscription: it wakes now");
   });
 
   it("shows its plan's progress, and that it's paused, and by whom", async () => {

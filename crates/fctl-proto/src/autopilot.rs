@@ -165,6 +165,14 @@ pub struct Autopilot {
     /// the project on autopilot, or took it over since. Absent once their
     /// account is gone.
     pub owner: Option<UserRef>,
+    /// Its owner keeps it on their subscription when others change or
+    /// resume it, while they can run it: those who steer it then spend the
+    /// owner's plan, and take it over only by asking to. Off (the
+    /// default): changing how much it works, or resuming it, runs it on the
+    /// changer's subscription from then on. Its owner alone sets it, for a
+    /// project whose people they all trust.
+    #[serde(default)]
+    pub keep_owner: bool,
     /// Where people want it to take the project: Markdown, theirs to change.
     pub direction: String,
     pub direction_by: Option<UserRef>,
@@ -688,6 +696,11 @@ pub struct PutAutopilotRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub take_over: bool,
+    /// Keep it on its owner's subscription when others change or resume
+    /// it (`Autopilot.keep_owner`): its owner's choice alone, or the
+    /// choice of whoever puts it on or takes it over, who becomes its
+    /// owner. Absent: as it was, or off for a new owner.
+    pub keep_owner: Option<bool>,
 }
 
 /// `DELETE /api/v1/projects/{id}/autopilot`: takes the project off

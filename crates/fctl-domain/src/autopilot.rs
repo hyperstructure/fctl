@@ -268,6 +268,36 @@ pub fn at_work(status: SessionStatus) -> bool {
     )
 }
 
+// ───────────────────────────── whose it is ─────────────────────────────
+
+/// What someone who steers an autopilot does that bears on whose
+/// subscription it runs on.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Change {
+    /// They are its owner.
+    pub by_owner: bool,
+    /// They ask to run it on theirs (`take_over`).
+    pub asks: bool,
+    /// They change how much it works (its check-in, sessions at once,
+    /// model or effort), or resume it.
+    pub costs: bool,
+    /// Its owner keeps it when others change or resume it
+    /// (`Autopilot.keep_owner`).
+    pub kept: bool,
+    /// Its owner can run it: their account, role and Claude connection
+    /// let them.
+    pub owner_runs: bool,
+}
+
+/// Whether a change runs the autopilot on the changer's subscription from
+/// now on, as them. Nobody puts work on someone else's subscription
+/// unasked: changing how much it works, or resuming it, takes it over,
+/// unless its owner keeps it, which holds while they can run it. Asking
+/// always does.
+pub fn takes_over(c: Change) -> bool {
+    !c.by_owner && (c.asks || (c.costs && !(c.kept && c.owner_runs)))
+}
+
 // ───────────────────────────── what it may do ─────────────────────────────
 
 /// The autopilot whose session asks.
@@ -1051,6 +1081,44 @@ pub fn wake_message(news: &News<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changes_by_others_take_it_over_unless_its_owner_keeps_it() {
+        let by_other = Change {
+            costs: true,
+            owner_runs: true,
+            ..Change::default()
+        };
+        assert!(takes_over(by_other));
+        assert!(!takes_over(Change {
+            kept: true,
+            ..by_other
+        }));
+        // Asking to takes it over, kept or not.
+        assert!(takes_over(Change {
+            kept: true,
+            asks: true,
+            ..by_other
+        }));
+        // Its owner keeps it only while they can run it.
+        assert!(takes_over(Change {
+            kept: true,
+            owner_runs: false,
+            ..by_other
+        }));
+        // What costs nothing (its direction, its powers) takes nothing.
+        assert!(!takes_over(Change {
+            costs: false,
+            ..by_other
+        }));
+        // Its owner changes and resumes their own.
+        assert!(!takes_over(Change {
+            by_owner: true,
+            asks: true,
+            ..by_other
+        }));
+    }
+
     use AutopilotPower::*;
 
     const ALL: [AutopilotPower; 6] = [Merge, Settings, Secrets, Repos, Schedules, Projects];

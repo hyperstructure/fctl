@@ -36,6 +36,15 @@ paused_by?: UserRef, paused_at?: number,
  */
 owner?: UserRef, 
 /**
+ * Its owner keeps it on their subscription when others change or
+ * resume it, while they can run it: those who steer it then spend the
+ * owner's plan, and take it over only by asking to. Off (the
+ * default): changing how much it works, or resuming it, runs it on the
+ * changer's subscription from then on. Its owner alone sets it, for a
+ * project whose people they all trust.
+ */
+keep_owner: boolean, 
+/**
  * Where people want it to take the project: Markdown, theirs to change.
  */
 direction: string, direction_by?: UserRef, direction_at: number, 

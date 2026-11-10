@@ -275,10 +275,10 @@ session calls the endpoints marked *autopilot*, through its sandbox's
 
 | Request | What it does |
 |---|---|
-| `GET /api/v1/projects/{project}/autopilot` | `{"state": "on" \| "paused" \| "off", "scope", "direction", "plan", "powers", "check_in_minutes", "crew_max", "owner", "session", "wake_at", "wake_reason", "problem", "notes", "asks", "crew", "can"…}`; 404 for a project that never had one |
-| `PUT /api/v1/projects/{project}/autopilot` | `{"direction", "scope": "project" \| "workspace", "powers": ["merge", "settings", "secrets", "repos", "schedules", "projects"], "check_in_minutes", "crew_max", "model", "effort", "take_over": true}`: puts it on (a [sensitive action](architecture.md#confirming-its-you); `direction` needed the first time), or changes it (absent fields stay) |
+| `GET /api/v1/projects/{project}/autopilot` | `{"state": "on" \| "paused" \| "off", "scope", "direction", "plan", "powers", "check_in_minutes", "crew_max", "owner", "keep_owner", "session", "wake_at", "wake_reason", "problem", "notes", "asks", "crew", "can"…}`; 404 for a project that never had one |
+| `PUT /api/v1/projects/{project}/autopilot` | `{"direction", "scope": "project" \| "workspace", "powers": ["merge", "settings", "secrets", "repos", "schedules", "projects"], "check_in_minutes", "crew_max", "model", "effort", "take_over": true, "keep_owner": true}`: puts it on (a [sensitive action](architecture.md#confirming-its-you); `direction` needed the first time), or changes it (absent fields stay). Someone else who changes how much it works runs it on their subscription from then on, unless its owner keeps it (`keep_owner`, which only its owner, or who puts it on or takes it over, sets; turning it on is a sensitive action too); `take_over` always does |
 | `POST …/autopilot/off` | `{"stop_sessions": true}`: takes it off, and with that stops the sessions it started that still work |
-| `POST …/autopilot/pause`, `…/resume` | `{"reason"}`: pauses it (*autopilot* too: it pauses itself); resuming wakes it at once, on the resumer's subscription |
+| `POST …/autopilot/pause`, `…/resume` | `{"reason"}`: pauses it (*autopilot* too: it pauses itself); resuming wakes it at once, on the resumer's subscription unless its owner keeps it and can still run it |
 | `POST …/autopilot/wake` | wakes it now; *autopilot*: `{"in_minutes": 30}` or `{"at": …}`, when it wakes next unless something needs it sooner |
 | `POST …/autopilot/notes`, `DELETE …/autopilot/notes/{note}` | `{"text"}` (Markdown, at most 2,000 characters): steers it, at once |
 | `POST …/autopilot/asks/{ask}/answer` | `{"answer"}`, or `{"secret"}` for a secret it asked for, which goes into the project's secrets |

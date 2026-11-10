@@ -23,6 +23,7 @@ function autopilot(more: Partial<G.Autopilot> = {}): G.Autopilot {
     scope: "project",
     state: "on",
     owner: { id: "usr_noor", name: "Noor Haddad" },
+    keep_owner: false,
     direction: "Ship the checkout.",
     direction_at: NOW - 86_400_000,
     powers: ["settings", "schedules"],
