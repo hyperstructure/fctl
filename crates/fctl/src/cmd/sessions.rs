@@ -1053,6 +1053,23 @@ pub async fn resume(
     Ok(())
 }
 
+/// `fctl take-over`: the session continues on your Claude subscription.
+pub async fn take_over(server: Option<&str>, reference: &str, json: bool) -> Result<()> {
+    let api = config::api(server)?;
+    let s = resolve(&api, reference).await?;
+    let s = api.take_over(&s.id.0).await?;
+    if json {
+        return style::print_json(&s);
+    }
+    println!(
+        "{} {}#{} continues on your Claude subscription",
+        style::accent("✓"),
+        s.project_slug,
+        s.number
+    );
+    Ok(())
+}
+
 /// `fctl follow` (`follow`) and `fctl unfollow`.
 pub async fn follow(server: Option<&str>, reference: &str, follow: bool, json: bool) -> Result<()> {
     let api = config::api(server)?;

@@ -1318,6 +1318,17 @@ impl Api {
         .await
     }
 
+    /// Moves a session to your Claude subscription: one that waits for
+    /// its subscription's limit, or for a message, starts again on yours;
+    /// a stopped one resumes on it.
+    pub async fn take_over(&self, session: &str) -> Result<Session> {
+        self.post(
+            &format!("/sessions/{}/take-over", enc(session)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
     /// Follows a session: its notifications reach you.
     pub async fn follow(&self, session: &str) -> Result<Session> {
         self.put(

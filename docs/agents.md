@@ -276,6 +276,10 @@ wrote.
 - `fctl stop SESSION` ends the session and keeps its sandbox; `fctl resume
   SESSION "…"` starts it again on your subscription, a failed one too,
   which a message doesn't.
+- `fctl take-over SESSION` moves a session that waits for its
+  subscription's limit to reset (or for a message, or stopped) to your
+  Claude subscription: it starts again there, in the same conversation.
+  A message keeps a session on the subscription it ran on.
 - A token that may comment, triage or read on GitHub can only read a
   session whose agent started able to do more, so it can't steer an agent
   that pushes.

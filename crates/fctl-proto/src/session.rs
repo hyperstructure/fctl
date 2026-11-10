@@ -1450,6 +1450,10 @@ pub struct Session {
     /// started. Absent for other sessions, and from control planes before
     /// autopilots.
     pub autopilot: Option<crate::autopilot::SessionAutopilot>,
+    /// Whose Claude subscription it runs on: who started it, until someone
+    /// resumes it or takes it over (`POST /sessions/{id}/take-over`).
+    /// Absent from control planes before it.
+    pub claude: Option<UserRef>,
 }
 
 /// A question a session's agent asks people, when it needs their input to

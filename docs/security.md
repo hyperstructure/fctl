@@ -382,8 +382,8 @@ its VM, and nothing outside it except through these channels:
   workspace's two-factor requirement closes it to them, the sessions
   that run on their subscription stop, get no more Claude or GitHub tokens,
   and a message to one doesn't start it on their subscription again (nor
-  on their runners, with the project's secrets); resuming it runs it on the
-  resumer's. Unless its owner keeps it out of sandboxes (below), the token
+  on their runners, with the project's secrets); resuming it, or taking
+  it over, runs it on the subscription of whoever does. Unless its owner keeps it out of sandboxes (below), the token
   is in the sandbox, where the agent can read it, so
   whoever can message a session's agent (the project's editors, and people
   it is shared with to message) can have it hand over the token of the

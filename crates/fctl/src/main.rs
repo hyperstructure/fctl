@@ -273,6 +273,21 @@ Examples:
         #[arg(short, long = "attach", value_name = "FILE")]
         attach: Vec<std::path::PathBuf>,
     },
+    /// Continue a session on your Claude subscription: one that waits for
+    /// its subscription's limit to reset, or for a message, starts again
+    /// on yours, and a stopped one resumes on it. Messages keep a session
+    /// on the subscription it ran on.
+    #[command(
+        name = "take-over",
+        after_help = "It runs on the Claude connection you chose for its workspace (Settings → Claude), which may be another of your own.
+
+Examples:
+  fctl take-over my-app#12"
+    )]
+    TakeOver {
+        /// A session: its id (ses_…), its URL, or project#number.
+        session: String,
+    },
     /// Follow a session: notifications reach you when it waits for your
     /// reply, pauses on a usage limit or fails.
     Follow {
@@ -511,6 +526,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             message,
             attach,
         } => cmd::sessions::resume(server, &session, &message.join(" "), &attach, json).await,
+        Command::TakeOver { session } => cmd::sessions::take_over(server, &session, json).await,
         Command::Follow { session } => cmd::sessions::follow(server, &session, true, json).await,
         Command::Unfollow { session } => cmd::sessions::follow(server, &session, false, json).await,
         Command::Share(args) => cmd::sessions::share(server, args, json).await,

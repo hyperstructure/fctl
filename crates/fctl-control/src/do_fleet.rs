@@ -3130,6 +3130,7 @@ impl FleetObject {
         )?
         .run()
         .await?;
+        crate::autopilots::owner_moved(&self.env, db, user_id, now).await;
         // They hear of it, as of a token they connect (`api::claude`): best
         // effort, since the connection is made, whatever the email does.
         if let Some(mail) = cfg.email.clone() {

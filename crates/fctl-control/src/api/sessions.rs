@@ -828,6 +828,150 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     get(ctx, id).await
 }
 
+/// `POST /sessions/{id}/take-over`: the session runs on the caller's
+/// Claude connection from now on (the one they chose for its workspace):
+/// one that waits for its subscription's limit, or for a message, starts
+/// again on theirs, where Claude continues the same conversation; a
+/// stopped one resumes on it. For whoever may message its agent, and for
+/// someone who moved to another connection of their own. Messages keep a
+/// session on the subscription it ran on: this is how it moves.
+pub async fn take_over(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let a = access::session(ctx, id).await?;
+    a.require_editor()?;
+    refuse_review(&a.row)?;
+    if a.row.is_pilot() {
+        return Err(conflict(
+            "An autopilot's own session runs on its owner's Claude subscription: take the autopilot over, on its Autopilot tab, to run it on yours.",
+        ));
+    }
+    let way = fctl_domain::claude::moving(a.row.status()).map_err(conflict)?;
+    let user = ctx.user()?.clone();
+    let credential = default_credential(ctx, &user, a.workspace_id()).await?;
+    if a.row.credential_id.as_deref() == Some(credential.id.as_str()) {
+        return Err(conflict(
+            "It runs on your Claude connection already. To move it to another of yours, choose that one for this workspace in Settings → Claude first.",
+        ));
+    }
+    let limits = crate::schedules::usage_of(&ctx.db, &credential.id).await?;
+    if let Some(limit) = fctl_domain::schedules::at_limit(&limits, ctx.now) {
+        let why =
+            fctl_domain::schedules::limit_reason(&user.name, limit, &fctl_domain::cron::Utc, true);
+        return Err(conflict(&format!(
+            "{why} Connect another subscription in Settings → Claude, or let it wait."
+        )));
+    }
+    move_to(
+        &ctx.env,
+        &ctx.db,
+        &a.row.session_id(),
+        way,
+        &credential,
+        &user.to_ref(),
+        true,
+        ctx.now,
+    )
+    .await?;
+    if ctx.limits().is_none()
+        && let Err(e) = crate::notify::follow_own(&ctx.db, id, &user.id, ctx.now).await
+    {
+        worker::console_error!("following a session taken over failed: {}", e.0.message);
+    }
+    ctx.audit_in(
+        Some(a.workspace_id()),
+        "session.taken_over",
+        Some(id),
+        Some(serde_json::json!({ "from": a.row.claude_user_id })),
+    );
+    get(ctx, id).await
+}
+
+/// Moves session `id` to `credential`, `user`'s Claude connection, as
+/// `way` says ([`fctl_domain::claude::moving`]): its runs from now on are
+/// theirs. A run that waits stops, and the session starts again on it; a
+/// stopped one starts again only with `start`, and otherwise when
+/// something next resumes it.
+#[allow(clippy::too_many_arguments)]
+pub async fn move_to(
+    env: &worker::Env,
+    db: &worker::D1Database,
+    id: &fctl_proto::SessionId,
+    way: fctl_domain::claude::Move,
+    credential: &CredentialRow,
+    user: &UserRef,
+    start: bool,
+    now: i64,
+) -> AppResult<()> {
+    use fctl_domain::claude::Move;
+    let again = match way {
+        Move::Restart => true,
+        Move::Start => start,
+        Move::Queued => false,
+    };
+    q(
+        db,
+        "UPDATE sessions SET credential_id = ?, updated_at = ? WHERE id = ?",
+        &[s(&credential.id), n(now), s(id.as_str())],
+    )?
+    .run()
+    .await?;
+    let fleet = internal::fleet_stub(env)?;
+    if way == Move::Restart {
+        // Stopping first, so that messages wait for the run on the new
+        // connection; that run starts once this one has stopped.
+        let _: serde_json::Value = internal::post(
+            &fleet,
+            "/stop",
+            &Stop {
+                session_id: id.clone(),
+                reason: StopReason::User,
+                destroy: false,
+            },
+        )
+        .await?;
+    }
+    let stub = internal::session_stub(env, id.as_str())?;
+    if !again {
+        let _: serde_json::Value = internal::post(
+            &stub,
+            "/control",
+            &ControlState {
+                claude_user: Some(user.clone()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    q(
+        db,
+        "UPDATE sessions SET status = 'queued', status_reason = NULL, ended_at = NULL, updated_at = ? WHERE id = ?",
+        &[n(now), s(id.as_str())],
+    )?
+    .run()
+    .await?;
+    let _: serde_json::Value = internal::post(
+        &stub,
+        "/control",
+        &ControlState {
+            status: Some(SessionStatus::Queued),
+            reason: Some(format!("Continuing on {}'s Claude subscription", user.name)),
+            clear_runner: true,
+            claude_user: Some(user.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let _: serde_json::Value = internal::post(
+        &fleet,
+        "/schedule",
+        &Schedule {
+            session_id: id.clone(),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn events(ctx: &Ctx, req: &Request, id: &str) -> AppResult<Response> {
     access::session(ctx, id).await?;
     let mut path = String::from("/events?");

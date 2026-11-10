@@ -1,6 +1,8 @@
 //! Claude subscription tokens: what a token from `claude setup-token` looks
 //! like, wherever it is kept (in the control plane, or on its owner's
-//! runners).
+//! runners), and moving sessions from one connection to another.
+
+use fctl_proto::session::SessionStatus;
 
 /// What is wrong with `token` as a token from `claude setup-token`, or
 /// `None` when it looks like one. `token` is trimmed already.
@@ -37,6 +39,37 @@ pub fn masked(token: &str) -> String {
         .nth(2)
         .map_or("", |(i, _)| &token[..=i]);
     format!("{head}…{tail}")
+}
+
+/// What moving a session to another Claude connection does to its run
+/// ([`moving`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Move {
+    /// Its run waits (on its subscription's limit, or for a message): it
+    /// stops, and the session starts again on the new connection, where
+    /// Claude continues the same conversation.
+    Restart,
+    /// No run works for it, or the last one stops: it starts again on the
+    /// new connection, if whoever moves it wants it to go on.
+    Start,
+    /// It waits to start: it starts on the new connection.
+    Queued,
+}
+
+/// How a session in `status` moves to another Claude connection, or why
+/// it doesn't now.
+pub fn moving(status: SessionStatus) -> Result<Move, &'static str> {
+    match status {
+        SessionStatus::Paused | SessionStatus::Idle => Ok(Move::Restart),
+        SessionStatus::Stopping | SessionStatus::Stopped => Ok(Move::Start),
+        SessionStatus::Queued => Ok(Move::Queued),
+        SessionStatus::Provisioning | SessionStatus::Preparing | SessionStatus::Running => Err(
+            "Its agent is at work on the subscription it runs on: take it over once it pauses on a usage limit, waits for a message or stops.",
+        ),
+        SessionStatus::Failed => {
+            Err("The session failed: resuming it runs it on your Claude subscription.")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -76,5 +109,21 @@ mod tests {
         // Something else entirely shows its end alone.
         assert_eq!(masked("abcdef"), "…cdef");
         assert_eq!(masked("ab"), "…ab");
+    }
+    #[test]
+    fn sessions_move_while_they_wait_or_rest() {
+        assert_eq!(moving(SessionStatus::Paused), Ok(Move::Restart));
+        assert_eq!(moving(SessionStatus::Idle), Ok(Move::Restart));
+        assert_eq!(moving(SessionStatus::Stopping), Ok(Move::Start));
+        assert_eq!(moving(SessionStatus::Stopped), Ok(Move::Start));
+        assert_eq!(moving(SessionStatus::Queued), Ok(Move::Queued));
+        for at_work in [
+            SessionStatus::Provisioning,
+            SessionStatus::Preparing,
+            SessionStatus::Running,
+        ] {
+            assert!(moving(at_work).is_err_and(|why| why.contains("at work")));
+        }
+        assert!(moving(SessionStatus::Failed).is_err_and(|why| why.contains("resuming")));
     }
 }

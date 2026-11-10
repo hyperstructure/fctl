@@ -275,6 +275,9 @@ pub enum AutopilotWakeReason {
     Crew,
     /// Its own last session failed, and fctl tries again.
     Retry,
+    /// It runs on another Claude subscription now: someone took it over,
+    /// or its owner chose another connection. Its sessions move to it.
+    Moved,
     /// A reason a newer control plane gives.
     #[serde(other)]
     Other,
@@ -292,6 +295,7 @@ impl AutopilotWakeReason {
             Self::Answered => "answered",
             Self::Crew => "crew",
             Self::Retry => "retry",
+            Self::Moved => "moved",
             Self::Other => "other",
         }
     }
@@ -307,6 +311,7 @@ impl AutopilotWakeReason {
             Self::Answered,
             Self::Crew,
             Self::Retry,
+            Self::Moved,
         ]
         .into_iter()
         .find(|r| r.as_str() == s)

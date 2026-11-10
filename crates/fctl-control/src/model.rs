@@ -718,6 +718,13 @@ pub struct SessionRow {
     pub creator_name: Option<String>,
     pub creator_avatar: Option<String>,
     pub credential_id: Option<String>,
+    /// Whose Claude connection it runs on (LEFT JOINs: NULL once it's gone).
+    #[serde(default)]
+    pub claude_user_id: Option<String>,
+    #[serde(default)]
+    pub claude_user_name: Option<String>,
+    #[serde(default)]
+    pub claude_user_avatar: Option<String>,
     pub runner_id: Option<String>,
     pub runner_name: Option<String>,
     pub branch: Option<String>,
@@ -902,6 +909,15 @@ impl SessionRow {
         }
     }
 
+    /// Whose Claude subscription it runs on, while their connection exists.
+    pub fn claude_ref(&self) -> Option<UserRef> {
+        Some(UserRef {
+            id: UserId(self.claude_user_id.clone()?),
+            name: self.claude_user_name.clone().unwrap_or_default(),
+            avatar_url: self.claude_user_avatar.clone(),
+        })
+    }
+
     pub fn to_session(&self, role: Option<SessionRole>) -> Session {
         let mut s =
             Session {
@@ -968,6 +984,7 @@ impl SessionRow {
                     serde_json::from_str::<fctl_proto::session::SessionQuestion>(j).ok()
                 }),
                 autopilot: self.autopilot(),
+                claude: self.claude_ref(),
             };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -980,7 +997,8 @@ impl SessionRow {
 /// they were demoted) counts for nothing.
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
-    s.credential_id, s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
+    s.credential_id, cc.user_id AS claude_user_id, ccu.name AS claude_user_name, ccu.avatar_url AS claude_user_avatar, \
+    s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_effort, s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
     s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, s.github_issues, \
     s.created_at, s.updated_at, s.started_at, s.ended_at, s.last_activity_at, s.messaged_at, s.requested_at, \
@@ -999,6 +1017,8 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     LEFT JOIN workspaces w ON w.id = p.workspace_id \
     LEFT JOIN workspace_members wm ON wm.workspace_id = p.workspace_id AND wm.user_id = ?1 \
     LEFT JOIN users cu ON cu.id = s.created_by \
+    LEFT JOIN claude_credentials cc ON cc.id = s.credential_id \
+    LEFT JOIN users ccu ON ccu.id = cc.user_id \
     LEFT JOIN runners r ON r.id = s.runner_id \
     LEFT JOIN project_members m ON m.project_id = s.project_id AND m.user_id = ?1 \
     LEFT JOIN session_shares sh ON sh.session_id = s.id AND sh.user_id = ?1 \

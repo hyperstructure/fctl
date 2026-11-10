@@ -65,6 +65,7 @@ pub async fn add_token(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> 
     .run()
     .await?;
     ctx.audit("claude.token_added", Some(id.as_str()), None);
+    crate::autopilots::owner_moved(&ctx.env, &ctx.db, &user.id, ctx.now).await;
     // Best effort: the token is connected, whatever the email does.
     if ctx.cfg.email.is_some() {
         let instance = crate::instance::name(&ctx.db, &ctx.cfg)
@@ -200,6 +201,7 @@ pub async fn add_on_runners(ctx: &mut Ctx, req: &mut Request) -> AppResult<Respo
     )?
     .run()
     .await?;
+    crate::autopilots::owner_moved(&ctx.env, &ctx.db, &user.id, ctx.now).await;
     if created {
         ctx.audit("claude.on_runners_added", Some(&id), None);
         // Best effort, as for a token.
@@ -325,6 +327,7 @@ pub async fn set_default(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     )?
     .run()
     .await?;
+    crate::autopilots::owner_moved(&ctx.env, &ctx.db, &user.id, ctx.now).await;
     let user = auth::user_by_id(ctx, &user.id)
         .await?
         .ok_or_else(|| not_found("User"))?;

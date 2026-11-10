@@ -134,4 +134,10 @@ question?: SessionQuestion,
  * started. Absent for other sessions, and from control planes before
  * autopilots.
  */
-autopilot?: SessionAutopilot, };
+autopilot?: SessionAutopilot, 
+/**
+ * Whose Claude subscription it runs on: who started it, until someone
+ * resumes it or takes it over (`POST /sessions/{id}/take-over`).
+ * Absent from control planes before it.
+ */
+claude?: UserRef, };

@@ -471,6 +471,7 @@ async fn dispatch(
         }
         (Post, ["sessions", id, "stop"]) => api::sessions::stop(ctx, id).await,
         (Post, ["sessions", id, "resume"]) => api::sessions::resume(ctx, req, id).await,
+        (Post, ["sessions", id, "take-over"]) => api::sessions::take_over(ctx, id).await,
         (Get, ["sessions", id, "events"]) => api::sessions::events(ctx, req, id).await,
         (Get, ["sessions", id, "retrospectives"]) => {
             api::retrospectives::session_list(ctx, id).await
