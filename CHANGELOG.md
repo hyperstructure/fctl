@@ -2,6 +2,13 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.2 (2026-11-10)
+
+### Features
+
+- **web:** Give the workspace and admin pages' tabs icons ([#504](https://github.com/hyperstructure/fctl/pull/504))
+- Move sessions and autopilots to another Claude subscription ([#505](https://github.com/hyperstructure/fctl/pull/505))
+
 ## 0.33.1 (2026-11-10)
 
 ### Features
