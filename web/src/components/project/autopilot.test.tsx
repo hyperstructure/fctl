@@ -295,6 +295,17 @@ describe("a project's Autopilot tab", () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(tokens, "200k");
       tokens?.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // Its session takes a step meanwhile, and the tab hears of it: what's typed stays.
+    await act(async () =>
+      queryClient.setQueryData(
+        keys.autopilot("prj_1"),
+        on({ session: { ...session, context_tokens: 190_000 } }),
+      ),
+    );
+    await settle();
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Tokens of context"]')?.value).toBe(
+      "200k",
+    );
     await click("Save");
     expect(put).toHaveBeenCalledWith("prj_1", expect.objectContaining({ handoff_at: 200_000 }));
     expect(page.textContent).toContain(

@@ -1208,8 +1208,14 @@ function SettingsDialog({
   const [handoff, setHandoff] = useState(handoffChoice(a.handoff_at));
   const [handoffTyped, setHandoffTyped] = useState(typedSize(a.handoff_at));
   const [keep, setKeep] = useState(a.keep_owner);
+  // The fields start from the autopilot as the dialog opens, and only then: the tab refetches it
+  // every few seconds, and its session's context changes with each step, which mustn't undo what
+  // someone is choosing or typing.
+  const latest = useRef(a);
+  latest.current = a;
   useEffect(() => {
     if (!open) return;
+    const a = latest.current;
     setPowers(a.powers);
     setCheckIn(a.check_in_minutes);
     setCrew(a.crew_max);
@@ -1218,7 +1224,7 @@ function SettingsDialog({
     setHandoff(handoffChoice(a.handoff_at));
     setHandoffTyped(typedSize(a.handoff_at));
     setKeep(a.keep_owner);
-  }, [open, a]);
+  }, [open]);
   const mine = !!me && a.owner?.id === me.user.id;
   /** Where a fresh session takes over, as chosen: `null` for only after 12 hours, `undefined` for a size not read. */
   const handoffAt =
