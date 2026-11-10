@@ -2,6 +2,18 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.3 (2026-11-10)
+
+### Features
+
+- Choose the context size Claude compacts a project's sessions near ([#506](https://github.com/hyperstructure/fctl/pull/506))
+- **autopilot:** Hand off to a fresh session past a context size ([#508](https://github.com/hyperstructure/fctl/pull/508))
+
+### Fixes
+
+- Notify about an autopilot's sessions only when they ask ([#509](https://github.com/hyperstructure/fctl/pull/509))
+- **host:** Show how far image pulls are and retry broken-off ones ([#507](https://github.com/hyperstructure/fctl/pull/507))
+
 ## 0.33.2 (2026-11-10)
 
 ### Features
