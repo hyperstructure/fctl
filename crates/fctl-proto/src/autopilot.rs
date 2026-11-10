@@ -19,7 +19,7 @@
 
 use crate::Millis;
 use crate::ids::{ProjectId, SessionId};
-use crate::session::{SessionRef, SessionStatus, UserRef};
+use crate::session::{SessionRef, SessionSchedule, SessionStatus, UserRef};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -579,6 +579,8 @@ pub struct AutopilotEntry {
     pub project_slug: Option<String>,
     /// The autopilot's own session that did it.
     pub from: Option<SessionId>,
+    /// The schedule it ran, which started `session`.
+    pub schedule: Option<SessionSchedule>,
 }
 
 /// A page of an autopilot's log.
@@ -625,6 +627,8 @@ pub struct AutopilotNotice {
     pub session: Option<SessionRef>,
     /// That session's project, or the project it changed.
     pub project_slug: Option<String>,
+    /// The schedule it ran, which started `session`.
+    pub schedule: Option<SessionSchedule>,
 }
 
 /// What a session is to an autopilot (`Session.autopilot`).

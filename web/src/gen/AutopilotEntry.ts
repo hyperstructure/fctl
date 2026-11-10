@@ -2,6 +2,7 @@
 import type { AutopilotEntryKind } from "./AutopilotEntryKind";
 import type { SessionId } from "./SessionId";
 import type { SessionRef } from "./SessionRef";
+import type { SessionSchedule } from "./SessionSchedule";
 import type { UserRef } from "./UserRef";
 
 /**
@@ -29,4 +30,8 @@ project_slug?: string,
 /**
  * The autopilot's own session that did it.
  */
-from?: SessionId, };
+from?: SessionId, 
+/**
+ * The schedule it ran, which started `session`.
+ */
+schedule?: SessionSchedule, };

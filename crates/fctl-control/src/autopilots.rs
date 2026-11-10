@@ -31,9 +31,9 @@ use fctl_proto::autopilot::{
     AutopilotState, AutopilotWake, AutopilotWakeReason,
 };
 use fctl_proto::event::{EventBody, MessageSource, UserMessage};
-use fctl_proto::session::{SessionRef, SessionStatus, WorkspaceRole};
+use fctl_proto::session::{SessionRef, SessionSchedule, SessionStatus, WorkspaceRole};
 use fctl_proto::uplink::{Delivery, DeliveryKind};
-use fctl_proto::{ApiError, ProjectId, SessionId};
+use fctl_proto::{ApiError, ProjectId, ScheduleId, SessionId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use worker::{D1Database, Env};
@@ -1957,16 +1957,23 @@ pub async fn relay(
     let empty = Value::Null;
     let sent = body.as_ref().unwrap_or(&empty);
     // Only what changed something gets a line, and the lookups for it.
-    if (200..300).contains(&status) && ap::describe(&method, &segs, sent, &answer, None).is_some() {
+    if (200..300).contains(&status)
+        && ap::describe(&method, &segs, sent, &answer, None, None).is_some()
+    {
         let about = about(&ctx.db, &segs, &answer).await;
         // Another project it changed, by its slug, which the line names.
-        let elsewhere = match about.1.as_deref() {
+        let elsewhere = match about.project.as_deref() {
             Some(other) if other != row.project_id => slug_of(&ctx.db, other).await,
             _ => None,
         };
-        if let Some((kind, text)) =
-            ap::describe(&method, &segs, sent, &answer, elsewhere.as_deref())
-        {
+        if let Some((kind, text)) = ap::describe(
+            &method,
+            &segs,
+            sent,
+            &answer,
+            elsewhere.as_deref(),
+            about.schedule.as_deref(),
+        ) {
             // Its own transcript shows what it did, the session it started
             // or steered with it.
             transcript(
@@ -1974,13 +1981,13 @@ pub async fn relay(
                 session_id,
                 kind,
                 &text,
-                about.0.as_deref(),
-                about.1.as_deref(),
+                about.session.as_deref(),
+                about.project.as_deref(),
             )
             .await;
             let mut entry = Entry::new(kind, text);
-            entry.session = about.0.as_deref();
-            entry.other_project = about.1.as_deref();
+            entry.session = about.session.as_deref();
+            entry.other_project = about.project.as_deref();
             entry.from = Some(session_id);
             log(&ctx.db, &row.project_id, entry, ctx.now).await;
         }
@@ -2009,19 +2016,20 @@ async fn transcript(
         number: i64,
         title: String,
         slug: String,
+        schedule_id: Option<String>,
+        schedule_name: Option<String>,
     }
     let posted: AppResult<Value> = async {
         let found: Option<Found> = match session {
-            Some(id) => {
-                q(
-                    &ctx.db,
-                    "SELECT s.id, s.number, s.title, p.slug FROM sessions s JOIN projects p ON p.id = s.project_id \
-                     WHERE s.id = ?",
-                    &[s(id)],
-                )?
-                .first()
-                .await?
-            }
+            Some(id) => q(
+                &ctx.db,
+                "SELECT s.id, s.number, s.title, p.slug, s.schedule_id, sc.name AS schedule_name \
+                     FROM sessions s JOIN projects p ON p.id = s.project_id \
+                     LEFT JOIN schedules sc ON sc.id = s.schedule_id WHERE s.id = ?",
+                &[s(id)],
+            )?
+            .first()
+            .await?,
             None => None,
         };
         #[derive(Deserialize)]
@@ -2044,8 +2052,20 @@ async fn transcript(
                 None => text.to_owned(),
             },
         );
+        // A schedule it ran goes with the session it started, which the
+        // apps link to.
+        let schedule = match (&found, kind) {
+            (Some(f), AutopilotEntryKind::Schedule) => {
+                f.schedule_id.clone().map(|id| SessionSchedule {
+                    id: ScheduleId(id),
+                    name: f.schedule_name.clone(),
+                })
+            }
+            _ => None,
+        };
         notice.autopilot = Some(fctl_proto::autopilot::AutopilotNotice {
             kind,
+            schedule,
             session: found.map(|f| SessionRef {
                 id: SessionId(f.id),
                 number: u32::try_from(f.number).unwrap_or(0),
@@ -2062,17 +2082,32 @@ async fn transcript(
     }
 }
 
-/// The session and project a request the autopilot made concerns, for its
-/// log: the session it started or steered, the project it changed.
-async fn about(db: &D1Database, segs: &[&str], answer: &Value) -> (Option<String>, Option<String>) {
+/// What a request the autopilot made concerns, for its log.
+#[derive(Default)]
+struct About {
+    /// The session it started or steered, or that the schedule it ran
+    /// started.
+    session: Option<String>,
+    /// The project it changed.
+    project: Option<String>,
+    /// The name of the schedule it ran.
+    schedule: Option<String>,
+}
+
+/// What a request the autopilot made concerns, from its path and answer.
+async fn about(db: &D1Database, segs: &[&str], answer: &Value) -> About {
+    let str_at = |pointer: &str| {
+        answer
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
     match segs {
-        ["projects", _, "sessions"] => (
-            answer.get("id").and_then(Value::as_str).map(str::to_owned),
-            answer
-                .get("project_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        ),
+        ["projects", _, "sessions"] => About {
+            session: str_at("/id"),
+            project: str_at("/project_id"),
+            schedule: None,
+        },
         ["sessions", id, ..] => {
             #[derive(Deserialize)]
             struct S {
@@ -2088,44 +2123,47 @@ async fn about(db: &D1Database, segs: &[&str], answer: &Value) -> (Option<String
                     .map(|s| s.project_id),
                 None => None,
             };
-            (Some((*id).to_owned()), project)
+            About {
+                session: Some((*id).to_owned()),
+                project,
+                schedule: None,
+            }
         }
-        ["projects"] => (
-            None,
-            answer.get("id").and_then(Value::as_str).map(str::to_owned),
-        ),
-        ["projects", key, ..] => (None, project_of(db, key).await),
-        ["schedules", id, ..] => {
+        ["projects"] => About {
+            project: str_at("/id"),
+            ..About::default()
+        },
+        ["projects", key, ..] => About {
+            project: project_of(db, key).await,
+            ..About::default()
+        },
+        ["schedules", id, rest @ ..] => {
             #[derive(Deserialize)]
             struct S {
                 project_id: String,
+                name: String,
             }
-            let project = match q(
+            let found = match q(
                 db,
-                "SELECT project_id FROM schedules WHERE id = ?",
+                "SELECT project_id, name FROM schedules WHERE id = ?",
                 &[s(id)],
             )
             .ok()
             {
-                Some(query) => query
-                    .first::<S>()
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|s| s.project_id),
+                Some(query) => query.first::<S>().await.ok().flatten(),
                 None => None,
             };
-            (
-                None,
-                project.or_else(|| {
-                    answer
-                        .get("project_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                }),
-            )
+            // A run's answer is the run, with the session it started.
+            let ran = rest == ["runs"];
+            About {
+                session: if ran { str_at("/session/id") } else { None },
+                schedule: found.as_ref().filter(|_| ran).map(|f| f.name.clone()),
+                project: found
+                    .map(|f| f.project_id)
+                    .or_else(|| str_at("/project_id")),
+            }
         }
-        _ => (None, None),
+        _ => About::default(),
     }
 }
 

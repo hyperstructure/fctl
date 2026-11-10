@@ -1,21 +1,23 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { AutopilotTab } from "./autopilot";
 
-const { answer, autopilot, put, resume, toast } = vi.hoisted(() => ({
+const { answer, autopilot, autopilotLog, put, resume, toast } = vi.hoisted(() => ({
   answer: vi.fn(),
   autopilot: vi.fn(),
+  autopilotLog: vi.fn(),
   put: vi.fn(),
   resume: vi.fn(),
   toast: vi.fn(),
 }));
-// The autopilot, answering, changing and resuming it are answered; other requests wait.
+// The autopilot, its log, answering, changing and resuming it are answered; other requests wait.
 const answered: Record<string, unknown> = {
   autopilot,
+  autopilotLog,
   answerAutopilot: answer,
   putAutopilot: put,
   resumeAutopilot: resume,
@@ -44,6 +46,10 @@ vi.mock("@/components/ui", async (actual) => ({
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Its log waits, unless a test answers it.
+beforeEach(() => {
+  autopilotLog.mockImplementation(() => new Promise(() => {}));
+});
 const roots: (() => void)[] = [];
 afterEach(() => {
   for (const unmount of roots.splice(0)) unmount();
@@ -376,5 +382,31 @@ describe("a project's Autopilot tab", () => {
     expect(page.textContent).toContain("Ada paused it");
     expect(page.textContent).toContain("1 of 3");
     expect([...page.querySelectorAll("button")].some((b) => b.textContent === "Resume")).toBe(true);
+  });
+
+  it("logs a schedule it ran with the session it started, and the schedule's name a link", async () => {
+    autopilot.mockResolvedValue(on());
+    queryClient.setQueryData(keys.autopilot("prj_1"), on());
+    autopilotLog.mockResolvedValue({
+      entries: [
+        {
+          id: "apl_1",
+          at: Date.now() - 60_000,
+          kind: "schedule",
+          text: "Ran the schedule “Nightly *deps*” now",
+          session: { id: "ses_42", number: 42, title: "Update the dependencies" },
+          project_slug: "shop",
+          schedule: { id: "sch_1", name: "Nightly *deps*" },
+        },
+      ],
+      has_more: false,
+    } satisfies G.AutopilotLog);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    // fctl's line, as it is: a schedule's name isn't Markdown.
+    expect(page.textContent).toContain("Ran the schedule “Nightly *deps*” now");
+    const texts = [...page.querySelectorAll("a")].map((a) => a.textContent);
+    expect(texts).toContain("“Nightly *deps*”");
+    expect(texts.some((t) => t?.includes("#42") && t.includes("Update the dependencies"))).toBe(true);
   });
 });

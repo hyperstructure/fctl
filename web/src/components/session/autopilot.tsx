@@ -220,14 +220,63 @@ export function AutopilotAction({ notice }: { notice: G.Notice }) {
       </Milestone>
     );
   const verb =
-    a.kind === "session" ? "Started a session" : notice.message.split(` ${a.project_slug ?? ""}#`)[0];
+    a.kind === "session"
+      ? "Started a session"
+      : (notice.message.split(` ${a.project_slug ?? ""}#`)[0] ?? notice.message);
   return (
     <div className="animate-rise py-1.5">
-      <Milestone icon={icon}>{verb}</Milestone>
+      <Milestone icon={icon}>
+        {a.schedule && a.project_slug ? (
+          <ScheduleNamed
+            text={verb}
+            schedule={a.schedule}
+            slug={a.project_slug}
+            className="text-ink-3 decoration-line-strong hover:text-ink hover:decoration-ink-3"
+          />
+        ) : (
+          verb
+        )}
+      </Milestone>
       <Thread>
         <SpawnedSession session={a.session} projectSlug={a.project_slug} />
       </Thread>
     </div>
+  );
+}
+
+/**
+ * A line that names the schedule an autopilot ran ("Ran the schedule “Nightly deps” now"), its
+ * name a link to the schedule, whose runs its Schedules tab lists; the line as it is once the
+ * schedule is deleted, or when it doesn't name it.
+ */
+export function ScheduleNamed({
+  text,
+  schedule,
+  slug,
+  className,
+}: {
+  text: string;
+  schedule: G.SessionSchedule;
+  slug: string;
+  className?: string;
+}) {
+  const quoted = schedule.name ? `“${schedule.name}”` : undefined;
+  const at = quoted ? text.indexOf(quoted) : -1;
+  if (!quoted || at < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, at)}
+      <Link
+        to="/p/$slug"
+        params={{ slug }}
+        search={{ tab: "schedules", schedule: schedule.id }}
+        title="Open the schedule and its runs"
+        className={cn("underline underline-offset-2 transition-colors", className)}
+      >
+        {quoted}
+      </Link>
+      {text.slice(at + quoted.length)}
+    </>
   );
 }
 

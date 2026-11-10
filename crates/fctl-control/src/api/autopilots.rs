@@ -29,8 +29,8 @@ use crate::model::{PROJECT_SELECT, PROJECT_VISIBLE, ProjectRow};
 use fctl_domain::autopilot as ap;
 use fctl_domain::verify::Sensitive;
 use fctl_proto::autopilot::*;
-use fctl_proto::session::{SessionRef, WorkspaceRole};
-use fctl_proto::{ProjectId, SessionId};
+use fctl_proto::session::{SessionRef, SessionSchedule, WorkspaceRole};
+use fctl_proto::{ProjectId, ScheduleId, SessionId};
 use serde::Deserialize;
 use worker::{Request, Response};
 
@@ -383,11 +383,16 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
         session_title: Option<String>,
         project_slug: Option<String>,
         from_session_id: Option<String>,
+        schedule_id: Option<String>,
+        schedule_name: Option<String>,
     }
     let mut params = vec![s(&row.project_id)];
+    // A schedule it ran is the one that started the entry's session.
     let mut sql = "SELECT e.id, e.at, e.kind, e.text, e.user_id, u.name AS user_name, u.avatar_url AS user_avatar, \
-         e.session_id, es.number AS session_number, es.title AS session_title, op.slug AS project_slug, e.from_session_id \
+         e.session_id, es.number AS session_number, es.title AS session_title, op.slug AS project_slug, e.from_session_id, \
+         CASE WHEN e.kind = 'schedule' THEN es.schedule_id END AS schedule_id, sc.name AS schedule_name \
          FROM autopilot_log e LEFT JOIN users u ON u.id = e.user_id LEFT JOIN sessions es ON es.id = e.session_id \
+         LEFT JOIN schedules sc ON sc.id = es.schedule_id AND e.kind = 'schedule' \
          LEFT JOIN projects op ON op.id = e.other_project_id WHERE e.project_id = ?1"
         .to_owned();
     if let Some(before) = http::query(req, "before") {
@@ -423,6 +428,10 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
                 text: ap::said(&r.text, r.user_name.as_deref()),
                 project_slug: r.project_slug,
                 from: r.from_session_id.map(SessionId),
+                schedule: r.schedule_id.map(|id| SessionSchedule {
+                    id: ScheduleId(id),
+                    name: r.schedule_name,
+                }),
             })
             .collect(),
         has_more,

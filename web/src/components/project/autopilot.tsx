@@ -42,6 +42,7 @@ import {
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { ProjectMark } from "@/components/project/project-icon";
+import { ScheduleNamed } from "@/components/session/autopilot";
 import {
   AutopilotIcon,
   Avatar,
@@ -2274,7 +2275,17 @@ function EntryRow({
             className={cn("min-w-0 flex-1 text-[13.5px] leading-relaxed", note ? "text-ink" : "text-ink-2")}
           >
             <div className="[overflow-wrap:anywhere]">
-              <Markdown text={e.text} className={cn("prose-note", !note && "[&>*:last-child]:inline")} />
+              {e.schedule ? (
+                // fctl's own line, with the schedule's name a link to it.
+                <ScheduleNamed
+                  text={e.text}
+                  schedule={e.schedule}
+                  slug={e.project_slug ?? home}
+                  className="decoration-line-strong hover:text-ink hover:decoration-ink-3"
+                />
+              ) : (
+                <Markdown text={e.text} className={cn("prose-note", !note && "[&>*:last-child]:inline")} />
+              )}
             </div>
           </div>
           <time title={stamp(e.at)} className="mt-0.5 shrink-0 text-[11.5px] text-ink-4 tabular-nums">
