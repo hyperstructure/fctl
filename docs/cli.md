@@ -756,7 +756,9 @@ fctl autopilot pause --reason "The direction is done: all four features shipped.
 A session you follow notifies you when it waits for your reply, pauses on a
 usage limit or fails, in every browser where you turned notifications on
 (Settings → Notifications in the web app; on iPhone and iPad, fctl added to
-the Home Screen). You follow the sessions you start and resume.
+the Home Screen). You follow the sessions you start and resume. An
+autopilot's own session, and those it starts while it is on, notify you only
+when they ask you something: it looks after the rest itself.
 
 ```sh
 fctl notifications status                   # what notifies you, and the browsers that get it

@@ -3648,15 +3648,7 @@ impl SessionObject {
         if s.review.is_some() {
             self.review_moved(s, before);
         }
-        // A review agent waits for nobody: its turn's end is its review's.
-        // Nor does an autopilot's own session, which fctl wakes again.
-        let pilot = s
-            .autopilot
-            .as_ref()
-            .is_some_and(|a| a.role == fctl_proto::autopilot::AutopilotRole::Pilot);
-        let kind = notify::Kind::of(before, s.status)
-            .filter(|k| (s.review.is_none() && !pilot) || *k != notify::Kind::Waiting);
-        if let Some(kind) = kind {
+        if let Some(kind) = notify::Kind::of(before, s.status) {
             self.notify(s, kind, now);
         }
         if s.autopilot.is_some() && s.status != before {
@@ -3740,6 +3732,20 @@ impl SessionObject {
             notify::Kind::Paused => (kind, None),
             notify::Kind::Failed => (kind, s.status_reason.clone()),
         };
+        // What of it people hear (`notify::Audience`): an autopilot's
+        // sessions notify only when they ask, and a review's turn's end is
+        // its review's. Whether an autopilot is on, which decides for one it
+        // started, matters only for what an autopilot's session keeps quiet.
+        let role = s.autopilot.as_ref().map(|a| a.role);
+        if !kind.notifies(notify::Audience::of(s.review.is_some(), role, false)) {
+            return;
+        }
+        let crew_of = s
+            .autopilot
+            .as_ref()
+            .filter(|_| !kind.notifies(notify::Audience::Autopilot))
+            .map(|a| a.project_id.0.clone());
+        let review = s.review.is_some();
         let event = notify::Event {
             session_id: s.id.clone(),
             reference: format!("{}#{}", s.project_slug, s.number),
@@ -3751,6 +3757,15 @@ impl SessionObject {
         };
         let env = self.env.clone();
         self.state.wait_until(async move {
+            if let Some(project) = crew_of {
+                match crate::notify::autopilot_on(&env, &project).await {
+                    Ok(on) if !kind.notifies(notify::Audience::of(review, role, on)) => return,
+                    Ok(_) => {}
+                    Err(e) => {
+                        worker::console_error!("reading {project}'s autopilot: {}", e.0.message)
+                    }
+                }
+            }
             if let Err(e) = crate::notify::session_changed(&env, event, except).await {
                 worker::console_error!("notifying followers failed: {}", e.0.message);
             }

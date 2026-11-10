@@ -5,6 +5,7 @@
 use crate::perm::{self, SessionAccess};
 use crate::workspace::Membership;
 use fctl_proto::api::{NotificationSettings, PushMessage};
+use fctl_proto::autopilot::AutopilotRole;
 use fctl_proto::session::{ProjectRole, SessionRole, SessionStatus};
 use fctl_proto::{Millis, SessionId};
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,17 @@ impl Kind {
         }
     }
 
+    /// Whether it notifies the people who follow a session whose news is
+    /// for `audience`: an autopilot's sessions only when they ask
+    /// something, and a review's not when its turn ends.
+    pub fn notifies(self, audience: Audience) -> bool {
+        match self {
+            Self::Asking | Self::Autopilot => true,
+            Self::Waiting => audience == Audience::People,
+            Self::Paused | Self::Failed => audience != Audience::Autopilot,
+        }
+    }
+
     /// Whether `settings` ask for it.
     pub fn wanted(self, settings: &NotificationSettings) -> bool {
         match self {
@@ -75,6 +87,37 @@ impl Kind {
                 Self::Failed => SessionStatus::Failed,
                 Self::Autopilot => return true,
             }
+    }
+}
+
+/// Who looks after what a session does, which decides what of it notifies
+/// its followers ([`Kind::notifies`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// People: a finished turn waits for their reply.
+    People,
+    /// A review agent's: its turn's end is its review's, and waits for
+    /// nobody.
+    Review,
+    /// An autopilot's: its own session, which fctl wakes again, or one it
+    /// started while it is on. It hears when they finish a turn, pause or
+    /// fail, and goes on by itself; people hear only what they ask.
+    Autopilot,
+}
+
+impl Audience {
+    /// The audience of a session: a review's (`review`), or one of an
+    /// autopilot's in `role` whose autopilot is on (`autopilot_on`) or not.
+    /// Its own session is the autopilot's whatever its state: it only
+    /// plans and steers. One it started is its starter's while it is paused
+    /// or off, as *Needs you* sees it.
+    pub fn of(review: bool, role: Option<AutopilotRole>, autopilot_on: bool) -> Self {
+        match role {
+            _ if review => Self::Review,
+            Some(AutopilotRole::Pilot) => Self::Autopilot,
+            Some(_) if autopilot_on => Self::Autopilot,
+            _ => Self::People,
+        }
     }
 }
 
@@ -368,6 +411,33 @@ mod tests {
             detail: detail.map(str::to_owned),
             at: i64::from(n) * 1000,
             url: None,
+        }
+    }
+
+    #[test]
+    fn an_autopilots_sessions_notify_only_when_they_ask() {
+        use AutopilotRole::*;
+        let ours = Audience::of(false, Some(Pilot), true);
+        assert_eq!(ours, Audience::Autopilot);
+        // Its own session, paused or off, still waits for nobody.
+        assert_eq!(Audience::of(false, Some(Pilot), false), Audience::Autopilot);
+        assert_eq!(Audience::of(false, Some(Crew), true), Audience::Autopilot);
+        // Its crew is its starter's while it is paused or off.
+        assert_eq!(Audience::of(false, Some(Crew), false), Audience::People);
+        assert_eq!(Audience::of(false, None, true), Audience::People);
+        assert_eq!(Audience::of(true, None, false), Audience::Review);
+
+        assert!(Kind::Asking.notifies(ours));
+        assert!(Kind::Autopilot.notifies(ours));
+        assert!(!Kind::Waiting.notifies(ours));
+        assert!(!Kind::Paused.notifies(ours));
+        assert!(!Kind::Failed.notifies(ours));
+
+        assert!(!Kind::Waiting.notifies(Audience::Review));
+        assert!(Kind::Asking.notifies(Audience::Review));
+        assert!(Kind::Failed.notifies(Audience::Review));
+        for kind in [Kind::Waiting, Kind::Asking, Kind::Paused, Kind::Failed] {
+            assert!(kind.notifies(Audience::People));
         }
     }
 

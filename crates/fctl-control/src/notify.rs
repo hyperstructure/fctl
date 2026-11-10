@@ -189,3 +189,12 @@ pub async fn session_changed(env: &Env, event: Event, except: Vec<String>) -> Ap
     }
     Ok(())
 }
+
+/// Whether the autopilot of `project_id` is on, which makes the sessions it
+/// started its own to look after (`fctl_domain::notify::Audience`).
+pub async fn autopilot_on(env: &Env, project_id: &str) -> AppResult<bool> {
+    let db = env.d1("DB")?;
+    Ok(crate::autopilots::row(&db, project_id)
+        .await?
+        .is_some_and(|r| r.state() == fctl_proto::autopilot::AutopilotState::On))
+}
