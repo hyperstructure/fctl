@@ -123,7 +123,7 @@ export function Composer({
           onTakeOver && (
             <span className="animate-fade flex min-w-0 items-center gap-1.5">
               <span className="truncate">
-                {limitOf ? `${limitOf}'s` : "This"} Claude subscription is at its limit; messages wait for it.
+                {limitOf ? `${limitOf}'s` : "This"} subscription is at its limit.
               </span>
               <button
                 type="button"
