@@ -11,6 +11,7 @@
 use crate::config;
 use crate::style;
 use anyhow::{Context, Result, bail};
+use clap::builder::BoolishValueParser;
 use clap::{Args, Subcommand};
 use fctl_proto::agent::AUTOPILOT_ENV;
 use fctl_proto::autopilot::*;
@@ -57,6 +58,12 @@ pub struct Settings {
     /// Their effort level; `default` for the project's.
     #[arg(long)]
     pub effort: Option<String>,
+    /// Keep it on your subscription when others change or resume it
+    /// (yours to choose, as its owner): those who steer it then spend your
+    /// Claude plan, as you. Only where you trust everyone who steers it,
+    /// the project's maintainers and owners (a workspace's: its admins).
+    #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+    pub keep_owner: Option<bool>,
 }
 
 #[derive(Subcommand)]
@@ -81,7 +88,11 @@ pub enum AutopilotCmd {
     },
     /// Change its direction, powers, check-in, sessions or model. Changing
     /// how much it works when it runs on someone else's subscription (or
-    /// --mine) runs it on yours.
+    /// --mine) runs it on yours, unless they keep it (--keep-owner).
+    #[command(after_help = "Examples:
+  fctl autopilot set -p crm --check-in 2h --sessions 4
+  fctl autopilot set -p crm --keep-owner on   # yours: keep it on your plan when others change it
+  fctl autopilot set -p crm --mine            # run it on your subscription from now on")]
     Set {
         #[command(flatten)]
         settings: Settings,
@@ -103,7 +114,8 @@ pub enum AutopilotCmd {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Resume it: it wakes at once.
+    /// Resume it: it wakes at once, on your subscription from then on
+    /// when it ran on someone else's, unless they keep it.
     Resume,
     /// Wake it now. In its sandbox, the autopilot says when to wake next,
     /// unless something wakes it sooner.
@@ -625,6 +637,7 @@ impl Settings {
             model: self.model,
             effort: self.effort,
             take_over: false,
+            keep_owner: self.keep_owner,
         })
     }
 }
@@ -733,7 +746,12 @@ fn print_rules(a: &Autopilot) {
     println!(
         "  {}",
         style::dim(&format!(
-            "On {whose}'s Claude subscription · up to {} at once · checks in every {}",
+            "On {whose}'s Claude subscription{} · up to {} at once · checks in every {}",
+            if a.keep_owner {
+                ", even when others change it"
+            } else {
+                ""
+            },
             style::count(a.crew_max, "session", "sessions"),
             fctl_domain::autopilot::duration(a.check_in_minutes)
         ))

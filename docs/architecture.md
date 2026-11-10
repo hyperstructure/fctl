@@ -387,6 +387,10 @@ token can't do them alone
   Claude subscription, with a token, a sign-in or the token kept on their
   runners: the person's sessions then run on it, and a full login's Claude
   account sees them (Remote Control);
+- putting a project on autopilot, resuming or taking over someone else's
+  autopilot, and keeping one's autopilot on one's subscription when others
+  change it ([Autopilots](#autopilots)): it then acts as the person, on
+  their plan;
 - exporting your data, and deleting your account, someone else's, a
   project or a workspace;
 - making someone a password reset link on an instance that sends no
@@ -2080,7 +2084,15 @@ sessions to do it, and sets up what the work needs, as far as they let it
    owner, as whom it acts; that is a [sensitive action](#confirming-its-you),
    as is resuming or taking it over, which, as for schedules, runs it on
    the taker's subscription from then on, as does changing how much it
-   works (check-in, sessions at once, model). D1 keeps it (`autopilots`, one
+   works (check-in, sessions at once, model). Its owner can keep it on
+   theirs instead (`keep_owner`, *When others change it* in its settings,
+   `fctl autopilot set --keep-owner on`, a sensitive action too): those
+   who steer it then change how much it works and resume it on the owner's
+   plan, as them, and take it over only by asking to (`take_over`, *Run it
+   on your subscription…*), or by resuming or changing it once the owner
+   can no longer run it (`fctl_domain::autopilot::takes_over`). It is for
+   projects whose people the owner all trusts, and a new owner starts
+   without it. D1 keeps it (`autopilots`, one
    per project, its home) with the notes people steer it with
    (`autopilot_notes`), what it asks them (`autopilot_asks`) and its log
    (`autopilot_log`, its newest 1,000 entries).

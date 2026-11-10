@@ -19,4 +19,11 @@ model?: string, effort?: string,
 /**
  * Run it on the caller's Claude subscription, as them, from now on.
  */
-take_over?: boolean, };
+take_over?: boolean, 
+/**
+ * Keep it on its owner's subscription when others change or resume
+ * it (`Autopilot.keep_owner`): its owner's choice alone, or the
+ * choice of whoever puts it on or takes it over, who becomes its
+ * owner. Absent: as it was, or off for a new owner.
+ */
+keep_owner?: boolean, };

@@ -707,7 +707,9 @@ fctl autopilot log -p crm --limit 100
 fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it works, or its direction
 fctl autopilot wake -p crm                     # now, with what's new
 fctl autopilot pause -p crm --reason "Launch week"
-fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's
+fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's (unless they keep it)
+fctl autopilot set -p crm --keep-owner on      # its owner: others' changes and resumes run on your plan too
+fctl autopilot set -p crm --mine               # run it on your subscription from now on
 fctl autopilot off -p crm --stop-sessions      # its direction, notes, plan, log and asks stay
 ```
 
@@ -721,7 +723,12 @@ the work is done, as far as the repository's rules let them),
 `settings`, `secrets` (those it makes itself, never those people set),
 `repos`, `schedules`, and for a workspace's autopilot `projects`; `all`
 (every power its scope has) or `none`. Changing how much it works,
-resuming it or `--mine` runs it on your subscription from then on.
+resuming it or `--mine` runs it on your subscription from then on, unless
+its owner keeps it on theirs with `--keep-owner on`: then only `--mine`
+does, or a change once they can no longer run it. Keep it only in a
+project whose people you all trust: everyone who steers it (its
+maintainers and owners, or a workspace's admins) then runs it on your
+Claude plan, as you.
 
 In its own session's sandbox, the autopilot's `fctl` reaches the API as
 the person it acts for, without signing in (`FCTL_AUTOPILOT` names its

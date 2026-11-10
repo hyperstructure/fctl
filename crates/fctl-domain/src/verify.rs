@@ -95,6 +95,9 @@ pub enum Sensitive {
     /// agent then acts as the person, on their subscription, after they're
     /// gone, as an access token that does everything in the project would.
     PutOnAutopilot,
+    /// Keeping one's autopilot on one's subscription when others change or
+    /// resume it: those who steer it then spend one's plan, as one.
+    KeepAutopilot,
 }
 
 impl Sensitive {
@@ -128,6 +131,7 @@ impl Sensitive {
             Export => "export your data",
             DeleteAccount => "delete your account",
             PutOnAutopilot => "put a project on autopilot",
+            KeepAutopilot => "keep an autopilot on your subscription when others change it",
         }
     }
 }

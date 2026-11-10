@@ -34,6 +34,7 @@ import {
   SquareTerminal,
   Undo2,
   UserRoundCheck,
+  UsersRound,
   Waypoints,
   X,
   Zap,
@@ -870,8 +871,9 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
   const live = atWork(a);
   const [off, setOff] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [taking, setTaking] = useState(false);
   const me = useMe().data;
-  const mine = a.owner?.id === me?.user.id;
+  const mine = !!me && a.owner?.id === me.user.id;
   const wake = useMutation({
     mutationFn: () => api.wakeAutopilot(a.project_id),
     onSuccess: (x) => {
@@ -892,7 +894,9 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
     mutationFn: () => api.resumeAutopilot(a.project_id),
     onSuccess: (x) => {
       patched(x);
-      toast(mine ? "Resumed: it wakes now" : "Resumed, on your subscription: it wakes now");
+      toast(
+        !mine && takenBy(x, me) ? "Resumed, on your subscription: it wakes now" : "Resumed: it wakes now",
+      );
     },
     onError: (e) => failed(e, "It isn't resumed"),
   });
@@ -985,7 +989,11 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
                 loading={resume.isPending}
                 onClick={() => resume.mutate()}
                 title={
-                  mine ? "It wakes at once" : "It wakes at once, on your Claude subscription from now on"
+                  mine
+                    ? "It wakes at once"
+                    : a.keep_owner && a.owner
+                      ? `It wakes at once, on ${a.owner.name}'s Claude subscription, which they keep it on`
+                      : "It wakes at once, on your Claude subscription from now on"
                 }
               >
                 Resume
@@ -1009,6 +1017,17 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
                   >
                     Change how it works…
                   </MenuItem>
+                  {!mine && me && (
+                    <MenuItem
+                      icon={<UserRoundCheck />}
+                      onClick={() => {
+                        close();
+                        setTaking(true);
+                      }}
+                    >
+                      Run it on your subscription…
+                    </MenuItem>
+                  )}
                   {a.session && (
                     <MenuItem icon={<SquareTerminal />} link={{ href: `/s/${a.session.id}` }} onClick={close}>
                       Watch its session
@@ -1039,6 +1058,7 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
       )}
       <OffDialog a={a} project={project} open={off} onClose={() => setOff(false)} />
       <SettingsDialog a={a} project={project} open={settings} onClose={() => setSettings(false)} />
+      <TakeOverDialog a={a} project={project} open={taking} onClose={() => setTaking(false)} />
     </section>
   );
 }
@@ -1115,6 +1135,48 @@ function OffDialog({
   );
 }
 
+/** Someone who steers it, not its owner, runs it on their own subscription from now on. */
+function TakeOverDialog({
+  a,
+  project,
+  open,
+  onClose,
+}: {
+  a: G.Autopilot;
+  project: G.Project;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const take = useMutation({
+    mutationFn: () => api.putAutopilot(a.project_id, { take_over: true }),
+    onSuccess: (x) => {
+      patched(x);
+      toast("It runs on your subscription now");
+      onClose();
+    },
+    onError: (e) => failed(e, "It isn't yours"),
+  });
+  const where =
+    a.scope === "workspace" ? ` in every project of ${project.workspace?.name ?? "the workspace"}` : "";
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Run it on your subscription?"
+      description={`From now on it runs on your Claude subscription and acts as you${where}: its own sessions and those it starts.${a.owner ? ` ${a.owner.name} no longer runs it${a.keep_owner ? ", and whether it stays on yours when others change it is then yours to choose" : ""}.` : ""}`}
+    >
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="primary" loading={take.isPending} onClick={() => take.mutate()}>
+          Run it on mine
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
 function SettingsDialog({
   a,
   project,
@@ -1132,6 +1194,7 @@ function SettingsDialog({
   const [crew, setCrew] = useState(a.crew_max);
   const [model, setModel] = useState(a.model ?? "");
   const [effort, setEffort] = useState(a.effort ?? "");
+  const [keep, setKeep] = useState(a.keep_owner);
   useEffect(() => {
     if (!open) return;
     setPowers(a.powers);
@@ -1139,8 +1202,9 @@ function SettingsDialog({
     setCrew(a.crew_max);
     setModel(a.model ?? "");
     setEffort(a.effort ?? "");
+    setKeep(a.keep_owner);
   }, [open, a]);
-  const mine = a.owner?.id === me?.user.id;
+  const mine = !!me && a.owner?.id === me.user.id;
   const costs =
     checkIn !== a.check_in_minutes ||
     crew !== a.crew_max ||
@@ -1154,10 +1218,13 @@ function SettingsDialog({
         crew_max: crew,
         model: model || "default",
         effort: effort || "default",
+        // Its owner's choice alone.
+        ...(mine ? { keep_owner: keep } : {}),
       }),
     onSuccess: (x) => {
       patched(x);
-      toast(!mine && costs ? "Changed: it runs on your subscription from now on" : "Changed");
+      // Whose it is now, as the control plane decided: its owner may keep it, while they can run it.
+      toast(!mine && takenBy(x, me) ? "Changed: it runs on your subscription from now on" : "Changed");
       onClose();
     },
     onError: (e) => failed(e, "Not changed"),
@@ -1176,10 +1243,12 @@ function SettingsDialog({
           effort={effort}
           setEffort={setEffort}
         />
+        {mine && <KeepField a={a} keep={keep} setKeep={setKeep} />}
         {!mine && costs && a.owner && (
           <Banner tone="info">
-            It runs on {a.owner.name}'s Claude subscription. Changing how much it works runs it on yours from
-            now on.
+            {a.keep_owner
+              ? `It runs on ${a.owner.name}'s Claude subscription, which they keep it on when others change it: your changes run on theirs.`
+              : `It runs on ${a.owner.name}'s Claude subscription. Changing how much it works runs it on yours from now on.`}
           </Banner>
         )}
       </div>
@@ -1193,6 +1262,47 @@ function SettingsDialog({
       </div>
     </Dialog>
   );
+}
+
+/** Its owner's choice: whether it stays on their subscription when others change or resume it. */
+function KeepField({ a, keep, setKeep }: { a: G.Autopilot; keep: boolean; setKeep: (k: boolean) => void }) {
+  const who = a.scope === "workspace" ? "the workspace's admins" : "the project's maintainers and owners";
+  return (
+    <fieldset>
+      <legend className="mb-2 text-[12.5px] font-medium text-ink-2">When others change it</legend>
+      <label
+        htmlFor="autopilot-keep"
+        className="flex cursor-pointer items-start gap-3 rounded-xl border border-line px-3.5 py-2.5 hover:bg-hover/30"
+      >
+        <input
+          id="autopilot-keep"
+          type="checkbox"
+          checked={keep}
+          onChange={(e) => setKeep(e.target.checked)}
+          className="mt-1 accent-[var(--c-ink)]"
+          aria-describedby="autopilot-keep-line"
+        />
+        <span className="min-w-0">
+          <span className="block text-[13.5px] text-ink">Keep it on my subscription</span>
+          <span id="autopilot-keep-line" className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">
+            Those who steer it, {who}, then change how much it works and resume it on your Claude plan, rather
+            than taking it over, and it goes on acting as you. Only for a project whose people you all trust.
+          </span>
+        </span>
+      </label>
+      {keep && !a.keep_owner && (
+        <Banner tone="warn" className="mt-2">
+          Any of them can then run it as hard as they choose on your plan: up to {CREW_MAX} sessions at once,
+          checking in every 15 minutes.
+        </Banner>
+      )}
+    </fieldset>
+  );
+}
+
+/** Whether `a` now runs on the subscription of `me`. */
+function takenBy(a: G.Autopilot, me: G.Me | null | undefined): boolean {
+  return !!me && a.owner?.id === me.user.id;
 }
 
 // ───────────────────────────── what it asks ─────────────────────────────
@@ -1872,6 +1982,7 @@ function Rules({ a, project }: { a: G.Autopilot; project: G.Project }) {
             Works in every project of {project.workspace?.name ?? "its workspace"}
           </li>
         )}
+        {a.keep_owner && <KeptLine a={a} />}
         <li className="flex gap-2">
           <Sparkles className="mt-[2px] size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
           Thinks with {modelLabel(a.model ?? project.settings.model ?? "")}
@@ -1881,6 +1992,18 @@ function Rules({ a, project }: { a: G.Autopilot; project: G.Project }) {
         </li>
       </ul>
     </Card>
+  );
+}
+
+/** That its owner keeps it on their subscription when others change it. */
+function KeptLine({ a }: { a: G.Autopilot }) {
+  const me = useMe().data;
+  const whose = !a.owner ? "its owner's" : me && a.owner.id === me.user.id ? "your" : `${a.owner.name}'s`;
+  return (
+    <li className="flex gap-2">
+      <UsersRound className="mt-[2px] size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
+      Stays on {whose} subscription when others change or resume it
+    </li>
   );
 }
 
