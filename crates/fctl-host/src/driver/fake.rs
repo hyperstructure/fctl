@@ -17,7 +17,9 @@ use std::sync::{Mutex, PoisonError};
 /// `build` lists its context in `context`, copies its Dockerfile to
 /// `dockerfile` and makes a build without labels, and with `fail_build` it
 /// fails; `size` holds the size images have (1000 bytes without it). With
-/// `fail_run`, `run` fails, and with `full_disk` as for a full disk.
+/// `fail_run`, `run` fails, and with `full_disk` as for a full disk. With
+/// `slow_pull`, pulls print their progress as Apple's `container` does and
+/// take most of a second; `breaks` holds how many more pulls break off.
 /// `network create` makes `network`, which holds whether its containers
 /// reach each other, unless `no_networks` is there. Each volume is a file in
 /// `volumes` holding the KiB it takes, which `run` makes when a container
@@ -51,6 +53,20 @@ inspect() {
 }
 pull() {
   [ -e "$d/registry/$(key "$last")" ] || { echo "$last: manifest unknown" >&2; exit 1; }
+  if [ -e "$d/slow_pull" ]; then
+    echo "[1/2] Fetching image 40% (6 of 7 blobs, 400 MB/1 GB, 120 KB/s) [1s]" >&2
+    sleep 0.4
+    echo "[1/2] Fetching image 70% (6 of 7 blobs, 700 MB/1 GB, 150 KB/s) [2s]" >&2
+    sleep 0.4
+  fi
+  breaks=$(cat "$d/breaks" 2>/dev/null || echo 0)
+  if [ "$breaks" -gt 0 ]; then
+    echo $((breaks - 1)) > "$d/breaks"
+    echo "[1/2] Fetching image 76% (6 of 7 blobs, 981,6 MB/1,25 GB, 233 KB/s) [9m 47s]" >&2
+    echo "[1/2] Fetching image 100% (7 blobs, 1,25 GB) [10m 0s]" >&2
+    echo 'Error: StreamClosed(streamID: HTTP2StreamID(5), errorCode: HTTP2ErrorCode<0x1 ProtocolError>, location: "NIOHTTP2/HTTP2StreamChannel.swift:892")' >&2
+    exit 1
+  fi
   cp "$d/registry/$(key "$last")" "$(file "$last")"
 }
 names() { for f in "$d"/have/*; do [ -e "$f" ] && cut -d' ' -f4 "$f"; done; }
@@ -255,6 +271,19 @@ impl FakeCli {
     /// Makes `network create` fail, as a runtime that can't make networks.
     pub fn no_networks(&self) -> Result<()> {
         std::fs::write(self.dir.path().join("no_networks"), "")?;
+        Ok(())
+    }
+
+    /// Makes pulls print how far along they are and take most of a second.
+    pub fn slow_pulls(&self) -> Result<()> {
+        std::fs::write(self.dir.path().join("slow_pull"), "")?;
+        Ok(())
+    }
+
+    /// Makes the next `times` pulls break off partway, as ghcr.io's HTTP/2
+    /// streams did for Apple's `container`.
+    pub fn break_pulls(&self, times: u32) -> Result<()> {
+        std::fs::write(self.dir.path().join("breaks"), format!("{times}\n"))?;
         Ok(())
     }
 

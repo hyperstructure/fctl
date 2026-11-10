@@ -50,11 +50,17 @@ docker image inspect ghcr.io/hyperstructure/sandbox:0.5.0 \
 A host whose `host.toml` sets no `image` uses the default image of its own
 version, so a host that updates, by itself or with `fctl self update`,
 moves its new sessions to the new version's image. The host pulls the image in the background when
-it starts, and a session that starts before it has the image pulls it
-itself. When the image can't be pulled, as in the minutes after a release
-before its image is published, the host pulls `latest` instead, and
-sessions start from it and say so in their log. The first session after the
-version's image is published pulls it.
+it starts, and a session that starts before it has the image waits for that
+pull, or pulls it itself when none is under way: one pull of an image at a
+time. A session's log says every 30 seconds how far along the pull is
+(with Apple's `container`, its percentage and speed; with Docker, its
+layers), and how long it took. A pull whose download breaks off partway is
+tried again, three times in all. When the image can't be pulled, as in the
+minutes after a release before its image is published, the host pulls
+`latest` instead, and sessions start from it and say so in their log; not
+when the image's download broke off, as `latest`'s, of mostly the same
+layers, would too, unless `latest` is already on the runner. The first
+session after the version's image is published pulls it.
 
 The host pulls its tag again when it starts and every 6 hours, so new
 sessions start from the newest build of it, with the newest Claude Code.
