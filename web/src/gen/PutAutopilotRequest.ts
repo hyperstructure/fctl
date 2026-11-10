@@ -17,6 +17,12 @@ scope?: AutopilotScope, powers?: Array<AutopilotPower>, check_in_minutes?: numbe
  */
 model?: string, effort?: string, 
 /**
+ * Where a fresh session takes over from its own
+ * (`Autopilot.handoff_at`), 100,000 to 1,000,000 tokens; `0` for only
+ * after 12 hours.
+ */
+handoff_at?: number, 
+/**
  * Run it on the caller's Claude subscription, as them, from now on.
  */
 take_over?: boolean, 

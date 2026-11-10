@@ -192,6 +192,15 @@ pub struct Autopilot {
     /// project's.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The context size, in tokens, at which a fresh session of its own
+    /// takes over from the one it works in: the first wake that finds that
+    /// one between turns with this many tokens in its context, or more,
+    /// starts a fresh one, briefed and starting from its plan and log, and
+    /// stops the old one, as a wake does after 12 hours whatever its size.
+    /// Each wake reads its whole conversation again, uncached after an
+    /// hour's rest, so a smaller one spends less of its owner's plan.
+    /// Absent: only after 12 hours. Control planes before it leave it out.
+    pub handoff_at: Option<u32>,
     /// Its own session now: the one fctl wakes it in.
     pub session: Option<AutopilotSession>,
     /// When fctl wakes it next, unless something wakes it sooner; absent
@@ -250,6 +259,10 @@ pub struct AutopilotSession {
     pub number: u32,
     pub status: SessionStatus,
     pub started_at: Millis,
+    /// The tokens in its context, as it last said (`SessionStats`): it
+    /// hands off at `Autopilot.handoff_at`. Absent until it has, and from
+    /// control planes before it.
+    pub context_tokens: Option<u64>,
 }
 
 /// Why fctl wakes an autopilot.
@@ -697,6 +710,10 @@ pub struct PutAutopilotRequest {
     /// `"default"` for the project's.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Where a fresh session takes over from its own
+    /// (`Autopilot.handoff_at`), 100,000 to 1,000,000 tokens; `0` for only
+    /// after 12 hours.
+    pub handoff_at: Option<u32>,
     /// Run it on the caller's Claude subscription, as them, from now on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]

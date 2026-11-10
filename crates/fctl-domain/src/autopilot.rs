@@ -56,6 +56,17 @@ pub const WAKE_MAX: u32 = 1_440;
 /// this long ago and can take a message; after it, fctl starts a fresh one,
 /// so that no conversation grows for ever.
 pub const SHIFT_MS: i64 = 12 * HOUR_MS;
+/// The context sizes people choose from for a fresh session to take over
+/// from its own ([`Autopilot.handoff_at`]), besides none (only after
+/// [`SHIFT_MS`]) and one of their own, within
+/// [`crate::context::MIN_TOKENS`] and [`crate::context::MAX_TOKENS`].
+///
+/// [`Autopilot.handoff_at`]: fctl_proto::autopilot::Autopilot::handoff_at
+pub const HANDOFF_CHOICES: [u32; 3] = [150_000, 250_000, 400_000];
+/// How full its context is, of where it hands off, when the wake message
+/// tells it the handoff is near: what it writes down this turn is what its
+/// next session starts from.
+pub const HANDOFF_NEAR: f64 = 0.75;
 /// What its sessions do, gathered this long before it wakes for them: a
 /// review, its comments and a session that ends just after come together.
 pub const CREW_GATHER_MS: i64 = MINUTE_MS;
@@ -246,14 +257,100 @@ pub fn retry_in(failures: u32) -> Option<i64> {
     RETRY_MS.get(i).copied()
 }
 
-/// Whether a wake goes to its session as it is, a message to it, rather
-/// than to a fresh session: one that can take a message (waiting for one,
-/// at work, or stopped), started less than [`SHIFT_MS`] ago, or at work
-/// whenever it started, which hears at its next step rather than stop
-/// halfway.
-pub fn carries_on(status: SessionStatus, started_at: Millis, now: Millis) -> bool {
-    let takes_messages = !matches!(status, SessionStatus::Failed);
-    takes_messages && (now - started_at < SHIFT_MS || at_work(status))
+/// Its own session, as a wake finds it.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnSession {
+    pub status: SessionStatus,
+    pub started_at: Millis,
+    /// The tokens in its context, as it last said.
+    pub context_tokens: Option<u64>,
+}
+
+/// Why a wake goes to a fresh session rather than to its own as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fresh {
+    /// It failed.
+    Failed,
+    /// It started [`SHIFT_MS`] ago or more.
+    Shift,
+    /// Its context holds this many tokens, where it hands off or past it.
+    Full(u64),
+}
+
+/// Whether a wake goes to its session as it is, a message to it (`None`),
+/// or to a fresh session, and why. It carries on while it can take a
+/// message (waiting for one, at work, or stopped), started less than
+/// [`SHIFT_MS`] ago and holds less context than `handoff_at` tokens; at
+/// work, whenever it started and however full, it hears at its next step
+/// rather than stop halfway, and the first wake after its turn moves on.
+pub fn fresh(own: OwnSession, handoff_at: Option<u32>, now: Millis) -> Option<Fresh> {
+    if matches!(own.status, SessionStatus::Failed) {
+        return Some(Fresh::Failed);
+    }
+    if at_work(own.status) {
+        return None;
+    }
+    if now - own.started_at >= SHIFT_MS {
+        return Some(Fresh::Shift);
+    }
+    match (own.context_tokens, handoff_at) {
+        (Some(tokens), Some(at)) if tokens >= u64::from(at) => Some(Fresh::Full(tokens)),
+        _ => None,
+    }
+}
+
+/// How near its own session is to handing off, for the wake message that
+/// carries on in it: its context's tokens and where it hands off, once
+/// they reach [`HANDOFF_NEAR`] of it.
+pub fn handoff_near(context_tokens: Option<u64>, handoff_at: Option<u32>) -> Option<(u64, u32)> {
+    let (tokens, at) = (context_tokens?, handoff_at?);
+    #[allow(clippy::cast_precision_loss)]
+    let near = tokens as f64 >= f64::from(at) * HANDOFF_NEAR;
+    near.then_some((tokens, at))
+}
+
+/// Where its own session hands off, for people to choose: `None` (only
+/// after [`SHIFT_MS`]), or a context size within Claude's bounds. `0`,
+/// as an update sends it, is `None`.
+pub fn handoff_at(tokens: u32) -> Result<Option<u32>> {
+    if tokens == 0 {
+        return Ok(None);
+    }
+    if !crate::context::valid(tokens) {
+        return Err(ApiError::validation("handoff_at", crate::context::bounds()));
+    }
+    Ok(Some(tokens))
+}
+
+/// What the first message of a fresh session that takes over from `from`
+/// (`shop#12`) says of why, before the wake's news: its work goes on from
+/// its plan and log.
+pub fn takes_over_from(why: Fresh, from: &str, handoff_at: Option<u32>) -> Option<String> {
+    let because = match why {
+        // The wake's reasons say so (`Retry`).
+        Fresh::Failed => return None,
+        Fresh::Shift => format!(
+            "You take over from your last session, {from}, which started {} ago: fctl starts a fresh session every {}, so that no conversation grows for ever, and stopped it.",
+            duration(minutes(SHIFT_MS)),
+            duration(minutes(SHIFT_MS))
+        ),
+        Fresh::Full(tokens) => format!(
+            "You take over from your last session, {from}: its context held {} tokens{}, so fctl stopped it and started you, so that each wake reads less.",
+            crate::context::short(u32::try_from(tokens).unwrap_or(u32::MAX)),
+            handoff_at.map_or_else(String::new, |at| format!(
+                ", past the {} at which people want a fresh session to take over",
+                crate::context::short(at)
+            ))
+        ),
+    };
+    Some(format!(
+        "{because} Go on from your plan and log, which it kept for you, and `fctl autopilot brief`; read its transcript (`fctl logs {from}`) only for what they don't say, as it would fill your context again."
+    ))
+}
+
+/// `ms` in whole minutes.
+fn minutes(ms: i64) -> u32 {
+    u32::try_from(ms / MINUTE_MS).unwrap_or(u32::MAX)
 }
 
 /// Whether its session is at work, so that a check-in can wait.
@@ -569,12 +666,14 @@ pub struct Place<'a> {
     pub owner: &'a str,
 }
 
-/// What it may do and how often it wakes.
+/// What it may do, how often it wakes and when a fresh session takes over.
 #[derive(Clone, Copy, Debug)]
 pub struct Rules<'a> {
     pub powers: &'a [AutopilotPower],
     pub crew_max: u32,
     pub check_in_minutes: u32,
+    /// The context size its own session hands off at, if people chose one.
+    pub handoff_at: Option<u32>,
 }
 
 /// The first message of each of its own sessions: who it is, where to
@@ -613,6 +712,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         "- Your sessions open pull requests and leave merging to people. When the next piece of work waits on one, ask people to merge it (`fctl autopilot ask`), and go on meanwhile with what doesn't.\n"
     });
     s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well, written whole each time. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them: what you don't write down, it won't know.\n");
+    s.push_str(&format!("- {}\n", handoff_line(rules.handoff_at)));
     let powers = powers_line(rules.powers, scope);
     if !powers.is_empty() {
         s.push_str(&format!("- {powers}\n"));
@@ -626,6 +726,22 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     s.push_str("- When the direction is done and nothing is left to do, write it down and pause yourself with `fctl autopilot pause --reason \"…\"`: people resume you when they have more.\n");
     s.push_str("\nStart by running `fctl autopilot brief`: it shows where things stand, with your plan, people's notes and answers, your sessions and your log.\n");
     s
+}
+
+/// When a fresh session takes over from this one, as a line of the
+/// briefing.
+fn handoff_line(handoff_at: Option<u32>) -> String {
+    let when = match handoff_at {
+        Some(at) => format!(
+            "once your context holds {} tokens, or after {}",
+            crate::context::short(at),
+            duration(minutes(SHIFT_MS))
+        ),
+        None => format!("after {}", duration(minutes(SHIFT_MS))),
+    };
+    format!(
+        "Each wake reads this whole conversation again, so keep it lean: read what you need of a session (`fctl show`, the end of `fctl logs`) rather than all of it, and hand long reading to a subagent that reports back. fctl starts a fresh session in your place {when}, at the first wake between your turns, and stops this one: bring your plan and log up to date before you end each turn."
+    )
 }
 
 /// What its powers let it do, as a line of the briefing.
@@ -1018,6 +1134,9 @@ pub struct News<'a> {
     pub direction: Option<(&'a str, Option<&'a str>)>,
     pub answers: Vec<AskView<'a>>,
     pub crew: Vec<CrewView<'a>>,
+    /// Its context's tokens and where it hands off, once near
+    /// ([`handoff_near`]).
+    pub handoff: Option<(u64, u32)>,
     pub now: Millis,
 }
 
@@ -1074,6 +1193,13 @@ pub fn wake_message(news: &News<'_>) -> String {
         for c in &news.crew {
             s.push_str(&format!("\n- {}", crew_line(c)));
         }
+    }
+    if let Some((tokens, at)) = news.handoff {
+        s.push_str(&format!(
+            "\n\nYour context holds {} tokens: at {}, a fresh session takes over from you at your next wake, starting from your plan and log. Before you end this turn, write down in them what it needs to go on: what you're in the middle of, what you wait for, and what you learned.",
+            crate::context::short(u32::try_from(tokens).unwrap_or(u32::MAX)),
+            crate::context::short(at)
+        ));
     }
     s.push_str("\n\nGo on from here: look at your sessions, keep your plan and log current, start what comes next, and before your turn ends say when to wake you if not at your check-in (`fctl autopilot wake --in …`). `fctl autopilot brief` shows the whole picture.");
     s
@@ -1294,12 +1420,94 @@ mod tests {
     #[test]
     fn a_wake_carries_on_in_a_recent_session() {
         let now = 100 * HOUR_MS;
-        assert!(carries_on(SessionStatus::Idle, now - HOUR_MS, now));
-        assert!(carries_on(SessionStatus::Stopped, now - HOUR_MS, now));
-        assert!(!carries_on(SessionStatus::Failed, now - HOUR_MS, now));
-        assert!(!carries_on(SessionStatus::Idle, now - 13 * HOUR_MS, now));
+        let own = |status, ago, context_tokens| OwnSession {
+            status,
+            started_at: now - ago,
+            context_tokens,
+        };
+        let fresh_for = |o: OwnSession| fresh(o, None, now);
+        assert_eq!(fresh_for(own(SessionStatus::Idle, HOUR_MS, None)), None);
+        assert_eq!(fresh_for(own(SessionStatus::Stopped, HOUR_MS, None)), None);
+        assert_eq!(
+            fresh_for(own(SessionStatus::Failed, HOUR_MS, None)),
+            Some(Fresh::Failed)
+        );
+        assert_eq!(
+            fresh_for(own(SessionStatus::Idle, 13 * HOUR_MS, None)),
+            Some(Fresh::Shift)
+        );
         // At work, it finishes what it does first; the next wake moves on.
-        assert!(carries_on(SessionStatus::Running, now - 13 * HOUR_MS, now));
+        assert_eq!(
+            fresh_for(own(SessionStatus::Running, 13 * HOUR_MS, None)),
+            None
+        );
+        // However full, with no size chosen.
+        assert_eq!(
+            fresh_for(own(SessionStatus::Idle, HOUR_MS, Some(900_000))),
+            None
+        );
+    }
+
+    #[test]
+    fn a_full_context_hands_off_between_turns() {
+        let now = 100 * HOUR_MS;
+        let own = |status, context_tokens| OwnSession {
+            status,
+            started_at: now - HOUR_MS,
+            context_tokens,
+        };
+        let at = Some(250_000);
+        assert_eq!(
+            fresh(own(SessionStatus::Idle, Some(249_999)), at, now),
+            None
+        );
+        assert_eq!(
+            fresh(own(SessionStatus::Idle, Some(250_000)), at, now),
+            Some(Fresh::Full(250_000))
+        );
+        assert_eq!(
+            fresh(own(SessionStatus::Stopped, Some(300_000)), at, now),
+            Some(Fresh::Full(300_000))
+        );
+        // At work, it hears at its next step; the wake after its turn hands off.
+        assert_eq!(
+            fresh(own(SessionStatus::Running, Some(300_000)), at, now),
+            None
+        );
+        assert_eq!(
+            fresh(own(SessionStatus::Paused, Some(300_000)), at, now),
+            Some(Fresh::Full(300_000))
+        );
+        // A session that hasn't said yet carries on.
+        assert_eq!(fresh(own(SessionStatus::Idle, None), at, now), None);
+        // Near it, the wake message says so; not before.
+        assert_eq!(handoff_near(Some(190_000), at), Some((190_000, 250_000)));
+        assert_eq!(handoff_near(Some(180_000), at), None);
+        assert_eq!(handoff_near(Some(190_000), None), None);
+        assert_eq!(handoff_near(None, at), None);
+    }
+
+    #[test]
+    fn people_choose_where_it_hands_off_within_claudes_bounds() {
+        assert_eq!(handoff_at(0), Ok(None));
+        assert_eq!(handoff_at(250_000), Ok(Some(250_000)));
+        assert!(handoff_at(50_000).is_err_and(|e| e.message == "Use 100K to 1M tokens"));
+        assert!(handoff_at(2_000_000).is_err());
+        assert!(HANDOFF_CHOICES.iter().all(|&c| crate::context::valid(c)));
+    }
+
+    #[test]
+    fn a_fresh_session_hears_why_it_takes_over() {
+        let full = takes_over_from(Fresh::Full(412_000), "shop#12", Some(400_000));
+        assert!(full.as_deref().is_some_and(|t| t.starts_with(
+            "You take over from your last session, shop#12: its context held 412K tokens, past the 400K at which people want a fresh session to take over, so fctl stopped it"
+        )));
+        assert!(full.is_some_and(|t| t.contains("`fctl logs shop#12`")));
+        let shift = takes_over_from(Fresh::Shift, "shop#12", None);
+        assert!(shift.is_some_and(|t| t.contains(
+            "shop#12, which started 12 hours ago: fctl starts a fresh session every 12 hours"
+        )));
+        assert_eq!(takes_over_from(Fresh::Failed, "shop#12", None), None);
     }
 
     #[test]
@@ -1383,6 +1591,7 @@ mod tests {
                     powers,
                     crew_max: 3,
                     check_in_minutes: 60,
+                    handoff_at: None,
                 },
                 "Ship it.",
             )
@@ -1492,6 +1701,7 @@ mod tests {
                 powers: &[Settings, Schedules],
                 crew_max: 3,
                 check_in_minutes: 120,
+                handoff_at: Some(250_000),
             },
             "Ship the checkout.",
         );
@@ -1501,6 +1711,9 @@ mod tests {
         assert!(b.contains("## Where to take it\n\nShip the checkout."));
         assert!(b.contains("at most 3 at once"));
         assert!(b.contains("at least every 2 hours"));
+        assert!(b.contains(
+            "fctl starts a fresh session in your place once your context holds 250K tokens, or after 12 hours, at the first wake between your turns"
+        ));
         assert!(b.contains("`fctl projects set`"));
         assert!(b.contains("`fctl schedules add`"));
         assert!(!b.contains("fctl projects repos add"));
@@ -1559,6 +1772,7 @@ mod tests {
                 powers: &[],
                 crew_max: 2,
                 check_in_minutes: 60,
+                handoff_at: None,
             },
             direction: "Ship the checkout.",
             direction_by: Some("Ada"),
@@ -1612,6 +1826,7 @@ mod tests {
                 question: None,
                 pull_requests: vec![],
             }],
+            handoff: None,
             now: 0,
         };
         let m = wake_message(&news);
@@ -1621,6 +1836,15 @@ mod tests {
         assert!(m.contains("\n- Ada: Don't touch billing"));
         assert!(m.contains("\n- shop#41 “Add Apple Pay”: failed: Its runner went away"));
         assert!(m.contains("`fctl autopilot brief` shows the whole picture."));
+        assert!(!m.contains("a fresh session takes over"));
+        // Near where it hands off, it hears so.
+        let m = wake_message(&News {
+            handoff: Some((310_000, 400_000)),
+            ..news
+        });
+        assert!(m.contains(
+            "\n\nYour context holds 310K tokens: at 400K, a fresh session takes over from you at your next wake"
+        ));
     }
 
     #[test]

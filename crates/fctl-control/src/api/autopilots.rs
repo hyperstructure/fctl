@@ -184,20 +184,8 @@ async fn view(
         crew_max: row.crew_max(),
         model: row.model.clone(),
         effort: row.effort.clone(),
-        session: match (
-            &row.session_id,
-            row.session_number,
-            row.session_status(),
-            row.session_created_at,
-        ) {
-            (Some(id), Some(number), Some(status), Some(started_at)) => Some(AutopilotSession {
-                id: SessionId(id.clone()),
-                number: u32::try_from(number).unwrap_or(0),
-                status,
-                started_at,
-            }),
-            _ => None,
-        },
+        handoff_at: row.handoff_at(),
+        session: row.session(),
         wake_at: row.wake_at.filter(|_| row.state() == AutopilotState::On),
         wake_reason: row
             .wake_reason()
@@ -605,6 +593,7 @@ async fn brief_of(
             powers: &powers,
             crew_max: row.crew_max(),
             check_in_minutes: row.check_in(),
+            handoff_at: row.handoff_at(),
         },
         direction: &row.direction,
         direction_by: direction_by.as_deref(),
@@ -672,6 +661,12 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     let crew = body
         .crew_max
         .map(ap::crew_max)
+        .transpose()
+        .map_err(AppError)?;
+    // Unsent, none (`0`: only after 12 hours), or a context size.
+    let handoff = body
+        .handoff_at
+        .map(ap::handoff_at)
         .transpose()
         .map_err(AppError)?;
     let direction = body
@@ -747,6 +742,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             let crew = crew
                 .or(before.as_ref().map(AutopilotRow::crew_max))
                 .unwrap_or(ap::DEFAULT_CREW);
+            let handoff =
+                handoff.unwrap_or_else(|| before.as_ref().and_then(AutopilotRow::handoff_at));
             // Theirs to choose, who own it from now on: what its owner
             // before them chose isn't.
             let keep_owner = body.keep_owner.unwrap_or_else(|| {
@@ -757,9 +754,9 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             let written = q(
                 &ctx.db,
                 "INSERT INTO autopilots (project_id, workspace_id, scope, state, owner_id, keep_owner, direction, direction_by, \
-                 direction_at, direction_new, powers, check_in_minutes, crew_max, model, effort, wake_at, wake_reasons, failures, \
-                 created_by, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, 'on', ?4, ?12, ?5, ?4, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?6, 'started', 0, ?4, ?6, ?6) \
+                 direction_at, direction_new, powers, check_in_minutes, crew_max, model, effort, handoff_at, wake_at, wake_reasons, \
+                 failures, created_by, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, 'on', ?4, ?12, ?5, ?4, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?13, ?6, 'started', 0, ?4, ?6, ?6) \
                  ON CONFLICT (project_id) DO UPDATE SET workspace_id = excluded.workspace_id, scope = excluded.scope, \
                  state = 'on', paused_reason = NULL, paused_by = NULL, paused_at = NULL, owner_id = excluded.owner_id, \
                  keep_owner = excluded.keep_owner, \
@@ -768,7 +765,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                  direction_at = CASE WHEN autopilots.direction = excluded.direction THEN autopilots.direction_at \
                    ELSE excluded.direction_at END, direction_new = 0, \
                  powers = excluded.powers, check_in_minutes = excluded.check_in_minutes, crew_max = excluded.crew_max, \
-                 model = excluded.model, effort = excluded.effort, session_id = NULL, wake_at = excluded.wake_at, \
+                 model = excluded.model, effort = excluded.effort, handoff_at = excluded.handoff_at, session_id = NULL, \
+                 wake_at = excluded.wake_at, \
                  wake_reasons = 'started', asked_wake_at = NULL, failures = 0, updated_at = excluded.updated_at",
                 &[
                     s(&l.p.row.id),
@@ -791,6 +789,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                         None => before.as_ref().and_then(|b| b.effort.as_deref()),
                     }),
                     crate::db::b(keep_owner),
+                    on(handoff.map(i64::from)),
                 ],
             )?
             .run()
@@ -838,6 +837,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     "powers": ap::store_powers(&powers),
                     "check_in_minutes": check_in,
                     "crew_max": crew,
+                    "handoff_at": handoff,
                     "keep_owner": keep_owner,
                 })),
             );
@@ -869,7 +869,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     .is_some_and(|m| m.as_deref() != row.model.as_deref())
                 || effort
                     .as_ref()
-                    .is_some_and(|e| e.as_deref() != row.effort.as_deref());
+                    .is_some_and(|e| e.as_deref() != row.effort.as_deref())
+                || handoff.is_some_and(|h| h != row.handoff_at());
             let mine = row.owner_id.as_deref() == Some(me.id.as_str());
             let take_over = takes_over(ctx, &l.p, &row, mine, body.take_over, costs).await?;
             // Whether it stays on its owner's subscription is theirs to
@@ -921,7 +922,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                  powers = COALESCE(?4, powers), check_in_minutes = COALESCE(?5, check_in_minutes), \
                  crew_max = COALESCE(?6, crew_max), \
                  model = CASE WHEN ?7 THEN ?8 ELSE model END, effort = CASE WHEN ?9 THEN ?10 ELSE effort END, \
-                 owner_id = CASE WHEN ?11 THEN ?2 ELSE owner_id END, keep_owner = ?13, updated_at = ?3 \
+                 owner_id = CASE WHEN ?11 THEN ?2 ELSE owner_id END, keep_owner = ?13, \
+                 handoff_at = CASE WHEN ?16 THEN ?17 ELSE handoff_at END, updated_at = ?3 \
                  WHERE project_id = ?12 AND owner_id IS ?14 AND keep_owner = ?15",
                 &[
                     os(new_direction.as_deref()),
@@ -939,6 +941,8 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     crate::db::b(keep_owner),
                     os(row.owner_id.as_deref()),
                     crate::db::b(row.keep_owner),
+                    crate::db::b(handoff.is_some()),
+                    on(handoff.flatten().map(i64::from)),
                 ],
             )?
             .run()
@@ -1002,6 +1006,10 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                             .is_some_and(|e| e.as_deref() != row.effort.as_deref()),
                     "its model",
                 ),
+                (
+                    handoff.is_some_and(|h| h != row.handoff_at()),
+                    "when a fresh session takes over",
+                ),
             ]
             .into_iter()
             .filter_map(|(yes, what)| yes.then_some(what))
@@ -1032,6 +1040,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                         "powers": powers.as_ref().map(|p| ap::store_powers(p)),
                         "check_in_minutes": check_in,
                         "crew_max": crew,
+                        "handoff_at": handoff,
                         "taken_over": take_over,
                         "keep_owner": keep_owner,
                     })),

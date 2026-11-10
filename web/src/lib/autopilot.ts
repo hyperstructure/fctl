@@ -3,7 +3,7 @@
 // how often it wakes, and the directions to start from.
 
 import type * as G from "@/gen";
-import { ago, clock, day } from "./format";
+import { ago, clock, day, num } from "./format";
 
 /** How long it goes without waking, at most, as people choose it (the control plane's CHECK_INS). */
 export const CHECK_INS: { minutes: number; label: string }[] = [
@@ -25,6 +25,26 @@ export function checkInWords(minutes: number): string {
   const c = CHECK_INS.find((x) => x.minutes === minutes);
   if (c) return c.label.charAt(0).toLowerCase() + c.label.slice(1);
   return minutes % 60 === 0 ? `every ${minutes / 60} hours` : `every ${minutes} minutes`;
+}
+
+/**
+ * Where a fresh session of its own takes over from the one it works in, as people choose it (the
+ * control plane's HANDOFF_CHOICES), besides only after 12 hours and a size of their own.
+ */
+export const HANDOFF_CHOICES = [150_000, 250_000, 400_000] as const;
+
+/** What the handoff's list shows: "" for only after 12 hours, a size offered, or "other" for one typed. */
+export type HandoffChoice = "" | `${(typeof HANDOFF_CHOICES)[number]}` | "other";
+
+/** The choice that shows `tokens`. */
+export function handoffChoice(tokens?: number | null): HandoffChoice {
+  if (tokens == null) return "";
+  return HANDOFF_CHOICES.find((c) => c === tokens) != null ? (`${tokens}` as HandoffChoice) : "other";
+}
+
+/** When a fresh session takes over: "at 250K tokens of context, or after 12 hours". */
+export function handoffWords(tokens?: number | null): string {
+  return tokens == null ? "after 12 hours" : `at ${num(tokens)} tokens of context, or after 12 hours`;
 }
 
 /** What each power lets it do, in the order people see them. */

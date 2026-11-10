@@ -58,6 +58,13 @@ pub struct Settings {
     /// Their effort level; `default` for the project's.
     #[arg(long)]
     pub effort: Option<String>,
+    /// The context size, 100k to 1m tokens, at which a fresh session of
+    /// its own takes over from the one it works in, starting from its plan
+    /// and log, at the first wake between turns; `never` for only after 12
+    /// hours. Each wake reads its whole conversation again: a smaller one
+    /// spends less of the plan.
+    #[arg(long, value_name = "TOKENS|never", value_parser = handoff_arg)]
+    pub handoff_at: Option<u32>,
     /// Keep it on your subscription when others change or resume it
     /// (yours to choose, as its owner): those who steer it then spend your
     /// Claude plan, as you. Only where you trust everyone who steers it,
@@ -91,6 +98,7 @@ pub enum AutopilotCmd {
     /// --mine) runs it on yours, unless they keep it (--keep-owner).
     #[command(after_help = "Examples:
   fctl autopilot set -p crm --check-in 2h --sessions 4
+  fctl autopilot set -p crm --handoff-at 250k   # a fresh session takes over once its context holds 250K tokens
   fctl autopilot set -p crm --keep-owner on   # yours: keep it on your plan when others change it
   fctl autopilot set -p crm --mine            # run it on your subscription from now on")]
     Set {
@@ -636,10 +644,55 @@ impl Settings {
             crew_max: self.sessions,
             model: self.model,
             effort: self.effort,
+            handoff_at: self.handoff_at,
             take_over: false,
             keep_owner: self.keep_owner,
         })
     }
+}
+
+/// `--handoff-at`: a context size like 250k, or `never` (`0`, as the API
+/// takes it).
+fn handoff_arg(s: &str) -> std::result::Result<u32, String> {
+    use fctl_domain::context;
+    if matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "never" | "off" | "default"
+    ) {
+        return Ok(0);
+    }
+    context::parse(s)
+        .and_then(|t| u32::try_from(t).ok())
+        .filter(|&t| context::valid(t))
+        .ok_or_else(|| {
+            format!(
+                "use {} to {} tokens (like 250k), or never",
+                context::short(context::MIN_TOKENS).to_lowercase(),
+                context::short(context::MAX_TOKENS).to_lowercase()
+            )
+        })
+}
+
+/// When a fresh session takes over from its own, and how full that one's
+/// context is.
+fn handoff_line(a: &Autopilot) -> String {
+    let shift = fctl_domain::autopilot::duration(
+        u32::try_from(fctl_domain::autopilot::SHIFT_MS / 60_000).unwrap_or(720),
+    );
+    let mut line = match a.handoff_at {
+        Some(at) => format!(
+            "A fresh session takes over at {} tokens of context, or after {shift}",
+            fctl_domain::context::short(at)
+        ),
+        None => format!("A fresh session takes over after {shift}"),
+    };
+    if let Some(t) = a.session.as_ref().and_then(|s| s.context_tokens) {
+        line.push_str(&format!(
+            "; its session holds {}",
+            fctl_domain::context::short(u32::try_from(t).unwrap_or(u32::MAX))
+        ));
+    }
+    line
 }
 
 /// `settings,repos`, `all` (every power of `scope`: a project's autopilot
@@ -756,6 +809,7 @@ fn print_rules(a: &Autopilot) {
             fctl_domain::autopilot::duration(a.check_in_minutes)
         ))
     );
+    println!("  {}", style::dim(&handoff_line(a)));
     let changes: Vec<&str> = a
         .powers
         .iter()
@@ -993,6 +1047,16 @@ mod tests {
             block("# Autopilot\n\n- [ ] One\n- [x] Two\u{202E}"),
             "# Autopilot\n\n- [ ] One\n- [x] Two"
         );
+    }
+
+    #[test]
+    fn where_a_fresh_session_takes_over_reads_as_people_type_it() {
+        assert_eq!(handoff_arg("250k"), Ok(250_000));
+        assert_eq!(handoff_arg("1M"), Ok(1_000_000));
+        assert_eq!(handoff_arg("never"), Ok(0));
+        assert_eq!(handoff_arg("Off"), Ok(0));
+        assert!(handoff_arg("50k").is_err_and(|e| e.contains("100k to 1m")));
+        assert!(handoff_arg("lots").is_err());
     }
 
     #[test]

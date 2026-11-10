@@ -74,6 +74,9 @@ pub struct AutopilotRow {
     pub crew_max: i64,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Where a fresh session takes over from its own, in tokens of context.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub handoff_at: Option<i64>,
     pub session_id: Option<String>,
     #[serde(deserialize_with = "opt_int", default)]
     pub wake_at: Option<i64>,
@@ -106,16 +109,19 @@ pub struct AutopilotRow {
     /// The Claude connection its own session runs on.
     #[serde(default)]
     pub session_credential_id: Option<String>,
+    /// The tokens in its own session's context, as it last said.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub session_context: Option<i64>,
 }
 
 pub const AUTOPILOT_SELECT: &str = "SELECT a.project_id, a.workspace_id, a.scope, a.state, a.paused_reason, \
     a.paused_by, a.paused_at, a.owner_id, a.keep_owner, a.direction, a.direction_by, a.direction_at, a.direction_new, a.plan, \
-    a.plan_at, a.powers, a.check_in_minutes, a.crew_max, a.model, a.effort, a.session_id, a.wake_at, a.wake_reasons, \
+    a.plan_at, a.powers, a.check_in_minutes, a.crew_max, a.model, a.effort, a.handoff_at, a.session_id, a.wake_at, a.wake_reasons, \
     a.asked_wake_at, a.woken_at, a.check_ins, a.failures, a.created_at, a.updated_at, \
     ou.name AS owner_name, ou.avatar_url AS owner_avatar, pu.name AS paused_by_name, pu.avatar_url AS paused_by_avatar, \
     du.name AS direction_by_name, du.avatar_url AS direction_by_avatar, \
     ps.number AS session_number, ps.status AS session_status, ps.created_at AS session_created_at, \
-    ps.credential_id AS session_credential_id \
+    ps.credential_id AS session_credential_id, json_extract(ps.stats, '$.context_tokens') AS session_context \
     FROM autopilots a \
     LEFT JOIN users ou ON ou.id = a.owner_id \
     LEFT JOIN users pu ON pu.id = a.paused_by \
@@ -141,6 +147,40 @@ impl AutopilotRow {
 
     pub fn crew_max(&self) -> u32 {
         u32::try_from(self.crew_max).unwrap_or(ap::DEFAULT_CREW)
+    }
+
+    /// Where a fresh session takes over from its own: `None`, only after
+    /// [`ap::SHIFT_MS`].
+    pub fn handoff_at(&self) -> Option<u32> {
+        self.handoff_at
+            .and_then(|t| u32::try_from(t).ok())
+            .filter(|&t| t > 0)
+    }
+
+    /// The tokens in its own session's context, as it last said.
+    pub fn session_context(&self) -> Option<u64> {
+        self.session_context.and_then(|t| u64::try_from(t).ok())
+    }
+
+    /// Its own session as people and the API see it.
+    pub fn session(&self) -> Option<fctl_proto::autopilot::AutopilotSession> {
+        match (
+            &self.session_id,
+            self.session_number,
+            self.session_status(),
+            self.session_created_at,
+        ) {
+            (Some(id), Some(number), Some(status), Some(started_at)) => {
+                Some(fctl_proto::autopilot::AutopilotSession {
+                    id: SessionId(id.clone()),
+                    number: u32::try_from(number).unwrap_or(0),
+                    status,
+                    started_at,
+                    context_tokens: self.session_context(),
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Why it wakes next, gathered since it last woke.
@@ -701,13 +741,34 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             return Ok(true);
         }
         let wake = news.wake(&reasons);
-        let text = news.message(&reasons, now);
-        let carries_on = match (row.session_id.as_deref(), status, row.session_created_at) {
+        // Where it goes: its session as it is, or a fresh one, and why
+        // (`Failed` for any a message can't reach: none, or one that failed
+        // or takes none).
+        let fresh = match (row.session_id.as_deref(), status, row.session_created_at) {
             (Some(_), Some(st), Some(started)) => {
-                ap::carries_on(st, started, now) && (st.accepts_messages() || st.resumes_for_messages())
+                let own = ap::OwnSession {
+                    status: st,
+                    started_at: started,
+                    context_tokens: row.session_context(),
+                };
+                match ap::fresh(own, row.handoff_at(), now) {
+                    None if !(st.accepts_messages() || st.resumes_for_messages()) => {
+                        Some(ap::Fresh::Failed)
+                    }
+                    f => f,
+                }
             }
-            _ => false,
+            _ => Some(ap::Fresh::Failed),
         };
+        let carries_on = fresh.is_none();
+        // Near where it hands off, it hears so, to write down what its next
+        // session needs while its cache is warm.
+        let near = if carries_on {
+            ap::handoff_near(row.session_context(), row.handoff_at())
+        } else {
+            None
+        };
+        let text = news.message(&reasons, near, now);
         let session = match (carries_on, row.session_id.as_deref()) {
             (true, Some(id)) => {
                 // On another Claude connection than its owner's now (someone
@@ -744,7 +805,18 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             }
             _ => {
                 let briefing = briefing(db, row, &project, &owner.user).await?;
-                let first = format!("{briefing}\n---\n\n{text}");
+                // A fresh session that takes over from one that did its
+                // work hears why, and where that work is.
+                let from = row
+                    .session_number
+                    .map(|number| format!("{}#{number}", project.slug));
+                let over = fresh.zip(from.as_deref()).and_then(|(why, from)| {
+                    ap::takes_over_from(why, from, row.handoff_at())
+                });
+                let first = match over {
+                    Some(over) => format!("{briefing}\n---\n\n{over}\n\n{text}"),
+                    None => format!("{briefing}\n---\n\n{text}"),
+                };
                 let (id, _) =
                     start_pilot(env, db, row, &project, &owner, first, wake.clone(), now).await?;
                 // The session it leaves stops, rather than keep its sandbox
@@ -768,10 +840,17 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
         )?
         .run()
         .await?;
+        let mut line = woke_line(&reasons, &wake);
+        if let Some(ap::Fresh::Full(tokens)) = fresh.filter(|_| row.session_id.is_some()) {
+            line.push_str(&format!(
+                ", in a fresh session: the last one's context held {} tokens",
+                fctl_domain::context::short(u32::try_from(tokens).unwrap_or(u32::MAX))
+            ));
+        }
         log(
             db,
             &row.project_id,
-            Entry::new(AutopilotEntryKind::Woke, woke_line(&reasons, &wake)).about(Some(&session)),
+            Entry::new(AutopilotEntryKind::Woke, line).about(Some(&session)),
             now,
         )
         .await;
@@ -1186,6 +1265,7 @@ async fn briefing(
             powers: &powers,
             crew_max: row.crew_max(),
             check_in_minutes: row.check_in(),
+            handoff_at: row.handoff_at(),
         },
         &row.direction,
     ))
@@ -1391,7 +1471,12 @@ impl News {
         }
     }
 
-    fn message(&self, reasons: &[AutopilotWakeReason], now: i64) -> String {
+    fn message(
+        &self,
+        reasons: &[AutopilotWakeReason],
+        handoff: Option<(u64, u32)>,
+        now: i64,
+    ) -> String {
         let notes: Vec<ap::NoteView> = self
             .notes
             .iter()
@@ -1428,6 +1513,7 @@ impl News {
                 .map(|(d, by)| (d.as_str(), by.as_deref())),
             answers,
             crew,
+            handoff,
             now,
         })
     }

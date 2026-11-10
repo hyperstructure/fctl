@@ -260,6 +260,65 @@ describe("a project's Autopilot tab", () => {
     expect(document.body.textContent).toContain("Stays on your subscription when others change or resume it");
   });
 
+  it("chooses when a fresh session takes over, and says how full its session is", async () => {
+    signIn("usr_ada");
+    const session = {
+      id: "ses_4",
+      number: 4,
+      status: "idle" as const,
+      started_at: 0,
+      context_tokens: 180_000,
+    };
+    const a = on({ session });
+    autopilot.mockResolvedValue(a);
+    put.mockResolvedValue(on({ session, handoff_at: 200_000 }));
+    queryClient.setQueryData(keys.autopilot("prj_1"), a);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    expect(page.textContent).toContain("A fresh session takes over after 12 hours · its session holds 180K");
+    await click("More");
+    await click("Change how it works…");
+    expect(document.body.textContent).toContain("Its session holds 180K tokens now.");
+    const choose = async (text: string) => {
+      const list = document.body.querySelector<HTMLElement>('[aria-label="When a fresh session takes over"]');
+      await act(async () => list?.click());
+      const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+        o.textContent?.startsWith(text),
+      );
+      expect(option, text).toBeTruthy();
+      await act(async () => option?.click());
+      await settle();
+    };
+    await choose("At another size");
+    const tokens = document.body.querySelector<HTMLInputElement>('[aria-label="Tokens of context"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(tokens, "200k");
+      tokens?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // Its session takes a step meanwhile, and the tab hears of it: what's typed stays.
+    await act(async () =>
+      queryClient.setQueryData(
+        keys.autopilot("prj_1"),
+        on({ session: { ...session, context_tokens: 190_000 } }),
+      ),
+    );
+    await settle();
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Tokens of context"]')?.value).toBe(
+      "200k",
+    );
+    await click("Save");
+    expect(put).toHaveBeenCalledWith("prj_1", expect.objectContaining({ handoff_at: 200_000 }));
+    expect(page.textContent).toContain(
+      "A fresh session takes over at 200K tokens of context, or after 12 hours · its session holds 180K",
+    );
+    // Only after 12 hours again: sent as 0, which the API reads as none.
+    await click("More");
+    await click("Change how it works…");
+    await choose("After 12 hours");
+    await click("Save");
+    expect(put).toHaveBeenLastCalledWith("prj_1", expect.objectContaining({ handoff_at: 0 }));
+  });
+
   it("tells others whose subscription a kept one stays on, and lets them take it over", async () => {
     signIn("usr_bo");
     const kept = on({ keep_owner: true, crew_max: 3 });

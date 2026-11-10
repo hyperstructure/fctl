@@ -49,6 +49,7 @@ import {
   Button,
   Dialog,
   IconButton,
+  Input,
   Menu,
   MenuItem,
   MenuSeparator,
@@ -74,6 +75,10 @@ import {
   DIRECTIONS,
   type DirectionIdea,
   defaultPowers,
+  HANDOFF_CHOICES,
+  type HandoffChoice,
+  handoffChoice,
+  handoffWords,
   hasPlaceholders,
   openAsks,
   POWERS,
@@ -81,7 +86,8 @@ import {
   wakeWords,
 } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
-import { ago, agoShort, clock, day, stamp } from "@/lib/format";
+import { MAX_TOKENS, MIN_TOKENS, parseTokens, tokensText, validWindow } from "@/lib/context";
+import { ago, agoShort, clock, day, num, stamp } from "@/lib/format";
 import { EFFORTS, effortLabel, modelLabel, modelOffers } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useWorkspace } from "@/lib/queries";
 
@@ -1199,33 +1205,63 @@ function SettingsDialog({
   const [crew, setCrew] = useState(a.crew_max);
   const [model, setModel] = useState(a.model ?? "");
   const [effort, setEffort] = useState(a.effort ?? "");
+  const [handoff, setHandoff] = useState(handoffChoice(a.handoff_at));
+  const [handoffTyped, setHandoffTyped] = useState(typedSize(a.handoff_at));
   const [keep, setKeep] = useState(a.keep_owner);
+  // The fields start from the autopilot as the dialog opens, and only then: the tab refetches it
+  // every few seconds, and its session's context changes with each step, which mustn't undo what
+  // someone is choosing or typing.
+  const latest = useRef(a);
+  latest.current = a;
   useEffect(() => {
     if (!open) return;
+    const a = latest.current;
     setPowers(a.powers);
     setCheckIn(a.check_in_minutes);
     setCrew(a.crew_max);
     setModel(a.model ?? "");
     setEffort(a.effort ?? "");
+    setHandoff(handoffChoice(a.handoff_at));
+    setHandoffTyped(typedSize(a.handoff_at));
     setKeep(a.keep_owner);
-  }, [open, a]);
+  }, [open]);
   const mine = !!me && a.owner?.id === me.user.id;
+  /** Where a fresh session takes over, as chosen: `null` for only after 12 hours, `undefined` for a size not read. */
+  const handoffAt =
+    handoff === ""
+      ? null
+      : handoff === "other"
+        ? (() => {
+            const t = parseTokens(handoffTyped);
+            return t != null && validWindow(t) ? t : undefined;
+          })()
+        : Number(handoff);
   const costs =
     checkIn !== a.check_in_minutes ||
     crew !== a.crew_max ||
     model !== (a.model ?? "") ||
-    effort !== (a.effort ?? "");
+    effort !== (a.effort ?? "") ||
+    (handoffAt !== undefined && handoffAt !== (a.handoff_at ?? null));
   const save = useMutation({
-    mutationFn: () =>
-      api.putAutopilot(a.project_id, {
+    mutationFn: () => {
+      if (handoffAt === undefined)
+        throw new ApiFailure(400, {
+          code: "validation",
+          field: "handoff_at",
+          message: `type a size from ${tokensText(MIN_TOKENS)} to ${tokensText(MAX_TOKENS)} tokens, like 200K`,
+        });
+      return api.putAutopilot(a.project_id, {
         powers,
         check_in_minutes: checkIn,
         crew_max: crew,
         model: model || "default",
         effort: effort || "default",
+        // 0: only after 12 hours.
+        handoff_at: handoffAt ?? 0,
         // Its owner's choice alone.
         ...(mine ? { keep_owner: keep } : {}),
-      }),
+      });
+    },
     onSuccess: (x) => {
       patched(x);
       // Whose it is now, as the control plane decided: its owner may keep it, while they can run it.
@@ -1248,6 +1284,13 @@ function SettingsDialog({
           effort={effort}
           setEffort={setEffort}
         />
+        <HandoffField
+          choice={handoff}
+          setChoice={setHandoff}
+          typed={handoffTyped}
+          setTyped={setHandoffTyped}
+          context={a.session?.context_tokens}
+        />
         {mine && <KeepField a={a} keep={keep} setKeep={setKeep} />}
         {!mine && costs && a.owner && (
           <Banner tone="info">
@@ -1266,6 +1309,68 @@ function SettingsDialog({
         </Button>
       </div>
     </Dialog>
+  );
+}
+
+/** A size as it is typed, for a size of people's own: "" for none or one offered. */
+function typedSize(tokens?: number | null): string {
+  return tokens != null && handoffChoice(tokens) === "other" ? tokensText(tokens) : "";
+}
+
+/** Where a fresh session of its own takes over from the one it works in. */
+function HandoffField({
+  choice,
+  setChoice,
+  typed,
+  setTyped,
+  context,
+}: {
+  choice: HandoffChoice;
+  setChoice: (c: HandoffChoice) => void;
+  typed: string;
+  setTyped: (t: string) => void;
+  /** Its session's context now, in tokens. */
+  context?: number | null;
+}) {
+  const options: SelectOption<HandoffChoice>[] = [
+    { value: "", label: "After 12 hours", description: "Whatever its context holds" },
+    ...HANDOFF_CHOICES.map((t) => ({
+      value: `${t}` as HandoffChoice,
+      label: `At ${tokensText(t)} tokens of context`,
+      short: `At ${tokensText(t)} tokens`,
+      description: "Or after 12 hours",
+    })),
+    { value: "other", label: "At another size", description: "Or after 12 hours" },
+  ];
+  return (
+    <div>
+      <span className="mb-1.5 block text-[12.5px] font-medium text-ink-2">A fresh session takes over</span>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Select
+          aria-label="When a fresh session takes over"
+          value={choice}
+          options={options}
+          onChange={setChoice}
+        />
+        {choice === "other" && (
+          <Input
+            aria-label="Tokens of context"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder="200K"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        )}
+      </div>
+      <p className="mt-1.5 text-[12.5px] text-ink-4">
+        Each wake reads its whole conversation again, uncached after an hour&rsquo;s rest. A fresh session
+        starts from its plan and log, and costs far less at each wake.
+        {context != null && ` Its session holds ${num(context)} tokens now.`}
+      </p>
+    </div>
   );
 }
 
@@ -1994,6 +2099,15 @@ function Rules({ a, project }: { a: G.Autopilot; project: G.Project }) {
           {(a.effort ?? project.settings.effort)
             ? ` at ${effortLabel(a.effort ?? project.settings.effort ?? "").toLowerCase()} effort`
             : ""}
+        </li>
+        <li className="flex gap-2">
+          <Repeat className="mt-[2px] size-3.5 shrink-0 text-ink-4" aria-hidden="true" />
+          <span>
+            A fresh session takes over {handoffWords(a.handoff_at)}
+            {a.session?.context_tokens != null && (
+              <span className="text-ink-4"> · its session holds {num(a.session.context_tokens)}</span>
+            )}
+          </span>
         </li>
       </ul>
     </Card>
