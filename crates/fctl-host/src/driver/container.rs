@@ -1016,32 +1016,40 @@ impl ContainerDriver {
         show: bool,
     ) -> Result<()> {
         let pulling = self.pulling(image);
-        let _held = match pulling.held.try_lock() {
-            Ok(held) => held,
-            Err(_) => {
+        // Taking the lock and numbering the pull happen under the state's
+        // lock, so a pull that has to wait knows which pull it waits for:
+        // the one under way, or else the next one to start, whose holder
+        // may first look for the image.
+        let taken = {
+            let mut state = pulling.state();
+            match pulling.held.try_lock() {
+                Ok(held) => {
+                    state.started += 1;
+                    Ok((held, state.started))
+                }
+                Err(_) => Err(state.under_way().unwrap_or(state.started + 1)),
+            }
+        };
+        let (_held, number) = match taken {
+            Ok(taken) => taken,
+            Err(waited_for) => {
                 log(format!(
                     "Another pull of {image} is under way: waiting for it"
                 ));
-                let waited_for = pulling.state().under_way();
                 let held = self.wait_for(&pulling, image, log).await;
                 if unless_here && self.find_image(image).await? {
                     log(format!("{image} is here"));
                     return Ok(());
                 }
-                let failed = match &pulling.state().failed {
-                    Some((n, failure)) if Some(*n) == waited_for => Some(failure.clone()),
-                    _ => None,
-                };
-                if let Some(failure) = failed {
+                let mut state = pulling.state();
+                if let Some((n, failure)) = &state.failed
+                    && *n == waited_for
+                {
                     return Err(failure.error());
                 }
-                held
+                state.started += 1;
+                (held, state.started)
             }
-        };
-        let number = {
-            let mut state = pulling.state();
-            state.started += 1;
-            state.started
         };
         let end = |failure: Option<Failure>| {
             let mut state = pulling.state();

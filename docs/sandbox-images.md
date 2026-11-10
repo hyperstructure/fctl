@@ -69,7 +69,8 @@ sessions start from the newest build of it, with the newest Claude Code.
 Sessions don't wait for that: they start from the build that is there, and
 a tag that hasn't changed costs one request to ghcr.io. `fctl host image
 pull` pulls it now. While the version's image can't be pulled, it pulls
-`latest` instead, and says so.
+`latest` instead, and says so: not when the image's download broke off or
+the runtime didn't answer, as `latest`'s pull would fail the same way.
 
 - **Another image.** `image` in `host.toml` (or `fctl host install --image
   …`) sets the image for sessions whose project sets none, and a project
