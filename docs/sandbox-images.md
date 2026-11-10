@@ -50,18 +50,27 @@ docker image inspect ghcr.io/hyperstructure/sandbox:0.5.0 \
 A host whose `host.toml` sets no `image` uses the default image of its own
 version, so a host that updates, by itself or with `fctl self update`,
 moves its new sessions to the new version's image. The host pulls the image in the background when
-it starts, and a session that starts before it has the image pulls it
-itself. When the image can't be pulled, as in the minutes after a release
-before its image is published, the host pulls `latest` instead, and
-sessions start from it and say so in their log. The first session after the
-version's image is published pulls it.
+it starts, and a session that starts before it has the image waits for that
+pull, or pulls it itself when none is under way: one pull of an image at a
+time. A session's log says every 30 seconds how far along the pull is
+(with Apple's `container`, its percentage and speed; with Docker, its
+layers), and how long it took. A pull whose connection to the registry
+breaks off partway is tried again, three times in all, as is one that
+`fctl host image pull` shows; sessions that waited for a pull that failed
+fail with it. When the image can't be pulled, as in the
+minutes after a release before its image is published, the host pulls
+`latest` instead, and sessions start from it and say so in their log; not
+when the image's download broke off, as `latest`'s, of mostly the same
+layers, would too, unless `latest` is already on the runner. The first
+session after the version's image is published pulls it.
 
 The host pulls its tag again when it starts and every 6 hours, so new
 sessions start from the newest build of it, with the newest Claude Code.
 Sessions don't wait for that: they start from the build that is there, and
 a tag that hasn't changed costs one request to ghcr.io. `fctl host image
 pull` pulls it now. While the version's image can't be pulled, it pulls
-`latest` instead, and says so.
+`latest` instead, and says so: not when the image's download broke off or
+the runtime didn't answer, as `latest`'s pull would fail the same way.
 
 - **Another image.** `image` in `host.toml` (or `fctl host install --image
   …`) sets the image for sessions whose project sets none, and a project

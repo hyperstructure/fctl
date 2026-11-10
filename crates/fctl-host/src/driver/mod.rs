@@ -15,6 +15,7 @@ pub(crate) mod fake;
 pub mod firecracker;
 pub mod lima;
 pub mod process;
+pub(crate) mod pulls;
 
 pub use container::ImageInfo;
 
