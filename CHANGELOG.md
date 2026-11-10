@@ -2,6 +2,21 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.1 (2026-11-10)
+
+### Features
+
+- **web:** Tidy a project's tabs and split its settings into pages ([#497](https://github.com/hyperstructure/fctl/pull/497))
+- **web:** Show a project's autopilot in the sidebar ([#498](https://github.com/hyperstructure/fctl/pull/498))
+- Let an autopilot's owner keep it on their subscription ([#500](https://github.com/hyperstructure/fctl/pull/500))
+
+### Fixes
+
+- Name model IDs by family and version; autopilots use aliases ([#499](https://github.com/hyperstructure/fctl/pull/499))
+- **web:** Scroll the sidebar's views with its workspaces on phones ([#501](https://github.com/hyperstructure/fctl/pull/501))
+- **web:** Keep the autopilot and thinking icons' comets from coming back ([#502](https://github.com/hyperstructure/fctl/pull/502))
+- **web:** Open the session when a notification is tapped on an iPhone ([#503](https://github.com/hyperstructure/fctl/pull/503))
+
 ## 0.33.0 (2026-11-09)
 
 ### Features
