@@ -521,15 +521,17 @@ fn refused_power(power: AutopilotPower) -> ApiError {
 /// What a request the autopilot made did, for its log: the entry's kind
 /// and line, from the request (`method`, `segs`, `body`) and the API's
 /// answer; `elsewhere` is the slug of the project it changed when that
-/// isn't its home, which the line names. `None` for what changes nothing
-/// worth a line (reads, the project's memory, its own endpoints, which log
-/// themselves).
+/// isn't its home, which the line names, and `schedule` the name of the
+/// schedule it ran, which a run's answer doesn't carry. `None` for what
+/// changes nothing worth a line (reads, the project's memory, its own
+/// endpoints, which log themselves).
 pub fn describe(
     method: &str,
     segs: &[&str],
     body: &Value,
     answer: &Value,
     elsewhere: Option<&str>,
+    schedule: Option<&str>,
 ) -> Option<(AutopilotEntryKind, String)> {
     let str_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
     // Its home goes without saying; another project is named.
@@ -616,7 +618,14 @@ pub fn describe(
             (K::Schedule, format!("{what} the schedule “{name}”{in_it}"))
         }
         ("DELETE", ["schedules", _]) => (K::Schedule, format!("Deleted a schedule{in_it}")),
-        ("POST", ["schedules", _, "runs"]) => (K::Schedule, format!("Ran a schedule now{in_it}")),
+        // The session it started goes with the entry, which links to it.
+        ("POST", ["schedules", _, "runs"]) => (
+            K::Schedule,
+            match schedule {
+                Some(n) => format!("Ran the schedule “{n}”{in_it} now"),
+                None => format!("Ran a schedule{in_it} now"),
+            },
+        ),
         // The project it created goes with the entry, which links to it.
         ("POST", ["projects"]) => {
             let name = str_of(answer, "name").or_else(|| str_of(body, "name"));
@@ -1528,6 +1537,7 @@ mod tests {
             &serde_json::json!({"prompt": "x"}),
             &serde_json::json!({"number": 41, "title": "Add Apple Pay"}),
             None,
+            None,
         );
         assert_eq!(
             started,
@@ -1538,6 +1548,7 @@ mod tests {
             &["projects", "shop"],
             &serde_json::json!({"settings": {}, "default_branch": "main"}),
             &Value::Null,
+            None,
             None,
         );
         assert_eq!(
@@ -1554,11 +1565,34 @@ mod tests {
                 &Value::Null,
                 &Value::Null,
                 None,
+                None,
             ),
             Some((
                 AutopilotEntryKind::Secret,
                 "Set the secret `STRIPE_KEY`".into()
             ))
+        );
+        // A run names its schedule, when fctl found it.
+        let ran = |schedule: Option<&str>, elsewhere: Option<&str>| {
+            describe(
+                "POST",
+                &["schedules", "sch_1", "runs"],
+                &serde_json::json!({}),
+                &serde_json::json!({"outcome": "started"}),
+                elsewhere,
+                schedule,
+            )
+        };
+        assert_eq!(
+            ran(Some("Nightly deps"), None),
+            Some((
+                AutopilotEntryKind::Schedule,
+                "Ran the schedule “Nightly deps” now".into()
+            ))
+        );
+        assert_eq!(
+            ran(None, Some("blog")).map(|(_, l)| l).as_deref(),
+            Some("Ran a schedule in blog now")
         );
         assert_eq!(
             describe(
@@ -1566,6 +1600,7 @@ mod tests {
                 &["projects", "shop"],
                 &Value::Null,
                 &Value::Null,
+                None,
                 None
             ),
             None
@@ -1614,7 +1649,7 @@ mod tests {
     #[test]
     fn names_another_project_it_changed() {
         let line = |method: &str, segs: &[&str], body: Value| {
-            describe(method, segs, &body, &Value::Null, Some("blog")).map(|(_, l)| l)
+            describe(method, segs, &body, &Value::Null, Some("blog"), None).map(|(_, l)| l)
         };
         assert_eq!(
             line(
@@ -1663,6 +1698,7 @@ mod tests {
                 &["projects", "shop"],
                 &serde_json::json!({"name": "Shop", "archived": false}),
                 &Value::Null,
+                None,
                 None
             )
             .map(|(_, l)| l)
@@ -1675,6 +1711,7 @@ mod tests {
                 &["projects", "shop", "repos"],
                 &serde_json::json!({"repo": "acme/shop"}),
                 &Value::Null,
+                None,
                 None
             )
             .map(|(_, l)| l)
