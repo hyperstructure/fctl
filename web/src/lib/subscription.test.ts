@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { takeOverOf } from "./subscription";
+import { takeOverOf, workspaceConnection } from "./subscription";
 
 const ada: G.UserRef = { id: "usr_ada", name: "Ada" };
 const bo: G.UserRef = { id: "usr_bo", name: "Bo" };
 
-const connection = (id: string, status: G.CredentialStatus = "active") =>
-  ({ id, kind: "oauth", status }) as unknown as G.ClaudeCredentialInfo;
+const connection = (id: string, status: G.CredentialStatus = "active", created_at = 0, is_default = false) =>
+  ({ id, kind: "oauth", status, created_at, is_default }) as unknown as G.ClaudeCredentialInfo;
 
 const me = (user: G.UserRef, claude = [connection("cred_1")]) =>
   ({ user: { ...user }, claude }) as unknown as Pick<G.Me, "user" | "claude">;
@@ -24,15 +24,37 @@ describe("takeOverOf", () => {
     expect(takeOverOf(session({ claude: bo }), "owner", me(ada))).toEqual({ whose: "Bo", waits: true });
   });
 
-  it("offers your own session only when you have another connection to move it to", () => {
-    expect(takeOverOf(session(), "owner", me(ada))).toBeUndefined();
-    expect(takeOverOf(session(), "owner", me(ada, [connection("cred_1"), connection("cred_2")]))).toEqual({
-      whose: undefined,
+  it("offers your own session only to move it to the connection its workspace uses now", () => {
+    const two = [connection("cred_1", "active", 1, true), connection("cred_2", "active", 2)];
+    // Its workspace uses cred_2, and it runs on cred_1.
+    expect(takeOverOf(session(), "owner", me(ada, two), { mine: "cred_1", chosen: "cred_2" })).toEqual({
       waits: true,
     });
+    // It runs on the one its workspace uses already: your default, as none was chosen for it.
+    expect(takeOverOf(session(), "owner", me(ada, two), { mine: "cred_1" })).toBeUndefined();
     expect(
-      takeOverOf(session(), "owner", me(ada, [connection("cred_1"), connection("cred_2", "invalid")])),
+      takeOverOf(session(), "owner", me(ada, two), { mine: "cred_2", chosen: "cred_2" }),
     ).toBeUndefined();
+    // Which one it runs on is unknown: nothing to offer.
+    expect(takeOverOf(session(), "owner", me(ada, two), { chosen: "cred_2" })).toBeUndefined();
+    // A single connection, or another that no longer works.
+    expect(takeOverOf(session(), "owner", me(ada), { mine: "cred_0", chosen: "cred_1" })).toBeUndefined();
+    expect(
+      takeOverOf(session(), "owner", me(ada, [connection("cred_1"), connection("cred_2", "invalid")]), {
+        mine: "cred_1",
+        chosen: "cred_2",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("picks the workspace's connection as the server does", () => {
+    const a = connection("cred_a", "active", 1);
+    const b = connection("cred_b", "active", 3);
+    const c = connection("cred_c", "active", 2, true);
+    expect(workspaceConnection([a, b, c], "cred_a")).toBe("cred_a");
+    expect(workspaceConnection([a, b, c], "cred_gone")).toBe("cred_c");
+    expect(workspaceConnection([a, b], undefined)).toBe("cred_b");
+    expect(workspaceConnection([], undefined)).toBeUndefined();
   });
 
   it("offers sessions that rest, but not ones at work or failed", () => {

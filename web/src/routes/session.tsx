@@ -360,7 +360,14 @@ export function SessionPage() {
   const role = s.role ?? session?.role;
   const isOwner = role === "owner";
   // Whether you may move it to your Claude subscription now.
-  const takeOver = takeOverOf(session, role, me);
+  const takeOver = takeOverOf(session, role, me, {
+    // Only the session's own request says which of your connections it runs on.
+    mine: initial.data?.claude_connection,
+    chosen: workspace?.id ? workspaceIndex.get(workspace.id)?.claude : undefined,
+  });
+  // Once it can no longer be taken over (it runs again), an open dialog goes for good, rather
+  // than open by itself the next time it pauses.
+  if (moving && !takeOver) setMoving(false);
   const notes = session
     ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall, disk })
     : [];

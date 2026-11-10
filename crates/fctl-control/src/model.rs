@@ -718,6 +718,9 @@ pub struct SessionRow {
     pub creator_name: Option<String>,
     pub creator_avatar: Option<String>,
     pub credential_id: Option<String>,
+    /// The Claude connection it runs on, when it is the caller's.
+    #[serde(default)]
+    pub my_credential_id: Option<String>,
     /// Whose Claude connection it runs on (LEFT JOINs: NULL once it's gone).
     #[serde(default)]
     pub claude_user_id: Option<String>,
@@ -985,6 +988,7 @@ impl SessionRow {
                 }),
                 autopilot: self.autopilot(),
                 claude: self.claude_ref(),
+                claude_connection: self.my_credential_id.clone().map(fctl_proto::CredentialId),
             };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -997,7 +1001,7 @@ impl SessionRow {
 /// they were demoted) counts for nothing.
 pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.description, s.prompt, s.prompt_attachments, \
     s.status, s.status_reason, s.resume_at, s.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, \
-    s.credential_id, cc.user_id AS claude_user_id, ccu.name AS claude_user_name, ccu.avatar_url AS claude_user_avatar, \
+    s.credential_id, CASE WHEN cc.user_id = ?1 THEN s.credential_id END AS my_credential_id, cc.user_id AS claude_user_id, ccu.name AS claude_user_name, ccu.avatar_url AS claude_user_avatar, \
     s.runner_id, r.name AS runner_name, s.branch, s.base_branch, s.model, s.effort, \
     s.claude_effort, s.claude_session_id, s.pr_number, s.pr_url, s.pr_title, s.pr_state, s.pull_requests, s.remote_control, s.stats, s.archived, \
     s.github_access, json_extract(p.settings, '$.github_access') AS project_github_access, s.github_issues, \

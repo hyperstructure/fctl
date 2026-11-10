@@ -718,7 +718,9 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
                     && row.session_credential_id.as_deref() != Some(owner.credential.id.as_str())
                     && let Ok(way) = fctl_domain::claude::moving(st)
                 {
-                    crate::api::sessions::move_to(
+                    // Best effort, as for its crew: the wake goes on, and the
+                    // next one moves it.
+                    let moved = crate::api::sessions::move_to(
                         env,
                         db,
                         &SessionId(id.to_owned()),
@@ -728,7 +730,14 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
                         false,
                         now,
                     )
-                    .await?;
+                    .await;
+                    if let Err(e) = moved {
+                        worker::console_error!(
+                            "autopilot {}: moving its session to its owner's Claude connection: {}",
+                            row.project_id,
+                            e.0.message
+                        );
+                    }
                 }
                 deliver(env, id, &text, wake.clone(), now).await?;
                 id.to_owned()
@@ -863,10 +872,11 @@ pub async fn owner_moved(env: &Env, db: &D1Database, user_id: &str, now: i64) {
             let Ok(owner) = owner(db, &project, &row).await? else {
                 continue;
             };
+            // As the wake moves it: not while it works, nor once it failed.
             let own = row.session_id.is_some()
                 && row
                     .session_status()
-                    .is_some_and(|st| st != SessionStatus::Failed)
+                    .is_some_and(|st| !ap::at_work(st) && fctl_domain::claude::moving(st).is_ok())
                 && row.session_credential_id.as_deref() != Some(owner.credential.id.as_str());
             let crew: Option<crate::db::Count> = q(
                 db,

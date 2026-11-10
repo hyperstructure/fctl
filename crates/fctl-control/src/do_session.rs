@@ -858,6 +858,7 @@ impl SessionObject {
         let mut s = b.session;
         s.role = None;
         s.following = None;
+        s.claude_connection = None;
         if s.claude.is_none() {
             s.claude = Some(s.created_by.clone());
         }

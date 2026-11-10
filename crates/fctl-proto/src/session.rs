@@ -1454,6 +1454,11 @@ pub struct Session {
     /// resumes it or takes it over (`POST /sessions/{id}/take-over`).
     /// Absent from control planes before it.
     pub claude: Option<UserRef>,
+    /// The Claude connection it runs on, when it is one of the caller's:
+    /// whether taking it over would move it to another of theirs. Absent
+    /// for others', from live updates, which go to everyone watching, and
+    /// from control planes before it.
+    pub claude_connection: Option<crate::CredentialId>,
 }
 
 /// A question a session's agent asks people, when it needs their input to

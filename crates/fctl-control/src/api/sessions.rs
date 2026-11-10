@@ -847,7 +847,11 @@ pub async fn take_over(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let way = fctl_domain::claude::moving(a.row.status()).map_err(conflict)?;
     let user = ctx.user()?.clone();
     let credential = default_credential(ctx, &user, a.workspace_id()).await?;
-    if a.row.credential_id.as_deref() == Some(credential.id.as_str()) {
+    // One that stopped on it already (a move whose restart failed, say)
+    // just starts again.
+    if a.row.credential_id.as_deref() == Some(credential.id.as_str())
+        && way != fctl_domain::claude::Move::Start
+    {
         return Err(conflict(
             "It runs on your Claude connection already. To move it to another of yours, choose that one for this workspace in Settings → Claude first.",
         ));
@@ -889,7 +893,8 @@ pub async fn take_over(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 /// `way` says ([`fctl_domain::claude::moving`]): its runs from now on are
 /// theirs. A run that waits stops, and the session starts again on it; a
 /// stopped one starts again only with `start`, and otherwise when
-/// something next resumes it.
+/// something next resumes it. Should starting it again fail, it stays
+/// stopped on the new connection.
 #[allow(clippy::too_many_arguments)]
 pub async fn move_to(
     env: &worker::Env,
@@ -907,17 +912,11 @@ pub async fn move_to(
         Move::Start => start,
         Move::Queued => false,
     };
-    q(
-        db,
-        "UPDATE sessions SET credential_id = ?, updated_at = ? WHERE id = ?",
-        &[s(&credential.id), n(now), s(id.as_str())],
-    )?
-    .run()
-    .await?;
     let fleet = internal::fleet_stub(env)?;
     if way == Move::Restart {
         // Stopping first, so that messages wait for the run on the new
-        // connection; that run starts once this one has stopped.
+        // connection; that run starts once this one has stopped. Should
+        // that fail, nothing has moved yet.
         let _: serde_json::Value = internal::post(
             &fleet,
             "/stop",
@@ -929,6 +928,16 @@ pub async fn move_to(
         )
         .await?;
     }
+    // From here on a failure leaves it stopped, or stopping, on the new
+    // connection: a message, a resume or taking it over again starts it
+    // there.
+    q(
+        db,
+        "UPDATE sessions SET credential_id = ?, updated_at = ? WHERE id = ?",
+        &[s(&credential.id), n(now), s(id.as_str())],
+    )?
+    .run()
+    .await?;
     let stub = internal::session_stub(env, id.as_str())?;
     if !again {
         let _: serde_json::Value = internal::post(
