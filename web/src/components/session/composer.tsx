@@ -29,6 +29,8 @@ export function Composer({
   onTyping,
   onResume,
   choices,
+  onTakeOver,
+  limitOf,
 }: {
   status?: G.SessionStatus;
   role?: G.SessionRole;
@@ -41,6 +43,13 @@ export function Composer({
   onResume: (text: string, files: SentFiles) => Promise<void>;
   /** The model and effort pickers, beside the paperclip, for the session's owner. */
   choices?: ReactNode;
+  /**
+   * While it waits for its subscription's limit to reset, and you may move it to yours: asks to.
+   * A message keeps it on the subscription it runs on.
+   */
+  onTakeOver?: () => void;
+  /** Whose subscription's limit it waits for, when not yours. */
+  limitOf?: string;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -105,11 +114,26 @@ export function Composer({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="h-4 pl-3 text-[11.5px] text-ink-4">
-        {typing.length > 0 && (
-          <span className="animate-fade">
+      <div className="flex h-4 min-w-0 items-center gap-1.5 pl-3 text-[11.5px] text-ink-4">
+        {typing.length > 0 ? (
+          <span className="animate-fade truncate">
             {typing.map((v) => v.user.name).join(", ")} {typing.length === 1 ? "is" : "are"} typing…
           </span>
+        ) : (
+          onTakeOver && (
+            <span className="animate-fade flex min-w-0 items-center gap-1.5">
+              <span className="truncate">
+                {limitOf ? `${limitOf}'s` : "This"} subscription is at its limit.
+              </span>
+              <button
+                type="button"
+                onClick={onTakeOver}
+                className="shrink-0 rounded font-medium text-ink-2 underline decoration-ink-4/60 underline-offset-2 transition-colors hover:text-ink hover:decoration-ink"
+              >
+                Continue on mine
+              </button>
+            </span>
+          )
         )}
       </div>
       <div

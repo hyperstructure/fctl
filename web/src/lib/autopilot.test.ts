@@ -131,6 +131,12 @@ describe("what woke it", () => {
     );
     expect(wokeLine(wake({ reasons: ["check_in"] }))).toBe("Woke for its check-in");
     expect(wokeLine(wake({ reasons: ["woken"] }))).toBe("Woke as someone woke it");
+    expect(wokeLine(wake({ reasons: ["moved"] }))).toBe(
+      "Woke as it was moved to another Claude subscription",
+    );
+    expect(wokeLine(wake({ reasons: ["moved", "crew"] }))).toBe(
+      "Woke for being moved to another Claude subscription and its sessions",
+    );
   });
 });
 

@@ -103,6 +103,9 @@ pub struct AutopilotRow {
     pub session_status: Option<String>,
     #[serde(deserialize_with = "opt_int", default)]
     pub session_created_at: Option<i64>,
+    /// The Claude connection its own session runs on.
+    #[serde(default)]
+    pub session_credential_id: Option<String>,
 }
 
 pub const AUTOPILOT_SELECT: &str = "SELECT a.project_id, a.workspace_id, a.scope, a.state, a.paused_reason, \
@@ -111,7 +114,8 @@ pub const AUTOPILOT_SELECT: &str = "SELECT a.project_id, a.workspace_id, a.scope
     a.asked_wake_at, a.woken_at, a.check_ins, a.failures, a.created_at, a.updated_at, \
     ou.name AS owner_name, ou.avatar_url AS owner_avatar, pu.name AS paused_by_name, pu.avatar_url AS paused_by_avatar, \
     du.name AS direction_by_name, du.avatar_url AS direction_by_avatar, \
-    ps.number AS session_number, ps.status AS session_status, ps.created_at AS session_created_at \
+    ps.number AS session_number, ps.status AS session_status, ps.created_at AS session_created_at, \
+    ps.credential_id AS session_credential_id \
     FROM autopilots a \
     LEFT JOIN users ou ON ou.id = a.owner_id \
     LEFT JOIN users pu ON pu.id = a.paused_by \
@@ -676,6 +680,15 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             .await?;
             return Ok(true);
         }
+        // Its sessions that wait move to the subscription it runs on now,
+        // should it have moved (`move_crew`).
+        if let Err(e) = move_crew(env, db, row, &owner, now).await {
+            worker::console_error!(
+                "autopilot {}: moving its sessions to its owner's Claude connection: {}",
+                row.project_id,
+                e.0.message
+            );
+        }
         let news = News::gather(db, row, now).await?;
         let status = row.session_status();
         let working = status.is_some_and(ap::at_work);
@@ -697,6 +710,35 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
         };
         let session = match (carries_on, row.session_id.as_deref()) {
             (true, Some(id)) => {
+                // On another Claude connection than its owner's now (someone
+                // took it over, or its owner chose another): unless at work,
+                // it moves there, and Claude continues the same conversation.
+                if let Some(st) = status
+                    && !ap::at_work(st)
+                    && row.session_credential_id.as_deref() != Some(owner.credential.id.as_str())
+                    && let Ok(way) = fctl_domain::claude::moving(st)
+                {
+                    // Best effort, as for its crew: the wake goes on, and the
+                    // next one moves it.
+                    let moved = crate::api::sessions::move_to(
+                        env,
+                        db,
+                        &SessionId(id.to_owned()),
+                        way,
+                        &owner.credential,
+                        &owner.user.to_ref(),
+                        false,
+                        now,
+                    )
+                    .await;
+                    if let Err(e) = moved {
+                        worker::console_error!(
+                            "autopilot {}: moving its session to its owner's Claude connection: {}",
+                            row.project_id,
+                            e.0.message
+                        );
+                    }
+                }
                 deliver(env, id, &text, wake.clone(), now).await?;
                 id.to_owned()
             }
@@ -742,6 +784,124 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
         worker::console_error!("autopilot {}: {}", row.project_id, again.0.message);
     }
     woke
+}
+
+/// The sessions it started, that wait or rest, which [`move_crew`] moves
+/// to the Claude connection it runs on: those paused on a usage limit, about
+/// to start, and those that stopped in the last week. Those at work, or
+/// waiting for a message, finish their run where they are. `?1`: its home
+/// project, `?2`: the connection, `?3`: a week ago.
+const CREW_TO_MOVE: &str = "autopilot_id = ?1 AND autopilot_role = 'crew' AND credential_id IS NOT ?2 \
+    AND (status IN ('paused', 'queued', 'stopping') OR (status = 'stopped' AND updated_at > ?3))";
+
+/// How many of its sessions one wake moves at most; the next wake moves more.
+const CREW_MOVES_PER_WAKE: i64 = 25;
+
+/// Moves the sessions it started that wait or rest ([`CREW_TO_MOVE`]) to
+/// its owner's Claude connection, as it runs on that now: someone took it
+/// over, or its owner chose another connection. One paused on its old
+/// subscription's limit starts again on the new one; the others start on
+/// it when they next start.
+async fn move_crew(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    owner: &Owner,
+    now: i64,
+) -> AppResult<()> {
+    #[derive(Deserialize)]
+    struct Crew {
+        id: String,
+        status: String,
+    }
+    let crew: Vec<Crew> = q(
+        db,
+        &format!(
+            "SELECT id, status FROM sessions WHERE {CREW_TO_MOVE} ORDER BY updated_at DESC LIMIT {CREW_MOVES_PER_WAKE}"
+        ),
+        &[s(&row.project_id), s(&owner.credential.id), n(now - 7 * 86_400_000)],
+    )?
+    .all()
+    .await?;
+    let user = owner.user.to_ref();
+    for c in crew {
+        let Some(way) =
+            SessionStatus::parse(&c.status).and_then(|st| fctl_domain::claude::moving(st).ok())
+        else {
+            continue;
+        };
+        let moved = crate::api::sessions::move_to(
+            env,
+            db,
+            &SessionId(c.id.clone()),
+            way,
+            &owner.credential,
+            &user,
+            false,
+            now,
+        )
+        .await;
+        if let Err(e) = moved {
+            worker::console_error!(
+                "moving {} to its autopilot's connection: {}",
+                c.id,
+                e.0.message
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Wakes the autopilots `user_id` runs, now, whose sessions run on another
+/// Claude connection than theirs for its workspace: they took one over, or
+/// chose or connected another connection. The wake moves them
+/// ([`move_crew`], [`take_up`]). Best effort: a failure is logged.
+pub async fn owner_moved(env: &Env, db: &D1Database, user_id: &str, now: i64) {
+    let moved: AppResult<()> = async {
+        let rows: Vec<AutopilotRow> = q(
+            db,
+            &format!("{AUTOPILOT_SELECT} WHERE a.owner_id = ? AND a.state = 'on'"),
+            &[s(user_id)],
+        )?
+        .all()
+        .await?;
+        for row in rows {
+            let Some(project) = crate::spec::project_row(db, &row.project_id).await? else {
+                continue;
+            };
+            let Ok(owner) = owner(db, &project, &row).await? else {
+                continue;
+            };
+            // As the wake moves it: not while it works, nor once it failed.
+            let own = row.session_id.is_some()
+                && row
+                    .session_status()
+                    .is_some_and(|st| !ap::at_work(st) && fctl_domain::claude::moving(st).is_ok())
+                && row.session_credential_id.as_deref() != Some(owner.credential.id.as_str());
+            let crew: Option<crate::db::Count> = q(
+                db,
+                &format!("SELECT COUNT(*) AS n FROM sessions WHERE {CREW_TO_MOVE}"),
+                &[
+                    s(&row.project_id),
+                    s(&owner.credential.id),
+                    n(now - 7 * 86_400_000),
+                ],
+            )?
+            .first()
+            .await?;
+            if own || crew.is_some_and(|c| c.n > 0) {
+                nudge(env, db, &row.project_id, AutopilotWakeReason::Moved, now).await?;
+            }
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = moved {
+        worker::console_error!(
+            "waking {user_id}'s autopilots for their new Claude connection: {}",
+            e.0.message
+        );
+    }
 }
 
 /// After waking it failed once claimed (`why`): what woke it goes back
@@ -823,6 +983,7 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
                 n => format!("{n} of its sessions"),
             },
             AutopilotWakeReason::Retry => "a retry after its session failed".into(),
+            AutopilotWakeReason::Moved => "it was moved to another Claude subscription".into(),
             AutopilotWakeReason::Other => continue,
         });
     }

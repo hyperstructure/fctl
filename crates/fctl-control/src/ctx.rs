@@ -147,11 +147,16 @@ impl Ctx {
         crypto::keys(&self.cfg)
     }
 
-    /// Runs `fut` after the response is sent (logging failures).
+    /// Runs `fut` after the response is sent (logging failures). It goes
+    /// on the heap at once: a webhook's deferred work can be a large
+    /// future, and each wrapper `wait_until` puts around it would copy it
+    /// again onto the Worker's small stack, which overflowed (as
+    /// `unreachable`) for Linear's replies once sessions grew a field.
     pub fn defer<F>(&self, fut: F)
     where
         F: Future<Output = AppResult<()>> + 'static,
     {
+        let fut = Box::pin(fut);
         self.wctx.wait_until(async move {
             if let Err(e) = fut.await {
                 worker::console_error!("deferred task failed: {}", e.0.message);

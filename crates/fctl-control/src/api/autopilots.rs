@@ -946,6 +946,19 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             if written == 0 {
                 return Err(conflict(MOVED_ON));
             }
+            // Its sessions run on the old owner's subscription: it wakes
+            // now to move them to the new owner's, rather than wait there,
+            // perhaps for a limit to reset.
+            if take_over {
+                engine::nudge(
+                    &ctx.env,
+                    &ctx.db,
+                    &row.project_id,
+                    AutopilotWakeReason::Moved,
+                    ctx.now,
+                )
+                .await?;
+            }
             if new_direction.is_some() {
                 engine::log(
                     &ctx.db,

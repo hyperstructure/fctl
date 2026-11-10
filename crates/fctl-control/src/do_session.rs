@@ -575,6 +575,10 @@ impl SessionObject {
         }
         let mut s: Session = serde_json::from_str(&self.meta("summary")?).ok()?;
         fctl_domain::pulls::backfill(&mut s);
+        // Summaries from before it say whose subscription it runs on here.
+        if s.claude.is_none() {
+            s.claude = Some(self.claude_user(&s));
+        }
         self.mem.borrow_mut().summary = Some(s.clone());
         Some(s)
     }
@@ -854,6 +858,10 @@ impl SessionObject {
         let mut s = b.session;
         s.role = None;
         s.following = None;
+        s.claude_connection = None;
+        if s.claude.is_none() {
+            s.claude = Some(s.created_by.clone());
+        }
         self.save_summary(&s);
         if !b.prompt.attachments.is_empty() {
             self.set_meta("task_files", "1");
@@ -1952,6 +1960,7 @@ impl SessionObject {
             && let Ok(json) = serde_json::to_string(&u)
         {
             self.set_meta("claude_user", &json);
+            s.claude = Some(u);
         }
         let new_runner = b.runner.is_some() || b.clear_runner;
         if let Some(r) = b.runner {

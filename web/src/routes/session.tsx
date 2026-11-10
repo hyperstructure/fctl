@@ -8,6 +8,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
+  ArrowRightLeft,
   ArrowUpRight,
   Bell,
   BellOff,
@@ -54,6 +55,7 @@ import {
 import { QuestionCard, useQuestionFloats } from "@/components/session/question";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
+import { TakeOverDialog } from "@/components/session/take-over";
 import {
   TurnBar,
   TurnList,
@@ -113,6 +115,7 @@ import { ariaShortcut, useShortcut, withShortcut } from "@/lib/shortcuts";
 import { type DiskShort, diskOf, diskText, type Stall, stallText, useStall } from "@/lib/stall";
 import { type StatusNote, statusNotes, waitsForYou } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
+import { takeOverOf } from "@/lib/subscription";
 import type { Item } from "@/lib/transcript";
 import { factsOf, type Turn, type TurnFacts, turnOfSeq, turnSeq, turnsOf, turnTitle } from "@/lib/turns";
 import { cameAfter, newestSeq } from "@/lib/unseen";
@@ -147,6 +150,7 @@ export function SessionPage() {
   // The details sheet, where the rail doesn't fit.
   const [details, setDetails] = useState(false);
   const [share, setShare] = useState(false);
+  const [moving, setMoving] = useState(false);
   // The diffs shown over the page, at the file opened in Changes (or the first, with c).
   const [diffAt, setDiffAt] = useState<DiffTarget>();
   // Only the conversation: the agent's work and the milestones left out.
@@ -355,6 +359,15 @@ export function SessionPage() {
   const claudeUrl = session && remoteControlUrl(session.remote_control, session.created_by, me?.user.id);
   const role = s.role ?? session?.role;
   const isOwner = role === "owner";
+  // Whether you may move it to your Claude subscription now.
+  const takeOver = takeOverOf(session, role, me, {
+    // Only the session's own request says which of your connections it runs on.
+    mine: initial.data?.claude_connection,
+    chosen: workspace?.id ? workspaceIndex.get(workspace.id)?.claude : undefined,
+  });
+  // Once it can no longer be taken over (it runs again), an open dialog goes for good, rather
+  // than open by itself the next time it pauses.
+  if (moving && !takeOver) setMoving(false);
   const notes = session
     ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall, disk })
     : [];
@@ -652,6 +665,17 @@ export function SessionPage() {
                           Resume
                         </MenuItem>
                       )}
+                      {takeOver && (
+                        <MenuItem
+                          icon={<ArrowRightLeft />}
+                          onClick={() => {
+                            close();
+                            setMoving(true);
+                          }}
+                        >
+                          Continue on my subscription
+                        </MenuItem>
+                      )}
                       {session && (
                         <MenuItem
                           icon={<Search />}
@@ -859,6 +883,8 @@ export function SessionPage() {
                   }
                   onInterrupt={() => store.interrupt()}
                   onTyping={() => store.typing()}
+                  onTakeOver={takeOver?.waits ? () => setMoving(true) : undefined}
+                  limitOf={takeOver?.whose}
                   choices={
                     isOwner && session ? (
                       <SessionChoices session={session} perTurnEffort={s.perTurnEffort} />
@@ -943,6 +969,14 @@ export function SessionPage() {
         />
       )}
       {session && <ShareDialog open={share} onClose={() => setShare(false)} session={session} />}
+      {session && takeOver && (
+        <TakeOverDialog
+          session={session}
+          takeOver={takeOver}
+          open={moving}
+          onClose={() => setMoving(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1683,7 +1717,16 @@ function Details({
             }
           />
         )}
-        <Row k="Billing" v="Claude subscription" />
+        <Row
+          k="Billing"
+          v={
+            session.claude
+              ? session.claude.id === me
+                ? "Your Claude subscription"
+                : `${session.claude.name}'s Claude subscription`
+              : "Claude subscription"
+          }
+        />
       </RailSection>
       <RailSection title="Follow along">
         {claudeApps}

@@ -1038,6 +1038,7 @@ pub fn wake_message(news: &News<'_>) -> String {
             AutopilotWakeReason::Answered => "people answered you",
             AutopilotWakeReason::Crew => "your sessions moved on",
             AutopilotWakeReason::Retry => "your last session failed, so this is a new one",
+            AutopilotWakeReason::Moved => "you run on another Claude subscription now",
             AutopilotWakeReason::Other => "something needs you",
         })
         .collect();

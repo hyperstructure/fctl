@@ -909,6 +909,7 @@ pub async fn update_membership(ctx: &mut Ctx, req: &mut Request, id: &str) -> Ap
         )?
         .run()
         .await?;
+        crate::autopilots::owner_moved(&ctx.env, &ctx.db, &user.id, ctx.now).await;
     }
     if let Some(order) = project_order {
         q(

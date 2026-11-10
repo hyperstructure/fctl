@@ -551,6 +551,14 @@ left off, on the same machine, with the same conversation and branch: type
 it on the session page or send it with `fctl send`. A session that failed
 needs its owner to **Resume** it (or `fctl resume my-app#12 "…"`).
 
+A session runs on the Claude subscription of whoever started it, and a
+message keeps it there. When that subscription reaches its limit, the
+session pauses until the limit resets. To carry on sooner on yours, or on
+another connection of your own, choose **Continue on mine** above the
+message box, or **Continue on my subscription** in the session's ⋯ menu
+(`fctl take-over my-app#12`): the session starts again on the connection
+you chose for its workspace, in the same conversation.
+
 ## 9. Work together
 
 A workspace's admins invite people from its **People** tab (`fctl

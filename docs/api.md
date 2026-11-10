@@ -125,7 +125,7 @@ It answers with the session, `queued`. A session is:
   `?project=` and `?limit=` (20, at most 50). Each result has the `session`,
   up to three `matches` (`kind`, `seq`, `text`, `ranges`) and a `count`.
 
-### Message, interrupt, stop, resume
+### Message, interrupt, stop, resume, take over
 
 | Request | Body | What it does |
 |---|---|---|
@@ -134,6 +134,7 @@ It answers with the session, `queued`. A session is:
 | `POST /api/v1/sessions/{id}/reviews/{review}/pass-on` | | passes on the findings of review `{review}` (its `session_id`) that fctl held back from the agent (`held_after`), or that went to no session (`unsent`) where the session lists the review's pull request: the agent gets them as it would have, a stopped session resumes on the subscription it ran on, and it gets those of up to five reviews in a row again, these included; `409` when fctl holds none of that review's back (the agent got them, someone wrote to it since, or a newer review of its pull request came), the session doesn't list the pull request of findings that went to no session, the pull request is merged or closed, a newer review of it posted, its agent only reads on GitHub, or the session failed. Answers `{"delivery_id": "dlv_…"}` |
 | `POST /api/v1/sessions/{id}/stop` | | ends the session; its sandbox stays for a resume |
 | `POST /api/v1/sessions/{id}/resume` | `{"prompt": "…", "attachments": [...]}` | starts a stopped or failed session again, on the caller's subscription; `409` while it runs |
+| `POST /api/v1/sessions/{id}/take-over` | | moves the session to the caller's Claude connection for its workspace (who may message it): one that waits for its subscription's limit to reset, or for a message, stops its run and starts again there, where Claude continues the same conversation; a stopped one resumes on it. `409` while its agent works, for a failed one (resume it), an autopilot's own session (take the autopilot over), a review agent's, one that runs on that connection already, and while the caller's plan is at its limit too |
 | `PATCH /api/v1/sessions/{id}` | `{"title": "…", "description": "…", "archived": true, "model": "sonnet", "effort": "medium"}` | renames, describes or archives it (`""` clears the description); `model` (an alias or a model's ID) and `effort` (`low` … `max`) change what its agent works on from its next step, and what its next run starts on: a new model reads the whole conversation again without Claude's prompt cache, a new effort level keeps it where Claude sends the level with each turn ([Model and effort](architecture.md#model-and-effort)). For its owner; `409` for a review agent's session, and while it runs on a runner whose fctl can't change them |
 
 `client_id` is a key of your own: a message sent again with the same one

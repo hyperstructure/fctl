@@ -406,6 +406,8 @@ export const api = {
   passOnReview: (id: string, review: string) =>
     request<G.SendMessageResponse>("POST", `/sessions/${enc(id)}/reviews/${enc(review)}/pass-on`, {}),
   stop: (id: string) => request<G.Session>("POST", `/sessions/${enc(id)}/stop`, {}),
+  /** Moves a session to your Claude subscription: it starts again there, or resumes on it. */
+  takeOver: (id: string) => request<G.Session>("POST", `/sessions/${enc(id)}/take-over`, {}),
   resume: (id: string, prompt?: string, attachments?: G.AttachmentId[]) =>
     request<G.Session>("POST", `/sessions/${enc(id)}/resume`, { prompt, attachments }),
   events: (id: string, q: { before?: number; after?: number; limit?: number }) => {

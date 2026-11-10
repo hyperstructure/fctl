@@ -1122,7 +1122,18 @@ Claude's, get no credential, and it fails with a reason instead; leaving,
 being disabled, or losing that role stops the sessions that run on their
 subscription (FleetDO, on `/workspaces-changed`). A resume (**Resume** for the session's
 owners, `fctl resume`) runs it on the resumer's subscription instead, and
-also starts a failed session, which a message doesn't. A message that comes
+also starts a failed session, which a message doesn't. Taking it over
+(`POST /sessions/{id}/take-over`, **Continue on my subscription**, for
+whoever may message it) moves a session that waits, rests or stopped to
+the caller's connection for its workspace, which may be another of the
+same person's: `sessions.credential_id` changes, a run that waits stops,
+and the session is queued again, its next run on the new connection
+(`api::sessions::move_to`, `fctl_domain::claude::moving`). An autopilot
+moves its own: each wake moves its own session, unless it works, and the
+sessions it started that wait or stopped in the last week, to its owner's
+connection, so that taking it over, or its owner choosing or connecting
+another connection (which wakes it with the reason `moved`), carries it
+on there. A message that comes
 while the session stops queues it too: FleetDO starts the new run once the
 last one has ended, so that two runs of a session never overlap, and
 SessionDO ignores what the last run's uplink still says about stopping.

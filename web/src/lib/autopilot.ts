@@ -225,6 +225,7 @@ export function wokeLine(w: G.AutopilotWake): string {
   if (!more && only === "started") return "Woke as it was put on";
   if (!more && only === "resumed") return "Woke as it was resumed";
   if (!more && only === "woken") return "Woke as someone woke it";
+  if (!more && only === "moved") return "Woke as it was moved to another Claude subscription";
   return `Woke for ${wakeText(w)}`;
 }
 
@@ -275,6 +276,9 @@ export function wakeText(w: G.AutopilotWake): string {
       }
       case "retry":
         parts.push("a retry");
+        break;
+      case "moved":
+        parts.push("being moved to another Claude subscription");
         break;
     }
   }
