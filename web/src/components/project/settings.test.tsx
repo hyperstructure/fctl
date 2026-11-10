@@ -296,9 +296,25 @@ describe("a project's Settings", () => {
       expect(updates.at(-1)?.body.settings?.instructions).toBe("Run the tests first.");
       // Saved, the field shows it as it'd be typed.
       expect((field("Tokens") as HTMLInputElement).value).toBe("300K");
+      // Another choice and back leaves nothing to save, and the size typed comes back with it.
+      choose("400K");
+      choose("Another size");
+      expect((field("Tokens") as HTMLInputElement).value).toBe("300K");
+      expect(s.button("Save")).toBeUndefined();
+      type("350k");
+      choose("Claude's default");
+      choose("Another size");
+      expect((field("Tokens") as HTMLInputElement).value).toBe("350k");
+      choose("Another size");
       choose("400K");
       await save();
       expect(updates.at(-1)?.body.settings?.compact_window).toBe(400_000);
+      // A size typed, then the saved choice again: nothing to save.
+      choose("Another size");
+      type("500k");
+      expect(s.button("Save")).toBeDefined();
+      choose("400K");
+      expect(s.button("Save")).toBeUndefined();
       choose("Claude's default");
       await save();
       // Sent as null, which the control plane reads as Claude's default rather than as unsent.
