@@ -46,7 +46,8 @@ To hear when a session waits for your reply, pauses on a usage limit or
 fails, turn on notifications in **Settings → Notifications**, in each
 browser you want them in (on an iPhone or iPad, in the app on the Home
 Screen). You follow the sessions you start; the bell on a session's page
-follows others.
+follows others. An autopilot's sessions notify you only when they ask you
+something: it looks after the rest itself.
 
 ## 2. Install the CLI
 

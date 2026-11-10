@@ -2142,8 +2142,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the project's memory. `fctl autopilot brief` gives it where things
    stand: the direction, people's notes (the new ones marked), its asks
    and their answers, its sessions, its plan and log
-   (`fctl_domain::autopilot::brief`). Its owner follows its sessions, which
-   notify of failures and asks, not of turns that end.
+   (`fctl_domain::autopilot::brief`). Its owner follows its own session, which
+   notifies only of what it asks, and of fctl pausing it after its sessions
+   kept failing ([Notifications](#notifications)).
 3. **Waking** (`crate::autopilots`). ScheduleObject's alarm, which starts
    schedules' runs, wakes autopilots too: at the earliest of the two, each
    wake claimed in D1 (`autopilots.wake_at`) as a run is. It wakes at its
@@ -2200,7 +2201,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the autopilot). Its messages to them carry it as their author's
    autopilot (`UserMessage.autopilot`), which the apps show; their agents
    see them as their starter's, its owner's. Nobody follows them, so they
-   notify nobody, and *Needs you* leaves them to the autopilot while it is
+   notify nobody, and while it is on they notify those who follow one only
+   when it asks something ([Notifications](#notifications)); *Needs you* leaves them to the autopilot while it is
    on, unless someone follows one; while it is paused or off, they are its
    owner's there as any session they started. They show the autopilot's
    mark in lists and link back to its tab.
@@ -3240,7 +3242,14 @@ A session notifies the people who follow it when it waits for a reply (a
 turn ends: `running` → `idle`), pauses on a usage limit, or fails. A turn
 that ends with a [question](#questions) open says so instead ("my-app#12
 asks you", with the question and its answers), to those who want to hear
-when it waits. Starting
+when it waits. An autopilot's sessions notify only when they ask: its own
+session, and those it started while it is on, finish turns, pause and fail
+for the autopilot, which hears of them and goes on by itself
+(`notify::Audience`). When its own sessions keep failing, fctl pauses it
+and says so to those who follow its own session, as a failure
+(`notify::Kind::AutopilotPaused`). A review agent's finished turn is its
+review's.
+Starting
 or resuming a session follows it, unless the person turned that off in
 Settings; anyone who can see a session can follow it (the bell on its page,
 `fctl follow`). Notifications are Web Push messages (RFC 8030) to the

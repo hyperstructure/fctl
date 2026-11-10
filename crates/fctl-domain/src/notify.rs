@@ -5,6 +5,7 @@
 use crate::perm::{self, SessionAccess};
 use crate::workspace::Membership;
 use fctl_proto::api::{NotificationSettings, PushMessage};
+use fctl_proto::autopilot::AutopilotRole;
 use fctl_proto::session::{ProjectRole, SessionRole, SessionStatus};
 use fctl_proto::{Millis, SessionId};
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,9 @@ pub enum Kind {
     /// (`fctl autopilot ask`): a decision, or a secret. It goes on with
     /// other work meanwhile, so it says this whatever the session's state.
     Autopilot,
+    /// fctl paused an autopilot whose sessions kept failing, which its
+    /// own session's failures don't say: people resume it once that's fixed.
+    AutopilotPaused,
 }
 
 impl Kind {
@@ -56,12 +60,23 @@ impl Kind {
         }
     }
 
+    /// Whether it notifies the people who follow a session whose news is
+    /// for `audience`: an autopilot's sessions only when they ask
+    /// something, and a review's not when its turn ends.
+    pub fn notifies(self, audience: Audience) -> bool {
+        match self {
+            Self::Asking | Self::Autopilot | Self::AutopilotPaused => true,
+            Self::Waiting => audience == Audience::People,
+            Self::Paused | Self::Failed => audience != Audience::Autopilot,
+        }
+    }
+
     /// Whether `settings` ask for it.
     pub fn wanted(self, settings: &NotificationSettings) -> bool {
         match self {
             Self::Waiting | Self::Asking | Self::Autopilot => settings.waiting,
             Self::Paused => settings.paused,
-            Self::Failed => settings.failed,
+            Self::Failed | Self::AutopilotPaused => settings.failed,
         }
     }
 
@@ -73,8 +88,43 @@ impl Kind {
                 Self::Waiting | Self::Asking => SessionStatus::Idle,
                 Self::Paused => SessionStatus::Paused,
                 Self::Failed => SessionStatus::Failed,
-                Self::Autopilot => return true,
+                Self::Autopilot | Self::AutopilotPaused => return true,
             }
+    }
+}
+
+/// Who looks after what a session does, which decides what of it notifies
+/// its followers ([`Kind::notifies`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// People: a finished turn waits for their reply.
+    People,
+    /// A review agent's: its turn's end is its review's, and waits for
+    /// nobody.
+    Review,
+    /// An autopilot's: its own session, which fctl wakes again, or one it
+    /// started while it is on. People hear only what they ask: the
+    /// autopilot hears when they finish a turn or fail, and goes on by
+    /// itself; a pause on a usage limit continues by itself when the limit
+    /// resets. Should its own sessions keep failing, fctl pauses it and says
+    /// so ([`Kind::AutopilotPaused`]); its own session's other failures, while
+    /// the autopilot is paused or off, go unheard.
+    Autopilot,
+}
+
+impl Audience {
+    /// The audience of a session: a review's (`review`), or one of an
+    /// autopilot's in `role` whose autopilot is on (`autopilot_on`) or not.
+    /// Its own session is the autopilot's whatever its state: it only
+    /// plans and steers. One it started is its starter's while it is paused
+    /// or off, as *Needs you* sees it.
+    pub fn of(review: bool, role: Option<AutopilotRole>, autopilot_on: bool) -> Self {
+        match role {
+            _ if review => Self::Review,
+            Some(AutopilotRole::Pilot) => Self::Autopilot,
+            Some(_) if autopilot_on => Self::Autopilot,
+            _ => Self::People,
+        }
     }
 }
 
@@ -223,6 +273,7 @@ fn says(kind: Kind) -> &'static str {
         Kind::Paused => "paused on a usage limit",
         Kind::Failed => "failed",
         Kind::Autopilot => "asks you",
+        Kind::AutopilotPaused => "is paused",
     }
 }
 
@@ -265,6 +316,14 @@ pub fn compose(events: &[Event]) -> Option<PushMessage> {
         {
             Some(q) => format!("It asks you\n{}", question_lines(q)),
             None => "It asks you something".to_owned(),
+        },
+        (Kind::AutopilotPaused, _) => match only
+            .detail
+            .as_deref()
+            .and_then(|why| excerpt(why, QUESTION_CHARS))
+        {
+            Some(why) => format!("fctl paused it\n{why}"),
+            None => "fctl paused it".to_owned(),
         },
     };
     Some(PushMessage {
@@ -359,6 +418,26 @@ mod tests {
         assert!(Kind::Autopilot.still(SessionStatus::Running));
     }
 
+    #[test]
+    fn an_autopilot_fctl_paused_says_why() {
+        let why = "Its last 3 sessions failed, the last because the runner is gone. Resume it once that's fixed.";
+        let e = Event {
+            title: "Shop's autopilot".into(),
+            url: Some("/p/shop?tab=autopilot".into()),
+            ..event(3, Kind::AutopilotPaused, Some(why))
+        };
+        assert_eq!(
+            compose(&[e]).map(|m| m.body),
+            Some(format!("fctl paused it\n{why}"))
+        );
+        assert!(Kind::AutopilotPaused.notifies(Audience::Autopilot));
+        assert!(Kind::AutopilotPaused.still(SessionStatus::Failed));
+        assert!(!Kind::AutopilotPaused.wanted(&NotificationSettings {
+            failed: false,
+            ..Default::default()
+        }));
+    }
+
     fn event(n: u32, kind: Kind, detail: Option<&str>) -> Event {
         Event {
             session_id: SessionId(format!("ses_{n}")),
@@ -368,6 +447,33 @@ mod tests {
             detail: detail.map(str::to_owned),
             at: i64::from(n) * 1000,
             url: None,
+        }
+    }
+
+    #[test]
+    fn an_autopilots_sessions_notify_only_when_they_ask() {
+        use AutopilotRole::*;
+        let ours = Audience::of(false, Some(Pilot), true);
+        assert_eq!(ours, Audience::Autopilot);
+        // Its own session, paused or off, still waits for nobody.
+        assert_eq!(Audience::of(false, Some(Pilot), false), Audience::Autopilot);
+        assert_eq!(Audience::of(false, Some(Crew), true), Audience::Autopilot);
+        // Its crew is its starter's while it is paused or off.
+        assert_eq!(Audience::of(false, Some(Crew), false), Audience::People);
+        assert_eq!(Audience::of(false, None, true), Audience::People);
+        assert_eq!(Audience::of(true, None, false), Audience::Review);
+
+        assert!(Kind::Asking.notifies(ours));
+        assert!(Kind::Autopilot.notifies(ours));
+        assert!(!Kind::Waiting.notifies(ours));
+        assert!(!Kind::Paused.notifies(ours));
+        assert!(!Kind::Failed.notifies(ours));
+
+        assert!(!Kind::Waiting.notifies(Audience::Review));
+        assert!(Kind::Asking.notifies(Audience::Review));
+        assert!(Kind::Failed.notifies(Audience::Review));
+        for kind in [Kind::Waiting, Kind::Asking, Kind::Paused, Kind::Failed] {
+            assert!(kind.notifies(Audience::People));
         }
     }
 

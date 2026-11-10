@@ -1680,6 +1680,17 @@ pub async fn session_moved(
                                 ap::RETRY_MS.len()
                             );
                             stop_for(&db, &row, &why, now).await?;
+                            // Its sessions' failures notify nobody: this
+                            // one waits for people to resume it.
+                            notify_people(
+                                env,
+                                &db,
+                                &row,
+                                fctl_domain::notify::Kind::AutopilotPaused,
+                                &why,
+                                now,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -2265,6 +2276,29 @@ pub async fn spec(db: &D1Database, autopilot: &str) -> AppResult<Option<Autopilo
 /// Notifies the people who follow the autopilot's own session that it
 /// asks them something (`crate::notify`).
 pub async fn notify_ask(env: &Env, db: &D1Database, row: &AutopilotRow, text: &str, now: i64) {
+    notify_people(
+        env,
+        db,
+        row,
+        fctl_domain::notify::Kind::Autopilot,
+        text,
+        now,
+    )
+    .await;
+}
+
+/// Tells the people who follow the autopilot's own session what of it
+/// waits for them, `kind` with `text`, in a notification that opens its tab:
+/// what it asks, or that fctl paused it. Its sessions keep the rest to
+/// themselves (`fctl_domain::notify::Audience`).
+async fn notify_people(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    kind: fctl_domain::notify::Kind,
+    text: &str,
+    now: i64,
+) {
     let Some(session) = row.session_id.clone() else {
         return;
     };
@@ -2281,12 +2315,12 @@ pub async fn notify_ask(env: &Env, db: &D1Database, row: &AutopilotRow, text: &s
         session_id: SessionId(session),
         reference,
         title,
-        kind: fctl_domain::notify::Kind::Autopilot,
+        kind,
         detail: Some(text.to_owned()),
         at: now,
         url: Some(format!("/p/{slug}?tab=autopilot")),
     };
     if let Err(e) = crate::notify::session_changed(env, event, Vec::new()).await {
-        worker::console_error!("notifying of an autopilot's ask: {}", e.0.message);
+        worker::console_error!("notifying of an autopilot: {}", e.0.message);
     }
 }
