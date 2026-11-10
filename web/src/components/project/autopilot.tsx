@@ -903,9 +903,14 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
   return (
     <section
       aria-label="Where it stands"
-      className={cn("relative overflow-hidden rounded-2xl border bg-surface", tone.border)}
+      // Nothing clips the card, so that its ⋯ menu reaches past its foot; its glow and problem strip round
+      // their own corners (its radius less its border).
+      className={cn("relative rounded-2xl border bg-surface", tone.border)}
     >
-      <div aria-hidden="true" className={cn("pointer-events-none absolute inset-0", tone.glow)} />
+      <div
+        aria-hidden="true"
+        className={cn("pointer-events-none absolute inset-0 rounded-[15px]", tone.glow)}
+      />
       <div className="relative flex flex-wrap items-start gap-x-4 gap-y-4 px-5 py-4.5">
         {/* On a phone its mark sits beside its name, rather than in a row of its own. */}
         <AutopilotTile live={live} size={44} className="max-sm:hidden" />
@@ -1051,7 +1056,7 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
         )}
       </div>
       {a.problem && (
-        <div className="relative flex items-start gap-2 border-t border-amber/25 bg-amber-soft px-5 py-2.5 text-[12.5px] text-ink-2">
+        <div className="relative flex items-start gap-2 rounded-b-[15px] border-t border-amber/25 bg-amber-soft px-5 py-2.5 text-[12.5px] text-ink-2">
           <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber" aria-hidden="true" />
           {a.problem}
         </div>
