@@ -114,6 +114,14 @@ fn clean_settings(mut s: ProjectSettings) -> AppResult<ProjectSettings> {
             "Use 1 minute – 7 days",
         ));
     }
+    if let Some(t) = s.compact_window
+        && !fctl_domain::context::valid(t)
+    {
+        return Err(validation(
+            "settings.compact_window",
+            &fctl_domain::context::bounds(),
+        ));
+    }
     if let Some(d) = s.screenshot_days
         && !published::valid_days(d)
     {

@@ -11,6 +11,7 @@ pub mod base_branch;
 pub mod branches;
 pub mod cbor;
 pub mod claude;
+pub mod context;
 pub mod cookies;
 pub mod crawlers;
 pub mod cron;

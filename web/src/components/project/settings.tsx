@@ -45,6 +45,16 @@ import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { showHex } from "@/lib/color";
+import {
+  COMPACT_CHOICES,
+  type CompactChoice,
+  compactChoice,
+  MAX_TOKENS,
+  MIN_TOKENS,
+  parseTokens,
+  tokensText,
+  validWindow,
+} from "@/lib/context";
 import { cpus, memory } from "@/lib/format";
 import { GITHUB_ACCESS } from "@/lib/github-access";
 import {
@@ -396,6 +406,12 @@ const agentSettings = (s: G.ProjectSettings) => ({
   instructions: s.instructions,
   model: s.model,
   effort: s.effort,
+  /** Where sessions compact, as chosen in its list, and the size typed for Another size: "" for another choice. */
+  compact: compactChoice(s.compact_window),
+  compactTyped:
+    s.compact_window != null && compactChoice(s.compact_window) === "other"
+      ? tokensText(s.compact_window)
+      : "",
   github_access: s.github_access,
   remote_control: s.remote_control,
   claude_ai_connectors: s.claude_ai_connectors,
@@ -414,18 +430,25 @@ function Agents({ project }: { project: G.Project }) {
   const model = s.choice;
   /** The model ID typed last, so that choosing Model ID again brings it back. */
   const typedModel = useRef<string>(undefined);
+  /**
+   * The size typed for Another size while another is chosen, out of the draft (as the model ID is), so
+   * that going back to the saved choice leaves nothing to save; choosing Another size brings it back.
+   */
+  const typedCompact = useRef<string>(undefined);
   const save = useSave(
     project,
     "Saved: sessions that start from now on take it",
     () => {
-      const { choice, ...settings } = s;
+      const { choice, compact, compactTyped, ...settings } = s;
       if (choice === "id" && !settings.model?.trim())
         throw new ApiFailure(400, {
           code: "validation",
           field: "model",
           message: "Type a model ID, or choose another model",
         });
-      return { settings: { ...project.settings, ...settings } };
+      return {
+        settings: { ...project.settings, ...settings, compact_window: compactWindow(compact, compactTyped) },
+      };
     },
     (p) => setDraft(agentSettings(p.settings)),
   );
@@ -506,6 +529,50 @@ function Agents({ project }: { project: G.Project }) {
             </div>
           </Section>
           <Section
+            title="Context"
+            description="As its context nears this size, Claude compacts the conversation into a summary of it. Each step reads the whole context again: a smaller one spends less of the plan on long sessions, and keeps less of their detail."
+          >
+            <div className="grid grid-cols-2 items-start gap-4">
+              <Field
+                label="Compact near"
+                error={s.compact === "other" ? undefined : err("settings.compact_window")}
+              >
+                {(id) => (
+                  <Select
+                    id={id}
+                    value={s.compact}
+                    onChange={(v) => {
+                      if (s.compact === "other") typedCompact.current = s.compactTyped;
+                      set({ compact: v, compactTyped: v === "other" ? (typedCompact.current ?? "") : "" });
+                    }}
+                    options={COMPACT_OPTIONS}
+                    className="w-full"
+                  />
+                )}
+              </Field>
+              {s.compact === "other" && (
+                <Field
+                  label="Tokens"
+                  hint={`From ${tokensText(MIN_TOKENS)} to ${tokensText(MAX_TOKENS)}.`}
+                  error={err("settings.compact_window")}
+                >
+                  {(id) => (
+                    <Input
+                      id={id}
+                      value={s.compactTyped}
+                      onChange={(e) => set({ compactTyped: e.target.value })}
+                      placeholder="300K"
+                      autoComplete="off"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                  )}
+                </Field>
+              )}
+            </div>
+          </Section>
+          <Section
             title="Access"
             description="What agents may do on GitHub and use of a Claude account, and where people follow them."
           >
@@ -566,7 +633,7 @@ function Agents({ project }: { project: G.Project }) {
           dirty={dirty}
           save={save}
           hint="Sessions that start from now on take it."
-          fields={["settings.instructions", "effort", "model"]}
+          fields={["settings.instructions", "effort", "model", "settings.compact_window"]}
           onReset={reset}
         />
       </form>
@@ -1081,6 +1148,27 @@ const MODELS: SelectOption<ModelChoice>[] = [
   ...ALIASES,
   { value: "id", label: "Model ID" },
 ];
+
+/** Where sessions compact: Claude's default, a few sizes, or one typed. */
+const COMPACT_OPTIONS: SelectOption<CompactChoice>[] = [
+  { value: "", label: "Claude's default", description: "Near the model's whole window" },
+  ...COMPACT_CHOICES.map((t) => ({ value: `${t}` as CompactChoice, label: `${tokensText(t)} tokens` })),
+  { value: "other", label: "Another size" },
+];
+
+/** The window to store for `choice`, with `typed` the size typed for Another size. */
+function compactWindow(choice: CompactChoice, typed: string): number | null {
+  if (choice === "") return null;
+  if (choice !== "other") return Number(choice);
+  const tokens = parseTokens(typed);
+  if (tokens == null || !validWindow(tokens))
+    throw new ApiFailure(400, {
+      code: "validation",
+      field: "settings.compact_window",
+      message: `Type a size from ${tokensText(MIN_TOKENS)} to ${tokensText(MAX_TOKENS)} tokens, like 300K`,
+    });
+  return tokens;
+}
 
 /** Claude's effort levels; the empty value leaves it to Claude. */
 const EFFORT_LEVELS: SelectOption[] = [

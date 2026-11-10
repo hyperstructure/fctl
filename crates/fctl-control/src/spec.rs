@@ -580,6 +580,7 @@ async fn review_spec(
         package_caches: false,
         model: p.model.clone(),
         effort: p.effort.clone(),
+        compact_window: p.compact_window,
         instructions: None,
         cpus: p.cpus,
         memory_mb: p.memory_mb,

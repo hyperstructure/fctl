@@ -23,14 +23,18 @@ pub fn idle_timeout_secs(settings: &ProjectSettings) -> u64 {
 }
 
 /// The environment a session gets from its project's settings: the
-/// project's variables, and `ENABLE_CLAUDEAI_MCP_SERVERS=false` when
-/// claude.ai connectors are off, whatever the variables say. Every
-/// fctl-agent passes these variables to Claude, including those from before
-/// `claude_ai_connectors` existed.
+/// project's variables, `ENABLE_CLAUDEAI_MCP_SERVERS=false` when claude.ai
+/// connectors are off and Claude Code's auto-compact window where the
+/// project chose one ([`crate::context::env`]), whatever the variables say.
+/// Every fctl-agent passes these variables to Claude, including those from
+/// before `claude_ai_connectors` and `compact_window` existed.
 pub fn session_env(settings: &ProjectSettings) -> BTreeMap<String, String> {
     let mut env = settings.env.clone();
     if !settings.claude_ai_connectors {
         env.insert(CLAUDE_AI_CONNECTORS_ENV.into(), "false".into());
+    }
+    if let Some((key, value)) = crate::context::env(settings) {
+        env.insert(key.into(), value);
     }
     env
 }
@@ -115,6 +119,9 @@ pub fn keep_unsent(settings: &mut ProjectSettings, stored: &ProjectSettings, sen
     }
     if sent.get("screenshot_days").is_none() {
         settings.screenshot_days = stored.screenshot_days;
+    }
+    if sent.get("compact_window").is_none() {
+        settings.compact_window = stored.compact_window;
     }
     if sent.get("project_memory").is_none() {
         settings.project_memory = stored.project_memory;
@@ -241,6 +248,39 @@ mod tests {
         // The setting wins over a project variable that turns them on.
         let env = session_env(&settings(false, &[(CLAUDE_AI_CONNECTORS_ENV, "true")]));
         assert_eq!(env[CLAUDE_AI_CONNECTORS_ENV], "false");
+    }
+
+    #[test]
+    fn a_compact_window_reaches_claude() {
+        use crate::context::COMPACT_WINDOW_ENV;
+        // Claude's default: a project variable of the same name stays.
+        let s = settings(true, &[(COMPACT_WINDOW_ENV, "300k")]);
+        assert_eq!(session_env(&s), s.env);
+        // The setting wins over it.
+        let mut s = settings(true, &[(COMPACT_WINDOW_ENV, "300k"), ("A", "1")]);
+        s.compact_window = Some(250_000);
+        let env = session_env(&s);
+        assert_eq!(env[COMPACT_WINDOW_ENV], "250000");
+        assert_eq!(env["A"], "1");
+    }
+
+    #[test]
+    fn updates_without_the_compact_window_keep_it() {
+        let stored = ProjectSettings {
+            compact_window: Some(400_000),
+            ..Default::default()
+        };
+        // An older client's update, which doesn't know it.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "model": "opus" }));
+        assert_eq!(s.compact_window, Some(400_000));
+        // `null` is Claude's default again.
+        let mut s = ProjectSettings::default();
+        keep_unsent(&mut s, &stored, &json!({ "compact_window": null }));
+        assert_eq!(s.compact_window, None);
+        // Sent whole, as the web app and the CLI send settings, it's there.
+        let sent = serde_json::to_value(ProjectSettings::default()).unwrap_or_default();
+        assert_eq!(sent.get("compact_window"), Some(&Value::Null));
     }
 
     #[test]

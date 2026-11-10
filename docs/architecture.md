@@ -2806,6 +2806,25 @@ buffer for it), so fctl-agent reports no threshold then. Claude Code
 before `get_context_usage`, and agents before this, report no window, and
 the session shows the context alone.
 
+A project chooses the context size Claude compacts near
+(`ProjectSettings.compact_window`: Settings → Agents, or `fctl projects
+set --compact-window 400k`), from 100K to 1M tokens, or leaves it to
+Claude, near the model's whole window. Each step of a session reads its
+whole context again, from the prompt cache or not, and a Claude plan's
+usage counts it, so long sessions spend less where Claude compacts
+sooner; past a compaction, Claude knows the earlier work from its
+summary. The control plane passes it on with the project's variables
+(`fctl_domain::settings::session_env`) as Claude Code's
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, which every fctl-agent passes to
+Claude, and which takes precedence over Claude's settings, a repository's
+among them; where the project leaves it to Claude, a project variable of
+that name still sets it. Claude Code 2.1.322 compacts 33K tokens before
+the window (at 367K for 400K), reads sizes below 100K as 100K and caps
+them at the model's own window, and then reports that window as
+`maxTokens`, so the session's Work section shows the context against it.
+A session takes it as each run starts; review agents take their
+project's.
+
 ### Event flow and reliability
 
 - fctl-agent assigns `agent_seq` to every event and appends it to a journal in

@@ -310,6 +310,7 @@ fctl projects set -p my-app --icon store --icon-color yellow --icon-style duoton
 fctl projects set -p my-app --icon-color '#2a9d8f'   # a color of its own (quoted: the shell takes # for a comment), made lighter or darker where a theme needs it to read
 fctl projects set -p my-app --default-branch develop   # sessions start from develop unless they ask for another (fctl run --base); the repository must have it
 fctl projects set -p my-app --model opus --effort high   # its agents' model and effort ("default" for Claude's own)
+fctl projects set -p my-app --compact-window 400k   # Claude compacts as its context nears 400K tokens, 100k to 1m ("default": near the model's whole window)
 fctl projects set -p my-app --instructions-file agents.md   # what its agents are told in every session (--instructions "" for nothing)
 fctl projects set -p my-app --auto-pull-request off   # agents open pull requests when someone asks, not when they finish
 fctl projects set -p my-app --remote-control off  # its sessions stay out of the Claude apps
