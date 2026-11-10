@@ -6,6 +6,8 @@ import {
   DIRECTIONS,
   defaultPowers,
   glance,
+  handoffChoice,
+  handoffWords,
   hasPlaceholders,
   phase,
   splitBriefing,
@@ -168,6 +170,14 @@ describe("how people set it up", () => {
   it("offers a workspace's autopilot projects too", () => {
     expect(defaultPowers("project")).toEqual(["merge", "settings", "secrets", "repos", "schedules"]);
     expect(defaultPowers("workspace")).toContain("projects");
+  });
+
+  it("offers a few sizes for a fresh session to take over at, and takes others", () => {
+    expect(handoffChoice(undefined)).toBe("");
+    expect(handoffChoice(250_000)).toBe("250000");
+    expect(handoffChoice(200_000)).toBe("other");
+    expect(handoffWords(undefined)).toBe("after 12 hours");
+    expect(handoffWords(250_000)).toBe("at 250K tokens of context, or after 12 hours");
   });
 
   it("says check-ins in words", () => {

@@ -649,3 +649,9 @@ fctl autopilot pause --reason "The direction is done."
 It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people
 set, and steers only the sessions it started.
+
+A fresh session takes its place after 12 hours, or once its context holds
+as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
+at the first wake between its turns: it starts from the plan and log, so
+the session keeps them current, and as its context nears that size each
+wake message says so.

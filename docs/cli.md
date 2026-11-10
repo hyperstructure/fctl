@@ -707,6 +707,7 @@ fctl autopilot secret -p crm apa_01JC…         # the value it asked for, witho
 fctl autopilot decline -p crm apa_01JC… --reason "Not yet: after launch"
 fctl autopilot log -p crm --limit 100
 fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it works, or its direction
+fctl autopilot set -p crm --handoff-at 250k    # a fresh session takes over once its own holds 250K tokens of context (never: only after 12 hours)
 fctl autopilot wake -p crm                     # now, with what's new
 fctl autopilot pause -p crm --reason "Launch week"
 fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's (unless they keep it)

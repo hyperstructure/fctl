@@ -5,4 +5,10 @@ import type { SessionStatus } from "./SessionStatus";
 /**
  * An autopilot's own session.
  */
-export type AutopilotSession = { id: SessionId, number: number, status: SessionStatus, started_at: number, };
+export type AutopilotSession = { id: SessionId, number: number, status: SessionStatus, started_at: number, 
+/**
+ * The tokens in its context, as it last said (`SessionStats`): it
+ * hands off at `Autopilot.handoff_at`. Absent until it has, and from
+ * control planes before it.
+ */
+context_tokens?: number, };

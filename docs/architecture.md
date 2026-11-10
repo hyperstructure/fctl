@@ -2114,10 +2114,28 @@ sessions to do it, and sets up what the work needs, as far as they let it
    fctl wakes
    it in its current one with a message (`UserMessage.wake`, what woke it),
    which resumes it if it stopped, while that started less than 12 hours
-   ago (`fctl_domain::autopilot::SHIFT_MS`) and didn't fail, or works now.
-   Otherwise it stops that one and starts a fresh one, whose first message
-   is its briefing (`fctl_domain::autopilot::briefing`): who it is and for
-   whom, the direction, and how it works. So no conversation grows for
+   ago (`fctl_domain::autopilot::SHIFT_MS`), holds less context than where
+   people want it to hand off, and didn't fail, or works now
+   (`fctl_domain::autopilot::fresh`). Otherwise it stops that one and
+   starts a fresh one, whose first message is its briefing
+   (`fctl_domain::autopilot::briefing`): who it is and for whom, the
+   direction, and how it works, then why it takes over from the last one
+   and from what (`takes_over_from`: its plan, its log, `fctl autopilot
+   brief`), then the wake's news. Where it hands off is its
+   **handoff** (`autopilots.handoff_at`, *A fresh session takes over* in
+   its settings, `fctl autopilot set --handoff-at 250k`): a context size,
+   100K to 1M tokens, that D1 reads from the session's stats
+   (`context_tokens`), or none, which leaves only the 12 hours. Each wake
+   reads its whole conversation again, uncached after an hour's rest
+   (Claude Code's prompt cache lives an hour on a subscription), so a
+   session that grew spends much of its owner's plan at each wake, and a
+   fresh one little. As its context nears the handoff (three quarters of
+   the way), each wake message says so, so that it writes down what its
+   next session needs while its cache is warm; the briefing tells it when
+   a fresh session takes over, and to keep its context lean: to read what
+   it needs of a session rather than all of its transcript, and to hand
+   long reading to a subagent. Changing the handoff, as changing its
+   model, changes how much it spends. So no conversation grows for
    ever, and
    what must outlast one is where people see it too: its plan (Markdown it
    writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and

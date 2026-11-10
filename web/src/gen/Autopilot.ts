@@ -72,6 +72,17 @@ crew_max: number,
  */
 model?: string, effort?: string, 
 /**
+ * The context size, in tokens, at which a fresh session of its own
+ * takes over from the one it works in: the first wake that finds that
+ * one between turns with this many tokens in its context, or more,
+ * starts a fresh one, briefed and starting from its plan and log, and
+ * stops the old one, as a wake does after 12 hours whatever its size.
+ * Each wake reads its whole conversation again, uncached after an
+ * hour's rest, so a smaller one spends less of its owner's plan.
+ * Absent: only after 12 hours. Control planes before it leave it out.
+ */
+handoff_at?: number, 
+/**
  * Its own session now: the one fctl wakes it in.
  */
 session?: AutopilotSession, 

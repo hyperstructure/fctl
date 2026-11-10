@@ -526,6 +526,8 @@ impl ProjectRow {
                         number: u32::try_from(number).unwrap_or(0),
                         status,
                         started_at,
+                        // The sidebar's summary doesn't show it.
+                        context_tokens: None,
                     })
                 }
                 _ => None,

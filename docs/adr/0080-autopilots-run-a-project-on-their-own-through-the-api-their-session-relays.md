@@ -36,7 +36,8 @@ agent that manages a project needs most of the API besides.
 - **It works in sessions of its own** in its home project, which wakes
   go to while they started less than 12 hours ago and can take a message;
   after that, or once one failed, fctl starts it a fresh one with a
-  briefing. It keeps what must outlast a conversation where people see it:
+  briefing (and, added later, once its context passes the size people
+  chose: `handoff_at`). It keeps what must outlast a conversation where people see it:
   a plan, a log, and the project's memory. Sessions it starts are its
   crew: up to as many at once as people allow, at most 20 an hour.
 - **fctl wakes it** on the schedules' alarm, which ScheduleObject already
