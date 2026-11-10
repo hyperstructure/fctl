@@ -37,6 +37,12 @@ use worker::{Request, Response};
 /// How long answered asks stay in the autopilot's list.
 const ASKS_KEPT_MS: i64 = 7 * 86_400_000;
 
+/// Why a change or a resume that started from whose it was didn't happen:
+/// someone took it over, or its owner changed whether they keep it,
+/// meanwhile.
+const MOVED_ON: &str =
+    "Whose subscription it runs on changed meanwhile: look again, then try again.";
+
 /// The project and its autopilot, if it has one, with what the caller may
 /// do.
 struct Loaded {
@@ -903,7 +909,10 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 ctx.verified(Sensitive::KeepAutopilot)?;
             }
             let new_direction = direction.filter(|d| *d != row.direction);
-            q(
+            // Only while whose it is, and whether they keep it, are as read:
+            // what was decided from them (taking it over or not, keeping it)
+            // holds then, and nothing writes back what changed meanwhile.
+            let written = q(
                 &ctx.db,
                 "UPDATE autopilots SET direction = COALESCE(?1, direction), \
                  direction_by = CASE WHEN ?1 IS NULL THEN direction_by ELSE ?2 END, \
@@ -913,7 +922,7 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                  crew_max = COALESCE(?6, crew_max), \
                  model = CASE WHEN ?7 THEN ?8 ELSE model END, effort = CASE WHEN ?9 THEN ?10 ELSE effort END, \
                  owner_id = CASE WHEN ?11 THEN ?2 ELSE owner_id END, keep_owner = ?13, updated_at = ?3 \
-                 WHERE project_id = ?12",
+                 WHERE project_id = ?12 AND owner_id IS ?14 AND keep_owner = ?15",
                 &[
                     os(new_direction.as_deref()),
                     s(&me.id),
@@ -928,10 +937,15 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                     crate::db::b(take_over),
                     s(&row.project_id),
                     crate::db::b(keep_owner),
+                    os(row.owner_id.as_deref()),
+                    crate::db::b(row.keep_owner),
                 ],
             )?
             .run()
             .await?;
+            if written == 0 {
+                return Err(conflict(MOVED_ON));
+            }
             if new_direction.is_some() {
                 engine::log(
                     &ctx.db,
@@ -1274,19 +1288,27 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         &ctx.db,
         "UPDATE autopilots SET state = 'on', paused_reason = NULL, paused_by = NULL, paused_at = NULL, failures = 0, \
          wake_at = ?1, wake_reasons = 'resumed', asked_wake_at = NULL, owner_id = CASE WHEN ?2 THEN ?3 ELSE owner_id END, \
-         keep_owner = CASE WHEN ?2 THEN 0 ELSE keep_owner END, updated_at = ?1 WHERE project_id = ?4 AND state = 'paused'",
+         keep_owner = CASE WHEN ?2 THEN 0 ELSE keep_owner END, updated_at = ?1 \
+         WHERE project_id = ?4 AND state = 'paused' AND owner_id IS ?5 AND keep_owner = ?6",
         &[
             n(ctx.now),
             crate::db::b(take_over),
             s(&me.id),
             s(&row.project_id),
+            os(row.owner_id.as_deref()),
+            crate::db::b(row.keep_owner),
         ],
     )?
     .run()
     .await?;
     if resumed == 0 {
+        let now = engine::row(&ctx.db, &row.project_id).await?;
         return Err(conflict(
-            "It isn't paused any more: someone resumed it, or took it off autopilot, meanwhile.",
+            if now.is_some_and(|n| n.state() == AutopilotState::Paused) {
+                MOVED_ON
+            } else {
+                "It isn't paused any more: someone resumed it, or took it off autopilot, meanwhile."
+            },
         ));
     }
     engine::log(
