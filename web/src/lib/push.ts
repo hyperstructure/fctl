@@ -148,14 +148,68 @@ export async function syncPush(userId: string): Promise<void> {
   }
 }
 
-/** Follows clicks on notifications: the service worker asks an open window to show a page. */
+/** Where public/sw.js keeps what the last click on a notification opens. */
+const OPENING = "fctl-opening";
+const OPENING_KEY = "/fctl-opening";
+/** How long a click stays to be taken: an app that starts or comes back later just opens. */
+const OPENING_FOR = 2 * 60_000;
+/** After the app comes to the front, when it looks again: the click may reach the service worker after. */
+const LOOK_AGAIN = [1_000, 3_000];
+
+/**
+ * The page the last click on a notification opens, if it was recent and no window took it yet,
+ * taken so that no other window does.
+ */
+export async function takeOpening(now = Date.now()): Promise<string | null> {
+  if (!("caches" in window)) return null;
+  try {
+    const kept = await caches.match(OPENING_KEY, { cacheName: OPENING });
+    if (!kept) return null;
+    const { url, at } = (await kept.json()) as { url?: unknown; at?: unknown };
+    await caches.delete(OPENING);
+    const fresh = typeof at === "number" && now - at < OPENING_FOR;
+    return fresh && typeof url === "string" && url.startsWith("/") ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Follows clicks on notifications: the service worker asks an open window to show a page, and
+ * keeps it for the app to take as it starts or comes to the front, where its message may not
+ * arrive (an iPhone's Home Screen app opens at its start page, and may miss it while it wakes).
+ */
 export function onPushOpen(navigate: (url: string) => void): () => void {
   if (!("serviceWorker" in navigator)) return () => {};
+  const go = (url: string) => {
+    if (url !== window.location.pathname + window.location.search) navigate(url);
+  };
   const listener = (e: MessageEvent) => {
     const data = e.data as { type?: string; url?: string } | null;
-    if (data?.type === "open" && typeof data.url === "string" && data.url.startsWith("/")) navigate(data.url);
+    if (data?.type !== "open" || typeof data.url !== "string" || !data.url.startsWith("/")) return;
+    go(data.url);
+    if ("caches" in window) void caches.delete(OPENING).catch(() => {});
+  };
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const look = () => {
+    if (document.visibilityState !== "visible") return;
+    void takeOpening().then((url) => url && go(url));
+  };
+  const shown = () => {
+    if (document.visibilityState !== "visible") return;
+    for (const t of timers.splice(0)) clearTimeout(t);
+    look();
+    for (const ms of LOOK_AGAIN) timers.push(setTimeout(look, ms));
   };
   navigator.serviceWorker.addEventListener("message", listener);
   navigator.serviceWorker.startMessages();
-  return () => navigator.serviceWorker.removeEventListener("message", listener);
+  document.addEventListener("visibilitychange", shown);
+  window.addEventListener("pageshow", shown);
+  shown();
+  return () => {
+    navigator.serviceWorker.removeEventListener("message", listener);
+    document.removeEventListener("visibilitychange", shown);
+    window.removeEventListener("pageshow", shown);
+    for (const t of timers.splice(0)) clearTimeout(t);
+  };
 }
