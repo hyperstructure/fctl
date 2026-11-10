@@ -76,21 +76,23 @@ pub fn parse(input: &str) -> Option<u64> {
     whole.checked_mul(unit)?.checked_add(part)
 }
 
-/// `250K`, `1M`, `1.5M`, `967K`: tokens in thousands, or millions from a
-/// million up, to what they hold.
+/// `250K`, `1M`, `1.5M`, `967K`, `25.5K`: tokens in thousands, or
+/// millions from a million up, to a tenth, as the web app writes them.
 pub fn short(tokens: u32) -> String {
     let t = u64::from(tokens);
-    if t >= 1_000_000 {
-        let tenths = t / 100_000;
-        return match tenths % 10 {
-            0 => format!("{}M", tenths / 10),
-            d => format!("{}.{d}M", tenths / 10),
-        };
+    let tenths = |unit: u64| {
+        let n = (t * 10 + unit / 2) / unit;
+        match n % 10 {
+            0 => format!("{}", n / 10),
+            d => format!("{}.{d}", n / 10),
+        }
+    };
+    match t {
+        // 999,950 and up round to a million.
+        999_950.. => format!("{}M", tenths(1_000_000)),
+        1_000.. => format!("{}K", tenths(1_000)),
+        _ => t.to_string(),
     }
-    if t >= 1_000 && t % 1_000 == 0 {
-        return format!("{}K", t / 1_000);
-    }
-    t.to_string()
 }
 
 /// The variables a project's compact window gives its sessions: Claude
@@ -152,7 +154,11 @@ mod tests {
         assert_eq!(short(967_000), "967K");
         assert_eq!(short(1_000_000), "1M");
         assert_eq!(short(1_500_000), "1.5M");
-        assert_eq!(short(123_456), "123456");
+        assert_eq!(short(123_456), "123.5K");
+        assert_eq!(short(25_500), "25.5K");
+        assert_eq!(short(999_999), "1M");
+        assert_eq!(short(1_234_560), "1.2M");
+        assert_eq!(short(950), "950");
         assert_eq!(bounds(), "Use 100K to 1M tokens");
     }
 
