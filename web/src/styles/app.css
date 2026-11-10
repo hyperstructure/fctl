@@ -914,20 +914,25 @@
     animation: thought-sweep 1.5s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
   }
   .thought-live .thought-tail {
-    stroke-dasharray: 36 100;
+    stroke-dasharray: 36 200;
     opacity: 0.7;
   }
   .thought-live .thought-head {
-    stroke-dasharray: 13 100;
+    stroke-dasharray: 13 200;
   }
 }
-/* The head and the tail end where the comet is: in at the trace's start, out past its end. */
+/* The head and the tail end where the comet is: in at the trace's start, out past its end. The
+   trace's length is 100 (pathLength), and each dash runs from a little before its start to a
+   little past its end: a dash of no length at an end would still draw its round cap as a dot. The
+   gaps are longer than that run, so no next dash comes onto the trace as a loop ends (with gaps
+   of 100, a second head came in at the start). The offsets are lengths (* 1px): Chromium doesn't
+   animate a calc() of plain numbers, and would jump from one end to the other halfway through. */
 @keyframes thought-sweep {
   from {
-    stroke-dashoffset: var(--L);
+    stroke-dashoffset: calc((var(--L) + 1) * 1px);
   }
   to {
-    stroke-dashoffset: calc(var(--L) - 136);
+    stroke-dashoffset: calc((var(--L) - 137) * 1px);
   }
 }
 
@@ -1071,19 +1076,25 @@
    flashes as they land, and the label stands out from the threads behind it: a
    halo of the sidebar's color and a drop shadow, faint on light backgrounds.
    Where motion is reduced, the icon holds still. */
-/* An autopilot at work: a comet round its ring (components/ui/icons.tsx AutopilotIcon). */
+/* An autopilot at work: a comet round its ring (components/ui/icons.tsx AutopilotIcon).
+   The ring's length is 1 (pathLength), and the comet a 0.22 dash that runs from
+   before the ring's start to past its end. Its gap is longer than that whole run,
+   so no next dash is on the ring as the loop starts again: with a gap of 1, the
+   next dash sat on the ring's end at the start, and the comet seemed to bounce
+   back there. The run starts and ends a little beyond the ring's ends, not right
+   at them, where a dash of no length would still draw its round cap as a dot. */
 @keyframes autopilot-comet {
   from {
-    stroke-dashoffset: 0.3;
+    stroke-dashoffset: 0.25;
   }
   to {
-    stroke-dashoffset: -1;
+    stroke-dashoffset: -1.03;
   }
 }
 .autopilot-comet {
   stroke: var(--c-accent);
-  stroke-dasharray: 0.22 1;
-  stroke-dashoffset: 0.3;
+  stroke-dasharray: 0.22 2;
+  stroke-dashoffset: 0.25;
 }
 @media (prefers-reduced-motion: no-preference) {
   .autopilot-comet {
