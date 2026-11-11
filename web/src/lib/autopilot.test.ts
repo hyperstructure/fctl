@@ -77,6 +77,8 @@ describe("where an autopilot stands", () => {
       wake_reason: "fresh",
     });
     expect(phase(resting, NOW).line).toBe("A fresh session takes over now.");
+    // With something else that wakes it, which the control plane may name first.
+    expect(phase({ ...resting, wake_reason: "crew" }, NOW).line).toBe("A fresh session takes over now.");
   });
 
   it("wakes, and starts, in its session", () => {

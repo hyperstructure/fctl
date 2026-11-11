@@ -1798,9 +1798,13 @@ pub async fn session_moved(
                     .await?;
                     ring(env).await;
                 }
-                // Stopped mid-turn, by a person: a fresh session people
-                // asked for needn't wait for its check-in.
-                SessionStatus::Stopped if row.reasons().contains(&AutopilotWakeReason::Fresh) => {
+                // Stopped mid-turn by a person, or paused on a usage limit:
+                // a fresh session people asked for needn't wait for its
+                // check-in (one at its owner's limit waits for the reset, as
+                // any wake does).
+                SessionStatus::Stopped | SessionStatus::Paused
+                    if row.reasons().contains(&AutopilotWakeReason::Fresh) =>
+                {
                     nudge(env, &db, autopilot, AutopilotWakeReason::Fresh, now).await?;
                 }
                 SessionStatus::Failed => {

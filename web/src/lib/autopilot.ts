@@ -235,12 +235,16 @@ export function glance(a: AutopilotGlance | undefined, now = Date.now()): Glance
 }
 
 /** "It checks in at 14:20, unless something needs it sooner." */
-export function wakeWords(a: Pick<G.Autopilot, "wake_at" | "wake_reason">, now = Date.now()): string {
+export function wakeWords(
+  a: Pick<G.Autopilot, "wake_at" | "wake_reason"> & Partial<Pick<G.Autopilot, "fresh_asked">>,
+  now = Date.now(),
+): string {
   if (!a.wake_at) return "";
   const at = a.wake_at;
   const when =
     at - now < 60_000 ? "now" : at - now < 86_400_000 ? `at ${clock(at)}` : `on ${day(at)} at ${clock(at)}`;
-  switch (a.wake_reason) {
+  // A fresh session asked for comes first, whatever else wakes it with it: `wake_reason` is only the first.
+  switch (a.fresh_asked ? "fresh" : a.wake_reason) {
     case "asked":
       return `It wakes ${when}, as it asked, unless something needs it sooner.`;
     case "check_in":

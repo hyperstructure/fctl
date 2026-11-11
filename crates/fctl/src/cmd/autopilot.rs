@@ -373,6 +373,13 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                 return style::print_json(&answer);
             }
             if fresh {
+                // A control plane before `fresh` leaves `fresh_asked` out,
+                // and wakes it as it is.
+                if answer.get("fresh_asked").is_none() {
+                    bail!(
+                        "The control plane is older than --fresh: it woke the autopilot in the session it works in, and no fresh session takes over"
+                    );
+                }
                 // Its session at work finishes its turn first.
                 let working = serde_json::from_value::<Autopilot>(answer)
                     .ok()
