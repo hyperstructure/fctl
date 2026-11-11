@@ -188,6 +188,7 @@ describe("a request with a time limit", () => {
     expect(failure).toBeInstanceOf(ApiFailure);
     expect(failure.status).toBe(0);
     expect(failure.message).toBe("fctl's server didn't answer in time.");
+    expect(failure.timedOut).toBe(true);
   });
 
   it("gets the answer that comes in time", async () => {

@@ -6,12 +6,24 @@ import { FAILED_FOR } from "./needs";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
 import { forgetSidebar } from "./sidebar";
 
+/** Whether a failed query goes again: up to 3 times, unless the server refused it (4xx). */
+export function retries(count: number, err: unknown): boolean {
+  return !(err instanceof ApiFailure && err.status >= 400 && err.status < 500) && count < 3;
+}
+
+/**
+ * Whether a check the app makes as it starts goes again: once if the server didn't answer in
+ * time, as each try takes that long; otherwise as any query does.
+ */
+export function startRetries(count: number, err: unknown): boolean {
+  return err instanceof ApiFailure && err.timedOut ? count < 1 : retries(count, err);
+}
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 15_000,
-      retry: (count, err) =>
-        !(err instanceof ApiFailure && err.status >= 400 && err.status < 500) && count < 3,
+      retry: retries,
       refetchOnWindowFocus: true,
     },
   },

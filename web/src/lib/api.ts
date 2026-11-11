@@ -7,12 +7,15 @@ export class ApiFailure extends Error {
   readonly code: G.ErrorCode | "network";
   readonly field?: string;
   readonly retryAfter?: number;
-  constructor(status: number, body: Partial<G.ApiError>) {
+  /** The server didn't answer within the request's time limit. */
+  readonly timedOut: boolean;
+  constructor(status: number, body: Partial<G.ApiError>, timedOut = false) {
     super(body.message ?? "Something went wrong");
     this.status = status;
     this.code = (body.code as G.ErrorCode) ?? "internal";
     this.field = body.field;
     this.retryAfter = body.retry_after;
+    this.timedOut = timedOut;
   }
 }
 
@@ -102,10 +105,15 @@ async function request<T>(
     });
     text = res.status === 204 ? "" : await res.text();
   } catch {
-    throw new ApiFailure(0, {
-      code: "unavailable",
-      message: signal?.aborted ? "fctl's server didn't answer in time." : "You appear to be offline.",
-    });
+    const late = signal?.aborted ?? false;
+    throw new ApiFailure(
+      0,
+      {
+        code: "unavailable",
+        message: late ? "fctl's server didn't answer in time." : "You appear to be offline.",
+      },
+      late,
+    );
   }
   if (res.status === 204) return undefined as T;
   const data = text ? JSON.parse(text) : undefined;

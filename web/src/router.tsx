@@ -6,7 +6,7 @@ import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@t
 import { api, START_WITHIN } from "@/lib/api";
 import { appHistory } from "@/lib/history";
 import { PROJECT_VIEWS, type ProjectView } from "@/lib/project-page";
-import { fetchMe, keys, queryClient } from "@/lib/queries";
+import { fetchMe, keys, queryClient, startRetries } from "@/lib/queries";
 import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings";
 import { routerScrolls } from "@/lib/stick-to-bottom";
 import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
@@ -36,16 +36,20 @@ import {
 
 // Pages wait to know who is signed in, and what the instance offers, as the app starts. A request
 // the server never answers (the app on an iPhone's Home Screen can come back after a while to one)
-// kept the app blank until it was closed: each now fails after START_WITHIN and goes again once,
-// and then the error page says so, with its Try again. Meanwhile, from a second on, Starting says
-// what the app waits for.
+// kept the app blank until it was closed: each now fails after START_WITHIN and goes again once
+// (other failures go again as any query's do), and then the error page says so, with its Try
+// again. Meanwhile, from a second on, Starting says what the app waits for.
 const me = () =>
-  queryClient.ensureQueryData({ queryKey: keys.me, queryFn: () => fetchMe(START_WITHIN), retry: 1 });
+  queryClient.ensureQueryData({
+    queryKey: keys.me,
+    queryFn: () => fetchMe(START_WITHIN),
+    retry: startRetries,
+  });
 const instance = () =>
   queryClient.ensureQueryData({
     queryKey: keys.instance,
     queryFn: () => api.instance(START_WITHIN),
-    retry: 1,
+    retry: startRetries,
   });
 
 // Unknown addresses get NotFound; a failed request or a crash anywhere, ErrorPage.
