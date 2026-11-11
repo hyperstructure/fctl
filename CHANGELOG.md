@@ -2,6 +2,18 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.5 (2026-11-11)
+
+### Features
+
+- **autopilot:** Hand off to a fresh session when people ask ([#512](https://github.com/hyperstructure/fctl/pull/512))
+
+### Fixes
+
+- **control:** Keep D1 in step with sessions so a failed one resumes ([#513](https://github.com/hyperstructure/fctl/pull/513))
+- **web:** Keep the header below the status bar in the iPhone app ([#514](https://github.com/hyperstructure/fctl/pull/514))
+- **web:** Stop a stalled start leaving the app blank ([#515](https://github.com/hyperstructure/fctl/pull/515))
+
 ## 0.33.4 (2026-11-11)
 
 ### Features
