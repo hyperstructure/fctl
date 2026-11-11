@@ -6,21 +6,23 @@ import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { AutopilotTab } from "./autopilot";
 
-const { answer, autopilot, autopilotLog, put, resume, toast } = vi.hoisted(() => ({
+const { answer, autopilot, autopilotLog, put, resume, toast, wake } = vi.hoisted(() => ({
   answer: vi.fn(),
   autopilot: vi.fn(),
   autopilotLog: vi.fn(),
   put: vi.fn(),
   resume: vi.fn(),
   toast: vi.fn(),
+  wake: vi.fn(),
 }));
-// The autopilot, its log, answering, changing and resuming it are answered; other requests wait.
+// The autopilot, its log, answering, changing, resuming and waking it are answered; other requests wait.
 const answered: Record<string, unknown> = {
   autopilot,
   autopilotLog,
   answerAutopilot: answer,
   putAutopilot: put,
   resumeAutopilot: resume,
+  wakeAutopilot: wake,
 };
 vi.mock("@/lib/api", () => ({
   api: new Proxy({} as Record<string, unknown>, {
@@ -119,6 +121,7 @@ const on = (more: Partial<G.Autopilot> = {}): G.Autopilot => ({
   state: "on",
   owner: { id: "usr_ada", name: "Ada" },
   keep_owner: false,
+  fresh_asked: false,
   direction: "Ship the **checkout**.",
   direction_at: Date.now() - 3_600_000,
   powers: ["settings"],
@@ -323,6 +326,46 @@ describe("a project's Autopilot tab", () => {
     await choose("After 12 hours");
     await click("Save");
     expect(put).toHaveBeenLastCalledWith("prj_1", expect.objectContaining({ handoff_at: 0 }));
+  });
+
+  it("hands off to a fresh session, at once or once its turn ends", async () => {
+    signIn("usr_bo");
+    const session = { id: "ses_4", number: 4, status: "idle" as const, started_at: 0 };
+    const resting = on({ session });
+    autopilot.mockResolvedValue(resting);
+    wake.mockResolvedValue(on({ session, fresh_asked: true, wake_at: Date.now(), wake_reason: "fresh" }));
+    queryClient.setQueryData(keys.autopilot("prj_1"), resting);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    await click("More");
+    await click("Hand off to a fresh session");
+    expect(wake).toHaveBeenCalledWith("prj_1", { fresh: true });
+    expect(toast).toHaveBeenCalledWith("A fresh session takes over now");
+    expect(page.textContent).toContain("A fresh session takes over now.");
+    // At work, it finishes its turn first, and the tab says so meanwhile.
+    const working = on({ session: { ...session, status: "running" }, fresh_asked: true });
+    wake.mockResolvedValue(working);
+    await click("More");
+    await click("Hand off to a fresh session");
+    expect(toast).toHaveBeenLastCalledWith("A fresh session takes over once this turn ends");
+    expect(page.textContent).toContain(
+      "It works in its session #4 now. A fresh session takes over once this turn ends.",
+    );
+  });
+
+  it("offers a fresh session only while it's on and has a session", async () => {
+    signIn("usr_ada");
+    const paused = on({
+      state: "paused",
+      session: { id: "ses_4", number: 4, status: "stopped", started_at: 0 },
+    });
+    autopilot.mockResolvedValue(paused);
+    queryClient.setQueryData(keys.autopilot("prj_1"), paused);
+    render(<AutopilotTab project={project()} />);
+    await settle();
+    await click("More");
+    expect(document.body.textContent).toContain("Watch its session");
+    expect(document.body.textContent).not.toContain("Hand off to a fresh session");
   });
 
   it("tells others whose subscription a kept one stays on, and lets them take it over", async () => {

@@ -41,6 +41,10 @@ use worker::{D1Database, Env};
 /// Autopilots one alarm takes up at most; it rings again at once for more.
 const DUE_PER_ALARM: i64 = 20;
 
+/// The statuses of a session at work, as `fctl_domain::autopilot::at_work`
+/// has them, for SQL.
+const AT_WORK: &str = "'queued','provisioning','preparing','running','stopping'";
+
 // ───────────────────────────── rows ─────────────────────────────
 
 /// An autopilot as D1 keeps it, with its people's names and its own
@@ -720,6 +724,32 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             .await?;
             return Ok(true);
         }
+        let status = row.session_status();
+        // People asked for a fresh session while its own works: the wake
+        // waits for that one's turn to end, which wakes it again at once
+        // (`session_moved`; here, should it have ended since it was read),
+        // and all it woke for goes to the fresh session.
+        if ap::holds(&reasons, status) {
+            q(
+                db,
+                &format!(
+                    "UPDATE autopilots SET wake_reasons = CASE WHEN wake_reasons = '' THEN ?1 \
+                     ELSE wake_reasons || ',' || ?1 END, \
+                     wake_at = CASE WHEN (SELECT status FROM sessions WHERE id = autopilots.session_id) \
+                       IN ({AT_WORK}) THEN wake_at ELSE ?2 END \
+                     WHERE project_id = ?3 AND state = 'on'"
+                ),
+                &[
+                    s(&reasons.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(",")),
+                    n(now),
+                    s(&row.project_id),
+                ],
+            )?
+            .run()
+            .await?;
+            ring(env).await;
+            return Ok(true);
+        }
         // Its sessions that wait move to the subscription it runs on now,
         // should it have moved (`move_crew`).
         if let Err(e) = move_crew(env, db, row, &owner, now).await {
@@ -730,7 +760,6 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
             );
         }
         let news = News::gather(db, row, now).await?;
-        let status = row.session_status();
         let working = status.is_some_and(ap::at_work);
         // At work already: a check-in can wait; news reaches it at its next
         // step.
@@ -751,7 +780,8 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
                     started_at: started,
                     context_tokens: row.session_context(),
                 };
-                match ap::fresh(own, row.handoff_at(), now) {
+                let asked = reasons.contains(&AutopilotWakeReason::Fresh);
+                match ap::fresh(own, row.handoff_at(), asked, now) {
                     None if !(st.accepts_messages() || st.resumes_for_messages()) => {
                         Some(ap::Fresh::Failed)
                     }
@@ -1032,6 +1062,9 @@ async fn wake_failed(
     Ok(())
 }
 
+/// What [`woke_line`] says of [`AutopilotWakeReason::Fresh`], alone.
+const FRESH_ASKED: &str = "someone asked for a fresh session";
+
 /// What a wake says in the log: "Woke for its check-in", "Woke: Ada's
 /// note, shop#41".
 fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
@@ -1063,13 +1096,16 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
             },
             AutopilotWakeReason::Retry => "a retry after its session failed".into(),
             AutopilotWakeReason::Moved => "it was moved to another Claude subscription".into(),
+            AutopilotWakeReason::Fresh => FRESH_ASKED.into(),
             AutopilotWakeReason::Other => continue,
         });
     }
     match parts.as_slice() {
         [] => "Woke".into(),
         // "Woke as it was put on", alone; "being put on" among others.
-        [one] if one.starts_with("it was ") || one == "someone woke it" => format!("Woke as {one}"),
+        [one] if one.starts_with("it was ") || one == "someone woke it" || one == FRESH_ASKED => {
+            format!("Woke as {one}")
+        }
         [one] => format!("Woke for {one}"),
         _ => format!(
             "Woke for {}",
@@ -1078,6 +1114,7 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
                 .map(|p| match p.strip_prefix("it was ") {
                     Some(was) => format!("being {was}"),
                     None if p == "someone woke it" => "someone waking it".to_owned(),
+                    None if p == FRESH_ASKED => "someone asking for a fresh session".to_owned(),
                     None => p.clone(),
                 })
                 .collect::<Vec<_>>()
@@ -1742,13 +1779,15 @@ pub async fn session_moved(
             match status {
                 SessionStatus::Idle => {
                     // Its turn ended: its check-in counts from now, unless it
-                    // asked for a time, or something waits to wake it.
+                    // asked for a time, or something waits to wake it; a
+                    // fresh session people asked for takes over now.
                     q(
                         &db,
                         "UPDATE autopilots SET failures = 0, wake_at = CASE \
+                           WHEN instr(',' || wake_reasons || ',', ',fresh,') > 0 THEN MIN(COALESCE(wake_at, ?2), ?2) \
                            WHEN wake_reasons != '' THEN wake_at \
                            WHEN asked_wake_at IS NOT NULL THEN asked_wake_at \
-                           ELSE ? END, updated_at = ? WHERE project_id = ? AND state = 'on'",
+                           ELSE ?1 END, updated_at = ?2 WHERE project_id = ?3 AND state = 'on'",
                         &[
                             n(ap::next_check_in(now, row.check_in())),
                             n(now),
@@ -1758,6 +1797,15 @@ pub async fn session_moved(
                     .run()
                     .await?;
                     ring(env).await;
+                }
+                // Stopped mid-turn by a person, or paused on a usage limit:
+                // a fresh session people asked for needn't wait for its
+                // check-in (one at its owner's limit waits for the reset, as
+                // any wake does).
+                SessionStatus::Stopped | SessionStatus::Paused
+                    if row.reasons().contains(&AutopilotWakeReason::Fresh) =>
+                {
+                    nudge(env, &db, autopilot, AutopilotWakeReason::Fresh, now).await?;
                 }
                 SessionStatus::Failed => {
                     let failures = u32::try_from(row.failures + 1).unwrap_or(u32::MAX);

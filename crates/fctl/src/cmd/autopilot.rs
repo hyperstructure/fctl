@@ -129,11 +129,18 @@ pub enum AutopilotCmd {
     /// unless something wakes it sooner.
     #[command(after_help = "Examples:
   fctl autopilot wake -p crm             # now
+  fctl autopilot wake -p crm --fresh     # in a fresh session, which picks up what's new in fctl
   fctl autopilot wake --in 30m           # the autopilot, in its sandbox: 5m to 1d")]
     Wake {
         /// In how long (5m to 1d): the autopilot, in its sandbox.
-        #[arg(long = "in", value_name = "DURATION")]
+        #[arg(long = "in", value_name = "DURATION", conflicts_with = "fresh")]
         after: Option<String>,
+        /// In a fresh session of its own, which takes over from the one it
+        /// works in, starting from its plan and log, and stops that one: at
+        /// once between its turns, else once its turn ends. Its briefing
+        /// and sandbox are fctl's as they are now.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Steer it with a note: a priority, a constraint, context it should
     /// know. It hears at once, and keeps it until someone removes it.
@@ -335,10 +342,15 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             }
             println!("{} Resumed: it wakes now", style::accent("✓"));
         }
-        AutopilotCmd::Wake { after } => {
+        AutopilotCmd::Wake { after, fresh } => {
             if after.is_some() && !in_its_sandbox() {
                 bail!(
                     "--in is for the autopilot, in its sandbox, to say when to wake next: people wake it now (fctl autopilot wake -p {p})"
+                );
+            }
+            if fresh && in_its_sandbox() {
+                bail!(
+                    "--fresh is for people: fctl starts a fresh session of yours after 12 hours, or past the context size they chose"
                 );
             }
             let req = match after.as_deref() {
@@ -348,14 +360,42 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                     })?;
                     WakeAutopilotRequest {
                         in_minutes: Some(u32::try_from(ms / 60_000).unwrap_or(u32::MAX)),
-                        at: None,
+                        ..WakeAutopilotRequest::default()
                     }
                 }
-                None => WakeAutopilotRequest::default(),
+                None => WakeAutopilotRequest {
+                    fresh: fresh.then_some(true),
+                    ..WakeAutopilotRequest::default()
+                },
             };
             let answer = api.wake_autopilot(p, &req).await?;
             if json {
                 return style::print_json(&answer);
+            }
+            if fresh {
+                // A control plane before `fresh` leaves `fresh_asked` out,
+                // and wakes it as it is.
+                if answer.get("fresh_asked").is_none() {
+                    bail!(
+                        "The control plane is older than --fresh: it woke the autopilot in the session it works in, and no fresh session takes over"
+                    );
+                }
+                // Its session at work finishes its turn first.
+                let working = serde_json::from_value::<Autopilot>(answer)
+                    .ok()
+                    .and_then(|a| {
+                        let s = a.session?;
+                        fctl_domain::autopilot::at_work(s.status)
+                            .then(|| format!("{}#{}", a.project_slug, s.number))
+                    });
+                match working {
+                    Some(s) => println!(
+                        "{} A fresh session takes over from {s} once its turn ends",
+                        style::accent("✓")
+                    ),
+                    None => println!("{} A fresh session takes over now", style::accent("✓")),
+                }
+                return Ok(());
             }
             // The autopilot hears when it wakes next; people, that it wakes.
             match answer
@@ -767,7 +807,12 @@ fn state_line(a: &Autopilot) -> String {
             });
             if at_work {
                 let s = a.session.as_ref().map(|s| s.number).unwrap_or_default();
-                style::accent(&format!("● At work in {}#{s}", a.project_slug))
+                let fresh = if a.fresh_asked {
+                    " · a fresh session takes over once this turn ends"
+                } else {
+                    ""
+                };
+                style::accent(&format!("● At work in {}#{s}{fresh}", a.project_slug))
             } else {
                 match (a.wake_at, a.wake_reason) {
                     (Some(at), Some(AutopilotWakeReason::CheckIn) | None) => {

@@ -25,7 +25,7 @@ import { ProjectMark } from "@/components/project/project-icon";
 import { AutopilotIcon, StatusDot, statusLabel } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
-import { splitBriefing, splitCrewNote, wakeText } from "@/lib/autopilot";
+import { splitBriefing, splitCrewNote, wakeLead } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { stamp, when } from "@/lib/format";
 import { prState, pullRequests } from "@/lib/pulls";
@@ -59,8 +59,6 @@ export function WakeCard({ item }: { item: UserItem }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const crew = wake?.crew ?? [];
-  // A start or a resume alone says so in a sentence of its own.
-  const lone = wake?.reasons.length === 1 ? wake.reasons[0] : undefined;
   return (
     <article className="ask-card animate-rise rounded-[18px] rounded-bl-[7px] border border-line bg-surface px-4 pt-3 pb-3.5 md:px-5 md:pt-3.5 md:pb-4">
       <header className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
@@ -71,15 +69,7 @@ export function WakeCard({ item }: { item: UserItem }) {
         </span>
       </header>
       <p className="mt-2 text-[15px] leading-[1.6] text-ink md:text-[15.5px]" data-find={`msg:${item.key}`}>
-        {briefing
-          ? "It was put on autopilot: it reads its brief, then plans the work."
-          : lone === "resumed"
-            ? "People resumed it: it reads what's new, then goes on."
-            : lone === "started"
-              ? "It was put on autopilot again: it reads what's new, then goes on."
-              : lone === "woken"
-                ? "Someone woke it: it reads what's new, then goes on."
-                : `For ${wake ? wakeText(wake) : "its check-in"}.`}
+        {wakeLead(item.text, wake)}
       </p>
       {(crew.length > 0 || (wake?.notes ?? 0) > 0 || (wake?.answers ?? 0) > 0) && (
         <ul className="mt-2.5 flex flex-wrap gap-1.5" aria-label="What woke it">

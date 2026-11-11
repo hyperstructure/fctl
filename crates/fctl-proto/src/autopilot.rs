@@ -201,6 +201,12 @@ pub struct Autopilot {
     /// hour's rest, so a smaller one spends less of its owner's plan.
     /// Absent: only after 12 hours. Control planes before it leave it out.
     pub handoff_at: Option<u32>,
+    /// Someone asked for a fresh session to take over from its own
+    /// (`WakeAutopilotRequest.fresh`), and none has yet: it does as fctl
+    /// next wakes it, once that one's turn ends while it works. Control
+    /// planes before it leave it out.
+    #[serde(default)]
+    pub fresh_asked: bool,
     /// Its own session now: the one fctl wakes it in.
     pub session: Option<AutopilotSession>,
     /// When fctl wakes it next, unless something wakes it sooner; absent
@@ -291,6 +297,10 @@ pub enum AutopilotWakeReason {
     /// It runs on another Claude subscription now: someone took it over,
     /// or its owner chose another connection. Its sessions move to it.
     Moved,
+    /// Someone asked for a fresh session of its own to take over from the
+    /// one it works in (`fctl autopilot wake --fresh`): the wake starts
+    /// one, once that one's turn ends.
+    Fresh,
     /// A reason a newer control plane gives.
     #[serde(other)]
     Other,
@@ -309,6 +319,7 @@ impl AutopilotWakeReason {
             Self::Crew => "crew",
             Self::Retry => "retry",
             Self::Moved => "moved",
+            Self::Fresh => "fresh",
             Self::Other => "other",
         }
     }
@@ -325,6 +336,7 @@ impl AutopilotWakeReason {
             Self::Crew,
             Self::Retry,
             Self::Moved,
+            Self::Fresh,
         ]
         .into_iter()
         .find(|r| r.as_str() == s)
@@ -748,15 +760,18 @@ pub struct PauseAutopilotRequest {
     pub reason: Option<String>,
 }
 
-/// `POST …/autopilot/wake`: a person wakes it now; the autopilot says
-/// when it wakes next, unless something wakes it sooner: in `in_minutes`
-/// (5 to 1,440), or at `at`.
+/// `POST …/autopilot/wake`: a person wakes it now, with `fresh` in a
+/// fresh session of its own, which takes over from the one it works in
+/// (once that one's turn ends, while it works); the autopilot says when it
+/// wakes next, unless something wakes it sooner: in `in_minutes` (5 to
+/// 1,440), or at `at`.
 #[skip_serializing_none]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct WakeAutopilotRequest {
     pub in_minutes: Option<u32>,
     pub at: Option<Millis>,
+    pub fresh: Option<bool>,
 }
 
 /// `POST …/autopilot/notes`: steers the autopilot.

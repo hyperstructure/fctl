@@ -185,6 +185,8 @@ async fn view(
         model: row.model.clone(),
         effort: row.effort.clone(),
         handoff_at: row.handoff_at(),
+        fresh_asked: row.state() == AutopilotState::On
+            && row.reasons().contains(&AutopilotWakeReason::Fresh),
         session: row.session(),
         wake_at: row.wake_at.filter(|_| row.state() == AutopilotState::On),
         wake_reason: row
@@ -1381,8 +1383,10 @@ pub async fn resume(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     get(ctx, id).await
 }
 
-/// `POST …/autopilot/wake`: a person wakes it now; its own session says
-/// when it wakes next unless something wakes it sooner.
+/// `POST …/autopilot/wake`: a person wakes it now, with `fresh` in a fresh
+/// session of its own, which takes over from the one it works in once that
+/// one's turn ends; its own session says when it wakes next unless
+/// something wakes it sooner.
 pub async fn wake(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: WakeAutopilotRequest = if http::header(req, "Content-Type").is_some() {
         http::body(req).await?
@@ -1394,8 +1398,15 @@ pub async fn wake(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respo
     if row.state() != AutopilotState::On {
         return Err(conflict("It's paused: resume it to wake it."));
     }
+    let fresh = body.fresh == Some(true);
     if ctx.autopilot().is_some() {
         require_pilot(ctx, &l)?;
+        if fresh {
+            return Err(validation(
+                "fresh",
+                "People ask for a fresh session of yours; fctl starts one after 12 hours, or past the context size they chose.",
+            ));
+        }
         let at = ap::asked_wake(ctx.now, body.in_minutes, body.at).map_err(AppError)?;
         q(
             &ctx.db,
@@ -1409,11 +1420,30 @@ pub async fn wake(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respo
         return http::ok(&serde_json::json!({ "wake_at": at }));
     }
     require_steer(&l)?;
+    if fresh {
+        let me = ctx.user()?.clone();
+        // Who asked, as the wake itself says only that someone did.
+        engine::log(
+            &ctx.db,
+            &row.project_id,
+            Entry::new(
+                AutopilotEntryKind::State,
+                format!("{} asked for a fresh session to take over", ap::WHO),
+            )
+            .by(&me.id),
+            ctx.now,
+        )
+        .await;
+    }
     engine::nudge(
         &ctx.env,
         &ctx.db,
         &row.project_id,
-        AutopilotWakeReason::Woken,
+        if fresh {
+            AutopilotWakeReason::Fresh
+        } else {
+            AutopilotWakeReason::Woken
+        },
         ctx.now,
     )
     .await?;

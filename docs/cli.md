@@ -709,6 +709,7 @@ fctl autopilot log -p crm --limit 100
 fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it works, or its direction
 fctl autopilot set -p crm --handoff-at 250k    # a fresh session takes over once its own holds 250K tokens of context (never: only after 12 hours)
 fctl autopilot wake -p crm                     # now, with what's new
+fctl autopilot wake -p crm --fresh             # in a fresh session, which starts from its plan and log (once its turn ends, while it works)
 fctl autopilot pause -p crm --reason "Launch week"
 fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's (unless they keep it)
 fctl autopilot set -p crm --keep-owner on      # its owner: others' changes and resumes run on your plan too

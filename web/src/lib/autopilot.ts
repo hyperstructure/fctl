@@ -142,12 +142,13 @@ export function phase(a: G.Autopilot, now = Date.now(), here?: G.SessionId): Pha
       a.session?.status === "preparing";
     const inIt = !!here && a.session?.id === here;
     const where = inIt ? "this session" : `its session #${a.session?.number}`;
+    const fresh = a.fresh_asked ? " A fresh session takes over once this turn ends." : "";
     return {
       tone: "accent",
       word: starting ? "Waking" : "At work",
       line: starting
-        ? `${inIt ? "This session" : `Its session #${a.session?.number}`} is starting.${waiting}`
-        : `It works in ${where} now.${waiting}`,
+        ? `${inIt ? "This session" : `Its session #${a.session?.number}`} is starting.${fresh}${waiting}`
+        : `It works in ${where} now.${fresh}${waiting}`,
     };
   }
   if (asks > 0)
@@ -234,12 +235,16 @@ export function glance(a: AutopilotGlance | undefined, now = Date.now()): Glance
 }
 
 /** "It checks in at 14:20, unless something needs it sooner." */
-export function wakeWords(a: Pick<G.Autopilot, "wake_at" | "wake_reason">, now = Date.now()): string {
+export function wakeWords(
+  a: Pick<G.Autopilot, "wake_at" | "wake_reason"> & Partial<Pick<G.Autopilot, "fresh_asked">>,
+  now = Date.now(),
+): string {
   if (!a.wake_at) return "";
   const at = a.wake_at;
   const when =
     at - now < 60_000 ? "now" : at - now < 86_400_000 ? `at ${clock(at)}` : `on ${day(at)} at ${clock(at)}`;
-  switch (a.wake_reason) {
+  // A fresh session asked for comes first, whatever else wakes it with it: `wake_reason` is only the first.
+  switch (a.fresh_asked ? "fresh" : a.wake_reason) {
     case "asked":
       return `It wakes ${when}, as it asked, unless something needs it sooner.`;
     case "check_in":
@@ -247,6 +252,8 @@ export function wakeWords(a: Pick<G.Autopilot, "wake_at" | "wake_reason">, now =
       return `It checks in ${when}, unless something needs it sooner.`;
     case "retry":
       return `Its last session failed: it tries again ${when}.`;
+    case "fresh":
+      return `A fresh session takes over ${when}.`;
     default:
       return `It wakes ${when} for what's new.`;
   }
@@ -259,6 +266,7 @@ export function wokeLine(w: G.AutopilotWake): string {
   if (!more && only === "resumed") return "Woke as it was resumed";
   if (!more && only === "woken") return "Woke as someone woke it";
   if (!more && only === "moved") return "Woke as it was moved to another Claude subscription";
+  if (!more && only === "fresh") return "Woke as someone asked for a fresh session";
   return `Woke for ${wakeText(w)}`;
 }
 
@@ -312,6 +320,9 @@ export function wakeText(w: G.AutopilotWake): string {
         break;
       case "moved":
         parts.push("being moved to another Claude subscription");
+        break;
+      case "fresh":
+        parts.push("someone asking for a fresh session");
         break;
     }
   }
@@ -390,6 +401,24 @@ export function splitCrewNote(text: string): { task: string; note?: string } {
   const m = /\n\n---\n(?=The autopilot of [^\n]* started this session: )/.exec(text);
   if (!m) return { task: text };
   return { task: text.slice(0, m.index), note: text.slice(m.index + m[0].length) };
+}
+
+/**
+ * What a message fctl woke it with says, in a sentence: a start, a fresh session taking over from the
+ * last (`fctl_domain::autopilot::takes_over_from`, after its briefing), or what woke it.
+ */
+export function wakeLead(text: string, wake?: G.AutopilotWake): string {
+  const { briefing, news } = splitBriefing(text);
+  // A start or a resume alone says so in a sentence of its own.
+  const lone = wake?.reasons.length === 1 ? wake.reasons[0] : undefined;
+  if (briefing)
+    return news.startsWith("You take over from your last session")
+      ? "A fresh session takes over: it reads its brief, then goes on from its plan and log."
+      : "It was put on autopilot: it reads its brief, then plans the work.";
+  if (lone === "resumed") return "People resumed it: it reads what's new, then goes on.";
+  if (lone === "started") return "It was put on autopilot again: it reads what's new, then goes on.";
+  if (lone === "woken") return "Someone woke it: it reads what's new, then goes on.";
+  return `For ${wake ? wakeText(wake) : "its check-in"}.`;
 }
 
 /**
