@@ -123,7 +123,7 @@ export function AppShell() {
       <aside
         ref={aside}
         className={cn(
-          "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[min(calc(100vw-3rem),calc(300px+env(safe-area-inset-left)))] flex-col bg-surface pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:w-[calc(var(--sidebar-w)+env(safe-area-inset-left))] md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
+          "fixed top-(--viewport-shift) -bottom-(--viewport-shift) left-0 z-30 flex w-[min(calc(100vw-3rem),calc(300px+env(safe-area-inset-left)))] flex-col bg-surface pt-(--safe-top) pl-[env(safe-area-inset-left)] max-md:starting:-translate-x-full md:w-[calc(var(--sidebar-w)+env(safe-area-inset-left))] md:translate-x-0 md:bg-surface/80 md:backdrop-blur-xl",
           drawer !== "gone" &&
             "transition-[translate,display] transition-discrete duration-300 ease-out motion-reduce:transition-none",
           // Folding animates its width, as does dragging its edge into the rail or out of it;
@@ -178,7 +178,7 @@ export function AppShell() {
       >
         {/* On phones: the menu button, its icon in line with the page's text. */}
         {!headerButton && (
-          <div className="sticky top-(--viewport-shift) z-10 flex h-14 items-center gap-1.5 bg-canvas/80 px-2.5 backdrop-blur-xl md:hidden">
+          <div className="sticky top-(--viewport-shift) z-10 box-content flex h-14 items-center gap-1.5 bg-canvas/80 px-2.5 pt-(--safe-top) backdrop-blur-xl md:hidden">
             <MenuButton onClick={openDrawer} />
             <Logo large />
           </div>

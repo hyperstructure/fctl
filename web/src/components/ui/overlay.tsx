@@ -63,7 +63,7 @@ export function Dialog({
         if (e.target === ref.current) onClose();
       }}
       className={cn(
-        "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto w-[calc(100vw-2rem)] rounded-xl border border-line-strong bg-surface p-0 text-ink shadow-[0_30px_120px_rgb(0_0_0/0.55)]",
+        "top-[calc(var(--viewport-shift)+var(--safe-top))] -bottom-(--viewport-shift) m-auto max-h-[calc(100%-2em-6px-var(--safe-top))] w-[calc(100vw-2rem)] rounded-xl border border-line-strong bg-surface p-0 text-ink shadow-[0_30px_120px_rgb(0_0_0/0.55)]",
         "backdrop:bg-black/45 backdrop:backdrop-blur-[3px] open:animate-rise",
         wide ? "max-w-2xl" : "max-w-md",
         // The modal's own max-height (the screen, less a margin) bounds the column.

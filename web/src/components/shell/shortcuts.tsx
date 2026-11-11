@@ -56,8 +56,8 @@ export function ShortcutsDialog({
         if (e.target === ref.current && pressedOutside.current) ref.current?.close();
       }}
       className={cn(
-        "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto w-[min(860px,calc(100vw-2rem))] max-w-none overflow-hidden rounded-xl border border-line-strong bg-surface p-0 text-ink outline-none xl:w-[min(1180px,calc(100vw-4rem))]",
-        "max-h-[min(760px,calc(100dvh-3rem))] shadow-[0_30px_120px_rgb(0_0_0/0.55)] open:flex open:flex-col",
+        "top-[calc(var(--viewport-shift)+var(--safe-top))] -bottom-(--viewport-shift) m-auto w-[min(860px,calc(100vw-2rem))] max-w-none overflow-hidden rounded-xl border border-line-strong bg-surface p-0 text-ink outline-none xl:w-[min(1180px,calc(100vw-4rem))]",
+        "max-h-[min(760px,calc(100dvh-3rem-var(--safe-top)))] shadow-[0_30px_120px_rgb(0_0_0/0.55)] open:flex open:flex-col",
         "backdrop:bg-black/45 backdrop:backdrop-blur-[3px] open:animate-rise motion-reduce:open:animate-none",
       )}
     >

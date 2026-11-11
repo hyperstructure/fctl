@@ -77,7 +77,10 @@ export function SettingsNav<K extends string>({
     <nav
       ref={nav}
       aria-label={label}
-      className={cn("sticky top-8 -ml-2.5 [view-transition-name:settings-pages] max-md:top-20", className)}
+      className={cn(
+        "sticky top-[calc(2rem+var(--safe-top))] -ml-2.5 [view-transition-name:settings-pages] max-md:top-[calc(5rem+var(--safe-top))]",
+        className,
+      )}
     >
       {mark && (
         <span
