@@ -38,8 +38,9 @@ pub struct Extras<'a> {
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
 /// about the work (Claude reads it through `~/.claude/CLAUDE.md`), and what
 /// else its project turned on: how it shows screenshots in pull requests
-/// (or, for an autopilot, passes them on to its sessions), resolves review threads when it may comment but not push, the project's
-/// memory and how to keep it, and how to record retrospectives.
+/// (or, for an autopilot, passes them on to its sessions), resolves review
+/// threads when it may comment but not push, the project's memory and how
+/// to keep it, and how to record retrospectives.
 pub fn agents_md(extras: &Extras<'_>) -> String {
     let mut s = AGENTS_MD.to_owned();
     if extras.review_threads {
