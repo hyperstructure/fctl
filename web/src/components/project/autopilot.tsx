@@ -84,6 +84,7 @@ import {
   openAsks,
   POWERS,
   phase,
+  planDone,
   wakeWords,
 } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
@@ -845,7 +846,8 @@ function Cockpit({ project, a }: { project: G.Project; a: G.Autopilot }) {
   );
 }
 
-const TONES: Record<
+/** Each phase's tone: its word, its dot, the wash from the card's corner and the card's border. */
+export const TONES: Record<
   "accent" | "blue" | "pink" | "ink",
   { word: string; dot: string; glow: string; border: string }
 > = {
@@ -881,32 +883,6 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
   const [taking, setTaking] = useState(false);
   const me = useMe().data;
   const mine = !!me && a.owner?.id === me.user.id;
-  const wake = useMutation({
-    mutationFn: () => api.wakeAutopilot(a.project_id),
-    onSuccess: (x) => {
-      patched(x);
-      toast("It wakes now");
-    },
-    onError: (e) => failed(e, "It didn't wake"),
-  });
-  const pause = useMutation({
-    mutationFn: () => api.pauseAutopilot(a.project_id),
-    onSuccess: (x) => {
-      patched(x);
-      toast("Paused: it wakes no more until you resume it");
-    },
-    onError: (e) => failed(e, "It isn't paused"),
-  });
-  const resume = useMutation({
-    mutationFn: () => api.resumeAutopilot(a.project_id),
-    onSuccess: (x) => {
-      patched(x);
-      toast(
-        !mine && takenBy(x, me) ? "Resumed, on your subscription: it wakes now" : "Resumed: it wakes now",
-      );
-    },
-    onError: (e) => failed(e, "It isn't resumed"),
-  });
   return (
     <section
       aria-label="Where it stands"
@@ -972,45 +948,7 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
         </div>
         {a.can.steer && (
           <div className="flex shrink-0 items-center gap-1.5">
-            {a.state === "on" ? (
-              <>
-                <Button
-                  size="sm"
-                  icon={<Zap className="size-3.5" />}
-                  loading={wake.isPending}
-                  onClick={() => wake.mutate()}
-                  title="Wake it now, with what's new"
-                >
-                  Wake now
-                </Button>
-                <Button
-                  size="sm"
-                  icon={<Pause className="size-3.5" />}
-                  loading={pause.isPending}
-                  onClick={() => pause.mutate()}
-                  title="It wakes no more until resumed; its session stops"
-                >
-                  Pause
-                </Button>
-              </>
-            ) : (
-              <Button
-                size="sm"
-                variant="primary"
-                icon={<Play className="size-3.5" />}
-                loading={resume.isPending}
-                onClick={() => resume.mutate()}
-                title={
-                  mine
-                    ? "It wakes at once"
-                    : a.keep_owner && a.owner
-                      ? `It wakes at once, on ${a.owner.name}'s Claude subscription, which they keep it on`
-                      : "It wakes at once, on your Claude subscription from now on"
-                }
-              >
-                Resume
-              </Button>
-            )}
+            <MoveButtons a={a} />
             <Menu
               trigger={(toggle, open) => (
                 <IconButton label="More" aria-expanded={open} onClick={toggle}>
@@ -1075,8 +1013,86 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
   );
 }
 
+/** What people do with it from where it stands: wake or pause it while it's on, resume it once paused. */
+export function useMoves(a: G.Autopilot) {
+  const me = useMe().data;
+  const mine = !!me && a.owner?.id === me.user.id;
+  const wake = useMutation({
+    mutationFn: () => api.wakeAutopilot(a.project_id),
+    onSuccess: (x) => {
+      patched(x);
+      toast("It wakes now");
+    },
+    onError: (e) => failed(e, "It didn't wake"),
+  });
+  const pause = useMutation({
+    mutationFn: () => api.pauseAutopilot(a.project_id),
+    onSuccess: (x) => {
+      patched(x);
+      toast("Paused: it wakes no more until you resume it");
+    },
+    onError: (e) => failed(e, "It isn't paused"),
+  });
+  const resume = useMutation({
+    mutationFn: () => api.resumeAutopilot(a.project_id),
+    onSuccess: (x) => {
+      patched(x);
+      toast(
+        !mine && takenBy(x, me) ? "Resumed, on your subscription: it wakes now" : "Resumed: it wakes now",
+      );
+    },
+    onError: (e) => failed(e, "It isn't resumed"),
+  });
+  return { wake, pause, resume, mine };
+}
+
+/** *Wake now* and *Pause* while it's on, *Resume* once paused: for those who steer it. */
+export function MoveButtons({ a }: { a: G.Autopilot }) {
+  const { wake, pause, resume, mine } = useMoves(a);
+  if (a.state === "off") return null;
+  return a.state === "on" ? (
+    <>
+      <Button
+        size="sm"
+        icon={<Zap className="size-3.5" />}
+        loading={wake.isPending}
+        onClick={() => wake.mutate()}
+        title="Wake it now, with what's new"
+      >
+        Wake now
+      </Button>
+      <Button
+        size="sm"
+        icon={<Pause className="size-3.5" />}
+        loading={pause.isPending}
+        onClick={() => pause.mutate()}
+        title="It wakes no more until resumed; its session stops"
+      >
+        Pause
+      </Button>
+    </>
+  ) : (
+    <Button
+      size="sm"
+      variant="primary"
+      icon={<Play className="size-3.5" />}
+      loading={resume.isPending}
+      onClick={() => resume.mutate()}
+      title={
+        mine
+          ? "It wakes at once"
+          : a.keep_owner && a.owner
+            ? `It wakes at once, on ${a.owner.name}'s Claude subscription, which they keep it on`
+            : "It wakes at once, on your Claude subscription from now on"
+      }
+    >
+      Resume
+    </Button>
+  );
+}
+
 /** Now, every `every` milliseconds, for what says how long ago or until. */
-function useNow(every: number): number {
+export function useNow(every: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), every);
@@ -1833,8 +1849,19 @@ function Card({
   );
 }
 
-/** Long text, clamped to `lines` with the rest a click away. */
-function Clamped({ text, lines = 8 }: { text: string; lines?: number }) {
+/**
+ * Long text, clamped to `lines` with the rest a click away. Where it's cut it fades out, whatever
+ * it's on: a card's surface, or a session's details rail.
+ */
+export function Clamped({
+  text,
+  lines = 8,
+  className,
+}: {
+  text: string;
+  lines?: number;
+  className?: string;
+}) {
   const long = text.split("\n").length > lines || text.length > lines * 70;
   const [open, setOpen] = useState(false);
   return (
@@ -1842,13 +1869,13 @@ function Clamped({ text, lines = 8 }: { text: string; lines?: number }) {
       <div
         className={cn(
           "relative text-[13px] leading-relaxed text-ink-2",
-          long && !open && "max-h-44 overflow-hidden",
+          className,
+          long &&
+            !open &&
+            "max-h-44 overflow-hidden [mask-image:linear-gradient(to_bottom,#000_calc(100%-3rem),transparent)]",
         )}
       >
         <Markdown text={text} className="prose-note" />
-        {long && !open && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface to-transparent" />
-        )}
       </div>
       {long && (
         <button
@@ -1944,11 +1971,7 @@ function Direction({ a }: { a: G.Autopilot }) {
 }
 
 function Plan({ a }: { a: G.Autopilot }) {
-  const done = useMemo(() => {
-    const items = a.plan?.match(/^\s*[-*+] \[( |x|X)\]/gm) ?? [];
-    const checked = items.filter((i) => /\[(x|X)\]/.test(i)).length;
-    return items.length ? { checked, of: items.length } : null;
-  }, [a.plan]);
+  const done = useMemo(() => planDone(a.plan), [a.plan]);
   return (
     <Card
       title="Its plan"
@@ -1987,25 +2010,38 @@ const WORKING = new Set<G.SessionStatus>([
 ]);
 
 function Crew({ a }: { a: G.Autopilot }) {
+  const count = crewCount(a);
+  return (
+    <Card
+      title="Its sessions"
+      icon={<GitFork />}
+      action={count && <span className="text-[12px] text-ink-4 tabular-nums">{count}</span>}
+    >
+      <CrewList a={a} />
+    </Card>
+  );
+}
+
+/** "3 working · 39 in all", once it started any. */
+export function crewCount(a: G.Autopilot): string | undefined {
+  if (a.crew_total === 0) return;
+  return `${a.crew.filter((c) => WORKING.has(c.status)).length} working · ${a.crew_total} in all`;
+}
+
+/**
+ * The sessions it started: five rows in all, those at work or waiting for a message first (all of
+ * them when there are more), then the rest of the 20 newest a click away.
+ */
+export function CrewList({ a, className }: { a: G.Autopilot; className?: string }) {
   const [all, setAll] = useState(false);
   const working = a.crew.filter((c) => WORKING.has(c.status) || c.status === "idle");
   const rest = a.crew.filter((c) => !working.includes(c));
   const shown = all ? a.crew : [...working, ...rest.slice(0, Math.max(0, 5 - working.length))];
   const others = a.crew.length - shown.length;
   return (
-    <Card
-      title="Its sessions"
-      icon={<GitFork />}
-      action={
-        a.crew_total > 0 && (
-          <span className="text-[12px] text-ink-4 tabular-nums">
-            {`${a.crew.filter((c) => WORKING.has(c.status)).length} working · ${a.crew_total} in all`}
-          </span>
-        )
-      }
-    >
+    <>
       {a.crew.length === 0 ? (
-        <p className="text-[13px] leading-relaxed text-ink-4">
+        <p className={cn("text-[13px] leading-relaxed text-ink-4", className)}>
           The sessions it starts show here, live: up to {a.crew_max} at once.
         </p>
       ) : (
@@ -2027,7 +2063,7 @@ function Crew({ a }: { a: G.Autopilot }) {
           Show {others} more
         </button>
       )}
-    </Card>
+    </>
   );
 }
 

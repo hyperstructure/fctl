@@ -98,6 +98,13 @@ export function atWork(a: Pick<G.Autopilot, "state" | "session">): boolean {
   );
 }
 
+/** How far its plan's checklist is ticked off ("9 of 15"); none for a plan without one. */
+export function planDone(plan?: string): { checked: number; of: number } | undefined {
+  const items = plan?.match(/^\s*[-*+] \[( |x|X)\]/gm) ?? [];
+  if (!items.length) return;
+  return { checked: items.filter((i) => /\[(x|X)\]/.test(i)).length, of: items.length };
+}
+
 /** What it asks that is still open. */
 export const openAsks = (a: Pick<G.Autopilot, "asks">) => a.asks.filter((x) => x.status === "open");
 
@@ -108,7 +115,11 @@ export interface Phase {
   line: string;
 }
 
-export function phase(a: G.Autopilot, now = Date.now()): Phase {
+/**
+ * Where `a` stands. `here` is the session the reader is in: its own session, said as "this session"
+ * when it is the one the autopilot works in now.
+ */
+export function phase(a: G.Autopilot, now = Date.now(), here?: G.SessionId): Phase {
   const asks = openAsks(a).length;
   const waiting =
     asks > 0
@@ -129,12 +140,14 @@ export function phase(a: G.Autopilot, now = Date.now()): Phase {
       a.session?.status === "queued" ||
       a.session?.status === "provisioning" ||
       a.session?.status === "preparing";
+    const inIt = !!here && a.session?.id === here;
+    const where = inIt ? "this session" : `its session #${a.session?.number}`;
     return {
       tone: "accent",
       word: starting ? "Waking" : "At work",
       line: starting
-        ? `Its session #${a.session?.number} is starting.${waiting}`
-        : `It works in its session #${a.session?.number} now.${waiting}`,
+        ? `${inIt ? "This session" : `Its session #${a.session?.number}`} is starting.${waiting}`
+        : `It works in ${where} now.${waiting}`,
     };
   }
   if (asks > 0)
