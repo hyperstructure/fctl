@@ -45,6 +45,7 @@ import {
 } from "@/components/session/kept";
 import { JumpPill, NowLine, toBottom, useAtBottom } from "@/components/session/now-line";
 import { AgentOrb } from "@/components/session/orb";
+import { PilotDetails } from "@/components/session/pilot";
 import { PlanList } from "@/components/session/plan";
 import {
   PullRequestChecksIcon,
@@ -53,6 +54,7 @@ import {
   PullRequestStateIcon,
 } from "@/components/session/pull-request";
 import { QuestionCard, useQuestionFloats } from "@/components/session/question";
+import { RailSection } from "@/components/session/rail";
 import { ScheduleLink, TicketLink } from "@/components/session/row";
 import { SessionChoices } from "@/components/session/settings";
 import { TakeOverDialog } from "@/components/session/take-over";
@@ -1288,15 +1290,6 @@ function SessionGithub({ session }: { session: G.Session }) {
   return <GithubAccessChip access={sessionGithub(session, project)} />;
 }
 
-function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="px-5 py-4">
-      <h3 className="mb-2.5 text-[12.5px] font-medium text-ink-3">{title}</h3>
-      {children}
-    </section>
-  );
-}
-
 function Row({ k, v }: { k: string; v: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-3 py-0.5 text-[12.5px]">
@@ -1560,6 +1553,10 @@ function Details({
   );
   // Several repositories: each under its name, those without changes left out.
   const changed = others.filter(hasChanges);
+  // An autopilot's own session plans and steers: its autopilot comes first, and what it rarely has
+  // stays out (changes, unless it made some) or is its sessions' (retrospectives, the memory).
+  const pilot = session.autopilot?.role === "pilot";
+  const changes = !pilot || (primary && hasChanges(primary)) || changed.length > 0;
   const primaryTitle = primaryTitleOf(project);
   const prs = pullRequests(session);
   const rc = session.remote_control;
@@ -1616,43 +1613,46 @@ function Details({
           <ReviewFacts session={session} review={review} />
         </RailSection>
       )}
+      {pilot && <PilotDetails session={session} />}
       {plan}
       {pullsFirst && pulls}
-      <RailSection title={session.review ? "Changes reviewed" : "Changes"}>
-        {primary && others.length === 0 ? (
-          <Changes repo={primary} showTotals={!!git} onOpen={(path) => onDiff({ path })} />
-        ) : (
-          <div className="flex flex-col gap-5">
-            {primary && (hasChanges(primary) || changed.length === 0) && (
-              <Changes
-                repo={primary}
-                title={primaryTitle}
-                showTotals={hasChanges(primary)}
-                onOpen={(path) => onDiff({ path })}
-              />
-            )}
-            {changed.map((r) => (
-              <Changes
-                key={r.name}
-                repo={r}
-                title={r.name}
-                showTotals
-                onOpen={(path) => onDiff({ repo: r.name, path })}
-              />
-            ))}
-          </div>
-        )}
-      </RailSection>
+      {changes && (
+        <RailSection title={session.review ? "Changes reviewed" : "Changes"}>
+          {primary && others.length === 0 ? (
+            <Changes repo={primary} showTotals={!!git} onOpen={(path) => onDiff({ path })} />
+          ) : (
+            <div className="flex flex-col gap-5">
+              {primary && (hasChanges(primary) || changed.length === 0) && (
+                <Changes
+                  repo={primary}
+                  title={primaryTitle}
+                  showTotals={hasChanges(primary)}
+                  onOpen={(path) => onDiff({ path })}
+                />
+              )}
+              {changed.map((r) => (
+                <Changes
+                  key={r.name}
+                  repo={r}
+                  title={r.name}
+                  showTotals
+                  onOpen={(path) => onDiff({ repo: r.name, path })}
+                />
+              ))}
+            </div>
+          )}
+        </RailSection>
+      )}
       {!pullsFirst && pulls}
       {turns}
-      {(retrospectives.length > 0 || (project?.settings.retrospectives && !session.review)) && (
+      {!pilot && (retrospectives.length > 0 || (project?.settings.retrospectives && !session.review)) && (
         <RailSection
           title={retrospectives.length > 1 ? `Retrospectives (${retrospectives.length})` : "Retrospective"}
         >
           <SessionRetrospectives list={retrospectives} project={project} />
         </RailSection>
       )}
-      {project && memory.shown && !session.review && (
+      {project && memory.shown && !session.review && !pilot && (
         <RailSection title="Memory">
           <SessionMemory project={project} memory={memory} />
         </RailSection>

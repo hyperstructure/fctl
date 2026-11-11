@@ -19,7 +19,7 @@ use fctl_proto::autopilot::{
     AutopilotAskKind, AutopilotAskStatus, AutopilotEntryKind, AutopilotPower, AutopilotScope,
     AutopilotWakeReason,
 };
-use fctl_proto::session::SessionStatus;
+use fctl_proto::session::{PullRequestRef, SessionStatus};
 use serde_json::Value;
 
 const MINUTE_MS: i64 = 60_000;
@@ -720,6 +720,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     } else {
         "- Your sessions open pull requests and leave merging to people. When the next piece of work waits on one, ask people to merge it (`fctl autopilot ask`), and go on meanwhile with what doesn't.\n"
     });
+    s.push_str(&format!("- {}\n", others_line(scope, rules.powers)));
     s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well, written whole each time. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them: what you don't write down, it won't know.\n");
     s.push_str(&format!("- {}\n", handoff_line(rules.handoff_at)));
     let powers = powers_line(rules.powers, scope);
@@ -733,8 +734,28 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         duration(rules.check_in_minutes)
     ));
     s.push_str("- When the direction is done and nothing is left to do, write it down and pause yourself with `fctl autopilot pause --reason \"…\"`: people resume you when they have more.\n");
-    s.push_str("\nStart by running `fctl autopilot brief`: it shows where things stand, with your plan, people's notes and answers, your sessions and your log.\n");
+    s.push_str("\nStart by running `fctl autopilot brief`: it shows where things stand, with your plan, people's notes and answers, your sessions and theirs, and your log.\n");
     s
+}
+
+/// How it looks after the sessions people start themselves in its
+/// projects, as a line of the briefing: theirs to steer, but their pull
+/// requests are its concern too, as one left open falls behind what its
+/// own sessions merge. It asks before it helps, and helps with a session of
+/// its own, as it steers no one else's.
+fn others_line(scope: AutopilotScope, powers: &[AutopilotPower]) -> String {
+    let whose = match scope {
+        AutopilotScope::Project => "the project's",
+        AutopilotScope::Workspace => "your projects'",
+    };
+    let help = if powers.contains(&AutopilotPower::Merge) {
+        "bring it up to date with its base branch, resolve its conflicts, get its checks passing and merge it"
+    } else {
+        "bring it up to date with its base branch, resolve its conflicts and get its checks passing, then ask people to merge it"
+    };
+    format!(
+        "Look after the rest of {whose} work too: people start sessions of their own there, and `fctl autopilot brief` lists those at work and those whose pull requests are still open. Those sessions are theirs: never message, stop or take over one unasked. But a pull request left open falls behind what your sessions merge, conflict after conflict. Once one looks ready (its session ended its turn and its checks pass) or stuck (it has waited a day or more, or its checks fail), ask people with `fctl autopilot ask` whether you should help get it merged, naming the session, its pull request and who started it, with answers to click. If they say yes, start a session of your own to {help}. Write their answer in your plan, and don't ask about the same pull request again unless something changed. Plan your own work around theirs, so that yours doesn't collide with what they are in the middle of."
+    )
 }
 
 /// When a fresh session takes over from this one, as a line of the
@@ -889,6 +910,51 @@ pub struct CrewView<'a> {
     pub pull_requests: Vec<String>,
 }
 
+/// A session someone started in its projects, rather than the autopilot,
+/// for what fctl tells it: one at work, or one whose pull request is still
+/// open.
+#[derive(Clone, Debug)]
+pub struct OtherView<'a> {
+    pub reference: String,
+    pub title: &'a str,
+    /// Who started it, by name.
+    pub by: &'a str,
+    pub status: SessionStatus,
+    /// What its agent asks its people.
+    pub question: Option<&'a str>,
+    /// Its pull requests still open, with their checks ([`open_pull`]).
+    pub pull_requests: Vec<String>,
+    /// When its agent last worked, or else when it last changed.
+    pub at: Millis,
+}
+
+/// A pull request still open (or a draft, or in a merge queue), with how
+/// its checks stand, for what fctl tells an autopilot: "#67 (open, checks
+/// pass)". `None` once it is merged or closed. One nobody looked up yet
+/// counts as open, as the pull requests page counts it.
+pub fn open_pull(pr: &PullRequestRef) -> Option<String> {
+    let state = match pr.state.as_deref().unwrap_or("open") {
+        "open" => "open",
+        "draft" => "a draft",
+        "queued" => "in a merge queue",
+        _ => return None,
+    };
+    let checks = pr
+        .checks
+        .as_ref()
+        .and_then(|c| match (c.failed, c.pending, c.passed) {
+            (1, ..) => Some("1 check failed".to_owned()),
+            (f, ..) if f > 1 => Some(format!("{f} checks failed")),
+            (0, p, _) if p > 0 => Some("checks running".to_owned()),
+            (0, 0, p) if p > 0 => Some("checks pass".to_owned()),
+            _ => None,
+        });
+    Some(match checks {
+        Some(checks) => format!("#{} ({state}, {checks})", pr.number),
+        None => format!("#{} ({state})", pr.number),
+    })
+}
+
 /// An entry of its log, for its brief.
 #[derive(Clone, Debug)]
 pub struct EntryView<'a> {
@@ -912,6 +978,9 @@ pub struct Brief<'a> {
     pub notes: &'a [NoteView<'a>],
     pub asks: &'a [AskView<'a>],
     pub crew: &'a [CrewView<'a>],
+    /// The sessions people started in its projects, at work or with a pull
+    /// request open, the latest first.
+    pub others: &'a [OtherView<'a>],
     pub log: &'a [EntryView<'a>],
     /// The projects it works in, by slug, for a workspace's autopilot.
     pub projects: &'a [String],
@@ -1025,6 +1094,23 @@ pub fn brief(b: &Brief<'_>) -> String {
             s.push_str(&format!("- {}\n", crew_line(c)));
         }
     }
+    s.push_str("\n## People's sessions\n\n");
+    let place = match b.place.scope {
+        AutopilotScope::Project => "the project",
+        AutopilotScope::Workspace => "your projects",
+    };
+    if b.others.is_empty() {
+        s.push_str(&format!(
+            "None: no session people started in {place} works now or has a pull request open.\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "Sessions people started in {place} that work now or have a pull request open, the latest first (`fctl show <ref>` tells more). They're theirs: ask before you help get one merged.\n\n"
+        ));
+        for o in b.others {
+            s.push_str(&format!("- {}\n", other_line(o, now)));
+        }
+    }
     s.push_str("\n## Your plan\n\n");
     match b.plan {
         Some(plan) => {
@@ -1134,6 +1220,37 @@ fn crew_line(c: &CrewView<'_>) -> String {
     format!("{} {}: {state}{prs}", c.reference, quoted(c.title))
 }
 
+fn other_line(o: &OtherView<'_>, now: Millis) -> String {
+    let when = ago(now, o.at);
+    let state = match o.status {
+        SessionStatus::Queued => "queued".to_owned(),
+        SessionStatus::Provisioning | SessionStatus::Preparing => "starting".to_owned(),
+        SessionStatus::Running => "working".to_owned(),
+        SessionStatus::Idle => match o.question {
+            Some(q) => format!("asks its people {}", quoted(q)),
+            None => format!("ended its turn {when}"),
+        },
+        SessionStatus::Paused => "paused on a usage limit".to_owned(),
+        SessionStatus::Stopping => "stopping".to_owned(),
+        SessionStatus::Stopped => match o.question {
+            Some(q) => format!("stopped {when}, asks its people {}", quoted(q)),
+            None => format!("stopped {when}"),
+        },
+        SessionStatus::Failed => format!("failed {when}"),
+    };
+    let prs = match o.pull_requests.as_slice() {
+        [] => String::new(),
+        [one] => format!("; pull request {one}"),
+        many => format!("; pull requests {}", many.join(", ")),
+    };
+    format!(
+        "{} {}, {}'s: {state}{prs}",
+        o.reference,
+        quoted(o.title),
+        o.by
+    )
+}
+
 /// What woke it, for the message that does.
 #[derive(Clone, Debug, Default)]
 pub struct News<'a> {
@@ -1143,6 +1260,10 @@ pub struct News<'a> {
     pub direction: Option<(&'a str, Option<&'a str>)>,
     pub answers: Vec<AskView<'a>>,
     pub crew: Vec<CrewView<'a>>,
+    /// Sessions people started in its projects that ended a turn since it
+    /// last woke with a pull request open. They don't wake it: they come
+    /// with what does.
+    pub others: Vec<OtherView<'a>>,
     /// Its context's tokens and where it hands off, once near
     /// ([`handoff_near`]).
     pub handoff: Option<(u64, u32)>,
@@ -1201,6 +1322,12 @@ pub fn wake_message(news: &News<'_>) -> String {
         s.push_str("\n\nYour sessions:\n");
         for c in &news.crew {
             s.push_str(&format!("\n- {}", crew_line(c)));
+        }
+    }
+    if !news.others.is_empty() {
+        s.push_str("\n\nPeople's sessions that ended a turn with a pull request open (theirs: ask people before you help get one merged):\n");
+        for o in &news.others {
+            s.push_str(&format!("\n- {}", other_line(o, news.now)));
         }
     }
     if let Some((tokens, at)) = news.handoff {
@@ -1756,7 +1883,25 @@ mod tests {
         assert!(!b.contains("fctl projects repos add"));
         assert!(b.contains("fctl autopilot ask --secret NAME"));
         assert!(b.contains("Don't use `fctl ask`"));
-        assert!(b.ends_with("your sessions and your log.\n"));
+        assert!(b.ends_with("your sessions and theirs, and your log.\n"));
+        // People's own sessions are theirs, but their pull requests its
+        // concern: it asks before it helps, with a session of its own.
+        assert!(b.contains("Look after the rest of the project's work too"));
+        assert!(b.contains("never message, stop or take over one unasked"));
+        assert!(b.contains(
+            "start a session of your own to bring it up to date with its base branch, resolve its conflicts and get its checks passing, then ask people to merge it."
+        ));
+        let merging = briefing(
+            place(),
+            Rules {
+                powers: &[Merge],
+                crew_max: 3,
+                check_in_minutes: 60,
+                handoff_at: None,
+            },
+            "Ship the checkout.",
+        );
+        assert!(merging.contains("get its checks passing and merge it."));
     }
 
     #[test]
@@ -1803,6 +1948,26 @@ mod tests {
             question: Some("Which merchant id?"),
             pull_requests: vec!["#12 open".into()],
         }];
+        let others = [
+            OtherView {
+                reference: "shop#38".into(),
+                title: "Wishlists",
+                by: "Bo",
+                status: SessionStatus::Idle,
+                question: None,
+                pull_requests: vec!["#67 (open, checks pass)".into()],
+                at: now - 2 * 86_400_000,
+            },
+            OtherView {
+                reference: "shop#44".into(),
+                title: "Gift cards",
+                by: "Ada",
+                status: SessionStatus::Running,
+                question: None,
+                pull_requests: vec![],
+                at: now,
+            },
+        ];
         let text = brief(&Brief {
             place: place(),
             rules: Rules {
@@ -1819,6 +1984,7 @@ mod tests {
             notes: &notes,
             asks: &asks,
             crew: &crew,
+            others: &others,
             log: &[],
             projects: &[],
             wake_at: Some(now + 25 * MINUTE_MS),
@@ -1838,6 +2004,12 @@ mod tests {
         ));
         assert!(text.contains(
             "- shop#41 “Add Apple Pay”: asks “Which merchant id?”; pull requests #12 open"
+        ));
+        assert!(text.contains(
+            "## People's sessions\n\nSessions people started in the project that work now or have a pull request open"
+        ));
+        assert!(text.contains(
+            "- shop#38 “Wishlists”, Bo's: ended its turn 2 days ago; pull request #67 (open, checks pass)\n- shop#44 “Gift cards”, Ada's: working\n"
         ));
         assert!(text.contains("- [ ] Apple Pay\n\n(Written 1 hour ago)"));
         assert!(text.contains("Empty. Write down what you do"));
@@ -1863,10 +2035,22 @@ mod tests {
                 question: None,
                 pull_requests: vec![],
             }],
+            others: vec![OtherView {
+                reference: "shop#38".into(),
+                title: "Wishlists",
+                by: "Bo",
+                status: SessionStatus::Stopped,
+                question: None,
+                pull_requests: vec!["#67 (open, 1 check failed)".into(), "#68 (a draft)".into()],
+                at: 0,
+            }],
             handoff: None,
             now: 0,
         };
         let m = wake_message(&news);
+        assert!(m.contains(
+            "People's sessions that ended a turn with a pull request open (theirs: ask people before you help get one merged):\n\n- shop#38 “Wishlists”, Bo's: stopped just now; pull requests #67 (open, 1 check failed), #68 (a draft)"
+        ));
         assert!(m.starts_with(
             "fctl woke you, the autopilot: people steered you and your sessions moved on."
         ));
@@ -1882,6 +2066,47 @@ mod tests {
         assert!(m.contains(
             "\n\nYour context holds 310K tokens: at 400K, a fresh session takes over from you at your next wake"
         ));
+    }
+
+    #[test]
+    fn says_how_an_open_pull_request_stands() {
+        use fctl_proto::session::PullRequestChecks;
+        let pr = |state: Option<&str>, checks: Option<(u32, u32, u32)>| PullRequestRef {
+            number: 67,
+            url: "https://github.com/acme/shop/pull/67".into(),
+            title: None,
+            state: state.map(str::to_owned),
+            repo: None,
+            state_changed_at: None,
+            updated_at: None,
+            checks: checks.map(|(passed, failed, pending)| PullRequestChecks {
+                passed,
+                failed,
+                pending,
+                sha: None,
+                at: 0,
+                review: None,
+            }),
+        };
+        assert_eq!(open_pull(&pr(None, None)).as_deref(), Some("#67 (open)"));
+        assert_eq!(
+            open_pull(&pr(Some("open"), Some((5, 0, 0)))).as_deref(),
+            Some("#67 (open, checks pass)")
+        );
+        assert_eq!(
+            open_pull(&pr(Some("open"), Some((4, 1, 1)))).as_deref(),
+            Some("#67 (open, 1 check failed)")
+        );
+        assert_eq!(
+            open_pull(&pr(Some("draft"), Some((2, 0, 3)))).as_deref(),
+            Some("#67 (a draft, checks running)")
+        );
+        assert_eq!(
+            open_pull(&pr(Some("queued"), Some((0, 0, 0)))).as_deref(),
+            Some("#67 (in a merge queue)")
+        );
+        assert_eq!(open_pull(&pr(Some("merged"), Some((5, 0, 0)))), None);
+        assert_eq!(open_pull(&pr(Some("closed"), None)), None);
     }
 
     #[test]

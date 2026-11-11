@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agoShort,
+  agoShortWords,
   browserName,
   cpus,
   diskBelow,
@@ -19,6 +20,11 @@ describe("format", () => {
   it("formats compact relative times", () => {
     expect(agoShort(undefined, now)).toBe("");
     expect(agoShort(now - 10_000, now)).toBe("now");
+    // After a word: never "now ago", nor "Oct 3 ago".
+    expect(agoShortWords(now - 10_000, now)).toBe("just now");
+    expect(agoShortWords(now - 4 * 60_000, now)).toBe("4m ago");
+    expect(agoShortWords(now - 2 * 86_400_000, now)).toBe("2d ago");
+    expect(agoShortWords(now - 30 * 86_400_000, now)).not.toMatch(/ago|now/);
     expect(agoShort(now - 4 * 60_000, now)).toBe("4m");
     expect(agoShort(now - 3 * 3_600_000, now)).toBe("3h");
     expect(agoShort(now - 2 * 86_400_000, now)).toBe("2d");

@@ -10,6 +10,7 @@ import {
   handoffWords,
   hasPlaceholders,
   phase,
+  planDone,
   splitBriefing,
   splitCrewNote,
   wakeText,
@@ -64,6 +65,20 @@ describe("where an autopilot stands", () => {
   it("wakes, and starts, in its session", () => {
     const a = autopilot({ session: { id: "ses_1", number: 7, status: "provisioning", started_at: NOW } });
     expect(phase(a, NOW)).toMatchObject({ word: "Waking", line: "Its session #7 is starting." });
+  });
+
+  it("says this session in the session it works in, and only there", () => {
+    const working = autopilot({ session: { id: "ses_1", number: 7, status: "running", started_at: NOW } });
+    expect(phase(working, NOW, "ses_1").line).toBe("It works in this session now.");
+    expect(phase(working, NOW, "ses_0").line).toBe("It works in its session #7 now.");
+    const waking = autopilot({ session: { id: "ses_1", number: 7, status: "queued", started_at: NOW } });
+    expect(phase(waking, NOW, "ses_1").line).toBe("This session is starting.");
+  });
+
+  it("counts its plan's checklist", () => {
+    expect(planDone("- [x] Board\n- [ ] Deals\n  * [X] Stages\nNotes")).toEqual({ checked: 2, of: 3 });
+    expect(planDone("Just prose")).toBeUndefined();
+    expect(planDone(undefined)).toBeUndefined();
   });
 
   it("waits for people while it asks, and goes on meanwhile", () => {

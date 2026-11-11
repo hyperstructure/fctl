@@ -295,6 +295,88 @@ describe("the session page", () => {
     expect(open()).toEqual(["Changes"]);
   });
 
+  it("shows an autopilot's own session its autopilot, plan and sessions, and leaves out what it doesn't keep", () => {
+    const pilot: G.Session = {
+      ...session("running"),
+      title: "Autopilot of web",
+      autopilot: { role: "pilot", project_id: "prj_1", project_slug: "web" },
+    };
+    const autopilot: G.Autopilot = {
+      project_id: "prj_1",
+      project_slug: "web",
+      scope: "project",
+      state: "on",
+      owner: { id: "usr_ada", name: "Ada Lovelace" },
+      keep_owner: false,
+      direction: "Ship the checkout.",
+      direction_at: 0,
+      plan: "- [x] Cart\n- [ ] Apple Pay",
+      plan_at: Date.now() - 120_000,
+      powers: ["merge"],
+      check_in_minutes: 60,
+      crew_max: 3,
+      session: { id: "ses_a", number: 12, status: "running", started_at: 0 },
+      check_ins: 4,
+      notes: [],
+      asks: [{ id: "apa_1", kind: "question", text: "Which provider?", status: "open", created_at: 0 }],
+      crew: [
+        {
+          id: "ses_c",
+          project_id: "prj_1",
+          project_slug: "web",
+          number: 14,
+          title: "Add Apple Pay",
+          status: "running",
+          created_at: 0,
+        },
+      ],
+      crew_total: 1,
+      can: { steer: true, secrets: true, read: true },
+      created_at: 0,
+      updated_at: 0,
+    };
+    queryClient.setQueryData(keys.autopilot("web"), autopilot);
+    const p = page(pilot);
+    p.snapshot([], pilot);
+    const rail = () => document.querySelector("aside.lg\\:block")?.textContent ?? "";
+    expect(rail()).toContain("At work");
+    expect(rail()).toContain("It works in this session now.");
+    expect(rail()).toContain("Which provider?");
+    expect(rail()).toContain("Wake now");
+    expect(rail()).toContain("Its plan");
+    expect(rail()).toContain("1 of 2");
+    expect(rail()).toContain("Its sessions");
+    expect(rail()).toContain("Add Apple Pay");
+    // It changed nothing: no changes, and no retrospectives or memory, which are its sessions'.
+    expect(rail()).not.toContain("Changes");
+    expect(rail()).not.toContain("Retrospective");
+    expect(rail()).not.toContain("Memory");
+
+    // Once it made changes, they show.
+    p.snapshot(
+      [
+        ev("git", {
+          ahead: 1,
+          behind: 0,
+          uncommitted: 0,
+          pushed: true,
+          files: [{ path: "plan.md", status: "added", additions: 3, deletions: 0 }],
+        }),
+      ],
+      pilot,
+    );
+    expect(rail()).toContain("Changes");
+
+    // An earlier session of its own says where it works now.
+    queryClient.setQueryData(keys.autopilot("web"), {
+      ...autopilot,
+      session: { id: "ses_z", number: 20, status: "running", started_at: 0 },
+    });
+    p.snapshot([], pilot);
+    expect(rail()).toContain("It works in its session #20 now.");
+    expect(rail()).toContain("This is an earlier session of its own: fctl wakes it in #20 now.");
+  });
+
   it("shows or hides the details with d: the rail where it fits, else the sheet", () => {
     page();
     const rail = () => !!document.querySelector("aside.lg\\:block");

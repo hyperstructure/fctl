@@ -65,6 +65,13 @@ agent that manages a project needs most of the API besides.
   credential where anything the agent runs reads it; this way access
   ends with the session, the runner and the autopilot's state, which the
   control plane checks at every request.
+- **It looks after people's sessions too** (added later). Those people
+  start in its places stay theirs: it never messages or stops them. But a
+  pull request left open falls behind what its sessions merge, so its
+  brief lists people's sessions at work and those with a pull request
+  open, and it asks people whether to help get one merged once it looks
+  ready or stuck; with their yes, a session of its own brings it up to
+  date and merges it.
 - **People steer and answer it without it waiting.** Notes stay with it
   until removed, and a newer note wins; its direction is theirs to change.
   It asks a question with answers to click and Markdown that helps answer
