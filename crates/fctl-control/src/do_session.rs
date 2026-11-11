@@ -263,7 +263,7 @@ const SEARCH_BACKFILL_ROUNDS: u32 = 10;
 const SEARCH_RETRIES: u32 = 5;
 
 /// The meta key that says D1's row lacks the summary's latest changes,
-/// with how many writes in a row failed: the alarm tries again
+/// with since when writes have failed in a row: the alarm tries again
 /// (`write_through::retry_in`). In storage, as the object may be evicted
 /// before it does.
 const D1_BEHIND: &str = "d1_behind";
@@ -899,6 +899,19 @@ impl SessionObject {
         let message = matches!(b.delivery.kind, DeliveryKind::Message { .. });
         if self.summary().is_some_and(|s| s.review.is_some()) {
             return Err(api_err(ErrorCode::Conflict, REVIEWS_TAKE_NO_MESSAGES));
+        }
+        // Only a resume starts a failed session again: a message would wait
+        // for a run that never comes. Callers refuse it by D1's row too, which
+        // may not say it failed yet.
+        if message
+            && self
+                .summary()
+                .is_some_and(|s| s.status == SessionStatus::Failed)
+        {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "The session failed. Resume it to continue.",
+            ));
         }
         if let Some(key) = b.client_key.as_deref() {
             if let Some(delivery_id) = self.keyed(key) {
@@ -4418,16 +4431,18 @@ impl SessionObject {
     }
 
     /// A write of the summary failed: the alarm tries again, waiting
-    /// longer after each failure in a row.
+    /// longer the longer writes have failed.
     async fn d1_behind(&self) {
-        let failures = self
-            .meta(D1_BEHIND)
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.set_meta(D1_BEHIND, &failures.to_string());
-        if let Some(wait) = write_through::retry_in(failures) {
-            self.arm(now_ms() + wait).await;
+        let now = now_ms();
+        let since = match self.meta(D1_BEHIND).and_then(|v| v.parse::<i64>().ok()) {
+            Some(since) => since,
+            None => {
+                self.set_meta(D1_BEHIND, &now.to_string());
+                now
+            }
+        };
+        if let Some(wait) = write_through::retry_in(since, now) {
+            self.arm(now + wait).await;
         }
     }
 

@@ -149,6 +149,10 @@ struct QueueRow {
     /// isn't ready: unlike after other declines, a resume goes back there.
     #[serde(default)]
     driver_declined: Option<f64>,
+    /// Building its spec failed this many times in a row, in a way that may
+    /// pass. Unlike declines, these leave it its runner.
+    #[serde(default)]
+    spec_failures: Option<f64>,
 }
 
 impl QueueRow {
@@ -390,6 +394,8 @@ impl DurableObject for FleetObject {
         add_column(&sql, "queue", "reason", "TEXT");
         // Set when its runner declined it for its driver (`driver_declined`).
         add_column(&sql, "queue", "driver_declined", "INTEGER");
+        // How many times in a row building its spec failed (`spec_failures`).
+        add_column(&sql, "queue", "spec_failures", "INTEGER");
         add_column(&sql, "runners", "memory_available_mb", "INTEGER");
         add_column(&sql, "runners", "disk_available_mb", "INTEGER");
         // Set while the runner drains: since when, and the admin who drained
@@ -2236,7 +2242,7 @@ impl FleetObject {
         let now = now_ms();
         let queued: Vec<QueueRow> = self
             .sql
-            .exec("SELECT session_id, attempts, reason, enqueued_at, driver_declined FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
+            .exec("SELECT session_id, attempts, reason, enqueued_at, driver_declined, spec_failures FROM queue WHERE not_before <= ? ORDER BY enqueued_at ASC LIMIT 50", Some(vec![iv(now)]))
             .and_then(|c| c.to_array::<QueueRow>())
             .unwrap_or_default();
         if queued.is_empty() {
@@ -2323,13 +2329,16 @@ impl FleetObject {
                     );
                     // A service that didn't answer, or an error on our side
                     // (D1 fails for a moment now and then), may well pass.
+                    // Counted apart from declines: the runner that has its
+                    // sandbox didn't refuse it, so a resume still goes there.
+                    let failures = item.spec_failures.unwrap_or(0.0) as i64;
                     let retryable =
                         matches!(e.0.code, ErrorCode::Unavailable | ErrorCode::Internal)
-                            && (item.attempts as i64) < MAX_ATTEMPTS;
+                            && failures < MAX_ATTEMPTS;
                     if retryable {
                         let _ = self.sql.exec(
-                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
-                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000), item.driver_declined()]),
+                            "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined, spec_failures) VALUES (?, ?, ?, ?, ?, ?)",
+                            Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64), iv(now + 15_000), item.driver_declined(), iv(failures + 1)]),
                         );
                         let why = if e.0.code == ErrorCode::Internal {
                             "Retrying after an error on our side".to_owned()

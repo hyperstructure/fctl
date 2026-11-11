@@ -2,28 +2,27 @@
 //! object has the session as it is; D1's row is the copy that lists,
 //! searches and the API read, and what they decide by. A write of the
 //! summary that fails (D1 can fail for a moment) is tried again, sooner at
-//! first and then every few minutes, until one lands or a later change
-//! writes it anyway; and an older write that lands after a newer one is
-//! followed by another of the summary as it is then.
+//! first and then every few minutes for an hour, until one lands or a
+//! later change writes it anyway; and an older write that lands after a
+//! newer one is followed by another of the summary as it is then.
 
-/// The first wait before a failed write is tried again; each failure after
-/// it doubles it, up to [`RETRY_MAX_MS`].
+/// The shortest wait before a failed write is tried again.
 pub const RETRY_FIRST_MS: i64 = 5_000;
 /// The longest wait between tries.
 pub const RETRY_MAX_MS: i64 = 5 * 60 * 1000;
-/// The most tries after failures in a row, about an hour of them: then the
-/// next change to the summary writes it.
-pub const RETRIES: u32 = 18;
+/// How long after writes started failing the object stops trying again by
+/// itself: then the next change to the summary, or the next time its alarm
+/// goes off for something else, writes it.
+pub const GIVE_UP_MS: i64 = 60 * 60 * 1000;
 
-/// How long after its `failures`-th failed write in a row the object tries
-/// again; `None` once it has tried [`RETRIES`] times.
-pub fn retry_in(failures: u32) -> Option<i64> {
-    let doublings = failures.checked_sub(1).filter(|n| *n < RETRIES)?;
-    Some(
-        RETRY_FIRST_MS
-            .saturating_mul(1 << doublings.min(16))
-            .min(RETRY_MAX_MS),
-    )
+/// How long after a failed write the object tries again, given since when
+/// its writes have failed in a row (`since`): as long again as they have
+/// failed, from [`RETRY_FIRST_MS`] to [`RETRY_MAX_MS`], so that tries thin
+/// out the longer D1 stays down, however often the session changed
+/// meanwhile; `None` once they have failed for [`GIVE_UP_MS`].
+pub fn retry_in(since: i64, now: i64) -> Option<i64> {
+    let failing = now.saturating_sub(since).max(0);
+    (failing < GIVE_UP_MS).then(|| failing.clamp(RETRY_FIRST_MS, RETRY_MAX_MS))
 }
 
 /// The writes of the summary under way and done, by the order they
@@ -77,19 +76,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tries_again_sooner_first_then_every_five_minutes_for_about_an_hour() {
-        assert_eq!(retry_in(0), None);
-        let waits: Vec<i64> = (1..=RETRIES).map_while(retry_in).collect();
-        assert_eq!(
-            &waits[..7],
-            &[5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000]
-        );
-        assert_eq!(waits.len(), RETRIES as usize);
-        assert!(waits[7..].iter().all(|w| *w == RETRY_MAX_MS));
-        let total: i64 = waits.iter().sum();
-        assert!((55 * 60_000..75 * 60_000).contains(&total), "{total}");
-        assert_eq!(retry_in(RETRIES + 1), None);
-        assert_eq!(retry_in(u32::MAX), None);
+    fn tries_again_as_long_after_as_writes_have_failed_for_an_hour() {
+        let since = 1_000_000;
+        assert_eq!(retry_in(since, since), Some(RETRY_FIRST_MS));
+        assert_eq!(retry_in(since, since + 2_000), Some(RETRY_FIRST_MS));
+        assert_eq!(retry_in(since, since + 40_000), Some(40_000));
+        assert_eq!(retry_in(since, since + 20 * 60_000), Some(RETRY_MAX_MS));
+        assert_eq!(retry_in(since, since + GIVE_UP_MS - 1), Some(RETRY_MAX_MS));
+        assert_eq!(retry_in(since, since + GIVE_UP_MS), None);
+        // A clock that went back waits the least.
+        assert_eq!(retry_in(since, since - 10_000), Some(RETRY_FIRST_MS));
+    }
+
+    #[test]
+    fn a_busy_session_keeps_trying_for_the_hour() {
+        // It changes every second while D1 is down: each failed write asks
+        // again, and none of them uses the tries up.
+        let since = 0;
+        let mut now = since;
+        let mut tries = 0;
+        while let Some(wait) = retry_in(since, now) {
+            assert!((RETRY_FIRST_MS..=RETRY_MAX_MS).contains(&wait));
+            now += if now < 60_000 { 1_000 } else { wait };
+            tries += 1;
+        }
+        assert!(now >= GIVE_UP_MS, "{now}");
+        assert!(tries > 60, "{tries}");
     }
 
     #[test]
