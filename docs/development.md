@@ -15,7 +15,11 @@ subscription, Cloudflare account or GitHub App.
   control plane for wrangler. The first `cargo xtask dev` installs it with
   `cargo install` if it isn't on your PATH. On Linux that needs pkg-config
   and OpenSSL's headers: `sudo apt install pkg-config libssl-dev` on Debian
-  and Ubuntu.
+  and Ubuntu. Its first build downloads the tools it builds with, and keeps
+  them in `~/.cache/worker-build` (`~/Library/Caches/worker-build` on
+  macOS): the wasm-bindgen CLI matching `Cargo.lock`'s `wasm-bindgen` and,
+  for release builds, wasm-opt, from GitHub's release downloads, and
+  esbuild, from npm. CI keeps that directory in a cache.
 - Optional, for release builds: [zig](https://ziglang.org) and
   `cargo install cargo-zigbuild`.
 

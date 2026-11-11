@@ -1,0 +1,47 @@
+name: worker-build's tools
+description: >
+  Restores the tools worker-build downloads to build the Worker, which it
+  keeps in ~/.cache/worker-build: the wasm-bindgen CLI matching Cargo.lock's
+  wasm-bindgen, from GitHub's release downloads; esbuild, from npm; and for
+  release builds wasm-opt, from GitHub's release downloads too. Without them
+  every build downloads them again, and fails while GitHub's downloads do
+  (#487). The key is the versions that pick them: worker-build's (the worker
+  crate's, released with it) and wasm-bindgen's, both from Cargo.lock. The
+  job saves the cache after its build when this restored none (only main
+  does, like the other caches), with the key this outputs.
+inputs:
+  profile:
+    description: dev or release, as worker-build builds (release builds need wasm-opt too)
+    required: true
+outputs:
+  key:
+    description: The key to save ~/.cache/worker-build under
+    value: ${{ steps.versions.outputs.key }}
+  cache-hit:
+    description: true when the cache had the tools for these versions
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: The versions that pick worker-build's tools
+      id: versions
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+      run: |
+        # A package's version is on the line after its name; more than one
+        # version of a package joins them with +.
+        version() { sed -n "/^name = \"$1\"\$/{n;s/^version = \"\(.*\)\"\$/\1/p;}" Cargo.lock | paste -sd+; }
+        worker=$(version worker)
+        bindgen=$(version wasm-bindgen)
+        # Each on its own: bash -e stops at neither of `a && b` but the last.
+        test -n "$worker"
+        test -n "$bindgen"
+        echo "worker-build $worker, wasm-bindgen $bindgen, $PROFILE builds"
+        echo "key=worker-build-$RUNNER_OS-$RUNNER_ARCH-$worker-wasm-bindgen-$bindgen-$PROFILE" >> "$GITHUB_OUTPUT"
+    - name: worker-build's tools from the cache
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/worker-build
+        key: ${{ steps.versions.outputs.key }}

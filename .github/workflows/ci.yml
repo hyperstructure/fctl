@@ -110,7 +110,10 @@ jobs:
   # Nothing else runs the control plane before it deploys: this applies the
   # migrations to a fresh local D1, starts the Worker, bootstraps an owner,
   # a credential, a runner and a project, and runs one fake-claude session
-  # through a host to its commit and a stop.
+  # through a host to its commit and a stop. The tools worker-build downloads
+  # to build the Worker (wasm-bindgen from GitHub's release downloads) come
+  # from a cache, so that GitHub's downloads failing doesn't fail it (#487):
+  # it downloads them into it when it has none, and only main saves it.
   dev:
     name: cargo xtask dev --smoke
     runs-on: ubuntu-24.04
@@ -125,8 +128,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: ./.github/actions/worker-build
+        id: worker-build
+        with:
+          profile: dev
       # No npm ci: like a fresh clone, cargo xtask dev installs what it needs.
       - run: xtask dev --smoke
+      - name: Save worker-build's tools
+        if: steps.worker-build.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/worker-build
+          key: ${{ steps.worker-build.outputs.key }}
 
   # The firecracker driver's tests that boot microVMs (`--ignored` ones in
   # crates/fctl-host/src/driver/firecracker), which need KVM: GitHub's x86_64
@@ -209,7 +222,8 @@ jobs:
   # The Worker the deploy ships, built beside the checks. Its release build
   # takes two minutes, so it is cached by what it is built from: a push that
   # leaves its crates, the manifests, the toolchain and this workflow as they
-  # were deploys the Worker built for an earlier one.
+  # were deploys the Worker built for an earlier one. worker-build's tools
+  # come from a cache too, as in cargo xtask dev --smoke.
   worker:
     name: Build the Worker
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -227,6 +241,11 @@ jobs:
           key: worker-${{ env.WORKER_BUILD }}-${{ hashFiles('crates/fctl-control/**', 'crates/fctl-domain/**', 'crates/fctl-proto/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', '.github/workflows/ci.yml') }}
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/rust
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/worker-build
+        id: worker-build
+        with:
+          profile: release
       - name: Build it
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -237,6 +256,12 @@ jobs:
         with:
           path: crates/fctl-control/build
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Save worker-build's tools
+        if: steps.cache.outputs.cache-hit != 'true' && steps.worker-build.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/worker-build
+          key: ${{ steps.worker-build.outputs.key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: worker
