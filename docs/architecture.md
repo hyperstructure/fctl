@@ -2226,7 +2226,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    when it asks something ([Notifications](#notifications)); *Needs you* leaves them to the autopilot while it is
    on, unless someone follows one; while it is paused or off, they are its
    owner's there as any session they started. They show the autopilot's
-   mark in lists and link back to its tab.
+   mark in lists and link back to its tab. They see only what it writes
+   them, and it may not upload attachments: it passes a screenshot on as
+   the link `fctl publish` gives it, where the project publishes them
+   ([Published screenshots](#published-screenshots)).
 6. **Asking people** (`fctl autopilot ask`). A question of at most 500
    characters with up to six answers to click and Markdown that helps
    answer (`detail`, such as screenshots of two designs it published), or
@@ -3124,7 +3127,11 @@ The setting reaches the agent in its `SessionSpec`, only when the instance
 allows it too, and through hosts that know it: an older host leaves it out
 of the agent's configuration, so its agents never offer `fctl publish`.
 When it is on, and the sandbox's fctl has the command, `~/AGENTS.md` tells
-Claude to try `--attach` and publish when GitHub refuses.
+Claude to try `--attach` and publish when GitHub refuses. An autopilot's
+own session opens no pull requests and may not upload attachments, so its
+`~/AGENTS.md` tells it instead to pass a screenshot on to one of its
+sessions (one people attached to a message to it, or one it made) by
+publishing it and putting the link in the session's task or a message.
 
 ### Images agents read
 

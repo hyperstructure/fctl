@@ -28,14 +28,17 @@ pub struct Extras<'a> {
     /// The agent may comment but not push, and resolves review threads
     /// with `fctl resolve`.
     pub review_threads: bool,
+    /// The session is an autopilot's own: it passes screenshots on to its
+    /// sessions rather than putting them in pull requests.
+    pub autopilot: bool,
     /// Now, for how old the notes are.
     pub now: i64,
 }
 
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
 /// about the work (Claude reads it through `~/.claude/CLAUDE.md`), and what
-/// else its project turned on: how it shows screenshots in pull requests,
-/// resolves review threads when it may comment but not push, the project's
+/// else its project turned on: how it shows screenshots in pull requests
+/// (or, for an autopilot, passes them on to its sessions), resolves review threads when it may comment but not push, the project's
 /// memory and how to keep it, and how to record retrospectives.
 pub fn agents_md(extras: &Extras<'_>) -> String {
     let mut s = AGENTS_MD.to_owned();
@@ -48,7 +51,12 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
         } else {
             format!("{days} days")
         };
-        s.push_str(&SCREENSHOTS_MD.replace("{lasts}", &lasts));
+        let md = if extras.autopilot {
+            AUTOPILOT_SCREENSHOTS_MD
+        } else {
+            SCREENSHOTS_MD
+        };
+        s.push_str(&md.replace("{lasts}", &lasts));
     }
     if let Some(memory) = extras.memory {
         s.push_str(&memory_md(memory, extras.now));
@@ -278,6 +286,38 @@ screenshot shows.
   people who manage the session can delete it.
 - PNG, JPEG, GIF and WebP images of at most 5 MB.
 - If `fctl publish` fails, describe the screenshots in words instead.
+"#;
+
+/// An autopilot's own session opens no pull requests: it publishes
+/// screenshots to pass them on to the sessions it starts, which see only
+/// what it writes them, and to people in what it asks them. It can't
+/// attach files (`fctl run --attach`, `fctl send --attach`): the API
+/// refuses it uploads.
+const AUTOPILOT_SCREENSHOTS_MD: &str = r#"
+## Screenshots for your sessions
+
+Your sessions see only what you write them: not the images people attach
+to your messages, nor the files in this sandbox, and `fctl run --attach`
+and `fctl send --attach` don't work for you. To pass a screenshot on to
+one of your sessions (one people sent you, or one you made), publish it on
+fctl, which talks to this session directly, and put the link it prints in
+the session's task (`fctl run`) or in a message (`fctl send`):
+
+```sh
+fctl publish checkout.png
+fctl send <project>#<n> "People see this on the checkout page: https://…/checkout.png (download it with curl -sfLo checkout.png <link> to look at it). Make the total fit on one line."
+```
+
+- Say what the screenshot shows and what to do about it, and that the
+  session downloads it to look at it.
+- The same Markdown, `![checkout.png](https://…)`, shows it to people in
+  what you ask them (`fctl autopilot ask --detail`).
+- Anyone who has a link can open it, for {lasts}; then it stops working.
+  Publish only what the work needs, never secrets, tokens or people's
+  details. If you publish one by mistake, say so in your log: people who
+  manage the session can delete it.
+- PNG, JPEG, GIF and WebP images of at most 5 MB.
+- If `fctl publish` fails, describe the screenshot in words instead.
 "#;
 
 /// `paths` say where the other repositories go; `sandbox` what the sandbox
@@ -1686,6 +1726,27 @@ mod tests {
         assert!(md.contains("for 30 days; then it stops working"));
         assert!(md.contains("If you publish one by mistake, say so"));
         assert!(agents_md(&screenshots(1)).contains("for 24 hours; then"));
+    }
+
+    #[test]
+    fn an_autopilot_passes_screenshots_on_to_its_sessions_as_links() {
+        let md = agents_md(&Extras {
+            autopilot: true,
+            ..screenshots(30)
+        });
+        assert!(md.contains("## Screenshots for your sessions"));
+        assert!(md.contains("`fctl send --attach` don't work for you"));
+        assert!(md.contains("fctl publish checkout.png\n"));
+        assert!(md.contains("fctl send <project>#<n> \"People see this"));
+        assert!(md.contains("for 30 days; then it stops working"));
+        // It opens no pull requests.
+        assert!(!md.contains("## Screenshots in pull requests"));
+        // Where the project doesn't publish, it hears nothing of it.
+        let md = agents_md(&Extras {
+            autopilot: true,
+            ..Extras::default()
+        });
+        assert!(!md.contains("fctl publish"));
     }
 
     fn note(
