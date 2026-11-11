@@ -636,6 +636,7 @@ fctl autopilot brief                         # where things stand: direction, no
 fctl run --title "Pipeline board" "Build the pipeline board: …"   # a session of its own; returns at once
 fctl show crm#12 && fctl logs crm#12         # what one did
 fctl send crm#12 "Use the existing Card component."   # answer it, steer it
+fctl resume crm#12 "Carry on where you left off."      # one that failed, once what failed it has passed
 fctl autopilot plan --file plan.md           # its plan, whole
 fctl autopilot log "Started crm#12 for the board: everything else builds on deals moving."
 fctl autopilot ask "Which layout?" --detail-file options.md -o Compact -o Roomy   # doesn't wait

@@ -67,6 +67,7 @@ pub mod webauthn;
 pub mod webhooks;
 pub mod webpush;
 pub mod workspace;
+pub mod write_through;
 
 /// Fills `buf` with cryptographically secure random bytes.
 ///

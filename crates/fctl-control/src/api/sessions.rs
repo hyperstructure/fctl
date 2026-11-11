@@ -732,11 +732,28 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
     })
 }
 
+/// The session's status as its SessionDO has it now, or as D1's row says
+/// when the object can't say. The row follows the object's summary, but
+/// only once a write to D1 lands: one that failed leaves it behind until
+/// the object tries again (`fctl_domain::write_through`).
+async fn status_now(ctx: &Ctx, row: &SessionRow) -> SessionStatus {
+    #[derive(serde::Deserialize)]
+    struct Live {
+        status: SessionStatus,
+    }
+    let live = match internal::session_stub(&ctx.env, &row.id) {
+        Ok(stub) => internal::get::<Live>(&stub, "/summary").await.ok(),
+        Err(_) => None,
+    };
+    live.map_or_else(|| row.status(), |l| l.status)
+}
+
 pub async fn stop(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
-    let status = a.row.status();
-    if status.is_terminal() {
+    // Over only when the object says so too: D1's row may say it stopped
+    // while a write that says it runs again hasn't landed.
+    if a.row.status().is_terminal() && status_now(ctx, &a.row).await.is_terminal() {
         return get(ctx, id).await;
     }
     let fleet = internal::fleet_stub(&ctx.env)?;
@@ -766,7 +783,9 @@ pub async fn resume(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let a = access::session(ctx, id).await?;
     a.require_owner()?;
     refuse_review(&a.row)?;
-    if !a.row.status().is_terminal() {
+    // As the object has it: D1's row may still say it runs after it failed
+    // or stopped, while the write that says so hasn't landed.
+    if !status_now(ctx, &a.row).await.is_terminal() {
         return Err(conflict("The session is still running"));
     }
     let user = ctx.user()?.clone();

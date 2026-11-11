@@ -22,6 +22,7 @@ use fctl_domain::notify;
 use fctl_domain::search;
 use fctl_domain::tickets::Progress;
 use fctl_domain::usage as plan;
+use fctl_domain::write_through::{self, Landed};
 use fctl_proto::api::{EventPage, PlanLimit, SessionDiff};
 use fctl_proto::event::{
     DiffKey, EventBody, FileDiff, FollowUp, FollowUpEvent, GitState, KeptImage, StatusChange,
@@ -167,6 +168,9 @@ struct Mem {
     pulse_weight: u32,
     last_d1_write: i64,
     d1_dirty: bool,
+    /// The summary's writes to D1 under way and done, by the order they
+    /// started in.
+    d1_writes: write_through::Writes,
     /// A message or a reply came that the search index doesn't have yet.
     search_due: bool,
 }
@@ -257,6 +261,12 @@ const SEARCH_BACKFILL_ROUNDS: u32 = 10;
 /// what's new, waiting longer each time; after that the hourly job does
 /// (`housekeeping::index_sessions`).
 const SEARCH_RETRIES: u32 = 5;
+
+/// The meta key that says D1's row lacks the summary's latest changes,
+/// with since when writes have failed in a row: the alarm tries again
+/// (`write_through::retry_in`). In storage, as the object may be evicted
+/// before it does.
+const D1_BEHIND: &str = "d1_behind";
 
 /// The most of the agent's last message of a turn that SessionDO keeps,
 /// for the ticket's thread its session answers in, which shows a shorter
@@ -468,8 +478,9 @@ impl DurableObject for SessionObject {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        // Flush summary changes that were throttled.
-        if self.mem.borrow().d1_dirty {
+        // Flush summary changes that were throttled, or that D1 failed to
+        // take.
+        if self.mem.borrow().d1_dirty || self.meta(D1_BEHIND).is_some() {
             self.write_through().await;
         }
         self.flush_follow_ups(now_ms()).await;
@@ -888,6 +899,19 @@ impl SessionObject {
         let message = matches!(b.delivery.kind, DeliveryKind::Message { .. });
         if self.summary().is_some_and(|s| s.review.is_some()) {
             return Err(api_err(ErrorCode::Conflict, REVIEWS_TAKE_NO_MESSAGES));
+        }
+        // Only a resume starts a failed session again: a message would wait
+        // for a run that never comes. Callers refuse it by D1's row too, which
+        // may not say it failed yet.
+        if message
+            && self
+                .summary()
+                .is_some_and(|s| s.status == SessionStatus::Failed)
+        {
+            return Err(api_err(
+                ErrorCode::Conflict,
+                "The session failed. Resume it to continue.",
+            ));
         }
         if let Some(key) = b.client_key.as_deref() {
             if let Some(delivery_id) = self.keyed(key) {
@@ -4376,14 +4400,54 @@ impl SessionObject {
         }
     }
 
+    /// Writes the summary to the session's row in D1, which lists, the API
+    /// and the fleet decide by. A write that fails is tried again by the
+    /// alarm; one that D1 finished after a newer one, which it undid, is
+    /// written again.
     async fn write_through(&self) {
-        let Some(s) = self.summary() else { return };
-        {
-            let mut mem = self.mem.borrow_mut();
-            mem.d1_dirty = false;
-            mem.last_d1_write = now_ms();
+        loop {
+            let Some(s) = self.summary() else { return };
+            let n = {
+                let mut mem = self.mem.borrow_mut();
+                mem.d1_dirty = false;
+                mem.last_d1_write = now_ms();
+                mem.d1_writes.start()
+            };
+            if let Err(e) = self.write_summary(&s).await {
+                worker::console_error!("session write-through failed: {e}");
+                self.d1_behind().await;
+                return;
+            }
+            let landed = self.mem.borrow_mut().d1_writes.landed(n);
+            match landed {
+                Landed::Current => {
+                    self.delete_meta(D1_BEHIND);
+                    return;
+                }
+                Landed::Newer => return,
+                Landed::Overtaken => {}
+            }
         }
-        let Ok(db) = self.env.d1("DB") else { return };
+    }
+
+    /// A write of the summary failed: the alarm tries again, waiting
+    /// longer the longer writes have failed.
+    async fn d1_behind(&self) {
+        let now = now_ms();
+        let since = match self.meta(D1_BEHIND).and_then(|v| v.parse::<i64>().ok()) {
+            Some(since) => since,
+            None => {
+                self.set_meta(D1_BEHIND, &now.to_string());
+                now
+            }
+        };
+        if let Some(wait) = write_through::retry_in(since, now) {
+            self.arm(now + wait).await;
+        }
+    }
+
+    async fn write_summary(&self, s: &Session) -> std::result::Result<(), String> {
+        let db = self.env.d1("DB").map_err(|e| e.to_string())?;
         let stats = serde_json::to_string(&s.stats).unwrap_or_else(|_| "{}".into());
         let rc = s
             .remote_control
@@ -4430,14 +4494,11 @@ impl SessionObject {
                 crate::db::s(s.id.as_str()),
             ],
         );
-        match res {
-            Ok(query) => {
-                if let Err(e) = query.run().await {
-                    worker::console_error!("session write-through failed: {}", e.0.message);
-                }
-            }
-            Err(e) => worker::console_error!("session write-through failed: {}", e.0.message),
-        }
+        res.map_err(|e| e.0.message)?
+            .run()
+            .await
+            .map_err(|e| e.0.message)?;
+        Ok(())
     }
 
     fn notify_fleet(&self, s: &Session) {

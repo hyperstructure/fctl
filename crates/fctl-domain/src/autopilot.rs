@@ -733,7 +733,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         rules.crew_max
     ));
     s.push_str("- They work on the project's model and effort level. Where a piece of work calls for others, ask for them (`fctl run --model sonnet --effort low …`), naming the model by Claude Code's alias for its family's latest (`opus`, `sonnet`, `haiku`, `fable`), as people pick it, rather than by its ID.\n");
-    s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
+    s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. One that failed waits until you resume it with `fctl resume <project>#<n> \"…\"` (the message is optional), where it left off: resume it once what failed it has passed (an error on fctl's side, a runner that went away) or is fixed, or start a new one instead. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
     s.push_str(if rules.powers.contains(&AutopilotPower::Merge) {
         "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`).\n"
     } else {
@@ -1227,8 +1227,8 @@ fn crew_line(c: &CrewView<'_>) -> String {
             None => "stopped (a message resumes it)".to_owned(),
         },
         SessionStatus::Failed => match c.status_reason {
-            Some(why) => format!("failed: {why}"),
-            None => "failed".to_owned(),
+            Some(why) => format!("failed: {why} (`fctl resume` starts it again)"),
+            None => "failed (`fctl resume` starts it again)".to_owned(),
         },
     };
     let prs = if c.pull_requests.is_empty() {
@@ -2118,7 +2118,9 @@ mod tests {
             "fctl woke you, the autopilot: people steered you and your sessions moved on."
         ));
         assert!(m.contains("\n- Ada: Don't touch billing"));
-        assert!(m.contains("\n- shop#41 “Add Apple Pay”: failed: Its runner went away"));
+        assert!(m.contains(
+            "\n- shop#41 “Add Apple Pay”: failed: Its runner went away (`fctl resume` starts it again)"
+        ));
         assert!(m.contains("`fctl autopilot brief` shows the whole picture."));
         assert!(!m.contains("a fresh session takes over"));
         // Near where it hands off, it hears so.

@@ -983,7 +983,13 @@ and sealed Web Push key, and the audit log.
 **SessionDO** (one per session, SQLite storage) holds the event log and the
 live state of a session: connected viewers, the runner uplink, pending
 deliveries, and the in-progress streaming message. It writes summary changes
-through to D1. It also keeps the images its agent read for a week (see
+through to D1, where lists, the API and the fleet read them: a write that
+fails is tried again by its alarm, as long after as writes have failed
+(from 5 seconds up to every 5 minutes), for an hour
+(`fctl_domain::write_through`), and an older write that D1 finishes after
+a newer one is followed by another. Resuming and stopping a session go by
+SessionDO's status, which D1's row may lag, and SessionDO refuses a
+message to a session that failed, whatever D1 says. It also keeps the images its agent read for a week (see
 [Images agents read](#images-agents-read)).
 
 **FleetDO** (one per instance) holds runner control connections, assigns
@@ -1054,7 +1060,12 @@ queued → provisioning → preparing → running ⇄ idle → stopped
    free one it stays `queued`, and says why.
 2. FleetDO builds the `SessionSpec` just in time (repositories, branch, agent
    settings, secrets, fresh GitHub installation tokens, the starter's Claude
-   credential) and sends `start_session` to a runner.
+   credential) and sends `start_session` to a runner. When a service
+   didn't answer (GitHub) or an error on our side stopped it (D1 fails for
+   a moment now and then), the session stays `queued` and FleetDO tries
+   again every 15 seconds, up to five times, before it fails it. These
+   tries don't count as declines: a resume still goes to the runner that
+   has its sandbox.
 3. The host creates a sandbox with its driver (building the project's image
    first when it builds one from its repository and the files changed),
    injects `fctl-agent`, starts it detached, attaches to it, and opens the

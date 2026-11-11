@@ -240,6 +240,7 @@ export function SessionPage() {
   const stop = useMutation({
     mutationFn: () => api.stop(id),
     onSuccess: () => toast("Stopping the session"),
+    onError: (e) => toast(e.message, "error"),
   });
   // Live updates go to everyone watching and leave out whether *you* follow it.
   const following = initial.data?.following ?? false;
@@ -661,7 +662,8 @@ export function SessionPage() {
                           icon={<Play />}
                           onClick={() => {
                             close();
-                            resume.mutate(undefined);
+                            // The message box says so itself when it resumes the session.
+                            resume.mutate(undefined, { onError: (e) => toast(e.message, "error") });
                           }}
                         >
                           Resume
