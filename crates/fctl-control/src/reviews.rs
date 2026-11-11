@@ -1087,8 +1087,18 @@ pub async fn start(
         )?,
     ];
     if let Err(e) = crate::db::batch(&ctx.db, statements).await {
-        // Another delivery about the same commit started it meanwhile.
-        if e.0.message.contains("UNIQUE") {
+        // Another delivery about the same commit, or another person asking
+        // for it, started it meanwhile, which reviews_commit keeps to one:
+        // asked again, as D1's errors don't say which (AppError hides
+        // them).
+        let started: Option<Value> = q(
+            &ctx.db,
+            "SELECT 1 AS found FROM reviews WHERE project_id = ? AND repo_key = ? AND number = ? AND head_sha = ? AND attempt = ?",
+            &[s(&project.id), s(&key), n(pr.number as i64), s(&pr.head_sha), n(attempt)],
+        )?
+        .first()
+        .await?;
+        if started.is_some() {
             return Ok(Started::Already);
         }
         return Err(e);
