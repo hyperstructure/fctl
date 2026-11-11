@@ -95,10 +95,12 @@ export const keys = {
 };
 
 export const useInstance = () =>
-  useQuery({ queryKey: keys.instance, queryFn: api.instance, staleTime: 60_000 });
+  useQuery({ queryKey: keys.instance, queryFn: () => api.instance(), staleTime: 60_000 });
 
-/** You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you. */
-/** Who is signed in, or nothing when no one is; the server answering within `within` ms, if given. */
+/**
+ * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you.
+ * The server answers within `within` ms, if given.
+ */
 export async function fetchMe(within?: number): Promise<G.Me | null> {
   try {
     return await api.me(within);

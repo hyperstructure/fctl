@@ -3,7 +3,7 @@
 // sends everyone else to /login (or /setup on a fresh instance).
 
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
-import { api } from "@/lib/api";
+import { api, START_WITHIN } from "@/lib/api";
 import { appHistory } from "@/lib/history";
 import { PROJECT_VIEWS, type ProjectView } from "@/lib/project-page";
 import { fetchMe, keys, queryClient } from "@/lib/queries";
@@ -34,13 +34,19 @@ import {
   type WorkspaceTab,
 } from "@/routes/workspace";
 
-// Pages wait to know who is signed in as the app starts. A request the server never answers (the
-// app on an iPhone's Home Screen can come back after a while to one) kept the app blank until it
-// was closed: the request now fails after a while and goes again once, and then the error page
-// says so, with its Try again. Meanwhile, from a second on, Starting says what the app waits for.
-const START_LIMIT = 8_000;
+// Pages wait to know who is signed in, and what the instance offers, as the app starts. A request
+// the server never answers (the app on an iPhone's Home Screen can come back after a while to one)
+// kept the app blank until it was closed: each now fails after START_WITHIN and goes again once,
+// and then the error page says so, with its Try again. Meanwhile, from a second on, Starting says
+// what the app waits for.
 const me = () =>
-  queryClient.ensureQueryData({ queryKey: keys.me, queryFn: () => fetchMe(START_LIMIT), retry: 1 });
+  queryClient.ensureQueryData({ queryKey: keys.me, queryFn: () => fetchMe(START_WITHIN), retry: 1 });
+const instance = () =>
+  queryClient.ensureQueryData({
+    queryKey: keys.instance,
+    queryFn: () => api.instance(START_WITHIN),
+    retry: 1,
+  });
 
 // Unknown addresses get NotFound; a failed request or a crash anywhere, ErrorPage.
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });
@@ -62,7 +68,7 @@ const login = createRoute({
     deleted: flag(s.deleted),
   }),
   beforeLoad: async () => {
-    const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+    const info = await instance();
     if (info.setup_required) throw redirect({ to: "/setup" });
     if (await me()) throw redirect({ to: "/" });
   },
@@ -74,7 +80,7 @@ const earlyAccess = createRoute({
   path: "/early-access",
   component: EarlyAccessPage,
   beforeLoad: async () => {
-    const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+    const info = await instance();
     if (info.setup_required) throw redirect({ to: "/setup" });
     if (!info.features.early_access) {
       throw redirect({ to: "/login", search: { next: undefined, error: undefined, deleted: undefined } });
@@ -94,7 +100,7 @@ const app = createRoute({
   beforeLoad: async ({ location }) => {
     const user = await me();
     if (!user) {
-      const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+      const info = await instance();
       if (info.setup_required) throw redirect({ to: "/setup" });
       throw redirect({ to: "/login", search: { next: location.href, error: undefined, deleted: undefined } });
     }

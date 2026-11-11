@@ -67,6 +67,12 @@ export function clickConfirmed(
   return goConfirmed(href);
 }
 
+/**
+ * How long the app waits on the server as it starts (ms), and as its error page's Try again asks
+ * whether it answers: a request still unanswered then fails, rather than leaving the app blank.
+ */
+export const START_WITHIN = 8_000;
+
 interface RequestOptions {
   /** Whether a sensitive action may ask the person to confirm it's them, and go again. */
   again?: boolean;
@@ -179,7 +185,8 @@ function upload(
 }
 
 export const api = {
-  instance: () => request<G.InstanceInfo>("GET", "/instance"),
+  /** The instance's name and features: `within` ms at most, if given. */
+  instance: (within?: number) => request<G.InstanceInfo>("GET", "/instance", undefined, { within }),
   setup: (b: G.SetupRequest) => request<G.AuthResponse>("POST", "/setup", b),
   invitePreview: (token: string) => request<G.InvitePreview>("GET", `/invites/${enc(token)}`),
   /** Asks for early access, without an account (where `features.early_access`). */
