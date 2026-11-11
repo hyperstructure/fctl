@@ -308,6 +308,7 @@ describe("the session page", () => {
       state: "on",
       owner: { id: "usr_ada", name: "Ada Lovelace" },
       keep_owner: false,
+      fresh_asked: false,
       direction: "Ship the checkout.",
       direction_at: 0,
       plan: "- [x] Cart\n- [ ] Apple Pay",

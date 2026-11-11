@@ -26,6 +26,7 @@ import {
   Play,
   Plus,
   Power,
+  RefreshCw,
   Repeat,
   Send,
   Settings2,
@@ -883,6 +884,7 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
   const [taking, setTaking] = useState(false);
   const me = useMe().data;
   const mine = !!me && a.owner?.id === me.user.id;
+  const { fresh } = useMoves(a);
   return (
     <section
       aria-label="Where it stands"
@@ -983,6 +985,17 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
                       Watch its session
                     </MenuItem>
                   )}
+                  {a.state === "on" && a.session && (
+                    <MenuItem
+                      icon={<RefreshCw />}
+                      onClick={() => {
+                        close();
+                        fresh.mutate();
+                      }}
+                    >
+                      Hand off to a fresh session
+                    </MenuItem>
+                  )}
                   <MenuSeparator />
                   <MenuItem
                     danger
@@ -1013,7 +1026,10 @@ function Header({ project, a }: { project: G.Project; a: G.Autopilot }) {
   );
 }
 
-/** What people do with it from where it stands: wake or pause it while it's on, resume it once paused. */
+/**
+ * What people do with it from where it stands: wake it (in a fresh session too) or pause it while it's on,
+ * resume it once paused.
+ */
 export function useMoves(a: G.Autopilot) {
   const me = useMe().data;
   const mine = !!me && a.owner?.id === me.user.id;
@@ -1024,6 +1040,15 @@ export function useMoves(a: G.Autopilot) {
       toast("It wakes now");
     },
     onError: (e) => failed(e, "It didn't wake"),
+  });
+  // Its session at work finishes its turn first.
+  const fresh = useMutation({
+    mutationFn: () => api.wakeAutopilot(a.project_id, { fresh: true }),
+    onSuccess: (x) => {
+      patched(x);
+      toast(atWork(x) ? "A fresh session takes over once this turn ends" : "A fresh session takes over now");
+    },
+    onError: (e) => failed(e, "No fresh session took over"),
   });
   const pause = useMutation({
     mutationFn: () => api.pauseAutopilot(a.project_id),
@@ -1043,7 +1068,7 @@ export function useMoves(a: G.Autopilot) {
     },
     onError: (e) => failed(e, "It isn't resumed"),
   });
-  return { wake, pause, resume, mine };
+  return { wake, fresh, pause, resume, mine };
 }
 
 /** *Wake now* and *Pause* while it's on, *Resume* once paused: for those who steer it. */

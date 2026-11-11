@@ -661,4 +661,7 @@ A fresh session takes its place after 12 hours, or once its context holds
 as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
 at the first wake between its turns: it starts from the plan and log, so
 the session keeps them current, and as its context nears that size each
-wake message says so.
+wake message says so. People who steer it also start one when they
+choose (`fctl autopilot wake --fresh`), say to pick up what's new in
+fctl after a release: at once between its turns, else once its turn
+ends.

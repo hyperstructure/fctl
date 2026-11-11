@@ -13,6 +13,7 @@ import {
   planDone,
   splitBriefing,
   splitCrewNote,
+  wakeLead,
   wakeText,
   wokeLine,
 } from "./autopilot";
@@ -27,6 +28,7 @@ function autopilot(more: Partial<G.Autopilot> = {}): G.Autopilot {
     state: "on",
     owner: { id: "usr_noor", name: "Noor Haddad" },
     keep_owner: false,
+    fresh_asked: false,
     direction: "Ship the checkout.",
     direction_at: NOW - 86_400_000,
     powers: ["settings", "schedules"],
@@ -60,6 +62,21 @@ describe("where an autopilot stands", () => {
     expect(atWork(a)).toBe(true);
     expect(phase(a, NOW)).toMatchObject({ tone: "accent", word: "At work" });
     expect(phase(a, NOW).line).toBe("It works in its session #7 now.");
+  });
+
+  it("says a fresh session people asked for takes over once its turn ends", () => {
+    const session = { id: "ses_1", number: 7, status: "running" as const, started_at: NOW };
+    expect(phase(autopilot({ session, fresh_asked: true }), NOW).line).toBe(
+      "It works in its session #7 now. A fresh session takes over once this turn ends.",
+    );
+    // Between turns, it takes over as fctl wakes it.
+    const resting = autopilot({
+      session: { ...session, status: "idle" },
+      fresh_asked: true,
+      wake_at: NOW,
+      wake_reason: "fresh",
+    });
+    expect(phase(resting, NOW).line).toBe("A fresh session takes over now.");
   });
 
   it("wakes, and starts, in its session", () => {
@@ -154,6 +171,28 @@ describe("what woke it", () => {
     expect(wokeLine(wake({ reasons: ["moved", "crew"] }))).toBe(
       "Woke for being moved to another Claude subscription and its sessions",
     );
+    expect(wokeLine(wake({ reasons: ["fresh"] }))).toBe("Woke as someone asked for a fresh session");
+    expect(wokeLine(wake({ reasons: ["crew", "fresh"] }))).toBe(
+      "Woke for its sessions and someone asking for a fresh session",
+    );
+  });
+
+  it("says a fresh session took over, apart from a start", () => {
+    const briefing =
+      "You are the autopilot of the project Shop (shop): an agent…\n\n## Where to take it\n\nShip it.\n\n## How you work\n\n- …\n---\n\n";
+    expect(
+      wakeLead(`${briefing}fctl woke you, the autopilot: you were put on.`, wake({ reasons: ["started"] })),
+    ).toBe("It was put on autopilot: it reads its brief, then plans the work.");
+    expect(
+      wakeLead(
+        `${briefing}You take over from your last session, shop#12: people asked for a fresh session…\n\nfctl woke you…`,
+        wake({ reasons: ["fresh"] }),
+      ),
+    ).toBe("A fresh session takes over: it reads its brief, then goes on from its plan and log.");
+    expect(wakeLead("fctl woke you, the autopilot: someone woke you.", wake({ reasons: ["woken"] }))).toBe(
+      "Someone woke it: it reads what's new, then goes on.",
+    );
+    expect(wakeLead("fctl woke you…", wake({ reasons: ["check_in"] }))).toBe("For its check-in.");
   });
 });
 

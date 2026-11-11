@@ -2115,8 +2115,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    it in its current one with a message (`UserMessage.wake`, what woke it),
    which resumes it if it stopped, while that started less than 12 hours
    ago (`fctl_domain::autopilot::SHIFT_MS`), holds less context than where
-   people want it to hand off, and didn't fail, or works now
-   (`fctl_domain::autopilot::fresh`). Otherwise it stops that one and
+   people want it to hand off, didn't fail and people didn't ask for a
+   fresh one, or works now (`fctl_domain::autopilot::fresh`). Otherwise it
+   stops that one and
    starts a fresh one, whose first message is its briefing
    (`fctl_domain::autopilot::briefing`): who it is and for whom, the
    direction, and how it works, then why it takes over from the last one
@@ -2135,8 +2136,15 @@ sessions to do it, and sets up what the work needs, as far as they let it
    a fresh session takes over, and to keep its context lean: to read what
    it needs of a session rather than all of its transcript, and to hand
    long reading to a subagent. Changing the handoff, as changing its
-   model, changes how much it spends. So no conversation grows for
-   ever, and
+   model, changes how much it spends. Those who steer it also hand off
+   when they choose (*Hand off to a fresh session*, `fctl autopilot wake
+   --fresh`, the wake reason `fresh`), so that it starts from what fctl
+   and its briefing say now, after a release for one: between its turns
+   at once, else once its turn ends. That wake waits for the turn's end
+   (`fctl_domain::autopilot::holds`), which wakes it again at once
+   (`autopilots::session_moved`), and all it woke for meanwhile goes to
+   the fresh session rather than the one leaving (`Autopilot.fresh_asked`
+   says one is due). So no conversation grows for ever, and
    what must outlast one is where people see it too: its plan (Markdown it
    writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and
    the project's memory. `fctl autopilot brief` gives it where things
@@ -2155,8 +2163,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    reach it together; a minute after one of its sessions ends a turn, asks
    something or fails, gathered likewise (SessionObject tells it,
    `autopilots::session_moved`); and at once when someone wakes it. A wake
-   while its session works tells it what's new at its next step, and a
-   check-in waits. The message says why it woke and what is new since it
+   while its session works tells it what's new at its next step (one for
+   a fresh session waits for its turn to end), and a check-in waits. The message says why it woke and what is new since it
    last did: notes, a changed direction, answers, its sessions that moved,
    and people's sessions that ended a turn with a pull request open, which
    wake it for nothing themselves (`fctl_domain::autopilot::wake_message`). While its owner's plan is at

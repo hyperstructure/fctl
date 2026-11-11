@@ -303,8 +303,9 @@ export const api = {
     request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/pause`, b),
   resumeAutopilot: (project: string) =>
     request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/resume`, {}),
-  wakeAutopilot: (project: string) =>
-    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/wake`, {}),
+  /** Wakes it now; `fresh`, in a fresh session of its own, once its session's turn ends. */
+  wakeAutopilot: (project: string, body: G.WakeAutopilotRequest = {}) =>
+    request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/wake`, body),
   /** Its log, newest first, a page at a time. */
   autopilotLog: (project: string, before?: string, limit = 50) => {
     const p = new URLSearchParams({ limit: String(limit) });

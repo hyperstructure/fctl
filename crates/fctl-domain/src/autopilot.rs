@@ -271,6 +271,8 @@ pub struct OwnSession {
 pub enum Fresh {
     /// It failed.
     Failed,
+    /// People asked for a fresh one (`AutopilotWakeReason::Fresh`).
+    Asked,
     /// It started [`SHIFT_MS`] ago or more.
     Shift,
     /// Its context holds this many tokens, where it hands off or past it.
@@ -280,15 +282,20 @@ pub enum Fresh {
 /// Whether a wake goes to its session as it is, a message to it (`None`),
 /// or to a fresh session, and why. It carries on while it can take a
 /// message (waiting for one, at work, or stopped), started less than
-/// [`SHIFT_MS`] ago and holds less context than `handoff_at` tokens; at
-/// work, whenever it started and however full, it hears at its next step
-/// rather than stop halfway, and the first wake after its turn moves on.
-pub fn fresh(own: OwnSession, handoff_at: Option<u32>, now: Millis) -> Option<Fresh> {
+/// [`SHIFT_MS`] ago, holds less context than `handoff_at` tokens and
+/// people didn't ask for a fresh one (`asked`); at work, whenever it
+/// started and however full, it hears at its next step rather than stop
+/// halfway, and the first wake after its turn moves on (one people asked
+/// for waits for that turn's end: [`holds`]).
+pub fn fresh(own: OwnSession, handoff_at: Option<u32>, asked: bool, now: Millis) -> Option<Fresh> {
     if matches!(own.status, SessionStatus::Failed) {
         return Some(Fresh::Failed);
     }
     if at_work(own.status) {
         return None;
+    }
+    if asked {
+        return Some(Fresh::Asked);
     }
     if now - own.started_at >= SHIFT_MS {
         return Some(Fresh::Shift);
@@ -297,6 +304,15 @@ pub fn fresh(own: OwnSession, handoff_at: Option<u32>, now: Millis) -> Option<Fr
         (Some(tokens), Some(at)) if tokens >= u64::from(at) => Some(Fresh::Full(tokens)),
         _ => None,
     }
+}
+
+/// Whether a wake waits for its own session's turn to end, rather than
+/// reach it now: people asked for a fresh session to take over from it
+/// (`reasons` has [`AutopilotWakeReason::Fresh`]) while it works. All it
+/// woke for then goes to the fresh session, which the turn's end wakes at
+/// once, rather than to the one about to leave.
+pub fn holds(reasons: &[AutopilotWakeReason], status: Option<SessionStatus>) -> bool {
+    reasons.contains(&AutopilotWakeReason::Fresh) && status.is_some_and(at_work)
 }
 
 /// How near its own session is to handing off, for the wake message that
@@ -329,6 +345,9 @@ pub fn takes_over_from(why: Fresh, from: &str, handoff_at: Option<u32>) -> Optio
     let because = match why {
         // The wake's reasons say so (`Retry`).
         Fresh::Failed => return None,
+        Fresh::Asked => format!(
+            "You take over from your last session, {from}: people asked for a fresh session to take over, so fctl stopped it and started you, with what fctl and this briefing say now."
+        ),
         Fresh::Shift => format!(
             "You take over from your last session, {from}, which started {} ago: fctl starts a fresh session every {}, so that no conversation grows for ever, and stopped it.",
             duration(minutes(SHIFT_MS)),
@@ -770,7 +789,7 @@ fn handoff_line(handoff_at: Option<u32>) -> String {
         None => format!("after {}", duration(minutes(SHIFT_MS))),
     };
     format!(
-        "Each wake reads this whole conversation again, so keep it lean: read what you need of a session (`fctl show`, the end of `fctl logs`) rather than all of it, and hand long reading to a subagent that reports back. fctl starts a fresh session in your place {when}, at the first wake between your turns, and stops this one: bring your plan and log up to date before you end each turn."
+        "Each wake reads this whole conversation again, so keep it lean: read what you need of a session (`fctl show`, the end of `fctl logs`) rather than all of it, and hand long reading to a subagent that reports back. fctl starts a fresh session in your place {when}, at the first wake between your turns, and stops this one; people may ask for one sooner. Bring your plan and log up to date before you end each turn."
     )
 }
 
@@ -1288,6 +1307,7 @@ pub fn wake_message(news: &News<'_>) -> String {
             AutopilotWakeReason::Crew => "your sessions moved on",
             AutopilotWakeReason::Retry => "your last session failed, so this is a new one",
             AutopilotWakeReason::Moved => "you run on another Claude subscription now",
+            AutopilotWakeReason::Fresh => "people asked for a fresh session, which you are",
             AutopilotWakeReason::Other => "something needs you",
         })
         .collect();
@@ -1561,7 +1581,7 @@ mod tests {
             started_at: now - ago,
             context_tokens,
         };
-        let fresh_for = |o: OwnSession| fresh(o, None, now);
+        let fresh_for = |o: OwnSession| fresh(o, None, false, now);
         assert_eq!(fresh_for(own(SessionStatus::Idle, HOUR_MS, None)), None);
         assert_eq!(fresh_for(own(SessionStatus::Stopped, HOUR_MS, None)), None);
         assert_eq!(
@@ -1594,33 +1614,72 @@ mod tests {
         };
         let at = Some(250_000);
         assert_eq!(
-            fresh(own(SessionStatus::Idle, Some(249_999)), at, now),
+            fresh(own(SessionStatus::Idle, Some(249_999)), at, false, now),
             None
         );
         assert_eq!(
-            fresh(own(SessionStatus::Idle, Some(250_000)), at, now),
+            fresh(own(SessionStatus::Idle, Some(250_000)), at, false, now),
             Some(Fresh::Full(250_000))
         );
         assert_eq!(
-            fresh(own(SessionStatus::Stopped, Some(300_000)), at, now),
+            fresh(own(SessionStatus::Stopped, Some(300_000)), at, false, now),
             Some(Fresh::Full(300_000))
         );
         // At work, it hears at its next step; the wake after its turn hands off.
         assert_eq!(
-            fresh(own(SessionStatus::Running, Some(300_000)), at, now),
+            fresh(own(SessionStatus::Running, Some(300_000)), at, false, now),
             None
         );
         assert_eq!(
-            fresh(own(SessionStatus::Paused, Some(300_000)), at, now),
+            fresh(own(SessionStatus::Paused, Some(300_000)), at, false, now),
             Some(Fresh::Full(300_000))
         );
         // A session that hasn't said yet carries on.
-        assert_eq!(fresh(own(SessionStatus::Idle, None), at, now), None);
+        assert_eq!(fresh(own(SessionStatus::Idle, None), at, false, now), None);
         // Near it, the wake message says so; not before.
         assert_eq!(handoff_near(Some(190_000), at), Some((190_000, 250_000)));
         assert_eq!(handoff_near(Some(180_000), at), None);
         assert_eq!(handoff_near(Some(190_000), None), None);
         assert_eq!(handoff_near(None, at), None);
+    }
+
+    #[test]
+    fn people_ask_for_a_fresh_session_that_waits_for_the_turn() {
+        let now = 100 * HOUR_MS;
+        let own = |status| OwnSession {
+            status,
+            started_at: now - HOUR_MS,
+            context_tokens: Some(50_000),
+        };
+        // Between turns, a fresh session takes over at once, however recent
+        // and small its own.
+        for status in [
+            SessionStatus::Idle,
+            SessionStatus::Stopped,
+            SessionStatus::Paused,
+        ] {
+            assert_eq!(
+                fresh(own(status), Some(250_000), true, now),
+                Some(Fresh::Asked),
+                "{status:?}"
+            );
+        }
+        // One that failed is the retry's.
+        assert_eq!(
+            fresh(own(SessionStatus::Failed), None, true, now),
+            Some(Fresh::Failed)
+        );
+        // At work, the wake waits for its turn's end, all it woke for with it.
+        assert_eq!(fresh(own(SessionStatus::Running), None, true, now), None);
+        let asked = [AutopilotWakeReason::Crew, AutopilotWakeReason::Fresh];
+        assert!(holds(&asked, Some(SessionStatus::Running)));
+        assert!(holds(&asked, Some(SessionStatus::Queued)));
+        assert!(!holds(&asked, Some(SessionStatus::Idle)));
+        assert!(!holds(&asked, None));
+        assert!(!holds(
+            &[AutopilotWakeReason::Crew],
+            Some(SessionStatus::Running)
+        ));
     }
 
     #[test]
@@ -1642,6 +1701,10 @@ mod tests {
         let shift = takes_over_from(Fresh::Shift, "shop#12", None);
         assert!(shift.is_some_and(|t| t.contains(
             "shop#12, which started 12 hours ago: fctl starts a fresh session every 12 hours"
+        )));
+        let asked = takes_over_from(Fresh::Asked, "shop#12", Some(400_000));
+        assert!(asked.is_some_and(|t| t.starts_with(
+            "You take over from your last session, shop#12: people asked for a fresh session to take over, so fctl stopped it"
         )));
         assert_eq!(takes_over_from(Fresh::Failed, "shop#12", None), None);
     }
@@ -2065,6 +2128,13 @@ mod tests {
         });
         assert!(m.contains(
             "\n\nYour context holds 310K tokens: at 400K, a fresh session takes over from you at your next wake"
+        ));
+        let m = wake_message(&News {
+            reasons: vec![AutopilotWakeReason::Crew, AutopilotWakeReason::Fresh],
+            ..News::default()
+        });
+        assert!(m.starts_with(
+            "fctl woke you, the autopilot: your sessions moved on and people asked for a fresh session, which you are."
         ));
     }
 

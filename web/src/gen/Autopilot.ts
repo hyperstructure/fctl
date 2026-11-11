@@ -83,6 +83,13 @@ model?: string, effort?: string,
  */
 handoff_at?: number, 
 /**
+ * Someone asked for a fresh session to take over from its own
+ * (`WakeAutopilotRequest.fresh`), and none has yet: it does as fctl
+ * next wakes it, once that one's turn ends while it works. Control
+ * planes before it leave it out.
+ */
+fresh_asked: boolean, 
+/**
  * Its own session now: the one fctl wakes it in.
  */
 session?: AutopilotSession, 
