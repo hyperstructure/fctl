@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { phantomKeyboard, type Viewports, viewportShift, visualHeight, watchViewport } from "./viewport";
+import {
+  phantomKeyboard,
+  type Screen,
+  statusBarAbove,
+  underStatusBar,
+  type Viewports,
+  viewportShift,
+  visualHeight,
+  watchViewport,
+} from "./viewport";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const clean of cleanups.splice(0).reverse()) clean();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  localStorage.clear();
 });
 
 /**
@@ -219,5 +229,111 @@ describe("the visual viewport's height", () => {
   it("is unknown without a visual viewport", () => {
     vi.stubGlobal("visualViewport", undefined);
     expect(visualHeight()).toBeUndefined();
+  });
+});
+
+/**
+ * A 402 x 874 iPhone held upright, with the installed app's layout viewport
+ * below its 62 px status bar, as Safari lays it out.
+ */
+const upright: Screen = { width: 402, height: 874, layoutWidth: 402, layoutHeight: 812 };
+
+describe("the status bar", () => {
+  it("stands above the page by what the layout viewport leaves of the screen", () => {
+    expect(statusBarAbove(upright)).toBe(62);
+    expect(underStatusBar(upright)).toBe(false);
+  });
+
+  it("covers the page's top when the layout viewport is as tall as the screen", () => {
+    const under = { ...upright, layoutHeight: 874 };
+    expect(underStatusBar(under)).toBe(true);
+    expect(statusBarAbove(under)).toBe(0);
+  });
+
+  it("isn't looked for with the app turned, or in a window narrower than the screen", () => {
+    const turned = { ...upright, layoutWidth: 874, layoutHeight: 402 };
+    expect(statusBarAbove(turned)).toBe(0);
+    expect(underStatusBar(turned)).toBe(false);
+    const window = { width: 820, height: 1180, layoutWidth: 600, layoutHeight: 1156 };
+    expect(statusBarAbove(window)).toBe(0);
+    expect(underStatusBar({ ...window, layoutHeight: 1180 })).toBe(false);
+  });
+
+  it("is never more than a status bar's height", () => {
+    expect(statusBarAbove({ ...upright, layoutHeight: 700 })).toBe(0);
+  });
+});
+
+/**
+ * The app on a 402 x 874 iPhone's Home Screen (or, `ios: false`, installed
+ * elsewhere), its layout viewport `layout` px tall; `resize` changes that.
+ */
+function homeScreen({ layout = 812, ios = true } = {}) {
+  if (ios) vi.stubGlobal("GestureEvent", class {});
+  Object.defineProperty(navigator, "maxTouchPoints", { value: ios ? 5 : 0, configurable: true });
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(display-mode: standalone)" }));
+  vi.stubGlobal(
+    "visualViewport",
+    Object.assign(new EventTarget(), { height: layout, offsetTop: 0, scale: 1 }),
+  );
+  vi.stubGlobal("screen", { width: 402, height: 874 });
+  const page = document.documentElement;
+  let height = layout;
+  Object.defineProperty(page, "clientWidth", { configurable: true, value: 402 });
+  Object.defineProperty(page, "clientHeight", { configurable: true, get: () => height });
+  cleanups.push(() => {
+    for (const k of ["clientWidth", "clientHeight"]) Reflect.deleteProperty(page, k);
+    delete (navigator as { maxTouchPoints?: number }).maxTouchPoints;
+  });
+  const resize = (to: number) => {
+    height = to;
+    window.dispatchEvent(new Event("resize"));
+  };
+  const watch = () => {
+    const stop = watchViewport();
+    cleanups.push(stop);
+    return stop;
+  };
+  const bar = () => document.documentElement.style.getPropertyValue("--status-bar");
+  return { resize, watch, bar };
+}
+
+describe("watching the status bar", () => {
+  it("makes room for the bar it saw above the page once Safari lays the page out under it", () => {
+    const p = homeScreen();
+    p.watch();
+    expect(p.bar()).toBe("");
+    p.resize(874);
+    expect(p.bar()).toBe("62px");
+    p.resize(812);
+    expect(p.bar()).toBe("");
+  });
+
+  it("remembers the bar for when the app opens under it", () => {
+    homeScreen().watch()();
+    const p = homeScreen({ layout: 874 });
+    p.watch();
+    expect(p.bar()).toBe("62px");
+  });
+
+  it("does nothing under a bar it never saw", () => {
+    const p = homeScreen({ layout: 874 });
+    p.watch();
+    expect(p.bar()).toBe("");
+  });
+
+  it("stays out of apps installed elsewhere, as on a Mac or Android", () => {
+    const p = homeScreen({ ios: false });
+    p.watch();
+    p.resize(874);
+    expect(p.bar()).toBe("");
+  });
+
+  it("takes the room away when it stops", () => {
+    const p = homeScreen();
+    const stop = p.watch();
+    p.resize(874);
+    stop();
+    expect(p.bar()).toBe("");
   });
 });

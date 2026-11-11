@@ -567,7 +567,7 @@ export function Lightbox({
         type="button"
         onClick={close}
         aria-label="Close"
-        className="group fixed top-3 right-3 z-10 rounded-full border border-line-strong bg-surface/90 p-1 backdrop-blur-xl"
+        className="group fixed top-[calc(0.75rem+var(--safe-top))] right-3 z-10 rounded-full border border-line-strong bg-surface/90 p-1 backdrop-blur-xl"
       >
         <span className="flex size-7 items-center justify-center rounded-full text-ink-3 transition-colors duration-150 group-hover:bg-hover group-hover:text-ink">
           <X className="size-4" />
@@ -577,7 +577,7 @@ export function Lightbox({
         <>
           <p
             aria-live="polite"
-            className="fixed top-3 left-3 z-10 flex h-9.5 items-center rounded-full border border-line-strong bg-surface/90 px-3.5 font-mono text-[11.5px] text-ink-3 tabular-nums backdrop-blur-xl"
+            className="fixed top-[calc(0.75rem+var(--safe-top))] left-3 z-10 flex h-9.5 items-center rounded-full border border-line-strong bg-surface/90 px-3.5 font-mono text-[11.5px] text-ink-3 tabular-nums backdrop-blur-xl"
           >
             <span className="sr-only">{current.file.name}: </span>
             {index + 1} of {items.length}

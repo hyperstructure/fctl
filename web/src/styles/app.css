@@ -14,10 +14,17 @@
 /* How far below the layout viewport the screen is: 0, but while Safari on iOS
    takes a keyboard to cover the screen that isn't there (lib/viewport.ts).
    What is pinned to the screen's edges moves down by as much, dialogs'
-   backdrops too. */
+   backdrops too.
+
+   --safe-top: how much of the page's top the status bar covers. 0, but where
+   Safari lays the app on an iPhone's Home Screen out under the status bar:
+   then its safe area says how tall the bar is, or, where it doesn't, the
+   height lib/viewport.ts saw the bar take before (--status-bar). What is
+   pinned to the top makes as much room above what it shows. */
 @layer base {
   :root {
     --viewport-shift: 0px;
+    --safe-top: max(env(safe-area-inset-top), var(--status-bar, 0px));
   }
   ::backdrop {
     top: var(--viewport-shift, 0px);

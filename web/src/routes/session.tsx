@@ -453,7 +453,10 @@ export function SessionPage() {
     <div className="flex min-h-dvh">
       <div className="flex min-w-0 flex-1 flex-col">
         <div ref={header} className="sticky top-(--viewport-shift) z-10">
-          <header ref={bar} className="relative z-2 h-14 bg-canvas/80 backdrop-blur-xl md:h-[60px]">
+          <header
+            ref={bar}
+            className="relative z-2 box-content h-14 bg-canvas/80 pt-(--safe-top) backdrop-blur-xl md:h-[60px]"
+          >
             {/* While the agent works, light runs along the header's edge. */}
             {live && <span aria-hidden="true" className="header-live" />}
             <div className="flex h-full items-center gap-2.5 px-2.5 md:gap-3 md:pr-5 md:pl-5">
@@ -909,7 +912,7 @@ export function SessionPage() {
       </div>
 
       {rail && session && (
-        <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto bg-surface/40 lg:block">
+        <aside className="sticky top-(--viewport-shift) hidden h-dvh w-[340px] shrink-0 overflow-y-auto bg-surface/40 pt-(--safe-top) lg:block">
           <Details
             key={session.id}
             session={session}

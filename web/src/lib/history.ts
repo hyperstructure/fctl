@@ -14,12 +14,11 @@
 // the app installed on Android, whose back gesture and button go through it.
 
 import { createBrowserHistory, type RouterHistory } from "@tanstack/react-router";
-import { installed } from "./viewport";
+import { onHomeScreen } from "./viewport";
 
 /** Whether this is the app on an iPhone's or iPad's Home Screen, which keeps no history of its pages. */
 export function keepsNoHistory(): boolean {
-  // Only WebKit sends gesture events, and only a touch screen swipes (not a Mac's app in the Dock).
-  return "GestureEvent" in window && navigator.maxTouchPoints > 0 && installed();
+  return onHomeScreen();
 }
 
 /** The router's history: where the app keeps none, each page it opens takes the place of the last. */

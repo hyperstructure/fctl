@@ -15,9 +15,24 @@
 // by as much (`top-(--viewport-shift)`, `-bottom-(--viewport-shift)`). It is 0
 // otherwise. It comes a frame late while the screen leaves the layout viewport
 // behind, and is right once the screen takes the layout viewport along.
+//
+// The installed app can also come back laid out under the status bar, until
+// it is closed: the layout viewport starts at the screen's top rather than
+// below the status bar, as tall as the screen, and the bar covers what is
+// pinned to the top, with the session's header behind it (WebKit bug 301994
+// has other web apps' reports of a status bar over their top). The status bar
+// otherwise takes its own room above the page. What is pinned to the top
+// makes room for the bar with --safe-top (app.css): Safari's safe area at the
+// top, which counts the bar the page is under, or, should Safari leave it at
+// 0, --status-bar on <html>, which says how tall the bar was when it last
+// stood above the page, while the layout viewport is as tall as the screen.
 
 /** A keyboard is at least this tall (px): a visual viewport this much shorter than the layout viewport has one over it. */
 const KEYBOARD = 100;
+/** A status bar is at most this tall (px): a layout viewport shorter than the screen by more has something else above it. */
+const STATUS_BAR = 100;
+/** Where the app keeps the status bar's height, for when it opens under the bar. */
+const STATUS_BAR_KEY = "fctl:status-bar";
 /** How long a keyboard takes to go once its field loses the focus (ms): until then, it may still be up. */
 const KEYBOARD_GOES = 1000;
 
@@ -52,6 +67,65 @@ export function viewportShift(v: Viewports): number {
   return phantomKeyboard(v) ? Math.max(0, v.offsetTop) : 0;
 }
 
+/** The screen and the layout viewport, as tests can make them up. */
+export interface Screen {
+  /** The screen's width (px), as it is held upright on an iPhone or iPad (`screen.width`). */
+  width: number;
+  /** The screen's height (px), held upright. */
+  height: number;
+  /** The layout viewport's width (px). */
+  layoutWidth: number;
+  /** The layout viewport's height (px). */
+  layoutHeight: number;
+}
+
+/** Whether the app has the whole screen, held upright: an iPhone's in portrait, an iPad's in full screen. */
+function upright(s: Screen): boolean {
+  return Math.abs(s.layoutWidth - s.width) < 1;
+}
+
+/**
+ * How tall the status bar is above the page (px): what the layout viewport leaves of the
+ * screen's height where the app has the whole screen upright and a status bar could take it,
+ * 0 otherwise.
+ */
+export function statusBarAbove(s: Screen): number {
+  const gap = s.height - s.layoutHeight;
+  return upright(s) && gap >= 1 && gap <= STATUS_BAR ? gap : 0;
+}
+
+/** Whether the page is laid out under the status bar: the layout viewport is as tall as the screen held upright. */
+export function underStatusBar(s: Screen): boolean {
+  return upright(s) && Math.abs(s.height - s.layoutHeight) < 1;
+}
+
+/** The screen and the layout viewport as they are. */
+function screenNow(): Screen {
+  const page = document.documentElement;
+  return {
+    width: window.screen.width,
+    height: window.screen.height,
+    layoutWidth: page.clientWidth,
+    layoutHeight: page.clientHeight,
+  };
+}
+
+/** The status bar's height this app saw above the page on this screen before (px), or 0. */
+function rememberedStatusBar(s: Screen): number {
+  try {
+    const kept = JSON.parse(localStorage.getItem(STATUS_BAR_KEY) ?? "null");
+    return kept?.screen === s.height && typeof kept.bar === "number" ? kept.bar : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function rememberStatusBar(s: Screen, bar: number) {
+  try {
+    localStorage.setItem(STATUS_BAR_KEY, JSON.stringify({ screen: s.height, bar }));
+  } catch {}
+}
+
 /** A field that brings up a keyboard lost the focus a moment ago: its keyboard may still be going. */
 let keyboardGoing = false;
 
@@ -72,6 +146,13 @@ export function installed(): boolean {
     window.matchMedia("(display-mode: standalone)").matches ||
     (navigator as { standalone?: boolean }).standalone === true
   );
+}
+
+/** Whether this is the app on an iPhone's or iPad's Home Screen. */
+export function onHomeScreen(): boolean {
+  // Only WebKit sends gesture events, and only an iPhone or iPad has a touch screen (not a Mac,
+  // whose app in the Dock is installed too).
+  return "GestureEvent" in window && navigator.maxTouchPoints > 0 && installed();
 }
 
 /** The page's viewports as they are, or nothing in a browser without a visual viewport. */
@@ -99,14 +180,35 @@ export function visualHeight(): number | undefined {
   return phantomKeyboard(v) ? v.layout : v.visual;
 }
 
-/** Keeps --viewport-shift on <html> up to date in the installed app. Returns what stops it. */
+/**
+ * Keeps --viewport-shift on <html> up to date in the installed app, and --status-bar on an
+ * iPhone's or iPad's Home Screen. Returns what stops it.
+ */
 export function watchViewport(): () => void {
   const vv = window.visualViewport;
   if (!vv || !installed()) return () => {};
   const html = document.documentElement;
+  const ios = onHomeScreen();
   let shift = 0;
   let later: ReturnType<typeof setTimeout> | undefined;
+  // The status bar's height as it last stood above the page, and what --status-bar says.
+  let seen = ios ? rememberedStatusBar(screenNow()) : 0;
+  let bar = 0;
+  const statusBar = () => {
+    const s = screenNow();
+    const above = statusBarAbove(s);
+    if (above && above !== seen) {
+      seen = above;
+      rememberStatusBar(s, above);
+    }
+    const next = underStatusBar(s) ? seen : 0;
+    if (next === bar) return;
+    bar = next;
+    if (bar) html.style.setProperty("--status-bar", `${bar}px`);
+    else html.style.removeProperty("--status-bar");
+  };
   const update = () => {
+    if (ios) statusBar();
     const v = viewports();
     const next = v ? viewportShift(v) : 0;
     if (next === shift) return;
@@ -141,6 +243,8 @@ export function watchViewport(): () => void {
   // as the page scrolls along with it.
   vv.addEventListener("resize", update, on);
   vv.addEventListener("scroll", update, { signal: off.signal, passive: true });
+  // The layout viewport changes size, as it goes under the status bar or the app turns.
+  window.addEventListener("resize", update, on);
   window.addEventListener("scrollend", back, on);
   window.addEventListener("pageshow", update, on);
   document.addEventListener("visibilitychange", update, on);
@@ -152,5 +256,6 @@ export function watchViewport(): () => void {
     clearTimeout(later);
     keyboardGoing = false;
     html.style.removeProperty("--viewport-shift");
+    html.style.removeProperty("--status-bar");
   };
 }

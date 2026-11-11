@@ -53,7 +53,9 @@ describe("Lightbox", () => {
     expect(dialog.querySelector("figcaption")?.textContent).toBe("after.png1440×900 · 245 KB");
     // The X comes first, at the top right: Tab reaches it first.
     expect(dialog.querySelector("button")?.getAttribute("aria-label")).toBe("Close");
-    expect(dialog.querySelector("button")?.className).toMatch(/\bfixed top-3 right-3\b/);
+    expect(dialog.querySelector("button")?.className).toMatch(
+      /\bfixed top-\[calc\(0\.75rem\+var\(--safe-top\)\)\] right-3\b/,
+    );
   });
 
   it("focuses itself as it opens, not the X, and shows no ring", () => {
@@ -226,7 +228,7 @@ describe("Lightbox with several pictures", () => {
     // Screen readers hear the name too, as it changes.
     const where = dialog.querySelector("p[aria-live]");
     expect(where?.textContent).toBe("after.png: 2 of 3");
-    expect(where?.className).toMatch(/\bfixed top-3 left-3\b/);
+    expect(where?.className).toMatch(/\bfixed top-\[calc\(0\.75rem\+var\(--safe-top\)\)\] left-3\b/);
   });
 
   it("steps with the arrow keys, not past the first or last", () => {

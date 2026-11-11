@@ -649,7 +649,13 @@ installing, run `cargo xtask dev --no-vite` and open http://127.0.0.1:8787
 (Chrome's DevTools → Application shows the manifest and the worker). In the
 installed app on a phone, the page reaches under the notch and the home
 indicator, so anything fixed to an edge of the screen keeps clear of them
-with `env(safe-area-inset-*)`, as the message box does.
+with `env(safe-area-inset-*)`, as the message box does. At the top, use
+`--safe-top` (`src/styles/app.css`) instead: Safari can lay the app on an
+iPhone's Home Screen out under the status bar while its top safe area
+stays 0, and `src/lib/viewport.ts` then sets `--status-bar` from the bar's
+height it saw before. Sticky bars pad their tops by it
+(`box-content h-14 pt-(--safe-top)`), and what is placed from the top adds
+it (`top-[calc(1.25rem+var(--safe-top))]`).
 
 On a phone the app keeps the screen's size. Zooming is off: the viewport
 tag in `index.html` asks for none (which also keeps Safari from zooming

@@ -648,7 +648,7 @@ export function DiffDialog({
       }}
       className={cn(
         "top-(--viewport-shift) -bottom-(--viewport-shift) m-auto overflow-hidden bg-surface p-0 text-ink outline-none",
-        "h-dvh max-h-none w-screen max-w-none sm:h-[calc(100dvh-2.5rem)] sm:w-[min(1440px,calc(100vw-2.5rem))] sm:rounded-xl sm:border sm:border-line-strong",
+        "h-dvh max-h-none w-screen max-w-none max-sm:pt-(--safe-top) sm:h-[calc(100dvh-2.5rem)] sm:w-[min(1440px,calc(100vw-2.5rem))] sm:rounded-xl sm:border sm:border-line-strong",
         "shadow-[0_30px_120px_rgb(0_0_0/0.55)] backdrop:bg-black/55 backdrop:backdrop-blur-[3px] open:animate-rise",
       )}
     >

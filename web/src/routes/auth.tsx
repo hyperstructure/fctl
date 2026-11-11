@@ -98,7 +98,7 @@ export function AuthFrame({
           options={{ pixel: 3, fps: 30 }}
         />
       </div>
-      <div className="relative z-10 flex items-center justify-between gap-4 px-6 py-5">
+      <div className="relative z-10 flex items-center justify-between gap-4 px-6 pt-[calc(1.25rem+var(--safe-top))] pb-5">
         <Logo />
         <span className="min-w-0 truncate text-[12.5px] text-ink-4">{instance?.name}</span>
       </div>
