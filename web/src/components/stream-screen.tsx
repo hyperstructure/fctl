@@ -93,7 +93,7 @@ export function StreamScreen({
       <div className="stream-screen-shade" aria-hidden="true" />
       <a
         href="/"
-        className="absolute top-5 left-5 z-10 rounded-md sm:top-6 sm:left-7"
+        className="absolute top-[calc(1.25rem+var(--safe-top))] left-5 z-10 rounded-md sm:top-[calc(1.5rem+var(--safe-top))] sm:left-7"
         aria-label="fctl, home"
       >
         <Logo />

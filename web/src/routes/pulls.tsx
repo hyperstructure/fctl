@@ -149,7 +149,7 @@ export function PullsPage() {
       </header>
 
       {/* Beside the page it stays in view, so that the tabs and the filter are at hand anywhere in a long list. */}
-      <div className="z-10 mt-8 bg-canvas/85 backdrop-blur-xl md:sticky md:top-0 md:-mx-6 md:mt-6 md:px-6 md:pt-2">
+      <div className="z-10 mt-8 bg-canvas/85 backdrop-blur-xl md:sticky md:top-(--safe-top) md:-mx-6 md:mt-6 md:px-6 md:pt-2">
         <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-3 border-b border-line">
           <Tabs
             state={state}
