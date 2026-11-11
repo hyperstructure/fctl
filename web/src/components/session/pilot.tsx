@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui";
 import type * as G from "@/gen";
 import { atWork, openAsks, phase, planDone } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
-import { agoShort, stamp } from "@/lib/format";
+import { agoShortWords, stamp } from "@/lib/format";
 import { RailSection } from "./rail";
 
 /** The asks it shows; the rest are a click away, on its tab. */
@@ -176,7 +176,7 @@ function PlanSection({ a }: { a: G.Autopilot }) {
   return (
     <RailSection
       title="Its plan"
-      meta={a.plan_at && <span title={stamp(a.plan_at)}>Updated {agoShort(a.plan_at)} ago</span>}
+      meta={a.plan_at && <span title={stamp(a.plan_at)}>Updated {agoShortWords(a.plan_at)}</span>}
     >
       {done && (
         <div className="mb-3 flex items-center gap-3">

@@ -89,7 +89,7 @@ import {
 } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { MAX_TOKENS, MIN_TOKENS, parseTokens, tokensText, validWindow } from "@/lib/context";
-import { ago, agoShort, clock, day, num, stamp } from "@/lib/format";
+import { ago, agoShort, agoShortWords, clock, day, num, stamp } from "@/lib/format";
 import { EFFORTS, effortLabel, modelLabel, modelOffers } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useWorkspace } from "@/lib/queries";
 
@@ -1927,7 +1927,7 @@ function Direction({ a }: { a: G.Autopilot }) {
         !editing && (
           <>
             {a.direction_by ? `Set by ${a.direction_by.name}, ` : ""}
-            <span title={stamp(a.direction_at)}>{agoShort(a.direction_at)} ago</span>
+            <span title={stamp(a.direction_at)}>{agoShortWords(a.direction_at)}</span>
           </>
         )
       }
@@ -1979,7 +1979,7 @@ function Plan({ a }: { a: G.Autopilot }) {
       action={
         done && <span className="text-[12px] text-ink-4 tabular-nums">{`${done.checked} of ${done.of}`}</span>
       }
-      footer={a.plan_at && <span title={stamp(a.plan_at)}>Updated {agoShort(a.plan_at)} ago</span>}
+      footer={a.plan_at && <span title={stamp(a.plan_at)}>Updated {agoShortWords(a.plan_at)}</span>}
     >
       {done && (
         <div className="mb-2.5 h-1 overflow-hidden rounded-full bg-sunken">

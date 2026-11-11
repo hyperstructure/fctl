@@ -27,6 +27,13 @@ export function agoShort(ms: number | undefined | null, now = Date.now()): strin
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** [`agoShort`] to follow a word in a sentence: "Updated just now", "2m ago", "3h ago", "Oct 3". */
+export function agoShortWords(ms: number | undefined | null, now = Date.now()): string {
+  const short = agoShort(ms, now);
+  if (short === "now") return "just now";
+  return /^\d+[mhd]$/.test(short) ? `${short} ago` : short;
+}
+
 /** A full timestamp for tooltips: "Oct 27, 2026, 7:40 PM", "27 Oct 2026, 19:40". */
 export function stamp(ms: number): string {
   return dateTimeFormat({ year: "numeric", month: "short", day: "numeric", ...timeOptions() }).format(ms);
