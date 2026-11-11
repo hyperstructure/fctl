@@ -2,6 +2,13 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.4 (2026-11-11)
+
+### Features
+
+- **autopilot:** Link a schedule it ran to the session the run started ([#510](https://github.com/hyperstructure/fctl/pull/510))
+- Autopilots tend people's pull requests and show in their session ([#511](https://github.com/hyperstructure/fctl/pull/511))
+
 ## 0.33.3 (2026-11-10)
 
 ### Features
