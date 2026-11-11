@@ -2321,17 +2321,25 @@ impl FleetObject {
                         "DELETE FROM queue WHERE session_id = ?",
                         Some(vec![sv(&item.session_id)]),
                     );
+                    // A service that didn't answer, or an error on our side
+                    // (D1 fails for a moment now and then), may well pass.
                     let retryable =
-                        e.0.code == ErrorCode::Unavailable && (item.attempts as i64) < MAX_ATTEMPTS;
+                        matches!(e.0.code, ErrorCode::Unavailable | ErrorCode::Internal)
+                            && (item.attempts as i64) < MAX_ATTEMPTS;
                     if retryable {
                         let _ = self.sql.exec(
                             "INSERT INTO queue (session_id, enqueued_at, attempts, not_before, driver_declined) VALUES (?, ?, ?, ?, ?)",
                             Some(vec![sv(&item.session_id), iv(now), iv(item.attempts as i64 + 1), iv(now + 15_000), item.driver_declined()]),
                         );
+                        let why = if e.0.code == ErrorCode::Internal {
+                            "Retrying after an error on our side".to_owned()
+                        } else {
+                            format!("Retrying: {}", e.0.message)
+                        };
                         self.session_control(
                             &session_id,
                             Some(SessionStatus::Queued),
-                            Some(format!("Retrying: {}", e.0.message)),
+                            Some(why),
                             false,
                         )
                         .await;
