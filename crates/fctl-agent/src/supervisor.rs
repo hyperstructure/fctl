@@ -1600,6 +1600,7 @@ impl Supervisor {
                 retrospectives,
                 update_retrospectives,
                 review_threads,
+                autopilot: spec.autopilot.is_some(),
                 now: now_ms(),
             };
             if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(&extras)) {
