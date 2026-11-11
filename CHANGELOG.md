@@ -2,6 +2,12 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.33.6 (2026-11-11)
+
+### Features
+
+- **autopilot:** Pass screenshots on to its sessions as published links ([#516](https://github.com/hyperstructure/fctl/pull/516))
+
 ## 0.33.5 (2026-11-11)
 
 ### Features
