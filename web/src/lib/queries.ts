@@ -6,12 +6,24 @@ import { FAILED_FOR } from "./needs";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
 import { forgetSidebar } from "./sidebar";
 
+/** Whether a failed query goes again: up to 3 times, unless the server refused it (4xx). */
+export function retries(count: number, err: unknown): boolean {
+  return !(err instanceof ApiFailure && err.status >= 400 && err.status < 500) && count < 3;
+}
+
+/**
+ * Whether a check the app makes as it starts goes again: once if the server didn't answer in
+ * time, as each try takes that long; otherwise as any query does.
+ */
+export function startRetries(count: number, err: unknown): boolean {
+  return err instanceof ApiFailure && err.timedOut ? count < 1 : retries(count, err);
+}
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 15_000,
-      retry: (count, err) =>
-        !(err instanceof ApiFailure && err.status >= 400 && err.status < 500) && count < 3,
+      retry: retries,
       refetchOnWindowFocus: true,
     },
   },
@@ -95,12 +107,15 @@ export const keys = {
 };
 
 export const useInstance = () =>
-  useQuery({ queryKey: keys.instance, queryFn: api.instance, staleTime: 60_000 });
+  useQuery({ queryKey: keys.instance, queryFn: () => api.instance(), staleTime: 60_000 });
 
-/** You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you. */
-export async function fetchMe(): Promise<G.Me | null> {
+/**
+ * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you.
+ * The server answers within `within` ms, if given.
+ */
+export async function fetchMe(within?: number): Promise<G.Me | null> {
   try {
-    return await api.me();
+    return await api.me(within);
   } catch (e) {
     if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) {
       forgetSidebar();
@@ -110,7 +125,7 @@ export async function fetchMe(): Promise<G.Me | null> {
   }
 }
 
-export const useMe = () => useQuery({ queryKey: keys.me, queryFn: fetchMe, staleTime: 60_000 });
+export const useMe = () => useQuery({ queryKey: keys.me, queryFn: () => fetchMe(), staleTime: 60_000 });
 
 /** Your projects, in your order: under your workspaces in theirs. */
 export const useProjects = () =>

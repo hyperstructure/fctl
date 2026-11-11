@@ -3,10 +3,10 @@
 // sends everyone else to /login (or /setup on a fresh instance).
 
 import { createRootRoute, createRoute, createRouter, Outlet, redirect } from "@tanstack/react-router";
-import { api } from "@/lib/api";
+import { api, START_WITHIN } from "@/lib/api";
 import { appHistory } from "@/lib/history";
 import { PROJECT_VIEWS, type ProjectView } from "@/lib/project-page";
-import { fetchMe, keys, queryClient } from "@/lib/queries";
+import { fetchMe, keys, queryClient, startRetries } from "@/lib/queries";
 import { SETTINGS_TABS, type SettingsTab } from "@/lib/settings";
 import { routerScrolls } from "@/lib/stick-to-bottom";
 import { LINEAR_OUTCOMES, type LinearOutcome } from "@/lib/tickets";
@@ -23,6 +23,7 @@ import { ProjectPage } from "@/routes/project";
 import { PullsPage, type PullsSearch } from "@/routes/pulls";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
+import { Starting } from "@/routes/starting";
 import { SignedInLayout } from "@/routes/two-factor";
 import {
   GITHUB_OUTCOMES,
@@ -33,7 +34,23 @@ import {
   type WorkspaceTab,
 } from "@/routes/workspace";
 
-const me = () => queryClient.ensureQueryData({ queryKey: keys.me, queryFn: fetchMe });
+// Pages wait to know who is signed in, and what the instance offers, as the app starts. A request
+// the server never answers (the app on an iPhone's Home Screen can come back after a while to one)
+// kept the app blank until it was closed: each now fails after START_WITHIN and goes again once
+// (other failures go again as any query's do), and then the error page says so, with its Try
+// again. Meanwhile, from a second on, Starting says what the app waits for.
+const me = () =>
+  queryClient.ensureQueryData({
+    queryKey: keys.me,
+    queryFn: () => fetchMe(START_WITHIN),
+    retry: startRetries,
+  });
+const instance = () =>
+  queryClient.ensureQueryData({
+    queryKey: keys.instance,
+    queryFn: () => api.instance(START_WITHIN),
+    retry: startRetries,
+  });
 
 // Unknown addresses get NotFound; a failed request or a crash anywhere, ErrorPage.
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });
@@ -55,7 +72,7 @@ const login = createRoute({
     deleted: flag(s.deleted),
   }),
   beforeLoad: async () => {
-    const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+    const info = await instance();
     if (info.setup_required) throw redirect({ to: "/setup" });
     if (await me()) throw redirect({ to: "/" });
   },
@@ -67,7 +84,7 @@ const earlyAccess = createRoute({
   path: "/early-access",
   component: EarlyAccessPage,
   beforeLoad: async () => {
-    const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+    const info = await instance();
     if (info.setup_required) throw redirect({ to: "/setup" });
     if (!info.features.early_access) {
       throw redirect({ to: "/login", search: { next: undefined, error: undefined, deleted: undefined } });
@@ -87,7 +104,7 @@ const app = createRoute({
   beforeLoad: async ({ location }) => {
     const user = await me();
     if (!user) {
-      const info = await queryClient.ensureQueryData({ queryKey: keys.instance, queryFn: api.instance });
+      const info = await instance();
       if (info.setup_required) throw redirect({ to: "/setup" });
       throw redirect({ to: "/login", search: { next: location.href, error: undefined, deleted: undefined } });
     }
@@ -232,6 +249,8 @@ export const router = createRouter({
   // On an iPhone's or iPad's Home Screen, with no history for iOS's edge swipes to go through.
   history: appHistory(),
   defaultPreload: "intent",
+  // What shows while a page waits on the server for over a second, as one does when the app starts.
+  defaultPendingComponent: Starting,
   defaultViewTransition: true,
   // A session's page opens at its newest work by itself (lib/stick-to-bottom.ts).
   scrollRestoration: ({ location }) => routerScrolls(location.pathname),

@@ -4,7 +4,7 @@ import { Check, Copy } from "lucide-react";
 import { useRef, useState } from "react";
 import { StreamScreen } from "@/components/stream-screen";
 import { Button } from "@/components/ui";
-import { ApiFailure } from "@/lib/api";
+import { ApiFailure, START_WITHIN } from "@/lib/api";
 import { redact, safeAddress } from "@/lib/redact";
 
 /** What the error page says: the glyphs, the headline and a sentence. */
@@ -69,7 +69,9 @@ export function ErrorPage({ error, reset }: ErrorComponentProps) {
     const started = performance.now();
     let ok = false;
     try {
-      ok = (await fetch("/api/v1/health", { cache: "no-store" })).ok;
+      // A server that never answers gets as long as the app gives it as it starts.
+      const signal = AbortSignal.timeout(START_WITHIN);
+      ok = (await fetch("/api/v1/health", { cache: "no-store", signal })).ok;
     } catch {}
     // Let the lights come back before the verdict.
     await new Promise((r) => setTimeout(r, Math.max(0, 1500 - (performance.now() - started))));

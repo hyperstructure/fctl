@@ -166,3 +166,39 @@ describe("links that take confirming it's you", () => {
     expect(assign).not.toHaveBeenCalled();
   });
 });
+
+describe("a request with a time limit", () => {
+  /** A server that answers after `ms`, or never, as aborting the request allows. */
+  function server(ms = Number.POSITIVE_INFINITY) {
+    const fetch = vi.fn(
+      (_url: string, init: RequestInit = {}) =>
+        new Promise<Response>((resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          if (Number.isFinite(ms))
+            setTimeout(() => resolve(new Response(JSON.stringify({ user: { id: "usr_ada" } }))), ms);
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    return fetch;
+  }
+
+  it("fails as unanswered once the server takes longer", async () => {
+    server();
+    const failure = await api.me(20).catch((e) => e);
+    expect(failure).toBeInstanceOf(ApiFailure);
+    expect(failure.status).toBe(0);
+    expect(failure.message).toBe("fctl's server didn't answer in time.");
+    expect(failure.timedOut).toBe(true);
+  });
+
+  it("gets the answer that comes in time", async () => {
+    server(5);
+    await expect(api.me(1000)).resolves.toEqual({ user: { id: "usr_ada" } });
+  });
+
+  it("has none unless asked", async () => {
+    const fetch = server(5);
+    await api.me();
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBeUndefined();
+  });
+});

@@ -7,12 +7,15 @@ export class ApiFailure extends Error {
   readonly code: G.ErrorCode | "network";
   readonly field?: string;
   readonly retryAfter?: number;
-  constructor(status: number, body: Partial<G.ApiError>) {
+  /** The server didn't answer within the request's time limit. */
+  readonly timedOut: boolean;
+  constructor(status: number, body: Partial<G.ApiError>, timedOut = false) {
     super(body.message ?? "Something went wrong");
     this.status = status;
     this.code = (body.code as G.ErrorCode) ?? "internal";
     this.field = body.field;
     this.retryAfter = body.retry_after;
+    this.timedOut = timedOut;
   }
 }
 
@@ -67,8 +70,28 @@ export function clickConfirmed(
   return goConfirmed(href);
 }
 
-async function request<T>(method: string, path: string, body?: unknown, again = true): Promise<T> {
+/**
+ * How long the app waits on the server as it starts (ms), and as its error page's Try again asks
+ * whether it answers: a request still unanswered then fails, rather than leaving the app blank.
+ */
+export const START_WITHIN = 8_000;
+
+interface RequestOptions {
+  /** Whether a sensitive action may ask the person to confirm it's them, and go again. */
+  again?: boolean;
+  /** How long it may take (ms): it fails as unanswered after that. No limit by default. */
+  within?: number;
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  { again = true, within }: RequestOptions = {},
+): Promise<T> {
+  const signal = within === undefined ? undefined : AbortSignal.timeout(within);
   let res: Response;
+  let text: string;
   try {
     res = await fetch(`/api/v1${path}`, {
       method,
@@ -78,12 +101,21 @@ async function request<T>(method: string, path: string, body?: unknown, again = 
           ? { Accept: "application/json" }
           : { Accept: "application/json", "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     });
+    text = res.status === 204 ? "" : await res.text();
   } catch {
-    throw new ApiFailure(0, { code: "unavailable", message: "You appear to be offline." });
+    const late = signal?.aborted ?? false;
+    throw new ApiFailure(
+      0,
+      {
+        code: "unavailable",
+        message: late ? "fctl's server didn't answer in time." : "You appear to be offline.",
+      },
+      late,
+    );
   }
   if (res.status === 204) return undefined as T;
-  const text = await res.text();
   const data = text ? JSON.parse(text) : undefined;
   if (!res.ok) {
     const failure = new ApiFailure(res.status, data ?? {});
@@ -92,7 +124,7 @@ async function request<T>(method: string, path: string, body?: unknown, again = 
     if (failure.code === "two_factor_setup_required") window.dispatchEvent(new Event(TWO_FACTOR_REQUIRED));
     // A sensitive action goes again once the person confirmed it's them.
     if (failure.code === "verification_required" && again && confirmer && (await confirmer()))
-      return request<T>(method, path, body, false);
+      return request<T>(method, path, body, { again: false, within });
     throw failure;
   }
   return data as T;
@@ -161,7 +193,8 @@ function upload(
 }
 
 export const api = {
-  instance: () => request<G.InstanceInfo>("GET", "/instance"),
+  /** The instance's name and features: `within` ms at most, if given. */
+  instance: (within?: number) => request<G.InstanceInfo>("GET", "/instance", undefined, { within }),
   setup: (b: G.SetupRequest) => request<G.AuthResponse>("POST", "/setup", b),
   invitePreview: (token: string) => request<G.InvitePreview>("GET", `/invites/${enc(token)}`),
   /** Asks for early access, without an account (where `features.early_access`). */
@@ -171,7 +204,8 @@ export const api = {
   signup: (b: G.SignupRequest) => request<G.AuthResponse>("POST", "/auth/signup", b),
   login: (b: G.LoginRequest) => request<G.AuthResponse>("POST", "/auth/login", b),
   logout: () => request<G.Ok>("POST", "/auth/logout", {}),
-  me: () => request<G.Me>("GET", "/auth/me"),
+  /** Who is signed in: `within` ms at most, if given. */
+  me: (within?: number) => request<G.Me>("GET", "/auth/me", undefined, { within }),
   updateMe: (b: G.UpdateMeRequest) => request<G.Me>("PATCH", "/auth/me", b),
   /** Your picture (`avatarImage` makes it): it replaces the one you had. */
   setAvatar: (image: Blob) => putAvatar<G.Me>("/me/avatar", image),

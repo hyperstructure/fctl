@@ -1,7 +1,8 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { keys, patchProjectActivity, patchSession } from "./queries";
+import { ApiFailure } from "./api";
+import { keys, patchProjectActivity, patchSession, retries, startRetries } from "./queries";
 
 const project = (id: string, last_activity_at?: number) => ({ id, last_activity_at }) as G.Project;
 const session = (project_id: string, more: Partial<G.Session> = {}) =>
@@ -77,5 +78,29 @@ describe("a session's summary from the feed", () => {
       expect(s?.question).toEqual(question);
       expect(s?.last_activity_at).toBe(600);
     }
+  });
+});
+
+describe("going again after a failure", () => {
+  const offline = new ApiFailure(0, { code: "unavailable", message: "You appear to be offline." });
+  const late = new ApiFailure(
+    0,
+    { code: "unavailable", message: "fctl's server didn't answer in time." },
+    true,
+  );
+  const down = new ApiFailure(502, { code: "unavailable" });
+  const refused = new ApiFailure(429, { code: "rate_limited" });
+
+  it("tries a query 3 more times, unless the server refused it", () => {
+    expect([0, 1, 2, 3].map((n) => retries(n, down))).toEqual([true, true, true, false]);
+    expect(retries(0, offline)).toBe(true);
+    expect(retries(0, refused)).toBe(false);
+  });
+
+  it("tries a start-up check the server didn't answer in time once more, others as any query", () => {
+    expect([0, 1].map((n) => startRetries(n, late))).toEqual([true, false]);
+    expect([0, 1, 2, 3].map((n) => startRetries(n, down))).toEqual([true, true, true, false]);
+    expect(startRetries(2, offline)).toBe(true);
+    expect(startRetries(0, refused)).toBe(false);
   });
 });

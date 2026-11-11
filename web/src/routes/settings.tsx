@@ -1978,7 +1978,7 @@ function ExportLink({
         setBusy(true);
         // As the instance has it now: the browser would save a refusal as the file.
         queryClient
-          .fetchQuery({ queryKey: keys.me, queryFn: fetchMe, staleTime: 0 })
+          .fetchQuery({ queryKey: keys.me, queryFn: () => fetchMe(), staleTime: 0 })
           .then((me) => (me && nextExport(me.export) !== undefined ? false : confirmFirst()))
           .then((confirmed) => {
             if (!confirmed) return;
