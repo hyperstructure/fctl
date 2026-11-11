@@ -489,6 +489,7 @@ async fn brief_of(
     )?
     .all()
     .await?;
+    let others = engine::others(db, row).await?;
     #[derive(Deserialize)]
     struct LogRow {
         #[serde(deserialize_with = "int")]
@@ -555,6 +556,13 @@ async fn brief_of(
             v
         })
         .collect();
+    let other_questions: Vec<Option<String>> =
+        others.iter().map(engine::CrewRow::question_text).collect();
+    let other_views: Vec<ap::OtherView> = others
+        .iter()
+        .zip(other_questions.iter())
+        .map(|(o, q)| engine::other_view(o, q.as_deref()))
+        .collect();
     // People's lines name them as they read ([`ap::said`]); their notes,
     // which don't, say who wrote them beside the note.
     let lines: Vec<String> = entries
@@ -612,6 +620,7 @@ async fn brief_of(
         notes: &note_views,
         asks: &ask_views,
         crew: &crew_views,
+        others: &other_views,
         log: &log_views,
         projects: &projects,
         wake_at: row.wake_at,

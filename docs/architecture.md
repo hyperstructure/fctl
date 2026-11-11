@@ -2141,7 +2141,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and
    the project's memory. `fctl autopilot brief` gives it where things
    stand: the direction, people's notes (the new ones marked), its asks
-   and their answers, its sessions, its plan and log
+   and their answers, its sessions, people's sessions in its places that
+   work or have a pull request open (point 8), its plan and log
    (`fctl_domain::autopilot::brief`). Its owner follows its own session, which
    notifies only of what it asks, and of fctl pausing it after its sessions
    kept failing ([Notifications](#notifications)).
@@ -2156,8 +2157,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    `autopilots::session_moved`); and at once when someone wakes it. A wake
    while its session works tells it what's new at its next step, and a
    check-in waits. The message says why it woke and what is new since it
-   last did: notes, a changed direction, answers, its sessions that moved
-   (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
+   last did: notes, a changed direction, answers, its sessions that moved,
+   and people's sessions that ended a turn with a pull request open, which
+   wake it for nothing themselves (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
    its limit it waits for the reset. Its own session failing makes fctl
    try again 5, 15 and 60 minutes later, then pauses it and says why;
    its owner can no longer manage its project (or, for a workspace's, is
@@ -2222,6 +2224,20 @@ sessions to do it, and sets up what the work needs, as far as they let it
    with it until someone removes them; a newer one wins over an older one
    and over the direction, which people change too. Each reaches it at
    once, and says on the tab when it saw it.
+8. **People's sessions.** The sessions people start in its places are
+   theirs: it neither messages nor stops them. Their pull requests are its
+   concern all the same, as one left open falls behind what its own
+   sessions merge, conflict after conflict. Its brief lists those at work
+   and those resting with a pull request open, with who started each, how
+   long ago its agent last worked and its pull requests' checks
+   (`autopilots::others`, at most 15, the latest first); review agents'
+   and archived sessions stay out. Its briefing asks it to plan around
+   them, and once one looks ready (its turn ended, its checks pass) or
+   stuck, to ask people whether to help get it merged; when they say yes,
+   it starts a session of its own to bring the pull request up to date,
+   resolve its conflicts, get its checks passing and merge it (or, without
+   the merge power, ask people to), and it keeps their answer in its plan
+   so as not to ask again.
 
 The tab shows where it stands (at work, waking, waiting for people, on
 and when it next checks in, paused and why), what it asks, the notes, its

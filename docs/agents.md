@@ -650,6 +650,13 @@ It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people
 set, and steers only the sessions it started.
 
+It looks after the sessions people start themselves too: its brief lists
+those at work and those whose pull requests are still open, with their
+checks. Once one looks ready or stuck, it asks people whether to help get
+it merged, and with their yes starts a session of its own to bring the
+pull request up to date and merge it, so that it doesn't fall behind what
+its own sessions merge.
+
 A fresh session takes its place after 12 hours, or once its context holds
 as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
 at the first wake between its turns: it starts from the plan and log, so

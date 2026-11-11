@@ -1357,11 +1357,72 @@ pub struct CrewRow {
     pub created_at: i64,
     #[serde(deserialize_with = "opt_int", default)]
     pub last_activity_at: Option<i64>,
+    /// When it last changed, and who started it: for people's sessions
+    /// ([`OTHERS_SELECT`]) alone.
+    #[serde(deserialize_with = "opt_int", default)]
+    pub updated_at: Option<i64>,
+    #[serde(default)]
+    pub creator_name: Option<String>,
 }
 
 pub const CREW_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.status, \
     s.status_reason, s.question, s.pull_requests, s.created_at, s.last_activity_at \
     FROM sessions s JOIN projects p ON p.id = s.project_id";
+
+/// The sessions people started in an autopilot's places, rather than the
+/// autopilot: with [`others_where`], neither its own nor those it started,
+/// nor review agents' or archived ones.
+const OTHERS_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.status, \
+    s.status_reason, s.question, s.pull_requests, s.created_at, s.last_activity_at, s.updated_at, \
+    cu.name AS creator_name FROM sessions s JOIN projects p ON p.id = s.project_id \
+    LEFT JOIN users cu ON cu.id = s.created_by";
+
+/// That a session (`s`) lists a pull request still open, as the pull
+/// requests page counts it: one nobody looked up counts as open.
+const PULL_OPEN: &str = "s.id IN (SELECT session_id FROM pull_request_sessions) AND EXISTS (SELECT 1 FROM \
+    json_each(COALESCE(s.pull_requests, json_array(json_object('state', s.pr_state)))) j \
+    WHERE COALESCE(json_extract(j.value, '$.state'), 'open') IN ('open','draft','queued'))";
+
+/// Where [`OTHERS_SELECT`]'s sessions are: in the autopilot's places (its
+/// project, or its workspace's projects that aren't archived), people's
+/// own. Pushes what it binds onto `params`.
+fn others_where(row: &AutopilotRow, params: &mut Vec<crate::db::Val>) -> String {
+    params.push(s(&row.project_id));
+    let home = params.len();
+    let place = match row.scope() {
+        AutopilotScope::Project => format!("s.project_id = ?{home}"),
+        AutopilotScope::Workspace => {
+            params.push(s(&row.workspace_id));
+            format!(
+                "p.workspace_id = ?{} AND p.archived_at IS NULL",
+                params.len()
+            )
+        }
+    };
+    format!(
+        "{place} AND s.archived = 0 AND (s.autopilot_role IS NULL OR (s.autopilot_role = 'crew' \
+         AND s.autopilot_id != ?{home})) AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)"
+    )
+}
+
+/// The sessions people started in its places that work now, or rest with
+/// a pull request still open, the latest first: what its brief lists, as
+/// it looks after their pull requests too.
+pub async fn others(db: &D1Database, row: &AutopilotRow) -> AppResult<Vec<CrewRow>> {
+    let mut params = Vec::new();
+    let place = others_where(row, &mut params);
+    q(
+        db,
+        &format!(
+            "{OTHERS_SELECT} WHERE {place} AND (s.status IN ('queued','provisioning','preparing','running','paused','stopping') \
+             OR (s.status IN ('idle','stopped','failed') AND {PULL_OPEN})) \
+             ORDER BY COALESCE(s.last_activity_at, s.updated_at) DESC LIMIT 15"
+        ),
+        &params,
+    )?
+    .all()
+    .await
+}
 
 impl CrewRow {
     pub fn status(&self) -> SessionStatus {
@@ -1380,6 +1441,21 @@ impl CrewRow {
             .as_deref()
             .and_then(|p| serde_json::from_str(p).ok())
             .unwrap_or_default()
+    }
+
+    /// When its agent last worked, or else when it last changed.
+    pub fn at(&self) -> i64 {
+        self.last_activity_at
+            .or(self.updated_at)
+            .unwrap_or(self.created_at)
+    }
+
+    /// Its pull requests still open, with their checks.
+    pub fn open_pulls(&self) -> Vec<String> {
+        self.pull_requests()
+            .iter()
+            .filter_map(ap::open_pull)
+            .collect()
     }
 
     pub fn session_ref(&self) -> SessionRef {
@@ -1408,6 +1484,9 @@ struct News {
     direction: Option<(String, Option<String>)>,
     answers: Vec<AskRow>,
     crew: Vec<CrewRow>,
+    /// People's sessions that ended a turn since, with a pull request
+    /// open: they come with what wakes it, and wake it for nothing.
+    others: Vec<CrewRow>,
 }
 
 impl News {
@@ -1443,6 +1522,21 @@ impl News {
         )?
         .all()
         .await?;
+        let mut params = Vec::new();
+        let place = others_where(row, &mut params);
+        params.push(n(since));
+        let others: Vec<CrewRow> = q(
+            db,
+            &format!(
+                "{OTHERS_SELECT} WHERE {place} AND COALESCE(s.last_activity_at, s.updated_at) > ?{} \
+                 AND s.status IN ('idle', 'stopped') AND s.question IS NULL AND {PULL_OPEN} \
+                 ORDER BY COALESCE(s.last_activity_at, s.updated_at) DESC LIMIT 10",
+                params.len()
+            ),
+            &params,
+        )?
+        .all()
+        .await?;
         let _ = now;
         Ok(Self {
             notes,
@@ -1451,6 +1545,7 @@ impl News {
                 .then(|| (row.direction.clone(), row.direction_by_name.clone())),
             answers,
             crew,
+            others,
         })
     }
 
@@ -1504,6 +1599,7 @@ impl News {
                 c
             })
             .collect();
+        let others: Vec<ap::OtherView> = self.others.iter().map(|o| other_view(o, None)).collect();
         ap::wake_message(&ap::News {
             reasons: reasons.to_vec(),
             notes,
@@ -1513,6 +1609,7 @@ impl News {
                 .map(|(d, by)| (d.as_str(), by.as_deref())),
             answers,
             crew,
+            others,
             handoff,
             now,
         })
@@ -1587,6 +1684,20 @@ pub fn crew_view(c: &CrewRow) -> ap::CrewView<'_> {
         status_reason: c.status_reason.as_deref(),
         question: None,
         pull_requests: c.pr_lines(),
+    }
+}
+
+/// One of people's sessions, for what fctl tells it, with what its agent
+/// asks (`question`, from [`CrewRow::question_text`]).
+pub fn other_view<'a>(c: &'a CrewRow, question: Option<&'a str>) -> ap::OtherView<'a> {
+    ap::OtherView {
+        reference: format!("{}#{}", c.project_slug, c.number),
+        title: &c.title,
+        by: c.creator_name.as_deref().unwrap_or("Someone"),
+        status: c.status(),
+        question,
+        pull_requests: c.open_pulls(),
+        at: c.at(),
     }
 }
 
