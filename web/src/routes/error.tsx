@@ -69,7 +69,8 @@ export function ErrorPage({ error, reset }: ErrorComponentProps) {
     const started = performance.now();
     let ok = false;
     try {
-      ok = (await fetch("/api/v1/health", { cache: "no-store" })).ok;
+      // A server that never answers gets as long as the app gives it as it starts (router.tsx).
+      ok = (await fetch("/api/v1/health", { cache: "no-store", signal: AbortSignal.timeout(8_000) })).ok;
     } catch {}
     // Let the lights come back before the verdict.
     await new Promise((r) => setTimeout(r, Math.max(0, 1500 - (performance.now() - started))));

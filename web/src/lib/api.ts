@@ -67,8 +67,22 @@ export function clickConfirmed(
   return goConfirmed(href);
 }
 
-async function request<T>(method: string, path: string, body?: unknown, again = true): Promise<T> {
+interface RequestOptions {
+  /** Whether a sensitive action may ask the person to confirm it's them, and go again. */
+  again?: boolean;
+  /** How long it may take (ms): it fails as unanswered after that. No limit by default. */
+  within?: number;
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  { again = true, within }: RequestOptions = {},
+): Promise<T> {
+  const signal = within === undefined ? undefined : AbortSignal.timeout(within);
   let res: Response;
+  let text: string;
   try {
     res = await fetch(`/api/v1${path}`, {
       method,
@@ -78,12 +92,16 @@ async function request<T>(method: string, path: string, body?: unknown, again = 
           ? { Accept: "application/json" }
           : { Accept: "application/json", "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
     });
+    text = res.status === 204 ? "" : await res.text();
   } catch {
-    throw new ApiFailure(0, { code: "unavailable", message: "You appear to be offline." });
+    throw new ApiFailure(0, {
+      code: "unavailable",
+      message: signal?.aborted ? "fctl's server didn't answer in time." : "You appear to be offline.",
+    });
   }
   if (res.status === 204) return undefined as T;
-  const text = await res.text();
   const data = text ? JSON.parse(text) : undefined;
   if (!res.ok) {
     const failure = new ApiFailure(res.status, data ?? {});
@@ -92,7 +110,7 @@ async function request<T>(method: string, path: string, body?: unknown, again = 
     if (failure.code === "two_factor_setup_required") window.dispatchEvent(new Event(TWO_FACTOR_REQUIRED));
     // A sensitive action goes again once the person confirmed it's them.
     if (failure.code === "verification_required" && again && confirmer && (await confirmer()))
-      return request<T>(method, path, body, false);
+      return request<T>(method, path, body, { again: false, within });
     throw failure;
   }
   return data as T;
@@ -171,7 +189,8 @@ export const api = {
   signup: (b: G.SignupRequest) => request<G.AuthResponse>("POST", "/auth/signup", b),
   login: (b: G.LoginRequest) => request<G.AuthResponse>("POST", "/auth/login", b),
   logout: () => request<G.Ok>("POST", "/auth/logout", {}),
-  me: () => request<G.Me>("GET", "/auth/me"),
+  /** Who is signed in: `within` ms at most, if given. */
+  me: (within?: number) => request<G.Me>("GET", "/auth/me", undefined, { within }),
   updateMe: (b: G.UpdateMeRequest) => request<G.Me>("PATCH", "/auth/me", b),
   /** Your picture (`avatarImage` makes it): it replaces the one you had. */
   setAvatar: (image: Blob) => putAvatar<G.Me>("/me/avatar", image),

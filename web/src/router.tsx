@@ -23,6 +23,7 @@ import { ProjectPage } from "@/routes/project";
 import { PullsPage, type PullsSearch } from "@/routes/pulls";
 import { SessionPage } from "@/routes/session";
 import { SettingsPage } from "@/routes/settings";
+import { Starting } from "@/routes/starting";
 import { SignedInLayout } from "@/routes/two-factor";
 import {
   GITHUB_OUTCOMES,
@@ -33,7 +34,13 @@ import {
   type WorkspaceTab,
 } from "@/routes/workspace";
 
-const me = () => queryClient.ensureQueryData({ queryKey: keys.me, queryFn: fetchMe });
+// Pages wait to know who is signed in as the app starts. A request the server never answers (the
+// app on an iPhone's Home Screen can come back after a while to one) kept the app blank until it
+// was closed: the request now fails after a while and goes again once, and then the error page
+// says so, with its Try again. Meanwhile, from a second on, Starting says what the app waits for.
+const START_LIMIT = 8_000;
+const me = () =>
+  queryClient.ensureQueryData({ queryKey: keys.me, queryFn: () => fetchMe(START_LIMIT), retry: 1 });
 
 // Unknown addresses get NotFound; a failed request or a crash anywhere, ErrorPage.
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound, errorComponent: ErrorPage });
@@ -232,6 +239,8 @@ export const router = createRouter({
   // On an iPhone's or iPad's Home Screen, with no history for iOS's edge swipes to go through.
   history: appHistory(),
   defaultPreload: "intent",
+  // What shows while a page waits on the server for over a second, as one does when the app starts.
+  defaultPendingComponent: Starting,
   defaultViewTransition: true,
   // A session's page opens at its newest work by itself (lib/stick-to-bottom.ts).
   scrollRestoration: ({ location }) => routerScrolls(location.pathname),
