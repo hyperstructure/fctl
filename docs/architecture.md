@@ -2146,9 +2146,19 @@ sessions to do it, and sets up what the work needs, as far as they let it
    next session needs while its cache is warm; the briefing tells it when
    a fresh session takes over, and to keep its context lean: to read what
    it needs of a session rather than all of its transcript, and to hand
-   long reading to a subagent. Changing the handoff, as changing its
-   model, changes how much it spends. Those who steer it also hand off
-   when they choose (*Hand off to a fresh session*, `fctl autopilot wake
+   long reading to a subagent. Its last section passes on what an
+   autopilot that ran a project for a day learned about getting good work
+   from its sessions (`work_lines`): what a task needs, among it the files
+   its other open pull requests change; putting what every session should
+   know in the project's memory or instructions, and fixing the cause of
+   a mistake sessions repeat; reading the end of a session's log before
+   taking its word that it's done, as sessions stop short; one round of
+   changes; reviewing screenshots; people's own messages to its sessions;
+   and background scripts that wait on what doesn't wake it. Each wake
+   message and the brief say the time in UTC (`clock`), and its sessions'
+   open pull requests say how their checks stand (`pull_line`). Changing
+   the handoff, as changing its model, changes how much it spends.
+   Those who steer it also hand off when they choose (*Hand off to a fresh session*, `fctl autopilot wake
    --fresh`, the wake reason `fresh`), so that it starts from what fctl
    and its briefing say now, after a release for one: between its turns
    at once, else once its turn ends. That wake waits for the turn's end
