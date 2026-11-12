@@ -1810,6 +1810,9 @@ impl Supervisor {
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
         self.oom_kills = oom::Count::start(Instant::now(), oom::kills());
         self.kernel_log = self.watches_memory().then(oom::KernelLog::open).flatten();
+        // A Claude Code that starts again, after the kernel killed the one
+        // before say, hears of the sandbox's memory afresh.
+        self.memory = oom::Watch::default();
         self.persisted.claude = c.pid().and_then(orphan::Process::of);
         self.persist();
         self.log(
@@ -2686,7 +2689,15 @@ impl Supervisor {
         }
         self.tell_unheard_kills().await;
         if let Some(usage) = self.memory.tick(now, oom::usage) {
-            self.memory_nearly_out(usage, oom::processes()).await;
+            // Off the supervisor's thread, and for 5 seconds at most: a
+            // command line is read from its process's memory, under its
+            // lock, which a sandbox short of memory may hold long.
+            let processes = tokio::task::spawn_blocking(oom::processes);
+            let processes = match tokio::time::timeout(Duration::from_secs(5), processes).await {
+                Ok(Ok(processes)) => processes,
+                _ => Vec::new(),
+            };
+            self.memory_nearly_out(usage, processes).await;
         }
     }
 
