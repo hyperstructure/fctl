@@ -1,6 +1,9 @@
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearLog,
+  forgetLog,
   KEEP,
   logFor,
   logText,
@@ -10,9 +13,12 @@ import {
   record,
   reloadToRecover,
   startAppLog,
+  useAppLog,
   viewportText,
   watchWebgl,
 } from "./app-log";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const said = () => readLog().map((e) => e.what);
 
@@ -74,6 +80,46 @@ describe("record", () => {
     logFor("usr_b");
     expect(said()).toEqual([]);
     expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_b");
+  });
+
+  it("is kept for the next account to sign in only by the one it was kept for", () => {
+    // A first run notes no one yet: what it logged before the sign-in stays.
+    record("Started", 1);
+    logFor("usr_a");
+    expect(said()).toEqual(["Started"]);
+    // Clear empties it, and what comes after is still A's.
+    clearLog();
+    record("After Clear", 2);
+    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_a");
+    logFor("usr_a");
+    expect(said()).toEqual(["After Clear"]);
+    // Signing out keeps it for no one: what another tab adds after goes as anyone signs in.
+    forgetLog();
+    record("Another tab, still on A's page", 3);
+    logFor("usr_b");
+    expect(said()).toEqual([]);
+    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_b");
+  });
+
+  it("shows, as the page opens, what another tab wrote since this tab last read it", async () => {
+    record("here", 1);
+    expect(said()).toEqual(["here"]);
+    localStorage.setItem(
+      "fctl:app-log",
+      JSON.stringify([
+        { at: 1, what: "here" },
+        { at: 2, what: "another tab" },
+      ]),
+    );
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    function Log() {
+      const log = useAppLog();
+      return createElement("p", null, log.map((e) => e.what).join(", "));
+    }
+    await act(async () => root.render(createElement(Log)));
+    expect(host.textContent).toBe("here, another tab");
+    await act(async () => root.unmount());
   });
 
   it("forgets the heartbeat with the log", () => {

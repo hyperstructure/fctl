@@ -101,20 +101,30 @@ export function record(what: string, at = Date.now()) {
   changed(next);
 }
 
-/** Empties the log, and forgets the run's heartbeat and whose it was (signing out, or Clear). */
+/** Empties the log and forgets the run's heartbeat (Clear), keeping whose it is. */
 export function clearLog() {
   try {
     localStorage.removeItem(LOG);
     localStorage.removeItem(BEAT);
-    localStorage.removeItem(OWNER);
   } catch {}
   changed([]);
 }
 
 /**
+ * Signing out: empties the log and keeps it for no one, so that what this page and other tabs
+ * still open add to it after, about the account that signed out, goes as anyone signs in next.
+ */
+export function forgetLog() {
+  clearLog();
+  try {
+    localStorage.setItem(OWNER, "");
+  } catch {}
+}
+
+/**
  * Keeps the log for `user`, who is signed in: one kept for someone else, whose sign-in ended here
- * without them signing out, goes first. A sign-in that ends leaves the log, as it may tell why;
- * signing out clears it.
+ * without them signing out, or for no one since a sign-out, goes first. A sign-in that ends
+ * leaves the log, as it may tell why.
  */
 export function logFor(user: string) {
   try {
@@ -126,11 +136,12 @@ export function logFor(user: string) {
 
 function subscribe(fn: () => void) {
   listeners.add(fn);
-  // What another tab adds.
+  // What another tab adds, or cleared, from now on and since this tab last read the log.
   const other = (e: StorageEvent) => {
     if (e.key === LOG || e.key === null) changed(stored());
   };
   window.addEventListener("storage", other);
+  changed(stored());
   return () => {
     listeners.delete(fn);
     window.removeEventListener("storage", other);

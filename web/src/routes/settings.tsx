@@ -68,7 +68,7 @@ import {
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as wsApi } from "@/lib/api";
-import { clearLog } from "@/lib/app-log";
+import { forgetLog } from "@/lib/app-log";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
@@ -2032,7 +2032,7 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
       await forgetDraft();
       queryClient.clear();
       forgetSidebar(); // last, so that no list that comes is kept again
-      clearLog();
+      forgetLog();
       goTo("/login?deleted=1");
     },
   });
