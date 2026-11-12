@@ -112,7 +112,10 @@ fake-claude's behaviors are listed in [docs/development.md](docs/development.md)
 ## Verifying your change
 
 - Logic: unit tests next to the code (`#[cfg(test)]` in Rust, `*.test.ts` in
-  the web app).
+  the web app). The control plane's code that reads and writes D1 has
+  tests that run in Node against a stand-in for D1 with the migrations
+  applied (`crate::testing`,
+  [docs/development.md](docs/development.md#working-on-the-control-plane)).
 - A test that writes a script and runs it (a stand-in for `docker`, `gh` or
   wrangler) has `sh` write it, with `write_script` (in fctl-host's
   `driver::fake`, fctl-agent's `claude::tests` and xtask's `util::tests`): a

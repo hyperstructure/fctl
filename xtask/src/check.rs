@@ -12,7 +12,8 @@ use std::process::Command;
 pub enum Part {
     /// Formatting, the generated types, and Clippy for the host and the Worker.
     Lint,
-    /// `cargo test`.
+    /// `cargo test`, and fctl-control's tests in Node
+    /// ([`control_tests`]).
     Test,
     /// Biome, TypeScript and the tests of the web app, the standalone
     /// server and the Linear stand-in, fctl's Linear queries against
@@ -81,6 +82,7 @@ pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
                 "fctl-control",
                 "--target",
                 "wasm32-unknown-unknown",
+                "--all-targets",
                 "--locked",
                 "--",
                 "-D",
@@ -92,6 +94,7 @@ pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
         run(Command::new("cargo")
             .args(["test", "--workspace", "--locked"])
             .current_dir(root))?;
+        control_tests(root)?;
     }
     if has(Part::Web) {
         for workspace in WORKSPACES {
@@ -106,6 +109,34 @@ pub fn check(root: &Path, parts: &[Part], quick: bool) -> Result<()> {
     }
     eprintln!("\nall checks passed");
     Ok(())
+}
+
+/// fctl-control's tests, which build for wasm32 only: wasm-bindgen's
+/// runner runs them in Node, where node:sqlite stands in for D1
+/// (crates/fctl-control/src/testing).
+fn control_tests(root: &Path) -> Result<()> {
+    let sqlite = Command::new("node")
+        .args(["--eval", "require('node:sqlite')"])
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !sqlite.is_ok_and(|s| s.success()) {
+        bail!(
+            "fctl-control's tests run in Node 22.13 or newer, whose node:sqlite stands in for D1: \
+             node --eval \"require('node:sqlite')\" failed"
+        );
+    }
+    let runner = util::wasm_bindgen_test_runner(root)?;
+    run(Command::new("cargo")
+        .args([
+            "test",
+            "-p",
+            "fctl-control",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--locked",
+        ])
+        .env("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER", runner)
+        .current_dir(root))
 }
 
 /// web/src/gen must match what `cargo xtask gen` writes.

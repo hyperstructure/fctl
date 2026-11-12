@@ -346,6 +346,131 @@ pub fn worker_build() -> Result<Command> {
     Ok(Command::new("worker-build"))
 }
 
+/// wasm-bindgen-test-runner, which runs fctl-control's tests in Node: the
+/// one that comes with the wasm-bindgen CLI worker-build keeps in its cache,
+/// of the version in Cargo.lock. Where worker-build hasn't downloaded it
+/// yet, it is downloaded there as worker-build would, from GitHub's release
+/// downloads.
+pub fn wasm_bindgen_test_runner(root: &Path) -> Result<PathBuf> {
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).context("Cargo.lock")?;
+    let version = locked_version(&lock, "wasm-bindgen")?;
+    let target = wasm_bindgen_target()?;
+    let dir = worker_build_cache()?.join(format!("wasm-bindgen-{target}-{version}"));
+    let runner = dir.join("wasm-bindgen-test-runner");
+    if runner.exists() {
+        return Ok(runner);
+    }
+    let url = format!(
+        "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/{version}/wasm-bindgen-{version}-{target}.tar.gz"
+    );
+    eprintln!("wasm-bindgen-test-runner {version} is missing; downloading it from {url}");
+    let archive = std::env::temp_dir().join(format!("wasm-bindgen-{}.tar.gz", std::process::id()));
+    run(Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--retry",
+            "3",
+            "--output",
+        ])
+        .arg(&archive)
+        .arg(&url))?;
+    // Unpacked beside it first, so that a download cut short isn't taken
+    // for the tools.
+    let part = PathBuf::from(format!("{}.part", dir.display()));
+    let _ = std::fs::remove_dir_all(&part);
+    let unpacked = unpack(&archive, &part);
+    let _ = std::fs::remove_file(&archive);
+    unpacked?;
+    if !part.join("wasm-bindgen-test-runner").exists() {
+        bail!("{url} has no wasm-bindgen-test-runner");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::rename(&part, &dir).with_context(|| format!("{}", dir.display()))?;
+    Ok(runner)
+}
+
+/// The version of `package` that Cargo.lock has.
+fn locked_version(lock: &str, package: &str) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct Lock {
+        package: Vec<Package>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Package {
+        name: String,
+        version: String,
+    }
+    let lock: Lock = toml::from_str(lock).context("Cargo.lock")?;
+    lock.package
+        .into_iter()
+        .find(|p| p.name == package)
+        .map(|p| p.version)
+        .ok_or_else(|| anyhow!("Cargo.lock has no {package}"))
+}
+
+/// The build of the wasm-bindgen CLI for this machine, as its releases
+/// (and worker-build) name it.
+fn wasm_bindgen_target() -> Result<&'static str> {
+    Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        (os, arch) => bail!("wasm-bindgen has no build for {os} on {arch}"),
+    })
+}
+
+/// Where worker-build keeps the tools it downloads: its directory in the
+/// user's cache directory.
+fn worker_build_cache() -> Result<PathBuf> {
+    let home = || {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("HOME is not set"))
+    };
+    let cache = if cfg!(target_os = "macos") {
+        home()?.join("Library/Caches")
+    } else {
+        match std::env::var_os("XDG_CACHE_HOME").filter(|d| !d.is_empty()) {
+            Some(dir) => PathBuf::from(dir),
+            None => home()?.join(".cache"),
+        }
+    };
+    Ok(cache.join("worker-build"))
+}
+
+/// Unpacks a .tar.gz into `dir` without its top-level directory, as
+/// worker-build does.
+fn unpack(archive: &Path, dir: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive).with_context(|| format!("{}", archive.display()))?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let mut parts = path.components().skip(1).peekable();
+        // Files only, each within `dir`.
+        let plain = parts.peek().is_some()
+            && path
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !plain || !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path: PathBuf = parts.collect();
+        let to = dir.join(path);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        entry
+            .unpack(&to)
+            .with_context(|| format!("unpacking {}", to.display()))?;
+    }
+    Ok(())
+}
+
 /// Builds the web app into web/dist.
 pub fn build_web(root: &Path) -> Result<()> {
     if !root.join("node_modules").exists() {
@@ -402,6 +527,16 @@ pub fn target_dir(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wasm-bindgen whose runner runs fctl-control's tests is the one
+    /// the Worker builds with.
+    #[test]
+    fn finds_a_locked_version() {
+        let lock = include_str!("../../Cargo.lock");
+        let version = locked_version(lock, "wasm-bindgen").unwrap();
+        assert!(lock.contains(&format!("name = \"wasm-bindgen\"\nversion = \"{version}\"")));
+        assert!(locked_version(lock, "no-such-crate").is_err());
+    }
 
     /// What wrangler 4.151.1 writes when the API throttles it, as it did
     /// app.fctl.sh's deploy.

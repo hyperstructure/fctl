@@ -31,6 +31,9 @@ wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = ["Crypto", "SubtleCrypto", "CryptoKey", "CryptoKeyPair"] }
 worker = { version = "0.8.7", features = ["d1"] }
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.79"
+
 [lints.rust]
 unsafe_code = "deny"
 

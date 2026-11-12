@@ -34,6 +34,8 @@ mod schedules;
 mod slugs;
 mod spec;
 mod starts;
+#[cfg(all(test, target_arch = "wasm32"))]
+mod testing;
 mod tickets;
 mod usage;
 mod workspaces;
