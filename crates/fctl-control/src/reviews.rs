@@ -936,27 +936,43 @@ async fn connected(ctx: &Ctx, project: &ProjectRow, repo: &RepoRef) -> AppResult
     crate::workspaces::installation(&ctx.db, &gh, &connections, &repo.owner).await
 }
 
-/// Starts a review of `pr` at its head in `project`, through installation
-/// `inst`, as its review agents' operator: a session, its row in
-/// `reviews`, and on GitHub its check and a reaction. A review of the pull
-/// request still under way stops: the new one takes its place. `asked_by`:
-/// the person who asked for it; a delivery's review of a commit that has
-/// one already isn't repeated. `trusted`: its agent may run the pull
-/// request's code ([`author_trusted`]).
-pub async fn start(
-    ctx: &Ctx,
+/// A review that [`put`] put in D1, which [`start`] starts.
+struct Put {
+    /// Its session.
+    id: SessionId,
+    /// What its agent is asked to do.
+    task: String,
+    /// Its pull request, as its session lists it.
+    listed: PullRequestRef,
+    /// The person it runs for.
+    operator: String,
+    /// What the reviews of the pull request it stops are told.
+    because: String,
+}
+
+/// Puts a review of `pr` at its head in `project` in D1 at `now`, for
+/// [`start`] to start: its session, queued, and its row in `reviews`, the
+/// commit's next attempt. `Err`: it put none, and what [`start`] answers
+/// instead: `Skipped` where its review agents are off or can't run, or a
+/// newer commit has its review; `Already` where a delivery is about a
+/// commit that has its review, and where another delivery about the
+/// commit, or another person asking for it, put the review in meanwhile,
+/// which `reviews_commit` keeps to one.
+async fn put(
+    db: &D1Database,
+    now: i64,
     project: &ProjectRow,
     pr: &PullRequest,
     inst: u64,
     asked_by: Option<&UserRow>,
     trusted: bool,
-) -> AppResult<Started> {
-    let Some(conf) = settings(&ctx.db, &project.id).await?.filter(|c| c.enabled) else {
-        return Ok(Started::Skipped("its review agents are off".into()));
+) -> AppResult<Result<Put, Started>> {
+    let Some(conf) = settings(db, &project.id).await?.filter(|c| c.enabled) else {
+        return Ok(Err(Started::Skipped("its review agents are off".into())));
     };
-    let op = match operator(&ctx.db, project, &conf).await? {
+    let op = match operator(db, project, &conf).await? {
         Ok(op) => op,
-        Err(why) => return Ok(Started::Skipped(why)),
+        Err(why) => return Ok(Err(Started::Skipped(why))),
     };
     let key = pr.repo.full_name().to_ascii_lowercase();
     #[derive(Deserialize)]
@@ -965,14 +981,14 @@ pub async fn start(
         attempt: Option<i64>,
     }
     let last: Option<Attempt> = q(
-        &ctx.db,
+        db,
         "SELECT MAX(attempt) AS attempt FROM reviews WHERE project_id = ? AND repo_key = ? AND number = ? AND head_sha = ?",
         &[s(&project.id), s(&key), n(pr.number as i64), s(&pr.head_sha)],
     )?
     .first()
     .await?;
     let attempt = match (last.and_then(|a| a.attempt), asked_by) {
-        (Some(_), None) => return Ok(Started::Already),
+        (Some(_), None) => return Ok(Err(Started::Already)),
         (Some(a), Some(_)) => a + 1,
         (None, _) => 0,
     };
@@ -987,16 +1003,16 @@ pub async fn start(
             at: Option<i64>,
         }
         let newest: Option<Newest> = q(
-            &ctx.db,
+            db,
             "SELECT MAX(pr_updated_at) AS at FROM reviews WHERE project_id = ? AND repo_key = ? AND number = ?",
             &[s(&project.id), s(&key), n(pr.number as i64)],
         )?
         .first()
         .await?;
         if newest.and_then(|n| n.at).is_some_and(|at| at > updated) {
-            return Ok(Started::Skipped(
+            return Ok(Err(Started::Skipped(
                 "a newer commit of it has its review already".into(),
-            ));
+            )));
         }
     }
     #[derive(Deserialize)]
@@ -1004,7 +1020,7 @@ pub async fn start(
         head_sha: String,
     }
     let previous: Option<Head> = q(
-        &ctx.db,
+        db,
         "SELECT head_sha FROM reviews WHERE project_id = ? AND repo_key = ? AND number = ? AND head_sha != ? \
          AND state IN ('passed', 'commented') ORDER BY created_at DESC LIMIT 1",
         &[s(&project.id), s(&key), n(pr.number as i64), s(&pr.head_sha)],
@@ -1021,7 +1037,7 @@ pub async fn start(
         )
     };
 
-    let id = fctl_domain::ids::session_id(ctx.now);
+    let id = fctl_domain::ids::session_id(now);
     let title = rv::title(pr);
     let task = rv::task(pr, previous.as_deref());
     let listed = PullRequestRef {
@@ -1035,12 +1051,12 @@ pub async fn start(
     let pull_requests = serde_json::to_string(&[&listed])?;
     let statements = vec![
         q(
-            &ctx.db,
+            db,
             "UPDATE projects SET session_counter = session_counter + 1 WHERE id = ?",
             &[s(&project.id)],
         )?,
         q(
-            &ctx.db,
+            db,
             "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, branch, base_branch, \
              model, effort, claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, pull_requests) \
              VALUES (?1, ?2, (SELECT session_counter FROM projects WHERE id = ?2), ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, '{}', ?12, ?12, ?12, 'read', ?13)",
@@ -1056,12 +1072,12 @@ pub async fn start(
                 os(conf.model.as_deref()),
                 os(conf.effort.as_deref()),
                 s(&fctl_domain::ids::uuid_v4()),
-                n(ctx.now),
+                n(now),
                 s(&pull_requests),
             ],
         )?,
         q(
-            &ctx.db,
+            db,
             "INSERT INTO reviews (session_id, project_id, repo, repo_key, number, head_sha, attempt, url, title, author, draft, \
              fork, trusted, previous_sha, pr_updated_at, installation_id, state, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
@@ -1082,27 +1098,61 @@ pub async fn start(
                 os(previous.as_deref()),
                 crate::db::on(pr.updated_at),
                 n(inst as i64),
-                n(ctx.now),
+                n(now),
             ],
         )?,
     ];
-    if let Err(e) = crate::db::batch(&ctx.db, statements).await {
+    if let Err(e) = crate::db::batch(db, statements).await {
         // Another delivery about the same commit, or another person asking
         // for it, started it meanwhile, which reviews_commit keeps to one:
         // asked again, as D1's errors don't say which (AppError hides
         // them).
         let started: Option<Value> = q(
-            &ctx.db,
+            db,
             "SELECT 1 AS found FROM reviews WHERE project_id = ? AND repo_key = ? AND number = ? AND head_sha = ? AND attempt = ?",
             &[s(&project.id), s(&key), n(pr.number as i64), s(&pr.head_sha), n(attempt)],
         )?
         .first()
         .await?;
         if started.is_some() {
-            return Ok(Started::Already);
+            return Ok(Err(Started::Already));
         }
         return Err(e);
     }
+    Ok(Ok(Put {
+        id,
+        task,
+        listed,
+        operator: op.user.id,
+        because,
+    }))
+}
+
+/// Starts a review of `pr` at its head in `project`, through installation
+/// `inst`, as its review agents' operator: a session, its row in
+/// `reviews`, and on GitHub its check and a reaction. A review of the pull
+/// request still under way stops: the new one takes its place. `asked_by`:
+/// the person who asked for it; a delivery's review of a commit that has
+/// one already isn't repeated. `trusted`: its agent may run the pull
+/// request's code ([`author_trusted`]).
+pub async fn start(
+    ctx: &Ctx,
+    project: &ProjectRow,
+    pr: &PullRequest,
+    inst: u64,
+    asked_by: Option<&UserRow>,
+    trusted: bool,
+) -> AppResult<Started> {
+    let Put {
+        id,
+        task,
+        listed,
+        operator,
+        because,
+    } = match put(&ctx.db, ctx.now, project, pr, inst, asked_by, trusted).await? {
+        Ok(put) => put,
+        Err(started) => return Ok(started),
+    };
     // The reviews of the pull request still under way stop: this one takes
     // their place. Only once it is in, so that a delivery that turns out
     // to repeat another stops nothing.
@@ -1153,7 +1203,7 @@ pub async fn start(
             "project": project.slug,
             "pull_request": format!("{}#{}", pr.repo.full_name(), pr.number),
             "commit": pr.head_sha,
-            "operator": op.user.id,
+            "operator": operator,
             "asked_by": asked_by.map(|u| &u.id),
         })),
     );
@@ -3120,4 +3170,160 @@ async fn project_slug(db: &D1Database, project_id: &str) -> AppResult<String> {
     .first()
     .await?;
     slug.map(|s| s.slug).ok_or_else(|| not_found("Project"))
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::db::Count;
+    use crate::error::internal;
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const NOW: i64 = 1_790_000_000_000;
+
+    /// A project whose review agents are on and run for Ada, who owns its
+    /// workspace and has a Claude connection; and Ada.
+    async fn project(db: &D1Database) -> AppResult<(ProjectRow, UserRow)> {
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0)",
+            "INSERT INTO workspace_members (workspace_id, user_id, email, role, created_at) \
+             VALUES ('wsp_acme', 'usr_ada', 'ada@example.com', 'owner', 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_web', 'web', 'Web', 'acme', 'web', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO claude_credentials (id, user_id, kind, secret_enc, created_at, updated_at) \
+             VALUES ('crd_ada', 'usr_ada', 'oauth', 'sealed', 0, 0)",
+            "INSERT INTO project_reviews (project_id, enabled, operator_id, updated_at) VALUES ('prj_web', 1, 'usr_ada', 0)",
+        ] {
+            q(db, sql, &[])?.run().await?;
+        }
+        let project: ProjectRow = q(
+            db,
+            &format!("{PROJECT_SELECT} WHERE p.id = ?2"),
+            &[s("usr_ada"), s("prj_web")],
+        )?
+        .first()
+        .await?
+        .ok_or_else(|| internal("no project"))?;
+        let ada: UserRow = q(
+            db,
+            &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
+            &[s("usr_ada")],
+        )?
+        .first()
+        .await?
+        .ok_or_else(|| internal("no Ada"))?;
+        Ok((project, ada))
+    }
+
+    fn pull_request() -> PullRequest {
+        PullRequest {
+            repo: RepoRef {
+                owner: "acme".into(),
+                name: "web".into(),
+            },
+            number: 12,
+            url: "https://github.com/acme/web/pull/12".into(),
+            title: "Retry failed uploads".into(),
+            head_sha: "4b825dc642cb6eb9a060e54bf8d69288fbee4904".into(),
+            head_ref: "retry-uploads".into(),
+            base_ref: "main".into(),
+            author: Some("ada".into()),
+            association: Some("OWNER".into()),
+            draft: false,
+            open: true,
+            fork: false,
+            updated_at: Some(NOW),
+        }
+    }
+
+    /// How many rows `sql` (`SELECT COUNT(*) AS n …`) counts.
+    async fn count(db: &D1Database, sql: &str) -> AppResult<i64> {
+        let c: Option<Count> = q(db, sql, &[])?.first().await?;
+        Ok(c.map_or(0, |c| c.n))
+    }
+
+    /// What two racing [`put`]s came to: how many put a review in, and how
+    /// many answered `Already`.
+    fn outcomes(results: [AppResult<Result<Put, Started>>; 2]) -> AppResult<(usize, usize)> {
+        let (mut put, mut already) = (0, 0);
+        for r in results {
+            match r? {
+                Ok(_) => put += 1,
+                Err(Started::Already) => already += 1,
+                Err(Started::Review(_)) => return Err(internal("a put started a review")),
+                Err(Started::Skipped(why)) => return Err(internal(format!("skipped: {why}"))),
+            }
+        }
+        Ok((put, already))
+    }
+
+    /// The project has one review and one session, and counted one: the
+    /// batch that lost the race to `reviews_commit` left nothing behind.
+    async fn one_review(db: &D1Database) -> AppResult<()> {
+        assert_eq!(count(db, "SELECT COUNT(*) AS n FROM reviews").await?, 1);
+        assert_eq!(count(db, "SELECT COUNT(*) AS n FROM sessions").await?, 1);
+        assert_eq!(
+            count(
+                db,
+                "SELECT session_counter AS n FROM projects WHERE id = 'prj_web'"
+            )
+            .await?,
+            1
+        );
+        Ok(())
+    }
+
+    /// GitHub sends `synchronize` and another delivery about the same
+    /// commit close together (fctl#495): both read the commit's attempts
+    /// before either puts its review in, and the one whose batch fails
+    /// finds the other's review.
+    #[wasm_bindgen_test]
+    async fn two_deliveries_about_one_commit_put_one_review() -> AppResult<()> {
+        let db = testing::database();
+        let (project, _) = project(&db).await?;
+        let pr = pull_request();
+        let (a, b) = futures::join!(
+            put(&db, NOW, &project, &pr, 1, None, true),
+            put(&db, NOW, &project, &pr, 1, None, true),
+        );
+        assert_eq!(outcomes([a, b])?, (1, 1));
+        one_review(&db).await
+    }
+
+    /// Two people ask for another review of a commit at once: one more
+    /// review, of the commit's next attempt.
+    #[wasm_bindgen_test]
+    async fn two_asking_at_once_put_one_more_review() -> AppResult<()> {
+        let db = testing::database();
+        let (project, ada) = project(&db).await?;
+        let pr = pull_request();
+        let first = put(&db, NOW, &project, &pr, 1, None, true).await?;
+        assert!(first.is_ok(), "the delivery's review wasn't put in");
+        let (a, b) = futures::join!(
+            put(&db, NOW, &project, &pr, 1, Some(&ada), true),
+            put(&db, NOW, &project, &pr, 1, Some(&ada), true),
+        );
+        assert_eq!(outcomes([a, b])?, (1, 1));
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) AS n FROM reviews WHERE attempt = 1").await?,
+            1
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) AS n FROM sessions").await?, 2);
+        Ok(())
+    }
+
+    /// A delivery about a commit that has its review answers `Already`
+    /// before it tries to put another in.
+    #[wasm_bindgen_test]
+    async fn a_later_delivery_about_a_reviewed_commit_is_already() -> AppResult<()> {
+        let db = testing::database();
+        let (project, _) = project(&db).await?;
+        let pr = pull_request();
+        let first = put(&db, NOW, &project, &pr, 1, None, true).await;
+        let second = put(&db, NOW, &project, &pr, 1, None, true).await;
+        assert_eq!(outcomes([first, second])?, (1, 1));
+        one_review(&db).await
+    }
 }

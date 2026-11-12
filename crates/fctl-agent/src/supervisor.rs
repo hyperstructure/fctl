@@ -125,6 +125,10 @@ enum CutOff {
     Unseen,
     /// Claude stopped with it: the sandbox, or fctl-agent, stopped.
     Stopped,
+    /// Claude Code exited on its own while it worked, killed for want of
+    /// memory or crashed, and fctl-agent started it again
+    /// ([`Supervisor::on_claude_exit`]).
+    Exited(claude::Exit),
 }
 
 /// How long after Claude carried on with a turn that was cut off a second
@@ -227,6 +231,9 @@ pub struct Supervisor {
     next_request: u64,
     outbox: Vec<AgentEvent>,
     restarts: VecDeque<Instant>,
+    /// How many processes the kernel had killed for want of memory
+    /// shortly before now, while Claude runs ([`claude::OomCount`]).
+    oom_kills: claude::OomCount,
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
@@ -350,6 +357,7 @@ impl Supervisor {
                 next_request: 0,
                 outbox: Vec::new(),
                 restarts: VecDeque::new(),
+                oom_kills: claude::OomCount::default(),
                 stderr_budget: (Instant::now(), 0),
                 claude_credential: None,
                 exit_after: None,
@@ -1788,6 +1796,7 @@ impl Supervisor {
         };
         self.model_name.started(launch.model);
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
+        self.oom_kills = claude::OomCount::start(Instant::now(), claude::oom_kills());
         self.persisted.claude = c.pid().and_then(orphan::Process::of);
         self.persist();
         self.log(
@@ -2508,11 +2517,15 @@ impl Supervisor {
             .is_some_and(|at| now.saturating_sub(at) < CARRY_ON_AGAIN_AFTER.as_millis() as i64);
         let what = match cut_off {
             CutOff::Unseen => {
-                "fctl-agent restarted in the sandbox while Claude worked, so Claude's last steps aren't shown here, and fctl stopped that Claude to start it again on the conversation."
+                "fctl-agent restarted in the sandbox while Claude worked, so Claude's last steps aren't shown here, and fctl stopped that Claude to start it again on the conversation.".to_owned()
             }
             CutOff::Stopped => {
-                "Claude's turn was cut off: fctl-agent stopped in the sandbox while Claude worked."
+                "Claude's turn was cut off: fctl-agent stopped in the sandbox while Claude worked.".to_owned()
             }
+            CutOff::Exited(exit) => format!(
+                "Claude's turn was cut off: Claude Code {} while it worked.",
+                exit.words()
+            ),
         };
         let then = if again {
             "It was cut off shortly before too, so Claude waits for a message."
@@ -2530,19 +2543,51 @@ impl Supervisor {
         }
         self.persisted.carried_on_at = Some(now);
         self.persist();
-        let text = prompt::cut_off_turn(cut_off == CutOff::Unseen);
+        let why = match cut_off {
+            CutOff::Unseen => prompt::CutOffBy::Restart,
+            CutOff::Stopped => prompt::CutOffBy::Stop,
+            CutOff::Exited(exit) => prompt::CutOffBy::Exit(exit),
+        };
+        let text = prompt::cut_off_turn(why);
         self.send_turn(&text, None, None, &[]).await;
     }
 
+    /// Claude Code exited on its own: fctl-agent starts it again on the
+    /// conversation ([`Self::claude_exited`]).
     async fn on_claude_exit(&mut self, _code: Option<i32>) {
-        let code = match self.claude.take() {
+        let exit = match self.claude.take() {
             Some(mut c) => tokio::time::timeout(Duration::from_secs(5), c.wait())
                 .await
                 .ok()
-                .flatten(),
+                .flatten()
+                .unwrap_or_default(),
             None => return,
         };
-        self.persisted.claude = None;
+        let exit = exit.killed_for_memory(self.oom_kills.before(), claude::oom_kills());
+        if !self.claude_exited(exit).await {
+            return;
+        }
+        if let Err(e) = self.start_claude().await {
+            let msg = format!("Claude could not restart: {e:#}");
+            self.set_status(SessionStatus::Failed, Some(msg));
+            self.finish().await;
+        }
+    }
+
+    /// What Claude Code's exit means, before it starts again: the
+    /// transcript says how it ended, and a turn it cut short goes on once
+    /// Claude runs again, rather than end with no answer, as if the agent
+    /// were done ([`Self::carry_on`]). Exits three times in ten minutes fail
+    /// the session. Returns whether to start Claude again.
+    async fn claude_exited(&mut self, exit: claude::Exit) -> bool {
+        let cut_short = self.turn_active;
+        // What it started runs on without it (dev servers, browsers, its
+        // background tasks), unseen: the Claude Code that starts again
+        // doesn't follow it, and after an out-of-memory kill it holds the
+        // memory. Stopped, as a supervisor that takes over stops it.
+        if let Some(group) = self.persisted.claude.take() {
+            group.stop(Duration::from_secs(5)).await;
+        }
         self.persist();
         self.turn_active = false;
         self.claude_turn = false;
@@ -2551,10 +2596,10 @@ impl Supervisor {
         self.tasks.take();
         self.claude_running = false;
         if self.stopping.is_some() || self.state.status.is_terminal() {
-            return;
+            return false;
         }
         let now = Instant::now();
-        let code = code.map_or("?".into(), |c| c.to_string());
+        let how = exit.words();
         // A full disk is the likeliest reason, when it is.
         let full = if self.disk_was_full().await {
             ": the sandbox's disk is full"
@@ -2564,24 +2609,23 @@ impl Supervisor {
         self.restarts
             .retain(|t| now.duration_since(*t) < Duration::from_secs(600));
         if self.restarts.len() >= 3 {
-            let msg = format!("Claude exited (code {code}) three times in ten minutes{full}");
+            let msg = format!(
+                "Claude Code exited three times in ten minutes; the last time it {how}{full}"
+            );
             self.notice(NoticeLevel::Error, "claude_crashed", &msg, None);
             self.set_status(SessionStatus::Failed, Some(msg));
             self.finish().await;
-            return;
+            return false;
         }
         self.restarts.push_back(now);
-        let msg = if full.is_empty() {
-            format!("Claude exited unexpectedly (code {code}); resuming the conversation")
-        } else {
-            format!("Claude exited unexpectedly (code {code}){full}; resuming the conversation")
-        };
+        let msg = format!("Claude Code {how}{full}; resuming the conversation");
         self.notice(NoticeLevel::Warn, "claude_restarted", &msg, None);
-        if let Err(e) = self.start_claude().await {
-            let msg = format!("Claude could not restart: {e:#}");
-            self.set_status(SessionStatus::Failed, Some(msg));
-            self.finish().await;
+        // Saved, for a supervisor that takes over before Claude runs again.
+        if cut_short {
+            self.persisted.cut_off = Some(CutOff::Exited(exit));
+            self.persist();
         }
+        true
     }
 
     // ───────────────────────────── timers and stopping ─────────────────────────────
@@ -2633,6 +2677,9 @@ impl Supervisor {
 
     async fn on_tick(&mut self) {
         let now = now_ms();
+        if self.claude.is_some() {
+            self.oom_kills.tick(Instant::now(), claude::oom_kills);
+        }
         self.expire_publishes();
         self.expire_calls();
         self.sync();
@@ -5125,7 +5172,10 @@ done
         );
         let sent = sent_to_claude(dir.path(), 1).await?;
         let text = sent[0]["message"]["content"][0]["text"].as_str();
-        assert_eq!(text, Some(prompt::cut_off_turn(true).as_str()));
+        assert_eq!(
+            text,
+            Some(prompt::cut_off_turn(prompt::CutOffBy::Restart).as_str())
+        );
         assert!(
             text.is_some_and(
                 |t| t.starts_with("Your last turn was cut off: fctl-agent, which runs you")
@@ -5203,6 +5253,117 @@ done
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.take_over().await;
         assert_eq!(next.persisted.cut_off, None);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn what_claude_code_started_stops_with_it() -> anyhow::Result<()> {
+        use std::os::unix::process::CommandExt;
+        // Claude Code, which leads a process group, started a dev server,
+        // then the kernel killed it, and the server runs on.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        let mut claude = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()?;
+        let mut server = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(i32::try_from(claude.id())?)
+            .spawn()?;
+        sup.persisted.claude = orphan::Process::of(claude.id());
+        claude.kill()?;
+        claude.wait()?;
+        assert!(sup.claude_exited(claude::Exit::default()).await);
+        let ended = tokio::task::spawn_blocking(move || server.wait()).await??;
+        assert!(!ended.success(), "what Claude Code started wasn't stopped");
+        assert_eq!(sup.persisted.claude, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_turn_claude_code_exits_in_goes_on_once_it_runs_again() -> anyhow::Result<()> {
+        // The kernel killed Claude Code for want of memory while it worked.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        let oom = claude::Exit {
+            code: None,
+            signal: Some(9),
+            out_of_memory: true,
+        };
+        assert!(sup.claude_exited(oom).await);
+        sup.flush();
+        assert_eq!(
+            notices_sent(&mut host),
+            vec![(
+                "claude_restarted".to_owned(),
+                "Claude Code was killed because the sandbox ran out of memory; resuming the conversation".to_owned()
+            )]
+        );
+        // The session still works on the turn, which goes on once Claude
+        // runs again, also after a supervisor that takes over meanwhile.
+        assert_eq!(sup.state.status, SessionStatus::Running);
+        assert_eq!(sup.persisted.cut_off, Some(CutOff::Exited(oom)));
+        drop(sup);
+        let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
+        next.take_over().await;
+        assert_eq!(next.persisted.cut_off, Some(CutOff::Exited(oom)));
+
+        next.config = Some(config(dir.path(), false)?);
+        let (host_tx, mut host) = mpsc::unbounded_channel::<String>();
+        next.host = Some((1, host_tx));
+        next.claude = Some(stub_claude(dir.path(), &next)?);
+        let cut_off = next
+            .persisted
+            .cut_off
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("no cut-off turn"))?;
+        next.carry_on(cut_off).await;
+        assert_eq!(
+            notices_sent(&mut host),
+            vec![(
+                "turn_cut_off".to_owned(),
+                "Claude's turn was cut off: Claude Code was killed because the sandbox ran out of memory while it worked. Claude carries on with the turn, from where it left off.".to_owned()
+            )]
+        );
+        let sent = sent_to_claude(dir.path(), 1).await?;
+        let text = sent[0]["message"]["content"][0]["text"].as_str();
+        assert_eq!(
+            text,
+            Some(prompt::cut_off_turn(prompt::CutOffBy::Exit(oom)).as_str())
+        );
+
+        // Claude Code that exits while the session waits has no turn to
+        // carry on.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        sup.claude = Some(stub_claude(dir.path(), &sup)?);
+        sup.on_claude_message(result()).await;
+        let crashed = claude::Exit {
+            code: Some(1),
+            ..claude::Exit::default()
+        };
+        assert!(sup.claude_exited(crashed).await);
+        assert_eq!(sup.persisted.cut_off, None);
+
+        // After three restarts in ten minutes, the next exit fails the
+        // session, saying how.
+        assert!(sup.claude_exited(crashed).await);
+        assert!(sup.claude_exited(crashed).await);
+        assert!(!sup.claude_exited(oom).await);
+        assert_eq!(
+            sup.state.status,
+            SessionStatus::Failed,
+            "{:?}",
+            sup.state.reason
+        );
+        assert_eq!(
+            sup.state.reason.as_deref(),
+            Some(
+                "Claude Code exited three times in ten minutes; the last time it was killed because the sandbox ran out of memory"
+            )
+        );
         Ok(())
     }
 

@@ -2146,12 +2146,23 @@ sessions to do it, and sets up what the work needs, as far as they let it
    next session needs while its cache is warm; the briefing tells it when
    a fresh session takes over, and to keep its context lean: to read what
    it needs of a session rather than all of its transcript, and to hand
-   long reading to a subagent. Changing the handoff, as changing its
-   model, changes how much it spends. Those who steer it also hand off
-   when they choose (*Hand off to a fresh session*, `fctl autopilot wake
-   --fresh`, the wake reason `fresh`), so that it starts from what fctl
-   and its briefing say now, after a release for one: between its turns
-   at once, else once its turn ends. That wake waits for the turn's end
+   long reading to a subagent. Its last section passes on what an
+   autopilot that ran a project for a day learned about getting good work
+   from its sessions (`work_lines`): what a task needs, among it the files
+   its other open pull requests change; putting what every session should
+   know in the project's memory or instructions, and fixing the cause of
+   a mistake sessions repeat; reading the end of a session's log before
+   taking its word that it's done, as sessions stop short; one round of
+   changes; reviewing screenshots; people's own messages to its sessions;
+   and background scripts that wait on what doesn't wake it. Each wake
+   message and the brief say the time in UTC (`clock`), and its sessions'
+   open pull requests say how their checks stand (`pull_line`). Changing
+   the handoff, as changing its model, changes how much it spends.
+   Those who steer it also hand off when they choose (*Hand off to a
+   fresh session*, `fctl autopilot wake --fresh`, the wake reason
+   `fresh`), so that it starts from what fctl and its briefing say now,
+   after a release for one: between its turns at once, else once its
+   turn ends. That wake waits for the turn's end
    (`fctl_domain::autopilot::holds`), which wakes it again at once
    (`autopilots::session_moved`), and all it woke for meanwhile goes to
    the fresh session rather than the one leaving (`Autopilot.fresh_asked`
@@ -3730,6 +3741,22 @@ notice) and has Claude carry on with it, from a message that tells Claude
 what happened; a second turn cut off within ten minutes of that waits for
 a person's message instead. The state keeps a cut-off turn until Claude
 carries on with it, also across another supervisor that dies first.
+
+Claude Code that exits on its own is started again on the conversation
+(a `claude_restarted` notice), once the supervisor has stopped what is
+left of its process group, and a turn it was on goes on the same way,
+rather than end with no answer while the session waits as if the agent
+were done: an autopilot took such sessions for finished. The notice and
+the message say how it ended: an exit code, a signal, or the kernel
+killing it for want of memory. The supervisor tells that last by a
+SIGKILL ending it and the kernel's `oom_kill` count having gone up within
+the 10 to 20 seconds before (it reads the count again every ten seconds
+while Claude runs): the sandbox cgroup's (`memory.events` with cgroup v2,
+`memory/memory.oom_control` with v1), or else the system's
+(`/proc/vmstat`), which in a VM sandbox is the sandbox's own. After an
+out-of-memory kill, the message asks Claude to run one heavy job at a
+time. A fourth exit within ten minutes fails the session
+(`claude_crashed`).
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control

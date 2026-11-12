@@ -5,6 +5,7 @@ import { ApiFailure, api, workspaces } from "./api";
 import { logFor } from "./app-log";
 import { FAILED_FOR } from "./needs";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
+import { forgetLeft } from "./reopen";
 import { forgetSidebar } from "./sidebar";
 
 /** Whether a failed query goes again: up to 3 times, unless the server refused it (4xx). */
@@ -111,8 +112,8 @@ export const useInstance = () =>
   useQuery({ queryKey: keys.instance, queryFn: () => api.instance(), staleTime: 60_000 });
 
 /**
- * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you.
- * The app's log is kept for whoever is signed in (`logFor`).
+ * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you,
+ * and the page the app was left on. The app's log is kept for whoever is signed in (`logFor`).
  * The server answers within `within` ms, if given.
  */
 export async function fetchMe(within?: number): Promise<G.Me | null> {
@@ -123,6 +124,7 @@ export async function fetchMe(within?: number): Promise<G.Me | null> {
   } catch (e) {
     if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) {
       forgetSidebar();
+      forgetLeft();
       return null;
     }
     throw e;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appHistory, goTo, keepsNoHistory, linksInPlace } from "./history";
+import { reopen } from "./reopen";
 
 /** WebKit on a touch screen (an iPhone or iPad), and the app opened from the home screen or not. */
 function apple({ webKit = true, touch = true, home = true } = {}) {
@@ -58,6 +59,29 @@ describe("appHistory", () => {
     expect(added).toBe(0);
     expect(at).toBe("/s/one");
     history.destroy();
+  });
+
+  it("opens on the page it was left on when iOS starts the app afresh, and only there", async () => {
+    const left = JSON.stringify({ path: "/s/left", at: Date.now() - 3_600_000 });
+    apple();
+    localStorage.setItem("fctl:left", left);
+    sessionStorage.clear();
+    let history = appHistory();
+    await reopen(history, async () => false);
+    expect(history.location.pathname).toBe("/s/left");
+    history.destroy();
+
+    (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(
+      "http://localhost:3000/",
+    );
+    apple({ home: false });
+    localStorage.setItem("fctl:left", left);
+    sessionStorage.clear();
+    history = appHistory();
+    await reopen(history, async () => false);
+    expect(history.location.pathname).toBe("/");
+    history.destroy();
+    localStorage.clear();
   });
 
   it("adds each page to the browser's history in its tabs", async () => {

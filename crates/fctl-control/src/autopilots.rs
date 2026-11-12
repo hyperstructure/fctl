@@ -1503,15 +1503,9 @@ impl CrewRow {
         }
     }
 
-    /// "#41 merged".
+    /// "#41 (open, checks running)", "#40 merged" ([`ap::pull_line`]).
     pub fn pr_lines(&self) -> Vec<String> {
-        self.pull_requests()
-            .iter()
-            .map(|p| match &p.state {
-                Some(state) => format!("#{} {state}", p.number),
-                None => format!("#{}", p.number),
-            })
-            .collect()
+        self.pull_requests().iter().map(ap::pull_line).collect()
     }
 }
 

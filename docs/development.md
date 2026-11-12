@@ -8,7 +8,8 @@ subscription, Cloudflare account or GitHub App.
 - Rust via [rustup](https://rustup.rs) — `rust-toolchain.toml` pins the
   version and adds the `wasm32-unknown-unknown` target.
 - Node.js 22 or newer (`npm ci` at the root installs the web app and
-  wrangler). The web app depends on
+  wrangler), 22.13 or newer for the control plane's tests, which use its
+  `node:sqlite`. The web app depends on
   [@hyperstructure/design](https://github.com/hyperstructure/design) through
   git, at a tag, which `npm ci` downloads from GitHub without signing in.
 - [worker-build](https://crates.io/crates/worker-build), which builds the
@@ -19,7 +20,10 @@ subscription, Cloudflare account or GitHub App.
   them in `~/.cache/worker-build` (`~/Library/Caches/worker-build` on
   macOS): the wasm-bindgen CLI matching `Cargo.lock`'s `wasm-bindgen` and,
   for release builds, wasm-opt, from GitHub's release downloads, and
-  esbuild, from npm. CI keeps that directory in a cache.
+  esbuild, from npm. CI keeps that directory in a cache. The control
+  plane's tests run under the `wasm-bindgen-test-runner` that comes with
+  that wasm-bindgen CLI: `cargo xtask check test` downloads it there when
+  worker-build hasn't yet.
 - Optional, for release builds: [zig](https://ziglang.org) and
   `cargo install cargo-zigbuild`.
 
@@ -456,13 +460,15 @@ cargo xtask dev --smoke    # and CI's other check: a session through the local s
 That is `cargo fmt --check`, a check that `web/src/gen` matches the Rust
 types, Biome and TypeScript for the web app, Biome for the standalone
 server and the Linear stand-in, Clippy (native and wasm) with warnings as
-errors, `cargo test`, the web app's Vitest suite, the standalone server's
-and the Linear stand-in's tests (`node --test`), fctl's Linear queries
-against Linear's schema (`cargo xtask linear check`), and a production
-build of the web app. It comes in three parts: `lint`
-(formatting, the generated types and Clippy), `test` (`cargo test`) and
-`web` (the rest), and runs all three, in the order that fails fastest,
-when you name none. CI runs each part in a job of its own, at once, and
+errors, `cargo test`, the control plane's tests (in Node, as
+[Working on the control plane](#working-on-the-control-plane) says), the
+web app's Vitest suite, the standalone server's and the Linear stand-in's
+tests (`node --test`), fctl's Linear queries against Linear's schema
+(`cargo xtask linear check`), and a production build of the web app. It
+comes in three parts: `lint` (formatting, the generated types and
+Clippy), `test` (`cargo test` and the control plane's tests) and `web`
+(the rest), and runs all three, in the order that fails fastest, when you
+name none. CI runs each part in a job of its own, at once, and
 its `cargo xtask check` check passes once all three have; a part that
 fails there fails the same way locally with `cargo xtask check <part>`.
 
@@ -601,6 +607,23 @@ the lockfile, so their directories open none.
   applies them locally (in CI, to a fresh database), `cargo xtask deploy`
   before deploying, and the standalone server as it starts. Never edit a
   migration that has shipped.
+- Its tests (`#[cfg(all(test, target_arch = "wasm32"))]`, with
+  `#[wasm_bindgen_test]`) build for wasm32 and run in Node, where
+  `crate::testing::database()` stands in for D1: SQLite in memory through
+  `node:sqlite`, with the migrations applied, which binds numbers as REAL,
+  runs a batch in one transaction and answers each query with a promise,
+  as D1 does, so that two futures joined in a test interleave at each
+  query (`reviews::tests` races two review starts that way). Durable
+  Objects, GitHub and the rest of `Env` have no stand-in: keep the D1 part
+  of what you test in a function of its own that takes the
+  `D1Database`, as `reviews::put` is. `cargo xtask check test` runs them;
+  to run some alone, give cargo the runner in worker-build's cache (its
+  directory names your machine's build and `Cargo.lock`'s wasm-bindgen):
+
+  ```sh
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=~/.cache/worker-build/wasm-bindgen-x86_64-unknown-linux-musl-0.2.129/wasm-bindgen-test-runner \
+    cargo test -p fctl-control --target wasm32-unknown-unknown reviews::
+  ```
 - It runs outside Cloudflare too, on workerd through Miniflare
   (`deploy/standalone`), with the bindings in `wrangler.toml`: a binding
   added there and in `xtask/src/deploy.rs` reaches both. Workers APIs that

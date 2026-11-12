@@ -81,6 +81,7 @@ import { goTo } from "@/lib/history";
 import { sampleTime, useHourCycle } from "@/lib/hour-cycle";
 import { disablePush, enablePush, forgetPush, permission, pushSupport } from "@/lib/push";
 import { fetchMe, keys, queryClient, useInstance, useMe, useWorkspaces } from "@/lib/queries";
+import { forgetLeft } from "@/lib/reopen";
 import {
   askedTab,
   claudeGist,
@@ -2026,6 +2027,7 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
   const remove = useMutation({
     mutationFn: () => api.deleteAccount({ email: typed }),
     onSuccess: async () => {
+      forgetLeft();
       await forgetPush();
       await forgetDraft();
       queryClient.clear();
