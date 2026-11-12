@@ -36,7 +36,7 @@ import {
 } from "react";
 import { DiffLines } from "@/components/diff";
 import { CodeBlock, Markdown } from "@/components/markdown";
-import { plainClick, useLightbox } from "@/components/ui";
+import { plainClick, Thumbnail, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import type { Json } from "@/lib/claude-types";
 import { cn } from "@/lib/cn";
@@ -406,15 +406,14 @@ function ImageThumb({ kept, name, session }: { kept: G.KeptImage; name: string; 
         title={name}
         className="block cursor-zoom-in overflow-hidden rounded-md border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
       >
-        <img
+        <Thumbnail
           src={src}
           alt={name}
           width={kept.width}
           height={kept.height}
-          loading="lazy"
-          decoding="async"
+          row={96}
+          widest={288}
           onError={() => setFailed(true)}
-          className="h-24 w-auto max-w-[min(100%,18rem)] object-cover"
         />
       </a>
       {lightbox}

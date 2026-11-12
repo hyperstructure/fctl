@@ -16,6 +16,8 @@ vi.mock("@/components/ui", async () => {
     await vi.importActual<typeof import("@/components/ui/icons")>("@/components/ui/icons");
   const { DotWave } =
     await vi.importActual<typeof import("@/components/ui/dot-wave")>("@/components/ui/dot-wave");
+  const { Thumbnail } =
+    await vi.importActual<typeof import("@/components/ui/thumbnail")>("@/components/ui/thumbnail");
   return {
     Avatar: () => null,
     Button: () => null,
@@ -32,6 +34,7 @@ vi.mock("@/components/ui", async () => {
     ReviewIcon,
     Spinner: () => <svg className="animate-spin" />,
     ThoughtIcon,
+    Thumbnail,
     toast: vi.fn(),
     useLightbox,
   };

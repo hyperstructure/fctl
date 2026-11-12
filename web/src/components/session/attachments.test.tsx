@@ -15,6 +15,7 @@ vi.mock("@/lib/api", () => ({ api: { uploadAttachment } }));
 vi.mock("@/components/ui", async () => ({
   ...(await vi.importActual<typeof import("@/components/ui/lightbox")>("@/components/ui/lightbox")),
   ...(await vi.importActual<typeof import("@/components/ui/gallery")>("@/components/ui/gallery")),
+  ...(await vi.importActual<typeof import("@/components/ui/thumbnail")>("@/components/ui/thumbnail")),
   IconButton: () => null,
   toast: vi.fn(),
 }));
