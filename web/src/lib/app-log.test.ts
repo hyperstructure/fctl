@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearLog,
   KEEP,
+  logFor,
   logText,
   onCaughtError,
   previousEnd,
@@ -63,6 +64,16 @@ describe("record", () => {
       { at: 4, what: "Went to the background" },
       { at: 5, what: "Error: boom" },
     ]);
+  });
+
+  it("is kept for whoever is signed in, and goes as someone else signs in", () => {
+    logFor("usr_a");
+    record("A's page", 1);
+    logFor("usr_a");
+    expect(said()).toEqual(["A's page"]);
+    logFor("usr_b");
+    expect(said()).toEqual([]);
+    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_b");
   });
 
   it("forgets the heartbeat with the log", () => {

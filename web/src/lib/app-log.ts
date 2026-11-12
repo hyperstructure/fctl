@@ -25,6 +25,8 @@ export interface Entry {
 
 /** localStorage: the log. */
 const LOG = "fctl:app-log";
+/** localStorage: the account the log is kept for (`logFor`). */
+const OWNER = "fctl:app-log-owner";
 /** localStorage: the run's heartbeat: when it was last heard from, and whether it was on screen then. */
 const BEAT = "fctl:app-beat";
 /** sessionStorage: this run started already (a page load now is one of its own), and when it last reloaded to recover. */
@@ -99,13 +101,27 @@ export function record(what: string, at = Date.now()) {
   changed(next);
 }
 
-/** Empties the log, and forgets the run's heartbeat (signing out, or Clear). */
+/** Empties the log, and forgets the run's heartbeat and whose it was (signing out, or Clear). */
 export function clearLog() {
   try {
     localStorage.removeItem(LOG);
     localStorage.removeItem(BEAT);
+    localStorage.removeItem(OWNER);
   } catch {}
   changed([]);
+}
+
+/**
+ * Keeps the log for `user`, who is signed in: one kept for someone else, whose sign-in ended here
+ * without them signing out, goes first. A sign-in that ends leaves the log, as it may tell why;
+ * signing out clears it.
+ */
+export function logFor(user: string) {
+  try {
+    const was = localStorage.getItem(OWNER);
+    if (was !== null && was !== user) clearLog();
+    localStorage.setItem(OWNER, user);
+  } catch {}
 }
 
 function subscribe(fn: () => void) {

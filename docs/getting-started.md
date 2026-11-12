@@ -44,8 +44,8 @@ sidebar and links.
 
 **Settings → App log** keeps what the app did in that browser lately: how
 it started, when it went to the background and came back, and what went
-wrong. It stays in the browser; signing out, or a sign-in that ended, clears
-it. When the app misbehaves (on an iPhone, coming back from the background
+wrong. It stays in the browser until you sign out, or someone else signs in
+there. When the app misbehaves (on an iPhone, coming back from the background
 black, say), copy it into a message about it. Where the app comes back
 showing nothing while it still runs, it loads its page again by itself, at
 most once a minute.
