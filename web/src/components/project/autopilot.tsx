@@ -1816,7 +1816,7 @@ function NoteRow({ a, note }: { a: G.Autopilot; note: G.AutopilotNote }) {
         <span className="size-[22px] rounded-full bg-raised" />
       )}
       <div className="min-w-0 flex-1">
-        <p className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-ink-4">
+        <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-ink-4">
           <span className="font-medium text-ink-2">{note.author?.name ?? "Someone"}</span>
           <span title={stamp(note.created_at)}>{agoShort(note.created_at)}</span>
           {note.seen_at ? (
