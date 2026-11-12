@@ -3731,6 +3731,17 @@ what happened; a second turn cut off within ten minutes of that waits for
 a person's message instead. The state keeps a cut-off turn until Claude
 carries on with it, also across another supervisor that dies first.
 
+Claude Code that exits on its own is started again on the conversation
+(a `claude_restarted` notice), and a turn it was on goes on the same way,
+rather than end with no answer while the session waits as if the agent
+were done: an autopilot took such sessions for finished. The notice and
+the message say how it ended: an exit code, a signal, or the kernel
+killing it for want of memory, which the supervisor tells by the
+`oom_kill` count in the sandbox's cgroup (`/sys/fs/cgroup/memory.events`)
+going up while Claude ran and a SIGKILL ending it. After an out-of-memory
+kill, the message asks Claude to run one heavy job at a time. A fourth
+exit within ten minutes fails the session (`claude_crashed`).
+
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
 connection never waits on one: the hello reports what the drivers said

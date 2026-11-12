@@ -116,6 +116,60 @@ pub enum ClaudeOut {
     Exited(Option<i32>),
 }
 
+/// How Claude Code's process ended, when it ended on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Exit {
+    /// Its exit code, when it exited.
+    pub code: Option<i32>,
+    /// The signal that killed it, when one did.
+    pub signal: Option<i32>,
+    /// The kernel killed a process of the sandbox for want of memory while
+    /// it ran, and a signal killed it ([`oom_kills`]).
+    #[serde(default)]
+    pub out_of_memory: bool,
+}
+
+/// SIGKILL, which the kernel's out-of-memory killer sends.
+const SIGKILL: i32 = 9;
+
+impl Exit {
+    /// Whether the kernel killed it for want of memory, as far as the
+    /// sandbox's counts say.
+    pub fn killed_for_memory(self, kills_before: Option<u64>, kills_now: Option<u64>) -> Self {
+        let more = matches!((kills_before, kills_now), (Some(b), Some(n)) if n > b);
+        Self {
+            out_of_memory: more && self.signal == Some(SIGKILL),
+            ..self
+        }
+    }
+
+    /// How it ended, for the transcript and Claude: "ran out of memory",
+    /// "was killed (signal 9)", "exited with code 1".
+    pub fn words(self) -> String {
+        match (self.out_of_memory, self.signal, self.code) {
+            (true, ..) => "was killed because the sandbox ran out of memory".to_owned(),
+            (false, Some(signal), _) => format!("was killed (signal {signal})"),
+            (false, None, Some(code)) => format!("exited with code {code}"),
+            (false, None, None) => "exited".to_owned(),
+        }
+    }
+}
+
+/// How many times the kernel killed a process of the sandbox for want of
+/// memory (`oom_kill` in its cgroup's `memory.events`), where the sandbox
+/// shows it: compared before and after, it says whether a process that a
+/// signal killed ran out of memory.
+pub fn oom_kills() -> Option<u64> {
+    oom_kills_in(&std::fs::read_to_string("/sys/fs/cgroup/memory.events").ok()?)
+}
+
+fn oom_kills_in(events: &str) -> Option<u64> {
+    events.lines().find_map(|line| {
+        let (key, n) = line.split_once(' ')?;
+        (key == "oom_kill").then(|| n.trim().parse().ok())?
+    })
+}
+
 pub struct LaunchSpec<'a> {
     pub bin: &'a str,
     pub cwd: &'a Path,
@@ -577,9 +631,18 @@ impl Claude {
         self.child.id()
     }
 
-    /// Waits for the process to exit and reports it.
-    pub async fn wait(&mut self) -> Option<i32> {
-        self.child.wait().await.ok().and_then(|s| s.code())
+    /// Waits for the process to exit and reports how it ended.
+    pub async fn wait(&mut self) -> Option<Exit> {
+        let status = self.child.wait().await.ok()?;
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+        #[cfg(not(unix))]
+        let signal = None;
+        Some(Exit {
+            code: status.code(),
+            signal,
+            out_of_memory: false,
+        })
     }
 
     pub async fn kill(&mut self) {
@@ -672,6 +735,78 @@ pub(crate) mod tests {
             .arg(script)
             .status()?;
         anyhow::ensure!(status.success(), "writing {}: {status}", path.display());
+        Ok(())
+    }
+
+    #[test]
+    fn says_how_claude_code_ended_and_whether_memory_ran_out() {
+        let events = "low 0\nhigh 0\nmax 4\noom 2\noom_kill 2\noom_group_kill 0\n";
+        assert_eq!(oom_kills_in(events), Some(2));
+        assert_eq!(oom_kills_in("low 0\n"), None);
+
+        let killed = Exit {
+            code: None,
+            signal: Some(SIGKILL),
+            out_of_memory: false,
+        };
+        // The kernel killed a process for want of memory meanwhile.
+        let oom = killed.killed_for_memory(Some(1), Some(2));
+        assert!(oom.out_of_memory);
+        assert_eq!(
+            oom.words(),
+            "was killed because the sandbox ran out of memory"
+        );
+        // It didn't, or the sandbox doesn't say.
+        for (before, now) in [(Some(2), Some(2)), (None, Some(2)), (Some(1), None)] {
+            let exit = killed.killed_for_memory(before, now);
+            assert_eq!(exit.words(), "was killed (signal 9)");
+        }
+        // A process that exited itself didn't run out of memory, whatever
+        // else the kernel killed.
+        let crashed = Exit {
+            code: Some(1),
+            ..Exit::default()
+        };
+        assert_eq!(
+            crashed.killed_for_memory(Some(1), Some(2)).words(),
+            "exited with code 1"
+        );
+        assert_eq!(Exit::default().words(), "exited");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reports_the_signal_that_killed_it() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let bin = dir.path().join("claude");
+        write_script(&bin, "#!/bin/sh\nkill -9 $$\n")?;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut c = Claude::spawn(
+            LaunchSpec {
+                bin: &bin.display().to_string(),
+                cwd: dir.path(),
+                home: dir.path(),
+                claude_session_id: "s",
+                resume: false,
+                model: None,
+                effort: None,
+                append_system_prompt: "",
+                setting_sources: "user",
+                strict_mcp: false,
+                extra_args: &[],
+                env: Default::default(),
+            },
+            tx,
+        )?;
+        let exit = c.wait().await;
+        assert_eq!(
+            exit,
+            Some(Exit {
+                code: None,
+                signal: Some(SIGKILL),
+                out_of_memory: false
+            })
+        );
         Ok(())
     }
 

@@ -2,6 +2,7 @@
 //! AGENTS.md at the root of the sandbox's home, beside the checkout.
 
 use crate::caches::Ready;
+use crate::claude::Exit;
 use crate::tasks::{self, Task};
 use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
@@ -403,7 +404,7 @@ pub fn system_prompt(
         // the sandbox to its size, and Apple's container gives each VM a CPU
         // more than its sandbox, so build tools would start too many jobs.
         s.push_str(&format!(
-            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137.\n",
+            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137, and that may be Claude Code itself, which cuts your turn off: run one heavy job at a time, such as a browser with its dev server, or a large build.\n",
             size::cpus(size.cpus),
             size::memory(size.memory_mb.into()),
             size.cpus
@@ -480,7 +481,7 @@ pub fn system_prompt(
     }
     let idle = tasks::idle_timeout(spec);
     s.push_str(&format!(
-        "- When your turn ends, the session waits for a message, and after {} without one it stops, along with everything still running in the sandbox. Background work you start (a shell command with `run_in_background`, a subagent, a Monitor) keeps the session up while it runs, for up to {} after your turn ends: you can end your turn to wait for it, and you get its result in a new turn. Stop background processes you no longer need, like a dev server, so that the session can stop.\n",
+        "- When your turn ends, the session waits for a message, and after {} without one it stops, along with everything still running in the sandbox. Background work you start (a shell command with `run_in_background`, a subagent, a Monitor) keeps the session up while it runs, for up to {} after your turn ends: you can end your turn to wait for it, and you get its result in a new turn. Stop background processes you no longer need, like a dev server, so that the session can stop: by their PIDs, or start one with `setsid` and stop its process group with `kill -- -<pid>`. Don't use `pkill -f`: its pattern matches the shell that runs it too, whose command line holds the pattern, and may match Claude Code.\n",
         tasks::duration(idle),
         tasks::duration(tasks::limit(idle))
     ));
@@ -831,18 +832,45 @@ pub fn unfinished_tasks(tasks: &[Task]) -> String {
     s
 }
 
-/// What Claude is told when it carries on with a turn that was cut off:
-/// `unseen` when it ran on after fctl-agent died, until the next one
-/// stopped it, so that nothing it did meanwhile is in the transcript.
-pub fn cut_off_turn(unseen: bool) -> String {
-    let why = if unseen {
-        "fctl-agent, which runs you in this sandbox and passes on what you do, restarted while you worked on your last turn, so the session's transcript doesn't show what you did after that, and you were stopped then, with the commands you ran"
-    } else {
-        "the sandbox or fctl-agent, which runs you in it, stopped while you worked on your last turn, and you with it"
+/// What cut a turn of Claude's off, for what it is told as it carries on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CutOffBy {
+    /// fctl-agent died and Claude ran on, unseen, until the next one
+    /// stopped it, so that nothing it did meanwhile is in the transcript.
+    Restart,
+    /// The sandbox or fctl-agent stopped, and Claude with it.
+    Stop,
+    /// Claude Code exited on its own, and fctl-agent started it again.
+    Exit(Exit),
+}
+
+/// What Claude is told when it carries on with a turn that was cut off.
+pub fn cut_off_turn(by: CutOffBy) -> String {
+    let why = match by {
+        CutOffBy::Restart => {
+            "fctl-agent, which runs you in this sandbox and passes on what you do, restarted while you worked on your last turn, so the session's transcript doesn't show what you did after that, and you were stopped then, with the commands you ran".to_owned()
+        }
+        CutOffBy::Stop => {
+            "the sandbox or fctl-agent, which runs you in it, stopped while you worked on your last turn, and you with it".to_owned()
+        }
+        CutOffBy::Exit(exit) => format!(
+            "Claude Code, which runs you, {} while you worked on your last turn, and fctl-agent started it again on this conversation; the background tasks you had started went with it",
+            exit.words()
+        ),
     };
-    format!(
+    let mut s = format!(
         "Your last turn was cut off: {why}. Check where you left off first (the repositories' state, the pull requests, anything you had started), then finish what that turn was doing, and end with the answer it would have given. Don't repeat what is already done."
-    )
+    );
+    match by {
+        CutOffBy::Exit(exit) if exit.out_of_memory => s.push_str(
+            " Use less memory from here on, or it happens again: run one heavy job at a time (a browser with its dev server, a large build), with fewer parallel jobs, and stop what you no longer need.",
+        ),
+        CutOffBy::Exit(exit) if exit.signal.is_some() => s.push_str(
+            " If a command of yours killed it (a `pkill -f` or `killall` whose pattern matched it), stop processes by their PIDs from here on.",
+        ),
+        _ => {}
+    }
+    s
 }
 
 /// One attached file, as a message describes it to Claude.
@@ -1064,6 +1092,10 @@ mod tests {
         );
         assert!(text.contains("This sandbox has 4 CPUs and 8 GiB of memory"));
         assert!(text.contains("`make -j4`"));
+        // Running out of memory may kill Claude Code itself.
+        assert!(text.contains(
+            "that may be Claude Code itself, which cuts your turn off: run one heavy job at a time"
+        ));
         assert!(
             !system_prompt(&spec(), "/work", &paths(), None, None, false, false, false)
                 .contains("This sandbox has")
@@ -1115,6 +1147,53 @@ mod tests {
         let text = system_prompt(&spec(), "/work", &paths(), None, None, false, false, false);
         assert!(text.contains("after 2 hours without one it stops"));
         assert!(text.contains("for up to 2 hours after your turn ends"));
+        // How to stop them without stopping itself.
+        assert!(
+            text.contains("stop its process group with `kill -- -<pid>`. Don't use `pkill -f`")
+        );
+    }
+
+    #[test]
+    fn says_what_cut_a_turn_off_and_how_to_keep_it_from_happening_again() {
+        let carry_on = "Check where you left off first";
+        let restart = cut_off_turn(CutOffBy::Restart);
+        assert!(restart.starts_with("Your last turn was cut off: fctl-agent, which runs you"));
+        assert!(restart.contains(carry_on));
+        assert!(
+            cut_off_turn(CutOffBy::Stop)
+                .contains("the sandbox or fctl-agent, which runs you in it, stopped")
+        );
+
+        let oom = Exit {
+            code: None,
+            signal: Some(9),
+            out_of_memory: true,
+        };
+        let text = cut_off_turn(CutOffBy::Exit(oom));
+        assert!(text.starts_with("Your last turn was cut off: Claude Code, which runs you, was killed because the sandbox ran out of memory while you worked on your last turn, and fctl-agent started it again on this conversation; the background tasks you had started went with it."), "{text}");
+        assert!(text.contains(carry_on));
+        assert!(text.ends_with("run one heavy job at a time (a browser with its dev server, a large build), with fewer parallel jobs, and stop what you no longer need."));
+
+        // Killed otherwise, it may have been the agent's own doing.
+        let killed = Exit {
+            code: None,
+            signal: Some(15),
+            out_of_memory: false,
+        };
+        let text = cut_off_turn(CutOffBy::Exit(killed));
+        assert!(
+            text.contains("Claude Code, which runs you, was killed (signal 15) while you worked")
+        );
+        assert!(text.ends_with("stop processes by their PIDs from here on."));
+
+        let crashed = Exit {
+            code: Some(1),
+            signal: None,
+            out_of_memory: false,
+        };
+        let text = cut_off_turn(CutOffBy::Exit(crashed));
+        assert!(text.contains("Claude Code, which runs you, exited with code 1 while you worked"));
+        assert!(text.ends_with("Don't repeat what is already done."));
     }
 
     #[test]
