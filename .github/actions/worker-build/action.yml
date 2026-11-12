@@ -5,10 +5,12 @@ description: >
   wasm-bindgen, from GitHub's release downloads; esbuild, from npm; and for
   release builds wasm-opt, from GitHub's release downloads too. Without them
   every build downloads them again, and fails while GitHub's downloads do
-  (#487). The key is the versions that pick them: worker-build's (the worker
-  crate's, released with it) and wasm-bindgen's, both from Cargo.lock. The
-  job saves the cache after its build when this restored none (only main
-  does, like the other caches), with the key this outputs.
+  (#487). The wasm-bindgen CLI comes with wasm-bindgen-test-runner, which
+  runs the control plane's tests (the test job). The key is the versions
+  that pick them: worker-build's (the worker crate's, released with it) and
+  wasm-bindgen's, both from Cargo.lock. The job saves the cache after its
+  build when this restored none (only main does, like the other caches),
+  with the key this outputs.
 inputs:
   profile:
     description: dev or release, as worker-build builds (release builds need wasm-opt too)
