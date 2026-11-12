@@ -1571,20 +1571,24 @@ impl News {
         )?
         .all()
         .await?;
-        // Its others that people wrote to since (`ap::hear`).
+        // Its others that people wrote to since (`ap::hear`), besides those
+        // above, which say so themselves.
+        let listed: Vec<&str> = crew.iter().map(|c| c.id.as_str()).collect();
         let heard: Vec<CrewRow> = q(
             db,
             &format!(
                 "{CREW_SELECT} WHERE s.autopilot_id = ? AND s.autopilot_role = 'crew' \
-                 AND json_extract(s.heard, '$[0].at') > ? ORDER BY json_extract(s.heard, '$[0].at') DESC LIMIT 10"
+                 AND json_extract(s.heard, '$[0].at') > ? AND s.id NOT IN (SELECT value FROM json_each(?)) \
+                 ORDER BY json_extract(s.heard, '$[0].at') DESC LIMIT 10"
             ),
-            &[s(&row.project_id), n(since)],
+            &[
+                s(&row.project_id),
+                n(since),
+                s(&serde_json::to_string(&listed)?),
+            ],
         )?
-        .all::<CrewRow>()
-        .await?
-        .into_iter()
-        .filter(|h| !crew.iter().any(|c| c.id == h.id))
-        .collect();
+        .all()
+        .await?;
         let mut params = Vec::new();
         let place = others_where(row, &mut params);
         params.push(n(since));
