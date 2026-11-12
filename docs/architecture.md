@@ -2161,8 +2161,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    Those who steer it also hand off when they choose (*Hand off to a
    fresh session*, `fctl autopilot wake --fresh`, the wake reason
    `fresh`), so that it starts from what fctl and its briefing say now,
-   after a release for one: between its turns
-   at once, else once its turn ends. That wake waits for the turn's end
+   after a release for one: between its turns at once, else once its
+   turn ends. That wake waits for the turn's end
    (`fctl_domain::autopilot::holds`), which wakes it again at once
    (`autopilots::session_moved`), and all it woke for meanwhile goes to
    the fresh session rather than the one leaving (`Autopilot.fresh_asked`
