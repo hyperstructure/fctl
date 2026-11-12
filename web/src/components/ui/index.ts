@@ -14,3 +14,4 @@ export * from "./overlay";
 export * from "./save-bar";
 export * from "./select";
 export * from "./sheet";
+export * from "./thumbnail";

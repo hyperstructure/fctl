@@ -36,6 +36,7 @@ import {
   Logo,
   plainClick,
   Spinner,
+  Thumbnail,
   toast,
   useLightbox,
 } from "@/components/ui";
@@ -328,15 +329,14 @@ function PublishedShot({ file, canManage }: { file: G.PublishedFile; canManage?:
             aria-label={`View ${file.name}`}
             className="cursor-zoom-in overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
           >
-            <img
+            <Thumbnail
               src={file.url}
               alt={file.name}
               width={file.width}
               height={file.height}
-              loading="lazy"
-              decoding="async"
+              row={144}
+              widest={320}
               onError={() => setState("offline")}
-              className="h-36 w-auto max-w-[min(100%,20rem)] object-cover"
             />
           </a>
           <div className="flex flex-col items-start gap-0.5">

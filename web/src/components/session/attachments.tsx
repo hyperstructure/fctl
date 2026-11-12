@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { IconButton, Lightbox, toast, useLightbox } from "@/components/ui";
+import { IconButton, Lightbox, Thumbnail, toast, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, type UploadScope } from "@/lib/api";
 import {
@@ -533,15 +533,7 @@ function ImageFile({ file, src, download }: { file: G.Attachment; src?: string; 
         aria-label={`View ${file.name}`}
         className="cursor-zoom-in overflow-hidden rounded-lg border border-line bg-raised/50 transition-[border-color] duration-150 hover:border-line-strong"
       >
-        <img
-          src={src}
-          alt={file.name}
-          width={file.width}
-          height={file.height}
-          loading="lazy"
-          decoding="async"
-          className="h-36 w-auto max-w-[min(100%,20rem)] object-cover"
-        />
+        <Thumbnail src={src} alt={file.name} width={file.width} height={file.height} row={144} widest={320} />
       </button>
       {lightbox}
     </>
