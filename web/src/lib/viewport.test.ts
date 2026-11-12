@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   phantomKeyboard,
   type Screen,
+  STATUS_BAR_FADE,
   statusBarAbove,
   underStatusBar,
   type Viewports,
@@ -295,7 +296,8 @@ function homeScreen({ layout = 812, ios = true } = {}) {
     return stop;
   };
   const bar = () => document.documentElement.style.getPropertyValue("--status-bar");
-  return { resize, watch, bar };
+  const fade = () => document.documentElement.style.getPropertyValue("--status-bar-fade");
+  return { resize, watch, bar, fade };
 }
 
 describe("watching the status bar", () => {
@@ -322,11 +324,20 @@ describe("watching the status bar", () => {
     expect(p.bar()).toBe("");
   });
 
+  it("leaves room for the frosted band iOS draws over the bar, which --safe-top adds under it", () => {
+    const p = homeScreen();
+    p.watch();
+    expect(p.fade()).toBe(`${STATUS_BAR_FADE}px`);
+    p.resize(874);
+    expect(p.fade()).toBe(`${STATUS_BAR_FADE}px`);
+  });
+
   it("stays out of apps installed elsewhere, as on a Mac or Android", () => {
     const p = homeScreen({ ios: false });
     p.watch();
     p.resize(874);
     expect(p.bar()).toBe("");
+    expect(p.fade()).toBe("");
   });
 
   it("takes the room away when it stops", () => {
@@ -335,5 +346,6 @@ describe("watching the status bar", () => {
     p.resize(874);
     stop();
     expect(p.bar()).toBe("");
+    expect(p.fade()).toBe("");
   });
 });

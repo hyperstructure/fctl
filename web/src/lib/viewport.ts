@@ -26,6 +26,14 @@
 // top, which counts the bar the page is under, or, should Safari leave it at
 // 0, --status-bar on <html>, which says how tall the bar was when it last
 // stood above the page, while the layout viewport is as tall as the screen.
+//
+// iOS then also draws a frosted band over the page's top, which dims and blurs
+// what is under the bar and fades out below it, where the header's logo and
+// the drawer's head blurred. On an iPhone's or iPad's Home Screen,
+// --status-bar-fade on <html> says how far below the bar it fades out, and
+// --safe-top makes room for that too, only while the bar covers the page. A
+// band of the page's color covers it all (app.css), as the status bar's own
+// band does while the page is below it.
 
 /** A keyboard is at least this tall (px): a visual viewport this much shorter than the layout viewport has one over it. */
 const KEYBOARD = 100;
@@ -33,6 +41,11 @@ const KEYBOARD = 100;
 const STATUS_BAR = 100;
 /** Where the app keeps the status bar's height, for when it opens under the bar. */
 const STATUS_BAR_KEY = "fctl:status-bar";
+/**
+ * How far below the status bar the frosted band iOS draws over a page under the bar fades out
+ * (px): about 34 px on a 402 x 874 iPhone under its 62 px bar, and a little more to be clear of it.
+ */
+export const STATUS_BAR_FADE = 36;
 /** How long a keyboard takes to go once its field loses the focus (ms): until then, it may still be up. */
 const KEYBOARD_GOES = 1000;
 
@@ -182,13 +195,15 @@ export function visualHeight(): number | undefined {
 
 /**
  * Keeps --viewport-shift on <html> up to date in the installed app, and --status-bar on an
- * iPhone's or iPad's Home Screen. Returns what stops it.
+ * iPhone's or iPad's Home Screen, where it also sets --status-bar-fade. Returns what stops it.
  */
 export function watchViewport(): () => void {
   const vv = window.visualViewport;
   if (!vv || !installed()) return () => {};
   const html = document.documentElement;
   const ios = onHomeScreen();
+  // Room for iOS's frosted band, which --safe-top adds only while the bar covers the page.
+  if (ios) html.style.setProperty("--status-bar-fade", `${STATUS_BAR_FADE}px`);
   let shift = 0;
   let later: ReturnType<typeof setTimeout> | undefined;
   // The status bar's height as it last stood above the page, and what --status-bar says.
@@ -257,5 +272,6 @@ export function watchViewport(): () => void {
     keyboardGoing = false;
     html.style.removeProperty("--viewport-shift");
     html.style.removeProperty("--status-bar");
+    html.style.removeProperty("--status-bar-fade");
   };
 }
