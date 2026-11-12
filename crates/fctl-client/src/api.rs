@@ -1374,6 +1374,19 @@ impl Api {
         .await
     }
 
+    /// The latest of a session's events before `before` (a `seq`), oldest
+    /// first; `has_more` says whether earlier ones are left. Pass
+    /// `u64::MAX` for the transcript's end.
+    pub async fn events_before(&self, session: &str, before: u64, limit: u32) -> Result<EventPage> {
+        // The API reads it as a signed number.
+        let before = before.min(i64::MAX as u64);
+        self.get(&format!(
+            "/sessions/{}/events?before={before}&limit={limit}",
+            enc(session)
+        ))
+        .await
+    }
+
     /// The diffs of a session's changes, as its agent last read them.
     pub async fn session_diff(&self, session: &str) -> Result<SessionDiff> {
         self.get(&format!("/sessions/{}/diff", enc(session))).await

@@ -12,6 +12,7 @@ use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{
     CreateSessionRequest, CreateShareRequest, ReviewState, SessionShare, UpdateSessionRequest,
 };
+use fctl_proto::event::{EventBody, SessionEvent};
 use fctl_proto::session::{
     GithubAccess, PullRequestRef, Session, SessionRole, SessionStats, SessionStatus,
 };
@@ -875,20 +876,33 @@ fn print_edited(reference: &str, title: &str, description: Option<&str>) {
     }
 }
 
-pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: bool) -> Result<()> {
+pub async fn logs(
+    server: Option<&str>,
+    reference: &str,
+    follow: bool,
+    last_turn: bool,
+    json: bool,
+) -> Result<()> {
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let mut r = Renderer::default();
     r.json = json;
     let mut after = 0u64;
-    loop {
-        let page = api.events(&s.id.0, after, 1000).await?;
-        for ev in &page.events {
+    if last_turn {
+        for ev in &read_last_turn(&api, &s.id.0).await? {
             after = after.max(ev.seq);
             r.event(ev);
         }
-        if !page.has_more {
-            break;
+    } else {
+        loop {
+            let page = api.events(&s.id.0, after, 1000).await?;
+            for ev in &page.events {
+                after = after.max(ev.seq);
+                r.event(ev);
+            }
+            if !page.has_more {
+                break;
+            }
         }
     }
     if follow {
@@ -900,6 +914,40 @@ pub async fn logs(server: Option<&str>, reference: &str, follow: bool, json: boo
         return crate::cmd::attach::follow_after(&api, &s.id.0, true, Some(after), r).await;
     }
     Ok(())
+}
+
+/// A session's last turn: the last message to its agent and what followed,
+/// read from the transcript's end, a page at a time, until that message.
+/// All of it when nobody wrote to the agent.
+async fn read_last_turn(api: &Api, session: &str) -> Result<Vec<SessionEvent>> {
+    let mut later: Vec<SessionEvent> = Vec::new();
+    let mut before = u64::MAX;
+    loop {
+        let page = api.events_before(session, before, 1000).await?;
+        let Some(first) = page.events.first() else {
+            return Ok(later);
+        };
+        before = first.seq;
+        let mut events = page.events;
+        if let Some(start) = turn_start(&events) {
+            events.drain(..start);
+            events.extend(later);
+            return Ok(events);
+        }
+        events.extend(later);
+        later = events;
+        if !page.has_more {
+            return Ok(later);
+        }
+    }
+}
+
+/// Where the last turn of `events` (oldest first) starts: its last message
+/// to the agent.
+fn turn_start(events: &[SessionEvent]) -> Option<usize> {
+    events
+        .iter()
+        .rposition(|e| matches!(e.body, EventBody::UserMessage(_)))
 }
 
 /// The diffs of a session's changes, as its agent last read them: as git
@@ -1283,6 +1331,38 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_turn_starts_at_the_last_message_to_the_agent() {
+        let event = |seq: u64, kind: &str, data: serde_json::Value| {
+            serde_json::from_value::<SessionEvent>(serde_json::json!({
+                "seq": seq, "ts": 0, "kind": kind, "data": data,
+            }))
+            .ok()
+        };
+        let message = |seq| {
+            event(
+                seq,
+                "user_message",
+                serde_json::json!({"id": format!("dlv_{seq}"), "text": "Go on", "source": "cli"}),
+            )
+        };
+        let said = |seq| {
+            event(
+                seq,
+                "claude",
+                serde_json::json!({"type": "result", "result": "Done"}),
+            )
+        };
+        let events: Vec<SessionEvent> = [message(1), said(2), message(3), said(4), said(5)]
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(events.len(), 5);
+        assert_eq!(turn_start(&events), Some(2));
+        assert_eq!(turn_start(&events[3..]), None);
+        assert_eq!(turn_start(&[]), None);
+    }
 
     #[test]
     fn edits_go_to_fctl_agent_only_for_its_own_session() {
