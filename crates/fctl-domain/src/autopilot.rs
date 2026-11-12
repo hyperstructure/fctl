@@ -20,6 +20,7 @@ use fctl_proto::autopilot::{
     AutopilotWakeReason,
 };
 use fctl_proto::session::{PullRequestRef, SessionStatus};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const MINUTE_MS: i64 = 60_000;
@@ -733,7 +734,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         rules.crew_max
     ));
     s.push_str("- They work on the project's model and effort level. Where a piece of work calls for others, ask for them (`fctl run --model sonnet --effort low …`), naming the model by Claude Code's alias for its family's latest (`opus`, `sonnet`, `haiku`, `fable`), as people pick it, rather than by its ID.\n");
-    s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. One that failed waits until you resume it with `fctl resume <project>#<n> \"…\"` (the message is optional), where it left off: resume it once what failed it has passed (an error on fctl's side, a runner that went away) or is fixed, or start a new one instead. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
+    s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Wakes and `fctl autopilot brief` say what each said as its turn ended (the start of it) and what people wrote to it; `fctl logs <project>#<n> --last-turn` prints its last turn whole. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. One that failed waits until you resume it with `fctl resume <project>#<n> \"…\"` (the message is optional), where it left off: resume it once what failed it has passed (an error on fctl's side, a runner that went away) or is fixed, or start a new one instead. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
     s.push_str(if rules.powers.contains(&AutopilotPower::Merge) {
         "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`).\n"
     } else {
@@ -799,10 +800,10 @@ fn work_lines(powers: &[AutopilotPower]) -> Vec<String> {
     vec![
         "A session knows only its task and what every session of the project reads (its instructions and memory). Give each a complete task: what to do and why, what done looks like, and what to leave alone, naming the files your other open pull requests change (`gh pr view <n> --json files`): it leaves those alone until they merge, and you tell it when they have.".to_owned(),
         format!("Put what every session should know (a trap, a rule, a command that works) where every session reads it, rather than in each task: {everyone}. When sessions keep making the same mistake, fix its cause with a session of its own (a script that does harm by default, a missing check) rather than warn each one again."),
-        "Before you take a session's word that its work is done, read the end of its log (`fctl logs <project>#<n> | tail -n 60`) and its pull request. Sessions stop short: some end their turn after their first pull request or skip part of their own list, and one whose Claude Code restarted under it may wait without a word (its log says `resuming the conversation`). Send such a one what is left, item by item. Check what a session claims before you act on it, such as a failure that is \"already on main\", against main's own checks.".to_owned(),
+        "Before you take a session's word that its work is done, read its last turn (`fctl logs <project>#<n> --last-turn`) and its pull request. Sessions stop short: some end their turn after their first pull request or skip part of their own list, and one whose Claude Code restarted under it may wait without a word (fctl says it ended its turn without one, and its log says `resuming the conversation`). Send such a one what is left, item by item. Check what a session claims before you act on it, such as a failure that is \"already on main\", against main's own checks.".to_owned(),
         format!("Ask for all the changes you want in one round{merge}."),
         "For work people see, look at screenshots: scale them down and crop them to what matters before you look, or hand those of several pull requests to a subagent to review, and check what it reports before you ask for changes. Say what nobody could check in a sandbox (a real phone, another browser engine, an app installed on a home screen), and ask people to.".to_owned(),
-        "People may message your sessions themselves: read what they said (the end of the session's log) before you steer one, so that you don't contradict them.".to_owned(),
+        "People may message your sessions themselves: fctl tells you who wrote what to which (the start of it), at your next wake and in `fctl autopilot brief`, without waking you for it. Read what they said before you steer one, so that you don't contradict them.".to_owned(),
         "To wait on what doesn't wake you, such as a deploy or the checks that run on the base branch after a merge, run a small script in the background (Bash's `run_in_background`) that polls until it ends, either way: you hear when it does, without a wake. A pull request's passing checks don't mean its base branch's pass: look at those that run after a merge too.".to_owned(),
     ]
 }
@@ -819,7 +820,7 @@ fn handoff_line(handoff_at: Option<u32>) -> String {
         None => format!("after {}", duration(minutes(SHIFT_MS))),
     };
     format!(
-        "Each wake reads this whole conversation again, so keep it lean: read what you need of a session (`fctl show`, the end of `fctl logs`) rather than all of it, hand long reading to a subagent that reports back, scale images down before you look at them, and answer a wake that brings nothing to do in a line or two. fctl starts a fresh session in your place {when}, at the first wake between your turns, and stops this one; people may ask for one sooner. Bring your plan and log up to date before you end each turn."
+        "Each wake reads this whole conversation again, so keep it lean: read what you need of a session (`fctl show`, `fctl logs --last-turn`) rather than all of it, hand long reading to a subagent that reports back, scale images down before you look at them, and answer a wake that brings nothing to do in a line or two. fctl starts a fresh session in your place {when}, at the first wake between your turns, and stops this one; people may ask for one sooner. Bring your plan and log up to date before you end each turn."
     )
 }
 
@@ -953,6 +954,72 @@ pub struct AskView<'a> {
     pub new: bool,
 }
 
+/// How much of what one of its sessions said as its turn ended fctl keeps
+/// for it, in characters: the start, on one line (`notify::excerpt`).
+/// `fctl logs <ref> --last-turn` prints all of it.
+pub const SAID_CHARS: usize = 500;
+
+/// How much of a person's message to one of its sessions fctl keeps for
+/// it, in characters ([`Heard`]).
+pub const HEARD_CHARS: usize = 300;
+
+/// How many of people's latest messages to one of its sessions fctl keeps
+/// for it ([`hear`]).
+pub const HEARD_KEPT: usize = 3;
+
+/// A message that a person, rather than the autopilot, wrote to one of its
+/// sessions, as fctl keeps it for the autopilot: who, when, and the start
+/// of what they wrote. A session's row keeps the latest few, newest first
+/// ([`hear`]), so that the autopilot steers it knowing what people said.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Heard {
+    /// Who wrote it, by name.
+    pub by: String,
+    pub at: Millis,
+    /// The start of what they wrote, on one line ([`HEARD_CHARS`]).
+    /// Absent for a message of files alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// How many files came with it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub files: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// What a session's row keeps of people's messages once `by` wrote `text`
+/// with `files` files at `at`: that message first, then the latest of
+/// those it kept before (`kept`, as stored), at most [`HEARD_KEPT`], as
+/// JSON.
+pub fn hear(kept: Option<&str>, by: &str, text: &str, files: usize, at: Millis) -> String {
+    let mut all = vec![Heard {
+        by: by.to_owned(),
+        at,
+        text: crate::notify::excerpt(text, HEARD_CHARS),
+        files: u32::try_from(files).unwrap_or(u32::MAX),
+    }];
+    all.extend(heard(kept));
+    all.truncate(HEARD_KEPT);
+    serde_json::to_string(&all).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// People's messages a session's row keeps (`stored`, from [`hear`]),
+/// newest first. Nothing when it has none, or they don't read.
+pub fn heard(stored: Option<&str>) -> Vec<Heard> {
+    stored
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
+}
+
+/// Those of `heard` (newest first) that came after `since`: what is new
+/// to the autopilot since it last woke.
+pub fn heard_since(heard: &[Heard], since: Millis) -> &[Heard] {
+    let n = heard.iter().take_while(|h| h.at > since).count();
+    &heard[..n]
+}
+
 /// One of its sessions, for what fctl tells it.
 #[derive(Clone, Debug)]
 pub struct CrewView<'a> {
@@ -963,6 +1030,16 @@ pub struct CrewView<'a> {
     pub question: Option<&'a str>,
     /// Its pull requests ([`pull_line`]): "#41 (open, checks pass)", "#40 merged".
     pub pull_requests: Vec<String>,
+    /// What its agent said as its last turn ended, the start of it
+    /// ([`SAID_CHARS`]): empty from when its agent takes a message until
+    /// that turn ends with words, so empty after a turn that ended without
+    /// any.
+    /// Absent where fctl kept none (sessions from before it). Shown while
+    /// it isn't at work.
+    pub said: Option<&'a str>,
+    /// What people wrote to it, newest first: for a wake, those since the
+    /// autopilot last woke ([`heard_since`]).
+    pub heard: &'a [Heard],
 }
 
 /// A session someone started in its projects, rather than the autopilot,
@@ -1159,8 +1236,9 @@ pub fn brief(b: &Brief<'_>) -> String {
     if b.crew.is_empty() {
         s.push_str("None yet. Start one with `fctl run -p <project> \"<task>\"`.\n");
     } else {
+        s.push_str("The latest first, with what people wrote to each and the start of what each said as its turn ended (`fctl logs <ref> --last-turn` prints a session's last turn whole):\n\n");
         for c in b.crew {
-            s.push_str(&format!("- {}\n", crew_line(c)));
+            s.push_str(&format!("- {}\n", crew_line(c, now)));
         }
     }
     s.push_str("\n## People's sessions\n\n");
@@ -1261,7 +1339,50 @@ fn quoted(s: &str) -> String {
     format!("“{}”", s.trim())
 }
 
-fn crew_line(c: &CrewView<'_>) -> String {
+/// One of its sessions: how it stands, with its pull requests, then, on
+/// lines of their own, what people wrote to it (oldest first) and what it
+/// said as its turn ended, as they happened. A turn that ended without a
+/// word (cut off, interrupted) says so, as the session may not be done.
+fn crew_line(c: &CrewView<'_>, now: Millis) -> String {
+    let mut s = crew_state(c);
+    for h in c.heard.iter().rev() {
+        s.push_str(&format!("\n  {}", heard_line(h, now)));
+    }
+    match c.said.map(str::trim) {
+        _ if at_work(c.status) => {}
+        Some("") if c.status == SessionStatus::Idle => s.push_str(&format!(
+            "\n  It ended its turn without a word: `fctl logs {} --last-turn` shows how far it got.",
+            c.reference
+        )),
+        Some("") | None => {}
+        Some(said) => s.push_str(&format!("\n  It said as its turn ended: {}", quoted(said))),
+    }
+    s
+}
+
+/// "Ada wrote to it 5 minutes ago: “…”".
+fn heard_line(h: &Heard, now: Millis) -> String {
+    let when = ago(now, h.at);
+    let files = match h.files {
+        0 => String::new(),
+        1 => "a file".to_owned(),
+        n => format!("{n} files"),
+    };
+    match (&h.text, files.is_empty()) {
+        (Some(text), true) => format!("{} wrote to it {when}: {}", h.by, quoted(text)),
+        (Some(text), false) => {
+            format!(
+                "{} wrote to it {when}, with {files}: {}",
+                h.by,
+                quoted(text)
+            )
+        }
+        (None, false) => format!("{} sent it {files} {when}", h.by),
+        (None, true) => format!("{} wrote to it {when}", h.by),
+    }
+}
+
+fn crew_state(c: &CrewView<'_>) -> String {
     let state = match c.status {
         SessionStatus::Queued => "queued".to_owned(),
         SessionStatus::Provisioning | SessionStatus::Preparing => "starting".to_owned(),
@@ -1391,7 +1512,7 @@ pub fn wake_message(news: &News<'_>) -> String {
     if !news.crew.is_empty() {
         s.push_str("\n\nYour sessions:\n");
         for c in &news.crew {
-            s.push_str(&format!("\n- {}", crew_line(c)));
+            s.push_str(&format!("\n- {}", crew_line(c, news.now)));
         }
     }
     if !news.others.is_empty() {
@@ -2079,14 +2200,52 @@ mod tests {
                 new: true,
             },
         ];
-        let crew = [CrewView {
-            reference: "shop#41".into(),
-            title: "Add Apple Pay",
-            status: SessionStatus::Idle,
-            status_reason: None,
-            question: Some("Which merchant id?"),
-            pull_requests: vec!["#12 open".into()],
-        }];
+        let heard = [
+            Heard {
+                by: "Bo".into(),
+                at: now - 5 * MINUTE_MS,
+                text: Some("Use the new button styles".into()),
+                files: 2,
+            },
+            Heard {
+                by: "Ada".into(),
+                at: now - 2 * HOUR_MS,
+                text: None,
+                files: 1,
+            },
+        ];
+        let crew = [
+            CrewView {
+                reference: "shop#41".into(),
+                title: "Add Apple Pay",
+                status: SessionStatus::Idle,
+                status_reason: None,
+                question: Some("Which merchant id?"),
+                pull_requests: vec!["#12 open".into()],
+                said: Some("I need the merchant id to go on."),
+                heard: &heard,
+            },
+            CrewView {
+                reference: "shop#42".into(),
+                title: "Fix the footer",
+                status: SessionStatus::Idle,
+                status_reason: None,
+                question: None,
+                pull_requests: vec![],
+                said: Some(""),
+                heard: &[],
+            },
+            CrewView {
+                reference: "shop#43".into(),
+                title: "Gift cards",
+                status: SessionStatus::Running,
+                status_reason: None,
+                question: None,
+                pull_requests: vec![],
+                said: Some("Done with the first part."),
+                heard: &[],
+            },
+        ];
         let others = [
             OtherView {
                 reference: "shop#38".into(),
@@ -2144,9 +2303,15 @@ mod tests {
         assert!(text.contains(
             "- (new) Ada set the secret STRIPE_KEY in shop's secrets: sessions that start from now on have it in their environment."
         ));
+        // What people wrote to it, oldest first, then what it said.
         assert!(text.contains(
-            "- shop#41 “Add Apple Pay”: asks “Which merchant id?”; pull requests #12 open"
-        ));
+            "\n\n- shop#41 “Add Apple Pay”: asks “Which merchant id?”; pull requests #12 open\n  Ada sent it a file 2 hours ago\n  Bo wrote to it 5 minutes ago, with 2 files: “Use the new button styles”\n  It said as its turn ended: “I need the merchant id to go on.”\n"
+        ), "{text}");
+        // A turn that ended without a word says so; one at work says
+        // nothing of its last.
+        assert!(text.contains(
+            "\n- shop#42 “Fix the footer”: ended its turn, waiting for a message\n  It ended its turn without a word: `fctl logs shop#42 --last-turn` shows how far it got.\n- shop#43 “Gift cards”: working\n"
+        ), "{text}");
         assert!(text.contains(
             "## People's sessions\n\nSessions people started in the project that work now or have a pull request open"
         ));
@@ -2159,6 +2324,12 @@ mod tests {
 
     #[test]
     fn the_wake_message_says_what_is_new() {
+        let heard = [Heard {
+            by: "Ada".into(),
+            at: 0,
+            text: Some("Keep the old icons".into()),
+            files: 0,
+        }];
         let news = News {
             reasons: vec![AutopilotWakeReason::Steered, AutopilotWakeReason::Crew],
             notes: vec![NoteView {
@@ -2169,14 +2340,28 @@ mod tests {
             }],
             direction: None,
             answers: vec![],
-            crew: vec![CrewView {
-                reference: "shop#41".into(),
-                title: "Add Apple Pay",
-                status: SessionStatus::Failed,
-                status_reason: Some("Its runner went away"),
-                question: None,
-                pull_requests: vec![],
-            }],
+            crew: vec![
+                CrewView {
+                    reference: "shop#41".into(),
+                    title: "Add Apple Pay",
+                    status: SessionStatus::Failed,
+                    status_reason: Some("Its runner went away"),
+                    question: None,
+                    pull_requests: vec![],
+                    said: Some(""),
+                    heard: &[],
+                },
+                CrewView {
+                    reference: "shop#44".into(),
+                    title: "Wishlists",
+                    status: SessionStatus::Idle,
+                    status_reason: None,
+                    question: None,
+                    pull_requests: vec!["#70 (open, checks running)".into()],
+                    said: Some("Opened #70: wishlists on the account page."),
+                    heard: &heard,
+                },
+            ],
             others: vec![OtherView {
                 reference: "shop#38".into(),
                 title: "Wishlists",
@@ -2197,9 +2382,13 @@ mod tests {
             "fctl woke you, the autopilot, at 1970-01-01 00:00 UTC: people steered you and your sessions moved on."
         ));
         assert!(m.contains("\n- Ada: Don't touch billing"));
+        // A failed turn's silence goes without saying.
         assert!(m.contains(
-            "\n- shop#41 “Add Apple Pay”: failed: Its runner went away (`fctl resume` starts it again)"
-        ));
+            "\n- shop#41 “Add Apple Pay”: failed: Its runner went away (`fctl resume` starts it again)\n- shop#44"
+        ), "{m}");
+        assert!(m.contains(
+            "\n- shop#44 “Wishlists”: ended its turn, waiting for a message; pull requests #70 (open, checks running)\n  Ada wrote to it just now: “Keep the old icons”\n  It said as its turn ended: “Opened #70: wishlists on the account page.”"
+        ), "{m}");
         assert!(m.contains("`fctl autopilot brief` shows the whole picture."));
         assert!(!m.contains("a fresh session takes over"));
         // Near where it hands off, it hears so.
@@ -2286,5 +2475,45 @@ mod tests {
         assert_eq!(ago(10 * HOUR_MS, 10 * HOUR_MS - 30_000), "just now");
         assert_eq!(ago(10 * HOUR_MS, 9 * HOUR_MS), "1 hour ago");
         assert_eq!(until(0, 90 * MINUTE_MS), "in 1 hour");
+    }
+
+    #[test]
+    fn keeps_peoples_latest_messages_to_its_sessions() {
+        let first = hear(None, "Ada", "**Keep** the old icons", 0, 1_000);
+        assert_eq!(
+            heard(Some(&first)),
+            vec![Heard {
+                by: "Ada".into(),
+                at: 1_000,
+                text: Some("Keep the old icons".into()),
+                files: 0,
+            }]
+        );
+        // Newest first, the latest few, each cut at a word.
+        let mut kept = first;
+        for (i, text) in ["", "Second", &"word ".repeat(100)].iter().enumerate() {
+            let at = 2_000 + i64::try_from(i).unwrap_or_default() * 1_000;
+            kept = hear(Some(&kept), "Bo", text, 1, at);
+        }
+        let all = heard(Some(&kept));
+        assert_eq!(all.len(), HEARD_KEPT);
+        assert_eq!(
+            all.iter().map(|h| h.at).collect::<Vec<_>>(),
+            [4_000, 3_000, 2_000]
+        );
+        assert!(
+            all[0]
+                .text
+                .as_deref()
+                .is_some_and(|t| t.ends_with('…') && t.chars().count() <= HEARD_CHARS)
+        );
+        assert_eq!(all[2].text, None);
+        assert_eq!(all[2].files, 1);
+        // What came after it last woke.
+        assert_eq!(heard_since(&all, 2_500).len(), 2);
+        assert!(heard_since(&all, 4_000).is_empty());
+        // Nothing kept, or what doesn't read, is nothing.
+        assert!(heard(None).is_empty());
+        assert!(heard(Some("not json")).is_empty());
     }
 }

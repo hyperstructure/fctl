@@ -2151,8 +2151,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    from its sessions (`work_lines`): what a task needs, among it the files
    its other open pull requests change; putting what every session should
    know in the project's memory or instructions, and fixing the cause of
-   a mistake sessions repeat; reading the end of a session's log before
-   taking its word that it's done, as sessions stop short; one round of
+   a mistake sessions repeat; reading a session's last turn (`fctl logs
+   --last-turn`) before taking its word that it's done, as sessions stop
+   short; one round of
    changes; reviewing screenshots; people's own messages to its sessions;
    and background scripts that wait on what doesn't wake it. Each wake
    message and the brief say the time in UTC (`clock`), and its sessions'
@@ -2187,9 +2188,11 @@ sessions to do it, and sets up what the work needs, as far as they let it
    `autopilots::session_moved`); and at once when someone wakes it. A wake
    while its session works tells it what's new at its next step (one for
    a fresh session waits for its turn to end), and a check-in waits. The message says why it woke and what is new since it
-   last did: notes, a changed direction, answers, its sessions that moved,
-   and people's sessions that ended a turn with a pull request open, which
-   wake it for nothing themselves (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
+   last did: notes, a changed direction, answers, its sessions that moved
+   (point 5 says what their lines tell), its other sessions that people
+   wrote to since, and people's sessions that ended a turn with a pull
+   request open; those two wake it for nothing themselves
+   (`fctl_domain::autopilot::wake_message`). While its owner's plan is at
    its limit it waits for the reset. Its own session failing makes fctl
    try again 5, 15 and 60 minutes later, then pauses it and says why;
    its owner can no longer manage its project (or, for a workspace's, is
@@ -2234,7 +2237,15 @@ sessions to do it, and sets up what the work needs, as far as they let it
    autopilot (`UserMessage.autopilot`), which the apps show; their agents
    see them as their starter's, its owner's. Nobody follows them, so they
    notify nobody, and while it is on they notify those who follow one only
-   when it asks something ([Notifications](#notifications)); *Needs you* leaves them to the autopilot while it is
+   when it asks something ([Notifications](#notifications)). Their
+   SessionObject keeps for the autopilot the start of what the agent said
+   as its last turn ended (`fctl_domain::autopilot::SAID_CHARS`; empty from
+   when the agent takes a message until that turn ends with words, so that
+   a turn cut off says so) and people's three latest messages to it, which its
+   own aren't (`fctl_domain::autopilot::hear`), and writes them through to
+   D1 with its summary (`sessions.said`, `sessions.heard`): its sessions'
+   lines in wakes and the brief show them (`CrewView`), and
+   `fctl logs --last-turn` prints a session's last turn whole. *Needs you* leaves them to the autopilot while it is
    on, unless someone follows one; while it is paused or off, they are its
    owner's there as any session they started. They show the autopilot's
    mark in lists and link back to its tab. They see only what it writes

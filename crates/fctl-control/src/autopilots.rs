@@ -1400,10 +1400,23 @@ pub struct CrewRow {
     pub updated_at: Option<i64>,
     #[serde(default)]
     pub creator_name: Option<String>,
+    /// What its agent said as its last turn ended, and what people wrote
+    /// to it, for its autopilot ([`ap::CrewView`]): for its sessions
+    /// ([`CREW_SELECT`]) alone.
+    #[serde(default)]
+    pub said: Option<String>,
+    #[serde(default, deserialize_with = "heard_json")]
+    pub heard: Vec<ap::Heard>,
+}
+
+/// People's messages a session's row keeps ([`ap::heard`]), newest first.
+fn heard_json<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ap::Heard>, D::Error> {
+    let stored = Option::<String>::deserialize(d)?;
+    Ok(ap::heard(stored.as_deref()))
 }
 
 pub const CREW_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.status, \
-    s.status_reason, s.question, s.pull_requests, s.created_at, s.last_activity_at \
+    s.status_reason, s.question, s.pull_requests, s.created_at, s.last_activity_at, s.said, s.heard \
     FROM sessions s JOIN projects p ON p.id = s.project_id";
 
 /// The sessions people started in an autopilot's places, rather than the
@@ -1511,10 +1524,15 @@ impl CrewRow {
 
 /// What is new for an autopilot since it last woke.
 struct News {
+    /// When it last woke.
+    since: i64,
     notes: Vec<NoteRow>,
     direction: Option<(String, Option<String>)>,
     answers: Vec<AskRow>,
     crew: Vec<CrewRow>,
+    /// Its other sessions that people wrote to since: they come with what
+    /// wakes it, and wake it for nothing.
+    heard: Vec<CrewRow>,
     /// People's sessions that ended a turn since, with a pull request
     /// open: they come with what wakes it, and wake it for nothing.
     others: Vec<CrewRow>,
@@ -1553,6 +1571,24 @@ impl News {
         )?
         .all()
         .await?;
+        // Its others that people wrote to since (`ap::hear`), besides those
+        // above, which say so themselves.
+        let listed: Vec<&str> = crew.iter().map(|c| c.id.as_str()).collect();
+        let heard: Vec<CrewRow> = q(
+            db,
+            &format!(
+                "{CREW_SELECT} WHERE s.autopilot_id = ? AND s.autopilot_role = 'crew' \
+                 AND json_extract(s.heard, '$[0].at') > ? AND s.id NOT IN (SELECT value FROM json_each(?)) \
+                 ORDER BY json_extract(s.heard, '$[0].at') DESC LIMIT 10"
+            ),
+            &[
+                s(&row.project_id),
+                n(since),
+                s(&serde_json::to_string(&listed)?),
+            ],
+        )?
+        .all()
+        .await?;
         let mut params = Vec::new();
         let place = others_where(row, &mut params);
         params.push(n(since));
@@ -1570,12 +1606,14 @@ impl News {
         .await?;
         let _ = now;
         Ok(Self {
+            since,
             notes,
             direction: row
                 .direction_new
                 .then(|| (row.direction.clone(), row.direction_by_name.clone())),
             answers,
             crew,
+            heard,
             others,
         })
     }
@@ -1620,14 +1658,18 @@ impl News {
             .zip(options.iter())
             .map(|(a, options)| ask_view(a, options))
             .collect();
-        let crew: Vec<ap::CrewView> = self.crew.iter().map(crew_view).collect();
-        let questions: Vec<Option<String>> = self.crew.iter().map(CrewRow::question_text).collect();
-        let crew: Vec<ap::CrewView> = crew
-            .into_iter()
+        // Those that moved on, then those people wrote to, with what they
+        // wrote since it last woke.
+        let rows: Vec<&CrewRow> = self.crew.iter().chain(&self.heard).collect();
+        let questions: Vec<Option<String>> = rows.iter().map(|c| c.question_text()).collect();
+        let crew: Vec<ap::CrewView> = rows
+            .iter()
             .zip(questions.iter())
-            .map(|(mut c, q)| {
-                c.question = q.as_deref();
-                c
+            .map(|(c, q)| {
+                let mut v = crew_view(c);
+                v.question = q.as_deref();
+                v.heard = ap::heard_since(&c.heard, self.since);
+                v
             })
             .collect();
         let others: Vec<ap::OtherView> = self.others.iter().map(|o| other_view(o, None)).collect();
@@ -1707,6 +1749,8 @@ pub fn ask_view<'a>(a: &'a AskRow, options: &'a [String]) -> ap::AskView<'a> {
     }
 }
 
+/// One of its sessions, for what fctl tells it, with all that people
+/// wrote to it that its row keeps.
 pub fn crew_view(c: &CrewRow) -> ap::CrewView<'_> {
     ap::CrewView {
         reference: format!("{}#{}", c.project_slug, c.number),
@@ -1715,6 +1759,8 @@ pub fn crew_view(c: &CrewRow) -> ap::CrewView<'_> {
         status_reason: c.status_reason.as_deref(),
         question: None,
         pull_requests: c.pr_lines(),
+        said: c.said.as_deref(),
+        heard: &c.heard,
     }
 }
 

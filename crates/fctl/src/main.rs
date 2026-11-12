@@ -224,12 +224,21 @@ Examples:
         read_only: bool,
     },
     /// Print a session's transcript.
+    #[command(after_help = "Examples:
+  fctl logs my-app#12                 # all of it
+  fctl logs my-app#12 --last-turn     # the last message to the agent, and what followed
+  fctl logs -f my-app#12              # and keep following
+  fctl logs my-app#12 --json          # one event per line (JSON Lines)")]
     Logs {
         /// A session: its id (ses_…), its URL, or project#number.
         session: String,
         /// Keep following new events.
         #[arg(short, long)]
         follow: bool,
+        /// Only its last turn: the last message to the agent, and what
+        /// followed.
+        #[arg(long)]
+        last_turn: bool,
     },
     /// Print the diffs of a session's changes, as its agent last read them
     /// (since its branch left the base branch, uncommitted work included):
@@ -510,9 +519,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Attach { session, read_only } => {
             cmd::attach::attach(server, &session, read_only).await
         }
-        Command::Logs { session, follow } => {
-            cmd::sessions::logs(server, &session, follow, json).await
-        }
+        Command::Logs {
+            session,
+            follow,
+            last_turn,
+        } => cmd::sessions::logs(server, &session, follow, last_turn, json).await,
         Command::Diff(args) => cmd::sessions::diff(server, args, json).await,
         Command::Send {
             session,
