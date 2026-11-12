@@ -11,6 +11,7 @@ import { AuthenticatorSetup } from "@/components/two-factor/setup";
 import { Banner, Button, toast } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, TWO_FACTOR_REQUIRED } from "@/lib/api";
+import { clearLog } from "@/lib/app-log";
 import { clearAttention } from "@/lib/attention";
 import { cn } from "@/lib/cn";
 import { forgetDraft } from "@/lib/draft";
@@ -74,6 +75,7 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
     queryClient.clear();
     clearAttention();
     forgetSidebar(); // last, so that no list that comes is kept again
+    clearLog();
     goTo("/login");
   };
   // Without passkeys there is nothing to choose.

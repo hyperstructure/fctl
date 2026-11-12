@@ -111,6 +111,7 @@ export function FloorLink({
       {made && (
         <span aria-hidden="true" className={cn("absolute inset-0 -z-10", !shown && "hidden")}>
           <GLCanvas
+            name="Agent Floor row"
             scene={() => {
               const h = conduit();
               scene.current = h;

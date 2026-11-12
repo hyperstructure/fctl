@@ -46,7 +46,7 @@ export function AgentOrb({
   };
   return (
     <div className={cn("relative shrink-0", className ?? "size-11")}>
-      <GLCanvas scene={() => orb(() => state.current)} options={{ pixel: 2, fps: 30 }} />
+      <GLCanvas name="agent orb" scene={() => orb(() => state.current)} options={{ pixel: 2, fps: 30 }} />
     </div>
   );
 }

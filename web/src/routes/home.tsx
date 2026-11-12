@@ -95,6 +95,7 @@ function Threads({ active, handle }: { active: G.Session[]; handle: RefObject<Fo
   return (
     <div className="absolute inset-0">
       <GLCanvas
+        name="Agent Floor scene"
         scene={() => {
           const h = foundry({ planet: [0.95, -0.85, 1.4], density: 0.5 });
           handle.current = h;

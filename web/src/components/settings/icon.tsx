@@ -10,6 +10,7 @@ import {
   LayoutGrid,
   type LucideIcon,
   Mail,
+  ScrollText,
   ShieldCheck,
   SunMoon,
 } from "lucide-react";
@@ -24,6 +25,7 @@ const ICONS: Record<Exclude<SettingsTab, "linear">, LucideIcon> = {
   claude: Cpu,
   notifications: Bell,
   appearance: SunMoon,
+  log: ScrollText,
   security: ShieldCheck,
   tokens: KeyRound,
   data: Database,

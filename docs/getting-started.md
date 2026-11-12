@@ -42,6 +42,13 @@ Home Screen keeps no history of the pages you open, so a swipe from the
 edge of the screen doesn't go back or forward: you move about with the
 sidebar and links.
 
+**Settings → App log** keeps what the app did in that browser lately: how
+it started, when it went to the background and came back, and what went
+wrong. It stays in the browser, and signing out clears it. When the app
+misbehaves (on an iPhone, coming back from the background black, say), copy
+it into a message about it. Where the app comes back showing nothing while
+it still runs, it loads its page again by itself, at most once a minute.
+
 To hear when a session waits for your reply, pauses on a usage limit or
 fails, turn on notifications in **Settings → Notifications**, in each
 browser you want them in (on an iPhone or iPad, in the app on the Home

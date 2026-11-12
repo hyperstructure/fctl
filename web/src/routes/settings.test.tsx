@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
+import { clearLog, record } from "@/lib/app-log";
 import { keys, queryClient } from "@/lib/queries";
 import { SettingsPage } from "./settings";
 
@@ -148,6 +149,7 @@ describe("Settings", () => {
       "/settings?tab=linear",
       "/settings?tab=notifications",
       "/settings?tab=appearance",
+      "/settings?tab=log",
       "/settings?tab=security",
       "/settings?tab=tokens",
       "/settings?tab=data",
@@ -162,6 +164,15 @@ describe("Settings", () => {
     expect(container.querySelector('[aria-current="page"]')?.textContent).toBe("Security");
     // The way back to the list of pages, for a phone.
     expect(container.querySelector('a[href="/settings"]')?.textContent).toBe("Settings");
+  });
+
+  it("shows the app's log in this browser, to copy", () => {
+    record("Went to the background", 1);
+    route.search = { tab: "log" };
+    const { headings, container } = settings();
+    expect(headings()).toEqual(["App log"]);
+    expect(container.querySelector("pre")?.textContent).toContain("Went to the background");
+    clearLog();
   });
 
   it("opens the page with the section an older link named", () => {

@@ -1,8 +1,8 @@
 // Settings: one page at a time, with the list of pages beside it where both fit, else the list
 // alone (a phone), which opens one. Profile, email addresses, workspaces, Claude, Linear,
-// notifications, appearance, security (sign-in methods, passkeys, two-factor sign-in, devices),
-// access tokens and your data (the export, deleting the account). Which pages there are, and what
-// the list says about each, is lib/settings.ts.
+// notifications, appearance, the app log, security (sign-in methods, passkeys, two-factor sign-in,
+// devices), access tokens and your data (the export, deleting the account). Which pages there
+// are, and what the list says about each, is lib/settings.ts.
 
 import { palette, themes } from "@hyperstructure/design/brand";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -38,6 +38,7 @@ import { OnRunnersDetails } from "@/components/claude/on-runners";
 import { KeepTokenOut } from "@/components/claude/stand-in";
 import { PasskeySettings } from "@/components/passkeys/settings";
 import { PlanUsageList } from "@/components/plan-usage";
+import { AppLog } from "@/components/settings/app-log";
 import { SettingsIcon } from "@/components/settings/icon";
 import { type NavEntry, type NavLinkProps, SettingsList, SettingsNav } from "@/components/settings/nav";
 import { AccessTokens } from "@/components/tokens";
@@ -67,6 +68,7 @@ import {
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api, clickConfirmed, confirmFirst, emails, linearLinkUrl, workspaces as wsApi } from "@/lib/api";
+import { clearLog } from "@/lib/app-log";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
@@ -183,6 +185,8 @@ function SettingsBody({
       return <Notifications me={me} />;
     case "appearance":
       return <Appearance />;
+    case "log":
+      return <AppLog />;
     case "security":
       return <Security me={me} search={search} />;
     case "tokens":
@@ -307,6 +311,7 @@ function useGists(me: G.Me, has: (t: SettingsTab) => boolean): Partial<Record<Se
     appearance: {
       text: `${theme === "dark" ? "Dark" : "Light"} · ${hours}-hour clock`,
     },
+    log: { text: "Kept in this browser, to copy into a report" },
     security: securityGist(me, workspaces?.filter((w) => w.blocked).length),
     tokens: tokensGist(tokens.data?.tokens),
     data: { text: "Export it, or delete your account" },
@@ -2025,6 +2030,7 @@ function DeleteAccount({ me, open, onClose }: { me: G.Me; open: boolean; onClose
       await forgetDraft();
       queryClient.clear();
       forgetSidebar(); // last, so that no list that comes is kept again
+      clearLog();
       goTo("/login?deleted=1");
     },
   });
