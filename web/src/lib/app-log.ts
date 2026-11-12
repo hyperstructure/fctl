@@ -26,8 +26,10 @@ export interface Entry {
 
 /** localStorage: the log. */
 const LOG = "fctl:app-log";
-/** localStorage: the account the log is kept for (`logFor`). */
+/** localStorage: the account the log is kept for (`logFor`), or after a sign-out the run that signed out (`forgetLog`). */
 const OWNER = "fctl:app-log-owner";
+/** What `OWNER` starts with after a sign-out, before the run's ID. */
+const SIGNED_OUT = "signed-out:";
 /** localStorage: the run's heartbeat: when it was last heard from, and whether it was on screen then. */
 const BEAT = "fctl:app-beat";
 /** sessionStorage: the run's ID (a page load in a tab that has one is the run's own), and when it last reloaded to recover. */
@@ -56,6 +58,8 @@ export interface Beat {
 let entries: Entry[] | undefined;
 /** This run's ID, once `startAppLog` has started it. */
 let run: string | undefined;
+
+const newRun = () => Math.random().toString(36).slice(2, 10);
 const listeners = new Set<() => void>();
 
 function stored(): Entry[] {
@@ -118,30 +122,36 @@ export function clearLog() {
 }
 
 /**
- * Signing out: empties the log and keeps it for no one. What other tabs still open add to it after,
- * about the account that signed out, goes as anyone signs in next; the run that signs in keeps its
- * own lines (`logFor`).
+ * Signing out: empties the log and keeps it for this run alone, under a new ID that no other tab
+ * shares (a duplicated tab copies sessionStorage, and with it the ID). As anyone signs in next, the
+ * log keeps only this run's lines, its sign-in page's: what other tabs still open on the account
+ * that signed out add to it goes (`logFor`).
  */
 export function forgetLog() {
   clearLog();
+  run = newRun();
   try {
-    localStorage.setItem(OWNER, "");
+    sessionStorage.setItem(RUNNING, run);
+  } catch {}
+  try {
+    localStorage.setItem(OWNER, SIGNED_OUT + run);
   } catch {}
 }
 
 /**
  * Keeps the log for `user`, who is signed in: one kept for someone else, whose sign-in ended here
- * without them signing out, goes first. One kept for no one since a sign-out keeps only this
- * run's lines, from the sign-in page on. A sign-in that ends leaves the log, as it may tell why.
+ * without them signing out, goes first. After a sign-out, only the lines of the run that signed out
+ * stay. A sign-in that ends leaves the log, as it may tell why.
  */
 export function logFor(user: string) {
   try {
     const was = localStorage.getItem(OWNER);
-    if (was === "") {
-      const mine = stored().filter((e) => run !== undefined && e.run === run);
-      if (mine.length) localStorage.setItem(LOG, JSON.stringify(mine));
+    if (was?.startsWith(SIGNED_OUT)) {
+      const by = was.slice(SIGNED_OUT.length);
+      const kept = stored().filter((e) => e.run === by);
+      if (kept.length) localStorage.setItem(LOG, JSON.stringify(kept));
       else localStorage.removeItem(LOG);
-      changed(mine);
+      changed(kept);
     } else if (was !== null && was !== user) clearLog();
     localStorage.setItem(OWNER, user);
   } catch {}
@@ -326,8 +336,9 @@ export function watchWebgl(canvas: HTMLCanvasElement, name: string): () => void 
     canvas.removeEventListener("webglcontextlost", lost);
     canvas.removeEventListener("webglcontextrestored", restored);
     // Only a canvas that left the page: React's development mode unmounts and mounts a scene
-    // again on the same canvas, which a lost context would leave blank.
-    if (canvas.isConnected) return;
+    // again on the same canvas, which a lost context would leave blank. One that never had a
+    // context would be given one by asking, which may cost another scene its own.
+    if (canvas.isConnected || canvas.dataset.webgl === "unavailable") return;
     const gl = canvas.getContext("webgl2");
     if (gl && !gl.isContextLost()) gl.getExtension("WEBGL_lose_context")?.loseContext();
   };
@@ -339,7 +350,7 @@ export function watchWebgl(canvas: HTMLCanvasElement, name: string): () => void 
  */
 export function startAppLog(): () => void {
   let fresh = true;
-  run = Math.random().toString(36).slice(2, 10);
+  run = newRun();
   try {
     const was = sessionStorage.getItem(RUNNING);
     fresh = was === null;

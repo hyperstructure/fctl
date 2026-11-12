@@ -96,7 +96,7 @@ describe("record", () => {
     // Signing out keeps it for no one (startAppLog's tests: what the run that signs in keeps).
     forgetLog();
     expect(said()).toEqual([]);
-    expect(localStorage.getItem("fctl:app-log-owner")).toBe("");
+    expect(localStorage.getItem("fctl:app-log-owner")).toMatch(/^signed-out:/);
   });
 
   it("shows, as the page opens, what another tab wrote since this tab last read it", async () => {
@@ -225,26 +225,33 @@ describe("startAppLog", () => {
     again();
   });
 
-  it("keeps the run that signs in after a sign-out, without what other tabs logged", () => {
+  it("keeps only the lines of the run that signed out as anyone signs in next", () => {
     installed(true);
-    logFor("usr_a");
-    record("A's page", 1);
-    forgetLog();
-    // Signing out loads the sign-in page afresh: a page load of the same run's own.
     sessionStorage.setItem("fctl:log-running", "run-1");
-    const stop = startAppLog();
-    const other = { at: 2, what: "Another tab, still on A's page", run: "run-2" };
-    localStorage.setItem("fctl:app-log", JSON.stringify([...readLog(), other]));
-    record("On the sign-in page");
+    const before = startAppLog();
     logFor("usr_a");
+    record("On A's page");
+    before();
+    // Signing out gives this tab a run of its own, which a tab duplicated from it doesn't share,
+    // and loads the sign-in page: a page load of that run's own.
+    forgetLog();
+    expect(sessionStorage.getItem("fctl:log-running")).not.toBe("run-1");
+    const stop = startAppLog();
+    const others = [
+      { at: 2, what: "A duplicated tab, still on A's page", run: "run-1" },
+      { at: 3, what: "Another tab, still on A's page", run: "run-2" },
+    ];
+    localStorage.setItem("fctl:app-log", JSON.stringify([...readLog(), ...others]));
+    record("On the sign-in page");
+    logFor("usr_b");
     expect(said()).toEqual([
       expect.stringMatching(/^Started \(a page load in the same run/),
       "On the sign-in page",
     ]);
     expect(localStorage.getItem("fctl:app-beat")).not.toBeNull();
-    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_a");
+    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_b");
     // Someone else signing in after a sign-in that ended takes it all.
-    logFor("usr_b");
+    logFor("usr_c");
     expect(said()).toEqual([]);
     stop();
   });
@@ -348,6 +355,16 @@ describe("watchWebgl", () => {
     watchWebgl(el, "agent orb")();
     expect(lose).not.toHaveBeenCalled();
     el.remove();
+  });
+
+  it("asks no context of a canvas that never had one, which would be given one", () => {
+    const { el } = canvas();
+    el.dataset.webgl = "unavailable";
+    document.body.append(el);
+    const unwatch = watchWebgl(el, "agent orb");
+    el.remove();
+    unwatch();
+    expect(el.getContext).not.toHaveBeenCalled();
   });
 
   it("logs a context lost, restored or never given", () => {
