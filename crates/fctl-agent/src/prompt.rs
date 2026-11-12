@@ -3,6 +3,7 @@
 
 use crate::caches::Ready;
 use crate::claude::Exit;
+use crate::oom::{self, Kills, Usage};
 use crate::tasks::{self, Task};
 use crate::workspace::Paths;
 use fctl_domain::{files, memory, size};
@@ -404,7 +405,7 @@ pub fn system_prompt(
         // the sandbox to its size, and Apple's container gives each VM a CPU
         // more than its sandbox, so build tools would start too many jobs.
         s.push_str(&format!(
-            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137, and that may be Claude Code itself, which cuts your turn off: run one heavy job at a time, such as a browser with its dev server, or a large build.\n",
+            "- This sandbox has {} and {} of memory ($FCTL_SANDBOX_CPUS, $FCTL_SANDBOX_MEMORY_MB), even where `nproc` and `free` show more. Size parallel builds and test runs to these limits (for example `make -j{}`): when the sandbox runs out of memory, the kernel kills a process, which then exits with code 137, and that may be Claude Code itself, which cuts your turn off: run one heavy job at a time, such as a browser with its dev server, or a large build. fctl-agent tells you at your next step when the sandbox's memory is nearly out, and when the kernel killed a process for want of it.\n",
             size::cpus(size.cpus),
             size::memory(size.memory_mb.into()),
             size.cpus
@@ -873,6 +874,59 @@ pub fn cut_off_turn(by: CutOffBy) -> String {
     s
 }
 
+/// How fctl-agent's notes to Claude begin: they come as messages, which
+/// Claude would otherwise take for the person's.
+const FROM_FCTL_AGENT: &str = "A note from fctl-agent, which runs you in this sandbox:";
+
+/// What Claude hears at its next step when the sandbox's memory is nearly
+/// out: how full it is, which processes hold the most (`largest`, Claude
+/// Code's, `claude`, marked), and what to do.
+pub fn memory_nearly_out(usage: Usage, largest: &[oom::Process], claude: Option<u32>) -> String {
+    let mut s = format!(
+        "{FROM_FCTL_AGENT} the sandbox's memory is {}% full ({} in use). When it runs out, the kernel kills a process to free some, and that may be Claude Code, which runs you, cutting your turn off. Stop what you no longer need (dev servers, browsers, watchers and background tasks you are done with), and run one heavy job at a time, with fewer parallel jobs.",
+        usage.percent(),
+        usage.words()
+    );
+    if largest.is_empty() {
+        s.push(' ');
+    } else {
+        s.push_str(" The processes that hold the most memory:");
+        for p in largest {
+            let command = p.command.as_deref().unwrap_or(&p.name);
+            s.push_str(&format!(
+                "\n- PID {}, {}: {command}",
+                p.pid,
+                oom::bytes(p.rss)
+            ));
+            if Some(p.pid) == claude {
+                s.push_str(" (Claude Code, which runs you: leave it running)");
+            }
+        }
+        s.push('\n');
+    }
+    s.push_str("Then carry on with what you were doing.");
+    s
+}
+
+/// What Claude hears when the kernel killed processes of the sandbox for
+/// want of memory while Claude Code ran on: at its next step, or as its
+/// next turn starts when that happened while it waited (`waited`).
+pub fn killed_for_memory(kills: &Kills, waited: bool) -> String {
+    let when = if waited {
+        "while you waited"
+    } else {
+        "just now"
+    };
+    let mut s = format!(
+        "{FROM_FCTL_AGENT} the sandbox ran out of memory {when}, and the kernel killed {} to free some. A command of yours that ended with exit code 137 (SIGKILL), or a browser, server or test run that stopped, ended for that rather than a fault of its own. Before you run it again, stop what you no longer need and run one heavy job at a time, with fewer parallel jobs (`ps -eo pid,rss,args --sort=-rss | head | cut -c -150` lists the processes that hold the most memory).",
+        kills.words()
+    );
+    if !waited {
+        s.push_str(" Then carry on with what you were doing.");
+    }
+    s
+}
+
 /// One attached file, as a message describes it to Claude.
 pub struct FileNote<'a> {
     pub attachment: &'a Attachment,
@@ -1096,6 +1150,10 @@ mod tests {
         assert!(text.contains(
             "that may be Claude Code itself, which cuts your turn off: run one heavy job at a time"
         ));
+        // fctl-agent's notes on it come as messages.
+        assert!(text.contains(
+            "fctl-agent tells you at your next step when the sandbox's memory is nearly out, and when the kernel killed a process for want of it."
+        ));
         assert!(
             !system_prompt(&spec(), "/work", &paths(), None, None, false, false, false)
                 .contains("This sandbox has")
@@ -1151,6 +1209,48 @@ mod tests {
         assert!(
             text.contains("stop its process group with `kill -- -<pid>`. Don't use `pkill -f`")
         );
+    }
+
+    #[test]
+    fn tells_claude_its_memory_is_nearly_out_and_what_the_kernel_killed() {
+        let gib = 1024 * 1024 * 1024;
+        let usage = Usage {
+            used: 7 * gib,
+            limit: 8 * gib,
+        };
+        let process = |pid: u32, name: &str, rss: u64, command: Option<&str>| oom::Process {
+            pid,
+            name: name.into(),
+            rss,
+            command: command.map(str::to_owned),
+        };
+        let largest = [
+            process(4242, "chrome", 2 * gib, Some("chrome --type=renderer")),
+            process(555, "claude", gib / 2, None),
+        ];
+        assert_eq!(
+            memory_nearly_out(usage, &largest, Some(555)),
+            "A note from fctl-agent, which runs you in this sandbox: the sandbox's memory is 87% full (7 GiB of 8 GiB in use). When it runs out, the kernel kills a process to free some, and that may be Claude Code, which runs you, cutting your turn off. Stop what you no longer need (dev servers, browsers, watchers and background tasks you are done with), and run one heavy job at a time, with fewer parallel jobs. The processes that hold the most memory:\n- PID 4242, 2 GiB: chrome --type=renderer\n- PID 555, 512 MiB: claude (Claude Code, which runs you: leave it running)\nThen carry on with what you were doing."
+        );
+        assert!(
+            memory_nearly_out(usage, &[], None)
+                .ends_with("with fewer parallel jobs. Then carry on with what you were doing.")
+        );
+
+        let chrome = oom::Killed {
+            pid: Some(4242),
+            name: "chrome".into(),
+        };
+        assert_eq!(
+            killed_for_memory(&Kills::new(1, vec![chrome]), false),
+            "A note from fctl-agent, which runs you in this sandbox: the sandbox ran out of memory just now, and the kernel killed chrome (PID 4242) to free some. A command of yours that ended with exit code 137 (SIGKILL), or a browser, server or test run that stopped, ended for that rather than a fault of its own. Before you run it again, stop what you no longer need and run one heavy job at a time, with fewer parallel jobs (`ps -eo pid,rss,args --sort=-rss | head | cut -c -150` lists the processes that hold the most memory). Then carry on with what you were doing."
+        );
+        // Told with the next turn, which may be about something else.
+        let waited = killed_for_memory(&Kills::new(2, vec![]), true);
+        assert!(waited.contains(
+            "the sandbox ran out of memory while you waited, and the kernel killed 2 of its processes to free some."
+        ));
+        assert!(waited.ends_with("lists the processes that hold the most memory)."));
     }
 
     #[test]
