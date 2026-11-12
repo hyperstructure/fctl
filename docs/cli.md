@@ -96,6 +96,7 @@ fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" cl
 fctl edit my-app#12 --effort medium     # its agent works at medium effort from its next step
 fctl edit my-app#12 --model sonnet      # …on Sonnet: its next step reads the conversation without the prompt cache
 fctl logs my-app#12              # the transcript
+fctl logs my-app#12 --last-turn  # only the last message to the agent, and what followed
 fctl logs -f my-app#12           # …and keep following
 fctl diff my-app#12              # what its branch changed, as git prints it (uncommitted work too)
 fctl diff my-app#12 src/auth     # the files in a directory; --repo acme/docs for another repository
@@ -740,7 +741,10 @@ project, the default for `-p`): `fctl run`, `fctl sessions`, `fctl show`,
 `fctl logs`, `fctl send`, `fctl stop`, `fctl projects set`, `fctl
 projects secrets`, `fctl projects repos`, `fctl schedules` and `fctl
 projects create`, as far as its powers go. `fctl run` returns at once
-there; fctl wakes it when its sessions move on.
+there; fctl wakes it when its sessions move on, with the start of what
+each said as its turn ended and what people wrote to it meanwhile
+(people's messages don't wake it themselves). `fctl logs <ref>
+--last-turn` prints a session's last turn whole.
 
 ```sh
 fctl autopilot brief                           # where things stand, as it wakes

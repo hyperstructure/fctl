@@ -262,8 +262,9 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" -o after.png "$FCTL_SERVER/api/v
 ```
 
 `fctl logs SESSION` without `--json` prints the transcript as people read
-it, and `fctl search WORDS --json` finds sessions by what people and agents
-wrote.
+it, `fctl logs SESSION --last-turn` only the last message to the agent and
+what followed (it reads the transcript from its end), and
+`fctl search WORDS --json` finds sessions by what people and agents wrote.
 
 ## Steering a session
 
@@ -634,7 +635,7 @@ role and its powers:
 ```sh
 fctl autopilot brief                         # where things stand: direction, notes, asks, sessions, plan, log
 fctl run --title "Pipeline board" "Build the pipeline board: …"   # a session of its own; returns at once
-fctl show crm#12 && fctl logs crm#12         # what one did
+fctl show crm#12 && fctl logs crm#12 --last-turn   # what one did in its last turn
 fctl send crm#12 "Use the existing Card component."   # answer it, steer it
 fctl resume crm#12 "Carry on where you left off."      # one that failed, once what failed it has passed
 fctl autopilot plan --file plan.md           # its plan, whole
@@ -650,6 +651,13 @@ fctl autopilot pause --reason "The direction is done."
 It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people
 set, and steers only the sessions it started.
+
+Its wakes and brief say how each of its sessions stands: its pull
+requests with their checks, the start of what it said as its turn ended
+(or that it ended its turn without a word, as a turn cut off does), and
+who else wrote to it and what, so that it doesn't contradict them. People
+writing to one of its sessions don't wake it: it hears of them at its next
+wake.
 
 It looks after the sessions people start themselves too: its brief lists
 those at work and those whose pull requests are still open, with their
