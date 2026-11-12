@@ -6,7 +6,9 @@ import { createRoot } from "react-dom/client";
 import { VerifyDialog } from "@/components/two-factor/verify";
 import { Toaster } from "@/components/ui";
 import { linksInPlace } from "@/lib/history";
+import { openingWaits } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
+import { reopen } from "@/lib/reopen";
 import { syncShimmers } from "@/lib/shimmer";
 import { watchViewport } from "@/lib/viewport";
 import { stopPinchZoom } from "@/lib/zoom";
@@ -31,7 +33,10 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
 }
 
 const root = document.getElementById("root");
-if (root) {
+// On an iPhone's or iPad's Home Screen, the app that iOS started afresh first goes back to the page
+// it was left on, unless a notification opened it (lib/reopen.ts). Elsewhere it goes on at once.
+void reopen(router.history, openingWaits).finally(() => {
+  if (!root) return;
   createRoot(root).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
@@ -41,4 +46,4 @@ if (root) {
       </QueryClientProvider>
     </StrictMode>,
   );
-}
+});

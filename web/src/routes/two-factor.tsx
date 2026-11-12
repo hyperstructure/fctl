@@ -18,6 +18,7 @@ import { goTo } from "@/lib/history";
 import { OFFER_PASSKEY } from "@/lib/passkeys";
 import { forgetPush } from "@/lib/push";
 import { keys, queryClient, useInstance, useMe } from "@/lib/queries";
+import { forgetLeft } from "@/lib/reopen";
 import { forgetSidebar } from "@/lib/sidebar";
 import { RECOVERY_LEFT } from "@/lib/two-factor";
 import { AuthFrame } from "@/routes/auth";
@@ -68,6 +69,7 @@ function TwoFactorRequired({ me }: { me: G.Me }) {
     onAdded: () => toast("Your passkey is in: it's your second factor. Welcome in."),
   });
   const signOut = async () => {
+    forgetLeft();
     await forgetPush();
     await forgetDraft();
     await api.logout().catch(() => {});
