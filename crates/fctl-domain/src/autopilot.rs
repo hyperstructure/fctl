@@ -1031,8 +1031,9 @@ pub struct CrewView<'a> {
     /// Its pull requests ([`pull_line`]): "#41 (open, checks pass)", "#40 merged".
     pub pull_requests: Vec<String>,
     /// What its agent said as its last turn ended, the start of it
-    /// ([`SAID_CHARS`]): empty from when a message starts a turn until it
-    /// ends with words, so empty after a turn that ended without any.
+    /// ([`SAID_CHARS`]): empty from when its agent takes a message until
+    /// that turn ends with words, so empty after a turn that ended without
+    /// any.
     /// Absent where fctl kept none (sessions from before it). Shown while
     /// it isn't at work.
     pub said: Option<&'a str>,

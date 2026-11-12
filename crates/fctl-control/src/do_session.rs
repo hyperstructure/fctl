@@ -275,8 +275,9 @@ const LAST_RESULT_CHARS: usize = 12_000;
 
 /// The meta keys of what an autopilot's session keeps for its autopilot,
 /// which D1's row gets with the summary (`sessions.said`, `sessions.heard`):
-/// the start of what its agent said as its last turn ended, empty while a
-/// turn has said nothing yet (`fctl_domain::autopilot::SAID_CHARS`), and
+/// the start of what its agent said as its last turn ended, empty from
+/// when the agent takes a message until its turn ends with words
+/// (`fctl_domain::autopilot::SAID_CHARS`), and
 /// people's latest messages to it (`fctl_domain::autopilot::hear`).
 const SAID: &str = "said";
 const HEARD: &str = "heard";
@@ -971,24 +972,22 @@ impl SessionObject {
         if let DeliveryKind::Interrupt { by: Some(by) } = &b.delivery.kind {
             self.set_meta("interrupted_by", by.id.as_str());
         }
-        // An autopilot's session: the turn a message starts has said nothing
-        // yet, and its autopilot hears what people, rather than it, wrote
-        // (`UserMessage::autopilot` marks its own). Before the summary's
-        // write below, which takes them to D1.
-        if message && self.summary().is_some_and(|s| crew(&s)) {
-            self.set_meta(SAID, "");
-            if let EventBody::UserMessage(m) = &b.event
-                && let Some(author) = m.author.as_ref().filter(|_| m.autopilot.is_none())
-            {
-                let heard = fctl_domain::autopilot::hear(
-                    self.meta(HEARD).as_deref(),
-                    &author.name,
-                    &m.text,
-                    m.attachments.len(),
-                    now,
-                );
-                self.set_meta(HEARD, &heard);
-            }
+        // An autopilot's session: its autopilot hears what people, rather
+        // than it, wrote (`UserMessage::autopilot` marks its own). Before
+        // the summary's write below, which takes it to D1.
+        if message
+            && self.summary().is_some_and(|s| crew(&s))
+            && let EventBody::UserMessage(m) = &b.event
+            && let Some(author) = m.author.as_ref().filter(|_| m.autopilot.is_none())
+        {
+            let heard = fctl_domain::autopilot::hear(
+                self.meta(HEARD).as_deref(),
+                &author.name,
+                &m.text,
+                m.attachments.len(),
+                now,
+            );
+            self.set_meta(HEARD, &heard);
         }
         // A person's message: the agent gets reviews' findings, and hears
         // of failed checks and conflicts, again.
@@ -2862,6 +2861,16 @@ impl SessionObject {
                 // doesn't keep a draining runner from stopping the session.
                 if kind.as_ref().is_some_and(|k| !k.is_settings()) {
                     self.set_meta("last_delivered", &now.to_string());
+                }
+                // An autopilot's session: the turn a message starts has said
+                // nothing yet. Only once the agent takes it, as one waiting
+                // for it leaves what the last turn said standing; the
+                // running status that follows takes it to D1.
+                if ok
+                    && matches!(kind, Some(DeliveryKind::Message { .. }))
+                    && self.summary().is_some_and(|s| crew(&s))
+                {
+                    self.set_meta(SAID, "");
                 }
                 if !ok
                     && matches!(

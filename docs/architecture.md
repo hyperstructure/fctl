@@ -2240,8 +2240,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    when it asks something ([Notifications](#notifications)). Their
    SessionObject keeps for the autopilot the start of what the agent said
    as its last turn ended (`fctl_domain::autopilot::SAID_CHARS`; empty from
-   when a message starts a turn until it ends with words, so that a turn
-   cut off says so) and people's three latest messages to it, which its
+   when the agent takes a message until that turn ends with words, so that
+   a turn cut off says so) and people's three latest messages to it, which its
    own aren't (`fctl_domain::autopilot::hear`), and writes them through to
    D1 with its summary (`sessions.said`, `sessions.heard`): its sessions'
    lines in wakes and the brief show them (`CrewView`), and
