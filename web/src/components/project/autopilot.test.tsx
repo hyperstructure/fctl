@@ -158,8 +158,8 @@ describe("a project's Autopilot tab", () => {
     queryClient.setQueryData(keys.me, {
       user: { id: "usr_ada", name: "Ada" },
       claude: [
-        { id: "crd_max", subscription_type: "max", is_default: false },
-        { id: "crd_pro", subscription_type: "pro", is_default: true },
+        { id: "crd_max", subscription_type: "max", status: "active", is_default: false },
+        { id: "crd_pro", subscription_type: "pro", status: "active", is_default: true },
       ],
     } as unknown as G.Me);
     const page = render(<AutopilotTab project={project()} />);
@@ -182,7 +182,13 @@ describe("a project's Autopilot tab", () => {
     const me = (claude: unknown[]) =>
       queryClient.setQueryData(keys.me, { user: { id: "usr_ada", name: "Ada" }, claude } as unknown as G.Me);
     me([
-      { id: "crd_1", subscription_type: "max", rate_limit_tier: "default_claude_max_20x", is_default: true },
+      {
+        id: "crd_1",
+        subscription_type: "max",
+        rate_limit_tier: "default_claude_max_20x",
+        status: "active",
+        is_default: true,
+      },
     ]);
     const page = render(<AutopilotTab project={project()} />);
     await settle();
@@ -192,6 +198,34 @@ describe("a project's Autopilot tab", () => {
     await settle();
     expect(page.textContent).toContain("Autopilots are token hungry");
     expect(page.textContent).not.toContain("Your plan");
+  });
+
+  it("marks the plan of the connection your sessions in its workspace run on, once that's known", async () => {
+    autopilot.mockResolvedValue(null);
+    queryClient.setQueryData(keys.autopilot("prj_1"), null);
+    const me = (claude: unknown[]) =>
+      queryClient.setQueryData(keys.me, { user: { id: "usr_ada", name: "Ada" }, claude } as unknown as G.Me);
+    const pro = { id: "crd_pro", subscription_type: "pro", status: "active", is_default: true };
+    const max = { id: "crd_max", subscription_type: "max", status: "active", is_default: false };
+    me([pro, max]);
+    const inAcme = project({ workspace: { id: "wsp_1", slug: "acme", name: "Acme", color: "blue" } });
+    const page = render(<AutopilotTab project={inAcme} />);
+    await settle();
+    const marked = () =>
+      [...page.querySelectorAll("aside li")]
+        .filter((li) => li.textContent?.includes("Your plan"))
+        .map((li) => li.textContent);
+    // Its workspace hasn't loaded: whichever plan it is, none is marked yet.
+    expect(page.textContent).toContain("Autopilots are token hungry");
+    expect(marked()).toEqual([]);
+    // Ada's sessions in Acme run on her Max connection, not her default Pro one.
+    queryClient.setQueryData(keys.workspace("wsp_1"), { id: "wsp_1", claude: "crd_max" } as G.Workspace);
+    await settle();
+    expect(marked()).toEqual(["Claude MaxYour planUsually enough"]);
+    // One that stopped working runs nothing: the default one, which works, is marked.
+    me([pro, { ...max, status: "invalid" }]);
+    await settle();
+    expect(marked()).toEqual(["Claude ProYour planMay hit its five-hour limit"]);
   });
 
   it("tells people who can't put it on who can", async () => {

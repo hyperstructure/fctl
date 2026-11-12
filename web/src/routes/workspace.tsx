@@ -2146,7 +2146,7 @@ function Autopilots({ w }: { w: G.Workspace }) {
             <ArrowRight className="size-3.5 text-ink-4" />
           </Link>
         )}
-        <TokenHungry />
+        <TokenHungry workspace={w} />
       </div>
       <Dialog
         open={confirm}

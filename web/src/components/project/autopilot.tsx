@@ -90,6 +90,7 @@ import {
   planDone,
   wakeWords,
 } from "@/lib/autopilot";
+import { connectionIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { MAX_TOKENS, MIN_TOKENS, parseTokens, tokensText, validWindow } from "@/lib/context";
 import { ago, agoShort, agoShortWords, clock, day, num, stamp } from "@/lib/format";
@@ -187,10 +188,18 @@ const PLANS: { plan: string; name: string; enough: boolean; words: string }[] = 
  * That autopilots are token hungry: several sessions at once, kept going without anyone, drain a
  * Claude plan's usage fast, so a fresh build can hit Pro's five-hour limit, where Max and Ultra
  * usually keep up. Beside the workspace's switch and in the tab's intro, before anyone puts one
- * on; the plan that sessions they start run on is marked as theirs.
+ * on; the plan of the connection the reader's sessions in `workspace` run on (`connectionIn`) is
+ * marked as theirs. `null` while the workspace loads, which marks none until it's known.
  */
-export function TokenHungry({ className }: { className?: string }) {
-  const credential = useMe().data?.claude.find((c) => c.is_default);
+export function TokenHungry({
+  workspace,
+  className,
+}: {
+  workspace: Pick<G.Workspace, "claude"> | null | undefined;
+  className?: string;
+}) {
+  const me = useMe().data;
+  const credential = workspace === null ? undefined : connectionIn(me, workspace);
   const yours = credential && planOf(credential);
   return (
     <aside
@@ -324,6 +333,7 @@ function Intro({
   const can = project.role === "owner" || project.role === "maintainer";
   const allowed = project.autopilot?.allowed ?? false;
   const workspace = project.workspace?.name ?? "its workspace";
+  const space = useWorkspace(project.workspace?.id);
   return (
     <div className="flex animate-rise flex-col gap-12 py-2">
       <div className="grid items-center gap-x-12 gap-y-10 md:grid-cols-[minmax(0,1fr)_300px]">
@@ -347,7 +357,10 @@ function Intro({
               </li>
             ))}
           </ul>
-          <TokenHungry className="mt-7 max-w-xl" />
+          <TokenHungry
+            workspace={project.workspace ? (space.data ?? null) : undefined}
+            className="mt-7 max-w-xl"
+          />
         </div>
         {/* On a phone the directions below say it, and come sooner. */}
         <div className="max-sm:hidden">
