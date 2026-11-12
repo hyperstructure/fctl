@@ -231,9 +231,9 @@ pub struct Supervisor {
     next_request: u64,
     outbox: Vec<AgentEvent>,
     restarts: VecDeque<Instant>,
-    /// How many processes the kernel had killed for want of memory as
-    /// Claude started ([`claude::oom_kills`]).
-    oom_kills: Option<u64>,
+    /// How many processes the kernel had killed for want of memory
+    /// shortly before now, while Claude runs ([`claude::OomCount`]).
+    oom_kills: claude::OomCount,
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
@@ -357,7 +357,7 @@ impl Supervisor {
                 next_request: 0,
                 outbox: Vec::new(),
                 restarts: VecDeque::new(),
-                oom_kills: None,
+                oom_kills: claude::OomCount::default(),
                 stderr_budget: (Instant::now(), 0),
                 claude_credential: None,
                 exit_after: None,
@@ -1796,7 +1796,7 @@ impl Supervisor {
         };
         self.model_name.started(launch.model);
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
-        self.oom_kills = claude::oom_kills();
+        self.oom_kills = claude::OomCount::start(Instant::now(), claude::oom_kills());
         self.persisted.claude = c.pid().and_then(orphan::Process::of);
         self.persist();
         self.log(
@@ -2563,7 +2563,7 @@ impl Supervisor {
                 .unwrap_or_default(),
             None => return,
         };
-        let exit = exit.killed_for_memory(self.oom_kills, claude::oom_kills());
+        let exit = exit.killed_for_memory(self.oom_kills.before(), claude::oom_kills());
         if !self.claude_exited(exit).await {
             return;
         }
@@ -2581,7 +2581,13 @@ impl Supervisor {
     /// the session. Returns whether to start Claude again.
     async fn claude_exited(&mut self, exit: claude::Exit) -> bool {
         let cut_short = self.turn_active;
-        self.persisted.claude = None;
+        // What it started runs on without it (dev servers, browsers, its
+        // background tasks), unseen: the Claude Code that starts again
+        // doesn't follow it, and after an out-of-memory kill it holds the
+        // memory. Stopped, as a supervisor that takes over stops it.
+        if let Some(group) = self.persisted.claude.take() {
+            group.stop(Duration::from_secs(5)).await;
+        }
         self.persist();
         self.turn_active = false;
         self.claude_turn = false;
@@ -2671,6 +2677,9 @@ impl Supervisor {
 
     async fn on_tick(&mut self) {
         let now = now_ms();
+        if self.claude.is_some() {
+            self.oom_kills.tick(Instant::now(), claude::oom_kills);
+        }
         self.expire_publishes();
         self.expire_calls();
         self.sync();
@@ -5244,6 +5253,32 @@ done
         let (mut next, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         next.take_over().await;
         assert_eq!(next.persisted.cut_off, None);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn what_claude_code_started_stops_with_it() -> anyhow::Result<()> {
+        use std::os::unix::process::CommandExt;
+        // Claude Code, which leads a process group, started a dev server,
+        // then the kernel killed it, and the server runs on.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, _host) = in_a_turn(dir.path())?;
+        let mut claude = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()?;
+        let mut server = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(i32::try_from(claude.id())?)
+            .spawn()?;
+        sup.persisted.claude = orphan::Process::of(claude.id());
+        claude.kill()?;
+        claude.wait()?;
+        assert!(sup.claude_exited(claude::Exit::default()).await);
+        let ended = tokio::task::spawn_blocking(move || server.wait()).await??;
+        assert!(!ended.success(), "what Claude Code started wasn't stopped");
+        assert_eq!(sup.persisted.claude, None);
         Ok(())
     }
 

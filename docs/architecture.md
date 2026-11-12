@@ -3732,15 +3732,20 @@ a person's message instead. The state keeps a cut-off turn until Claude
 carries on with it, also across another supervisor that dies first.
 
 Claude Code that exits on its own is started again on the conversation
-(a `claude_restarted` notice), and a turn it was on goes on the same way,
+(a `claude_restarted` notice), once the supervisor has stopped what is
+left of its process group, and a turn it was on goes on the same way,
 rather than end with no answer while the session waits as if the agent
 were done: an autopilot took such sessions for finished. The notice and
 the message say how it ended: an exit code, a signal, or the kernel
-killing it for want of memory, which the supervisor tells by the
-`oom_kill` count in the sandbox's cgroup (`/sys/fs/cgroup/memory.events`)
-going up while Claude ran and a SIGKILL ending it. After an out-of-memory
-kill, the message asks Claude to run one heavy job at a time. A fourth
-exit within ten minutes fails the session (`claude_crashed`).
+killing it for want of memory. The supervisor tells that last by a
+SIGKILL ending it and the kernel's `oom_kill` count having gone up within
+the 10 to 20 seconds before (it reads the count again every ten seconds
+while Claude runs): the sandbox cgroup's (`memory.events` with cgroup v2,
+`memory/memory.oom_control` with v1), or else the system's
+(`/proc/vmstat`), which in a VM sandbox is the sandbox's own. After an
+out-of-memory kill, the message asks Claude to run one heavy job at a
+time. A fourth exit within ten minutes fails the session
+(`claude_crashed`).
 
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control

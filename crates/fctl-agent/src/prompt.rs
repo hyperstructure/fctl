@@ -854,7 +854,7 @@ pub fn cut_off_turn(by: CutOffBy) -> String {
             "the sandbox or fctl-agent, which runs you in it, stopped while you worked on your last turn, and you with it".to_owned()
         }
         CutOffBy::Exit(exit) => format!(
-            "Claude Code, which runs you, {} while you worked on your last turn, and fctl-agent started it again on this conversation; the background tasks you had started went with it",
+            "Claude Code, which runs you, {} while you worked on your last turn. fctl-agent stopped what you had started that still ran (background tasks, servers, browsers; not what you started with `setsid`) and started Claude Code again on this conversation",
             exit.words()
         ),
     };
@@ -1170,7 +1170,7 @@ mod tests {
             out_of_memory: true,
         };
         let text = cut_off_turn(CutOffBy::Exit(oom));
-        assert!(text.starts_with("Your last turn was cut off: Claude Code, which runs you, was killed because the sandbox ran out of memory while you worked on your last turn, and fctl-agent started it again on this conversation; the background tasks you had started went with it."), "{text}");
+        assert!(text.starts_with("Your last turn was cut off: Claude Code, which runs you, was killed because the sandbox ran out of memory while you worked on your last turn. fctl-agent stopped what you had started that still ran (background tasks, servers, browsers; not what you started with `setsid`) and started Claude Code again on this conversation."), "{text}");
         assert!(text.contains(carry_on));
         assert!(text.ends_with("run one heavy job at a time (a browser with its dev server, a large build), with fewer parallel jobs, and stop what you no longer need."));
 
