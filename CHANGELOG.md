@@ -2,6 +2,29 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.34.0 (2026-11-12)
+
+### Features
+
+- **autopilot:** Brief autopilots with what running a project taught one ([#524](https://github.com/hyperstructure/fctl/pull/524))
+- **agent:** Warn a session before its sandbox runs out of memory ([#530](https://github.com/hyperstructure/fctl/pull/530))
+- **autopilot:** Tell autopilots what their sessions said and heard ([#529](https://github.com/hyperstructure/fctl/pull/529))
+- **web:** Keep an app log, and reload the app when it shows nothing ([#526](https://github.com/hyperstructure/fctl/pull/526))
+- **web:** Warn that autopilots are token hungry ([#532](https://github.com/hyperstructure/fctl/pull/532))
+
+### Fixes
+
+- **reviews:** Answer Already when a review start loses a race ([#519](https://github.com/hyperstructure/fctl/pull/519))
+- **agent:** Carry on with a turn Claude Code exits in ([#520](https://github.com/hyperstructure/fctl/pull/520))
+- **web:** Reopen the iPhone app on the page it was left on ([#525](https://github.com/hyperstructure/fctl/pull/525))
+- **cli:** Try fctl send again when the control plane fails for a moment ([#527](https://github.com/hyperstructure/fctl/pull/527))
+- **web:** Line up the Seen check with a steering note's author and time ([#531](https://github.com/hyperstructure/fctl/pull/531))
+
+### Other changes
+
+- Keep worker-build's downloaded tools in a cache ([#518](https://github.com/hyperstructure/fctl/pull/518))
+- **control:** Race two review starts against a stand-in for D1 ([#528](https://github.com/hyperstructure/fctl/pull/528))
+
 ## 0.33.6 (2026-11-11)
 
 ### Features
