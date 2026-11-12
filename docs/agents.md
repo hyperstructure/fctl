@@ -269,8 +269,10 @@ wrote.
 
 - `fctl send SESSION "…"` reaches the agent at its next step, with `-a FILE`
   for files (up to 10, of 20 MB each); a stopped session resumes for it, on
-  the Claude subscription it ran on. Each call is a new message: through
-  the API, a `client_id` makes a retried message arrive once.
+  the Claude subscription it ran on. It tries again on its own when the
+  control plane fails in a way that may pass, without delivering the
+  message twice; but each call is a new message: through the API, a
+  `client_id` makes a retried message arrive once.
 - `fctl interrupt SESSION` stops the current turn; the session waits for a
   message.
 - `fctl stop SESSION` ends the session and keeps its sandbox; `fctl resume

@@ -137,6 +137,17 @@ stdin stays open, they wait. [fctl for agents](agents.md) has the rest of
 what matters when a program drives fctl, and how to wait for a session's
 turn to end.
 
+When the control plane fails in a way that may pass (an error on its
+side, a lost connection, a timeout), commands that name a session look it
+up again, and `fctl send` sends its message again: up to three more
+times, after 1, 3 and 9 seconds, but none that would start more than a
+minute after the first try. Over HTTP a request times out after 30
+seconds, so a control plane that doesn't answer gets one more try. Each
+message carries a `client_id` of its own, so a try whose answer was lost
+doesn't deliver it twice. When `fctl send` gives up after such a failure,
+the message may still have reached the session, which its error then
+says: read the transcript (`fctl logs`) before you send it again.
+
 `fctl search` looks in the titles and descriptions of the sessions you can
 see, in every workspace unless `-w` or `-p` says which, and in what people
 wrote to their agents and the agents replied; not in tool calls or what

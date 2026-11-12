@@ -77,6 +77,55 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// How many times [`retrying`] tries in all.
+pub const TRIES: u32 = 4;
+
+/// How long [`retrying`] waits before its second try; three times as long
+/// before each one after it (1, 3 and 9 seconds).
+pub const FIRST_WAIT: Duration = Duration::from_secs(1);
+
+/// How long after its first try [`retrying`] may start another, with the
+/// wait before it: it bounds when a try starts, not when the last one ends.
+/// A control plane that doesn't answer at all gets one more try over HTTP,
+/// whose requests time out after 30 seconds (the second ends near 61
+/// seconds), and none through an autopilot's relay, whose calls fctl-agent
+/// gives up on after two minutes, so that a caller with a time limit of its
+/// own (an agent's tool call) hears of it.
+pub const TRY_WITHIN: Duration = Duration::from_secs(60);
+
+/// Runs `attempt` until it succeeds, fails with an error that trying again
+/// wouldn't change, or has failed [`TRIES`] times, or too late to start
+/// another try ([`TRY_WITHIN`]), with errors that may pass ([`Error::is_transient`]): a hiccup of the
+/// control plane's database, a lost connection. Only for requests that
+/// change nothing when they come twice, such as a message with a
+/// `client_id`, which a request whose answer was lost may have delivered.
+/// `retried` hears of each error tried again, with how long it waits first.
+pub async fn retrying<T, F, Fut>(
+    mut attempt: F,
+    mut retried: impl FnMut(&Error, Duration),
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let started = tokio::time::Instant::now();
+    let mut wait = FIRST_WAIT;
+    let mut tries = 1;
+    loop {
+        match attempt().await {
+            Err(e)
+                if e.is_transient() && tries < TRIES && started.elapsed() + wait <= TRY_WITHIN =>
+            {
+                retried(&e, wait);
+                tokio::time::sleep(wait).await;
+                wait *= 3;
+                tries += 1;
+            }
+            done => return done,
+        }
+    }
+}
+
 type Connector = hyper_rustls::HttpsConnector<HttpConnector>;
 
 #[derive(Clone)]
@@ -491,5 +540,99 @@ mod tests {
         assert_eq!(range_start("bytes 0-9/*"), Some(0));
         assert_eq!(range_start("bytes */200"), None);
         assert_eq!(range_start("items 1-2/3"), None);
+    }
+
+    fn internal() -> Error {
+        Error::Api(ApiError::internal(
+            "Something went wrong on our side. Try again.",
+        ))
+    }
+
+    /// Runs [`retrying`] on `answers`, one per try, on a paused clock:
+    /// what it returned, how many tries it made and the waits it took.
+    async fn retry(answers: Vec<Result<u32>>) -> (Result<u32>, usize, Vec<Duration>) {
+        let answers = std::sync::Mutex::new(answers.into_iter());
+        let tries = std::sync::atomic::AtomicUsize::new(0);
+        let mut waits = Vec::new();
+        let out = retrying(
+            || async {
+                tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let next = answers.lock().ok().and_then(|mut a| a.next());
+                next.unwrap_or_else(|| Err(Error::Other("no answer left".into())))
+            },
+            |_, wait| waits.push(wait),
+        )
+        .await;
+        (out, tries.into_inner(), waits)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tries_again_while_errors_may_pass() {
+        let started = tokio::time::Instant::now();
+        let (out, tries, waits) = retry(vec![
+            Err(internal()),
+            Err(Error::Timeout(Duration::from_secs(30))),
+            Ok(7),
+        ])
+        .await;
+        assert_eq!(out.ok(), Some(7));
+        assert_eq!(tries, 3);
+        assert_eq!(waits, [Duration::from_secs(1), Duration::from_secs(3)]);
+        assert_eq!(started.elapsed(), Duration::from_secs(4));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gives_up_after_its_last_try() {
+        let (out, tries, waits) = retry(vec![
+            Err(internal()),
+            Err(internal()),
+            Err(internal()),
+            Err(Error::Status {
+                status: 503,
+                body: "unavailable".into(),
+            }),
+            Ok(7),
+        ])
+        .await;
+        assert!(out.is_err_and(|e| matches!(e, Error::Status { status: 503, .. })));
+        assert_eq!(tries, TRIES as usize);
+        assert_eq!(
+            waits,
+            [1, 3, 9].map(Duration::from_secs),
+            "it waits longer each time"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tries_again_within_a_minute() {
+        // Each try waits 50 seconds for an answer that doesn't come.
+        let tries = std::sync::atomic::AtomicUsize::new(0);
+        let started = tokio::time::Instant::now();
+        let out: Result<()> = retrying(
+            || async {
+                tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(50)).await;
+                Err(Error::Timeout(Duration::from_secs(50)))
+            },
+            |_, _| {},
+        )
+        .await;
+        assert!(out.is_err_and(|e| matches!(e, Error::Timeout(_))));
+        assert_eq!(tries.into_inner(), 2);
+        assert_eq!(started.elapsed(), Duration::from_secs(101));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answers_at_once_what_trying_again_wouldnt_change() {
+        let refused = Error::Api(ApiError::new(
+            fctl_proto::ErrorCode::Conflict,
+            "The session failed. Resume it to continue.",
+        ));
+        let (out, tries, waits) = retry(vec![Err(refused), Ok(7)]).await;
+        assert!(out.is_err_and(|e| e.api().is_some_and(|e| e.message.contains("failed"))));
+        assert_eq!(tries, 1);
+        assert!(waits.is_empty());
+        let (out, tries, _) = retry(vec![Ok(7)]).await;
+        assert_eq!((out.ok(), tries), (Some(7), 1));
     }
 }
