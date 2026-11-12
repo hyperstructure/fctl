@@ -2158,9 +2158,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    message and the brief say the time in UTC (`clock`), and its sessions'
    open pull requests say how their checks stand (`pull_line`). Changing
    the handoff, as changing its model, changes how much it spends.
-   Those who steer it also hand off when they choose (*Hand off to a fresh session*, `fctl autopilot wake
-   --fresh`, the wake reason `fresh`), so that it starts from what fctl
-   and its briefing say now, after a release for one: between its turns
+   Those who steer it also hand off when they choose (*Hand off to a
+   fresh session*, `fctl autopilot wake --fresh`, the wake reason
+   `fresh`), so that it starts from what fctl and its briefing say now,
+   after a release for one: between its turns
    at once, else once its turn ends. That wake waits for the turn's end
    (`fctl_domain::autopilot::holds`), which wakes it again at once
    (`autopilots::session_moved`), and all it woke for meanwhile goes to
