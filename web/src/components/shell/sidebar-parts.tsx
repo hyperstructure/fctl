@@ -39,6 +39,7 @@ import { goTo } from "@/lib/history";
 import { pullRequests } from "@/lib/pulls";
 import { forgetPush } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
+import { forgetLeft } from "@/lib/reopen";
 import { shortcutText } from "@/lib/shortcuts";
 import { forgetSidebar } from "@/lib/sidebar";
 import { draggedTo, RAIL_WIDTH, SIDEBAR_WIDTH } from "@/lib/sidebar-layout";
@@ -450,6 +451,7 @@ export function UserMenu({
               queryClient.clear();
               clearAttention();
               forgetSidebar(); // last, so that no list that comes is kept again
+              forgetLeft();
               goTo("/login");
             }}
           >
