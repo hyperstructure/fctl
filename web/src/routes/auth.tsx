@@ -89,6 +89,7 @@ export function AuthFrame({
     <div className="relative flex min-h-dvh flex-col overflow-hidden bg-canvas">
       <div className="absolute inset-0">
         <GLCanvas
+          name="sign-in scene"
           scene={() => {
             // Dim stars that fade rather than blink: a calm sky behind the form.
             const scene = foundry({ planet: [1.02, -0.75, 1.15], density: 0.6, stars: 0.3 });

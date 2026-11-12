@@ -5,6 +5,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { VerifyDialog } from "@/components/two-factor/verify";
 import { Toaster } from "@/components/ui";
+import { onCaughtError, onUncaughtError, startAppLog } from "@/lib/app-log";
 import { linksInPlace } from "@/lib/history";
 import { openingWaits } from "@/lib/push";
 import { queryClient } from "@/lib/queries";
@@ -14,6 +15,8 @@ import { watchViewport } from "@/lib/viewport";
 import { stopPinchZoom } from "@/lib/zoom";
 import { router } from "./router";
 
+// First: the log keeps how this run goes, for Settings → App log.
+startAppLog();
 stopPinchZoom();
 syncShimmers();
 watchViewport();
@@ -37,7 +40,9 @@ const root = document.getElementById("root");
 // it was left on, unless a notification opened it (lib/reopen.ts). Elsewhere it goes on at once.
 void reopen(router.history, openingWaits).finally(() => {
   if (!root) return;
-  createRoot(root).render(
+  // An error nothing catches takes the whole app down, leaving the screen blank: the page loads
+  // again (lib/app-log.ts). The error page catches the rest, and the log keeps them all.
+  createRoot(root, { onUncaughtError, onCaughtError }).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />

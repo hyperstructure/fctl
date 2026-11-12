@@ -30,6 +30,7 @@ import {
 } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
+import { forgetLog } from "@/lib/app-log";
 import { clearAttention } from "@/lib/attention";
 import { type AutopilotGlance, glance } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
@@ -452,6 +453,7 @@ export function UserMenu({
               queryClient.clear();
               clearAttention();
               forgetSidebar(); // last, so that no list that comes is kept again
+              forgetLog();
               goTo("/login");
             }}
           >

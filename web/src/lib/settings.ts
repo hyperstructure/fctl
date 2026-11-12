@@ -13,6 +13,7 @@ export const SETTINGS_TABS = [
   "linear",
   "notifications",
   "appearance",
+  "log",
   "security",
   "tokens",
   "data",
@@ -50,6 +51,11 @@ export const SETTINGS_GROUPS: readonly (readonly SettingsPage[])[] = [
       tab: "appearance",
       label: "Appearance",
       keywords: "theme dark light clock 24-hour 12-hour",
+    },
+    {
+      tab: "log",
+      label: "App log",
+      keywords: "diagnostics troubleshooting problem report bug black blank screen crash",
     },
   ],
   [

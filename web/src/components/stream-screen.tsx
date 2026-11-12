@@ -2,6 +2,7 @@ import { mount } from "@hyperstructure/design/gl/core";
 import { play, type StreamHandle, stream } from "@hyperstructure/design/gl/stream";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Logo } from "@/components/ui";
+import { watchWebgl } from "@/lib/app-log";
 import { cn } from "@/lib/cn";
 
 /**
@@ -35,7 +36,12 @@ export function StreamScreen({
     const b = box.current;
     if (!el || !c || !b) return;
     const s = stream({ text: code });
-    const unmount = mount(c, s.scene, { pixel: 3 });
+    const mounted = mount(c, s.scene, { pixel: 3 });
+    const unwatch = watchWebgl(c, `${code} page's scene`);
+    const unmount = () => {
+      mounted();
+      unwatch();
+    };
     if (c.dataset.webgl) {
       setGl(false);
       return unmount;

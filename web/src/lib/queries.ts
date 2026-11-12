@@ -2,6 +2,7 @@
 import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "./api";
+import { logFor } from "./app-log";
 import { FAILED_FOR } from "./needs";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
 import { forgetLeft } from "./reopen";
@@ -112,12 +113,14 @@ export const useInstance = () =>
 
 /**
  * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you,
- * and the page the app was left on.
+ * and the page the app was left on. The app's log is kept for whoever is signed in (`logFor`).
  * The server answers within `within` ms, if given.
  */
 export async function fetchMe(within?: number): Promise<G.Me | null> {
   try {
-    return await api.me(within);
+    const me = await api.me(within);
+    logFor(me.user.id);
+    return me;
   } catch (e) {
     if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) {
       forgetSidebar();
