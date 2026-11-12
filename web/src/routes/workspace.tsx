@@ -28,7 +28,7 @@ import { AuditLog } from "@/components/audit-log";
 import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
-import { ExperimentalPill } from "@/components/project/autopilot";
+import { ExperimentalPill, TokenHungry } from "@/components/project/autopilot";
 import { ProjectMark } from "@/components/project/project-icon";
 import { DriverLine } from "@/components/runner-driver";
 import { SessionRow } from "@/components/session/row";
@@ -2146,6 +2146,7 @@ function Autopilots({ w }: { w: G.Workspace }) {
             <ArrowRight className="size-3.5 text-ink-4" />
           </Link>
         )}
+        <TokenHungry workspace={w} />
       </div>
       <Dialog
         open={confirm}

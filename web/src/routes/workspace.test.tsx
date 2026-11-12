@@ -752,3 +752,27 @@ describe("where your sessions run, in a workspace's settings", () => {
     expect(toggle?.disabled).toBe(false);
   });
 });
+
+describe("autopilots in a workspace's settings", () => {
+  it("tells its admins, beside the switch, that autopilots are token hungry", () => {
+    route.tab = "settings";
+    queryClient.setQueryData(keys.workspace(side.slug), side);
+    queryClient.setQueryData(keys.me, { user: { role: "member" }, claude: [] } as unknown as G.Me);
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspacePage />
+        </QueryClientProvider>,
+      ),
+    );
+    roots.push(() => act(() => root.unmount()));
+    const notice = container.querySelector("aside[aria-label='Autopilots are token hungry']");
+    expect(notice?.closest("section")?.textContent).toContain("Let projects have an autopilot");
+    expect(notice?.textContent).toContain("it can drain a Claude plan's usage quickly");
+    expect(notice?.textContent).toContain("Claude ProMay hit its five-hour limit");
+    expect(notice?.textContent).toContain("Claude MaxUsually enough");
+    expect(notice?.textContent).toContain("Claude UltraUsually enough");
+  });
+});
