@@ -2,6 +2,7 @@
 import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "./api";
+import { clearLog } from "./app-log";
 import { FAILED_FOR } from "./needs";
 import { withPendingProjects, withPendingWorkspaces } from "./order";
 import { forgetSidebar } from "./sidebar";
@@ -110,7 +111,8 @@ export const useInstance = () =>
   useQuery({ queryKey: keys.instance, queryFn: () => api.instance(), staleTime: 60_000 });
 
 /**
- * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you.
+ * You, or null when you aren't signed in: then this browser forgets the sidebar it kept for you,
+ * and the app's log, which has the pages you were on.
  * The server answers within `within` ms, if given.
  */
 export async function fetchMe(within?: number): Promise<G.Me | null> {
@@ -119,6 +121,7 @@ export async function fetchMe(within?: number): Promise<G.Me | null> {
   } catch (e) {
     if (e instanceof ApiFailure && (e.status === 401 || e.status === 403)) {
       forgetSidebar();
+      clearLog();
       return null;
     }
     throw e;

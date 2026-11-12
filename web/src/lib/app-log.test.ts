@@ -52,6 +52,27 @@ describe("record", () => {
     expect(readLog().at(-1)?.what).toBe(`entry ${KEEP + 4}`);
   });
 
+  it("counts the same thing again on the entry it repeats", () => {
+    record("Error: boom", 1);
+    record("Error: boom", 2);
+    record("Error: boom", 3);
+    record("Went to the background", 4);
+    record("Error: boom", 5);
+    expect(readLog()).toEqual([
+      { at: 3, what: "Error: boom (×3)" },
+      { at: 4, what: "Went to the background" },
+      { at: 5, what: "Error: boom" },
+    ]);
+  });
+
+  it("forgets the heartbeat with the log", () => {
+    localStorage.setItem("fctl:app-beat", JSON.stringify({ at: 1, shown: true }));
+    record("here", 1);
+    clearLog();
+    expect(readLog()).toEqual([]);
+    expect(localStorage.getItem("fctl:app-beat")).toBeNull();
+  });
+
   it("adds to what another tab wrote rather than writing over it", () => {
     record("here", 1);
     localStorage.setItem(
@@ -108,7 +129,19 @@ describe("reloadToRecover", () => {
       "Crashed; loading the page again",
       "Crashed; not loading the page again, as it did 30 s ago",
     ]);
-    expect(reloadToRecover("Crashed", 200_000)).toBe(true);
+    // Refusing doesn't move the minute on: a page that crashes every 40 s still gets its reload.
+    expect(reloadToRecover("Crashed", 165_000)).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it("doesn't load the page again where it can't note when it last did", () => {
+    const reload = vi.spyOn(window.location, "reload").mockImplementation(() => {});
+    const refused = () => {
+      throw new Error("refused");
+    };
+    vi.stubGlobal("sessionStorage", { getItem: refused, setItem: refused });
+    expect(reloadToRecover("Crashed", 100_000)).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 
@@ -200,10 +233,13 @@ describe("startAppLog", () => {
     stop();
   });
 
-  it("keeps errors nothing caught", () => {
+  it("keeps errors nothing caught, ten a minute at most", () => {
     const stop = startAppLog();
     window.dispatchEvent(new ErrorEvent("error", { message: "boom" }));
     expect(said().at(-1)).toBe("Error: boom");
+    for (let i = 0; i < 20; i++) window.dispatchEvent(new ErrorEvent("error", { message: `boom ${i}` }));
+    expect(said().filter((w) => w.startsWith("Error:"))).toHaveLength(10);
+    expect(said().at(-1)).toBe("More errors this minute, not kept");
     stop();
   });
 });

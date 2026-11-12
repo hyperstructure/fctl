@@ -38,6 +38,8 @@ const BEAT_EVERY = 2_000;
 const STALL = 3_000;
 /** How soon after coming back the app looks for something on screen (ms). */
 const LOOK_AFTER = 3_000;
+/** Errors kept in a minute at most (`startAppLog`). */
+const ERRORS = 10;
 /** At most one reload to recover in this long (ms): one that doesn't help isn't tried again and again. */
 const RECOVER_EVERY = 60_000;
 
@@ -81,19 +83,27 @@ export function readLog(): Entry[] {
  * log afresh first: another tab of the app may have added to it.
  */
 export function record(what: string, at = Date.now()) {
-  const next = [...stored(), { at, what: redact(what).replace(/\s+/g, " ").trim().slice(0, 400) }].slice(
-    -KEEP,
-  );
+  const text = redact(what).replace(/\s+/g, " ").trim().slice(0, 400);
+  const log = stored();
+  // The same thing again, as an error thrown over and over is, counts on the entry it repeats
+  // rather than pushing the rest of the log out.
+  const last = log.at(-1);
+  const repeat = last && /^(.*?)(?: \(×(\d+)\))?$/.exec(last.what);
+  const next =
+    repeat && repeat[1] === text
+      ? [...log.slice(0, -1), { at, what: `${text} (×${Number(repeat[2] ?? 1) + 1})` }]
+      : [...log, { at, what: text }].slice(-KEEP);
   try {
     localStorage.setItem(LOG, JSON.stringify(next));
   } catch {}
   changed(next);
 }
 
-/** Empties the log. */
+/** Empties the log, and forgets the run's heartbeat (signing out, or Clear). */
 export function clearLog() {
   try {
     localStorage.removeItem(LOG);
+    localStorage.removeItem(BEAT);
   } catch {}
   changed([]);
 }
@@ -221,13 +231,22 @@ function message(e: unknown): string {
  * minute (the reload didn't help, and another wouldn't). Says which in the log.
  */
 export function reloadToRecover(why: string, now = Date.now()): boolean {
-  let last = 0;
+  let last: number;
   try {
     last = Number(sessionStorage.getItem(RECOVERED) ?? 0);
-    sessionStorage.setItem(RECOVERED, String(now));
-  } catch {}
+  } catch {
+    // Without a note of the last reload, one that doesn't help would go on and on.
+    record(`${why}; not loading the page again, as this browser keeps no note of when it last did`, now);
+    return false;
+  }
   if (now - last < RECOVER_EVERY) {
     record(`${why}; not loading the page again, as it did ${duration(now - last)} ago`, now);
+    return false;
+  }
+  try {
+    sessionStorage.setItem(RECOVERED, String(now));
+  } catch {
+    record(`${why}; not loading the page again, as this browser keeps no note of when it last did`, now);
     return false;
   }
   record(`${why}; loading the page again`, now);
@@ -356,8 +375,22 @@ export function startAppLog(): () => void {
   const resumed = () => record("Resumed by the browser");
   const offline = () => record("Went offline");
   const online = () => record("Back online");
-  const error = (e: ErrorEvent) => record(`Error: ${e.message || message(e.error)}`);
-  const rejection = (e: PromiseRejectionEvent) => record(`Unhandled rejection: ${message(e.reason)}`);
+  // At most ERRORS a minute, then one line that says more came: a handler that fails on every
+  // frame would push out what the log is for, as different errors.
+  let errors = 0;
+  let minute = 0;
+  const failed = (what: string) => {
+    const now = Date.now();
+    if (now - minute >= 60_000) {
+      minute = now;
+      errors = 0;
+    }
+    errors++;
+    if (errors <= ERRORS) record(what, now);
+    else if (errors === ERRORS + 1) record("More errors this minute, not kept", now);
+  };
+  const error = (e: ErrorEvent) => failed(`Error: ${e.message || message(e.error)}`);
+  const rejection = (e: PromiseRejectionEvent) => failed(`Unhandled rejection: ${message(e.reason)}`);
 
   const off = new AbortController();
   const on = { signal: off.signal };

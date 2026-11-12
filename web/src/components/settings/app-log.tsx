@@ -16,12 +16,12 @@ export function AppLog() {
   const [copied, setCopied] = useState(false);
   const box = useRef<HTMLPreElement>(null);
   const text = logText(log, about());
-  // The newest entries are at the end: the box opens there.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: it follows the log as it grows
+  // The newest entries are at the end: the box opens there, and follows them, full or not.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: it follows the log as it changes
   useLayoutEffect(() => {
     const el = box.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [log.length]);
+  }, [log]);
 
   const copy = async () => {
     try {
