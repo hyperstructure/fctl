@@ -184,21 +184,18 @@ impl From<ShareRole> for SessionRole {
     }
 }
 
-/// Resolves `ses_…`, a URL ending in it, or `project#12`.
-/// Finds a session by its id, URL or `project#number`, trying again while
-/// the error may pass (`fctl_client::http::retrying`): it only reads.
+/// Finds a session by its id (`ses_…`), a URL ending in it, or
+/// `project#12` ([`look_up`]).
 pub async fn resolve(api: &Api, reference: &str) -> Result<Session> {
     let r = reference.trim();
-    let retried = |e: &fctl_client::Error, wait| trying_again("Looking the session up", e, wait);
     if let Some(id) = r.rsplit('/').next().filter(|s| s.starts_with("ses_")) {
-        return Ok(fctl_client::http::retrying(|| api.session(id), retried).await?);
+        return Ok(look_up(api, || api.session(id)).await?);
     }
     if let Some((project, number)) = r.split_once('#') {
         let n: u32 = number
             .parse()
             .context("use project#number, like my-app#12")?;
-        let list = fctl_client::http::retrying(|| api.sessions_with_reviews(project, 200), retried)
-            .await?;
+        let list = look_up(api, || api.sessions_with_reviews(project, 200)).await?;
         return list
             .sessions
             .into_iter()
@@ -208,6 +205,23 @@ pub async fn resolve(api: &Api, reference: &str) -> Result<Session> {
             });
     }
     bail!("Refer to a session by id (ses_…) or as project#number")
+}
+
+/// Looks a session up with `read`, trying again while the error may pass
+/// (`fctl_client::http::retrying`): it only reads. Through an autopilot's
+/// relay it tries once, since the host tries reads again itself
+/// (`fctl_host::session`'s `ask`).
+async fn look_up<T, Fut>(api: &Api, mut read: impl FnMut() -> Fut) -> fctl_client::http::Result<T>
+where
+    Fut: std::future::Future<Output = fctl_client::http::Result<T>>,
+{
+    if api.is_relayed() {
+        return read().await;
+    }
+    fctl_client::http::retrying(read, |e, wait| {
+        trying_again("Looking the session up", e, wait)
+    })
+    .await
 }
 
 pub fn project_or_default(p: Option<String>) -> Result<String> {
@@ -995,15 +1009,14 @@ pub async fn send(
         trying_again("Sending", e, wait)
     })
     .await
-    .map_err(|e| {
-        if !e.is_transient() {
-            return anyhow::Error::from(e);
+    .map_err(|n| {
+        if !n.maybe_kept {
+            return anyhow::Error::from(n.error);
         }
-        // An earlier try may have kept it, for a run that hasn't started.
         let session = format!("{}#{}", s.project_slug, s.number);
         anyhow::anyhow!(
             "{}\n  The message may have reached {session} all the same: read its transcript (`fctl logs {session}`) before you send it again.",
-            style::terminal_safe(&why(&e))
+            style::terminal_safe(&why(&n.error))
         )
     })?;
     if json {
@@ -1040,6 +1053,17 @@ fn trying_again(doing: &str, e: &fctl_client::Error, wait: Duration) {
     );
 }
 
+/// A message [`deliver`] gave up on.
+struct NotSent {
+    /// What its last try answered.
+    error: fctl_client::Error,
+    /// Whether a try failed in a way that may have kept it: one whose
+    /// answer was lost, or that failed after SessionDO kept the message,
+    /// as its resume failed. A later try may then be refused for another
+    /// reason (the session failed meanwhile) though the agent gets it.
+    maybe_kept: bool,
+}
+
 /// Sends a message, trying again while the error may pass
 /// (`fctl_client::http::retrying`): with a `client_id` of its own, which
 /// the session's SessionDO answers again with the first delivery, so that
@@ -1050,14 +1074,22 @@ async fn deliver(
     session: &str,
     text: &str,
     attachments: Vec<AttachmentId>,
-    retried: impl FnMut(&fctl_client::Error, Duration),
-) -> fctl_client::http::Result<fctl_proto::api::SendMessageResponse> {
+    mut retried: impl FnMut(&fctl_client::Error, Duration),
+) -> std::result::Result<fctl_proto::api::SendMessageResponse, NotSent> {
     let client_id = fctl_domain::ids::new_id("cli", style::now_ms());
+    let mut maybe_kept = false;
     fctl_client::http::retrying(
         || api.send_message(session, text, Some(client_id.clone()), attachments.clone()),
-        retried,
+        |e, wait| {
+            maybe_kept = true;
+            retried(e, wait);
+        },
     )
     .await
+    .map_err(|error| NotSent {
+        maybe_kept: maybe_kept || error.is_transient(),
+        error,
+    })
 }
 
 pub async fn interrupt(server: Option<&str>, reference: &str) -> Result<()> {
@@ -1339,34 +1371,52 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
 mod tests {
     use super::*;
 
-    #[tokio::test(start_paused = true)]
-    async fn a_message_tried_again_keeps_its_client_id() {
+    /// What a stand-in for an autopilot's relay got: each request's
+    /// method, path and body.
+    type Got = std::sync::Arc<std::sync::Mutex<Vec<(String, String, serde_json::Value)>>>;
+
+    /// A client whose requests go to a stand-in for the relay, which answers
+    /// them with `answers` in turn, and then delivers: an `ErrorCode` for
+    /// an error with its message, or `None` for a delivery.
+    fn relayed(answers: Vec<Option<fctl_proto::ErrorCode>>) -> (Api, Got) {
         use std::sync::{Arc, Mutex};
-        // What the control plane got, through a stand-in for the relay: it
-        // fails twice as D1 might, then delivers.
-        let sent: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
-        let got = sent.clone();
+        let got: Got = Arc::default();
+        let answers = Arc::new(Mutex::new(answers.into_iter()));
+        let seen = got.clone();
         let relay: fctl_client::Relay = Arc::new(move |method, path, body| {
-            let got = got.clone();
+            let (seen, answers) = (seen.clone(), answers.clone());
             Box::pin(async move {
-                assert_eq!(
-                    (method.as_str(), path.as_str()),
-                    ("POST", "/api/v1/sessions/ses_01ABC/messages")
-                );
-                let mut got = got
-                    .lock()
-                    .map_err(|e| fctl_client::Error::Other(e.to_string()))?;
-                got.push(body.unwrap_or_default());
-                if got.len() < 3 {
-                    let e = fctl_proto::ApiError::internal(
-                        "Something went wrong on our side. Try again.",
-                    );
-                    return Ok((500, serde_json::to_value(e).unwrap_or_default()));
-                }
-                Ok((200, serde_json::json!({ "delivery_id": "dlv_01XYZ" })))
+                let lost = |e: String| fctl_client::Error::Other(e);
+                seen.lock().map_err(|e| lost(e.to_string()))?.push((
+                    method.to_string(),
+                    path,
+                    body.unwrap_or_default(),
+                ));
+                let next = answers.lock().map_err(|e| lost(e.to_string()))?.next();
+                Ok(match next.flatten() {
+                    Some(code) => {
+                        let e = fctl_proto::ApiError::new(code, "Something went wrong");
+                        (
+                            code.http_status(),
+                            serde_json::to_value(e).unwrap_or_default(),
+                        )
+                    }
+                    None => (200, serde_json::json!({ "delivery_id": "dlv_01XYZ" })),
+                })
             })
         });
-        let api = Api::relayed("https://app.fctl.sh", relay);
+        (Api::relayed("https://app.fctl.sh", relay), got)
+    }
+
+    fn got(got: &Got) -> Vec<(String, String, serde_json::Value)> {
+        got.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_message_tried_again_keeps_its_client_id() {
+        use fctl_proto::ErrorCode::Internal;
+        // It fails twice as D1 might, then delivers.
+        let (api, sent) = relayed(vec![Some(Internal), Some(Internal)]);
         let mut retried = Vec::new();
         let r = deliver(
             &api,
@@ -1374,37 +1424,76 @@ mod tests {
             "Also add a test",
             Vec::new(),
             |e, wait| {
-                retried.push((e.api().map(|e| e.message.clone()), wait));
+                retried.push((e.api().map(|e| e.code), wait));
             },
         )
         .await;
         assert_eq!(r.ok().map(|r| r.delivery_id.0), Some("dlv_01XYZ".into()));
         assert_eq!(
             retried,
-            [1, 3].map(|s| (
-                Some("Something went wrong on our side. Try again.".to_owned()),
-                Duration::from_secs(s)
-            ))
+            [1, 3].map(|s| (Some(Internal), Duration::from_secs(s)))
         );
-        let bodies = || sent.lock().map(|s| s.clone()).unwrap_or_default();
-        let first = bodies();
+        let first = got(&sent);
         assert_eq!(first.len(), 3);
-        let id = first[0]["client_id"]
+        let id = first[0].2["client_id"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
         assert!(id.starts_with("cli_"), "{id}");
-        assert!(
-            first
-                .iter()
-                .all(|b| b["client_id"] == id.as_str() && b["text"] == "Also add a test")
-        );
+        assert!(first.iter().all(|(method, path, b)| method == "POST"
+            && path == "/api/v1/sessions/ses_01ABC/messages"
+            && b["client_id"] == id.as_str()
+            && b["text"] == "Also add a test"));
         // Another message gets another.
         let again = deliver(&api, "ses_01ABC", "And docs", Vec::new(), |_, _| {}).await;
         assert!(again.is_ok());
-        let all = bodies();
+        let all = got(&sent);
         assert_eq!(all.len(), 4);
-        assert_ne!(all[3]["client_id"], id.as_str());
+        assert_ne!(all[3].2["client_id"], id.as_str());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_message_may_have_arrived_after_a_try_that_failed_for_a_moment() {
+        use fctl_proto::ErrorCode::{Conflict, Internal, Unavailable};
+        let not_sent = |answers| async move {
+            let (api, sent) = relayed(answers);
+            let r = deliver(&api, "ses_01ABC", "Also add a test", Vec::new(), |_, _| {}).await;
+            let tries = got(&sent).len();
+            r.err()
+                .map(|n| (n.error.api().map(|e| e.code), n.maybe_kept, tries))
+        };
+        // A refusal at once: nothing was kept.
+        assert_eq!(
+            not_sent(vec![Some(Conflict)]).await,
+            Some((Some(Conflict), false, 1))
+        );
+        // A refusal after a try that may have kept it (the session failed
+        // meanwhile, say).
+        assert_eq!(
+            not_sent(vec![Some(Internal), Some(Conflict)]).await,
+            Some((Some(Conflict), true, 2))
+        );
+        // Every try failed for a moment.
+        assert_eq!(
+            not_sent(vec![Some(Unavailable); 4]).await,
+            Some((Some(Unavailable), true, 4))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lookups_through_the_relay_are_tried_once() {
+        use fctl_proto::ErrorCode::Internal;
+        // Its host tries them again itself.
+        let (api, asked) = relayed(vec![Some(Internal), Some(Internal)]);
+        let r = resolve(&api, "ses_01ABC").await;
+        assert!(r.is_err());
+        assert_eq!(
+            got(&asked)
+                .into_iter()
+                .map(|(method, path, _)| (method, path))
+                .collect::<Vec<_>>(),
+            [("GET".to_owned(), "/api/v1/sessions/ses_01ABC".to_owned())]
+        );
     }
 
     #[test]

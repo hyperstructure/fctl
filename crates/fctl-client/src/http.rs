@@ -84,15 +84,18 @@ pub const TRIES: u32 = 4;
 /// before each one after it (1, 3 and 9 seconds).
 pub const FIRST_WAIT: Duration = Duration::from_secs(1);
 
-/// How long after its first try [`retrying`] may start another: a control
-/// plane that doesn't answer at all (a timeout, 30 seconds over HTTP and two
-/// minutes through an autopilot's relay) gets one more try at most, so that
-/// a caller with a time limit of its own (an agent's tool call) hears of it.
+/// How long after its first try [`retrying`] may start another, with the
+/// wait before it: it bounds when a try starts, not when the last one ends.
+/// A control plane that doesn't answer at all gets one more try over HTTP,
+/// whose requests time out after 30 seconds (the second ends near 61
+/// seconds), and none through an autopilot's relay, whose calls fctl-agent
+/// gives up on after two minutes, so that a caller with a time limit of its
+/// own (an agent's tool call) hears of it.
 pub const TRY_WITHIN: Duration = Duration::from_secs(60);
 
 /// Runs `attempt` until it succeeds, fails with an error that trying again
-/// wouldn't change, or has failed [`TRIES`] times, or past [`TRY_WITHIN`],
-/// with errors that may pass ([`Error::is_transient`]): a hiccup of the
+/// wouldn't change, or has failed [`TRIES`] times, or too late to start
+/// another try ([`TRY_WITHIN`]), with errors that may pass ([`Error::is_transient`]): a hiccup of the
 /// control plane's database, a lost connection. Only for requests that
 /// change nothing when they come twice, such as a message with a
 /// `client_id`, which a request whose answer was lost may have delivered.
