@@ -152,6 +152,48 @@ describe("a project's Autopilot tab", () => {
     expect(page.textContent).toContain("Write your own");
   });
 
+  it("warns that autopilots are token hungry, and marks the plan your sessions run on", async () => {
+    autopilot.mockResolvedValue(null);
+    queryClient.setQueryData(keys.autopilot("prj_1"), null);
+    queryClient.setQueryData(keys.me, {
+      user: { id: "usr_ada", name: "Ada" },
+      claude: [
+        { id: "crd_max", subscription_type: "max", is_default: false },
+        { id: "crd_pro", subscription_type: "pro", is_default: true },
+      ],
+    } as unknown as G.Me);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    const notice = page.querySelector("aside[aria-label='Autopilots are token hungry']");
+    expect(notice?.textContent).toContain(
+      "On a fresh build at full speed, its sessions may hit the plan's ceiling",
+    );
+    const plans = [...(notice?.querySelectorAll("li") ?? [])].map((li) => li.textContent);
+    expect(plans).toEqual([
+      "Claude ProYour planMay hit its five-hour limit",
+      "Claude MaxUsually enough",
+      "Claude UltraUsually enough",
+    ]);
+  });
+
+  it("marks Ultra as your plan by its login's tier, and no plan without a Claude connection", async () => {
+    autopilot.mockResolvedValue(null);
+    queryClient.setQueryData(keys.autopilot("prj_1"), null);
+    const me = (claude: unknown[]) =>
+      queryClient.setQueryData(keys.me, { user: { id: "usr_ada", name: "Ada" }, claude } as unknown as G.Me);
+    me([
+      { id: "crd_1", subscription_type: "max", rate_limit_tier: "default_claude_max_20x", is_default: true },
+    ]);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    const yours = () => page.querySelector("aside li span span")?.closest("li")?.textContent;
+    expect(yours()).toBe("Claude UltraYour planUsually enough");
+    me([]);
+    await settle();
+    expect(page.textContent).toContain("Autopilots are token hungry");
+    expect(page.textContent).not.toContain("Your plan");
+  });
+
   it("tells people who can't put it on who can", async () => {
     queryClient.setQueryData(keys.autopilot("prj_1"), null);
     autopilot.mockResolvedValue(null);

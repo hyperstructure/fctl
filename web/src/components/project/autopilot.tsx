@@ -14,8 +14,10 @@ import {
   CircleAlert,
   Clock,
   Ellipsis,
+  Flame,
   FlaskConical,
   FolderPlus,
+  Gauge,
   GitFork,
   KeyRound,
   ListChecks,
@@ -93,6 +95,7 @@ import { MAX_TOKENS, MIN_TOKENS, parseTokens, tokensText, validWindow } from "@/
 import { ago, agoShort, agoShortWords, clock, day, num, stamp } from "@/lib/format";
 import { EFFORTS, effortLabel, modelLabel, modelOffers } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useWorkspace } from "@/lib/queries";
+import { planOf } from "@/lib/usage";
 
 // ───────────────────────────── the tab ─────────────────────────────
 
@@ -170,6 +173,66 @@ export function ExperimentalPill({ className }: { className?: string }) {
       <FlaskConical className="size-3" aria-hidden="true" />
       Experimental
     </span>
+  );
+}
+
+/** The Claude plans the notice weighs an autopilot's appetite against, by `planOf`'s names. */
+const PLANS: { plan: string; name: string; enough: boolean; words: string }[] = [
+  { plan: "pro", name: "Pro", enough: false, words: "May hit its five-hour limit" },
+  { plan: "max", name: "Max", enough: true, words: "Usually enough" },
+  { plan: "Ultra", name: "Ultra", enough: true, words: "Usually enough" },
+];
+
+/**
+ * That autopilots are token hungry: several sessions at once, kept going without anyone, drain a
+ * Claude plan's usage fast, so a fresh build can hit Pro's five-hour limit, where Max and Ultra
+ * usually keep up. Beside the workspace's switch and in the tab's intro, before anyone puts one
+ * on; the plan that sessions they start run on is marked as theirs.
+ */
+export function TokenHungry({ className }: { className?: string }) {
+  const credential = useMe().data?.claude.find((c) => c.is_default);
+  const yours = credential && planOf(credential);
+  return (
+    <aside
+      aria-label="Autopilots are token hungry"
+      className={cn(
+        "rounded-xl border border-amber/30 bg-surface bg-[linear-gradient(to_bottom,var(--c-amber-soft),transparent_60%)] px-4 py-3.5",
+        className,
+      )}
+    >
+      <p className="flex items-center gap-2 text-[13.5px] font-medium text-amber">
+        <Flame className="size-4 shrink-0" aria-hidden="true" />
+        Autopilots are token hungry
+      </p>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-pretty text-ink-3">
+        An autopilot runs several sessions at once and keeps them going on its own, so it can drain a Claude
+        plan's usage quickly. On a fresh build at full speed, its sessions may hit the plan's ceiling and
+        pause there until the limit resets.
+      </p>
+      {/* Each plan as wide as its words: where they don't fit on a line, a plan moves to the next one whole. */}
+      <ul className="mt-3 flex flex-wrap gap-x-8 gap-y-3 border-t border-amber/20 pt-3">
+        {PLANS.map((p) => (
+          <li key={p.plan} className="flex flex-col items-start gap-y-0.5 text-[12.5px]">
+            <span className="flex items-center gap-2 font-medium text-ink">
+              Claude {p.name}
+              {yours === p.plan && (
+                <span className="rounded-full bg-raised px-1.5 text-[10.5px] leading-[17px] font-normal text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line)]">
+                  Your plan
+                </span>
+              )}
+            </span>
+            <span className={cn("flex items-center gap-1.5", p.enough ? "text-ink-3" : "text-amber")}>
+              {p.enough ? (
+                <Check className="size-3.5 shrink-0" aria-hidden="true" />
+              ) : (
+                <Gauge className="size-3.5 shrink-0" aria-hidden="true" />
+              )}
+              {p.words}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </aside>
   );
 }
 
@@ -284,6 +347,7 @@ function Intro({
               </li>
             ))}
           </ul>
+          <TokenHungry className="mt-7 max-w-xl" />
         </div>
         {/* On a phone the directions below say it, and come sooner. */}
         <div className="max-sm:hidden">
