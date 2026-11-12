@@ -17,10 +17,11 @@ import { useSyncExternalStore } from "react";
 import { duration } from "./format";
 import { redact } from "./redact";
 
-/** One thing the log says, and when (ms). */
+/** One thing the log says, and when (ms), with the run that said it (`startAppLog`). */
 export interface Entry {
   at: number;
   what: string;
+  run?: string;
 }
 
 /** localStorage: the log. */
@@ -29,7 +30,7 @@ const LOG = "fctl:app-log";
 const OWNER = "fctl:app-log-owner";
 /** localStorage: the run's heartbeat: when it was last heard from, and whether it was on screen then. */
 const BEAT = "fctl:app-beat";
-/** sessionStorage: this run started already (a page load now is one of its own), and when it last reloaded to recover. */
+/** sessionStorage: the run's ID (a page load in a tab that has one is the run's own), and when it last reloaded to recover. */
 const RUNNING = "fctl:log-running";
 const RECOVERED = "fctl:recovered-at";
 /** Entries kept, the newest. */
@@ -53,6 +54,8 @@ export interface Beat {
 
 /** The log as last read, which React shows until it changes. */
 let entries: Entry[] | undefined;
+/** This run's ID, once `startAppLog` has started it. */
+let run: string | undefined;
 const listeners = new Set<() => void>();
 
 function stored(): Entry[] {
@@ -61,7 +64,11 @@ function stored(): Entry[] {
     return Array.isArray(kept)
       ? kept.filter(
           (e): e is Entry =>
-            typeof e === "object" && e !== null && typeof e.at === "number" && typeof e.what === "string",
+            typeof e === "object" &&
+            e !== null &&
+            typeof e.at === "number" &&
+            typeof e.what === "string" &&
+            (e.run === undefined || typeof e.run === "string"),
         )
       : [];
   } catch {
@@ -92,9 +99,9 @@ export function record(what: string, at = Date.now()) {
   const last = log.at(-1);
   const repeat = last && /^(.*?)(?: \(×(\d+)\))?$/.exec(last.what);
   const next =
-    repeat && repeat[1] === text
-      ? [...log.slice(0, -1), { at, what: `${text} (×${Number(repeat[2] ?? 1) + 1})` }]
-      : [...log, { at, what: text }].slice(-KEEP);
+    repeat && repeat[1] === text && last?.run === run
+      ? [...log.slice(0, -1), { at, what: `${text} (×${Number(repeat[2] ?? 1) + 1})`, run }]
+      : [...log, { at, what: text, run }].slice(-KEEP);
   try {
     localStorage.setItem(LOG, JSON.stringify(next));
   } catch {}
@@ -111,8 +118,9 @@ export function clearLog() {
 }
 
 /**
- * Signing out: empties the log and keeps it for no one, so that what this page and other tabs
- * still open add to it after, about the account that signed out, goes as anyone signs in next.
+ * Signing out: empties the log and keeps it for no one. What other tabs still open add to it after,
+ * about the account that signed out, goes as anyone signs in next; the run that signs in keeps its
+ * own lines (`logFor`).
  */
 export function forgetLog() {
   clearLog();
@@ -123,13 +131,18 @@ export function forgetLog() {
 
 /**
  * Keeps the log for `user`, who is signed in: one kept for someone else, whose sign-in ended here
- * without them signing out, or for no one since a sign-out, goes first. A sign-in that ends
- * leaves the log, as it may tell why.
+ * without them signing out, goes first. One kept for no one since a sign-out keeps only this
+ * run's lines, from the sign-in page on. A sign-in that ends leaves the log, as it may tell why.
  */
 export function logFor(user: string) {
   try {
     const was = localStorage.getItem(OWNER);
-    if (was !== null && was !== user) clearLog();
+    if (was === "") {
+      const mine = stored().filter((e) => run !== undefined && e.run === run);
+      if (mine.length) localStorage.setItem(LOG, JSON.stringify(mine));
+      else localStorage.removeItem(LOG);
+      changed(mine);
+    } else if (was !== null && was !== user) clearLog();
     localStorage.setItem(OWNER, user);
   } catch {}
 }
@@ -326,9 +339,12 @@ export function watchWebgl(canvas: HTMLCanvasElement, name: string): () => void 
  */
 export function startAppLog(): () => void {
   let fresh = true;
+  run = Math.random().toString(36).slice(2, 10);
   try {
-    fresh = sessionStorage.getItem(RUNNING) === null;
-    sessionStorage.setItem(RUNNING, "1");
+    const was = sessionStorage.getItem(RUNNING);
+    fresh = was === null;
+    if (was !== null) run = was;
+    sessionStorage.setItem(RUNNING, run);
   } catch {}
   let before: Beat | undefined;
   try {

@@ -82,7 +82,7 @@ describe("record", () => {
     expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_b");
   });
 
-  it("is kept for the next account to sign in only by the one it was kept for", () => {
+  it("notes whose it is, which Clear keeps and signing out takes", () => {
     // A first run notes no one yet: what it logged before the sign-in stays.
     record("Started", 1);
     logFor("usr_a");
@@ -93,12 +93,10 @@ describe("record", () => {
     expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_a");
     logFor("usr_a");
     expect(said()).toEqual(["After Clear"]);
-    // Signing out keeps it for no one: what another tab adds after goes as anyone signs in.
+    // Signing out keeps it for no one (startAppLog's tests: what the run that signs in keeps).
     forgetLog();
-    record("Another tab, still on A's page", 3);
-    logFor("usr_b");
     expect(said()).toEqual([]);
-    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_b");
+    expect(localStorage.getItem("fctl:app-log-owner")).toBe("");
   });
 
   it("shows, as the page opens, what another tab wrote since this tab last read it", async () => {
@@ -225,6 +223,30 @@ describe("startAppLog", () => {
     expect(said()).toHaveLength(1);
     expect(said()[0]).toMatch(/^Started \(a page load in the same run/);
     again();
+  });
+
+  it("keeps the run that signs in after a sign-out, without what other tabs logged", () => {
+    installed(true);
+    logFor("usr_a");
+    record("A's page", 1);
+    forgetLog();
+    // Signing out loads the sign-in page afresh: a page load of the same run's own.
+    sessionStorage.setItem("fctl:log-running", "run-1");
+    const stop = startAppLog();
+    const other = { at: 2, what: "Another tab, still on A's page", run: "run-2" };
+    localStorage.setItem("fctl:app-log", JSON.stringify([...readLog(), other]));
+    record("On the sign-in page");
+    logFor("usr_a");
+    expect(said()).toEqual([
+      expect.stringMatching(/^Started \(a page load in the same run/),
+      "On the sign-in page",
+    ]);
+    expect(localStorage.getItem("fctl:app-beat")).not.toBeNull();
+    expect(localStorage.getItem("fctl:app-log-owner")).toBe("usr_a");
+    // Someone else signing in after a sign-in that ended takes it all.
+    logFor("usr_b");
+    expect(said()).toEqual([]);
+    stop();
   });
 
   it("leaves tabs, which run side by side, without a run before", () => {
