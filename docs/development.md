@@ -680,7 +680,10 @@ with `env(safe-area-inset-*)`, as the message box does. At the top, use
 `--safe-top` (`src/styles/app.css`) instead: Safari can lay the app on an
 iPhone's Home Screen out under the status bar while its top safe area
 stays 0, and `src/lib/viewport.ts` then sets `--status-bar` from the bar's
-height it saw before. Sticky bars pad their tops by it
+height it saw before. iOS also draws a frosted band over the bar that
+blurs what is under it and fades out below it, so `--safe-top` then adds
+`--status-bar-fade` too, and a band of the page's color covers it all
+(`body::before`). Sticky bars pad their tops by it
 (`box-content h-14 pt-(--safe-top)`), and what is placed from the top adds
 it (`top-[calc(1.25rem+var(--safe-top))]`).
 

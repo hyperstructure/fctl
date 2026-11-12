@@ -19,12 +19,28 @@
    --safe-top: how much of the page's top the status bar covers. 0, but where
    Safari lays the app on an iPhone's Home Screen out under the status bar:
    then its safe area says how tall the bar is, or, where it doesn't, the
-   height lib/viewport.ts saw the bar take before (--status-bar). What is
-   pinned to the top makes as much room above what it shows. */
+   height lib/viewport.ts saw the bar take before (--status-bar). iOS's
+   frosted band over the bar fades out below it, by --status-bar-fade on the
+   Home Screen, which --safe-top adds only while the bar covers the page. What
+   is pinned to the top makes as much room above what it shows, and a band of
+   the page's color covers it, above the drawer and the palette's shade, as
+   the status bar's own band does while the page is below it. */
 @layer base {
   :root {
     --viewport-shift: 0px;
-    --safe-top: max(env(safe-area-inset-top), var(--status-bar, 0px));
+    --status-bar-over: max(env(safe-area-inset-top), var(--status-bar, 0px));
+    /* The fade when any bar covers the page: a length times 100 is past it from 0.01 px. */
+    --safe-top: calc(var(--status-bar-over) + min(var(--status-bar-over) * 100, var(--status-bar-fade, 0px)));
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    top: var(--viewport-shift);
+    inset-inline: 0;
+    z-index: 60;
+    height: var(--safe-top);
+    background: var(--color-canvas);
+    pointer-events: none;
   }
   ::backdrop {
     top: var(--viewport-shift, 0px);
