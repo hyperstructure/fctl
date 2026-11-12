@@ -11,6 +11,7 @@ use crate::followed::Pulls;
 use crate::journal::Journal;
 use crate::link::{self, LinkEvent};
 use crate::local;
+use crate::oom;
 use crate::orphan;
 use crate::prompt;
 use crate::refresh::Refresh;
@@ -232,8 +233,16 @@ pub struct Supervisor {
     outbox: Vec<AgentEvent>,
     restarts: VecDeque<Instant>,
     /// How many processes the kernel had killed for want of memory
-    /// shortly before now, while Claude runs ([`claude::OomCount`]).
-    oom_kills: claude::OomCount,
+    /// shortly before now, while Claude runs ([`oom::Count`]).
+    oom_kills: oom::Count,
+    /// The kernel's log since Claude Code started, where the sandbox lets
+    /// fctl-agent read it: which processes it killed for want of memory.
+    kernel_log: Option<oom::KernelLog>,
+    /// When to warn Claude that the sandbox's memory is nearly out.
+    memory: oom::Watch,
+    /// What the kernel killed for want of memory while no turn was under
+    /// way, which Claude hears of as the next one starts.
+    killed_unheard: Option<oom::Kills>,
     stderr_budget: (Instant, u32),
     claude_credential: Option<ClaudeCredential>,
     exit_after: Option<Instant>,
@@ -357,7 +366,10 @@ impl Supervisor {
                 next_request: 0,
                 outbox: Vec::new(),
                 restarts: VecDeque::new(),
-                oom_kills: claude::OomCount::default(),
+                oom_kills: oom::Count::default(),
+                kernel_log: None,
+                memory: oom::Watch::default(),
+                killed_unheard: None,
                 stderr_budget: (Instant::now(), 0),
                 claude_credential: None,
                 exit_after: None,
@@ -1796,7 +1808,11 @@ impl Supervisor {
         };
         self.model_name.started(launch.model);
         let mut c = Claude::spawn(launch, self.claude_tx.clone())?;
-        self.oom_kills = claude::OomCount::start(Instant::now(), claude::oom_kills());
+        self.oom_kills = oom::Count::start(Instant::now(), oom::kills());
+        self.kernel_log = self.watches_memory().then(oom::KernelLog::open).flatten();
+        // A Claude Code that starts again, after the kernel killed the one
+        // before say, hears of the sandbox's memory afresh.
+        self.memory = oom::Watch::default();
         self.persisted.claude = c.pid().and_then(orphan::Process::of);
         self.persist();
         self.log(
@@ -1927,6 +1943,11 @@ impl Supervisor {
             let note = prompt::unfinished_tasks(&std::mem::take(&mut self.persisted.unfinished));
             self.persist();
             format!("{note}\n\n{text}")
+        };
+        // The first after the kernel killed processes while Claude waited.
+        let text = match self.killed_unheard.take() {
+            Some(kills) => format!("{}\n\n{text}", prompt::killed_for_memory(&kills, true)),
+            None => text,
         };
         if let Some(c) = &self.claude {
             let mut content = vec![json!({ "type": "text", "text": text })];
@@ -2563,7 +2584,7 @@ impl Supervisor {
                 .unwrap_or_default(),
             None => return,
         };
-        let exit = exit.killed_for_memory(self.oom_kills.before(), claude::oom_kills());
+        let exit = exit.killed_for_memory(self.oom_kills.before(), oom::kills());
         if !self.claude_exited(exit).await {
             return;
         }
@@ -2628,6 +2649,122 @@ impl Supervisor {
         true
     }
 
+    // ───────────────────────────── memory ─────────────────────────────
+
+    /// Whether fctl-agent watches the sandbox's memory: where its driver
+    /// limits it, not with the process driver, whose sessions share their
+    /// machine's memory with whatever else runs there.
+    fn watches_memory(&self) -> bool {
+        self.config.as_ref().is_some_and(|c| c.sandbox.is_some())
+    }
+
+    /// Whether what fctl-agent tells Claude now reaches it at its next
+    /// step: it is on a turn, which no stop or usage limit holds up.
+    fn claude_listens(&self) -> bool {
+        self.claude.is_some()
+            && self.turn_active
+            && self.stopping.is_none()
+            && self.state.status == SessionStatus::Running
+    }
+
+    /// While Claude Code runs: the kernel's out-of-memory kills, read every
+    /// ten seconds, and while it works, the sandbox's memory use, every
+    /// five ([`oom`]).
+    async fn watch_memory(&mut self, now: Instant) {
+        if self.claude.is_none() {
+            return;
+        }
+        if let Some(new) = self.oom_kills.tick(now, oom::kills) {
+            let named = self
+                .kernel_log
+                .as_mut()
+                .map(oom::KernelLog::kills)
+                .unwrap_or_default();
+            if new > 0 {
+                self.killed_for_memory(oom::Kills::new(new, named)).await;
+            }
+        }
+        if !self.watches_memory() || !self.claude_listens() {
+            return;
+        }
+        self.tell_unheard_kills().await;
+        if let Some(usage) = self.memory.tick(now, oom::usage) {
+            // Off the supervisor's thread, and for 5 seconds at most: a
+            // command line is read from its process's memory, under its
+            // lock, which a sandbox short of memory may hold long.
+            let processes = tokio::task::spawn_blocking(oom::processes);
+            let processes = match tokio::time::timeout(Duration::from_secs(5), processes).await {
+                Ok(Ok(processes)) => processes,
+                _ => Vec::new(),
+            };
+            self.memory_nearly_out(usage, processes).await;
+        }
+    }
+
+    /// What the kernel killed while Claude waited, told as a turn starts
+    /// that no message started: one Claude started on its own, likely for
+    /// the background task the kernel killed. A message carries it
+    /// otherwise ([`Self::send_content`]).
+    async fn tell_unheard_kills(&mut self) {
+        if let Some(kills) = self.killed_unheard.take() {
+            let text = prompt::killed_for_memory(&kills, true);
+            self.send_turn(&text, None, None, &[]).await;
+        }
+    }
+
+    /// The sandbox's memory is nearly out while Claude works: the
+    /// transcript says so, and Claude hears at its next step which
+    /// processes hold the most, to stop what it no longer needs.
+    async fn memory_nearly_out(&mut self, usage: oom::Usage, processes: Vec<oom::Process>) {
+        let largest = oom::largest_by_name(&processes);
+        let most = if largest.is_empty() {
+            String::new()
+        } else {
+            format!(", most of it by {largest}")
+        };
+        let msg = format!(
+            "The sandbox's memory is {}% full ({} in use){most}: fctl-agent asked Claude to stop what it no longer needs.",
+            usage.percent(),
+            usage.words()
+        );
+        self.notice(NoticeLevel::Warn, "memory_nearly_out", &msg, None);
+        let claude = self.claude.as_ref().and_then(Claude::pid);
+        let listed = &processes[..processes.len().min(oom::LISTED)];
+        let text = prompt::memory_nearly_out(usage, listed, claude);
+        self.send_turn(&text, None, None, &[]).await;
+    }
+
+    /// The kernel killed processes of the sandbox for want of memory while
+    /// Claude Code ran on: the transcript says which, where the kernel's
+    /// log names them, and Claude hears of it at its next step, or as its
+    /// next turn starts. Claude Code's own kill is for its exit to tell
+    /// ([`Self::on_claude_exit`]).
+    async fn killed_for_memory(&mut self, kills: oom::Kills) {
+        if !self.watches_memory() {
+            return;
+        }
+        let claude = self.claude.as_ref().and_then(Claude::pid);
+        let claude_killed = claude
+            .is_none_or(|pid| !oom::alive(pid) || kills.named.iter().any(|k| k.pid == Some(pid)));
+        if claude_killed {
+            return;
+        }
+        let msg = format!(
+            "The sandbox ran out of memory, and the kernel killed {} to free some.",
+            kills.words()
+        );
+        self.notice(NoticeLevel::Warn, "memory_killed", &msg, None);
+        if self.claude_listens() {
+            let text = prompt::killed_for_memory(&kills, false);
+            self.send_turn(&text, None, None, &[]).await;
+        } else {
+            match &mut self.killed_unheard {
+                Some(unheard) => unheard.add(kills),
+                None => self.killed_unheard = Some(kills),
+            }
+        }
+    }
+
     // ───────────────────────────── timers and stopping ─────────────────────────────
 
     /// A review agent that ended its turn without posting its review, with
@@ -2677,9 +2814,7 @@ impl Supervisor {
 
     async fn on_tick(&mut self) {
         let now = now_ms();
-        if self.claude.is_some() {
-            self.oom_kills.tick(Instant::now(), claude::oom_kills);
-        }
+        self.watch_memory(Instant::now()).await;
         self.expire_publishes();
         self.expire_calls();
         self.sync();
@@ -4042,6 +4177,29 @@ mod tests {
         anyhow::bail!("Claude got fewer than {n} lines")
     }
 
+    /// The texts of the messages the stub Claude Code has been sent, once
+    /// it has `n`, leaving out control requests.
+    async fn told_claude(dir: &std::path::Path, n: usize) -> anyhow::Result<Vec<String>> {
+        for _ in 0..250 {
+            let text = std::fs::read_to_string(dir.join("stdin.jsonl")).unwrap_or_default();
+            let told: Vec<String> = text
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|v| v["type"] == "user")
+                .filter_map(|v| {
+                    v["message"]["content"][0]["text"]
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .collect();
+            if told.len() >= n {
+                return Ok(told);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        anyhow::bail!("Claude was told fewer than {n} things")
+    }
+
     fn task_started(id: &str, description: &str, kind: &str) -> Value {
         json!({"type": "system", "subtype": "task_started", "task_id": id, "tool_use_id": "toolu_1",
                "description": description, "task_type": kind, "is_backgrounded": true,
@@ -5364,6 +5522,146 @@ done
                 "Claude Code exited three times in ten minutes; the last time it was killed because the sandbox ran out of memory"
             )
         );
+        Ok(())
+    }
+
+    /// [`in_a_turn`], in a sandbox its driver limits, with a Claude Code
+    /// that keeps what it is sent ([`stub_claude`]).
+    fn in_a_sandbox(
+        dir: &std::path::Path,
+    ) -> anyhow::Result<(Supervisor, mpsc::UnboundedReceiver<String>)> {
+        let (mut sup, host) = in_a_turn(dir)?;
+        if let Some(config) = sup.config.as_mut() {
+            config.sandbox = Some(fctl_proto::runner::SandboxSize {
+                cpus: 4,
+                memory_mb: 8192,
+            });
+        }
+        sup.claude = Some(stub_claude(dir, &sup)?);
+        Ok((sup, host))
+    }
+
+    #[tokio::test]
+    async fn claude_hears_when_the_sandboxs_memory_is_nearly_out() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_sandbox(dir.path())?;
+        let gib = 1024 * 1024 * 1024;
+        let usage = oom::Usage {
+            used: 7 * gib,
+            limit: 8 * gib,
+        };
+        let claude = sup.claude.as_ref().and_then(Claude::pid);
+        let process = |pid: u32, name: &str, rss: u64, command: Option<&str>| oom::Process {
+            pid,
+            name: name.into(),
+            rss,
+            command: command.map(str::to_owned),
+        };
+        let processes = vec![
+            process(4242, "chrome", 2 * gib, Some("chrome --type=renderer")),
+            process(claude.unwrap_or(1), "claude", gib / 2, Some("claude -p")),
+            process(4243, "chrome", gib / 4, Some("chrome --type=gpu-process")),
+            process(9, "node", gib / 4, Some("node vite")),
+            process(10, "sh", gib / 8, Some("sh -c vite")),
+            process(11, "cat", 1024, None),
+        ];
+        sup.memory_nearly_out(usage, processes.clone()).await;
+        sup.flush();
+        assert_eq!(
+            notices_sent(&mut host),
+            vec![(
+                "memory_nearly_out".to_owned(),
+                "The sandbox's memory is 87% full (7 GiB of 8 GiB in use), most of it by chrome (2.3 GiB in 2 processes), claude (512 MiB) and node (256 MiB): fctl-agent asked Claude to stop what it no longer needs.".to_owned()
+            )]
+        );
+        // The largest five, at its next step.
+        let sent = sent_to_claude(dir.path(), 1).await?;
+        let text = sent[0]["message"]["content"][0]["text"].as_str();
+        assert_eq!(
+            text,
+            Some(prompt::memory_nearly_out(usage, &processes[..5], claude).as_str())
+        );
+        assert!(
+            text.is_some_and(|t| t.contains("(Claude Code, which runs you: leave it running)"))
+        );
+        assert_eq!(sup.state.status, SessionStatus::Running);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn claude_hears_what_the_kernel_killed_for_want_of_memory() -> anyhow::Result<()> {
+        let killed = |pid: u32, name: &str| oom::Killed {
+            pid: Some(pid),
+            name: name.into(),
+        };
+        // While Claude works: at its next step.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_sandbox(dir.path())?;
+        let kills = oom::Kills::new(1, vec![killed(4242, "chrome")]);
+        sup.killed_for_memory(kills.clone()).await;
+        sup.flush();
+        assert_eq!(
+            notices_sent(&mut host),
+            vec![(
+                "memory_killed".to_owned(),
+                "The sandbox ran out of memory, and the kernel killed chrome (PID 4242) to free some.".to_owned()
+            )]
+        );
+        let sent = told_claude(dir.path(), 1).await?;
+        assert_eq!(sent[0], prompt::killed_for_memory(&kills, false));
+
+        // Claude Code's own kill is for its exit to tell.
+        let claude = sup.claude.as_ref().and_then(Claude::pid).unwrap_or(0);
+        sup.killed_for_memory(oom::Kills::new(1, vec![killed(claude, "claude")]))
+            .await;
+        sup.flush();
+        assert_eq!(notices_sent(&mut host), vec![]);
+
+        // While Claude waits: with what starts its next turn.
+        sup.on_claude_message(result()).await;
+        assert_eq!(sup.state.status, SessionStatus::Idle);
+        sup.killed_for_memory(oom::Kills::new(1, vec![])).await;
+        sup.killed_for_memory(oom::Kills::new(1, vec![killed(77, "node")]))
+            .await;
+        sup.flush();
+        assert_eq!(notices_sent(&mut host).len(), 2);
+        sup.send_turn("Run the tests again.", None, None, &[]).await;
+        let sent = told_claude(dir.path(), 2).await?;
+        let unheard = oom::Kills::new(2, vec![killed(77, "node")]);
+        assert_eq!(
+            sent[1],
+            format!(
+                "{}\n\nRun the tests again.",
+                prompt::killed_for_memory(&unheard, true)
+            )
+        );
+        assert!(sent[1].contains(
+            "the sandbox ran out of memory while you waited, and the kernel killed node (PID 77) and 1 more process to free some."
+        ));
+        assert_eq!(sup.killed_unheard, None);
+
+        // Or, in a turn Claude starts on its own, at its next step.
+        sup.on_claude_message(result()).await;
+        sup.killed_for_memory(oom::Kills::new(1, vec![])).await;
+        sup.on_claude_message(turn_state("running")).await;
+        assert!(sup.claude_listens());
+        sup.tell_unheard_kills().await;
+        let sent = told_claude(dir.path(), 3).await?;
+        assert_eq!(
+            sent[2],
+            prompt::killed_for_memory(&oom::Kills::new(1, vec![]), true)
+        );
+
+        // With the process driver, the machine's memory isn't the
+        // session's to watch.
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host) = in_a_turn(dir.path())?;
+        sup.claude = Some(stub_claude(dir.path(), &sup)?);
+        sup.killed_for_memory(kills).await;
+        sup.flush();
+        assert_eq!(notices_sent(&mut host), vec![]);
+        assert!(!sup.watches_memory());
         Ok(())
     }
 

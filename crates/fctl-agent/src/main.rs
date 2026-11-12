@@ -20,6 +20,7 @@ mod followed;
 mod journal;
 mod link;
 mod local;
+mod oom;
 mod orphan;
 mod prompt;
 #[cfg(target_os = "linux")]

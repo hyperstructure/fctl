@@ -557,7 +557,8 @@ pub struct Notice {
     /// `pull_request_summarized`, `follow_up_held`, `ticket_created`,
     /// `ticket_commented`, `ticket_updated`, `ticket_replied`,
     /// `ticket_moved`, `ticket_failed`, `question_asked`,
-    /// `question_withdrawn`, `autopilot_action`.
+    /// `question_withdrawn`, `autopilot_action`, `memory_nearly_out`,
+    /// `memory_killed`.
     pub code: String,
     pub message: String,
     /// When the condition clears (usage-limit resets).

@@ -3758,6 +3758,29 @@ out-of-memory kill, the message asks Claude to run one heavy job at a
 time. A fourth exit within ten minutes fails the session
 (`claude_crashed`).
 
+Where the driver limits the sandbox (not the process driver, whose
+sessions share their machine), the supervisor also warns before memory
+runs out (`crates/fctl-agent/src/oom.rs`). While Claude works, it reads
+the sandbox's use every five seconds, as `docker stats` counts it: the
+cgroup's `memory.current` less `inactive_file`, the page cache the kernel
+drops first, against `memory.max` where that is below the system's
+memory, else `MemTotal` less `MemAvailable`. At 85% the transcript says
+so (a `memory_nearly_out` notice, with the names whose processes hold
+the most) and Claude hears at its next step, in a message from
+fctl-agent, the five largest processes by resident memory (its own
+marked) and to stop what it no longer needs. It warns again only once
+the use has fallen below 75% and ten minutes have passed, so a script
+that starts and closes a browser again and again gets one warning. When
+the `oom_kill` count goes up while Claude Code lives, the transcript
+says what the kernel killed (`memory_killed`): by name, from the kernel's
+log (`/dev/kmsg`, where the sandbox lets fctl-agent read it: VM sandboxes
+that don't restrict it, not Docker's containers), with its PID where the
+sandbox's processes run in the kernel's own PID namespace (not in Apple's
+containers, whose VM's init runs them in one of their own). Claude hears
+of it at its next step, or with the next turn when it was waiting, so
+that it reads a command's exit code 137 as memory. Claude Code's own
+kill is its exit's to tell. The system prompt says such notes come.
+
 Driver commands that hang, as they do in an overloaded Docker VM, are
 killed after a minute (image pulls and VM boots after 30), and the control
 connection never waits on one: the hello reports what the drivers said
