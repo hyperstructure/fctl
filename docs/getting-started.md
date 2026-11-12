@@ -41,8 +41,10 @@ Android, **⋮ → Add to home screen**). On an iPhone or iPad, the app on the
 Home Screen keeps no history of the pages you open, so a swipe from the
 edge of the screen doesn't go back or forward: you move about with the
 sidebar and links. When iOS has ended the app in the background, it opens
-again on the page you left it on; closed from the app switcher and opened
-again within a minute, it starts at the Agent Floor.
+again on the page you left it on. Closed from the app switcher as you use it
+and opened again within a minute, it starts at the Agent Floor; after longer
+in the background, it opens on that page too, as iOS doesn't tell the app
+who closed it.
 
 To hear when a session waits for your reply, pauses on a usage limit or
 fails, turn on notifications in **Settings → Notifications**, in each

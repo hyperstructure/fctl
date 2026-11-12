@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { base64urlBytes, madeWith, onPushOpen, takeOpening } from "./push";
+import { base64urlBytes, madeWith, onPushOpen, openingWaits, takeOpening } from "./push";
 
 describe("push", () => {
   it("decodes server keys", () => {
@@ -63,6 +63,16 @@ describe("clicks on notifications", () => {
     expect(await takeOpening()).toBeNull();
     keep("https://evil.example/");
     expect(await takeOpening()).toBeNull();
+  });
+
+  it("tells whether a recent click waits, without taking it", async () => {
+    const { stores } = keep("/s/ses_12");
+    expect(await openingWaits()).toBe(true);
+    expect(stores.has("fctl-opening")).toBe(true);
+    keep("/s/ses_12", Date.now() - 3 * 60_000);
+    expect(await openingWaits()).toBe(false);
+    vi.stubGlobal("caches", { match: async () => undefined });
+    expect(await openingWaits()).toBe(false);
   });
 
   it("opens what a click kept as the app starts at its start page", async () => {

@@ -445,13 +445,13 @@ export function UserMenu({
             icon={<LogOut />}
             onClick={async () => {
               close();
+              forgetLeft();
               await forgetPush();
               await forgetDraft();
               await api.logout().catch(() => {});
               queryClient.clear();
               clearAttention();
               forgetSidebar(); // last, so that no list that comes is kept again
-              forgetLeft();
               goTo("/login");
             }}
           >

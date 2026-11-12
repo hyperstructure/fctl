@@ -1,6 +1,14 @@
 import { createBrowserHistory } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { forgetLeft, keepWhereLeft, keptAddress, RESTART_WITHIN, reopening, reopenWhereLeft } from "./reopen";
+import {
+  forgetLeft,
+  keepWhereLeft,
+  keptAddress,
+  RESTART_WITHIN,
+  reopen,
+  reopening,
+  whereLeft,
+} from "./reopen";
 
 const HOUR = 3_600_000;
 
@@ -83,24 +91,44 @@ describe("reopening", () => {
   });
 });
 
-describe("reopenWhereLeft", () => {
-  it("puts the page left in the address once, as the app starts afresh", () => {
+describe("whereLeft and reopen", () => {
+  const none = async () => false;
+
+  /** Starts the app at `url`: where it opens, as the first page shows. */
+  async function start(url: string, now = Date.now(), opening = none) {
+    setURL(url);
+    whereLeft(now);
+    const history = createBrowserHistory();
+    await reopen(history, opening);
+    const at = history.location.pathname;
+    history.destroy();
+    return at;
+  }
+
+  it("goes back to the page left once, as the app starts afresh", async () => {
     const now = Date.now();
     localStorage.setItem("fctl:left", JSON.stringify({ path: "/s/ses_1", at: now - HOUR }));
-    setURL("/");
-    reopenWhereLeft(now);
-    expect(window.location.pathname).toBe("/s/ses_1");
+    expect(await start("/", now)).toBe("/s/ses_1");
     // A page load later in the same run (going home from the error page) stays where it goes.
-    setURL("/");
-    reopenWhereLeft(now);
-    expect(window.location.pathname).toBe("/");
+    expect(await start("/", now)).toBe("/");
   });
 
-  it("takes nothing from storage it can't read", () => {
+  it("leaves a notification that opened the app to open its own page", async () => {
+    const now = Date.now();
+    localStorage.setItem("fctl:left", JSON.stringify({ path: "/s/ses_1", at: now - HOUR }));
+    expect(await start("/", now, async () => true)).toBe("/");
+  });
+
+  it("doesn't wait long to learn whether a notification opened it", async () => {
+    const now = Date.now();
+    localStorage.setItem("fctl:left", JSON.stringify({ path: "/s/ses_1", at: now - HOUR }));
+    const never = () => new Promise<boolean>(() => {});
+    expect(await start("/", now, never)).toBe("/s/ses_1");
+  });
+
+  it("takes nothing from storage it can't read", async () => {
     localStorage.setItem("fctl:left", "{not json");
-    setURL("/");
-    reopenWhereLeft();
-    expect(window.location.pathname).toBe("/");
+    expect(await start("/")).toBe("/");
   });
 });
 

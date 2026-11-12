@@ -14,7 +14,7 @@
 // the app installed on Android, whose back gesture and button go through it.
 
 import { createBrowserHistory, type RouterHistory } from "@tanstack/react-router";
-import { keepWhereLeft, reopenWhereLeft } from "./reopen";
+import { keepWhereLeft, whereLeft } from "./reopen";
 import { onHomeScreen } from "./viewport";
 
 /** Whether this is the app on an iPhone's or iPad's Home Screen, which keeps no history of its pages. */
@@ -24,11 +24,11 @@ export function keepsNoHistory(): boolean {
 
 /**
  * The router's history: where the app keeps none, each page it opens takes the place of the last,
- * and the app opens again on the page it was left on when iOS starts it afresh (lib/reopen.ts).
+ * and it keeps the page it is on, to open again when iOS starts the app afresh (lib/reopen.ts).
  */
 export function appHistory(): RouterHistory {
   const home = keepsNoHistory();
-  if (home) reopenWhereLeft();
+  if (home) whereLeft();
   const history = createBrowserHistory();
   if (home) {
     history.push = history.replace;

@@ -6,8 +6,12 @@
 //
 // Closing the app from the app switcher and opening it again starts it afresh too, and that should
 // start at the Agent Floor, as a fresh start does. The app can't tell the two apart (iOS tells a
-// page nothing as it ends it), but when: a start within a minute of the app going to the background
-// is that, and one later is iOS's.
+// page nothing as it ends it), but when: a start within a minute of the app last being on screen
+// is someone closing it as they used it and opening it again, and one later is iOS's. An app closed
+// from the app switcher after a while in the background opens on its page again.
+//
+// A tap on a notification that starts the app may open it at the start page too (public/sw.js):
+// then the notification's page opens (lib/push.ts onPushOpen), not the page left.
 
 import type { RouterHistory } from "@tanstack/react-router";
 
@@ -93,15 +97,35 @@ function startsAfresh(): boolean {
   }
 }
 
+/** Where the app goes back to as it starts (`reopen`), as `whereLeft` found. */
+let pending: string | undefined;
+
 /**
- * As the app starts, before the router reads the address: back to the page it was left on, if
- * iOS started it afresh at its start page (`reopening`).
+ * As the app starts, before the router reads the address: notes this run as started, and whether
+ * it goes back to the page it was left on (`reopening`), which `reopen` does.
  */
-export function reopenWhereLeft(now = Date.now()) {
+export function whereLeft(now = Date.now()) {
   const fresh = startsAfresh();
   const { pathname, search, hash } = window.location;
-  const to = reopening(readLeft(), { path: pathname + search + hash, fresh }, now);
-  if (to) window.history.replaceState(null, "", to);
+  pending = reopening(readLeft(), { path: pathname + search + hash, fresh }, now);
+}
+
+/** How long the app waits at most, as it starts, to learn whether a notification opened it (ms). */
+const ASK_FOR = 500;
+
+/**
+ * Before the first page shows: back to the page the app was left on, if `whereLeft` found one,
+ * unless a tap on a notification opened the app (`opening`), which then opens its own page.
+ */
+export async function reopen(history: RouterHistory, opening: () => Promise<boolean>) {
+  const to = pending;
+  pending = undefined;
+  if (!to) return;
+  const waits = await Promise.race([
+    opening().catch(() => false),
+    new Promise<boolean>((done) => setTimeout(() => done(false), ASK_FOR)),
+  ]);
+  if (!waits) history.replace(to);
 }
 
 /**

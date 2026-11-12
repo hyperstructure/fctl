@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appHistory, goTo, keepsNoHistory, linksInPlace } from "./history";
+import { reopen } from "./reopen";
 
 /** WebKit on a touch screen (an iPhone or iPad), and the app opened from the home screen or not. */
 function apple({ webKit = true, touch = true, home = true } = {}) {
@@ -60,12 +61,13 @@ describe("appHistory", () => {
     history.destroy();
   });
 
-  it("opens on the page it was left on when iOS starts the app afresh, and only there", () => {
+  it("opens on the page it was left on when iOS starts the app afresh, and only there", async () => {
     const left = JSON.stringify({ path: "/s/left", at: Date.now() - 3_600_000 });
     apple();
     localStorage.setItem("fctl:left", left);
     sessionStorage.clear();
     let history = appHistory();
+    await reopen(history, async () => false);
     expect(history.location.pathname).toBe("/s/left");
     history.destroy();
 
@@ -76,6 +78,7 @@ describe("appHistory", () => {
     localStorage.setItem("fctl:left", left);
     sessionStorage.clear();
     history = appHistory();
+    await reopen(history, async () => false);
     expect(history.location.pathname).toBe("/");
     history.destroy();
     localStorage.clear();

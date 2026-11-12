@@ -156,6 +156,19 @@ const OPENING_FOR = 2 * 60_000;
 /** After the app comes to the front, when it looks again: the click may reach the service worker after. */
 const LOOK_AGAIN = [1_000, 3_000];
 
+/** Whether a recent click on a notification waits for the app to open its page (`takeOpening`). */
+export async function openingWaits(now = Date.now()): Promise<boolean> {
+  if (!("caches" in window)) return false;
+  try {
+    const kept = await caches.match(OPENING_KEY, { cacheName: OPENING });
+    if (!kept) return false;
+    const { at } = (await kept.json()) as { at?: unknown };
+    return typeof at === "number" && now - at < OPENING_FOR;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The page the last click on a notification opens, if it was recent and no window took it yet,
  * taken so that no other window does.
