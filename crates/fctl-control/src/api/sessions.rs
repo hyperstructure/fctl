@@ -958,6 +958,7 @@ pub async fn move_to(
             "/control",
             &ControlState {
                 claude_user: Some(user.clone()),
+                keep_updated_at: true,
                 ..Default::default()
             },
         )
@@ -998,8 +999,9 @@ pub async fn move_to(
 /// ([`move_to`]). When it last changed stays as it was: a session that
 /// rests where it is, now on another subscription, did nothing new, and
 /// its autopilot's wakes take its sessions that changed since it last
-/// woke for news (`autopilots::News`). One that starts again changes as
-/// it does.
+/// woke for news (`autopilots::News`). SessionDO keeps its summary's as
+/// it was too (`ControlState::keep_updated_at`). One that starts again
+/// changes as it does.
 pub async fn connect(db: &worker::D1Database, id: &str, credential_id: &str) -> AppResult<()> {
     q(
         db,
