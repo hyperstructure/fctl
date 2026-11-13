@@ -119,13 +119,18 @@ pub fn plan(input: &str) -> Result<Option<String>> {
     markdown("plan", s, MAX_PLAN).map(Some)
 }
 
-/// A heading of a plan: its level (1 to 6) and its text, trimmed and
-/// without closing `#`s.
+/// A line of Markdown without the up to three spaces it may start with
+/// and still be a heading or a fence; `None` when indented more, as code.
+fn unindented(line: &str) -> Option<&str> {
+    let t = line.trim_start_matches(' ');
+    (line.len() - t.len() <= 3).then_some(t)
+}
+
+/// A heading of a plan, as CommonMark reads an ATX heading: its level (1
+/// to 6) and its text, trimmed and without the closing `#`s that follow a
+/// space (`## Learn C#` is “Learn C#”).
 fn plan_heading(line: &str) -> Option<(usize, &str)> {
-    let line = line.trim_start_matches(' ');
-    if line.len() - line.trim_start_matches(' ').len() > 3 {
-        return None;
-    }
+    let line = unindented(line)?;
     let level = line.chars().take_while(|c| *c == '#').count();
     if !(1..=6).contains(&level) {
         return None;
@@ -134,33 +139,49 @@ fn plan_heading(line: &str) -> Option<(usize, &str)> {
     if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
         return None;
     }
-    let text = rest.trim().trim_end_matches('#').trim_end();
+    let text = rest.trim();
+    let open = text.trim_end_matches('#');
+    let text = if open.is_empty() {
+        open
+    } else if open.ends_with([' ', '\t']) {
+        open.trim_end()
+    } else {
+        text
+    };
     Some((level, text))
 }
 
+/// A code fence: its character and how many of them open it.
+fn plan_fence(line: &str) -> Option<(char, usize)> {
+    let t = unindented(line)?;
+    let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let n = t.chars().take_while(|x| *x == c).count();
+    (n >= 3).then_some((c, n))
+}
+
 /// The headings of a plan, line by line (`None` for the rest), leaving
-/// out what looks like one in a fenced code block.
+/// out what looks like one in a fenced code block, which only a fence of
+/// its character, at least as long and with nothing after it, closes.
 fn plan_headings(plan: &str) -> Vec<Option<(usize, &str)>> {
-    let mut fence: Option<&str> = None;
+    let mut open: Option<(char, usize)> = None;
     plan.lines()
-        .map(|line| {
-            let t = line.trim_start();
-            match fence {
-                Some(f) if t.starts_with(f) => {
-                    fence = None;
-                    None
+        .map(|line| match open {
+            Some((c, n)) => {
+                let closes = plan_fence(line).is_some_and(|(c2, n2)| {
+                    c2 == c && n2 >= n && line.trim().chars().all(|x| x == c)
+                });
+                if closes {
+                    open = None;
                 }
-                Some(_) => None,
-                None if t.starts_with("```") => {
-                    fence = Some("```");
-                    None
-                }
-                None if t.starts_with("~~~") => {
-                    fence = Some("~~~");
+                None
+            }
+            None => match plan_fence(line) {
+                Some(fence) => {
+                    open = Some(fence);
                     None
                 }
                 None => plan_heading(line),
-            }
+            },
         })
         .collect()
 }
@@ -864,7 +885,14 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         "- Work through sessions of your own: start one for each piece of work with `fctl run -p <project> \"<task>\"`, at most {} at once, with a complete task (below). Each works on its own branch and opens a pull request; fctl wakes you when one ends its turn, asks something or fails.\n",
         rules.crew_max
     ));
-    s.push_str("- They work on the project's model and effort level. Where a piece of work calls for others, ask for them (`fctl run --model sonnet --effort low …`), naming the model by Claude Code's alias for its family's latest (`opus`, `sonnet`, `haiku`, `fable`), as people pick it, rather than by its ID: a lighter model at low effort for mechanical work (merging a pull request that is ready, a release its script makes), the most capable one for hard engineering.\n");
+    s.push_str(&format!(
+        "- They work on the project's model and effort level. Where a piece of work calls for others, ask for them (`fctl run --model sonnet --effort low …`), naming the model by Claude Code's alias for its family's latest (`opus`, `sonnet`, `haiku`, `fable`), as people pick it, rather than by its ID: a lighter model at low effort for mechanical work ({}), the most capable one for hard engineering.\n",
+        if rules.powers.contains(&AutopilotPower::Merge) {
+            "merging a pull request that is ready, a release its script makes"
+        } else {
+            "a release its script makes, a dependency bump"
+        }
+    ));
     s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Wakes and `fctl autopilot brief` say what each said as its turn ended (the start of it) and what people wrote to it; `fctl logs <project>#<n> --last-turn` prints its last turn whole. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`; stop one with `fctl stop <project>#<n>`. One that failed waits until you resume it with `fctl resume <project>#<n> \"…\"` (the message is optional), where it left off: resume it once what failed it has passed (an error on fctl's side, a runner that went away) or is fixed, or start a new one instead. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
     s.push_str(if rules.powers.contains(&AutopilotPower::Merge) {
         "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`).\n"
@@ -2075,6 +2103,22 @@ mod tests {
         let twice = "## Notes\n\na\n\n## Notes\n\nb\n";
         assert!(plan_section(twice, "Notes", "c").is_err_and(|e| e.message.contains("2 sections")));
         assert!(plan_section(plan, " ", "c").is_err());
+        // As CommonMark reads them: code indented four spaces, or in a
+        // fence until one at least as long closes it, has no headings, and
+        // only a #s after a space closes one.
+        let code = "## Build\n\n    # build.sh\n    make\n\n````md\n```\n## Not one\n````\n\n## Learn C#\n\nSoon. ##\n\n## Done ##\n";
+        assert_eq!(
+            plan_section(code, "Build", "Run make.").ok().as_deref(),
+            Some("## Build\n\nRun make.\n\n## Learn C#\n\nSoon. ##\n\n## Done ##\n")
+        );
+        assert_eq!(
+            plan_section(code, "Learn C#", "Later.").ok().as_deref(),
+            Some(
+                "## Build\n\n    # build.sh\n    make\n\n````md\n```\n## Not one\n````\n\n## Learn C#\n\nLater.\n\n## Done ##\n"
+            )
+        );
+        assert!(plan_section(code, "Done", "x").is_ok());
+        assert!(plan_section(code, "Not one", "x").is_err());
     }
 
     #[test]
@@ -2358,7 +2402,10 @@ mod tests {
         assert!(b.contains("as if a stranger takes over at your next wake"));
         assert!(b.contains("`fctl autopilot plan > plan.md` prints it"));
         assert!(b.contains("`fctl autopilot plan --section \"In flight\" --file part.md`"));
-        assert!(b.contains("a lighter model at low effort for mechanical work"));
+        assert!(b.contains("a lighter model at low effort for mechanical work (a release its script makes, a dependency bump)"));
+        assert!(merging.contains(
+            "mechanical work (merging a pull request that is ready, a release its script makes)"
+        ));
         // Asks short, the time from `date`, and what a fresh session needs.
         assert!(b.contains("(at most 500 characters), one topic to an ask, what helps them answer in `--detail-file`"));
         assert!(b.contains("`fctl autopilot withdraw <id>`"));

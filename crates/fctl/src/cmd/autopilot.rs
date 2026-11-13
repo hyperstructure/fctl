@@ -581,9 +581,15 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                         "plan_at": a.plan_at,
                     }));
                 }
+                // Redirected (`> plan.md`), the plan as fctl has it, to
+                // change and write back; nothing at all when there is none.
+                use std::io::IsTerminal;
+                let terminal = std::io::stdout().is_terminal();
                 match &a.plan {
-                    Some(plan) => println!("{}", block(plan)),
-                    None => println!("No plan yet."),
+                    Some(plan) if terminal => println!("{}", block(plan)),
+                    Some(plan) => println!("{}", plan.trim_end_matches('\n')),
+                    None if terminal => println!("No plan yet."),
+                    None => eprintln!("No plan yet."),
                 }
             }
         },
