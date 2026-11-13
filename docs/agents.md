@@ -607,7 +607,12 @@ fctl review summarize summary.json           # review agents, first, where the p
   `~/attachments/`. `FCTL_SESSION_ID`, `FCTL_SESSION_URL`,
   `FCTL_SANDBOX_CPUS` and `FCTL_SANDBOX_MEMORY_MB` say where it is.
 - git and `gh` are signed in with tokens for the project's repositories, as
-  far as the session's GitHub access allows, refreshed each hour.
+  far as the session's GitHub access allows, refreshed each hour. They read
+  Actions but can't re-run or cancel workflow runs, which in many
+  repositories is what starts a release: to run a pull request's checks
+  again, agents push an empty commit.
+- A session's branch, `fctl/<number>-…`, carries its number in fctl,
+  which the system prompt says is no issue's.
 - fctl pushes the branch after every turn until its pull request merges,
   and another branch checked out then only once GitHub has it; agents
   commit as they go and never force-push.

@@ -345,10 +345,11 @@ pub fn system_prompt(
     let repos = spec.project.repos.as_deref().unwrap_or_default();
     match &spec.project.repo {
         Some(repo) => s.push_str(&format!(
-            "- The repository {} is cloned at {workdir}. You are on the branch `{}`, created from `{}`.\n",
+            "- The repository {} is cloned at {workdir}. You are on the branch `{}`, created from `{}`.{}\n",
             repo.full_name(),
             spec.branch,
-            spec.base_branch
+            spec.base_branch,
+            session_number(spec)
         )),
         None if repos.is_empty() => s.push_str(&format!("- Your working directory is {workdir}. No GitHub repository is linked.\n")),
         None => s.push_str(&format!("- Your working directory is {workdir}, an empty git repository.\n")),
@@ -445,6 +446,9 @@ pub fn system_prompt(
     }
     if github.pushes() {
         s.push_str("- Commit as you go with clear messages. fctl pushes new commits on your branch after every turn, until its pull request is merged, and on another branch checked out then only once GitHub has it: a branch you haven't pushed stays in the sandbox. Never force-push and never rewrite published history.\n");
+        if has_repos {
+            s.push_str(RERUN_CHECKS);
+        }
     }
     // Agents that push open pull requests when the task is done or when
     // someone asks for one, and describe them as their project chose.
@@ -535,6 +539,25 @@ pub fn system_prompt(
     }
     s
 }
+
+/// What the number in fctl's name for the session's branch is, after the
+/// line that names the branch: agents took `fctl/12-…` for issue #12, and
+/// wrote `Fixes #12` for it.
+fn session_number(spec: &SessionSpec) -> String {
+    let n = spec.number;
+    let ours = spec.branch == format!("fctl/{n}") || spec.branch.starts_with(&format!("fctl/{n}-"));
+    if !ours {
+        return String::new();
+    }
+    format!(
+        " The {n} in its name is this fctl session's number, not a GitHub issue's: link only issues you read, by their own numbers."
+    )
+}
+
+/// How an agent runs a pull request's checks again: its GitHub token reads
+/// Actions only (`fctl_domain::repos::permissions`), which in many
+/// repositories is what starts a release.
+const RERUN_CHECKS: &str = "- Your GitHub token can't re-run or cancel workflow runs (`gh run rerun` answers \"Resource not accessible by integration\"). To run a pull request's checks again after a failure your change didn't cause, such as a flaky test or a runner that never came, push an empty commit (`git commit --allow-empty -m \"Run the checks again\"`).\n";
 
 /// Who started the session and what to call them, as far as fctl knows, and
 /// how messages from other people show who wrote them ([`user_turn`]).
@@ -1396,6 +1419,31 @@ mod tests {
         assert!(text.contains(
             "make its branch where the repository is checked out, with `git switch -c <branch> origin/<base>`, not in a worktree or another clone"
         ));
+        // The branch's number is the session's, not an issue's.
+        assert!(text.contains(
+            "You are on the branch `fctl/12-test`, created from `main`. The 12 in its name is this fctl session's number, not a GitHub issue's: link only issues you read, by their own numbers.\n"
+        ));
+        // Its token reads Actions only: an empty commit runs checks again.
+        assert!(text.contains("can't re-run or cancel workflow runs"));
+        assert!(text.contains("`git commit --allow-empty -m \"Run the checks again\"`"));
+    }
+
+    #[test]
+    fn says_only_fctls_own_branch_names_hold_the_sessions_number() {
+        let mut spec = spec_with(serde_json::Value::Null);
+        for (branch, says) in [
+            ("fctl/12", true),
+            ("fctl/12-fix-login", true),
+            ("fctl/123-other", false),
+            ("feature/12-login", false),
+        ] {
+            spec.branch = branch.into();
+            assert_eq!(
+                session_number(&spec).contains("The 12 in its name"),
+                says,
+                "{branch}"
+            );
+        }
     }
 
     #[test]
@@ -1517,6 +1565,7 @@ mod tests {
         assert!(text.contains("Approve a pull request only when you are asked to."));
         assert!(!text.contains("work on a branch named"));
         assert!(!text.contains("Commit as you go"));
+        assert!(!text.contains("re-run or cancel workflow runs"));
         assert!(!text.contains("gh pr create"));
         assert!(!text.contains("For another pull request"));
         assert!(!text.contains("## Pull request descriptions"));
