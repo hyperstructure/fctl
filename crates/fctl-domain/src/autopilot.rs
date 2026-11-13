@@ -151,11 +151,15 @@ fn plan_heading(line: &str) -> Option<(usize, &str)> {
     Some((level, text))
 }
 
-/// A code fence: its character and how many of them open it.
+/// A code fence: its character and how many of them open it. What
+/// follows backticks can't hold one (```` ```x``` ```` is inline code).
 fn plan_fence(line: &str) -> Option<(char, usize)> {
     let t = unindented(line)?;
     let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let n = t.chars().take_while(|x| *x == c).count();
+    if c == '`' && t[n..].contains('`') {
+        return None;
+    }
     (n >= 3).then_some((c, n))
 }
 
@@ -2119,6 +2123,11 @@ mod tests {
         );
         assert!(plan_section(code, "Done", "x").is_ok());
         assert!(plan_section(code, "Not one", "x").is_err());
+        let inline = "## Notes\n\n```x``` is inline code\n\n## Next\n\n- a\n";
+        assert_eq!(
+            plan_section(inline, "Next", "- b").ok().as_deref(),
+            Some("## Notes\n\n```x``` is inline code\n\n## Next\n\n- b\n")
+        );
     }
 
     #[test]
