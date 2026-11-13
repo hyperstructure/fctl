@@ -387,24 +387,40 @@ pub fn at_work(status: SessionStatus) -> bool {
 
 /// Whether a session's status says that its agent ended its turn to wait
 /// for work it started in the background (a build, checks it watches, a
-/// subagent), as fctl-agent words the reason: "Waiting for a background
-/// task", "Waiting for 2 background tasks". The agent takes a turn of its
-/// own when that work ends, for up to an hour (ADR 0018).
+/// subagent), as fctl-agent words the reason (`tasks::waiting_reason`):
+/// "Waiting for a background task", "Waiting for 2 background tasks". The
+/// agent takes a turn of its own when that work ends, for up to an hour
+/// (ADR 0018).
 pub fn waits_for_background(reason: Option<&str>) -> bool {
+    match reason {
+        Some("Waiting for a background task") => true,
+        Some(r) => r
+            .strip_prefix("Waiting for ")
+            .and_then(|r| r.strip_suffix(" background tasks"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+        None => false,
+    }
+}
+
+/// Whether a session's status says that fctl-agent stopped it once it had
+/// waited as long as it may for its background work, which didn't finish
+/// (`tasks::limit_reason`: "Stopped after an hour waiting for background
+/// tasks").
+pub fn stopped_waiting_for_background(reason: Option<&str>) -> bool {
     reason.is_some_and(|r| {
-        r.starts_with("Waiting for ")
-            && (r.ends_with(" background task") || r.ends_with(" background tasks"))
+        r.starts_with("Stopped after ") && r.ends_with(" waiting for background tasks")
     })
 }
 
 /// Whether one of the sessions it started wakes it, moving from `before`
-/// (with its reason) to `status`: one that ended a turn, asks something
-/// (`asks`) or failed. Not one that ended its turn only to wait for its
-/// background work, whose own turn comes once that ends: one wake for both
-/// turns, with what it said at the second's end, rather than one for a
-/// session that says it waits for checks. That wait ending without a turn
-/// wakes it then, and so does the session stopping meanwhile (after an
-/// hour of it, say), which ends the work unfinished.
+/// (with its reason) to `status`: one that ended a turn, asked something
+/// as it did (`asks`) or failed. Not one that ended its turn only to wait
+/// for its background work, whose own turn comes once that ends: one wake
+/// for both turns, with what it said at the second's end, rather than one
+/// for a session that says it waits for checks. That wait ending without a
+/// turn wakes it then, and so does the session starting to stop meanwhile
+/// (after an hour of it, say), which ends the work unfinished. A question
+/// it asks between turns wakes it on its own (`SessionObject::ask`).
 pub fn crew_wakes(
     before: SessionStatus,
     before_reason: Option<&str>,
@@ -415,10 +431,12 @@ pub fn crew_wakes(
     let waited = before == SessionStatus::Idle && waits_for_background(before_reason);
     match status {
         SessionStatus::Failed => before != SessionStatus::Failed,
-        SessionStatus::Idle if asks => true,
-        SessionStatus::Idle if waits_for_background(reason) => false,
-        SessionStatus::Idle => before != SessionStatus::Idle || waited,
-        SessionStatus::Stopped => waited,
+        SessionStatus::Idle if before != SessionStatus::Idle => {
+            asks || !waits_for_background(reason)
+        }
+        SessionStatus::Idle => !asks && waited && !waits_for_background(reason),
+        // fctl-agent stops a session in two steps: stopping, then stopped.
+        SessionStatus::Stopping | SessionStatus::Stopped => waited,
         _ => false,
     }
 }
@@ -1436,12 +1454,7 @@ fn crew_state(c: &CrewView<'_>) -> String {
         SessionStatus::Stopping => "stopping".to_owned(),
         SessionStatus::Stopped => match c.question {
             Some(q) => format!("stopped, asks {}", quoted(q)),
-            // fctl-agent's "Stopped after an hour waiting for background
-            // tasks".
-            None if c
-                .status_reason
-                .is_some_and(|r| r.ends_with(" waiting for background tasks")) =>
-            {
+            None if stopped_waiting_for_background(c.status_reason) => {
                 "stopped while it waited for its background work, which didn't finish (a message resumes it)".to_owned()
             }
             None => "stopped (a message resumes it)".to_owned(),
@@ -1947,26 +1960,39 @@ mod tests {
         let msg = Some("Waiting for a message");
         assert!(waits_for_background(bg) && waits_for_background(bgs));
         assert!(!waits_for_background(msg) && !waits_for_background(None));
+        assert!(!waits_for_background(Some(
+            "Waiting for some background tasks"
+        )));
         // A turn that ends wakes it; one that ends to wait for background
         // work (checks it watches) doesn't, unless it asks something.
         assert!(crew_wakes(Running, None, Idle, msg, false));
         assert!(!crew_wakes(Running, None, Idle, bg, false));
         assert!(crew_wakes(Running, None, Idle, bg, true));
         assert!(!crew_wakes(Idle, bgs, Idle, bg, false));
+        // A question it asked woke it already: its tasks ending one by one
+        // don't again.
+        assert!(!crew_wakes(Idle, bgs, Idle, bg, true));
+        assert!(!crew_wakes(Idle, bg, Idle, msg, true));
         // The turn of its own after it does, and the wait ending without
         // one.
         assert!(crew_wakes(Running, None, Idle, msg, false));
         assert!(crew_wakes(Idle, bg, Idle, msg, false));
         assert!(!crew_wakes(Idle, msg, Idle, Some("Something else"), false));
-        // Stopping while it waited ends the work unfinished; stopping after
-        // a turn that woke it already says nothing new.
-        assert!(crew_wakes(
-            Idle,
-            bgs,
+        // Stopping while it waited ends the work unfinished, as fctl-agent
+        // stops it: stopping, then stopped. Stopping after a turn that woke
+        // it already says nothing new.
+        let limit = Some("Stopped after an hour waiting for background tasks");
+        assert!(stopped_waiting_for_background(limit));
+        assert!(crew_wakes(Idle, bgs, SessionStatus::Stopping, limit, false));
+        assert!(!crew_wakes(
+            SessionStatus::Stopping,
+            limit,
             Stopped,
-            Some("Stopped after an hour waiting for background tasks"),
+            limit,
             false
         ));
+        assert!(crew_wakes(Idle, bg, Stopped, limit, false));
+        assert!(!crew_wakes(Idle, msg, SessionStatus::Stopping, None, false));
         assert!(!crew_wakes(Idle, msg, Stopped, None, false));
         assert!(crew_wakes(
             Running,

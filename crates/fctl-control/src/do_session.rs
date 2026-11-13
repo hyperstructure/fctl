@@ -1670,7 +1670,7 @@ impl SessionObject {
             self.publish(&mut s, now).await;
             if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {
                 self.notify(&s, notify::Kind::Asking, now);
-                self.autopilot_moved(&s, s.status, s.status_reason.as_deref(), now);
+                self.autopilot_moved(&s, None, now);
             }
         }
         Ok(internal::Ask {
@@ -3739,26 +3739,28 @@ impl SessionObject {
         if let Some(a) = &s.autopilot {
             let crew = a.role == fctl_proto::autopilot::AutopilotRole::Crew;
             if s.status != before || (crew && s.status_reason.as_deref() != before_reason) {
-                self.autopilot_moved(s, before, before_reason, now);
+                self.autopilot_moved(s, Some((before, before_reason)), now);
             }
         }
     }
 
-    /// A session of an autopilot's moved from `before` (with its reason)
-    /// (`crate::autopilots::session_moved`): its turn ended or failed. One it
-    /// started wakes it only as `fctl_domain::autopilot::crew_wakes` says:
-    /// not while it waits for its own background work.
+    /// A session of an autopilot's moved from `before` (its status and
+    /// reason; `None`: it asks something now, between its turns)
+    /// (`crate::autopilots::session_moved`): its turn ended, it asks or
+    /// failed. One it started wakes it only as
+    /// `fctl_domain::autopilot::crew_wakes` says: not while it waits for its
+    /// own background work.
     fn autopilot_moved(
         &self,
         s: &Session,
-        before: SessionStatus,
-        before_reason: Option<&str>,
+        before: Option<(SessionStatus, Option<&str>)>,
         now: i64,
     ) {
         let Some(a) = s.autopilot.clone() else {
             return;
         };
         if a.role == fctl_proto::autopilot::AutopilotRole::Crew
+            && let Some((before, before_reason)) = before
             && !fctl_domain::autopilot::crew_wakes(
                 before,
                 before_reason,

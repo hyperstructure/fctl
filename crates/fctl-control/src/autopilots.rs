@@ -1800,7 +1800,10 @@ pub async fn session_moved(
         AutopilotRole::Crew => {
             if matches!(
                 status,
-                SessionStatus::Idle | SessionStatus::Failed | SessionStatus::Stopped
+                SessionStatus::Idle
+                    | SessionStatus::Failed
+                    | SessionStatus::Stopping
+                    | SessionStatus::Stopped
             ) {
                 nudge(
                     env,

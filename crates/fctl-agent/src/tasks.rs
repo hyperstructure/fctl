@@ -313,7 +313,7 @@ mod tests {
         // Autopilots wait for what a session waits for (the control plane
         // reads the reason): its turn of its own wakes them instead.
         let waits = |n| fctl_domain::autopilot::waits_for_background(Some(&waiting_reason(n)));
-        assert!(!waits(0) && waits(1) && waits(2));
+        assert!(!waits(0) && waits(1) && waits(2) && waits(12));
     }
 
     #[test]
@@ -326,7 +326,13 @@ mod tests {
             "Stopped after an hour waiting for background tasks"
         );
         // Which the control plane and the autopilot's wakes read too.
-        assert!(limit_reason(limit(minutes(120))).ends_with(" waiting for background tasks"));
+        for idle in [1, 10, 60, 90, 120, 600] {
+            let reason = limit_reason(limit(minutes(idle)));
+            assert!(
+                fctl_domain::autopilot::stopped_waiting_for_background(Some(&reason)),
+                "{reason}"
+            );
+        }
         assert_eq!(duration(minutes(1)), "a minute");
         assert_eq!(duration(Duration::from_secs(20)), "a minute");
         assert_eq!(duration(minutes(10)), "10 minutes");
