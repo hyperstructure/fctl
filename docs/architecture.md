@@ -2185,7 +2185,14 @@ sessions to do it, and sets up what the work needs, as far as they let it
    after people steer or answer it, so that answers given one after another
    reach it together; a minute after one of its sessions ends a turn, asks
    something or fails, gathered likewise (SessionObject tells it,
-   `autopilots::session_moved`); and at once when someone wakes it. A wake
+   `autopilots::session_moved`); and at once when someone wakes it. A
+   session that ends its turn only to wait for its background work (checks
+   it watches; fctl-agent's "Waiting for a background task") doesn't wake
+   it: the turn it takes of its own once that work ends does, with what it
+   said then, and so does that wait ending without a turn, or the session
+   stopping meanwhile (`fctl_domain::autopilot::crew_wakes`, from the
+   status and reason before and after). Its line in a wake says it waits
+   for that work. A wake
    while its session works tells it what's new at its next step (one for
    a fresh session waits for its turn to end), and a check-in waits. The message says why it woke and what is new since it
    last did: notes, a changed direction, answers, its sessions that moved
