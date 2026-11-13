@@ -36,7 +36,7 @@ use fctl_proto::event::{
 };
 use fctl_proto::runner::{
     CLAUDE_STAND_IN, ClaudeCredential, ClaudeCredentialKind, CredentialKind, GitIdentity,
-    GithubCredential, StopReason,
+    GithubCredential, MemorySpec, StopReason,
 };
 use fctl_proto::session::{GithubAccess, ProjectSettings, RemoteControlState, SessionStatus};
 use fctl_proto::uplink::{
@@ -115,6 +115,10 @@ struct Persisted {
     /// what Claude started that still runs.
     #[serde(default)]
     relay_port: Option<u16>,
+    /// The project's memory as `~/AGENTS.md` gave it to Claude's
+    /// conversation ([`prompt::memory_md`]): runs that resume it keep it.
+    #[serde(default)]
+    memory_md: Option<String>,
 }
 
 /// A turn of Claude's that a supervisor before this one didn't see to its
@@ -1572,6 +1576,13 @@ impl Supervisor {
             &spec.project.settings,
             &spec.co_authored_by,
         )?;
+        // Resuming needs Claude's conversation. A sandbox made for a resumed
+        // session (the stopped one expired) has none: start a new one there.
+        let wants_resume = spec.resume || self.persisted.claude_started;
+        let resume = wants_resume
+            && (self.persisted.claude_started
+                || claude::conversation_exists(&paths.home, &spec.claude_session_id));
+        let fresh_resume = wants_resume && !resume;
         // Whether the agent keeps the project's memory: then Claude Code's
         // own, which would last only as long as the sandbox, is off.
         let mut keeps_memory = false;
@@ -1596,6 +1607,16 @@ impl Supervisor {
                 Some(m) if fctl_can(&paths, "memory").await => Some(m),
                 _ => None,
             };
+            let memory_md = memory_section(
+                memory,
+                self.persisted.memory_md.as_deref(),
+                resume,
+                now_ms(),
+            );
+            if self.persisted.memory_md != memory_md {
+                self.persisted.memory_md.clone_from(&memory_md);
+                self.persist();
+            }
             let retrospectives = spec.retrospectives && fctl_can(&paths, "retro").await;
             // Agents keep one for each piece of work where their fctl
             // updates them.
@@ -1616,12 +1637,11 @@ impl Supervisor {
                 && fctl_can(&paths, "resolve").await;
             let extras = prompt::Extras {
                 screenshot_days: days,
-                memory,
+                memory: memory_md.as_deref(),
                 retrospectives,
                 update_retrospectives,
                 review_threads,
                 autopilot: spec.autopilot.is_some(),
-                now: now_ms(),
             };
             if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(&extras)) {
                 tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
@@ -1721,13 +1741,6 @@ impl Supervisor {
             env.insert(SESSION_SOCKET_ENV.into(), socket.display().to_string());
         }
         env.extend(prompt::sandbox_env(config.sandbox));
-        // Resuming needs Claude's conversation. A sandbox made for a resumed
-        // session (the stopped one expired) has none: start a new one there.
-        let wants_resume = spec.resume || self.persisted.claude_started;
-        let resume = wants_resume
-            && (self.persisted.claude_started
-                || claude::conversation_exists(&paths.home, &spec.claude_session_id));
-        let fresh_resume = wants_resume && !resume;
         // `fctl ticket` reaches the tracker, where the sandbox's fctl has it.
         let tickets_cli = match spec.tickets.as_ref() {
             Some(t) if t.via == fctl_proto::tickets::TicketsVia::Fctl => {
@@ -2978,6 +2991,24 @@ fn expiry(write: Option<&GithubCredential>, read: Option<&GithubCredential>) -> 
 
 /// Whether the sandbox's `fctl` has a command (`edit`, `publish`, `retro
 /// update`): custom images may have none, and older images an older one.
+/// The project's memory as `~/AGENTS.md` gives it to Claude
+/// ([`prompt::memory_md`]), in projects that keep one (`memory`): the
+/// section its conversation started with (`kept`) when Claude resumes it,
+/// so that Claude Code doesn't take the whole file in again, else the notes
+/// as they are now. `fctl memory` lists the notes added since.
+fn memory_section(
+    memory: Option<&MemorySpec>,
+    kept: Option<&str>,
+    resume: bool,
+    now: i64,
+) -> Option<String> {
+    let memory = memory?;
+    match kept {
+        Some(kept) if resume => Some(kept.to_owned()),
+        _ => Some(prompt::memory_md(memory, now)),
+    }
+}
+
 async fn fctl_can(paths: &Paths, command: &str) -> bool {
     let args: Vec<&str> = command.split_whitespace().chain(["--help"]).collect();
     let help = workspace::run(&paths.home, &paths.home, "fctl", &args);
@@ -3703,6 +3734,56 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_resumed_conversation_keeps_the_memory_it_started_with() {
+        let note = |id: &str, text: &str, at: i64| fctl_proto::session::Memory {
+            id: fctl_proto::MemoryId(id.into()),
+            project_id: fctl_proto::ProjectId("prj_1".into()),
+            text: text.into(),
+            session: None,
+            created_by: None,
+            created_at: at,
+            edited_at: None,
+            edited_by: None,
+            stale: None,
+        };
+        const DAY: i64 = 86_400_000;
+        let first = MemorySpec {
+            notes: vec![note("mem_1", "Deploys happen on Fridays.", 0)],
+            more: 0,
+        };
+        // A new conversation starts with the notes as they are.
+        let started = memory_section(Some(&first), None, false, DAY / 2);
+        assert!(
+            started
+                .as_deref()
+                .is_some_and(|s| s.contains("(a person, today): Deploys"))
+        );
+        // Resumed the next day, after another session added a note, it
+        // keeps what it read, word for word: Claude Code takes in nothing
+        // again.
+        let later = MemorySpec {
+            notes: vec![
+                note("mem_2", "CI needs Node 22.", DAY),
+                first.notes[0].clone(),
+            ],
+            more: 0,
+        };
+        let resumed = memory_section(Some(&later), started.as_deref(), true, DAY * 3 / 2);
+        assert_eq!(resumed, started);
+        // A new conversation (one in a new sandbox, say) reads them anew.
+        let fresh = memory_section(Some(&later), started.as_deref(), false, DAY * 3 / 2);
+        assert!(
+            fresh.as_deref().is_some_and(
+                |s| s.contains("`mem_2`") && s.contains("(a person, yesterday): Deploys")
+            )
+        );
+        // One from before fctl-agent kept it reads them as they are, once.
+        assert_eq!(memory_section(Some(&later), None, true, DAY * 3 / 2), fresh);
+        // A project that stopped keeping a memory gives none.
+        assert_eq!(memory_section(None, started.as_deref(), true, DAY), None);
+    }
+
     /// A supervisor of a project that keeps a memory and asks for
     /// retrospectives (`memory`, `retros`), with a host link.
     fn keeping(
@@ -3712,7 +3793,7 @@ mod tests {
     ) -> anyhow::Result<(Supervisor, mpsc::UnboundedReceiver<String>)> {
         let (mut sup, _claude, _work) = Supervisor::new(dir.join("state"), None)?;
         let mut config = config(dir, false)?;
-        config.spec.memory = memory.then(fctl_proto::runner::MemorySpec::default);
+        config.spec.memory = memory.then(MemorySpec::default);
         config.spec.retrospectives = retros;
         sup.config = Some(config);
         let (host_tx, host_rx) = mpsc::unbounded_channel::<String>();
