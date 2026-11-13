@@ -1602,17 +1602,20 @@ impl Supervisor {
             let screenshots =
                 spec.project.settings.publish_screenshots && fctl_can(&paths, "publish").await;
             let days = screenshots.then(|| published::days(&spec.project.settings));
-            // So do the memory and retrospectives.
+            // So do the memory and retrospectives. A conversation that
+            // resumes with the memory it started with needs no new look:
+            // this sandbox's fctl kept it then, and a look that fails once
+            // (its time out) would cost Claude the whole file again.
+            let kept = self
+                .persisted
+                .memory_md
+                .clone()
+                .filter(|_| resume && spec.memory.is_some());
             let memory = match &spec.memory {
-                Some(m) if fctl_can(&paths, "memory").await => Some(m),
+                Some(m) if kept.is_some() || fctl_can(&paths, "memory").await => Some(m),
                 _ => None,
             };
-            let memory_md = memory_section(
-                memory,
-                self.persisted.memory_md.as_deref(),
-                resume,
-                now_ms(),
-            );
+            let memory_md = memory_section(memory, kept.as_deref(), resume, now_ms());
             if self.persisted.memory_md != memory_md {
                 self.persisted.memory_md.clone_from(&memory_md);
                 self.persist();
@@ -2989,8 +2992,6 @@ fn expiry(write: Option<&GithubCredential>, read: Option<&GithubCredential>) -> 
     write.iter().chain(read.iter()).map(|c| c.expires_at).min()
 }
 
-/// Whether the sandbox's `fctl` has a command (`edit`, `publish`, `retro
-/// update`): custom images may have none, and older images an older one.
 /// The project's memory as `~/AGENTS.md` gives it to Claude
 /// ([`prompt::memory_md`]), in projects that keep one (`memory`): the
 /// section its conversation started with (`kept`) when Claude resumes it,
@@ -3009,6 +3010,8 @@ fn memory_section(
     }
 }
 
+/// Whether the sandbox's `fctl` has a command (`edit`, `publish`, `retro
+/// update`): custom images may have none, and older images an older one.
 async fn fctl_can(paths: &Paths, command: &str) -> bool {
     let args: Vec<&str> = command.split_whitespace().chain(["--help"]).collect();
     let help = workspace::run(&paths.home, &paths.home, "fctl", &args);
