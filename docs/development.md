@@ -681,11 +681,12 @@ with `env(safe-area-inset-*)`, as the message box does. At the top, use
 iPhone's Home Screen out under the status bar while its top safe area
 stays 0, and `src/lib/viewport.ts` then sets `--status-bar` from the bar's
 height it saw before. iOS also draws a frosted band over the bar that
-blurs what is under it and fades out below it, so `--safe-top` then adds
-`--status-bar-fade` too, and a band of the page's color covers it all
-(`body::before`). Sticky bars pad their tops by it
-(`box-content h-14 pt-(--safe-top)`), and what is placed from the top adds
-it (`top-[calc(1.25rem+var(--safe-top))]`).
+blurs what is under it and fades out about 34 px below it, so `--safe-top`
+then adds `--status-bar-fade` too (22 px), and a band of the page's color
+covers it (`body::before`): the fade's last 12 px fall on the bars' own
+plain tops, and what they show stays sharp below it. Sticky bars pad their
+tops by it (`box-content h-14 pt-(--safe-top)`), and what is placed from
+the top adds it (`top-[calc(1.25rem+var(--safe-top))]`).
 
 On a phone the app keeps the screen's size. Zooming is off: the viewport
 tag in `index.html` asks for none (which also keeps Safari from zooming
