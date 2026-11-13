@@ -1670,7 +1670,7 @@ impl SessionObject {
             self.publish(&mut s, now).await;
             if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {
                 self.notify(&s, notify::Kind::Asking, now);
-                self.autopilot_moved(&s, now);
+                self.autopilot_moved(&s, s.status, s.status_reason.as_deref(), now);
             }
         }
         Ok(internal::Ask {
@@ -1996,6 +1996,7 @@ impl SessionObject {
         };
         let now = now_ms();
         let before = s.status;
+        let before_reason = s.status_reason.clone();
         let mut described = false;
         if let Some(t) = b.title {
             described |= s.title != t;
@@ -2067,7 +2068,7 @@ impl SessionObject {
             self.search_soon(now).await;
         }
         self.notify_fleet(&s);
-        self.notify_followers(&s, before, now);
+        self.notify_followers(&s, before, before_reason.as_deref(), now);
         Ok(serde_json::json!({ "ok": true }))
     }
 
@@ -3319,6 +3320,7 @@ impl SessionObject {
             return;
         }
         let before = s.status;
+        let before_reason = s.status_reason.clone();
         let mut status_changed = false;
         if state.status != s.status
             || state.reason != s.status_reason
@@ -3406,7 +3408,7 @@ impl SessionObject {
             self.search_soon(now).await;
         }
         self.notify_fleet(&s);
-        self.notify_followers(&s, before, now);
+        self.notify_followers(&s, before, before_reason.as_deref(), now);
         // Failed checks and conflicts waited for the turn to end: they
         // reach the agent once what it pushed as the turn ended had time to
         // say so.
@@ -3714,8 +3716,16 @@ impl SessionObject {
     }
 
     /// Tells the people who follow the session when a status change means it
-    /// finished a turn, paused or failed.
-    fn notify_followers(&self, s: &Session, before: SessionStatus, now: i64) {
+    /// finished a turn, paused or failed, and its autopilot what that means
+    /// to it: for a session it started, a change of reason too (its wait for
+    /// background work ending without a turn).
+    fn notify_followers(
+        &self,
+        s: &Session,
+        before: SessionStatus,
+        before_reason: Option<&str>,
+        now: i64,
+    ) {
         // A new turn: whoever interrupted the last one is not part of it.
         if s.status == SessionStatus::Running && before != SessionStatus::Running {
             self.delete_meta("interrupted_by");
@@ -3726,17 +3736,39 @@ impl SessionObject {
         if let Some(kind) = notify::Kind::of(before, s.status) {
             self.notify(s, kind, now);
         }
-        if s.autopilot.is_some() && s.status != before {
-            self.autopilot_moved(s, now);
+        if let Some(a) = &s.autopilot {
+            let crew = a.role == fctl_proto::autopilot::AutopilotRole::Crew;
+            if s.status != before || (crew && s.status_reason.as_deref() != before_reason) {
+                self.autopilot_moved(s, before, before_reason, now);
+            }
         }
     }
 
-    /// A session of an autopilot's moved (`crate::autopilots::session_moved`):
-    /// its turn ended, it asks something or failed.
-    fn autopilot_moved(&self, s: &Session, now: i64) {
+    /// A session of an autopilot's moved from `before` (with its reason)
+    /// (`crate::autopilots::session_moved`): its turn ended or failed. One it
+    /// started wakes it only as `fctl_domain::autopilot::crew_wakes` says:
+    /// not while it waits for its own background work.
+    fn autopilot_moved(
+        &self,
+        s: &Session,
+        before: SessionStatus,
+        before_reason: Option<&str>,
+        now: i64,
+    ) {
         let Some(a) = s.autopilot.clone() else {
             return;
         };
+        if a.role == fctl_proto::autopilot::AutopilotRole::Crew
+            && !fctl_domain::autopilot::crew_wakes(
+                before,
+                before_reason,
+                s.status,
+                s.status_reason.as_deref(),
+                s.question.is_some(),
+            )
+        {
+            return;
+        }
         let env = self.env.clone();
         let id = s.id.0.clone();
         let status = s.status;

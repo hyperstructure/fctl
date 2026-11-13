@@ -385,6 +385,44 @@ pub fn at_work(status: SessionStatus) -> bool {
     )
 }
 
+/// Whether a session's status says that its agent ended its turn to wait
+/// for work it started in the background (a build, checks it watches, a
+/// subagent), as fctl-agent words the reason: "Waiting for a background
+/// task", "Waiting for 2 background tasks". The agent takes a turn of its
+/// own when that work ends, for up to an hour (ADR 0018).
+pub fn waits_for_background(reason: Option<&str>) -> bool {
+    reason.is_some_and(|r| {
+        r.starts_with("Waiting for ")
+            && (r.ends_with(" background task") || r.ends_with(" background tasks"))
+    })
+}
+
+/// Whether one of the sessions it started wakes it, moving from `before`
+/// (with its reason) to `status`: one that ended a turn, asks something
+/// (`asks`) or failed. Not one that ended its turn only to wait for its
+/// background work, whose own turn comes once that ends: one wake for both
+/// turns, with what it said at the second's end, rather than one for a
+/// session that says it waits for checks. That wait ending without a turn
+/// wakes it then, and so does the session stopping meanwhile (after an
+/// hour of it, say), which ends the work unfinished.
+pub fn crew_wakes(
+    before: SessionStatus,
+    before_reason: Option<&str>,
+    status: SessionStatus,
+    reason: Option<&str>,
+    asks: bool,
+) -> bool {
+    let waited = before == SessionStatus::Idle && waits_for_background(before_reason);
+    match status {
+        SessionStatus::Failed => before != SessionStatus::Failed,
+        SessionStatus::Idle if asks => true,
+        SessionStatus::Idle if waits_for_background(reason) => false,
+        SessionStatus::Idle => before != SessionStatus::Idle || waited,
+        SessionStatus::Stopped => waited,
+        _ => false,
+    }
+}
+
 // ───────────────────────────── whose it is ─────────────────────────────
 
 /// What someone who steers an autopilot does that bears on whose
@@ -1389,12 +1427,23 @@ fn crew_state(c: &CrewView<'_>) -> String {
         SessionStatus::Running => "working".to_owned(),
         SessionStatus::Idle => match c.question {
             Some(q) => format!("asks {}", quoted(q)),
+            None if waits_for_background(c.status_reason) => {
+                "ended its turn to wait for its background work, and takes a turn of its own once that ends (fctl wakes you then)".to_owned()
+            }
             None => "ended its turn, waiting for a message".to_owned(),
         },
         SessionStatus::Paused => "paused on a usage limit".to_owned(),
         SessionStatus::Stopping => "stopping".to_owned(),
         SessionStatus::Stopped => match c.question {
             Some(q) => format!("stopped, asks {}", quoted(q)),
+            // fctl-agent's "Stopped after an hour waiting for background
+            // tasks".
+            None if c
+                .status_reason
+                .is_some_and(|r| r.ends_with(" waiting for background tasks")) =>
+            {
+                "stopped while it waited for its background work, which didn't finish (a message resumes it)".to_owned()
+            }
             None => "stopped (a message resumes it)".to_owned(),
         },
         SessionStatus::Failed => match c.status_reason {
@@ -1888,6 +1937,67 @@ mod tests {
         assert!(note("a\u{0}b").is_err());
         assert_eq!(plan("").ok(), Some(None));
         assert_eq!(reason(Some("  ")).ok(), Some(None));
+    }
+
+    #[test]
+    fn a_session_that_waits_for_its_background_work_wakes_it_once_that_ends() {
+        use SessionStatus::{Failed, Idle, Running, Stopped};
+        let bg = Some("Waiting for a background task");
+        let bgs = Some("Waiting for 2 background tasks");
+        let msg = Some("Waiting for a message");
+        assert!(waits_for_background(bg) && waits_for_background(bgs));
+        assert!(!waits_for_background(msg) && !waits_for_background(None));
+        // A turn that ends wakes it; one that ends to wait for background
+        // work (checks it watches) doesn't, unless it asks something.
+        assert!(crew_wakes(Running, None, Idle, msg, false));
+        assert!(!crew_wakes(Running, None, Idle, bg, false));
+        assert!(crew_wakes(Running, None, Idle, bg, true));
+        assert!(!crew_wakes(Idle, bgs, Idle, bg, false));
+        // The turn of its own after it does, and the wait ending without
+        // one.
+        assert!(crew_wakes(Running, None, Idle, msg, false));
+        assert!(crew_wakes(Idle, bg, Idle, msg, false));
+        assert!(!crew_wakes(Idle, msg, Idle, Some("Something else"), false));
+        // Stopping while it waited ends the work unfinished; stopping after
+        // a turn that woke it already says nothing new.
+        assert!(crew_wakes(
+            Idle,
+            bgs,
+            Stopped,
+            Some("Stopped after an hour waiting for background tasks"),
+            false
+        ));
+        assert!(!crew_wakes(Idle, msg, Stopped, None, false));
+        assert!(crew_wakes(
+            Running,
+            None,
+            Failed,
+            Some("Claude crashed"),
+            false
+        ));
+        assert!(!crew_wakes(Failed, Some("a"), Failed, Some("b"), false));
+        assert!(!crew_wakes(Idle, msg, Running, None, false));
+        // Its line in wakes and the brief says so.
+        let mut c = CrewView {
+            reference: "shop#12".into(),
+            title: "Add Apple Pay",
+            status: Idle,
+            status_reason: bg,
+            question: None,
+            pull_requests: vec![],
+            said: Some("Waiting for CI on #41."),
+            heard: &[],
+        };
+        assert_eq!(
+            crew_state(&c),
+            "shop#12 “Add Apple Pay”: ended its turn to wait for its background work, and takes a turn of its own once that ends (fctl wakes you then)"
+        );
+        c.status = Stopped;
+        c.status_reason = Some("Stopped after an hour waiting for background tasks");
+        assert_eq!(
+            crew_state(&c),
+            "shop#12 “Add Apple Pay”: stopped while it waited for its background work, which didn't finish (a message resumes it)"
+        );
     }
 
     #[test]

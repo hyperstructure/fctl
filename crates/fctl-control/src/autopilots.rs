@@ -1783,8 +1783,9 @@ pub fn other_view<'a>(c: &'a CrewRow, question: Option<&'a str>) -> ap::OtherVie
 /// What a session that moved means to its autopilot (from SessionObject):
 /// its own session's turn ended (it checks in next at its time, or the
 /// time it asked for) or failed (fctl tries again, then pauses it); one of
-/// those it started ended a turn, asks something or failed (fctl wakes it
-/// soon).
+/// those it started ended a turn, asks something, failed or stopped while
+/// it waited for its background work (fctl wakes it soon: SessionObject
+/// tells it of those alone, `ap::crew_wakes`).
 pub async fn session_moved(
     env: &Env,
     autopilot: &str,
@@ -1797,7 +1798,10 @@ pub async fn session_moved(
     let db = env.d1("DB")?;
     match role {
         AutopilotRole::Crew => {
-            if matches!(status, SessionStatus::Idle | SessionStatus::Failed) {
+            if matches!(
+                status,
+                SessionStatus::Idle | SessionStatus::Failed | SessionStatus::Stopped
+            ) {
                 nudge(
                     env,
                     &db,
