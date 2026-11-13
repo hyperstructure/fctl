@@ -30,10 +30,12 @@
 // iOS then also draws a frosted band over the page's top, which dims and blurs
 // what is under the bar and fades out below it, where the header's logo and
 // the drawer's head blurred. On an iPhone's or iPad's Home Screen,
-// --status-bar-fade on <html> says how far below the bar it fades out, and
-// --safe-top makes room for that too, only while the bar covers the page. A
-// band of the page's color covers it all (app.css), as the status bar's own
-// band does while the page is below it.
+// --status-bar-fade on <html> says how much further down that takes what is
+// pinned to the top, and --safe-top adds it, only while the bar covers the
+// page: no more than keeps what those bars show clear of the fade, while the
+// plain tops of the bars themselves take its end. A band of the page's color
+// covers the rest (app.css), as the status bar's own band does while the page
+// is below it.
 
 /** A keyboard is at least this tall (px): a visual viewport this much shorter than the layout viewport has one over it. */
 const KEYBOARD = 100;
@@ -42,10 +44,12 @@ const STATUS_BAR = 100;
 /** Where the app keeps the status bar's height, for when it opens under the bar. */
 const STATUS_BAR_KEY = "fctl:status-bar";
 /**
- * How far below the status bar the frosted band iOS draws over a page under the bar fades out
- * (px): about 34 px on a 402 x 874 iPhone under its 62 px bar, and a little more to be clear of it.
+ * How much further down than the status bar what is pinned to the top goes while the page is under
+ * the bar (px). The frosted band iOS draws there fades out about 34 px below the bar (on a 402 x 874
+ * iPhone under its 62 px bar), and the top bars, the drawer and the image viewer show nothing in the
+ * top 12 px of theirs: their plain tops take the fade's end, and what they show stays clear of it.
  */
-export const STATUS_BAR_FADE = 36;
+export const STATUS_BAR_FADE = 22;
 /** How long a keyboard takes to go once its field loses the focus (ms): until then, it may still be up. */
 const KEYBOARD_GOES = 1000;
 
