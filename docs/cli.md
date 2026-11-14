@@ -753,7 +753,9 @@ project, the default for `-p`): `fctl run`, `fctl sessions`, `fctl show`,
 `fctl logs`, `fctl send`, `fctl stop`, `fctl projects set`, `fctl
 projects secrets`, `fctl projects repos`, `fctl schedules` and `fctl
 projects create`, as far as its powers go. `fctl run` returns at once
-there; fctl wakes it when its sessions move on, with the start of what
+there; fctl wakes it when its sessions move on (a turn that ends, a
+question, a failure, or a pull request of one that rests merging or
+closing), with the start of what
 each said as its turn ended and what people wrote to it meanwhile
 (people's messages don't wake it themselves). `fctl logs <ref>
 --last-turn` prints a session's last turn whole.
