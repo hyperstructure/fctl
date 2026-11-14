@@ -317,7 +317,8 @@ const UNENDED: &str = "'queued','provisioning','preparing','running','idle','pau
 /// workspaces (`?workspace=` one), newest first, without review agents'
 /// (`?reviews=1` keeps them) or those of schedules that hide theirs
 /// (`?hidden=1` keeps them). `?active_since=` leaves out those that
-/// ended before then.
+/// ended before then. `?number=12` with `?project=` is the one session
+/// `project#12`, however many came after it.
 pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
     let user = ctx.user()?;
     let settings = ctx.settings();
@@ -340,10 +341,24 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
             n = params.len()
         ));
     }
-    if let Some(project) = http::query(req, "project") {
-        let p = access::project(ctx, &project).await?;
+    let project = http::query(req, "project");
+    if let Some(project) = &project {
+        let p = access::project(ctx, project).await?;
         params.push(s(&p.row.id));
         sql.push_str(&format!(" AND s.project_id = ?{}", params.len()));
+    }
+    if let Some(number) = http::query(req, "number") {
+        if project.is_none() {
+            return Err(validation(
+                "number",
+                "A session's number is its project's: say which with project",
+            ));
+        }
+        let number: i64 = number
+            .parse()
+            .map_err(|_| validation("number", "A session's number, like 12"))?;
+        params.push(n(number));
+        sql.push_str(&format!(" AND s.number = ?{}", params.len()));
     }
     if let Some(status) = http::query(req, "status") {
         match status.as_str() {

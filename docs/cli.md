@@ -67,8 +67,8 @@ Configuration lives in `~/.config/fctl/` (`config.toml`, and
 ## Sessions
 
 Sessions are named by their id (`ses_…`), their URL, or `project#number`,
-which fctl looks up among the project's latest 200 sessions: scripts keep
-the id.
+which fctl finds however many sessions came after it (where the control
+plane is older than the CLI, among the project's latest 200 only).
 
 ```sh
 fctl run -p my-app "Add a dark mode toggle"   # start one and follow it
