@@ -2,6 +2,22 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.34.1 (2026-11-14)
+
+### Features
+
+- **autopilot:** Pass on another autopilot's lessons; edit plan sections ([#538](https://github.com/hyperstructure/fctl/pull/538))
+- **autopilot:** Wake autopilots after background waits, not before ([#539](https://github.com/hyperstructure/fctl/pull/539))
+
+### Fixes
+
+- **web:** Keep the iPhone app's header clear of iOS's frosted status bar ([#533](https://github.com/hyperstructure/fctl/pull/533))
+- **web:** Show wide images whole in the transcript's thumbnails ([#534](https://github.com/hyperstructure/fctl/pull/534))
+- **web:** Keep the iPhone app's header closer to the status bar ([#535](https://github.com/hyperstructure/fctl/pull/535))
+- **autopilot:** Don't report sessions moved to its new subscription ([#536](https://github.com/hyperstructure/fctl/pull/536))
+- **agent:** Keep the memory a conversation started with when it resumes ([#537](https://github.com/hyperstructure/fctl/pull/537))
+- **agent:** Tell agents their branch's number isn't an issue's ([#540](https://github.com/hyperstructure/fctl/pull/540))
+
 ## 0.34.0 (2026-11-12)
 
 ### Features
