@@ -3751,20 +3751,21 @@ impl SessionObject {
         let Some(a) = s.autopilot.clone() else {
             return;
         };
-        if a.role == fctl_proto::autopilot::AutopilotRole::Crew
-            && let Some(before) = before
-        {
+        if a.role == fctl_proto::autopilot::AutopilotRole::Crew {
             // A wake held back while it waits for its background work is
-            // owed until one goes out (`fctl_domain::autopilot::owes`).
+            // owed until one goes out (`fctl_domain::autopilot::owes`). A
+            // question it asks between its turns (no `before`) wakes it.
             let owed = self.meta(AUTOPILOT_OWED).is_some();
             let reason = s.status_reason.as_deref();
-            let wakes = fctl_domain::autopilot::crew_wakes(
-                before,
-                s.status,
-                reason,
-                s.question.is_some(),
-                owed,
-            );
+            let wakes = before.is_none_or(|before| {
+                fctl_domain::autopilot::crew_wakes(
+                    before,
+                    s.status,
+                    reason,
+                    s.question.is_some(),
+                    owed,
+                )
+            });
             match fctl_domain::autopilot::owes(s.status, reason, wakes, owed) {
                 true if !owed => self.set_meta(AUTOPILOT_OWED, "1"),
                 false if owed => self.delete_meta(AUTOPILOT_OWED),
@@ -3773,8 +3774,6 @@ impl SessionObject {
             if !wakes {
                 return;
             }
-        } else if a.role == fctl_proto::autopilot::AutopilotRole::Crew {
-            self.delete_meta(AUTOPILOT_OWED);
         }
         let env = self.env.clone();
         let id = s.id.0.clone();

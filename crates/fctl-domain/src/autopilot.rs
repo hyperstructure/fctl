@@ -600,10 +600,11 @@ pub fn crew_wakes(
 
 /// Whether one of its sessions owes it a wake once it moved to `status`
 /// (with `reason`), given whether it `woke` it and whether it `owed` one
-/// before: from a turn that ended only to wait for background work until
-/// a wake goes out ([`crew_wakes`]).
+/// before: while it waits for its background work, and after, until a
+/// wake goes out ([`crew_wakes`]). A question it asks meanwhile wakes it
+/// without settling that: the wait hasn't ended.
 pub fn owes(status: SessionStatus, reason: Option<&str>, woke: bool, owed: bool) -> bool {
-    !woke && (owed || (status == SessionStatus::Idle && waits_for_background(reason)))
+    (status == SessionStatus::Idle && waits_for_background(reason)) || (owed && !woke)
 }
 
 // ───────────────────────────── whose it is ─────────────────────────────
@@ -2154,7 +2155,8 @@ mod tests {
         assert!(!crew_wakes(Running, Idle, bg, false, false));
         assert!(owes(Idle, bg, false, false));
         assert!(crew_wakes(Running, Idle, bg, true, false));
-        assert!(!owes(Idle, bg, true, false));
+        // A question wakes it, but leaves the wait's end owed.
+        assert!(owes(Idle, bg, true, false) && owes(Idle, bg, true, true));
         // Its tasks ending one by one, the last before the turn of its own
         // starts ("Waiting for a message"), wake nothing, a question or not.
         assert!(!crew_wakes(Idle, Idle, bg, false, true));

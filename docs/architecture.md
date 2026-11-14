@@ -2207,8 +2207,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    it, nor does fctl-agent saying it waits for a message as the last task
    ends, just before the turn it takes of its own then: that turn's end
    does, with what it said then. SessionObject keeps the wake it held back
-   (meta `autopilot_owed`) until one goes out, and sends it as the session
-   starts to stop should no turn have ended meanwhile, after an hour of
+   (meta `autopilot_owed`) until one goes out that isn't for a question
+   asked meanwhile, and sends it as the session starts to stop should no
+   turn have ended meanwhile, after an hour of
    waiting or its idle timeout (`fctl_domain::autopilot::crew_wakes`,
    `owes`). Its line in a wake says it waits for that work. A wake
    while its session works tells it what's new at its next step (one for
