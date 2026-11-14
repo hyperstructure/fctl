@@ -444,12 +444,14 @@ pub async fn log(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> 
 
 /// `GET …/autopilot/brief`: where things stand, as Markdown for its own
 /// session (`fctl autopilot brief`), which then has seen its notes and
-/// answers. People read it too.
-pub async fn brief(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+/// answers, those it showed. `?only=sessions,asks` shows only those parts
+/// (`fctl_domain::autopilot::brief_parts`). People read it too.
+pub async fn brief(ctx: &mut Ctx, req: &Request, id: &str) -> AppResult<Response> {
+    let parts = ap::brief_parts(http::query(req, "only").as_deref()).map_err(AppError)?;
     let l = load(ctx, id).await?;
     let row = require(l.row.clone())?;
     require_read(&l)?;
-    let (text, shown) = brief_of(ctx, &l.p.row, &row).await?;
+    let (text, shown) = brief_of(ctx, &l.p.row, &row, &parts).await?;
     if ctx.autopilot().is_some() {
         engine::mark_seen(&ctx.db, &row.project_id, &shown.notes, &shown.asks, ctx.now).await?;
     }
@@ -457,7 +459,8 @@ pub async fn brief(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 }
 
 /// What a brief showed of what people told the autopilot: its notes, and
-/// the closed asks, whose answers it has then heard of.
+/// the closed asks, whose answers it has then heard of; none of either
+/// when it left out their part.
 struct Shown {
     notes: Vec<String>,
     asks: Vec<String>,
@@ -467,6 +470,7 @@ async fn brief_of(
     ctx: &Ctx,
     project: &ProjectRow,
     row: &AutopilotRow,
+    parts: &[ap::BriefPart],
 ) -> AppResult<(String, Shown)> {
     let db = &ctx.db;
     let notes = notes(ctx, &row.project_id).await?;
@@ -594,11 +598,16 @@ async fn brief_of(
         .collect();
     let powers = row.powers();
     let direction_by = row.direction_by_name.clone();
+    let shows = |part: ap::BriefPart| parts.contains(&part);
     let shown = Shown {
-        notes: notes.iter().map(|n| n.id.clone()).collect(),
+        notes: notes
+            .iter()
+            .filter(|_| shows(ap::BriefPart::Notes))
+            .map(|n| n.id.clone())
+            .collect(),
         asks: ask_rows
             .iter()
-            .filter(|a| a.status() != AutopilotAskStatus::Open)
+            .filter(|a| shows(ap::BriefPart::Asks) && a.status() != AutopilotAskStatus::Open)
             .map(|a| a.id.clone())
             .collect(),
     };
@@ -629,6 +638,7 @@ async fn brief_of(
         projects: &projects,
         wake_at: row.wake_at,
         now: ctx.now,
+        parts,
     });
     Ok((text, shown))
 }

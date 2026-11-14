@@ -641,6 +641,7 @@ role and its powers:
 
 ```sh
 fctl autopilot brief                         # where things stand: direction, notes, asks, sessions, plan, log
+fctl autopilot brief --only sessions,people,asks   # the part that changes between wakes
 fctl run --title "Pipeline board" "Build the pipeline board: …"   # a session of its own; returns at once
 fctl show crm#12 && fctl logs crm#12 --last-turn   # what one did in its last turn
 fctl send crm#12 "Use the existing Card component."   # answer it, steer it
@@ -660,7 +661,10 @@ fctl autopilot pause --reason "The direction is done."
 
 It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people
-set, and steers only the sessions it started.
+set, and steers only the sessions it started. At most as many of those work
+at once as people allow: those queued, starting, working or paused on a
+usage limit count, as does one it just messaged, and those that ended their
+turn, stopped or failed don't.
 
 Its wakes and brief say how each of its sessions stands: its pull
 requests with their checks, the start of what it said as its turn ended
