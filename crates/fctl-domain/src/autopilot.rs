@@ -613,10 +613,12 @@ pub fn owes(status: SessionStatus, reason: Option<&str>, woke: bool, owed: bool)
 /// only to wait for its background work, stopped or failed), as nothing
 /// else would tell the autopilot before its check-in, and the next piece
 /// of work, or a session that waits for that merge, would wait as long.
-/// Not while it works or waits for its background work, nor once a
-/// message came since it last changed (`messaged`), which sets it working
-/// before its status says so: the turn that ends then wakes it, with the
-/// pull request as it stands.
+/// Not while it works or waits for its background work, nor while it
+/// waits for a message that came since it last changed (`messaged`),
+/// which sets it working before its status says so: the turn that ends
+/// then wakes it, with the pull request as it stands. A message to one
+/// that stopped or failed queues it at once; one that stays stopped (its
+/// resume failed) has no turn to end, so its merge wakes the autopilot.
 pub fn pull_wakes(
     status: SessionStatus,
     reason: Option<&str>,
@@ -627,7 +629,7 @@ pub fn pull_wakes(
     let ended = |pr: &PullRequestRef| matches!(pr.state.as_deref(), Some("merged" | "closed"));
     let rests = match status {
         SessionStatus::Idle => !waits_for_background(reason) && !messaged,
-        SessionStatus::Stopped | SessionStatus::Failed => !messaged,
+        SessionStatus::Stopped | SessionStatus::Failed => true,
         _ => false,
     };
     rests
@@ -2354,14 +2356,14 @@ mod tests {
         assert!(!pull_wakes(Stopped, None, false, &[], &[pr(69, "open")]));
         // One it hadn't listed that GitHub says merged already.
         assert!(pull_wakes(Stopped, None, false, &[], &[pr(69, "merged")]));
-        // A message that came since it last changed sets it working: its
-        // turn's end wakes it, and until then it counts among those at
-        // work, which a wake now would undo.
-        for status in [Idle, Stopped] {
-            assert!(
-                !pull_wakes(status, None, true, &open, &merged),
-                "{status:?}"
-            );
+        // A message that came since it last changed sets one that ended
+        // its turn working: its turn's end wakes it, and until then it
+        // counts among those at work, which a wake now would undo.
+        assert!(!pull_wakes(Idle, None, true, &open, &merged));
+        // One still stopped after a message (its resume failed) has no
+        // turn to end.
+        for status in [Stopped, Failed] {
+            assert!(pull_wakes(status, None, true, &open, &merged), "{status:?}");
         }
     }
 

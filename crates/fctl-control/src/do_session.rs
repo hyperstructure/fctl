@@ -3750,9 +3750,10 @@ impl SessionObject {
     /// Whether a pull request of the session, which an autopilot started,
     /// merged or closed while it rests, its pull requests having been
     /// `before`, so that its autopilot hears of it now rather than at its
-    /// check-in (`fctl_domain::autopilot::pull_wakes`). Not once a message
-    /// came since it last changed: `autopilots::CREW_WORKING` counts it at
-    /// work by that, which bumping `updated_at` for the wake would undo.
+    /// check-in (`fctl_domain::autopilot::pull_wakes`). Not while it ended its
+    /// turn and a message came since it last changed:
+    /// `autopilots::CREW_WORKING` counts it at work by that, which bumping
+    /// `updated_at` for the wake would undo.
     fn pull_moved(s: &Session, before: &[PullRequestRef]) -> bool {
         s.autopilot
             .as_ref()
