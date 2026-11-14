@@ -8,7 +8,10 @@
 //! Claude subscription. ScheduleObject's alarm wakes it ([`run_due`]): at
 //! its check-in, at the time it asked for, and soon after something needs
 //! it ([`nudge`]): people steered or answered it, one of its sessions ended
-//! a turn, asks something or failed ([`session_moved`]). A wake is a
+//! a turn, asks something or failed ([`session_moved`]); not one that ended
+//! its turn only to wait for its background work, whose wake comes with its
+//! next turn's end, or as it stops (`fctl_domain::autopilot::crew_wakes`).
+//! A wake is a
 //! message from fctl to its session ([`take_up`]), which a session that
 //! started less than [`fctl_domain::autopilot::SHIFT_MS`] ago takes as it
 //! is; otherwise fctl starts it a fresh one, briefed.

@@ -58,7 +58,9 @@ release fctl runs, has all three.
   slot for an hour after the turn instead of ten minutes. The system
   prompt asks agents to stop what they no longer need.
 - The reason a session waits is text, so hosts, the control plane and the
-  protocol are unchanged. The web app shows the reason beside a waiting
+  protocol are unchanged. (Later the control plane read it too: a session
+  an autopilot started doesn't wake it while it waits for its background
+  work, `fctl_domain::autopilot::waits_for_background`.) The web app shows the reason beside a waiting
   session's status when it is anything but waiting for a message. Agents
   of older versions keep stopping at the idle timeout.
 - Draining runners still stop these sessions after a minute, as they stop
