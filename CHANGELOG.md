@@ -2,6 +2,17 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.34.3 (2026-11-14)
+
+### Features
+
+- **autopilot:** Pass on more lessons, and read the brief in parts ([#544](https://github.com/hyperstructure/fctl/pull/544))
+- **autopilot:** Wake autopilots as their sessions' pull requests merge ([#546](https://github.com/hyperstructure/fctl/pull/546))
+
+### Fixes
+
+- **cli:** Find a session by its number however many came after it ([#545](https://github.com/hyperstructure/fctl/pull/545))
+
 ## 0.34.2 (2026-11-14)
 
 ### Features
