@@ -2289,7 +2289,13 @@ sessions to do it, and sets up what the work needs, as far as they let it
    steer it answer or decline, saying why; a secret goes into its
    project's secrets, sealed, for those who may set them, and the
    autopilot hears only that it is set: sessions that start from then on
-   have it. It takes back what it no longer needs.
+   have it. It takes back what it no longer needs. A question may name a
+   session in its places (`--session`, `about`): one it started that needs
+   files only people have, say. The ask links to it, and files people
+   attach to their answer (uploaded to that session) go to it in a
+   message from them, with the answer as its text; the autopilot hears
+   which went (`autopilot_asks.files`). A message that can't go (the
+   session failed, they can't message it) leaves the ask open.
 7. **Steering.** Notes (`POST …/autopilot/notes`, at most 30 kept) stay
    with it until someone removes them; a newer one wins over an older one
    and over the direction, which people change too. Each reaches it at

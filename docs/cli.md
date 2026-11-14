@@ -715,6 +715,7 @@ fctl autopilot -p crm                          # where it stands: what it asks, 
 fctl autopilot steer -p crm "Focus on the pipeline board this week."
 fctl autopilot asks --all                      # what autopilots ask you, across your workspaces
 fctl autopilot answer -p crm apa_01JC… "Stripe"
+fctl autopilot answer -p crm apa_01JC… --attach logo.svg "The dark one"   # files go to the session it asks about
 fctl autopilot secret -p crm apa_01JC…         # the value it asked for, without showing it (or from stdin)
 fctl autopilot decline -p crm apa_01JC… --reason "Not yet: after launch"
 fctl autopilot log -p crm --limit 100
@@ -765,6 +766,7 @@ fctl autopilot plan --section "In flight" --file part.md   # one section, to the
 fctl autopilot log "Started crm#12 for the board; imports wait for the CSV format."
 fctl autopilot ask "Which layout should the board use?" --detail-file options.md -o Compact -o Roomy
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"
+fctl autopilot ask --session crm#12 "Could you send crm#12 the logo files?" -o Sent   # people's files go to crm#12
 fctl autopilot withdraw apa_01JC…              # found out itself
 fctl autopilot wake --in 45m                   # when to wake next, 5m to 1d
 fctl autopilot pause --reason "The direction is done: all four features shipped."

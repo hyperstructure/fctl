@@ -651,6 +651,7 @@ fctl autopilot plan --section "In flight" --file part.md   # one section; fails 
 fctl autopilot log "Started crm#12 for the board: everything else builds on deals moving."
 fctl autopilot ask "Which layout?" --detail-file options.md -o Compact -o Roomy   # doesn't wait
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"
+fctl autopilot ask --session crm#12 "Could you send crm#12 the logo files?" -o Sent   # their files go to crm#12
 fctl projects set --setup-script 'npm ci'    # with the settings power
 fctl schedules add "Weekly dependencies" --cron "0 9 * * 1" -m "…"   # with the schedules power
 fctl autopilot wake --in 45m                 # when to wake next, if not at its check-in

@@ -282,13 +282,13 @@ session calls the endpoints marked *autopilot*, through its sandbox's
 | `POST …/autopilot/pause`, `…/resume` | `{"reason"}`: pauses it (*autopilot* too: it pauses itself); resuming wakes it at once, on the resumer's subscription unless its owner keeps it and can still run it |
 | `POST …/autopilot/wake` | wakes it now; `{"fresh": true}`, in a fresh session of its own that takes over from the one it works in, at once between its turns, else once its turn ends (`fresh_asked` meanwhile); *autopilot*: `{"in_minutes": 30}` or `{"at": …}`, when it wakes next unless something needs it sooner |
 | `POST …/autopilot/notes`, `DELETE …/autopilot/notes/{note}` | `{"text"}` (Markdown, at most 2,000 characters): steers it, at once |
-| `POST …/autopilot/asks/{ask}/answer` | `{"answer"}`, or `{"secret"}` for a secret it asked for, which goes into the project's secrets |
+| `POST …/autopilot/asks/{ask}/answer` | `{"answer", "attachments"}`, or `{"secret"}` for a secret it asked for, which goes into the project's secrets. `attachments`, uploaded to the session a question is about (`about`), go to it in a message from the caller with the answer as its text; the answer may then be empty |
 | `POST …/autopilot/asks/{ask}/decline` | `{"reason"}` |
 | `GET …/autopilot/log` | `{"entries": […], "has_more"}`, newest first (`?before=` an entry's id, `?limit=` up to 200) |
 | `GET …/autopilot/brief` | `{"brief"}`: where things stand, as Markdown for its session |
 | `POST …/autopilot/log` | *autopilot*: `{"text"}`, what it did, decided or plans |
 | `PUT …/autopilot/plan` | *autopilot*: `{"plan"}`, whole (Markdown) |
-| `POST …/autopilot/asks`, `DELETE …/autopilot/asks/{ask}` | *autopilot*: `{"text", "options", "detail", "secret": "NAME", "project"}`, takes it back |
+| `POST …/autopilot/asks`, `DELETE …/autopilot/asks/{ask}` | *autopilot*: `{"text", "options", "detail", "secret": "NAME", "project", "about": "ses_…"}` (`about`: a session in its places that the question is about), takes it back |
 | `GET /api/v1/autopilots/asks` | `{"asks": […]}`: what autopilots ask that the caller may answer, across their workspaces |
 
 Sessions say what they are to an autopilot (`"autopilot": {"role": "pilot"
