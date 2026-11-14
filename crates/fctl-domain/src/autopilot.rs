@@ -3026,7 +3026,8 @@ mod tests {
         assert!(text.contains("Empty. Write down what you do"));
         // Only the parts it asks for, after where it runs: what it heard of
         // is what it was shown.
-        let parts = brief_parts(Some("asks,sessions")).unwrap();
+        let parts = brief_parts(Some("asks,sessions")).unwrap_or_default();
+        assert_eq!(parts, [BriefPart::Asks, BriefPart::Sessions]);
         let part = brief(&Brief {
             place: place(),
             rules: Rules {
@@ -3079,21 +3080,20 @@ mod tests {
 
     #[test]
     fn the_brief_comes_in_parts() {
-        assert_eq!(brief_parts(None).unwrap(), BriefPart::ALL.to_vec());
-        assert_eq!(brief_parts(Some(" ")).unwrap(), BriefPart::ALL.to_vec());
+        assert_eq!(brief_parts(None).ok(), Some(BriefPart::ALL.to_vec()));
+        assert_eq!(brief_parts(Some(" ")).ok(), Some(BriefPart::ALL.to_vec()));
         // In the brief's order, whatever order they're asked in, once each.
         assert_eq!(
-            brief_parts(Some("log, Sessions,asks,log")).unwrap(),
-            vec![BriefPart::Asks, BriefPart::Sessions, BriefPart::Log]
+            brief_parts(Some("log, Sessions,asks,log")).ok(),
+            Some(vec![BriefPart::Asks, BriefPart::Sessions, BriefPart::Log])
         );
         assert_eq!(
-            brief_parts(Some("people,")).unwrap(),
-            vec![BriefPart::People]
+            brief_parts(Some("people,")).ok(),
+            Some(vec![BriefPart::People])
         );
-        let e = brief_parts(Some("sessions,crew")).unwrap_err();
         assert_eq!(
-            e.message,
-            "No part of the brief is called crew: use direction, notes, asks, sessions, people, plan, log"
+            brief_parts(Some("sessions,crew")).err().map(|e| e.message),
+            Some("No part of the brief is called crew: use direction, notes, asks, sessions, people, plan, log".to_owned())
         );
         for p in BriefPart::ALL {
             assert_eq!(BriefPart::parse(p.as_str()), Some(p));
