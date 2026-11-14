@@ -197,12 +197,21 @@ pub enum AutopilotCmd {
         #[arg(long, default_value_t = 30)]
         limit: u32,
     },
-    /// Its plan. In its sandbox, the autopilot writes it whole, from a file
-    /// or stdin.
+    /// Its plan, as Markdown. In its sandbox, the autopilot writes it
+    /// whole, from a file or stdin, or one of its sections.
+    #[command(after_help = "Examples:
+  fctl autopilot plan > plan.md
+  fctl autopilot plan --file plan.md
+  fctl autopilot plan --section \"In flight\" --file in-flight.md")]
     Plan {
         /// Write the plan from this file (`-`: stdin): the autopilot.
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
+        /// Replace only the section under this heading with the file, up to
+        /// the next heading of its level; it fails when the plan has no
+        /// such section. The file may start with the heading, or a new one.
+        #[arg(long, value_name = "HEADING", requires = "file")]
+        section: Option<String>,
     },
     /// The autopilot asks people a question, with answers to click, or for
     /// a secret, and goes on meanwhile: fctl wakes it with the answer.
@@ -529,7 +538,25 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             }
             print_log(&log);
         }
-        AutopilotCmd::Plan { file } => match file {
+        AutopilotCmd::Plan {
+            file: Some(f),
+            section: Some(heading),
+        } => {
+            let part = read_file_or_stdin(&f)?;
+            let current = api.autopilot(p).await?.plan.unwrap_or_default();
+            let plan = fctl_domain::autopilot::plan_section(&current, &heading, &part)
+                .map_err(|e| anyhow::anyhow!(e.message))?;
+            let answer = api.set_autopilot_plan(p, &plan).await?;
+            if json {
+                return style::print_json(&answer);
+            }
+            println!(
+                "{} Wrote the section “{}” of its plan",
+                style::accent("✓"),
+                style::plain(heading.trim().trim_start_matches('#').trim())
+            );
+        }
+        AutopilotCmd::Plan { file, .. } => match file {
             Some(f) => {
                 let plan = read_file_or_stdin(&f)?;
                 let answer = api.set_autopilot_plan(p, &plan).await?;
@@ -554,9 +581,15 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                         "plan_at": a.plan_at,
                     }));
                 }
+                // Redirected (`> plan.md`), the plan as fctl has it, to
+                // change and write back; nothing at all when there is none.
+                use std::io::IsTerminal;
+                let terminal = std::io::stdout().is_terminal();
                 match &a.plan {
-                    Some(plan) => println!("{}", block(plan)),
-                    None => println!("No plan yet."),
+                    Some(plan) if terminal => println!("{}", block(plan)),
+                    Some(plan) => println!("{}", plan.trim_end_matches('\n')),
+                    None if terminal => println!("No plan yet."),
+                    None => eprintln!("No plan yet."),
                 }
             }
         },
