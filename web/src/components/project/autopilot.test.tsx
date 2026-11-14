@@ -326,7 +326,7 @@ describe("a project's Autopilot tab", () => {
     const link = [...page.querySelectorAll("a")].find((x) => x.textContent?.startsWith("shop#41"));
     expect(link?.textContent).toBe("shop#41Colour matching");
     expect(page.textContent).toContain(
-      "Files you attach go to shop#41 with your answer, in a message from you. It hears at once.",
+      "It goes on with what it can meanwhile. Files you attach go to shop#41 with your answer, in a message from you.",
     );
     const input = page.querySelector<HTMLInputElement>("input[type=file]");
     expect(input).toBeTruthy();

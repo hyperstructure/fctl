@@ -1675,7 +1675,7 @@ function QuestionAnswer({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
       );
     } catch (e) {
       restore?.();
-      failed(e, "Not sent");
+      failed(e, "Not answered");
     } finally {
       setSending(undefined);
     }
@@ -1749,7 +1749,7 @@ function QuestionAnswer({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
       <div className="mt-2 flex items-start gap-3 text-[12px] leading-snug text-ink-4">
         <span>
           {about
-            ? `Files you attach go to ${aboutRef(about)} with your answer, in a message from you. It hears at once.`
+            ? `It goes on with what it can meanwhile. Files you attach go to ${aboutRef(about)} with your answer, in a message from you.`
             : "It goes on with what it can meanwhile, and hears your answer at once."}
         </span>
         <button

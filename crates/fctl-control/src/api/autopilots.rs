@@ -1717,7 +1717,8 @@ pub async fn remove_note(ctx: &mut Ctx, id: &str, note: &str) -> AppResult<Respo
 /// secret it asked for, which goes into the project's secrets: the
 /// autopilot hears only that it's set. Files attached to the answer go to
 /// the session the question is about, in a message from the caller with
-/// the answer as its text; when they can't, the ask stays open.
+/// the answer as its text, before the answer is theirs: when they can't,
+/// the ask stays open.
 pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> AppResult<Response> {
     let body: AnswerAutopilotAskRequest = http::body(req).await?;
     let l = load(ctx, id).await?;
@@ -1773,6 +1774,13 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
         true => None,
         false => Some(files_for(ctx, &found, answer.as_deref(), &files).await?),
     };
+    // The files go first, so that an ask stays open unless they went: the
+    // session may have taken the message even where delivering it failed
+    // (in waking the session), which an ask opened again would hide. The
+    // same answer sent again goes once.
+    if let Some(f) = &sending {
+        f.deliver(ctx, ask, &me).await?;
+    }
     let sent = sending
         .as_ref()
         .map(|f| serde_json::to_string(&f.attachments))
@@ -1791,7 +1799,13 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
             s(ask),
         ],
     )?;
-    let taken = || conflict("Someone answered it already, or it was taken back.");
+    let taken = || match &sending {
+        Some(f) => conflict(&format!(
+            "Someone answered it meanwhile, or it was taken back: your message went to {} all the same.",
+            f.reference
+        )),
+        None => conflict("Someone answered it already, or it was taken back."),
+    };
     let line = match (secret, &answer, &sending) {
         // The secret goes in with the claim, in one transaction.
         (Some((target, name, value)), _, _) => {
@@ -1807,12 +1821,6 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
             }
             match (text, sending) {
                 (_, Some(f)) => {
-                    // The files go once the ask is theirs; if they can't,
-                    // it is open again.
-                    if let Err(e) = f.deliver(ctx, ask, &me).await {
-                        reopen(ctx, ask, &me.id).await;
-                        return Err(e);
-                    }
                     let what = match f.attachments.len() {
                         1 => "a file".to_owned(),
                         n => format!("{n} files"),
@@ -1869,8 +1877,9 @@ struct Sending {
 }
 
 impl Sending {
-    /// Sends them, in a message from `me` with the answer as its text: a
-    /// retry within a day delivers it once.
+    /// Sends them, in a message from `me` with the answer as its text. The
+    /// same answer to `ask` sent again within a day goes once, and wakes
+    /// the session again where waking it failed; a changed one goes too.
     async fn deliver(&self, ctx: &Ctx, ask: &str, me: &crate::model::UserRow) -> AppResult<()> {
         crate::api::sessions::deliver_message(
             ctx,
@@ -1878,7 +1887,16 @@ impl Sending {
             self.text.clone(),
             me,
             crate::api::sessions::source_of(ctx),
-            Some(format!("{}:{ask}", me.id)),
+            Some(ap::answer_key(
+                &me.id,
+                ask,
+                &self.text,
+                &self
+                    .attachments
+                    .iter()
+                    .map(|a| a.id.as_str())
+                    .collect::<Vec<_>>(),
+            )),
             self.attachments.clone(),
         )
         .await?;
@@ -1932,25 +1950,6 @@ async fn files_for(
         text,
         attachments,
     })
-}
-
-/// Opens `ask` again, which `user` answered but whose files didn't reach
-/// the session it is about. A failure is logged.
-async fn reopen(ctx: &Ctx, ask: &str, user: &str) {
-    let done: AppResult<usize> = async {
-        q(
-            &ctx.db,
-            "UPDATE autopilot_asks SET status = 'open', answer = NULL, answered_by = NULL, answered_at = NULL, \
-             files = NULL WHERE id = ? AND status = 'answered' AND answered_by = ? AND answered_at = ?",
-            &[s(ask), s(user), n(ctx.now)],
-        )?
-        .run()
-        .await
-    }
-    .await;
-    if let Err(e) = done {
-        worker::console_error!("reopening ask {ask}: {}", e.0.message);
-    }
 }
 
 /// `POST …/autopilot/asks/{ask}/decline`: no, maybe saying why.

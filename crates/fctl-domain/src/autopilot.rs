@@ -1199,6 +1199,21 @@ pub struct AskView<'a> {
     pub files: Vec<String>,
 }
 
+/// The client key of the message that sends the files of `user`'s answer
+/// to ask `ask` (with its `text`, and the files' `ids`) to the session it
+/// is about: the same answer sent again goes once, as a retry should,
+/// while a changed one is a message of its own.
+pub fn answer_key(user: &str, ask: &str, text: &str, ids: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(text.as_bytes());
+    for id in ids {
+        h.update([0]);
+        h.update(id.as_bytes());
+    }
+    format!("{user}:{ask}:{}", hex::encode(&h.finalize()[..8]))
+}
+
 /// How much of what one of its sessions said as its turn ended fctl keeps
 /// for it, in characters: the start, on one line (`notify::excerpt`).
 /// `fctl logs <ref> --last-turn` prints all of it.
@@ -2621,6 +2636,27 @@ mod tests {
         ));
         assert!(b.contains("your next session starts from them, in a new sandbox"));
         assert!(b.contains("scale images down before you look at them"));
+    }
+
+    #[test]
+    fn the_same_answer_sent_again_goes_once() {
+        let key = answer_key("usr_ada", "apa_1", "Here", &["att_1", "att_2"]);
+        assert!(key.starts_with("usr_ada:apa_1:"));
+        assert_eq!(
+            key,
+            answer_key("usr_ada", "apa_1", "Here", &["att_1", "att_2"])
+        );
+        // Another text, other files or another answerer: a message of its own.
+        assert_ne!(
+            key,
+            answer_key("usr_ada", "apa_1", "Here.", &["att_1", "att_2"])
+        );
+        assert_ne!(key, answer_key("usr_ada", "apa_1", "Here", &["att_1"]));
+        assert_ne!(key, answer_key("usr_ada", "apa_1", "Here", &["att_1att_2"]));
+        assert_ne!(
+            key,
+            answer_key("usr_bo", "apa_1", "Here", &["att_1", "att_2"])
+        );
     }
 
     #[test]
