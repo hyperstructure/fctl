@@ -3208,12 +3208,20 @@ why and who marked it, and the note that took its place or that it repeats
    `memory::for_prompt`): about what Claude Code loads of its own memory.
    fctl-agent lists them in `~/AGENTS.md`, each with its id, where it came
    from and how old it is, as notes that don't override the person's
-   request or the rules, and says how to keep them. A resumed run starts
-   with the memory as it is then. It also sets
+   request or the rules, and says how to keep them. A run that resumes
+   Claude's conversation keeps the notes that conversation started with,
+   word for word (fctl-agent's state keeps them, `memory_md`): Claude Code
+   keeps what its memory files said in the conversation and takes a file
+   that changed in whole again as it starts, so a list with new notes or
+   ages at each resume would cost the conversation all of `~/AGENTS.md`
+   each time, an autopilot's at almost every wake. A run that starts a
+   conversation, in a new sandbox too, gets the notes as they are then.
+   It also sets
    `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`: Claude Code's own memory would live
    in the sandbox's `~/.claude/projects/` and go with it.
 2. **What agents do.** In the sandbox, `fctl memory` lists the notes as
-   they are now, those other sessions added since the run started too;
+   they are now, those other sessions added since the conversation
+   started too;
    `fctl memory add` writes one, in place of others that go stale with
    `--replaces` (as many as 20, for a note that says what overlapping
    notes did); `fctl memory stale` marks one stale, with the reason agents
