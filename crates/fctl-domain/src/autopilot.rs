@@ -607,6 +607,39 @@ pub fn owes(status: SessionStatus, reason: Option<&str>, woke: bool, owed: bool)
     (status == SessionStatus::Idle && waits_for_background(reason)) || (owed && !woke)
 }
 
+/// Whether one of the sessions it started wakes it as GitHub says that a
+/// pull request of its merged or closed (its pull requests went from
+/// `before` to `after`): while the session rests (it ended its turn, not
+/// only to wait for its background work, stopped or failed), as nothing
+/// else would tell the autopilot before its check-in, and the next piece
+/// of work, or a session that waits for that merge, would wait as long.
+/// Not while it works or waits for its background work, nor while it
+/// waits for a message that came since it last changed (`messaged`),
+/// which sets it working before its status says so: the turn that ends
+/// then wakes it, with the pull request as it stands. A message to one
+/// that stopped or failed queues it at once; one that stays stopped (its
+/// resume failed) has no turn to end, so its merge wakes the autopilot.
+pub fn pull_wakes(
+    status: SessionStatus,
+    reason: Option<&str>,
+    messaged: bool,
+    before: &[PullRequestRef],
+    after: &[PullRequestRef],
+) -> bool {
+    let ended = |pr: &PullRequestRef| matches!(pr.state.as_deref(), Some("merged" | "closed"));
+    let rests = match status {
+        SessionStatus::Idle => !waits_for_background(reason) && !messaged,
+        SessionStatus::Stopped | SessionStatus::Failed => true,
+        _ => false,
+    };
+    rests
+        && after.iter().filter(|pr| ended(pr)).any(|pr| {
+            !before
+                .iter()
+                .any(|b| b.url.eq_ignore_ascii_case(&pr.url) && ended(b))
+        })
+}
+
 // ───────────────────────────── whose it is ─────────────────────────────
 
 /// What someone who steers an autopilot does that bears on whose
@@ -965,9 +998,9 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     ));
     s.push_str("- Follow them with `fctl autopilot` (its Sessions), `fctl show <project>#<n>` and `fctl logs <project>#<n>`. Wakes and `fctl autopilot brief` say what each said as its turn ended (the start of it) and what people wrote to it; `fctl logs <project>#<n> --last-turn` prints its last turn whole. Answer what one asks, or steer it, with `fctl send <project>#<n> \"…\"`, naming it as your brief or a wake does (or by its `ses_…` id), never with a placeholder or a number you guess: a wrong one reaches another of your sessions; stop one with `fctl stop <project>#<n>`. One that failed waits until you resume it with `fctl resume <project>#<n> \"…\"` (the message is optional), where it left off: resume it once what failed it has passed (an error on fctl's side, a runner that went away) or is fixed, or start a new one instead. Keep this session for planning, steering and setting things up: work that changes code goes to a session of its own.\n");
     s.push_str(if rules.powers.contains(&AutopilotPower::Merge) {
-        "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`).\n"
+        "- Your sessions merge their own pull requests once their checks pass and the work is done (fctl's note on their task asks them to), so each piece of work lands before the next builds on it. Tell one to wait (`fctl send …`) when you want to look first; where a repository's rules don't let them merge, they say so, and you ask people to (`fctl autopilot ask`). A pull request of your sessions that merges or closes wakes you, whoever merged it: as it does, or once that session's turn ends if it is at work.\n"
     } else {
-        "- Your sessions open pull requests and leave merging to people. When the next piece of work waits on one, ask people to merge it (`fctl autopilot ask`), and go on meanwhile with what doesn't.\n"
+        "- Your sessions open pull requests and leave merging to people. When the next piece of work waits on one, ask people to merge it (`fctl autopilot ask`), and go on meanwhile with what doesn't: a pull request of your sessions that merges or closes wakes you, as it does, or once that session's turn ends if it is at work.\n"
     });
     s.push_str(&format!("- {}\n", others_line(scope, rules.powers)));
     s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well. Write it as if a stranger takes over at your next wake, starting with what they must act on first: what is in flight, what you wait for and what you promised people. Change the plan as fctl has it (`fctl autopilot plan > plan.md` prints it), not a copy from earlier, and write it whole, or one section of it with `fctl autopilot plan --section \"In flight\" --file part.md`, which fails when the plan has no such section. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them, in a new sandbox: what you don't write down, it won't know, and the files you made here (a script, notes) won't be there, so put in your plan what it needs of them, the scripts you rely on whole, as it can't look them up.\n");
@@ -1035,7 +1068,7 @@ fn work_lines(powers: &[AutopilotPower]) -> Vec<String> {
     };
     vec![
         format!("A session knows only its task and what every session of the project reads (its instructions and memory). Give each a complete task: what to do and why, what done looks like, and what to leave alone, naming the files your other open pull requests change (`gh pr view <n> --json files`): it leaves those alone until they merge, and you tell it when they have.{unseen}"),
-        "Sessions that change the same screen or component at once can each be right alone and break together (two that each add a chip to the same row). Give them one shared layout, and have the second wait until the first merges: a small script in the background that waits for the merge tells you when to let it go on.".to_owned(),
+        "Sessions that change the same screen or component at once can each be right alone and break together (two that each add a chip to the same row). Give them one shared layout, and have the second wait until the first merges: fctl wakes you once the first's pull request has merged (as it merges, or as the first's turn ends if it is at work), and you tell the second to go on.".to_owned(),
         "For a big or uncertain piece of work, start with a spike: a session that tries it, reports a short proposal with real numbers (what it measured, what each way would cost), and carries on unless something blocks it. You get a checkpoint without stalling the work.".to_owned(),
         format!("Put what every session should know (a trap, a rule, a command that works) where every session reads it, rather than in each task: {everyone}. When sessions keep making the same mistake, fix its cause with a session of its own (a script that does harm by default, a missing check) rather than warn each one again. Once the memory grows long, have a session tidy it, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale."),
         "Before you take a session's word that its work is done, read its last turn (`fctl logs <project>#<n> --last-turn`) and its pull request. Sessions stop short: some end their turn after their first pull request or skip part of their own list, and one whose Claude Code restarted under it may wait without a word (fctl says it ended its turn without one, and its log says `resuming the conversation`). Send such a one what is left, item by item. Check what a session claims before you act on it, such as a failure that is \"already on main\", against main's own checks.".to_owned(),
@@ -2418,6 +2451,65 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_request_that_merges_or_closes_wakes_it_while_its_session_rests() {
+        use SessionStatus::*;
+        let pr = |number: u64, state: &str| PullRequestRef {
+            number,
+            url: format!("https://github.com/romanesco/shop/pull/{number}"),
+            title: None,
+            state: Some(state.to_owned()),
+            repo: None,
+            state_changed_at: None,
+            updated_at: None,
+            checks: None,
+        };
+        let open = [pr(67, "open"), pr(68, "merged")];
+        let merged = [pr(67, "merged"), pr(68, "merged")];
+        let closed = [pr(67, "closed"), pr(68, "merged")];
+        for status in [Idle, Stopped, Failed] {
+            assert!(
+                pull_wakes(status, None, false, &open, &merged),
+                "{status:?}"
+            );
+            assert!(
+                pull_wakes(status, None, false, &open, &closed),
+                "{status:?}"
+            );
+        }
+        // Its turn's end, to come, wakes it instead.
+        for status in [Queued, Preparing, Running, Paused, Stopping] {
+            assert!(
+                !pull_wakes(status, None, false, &open, &merged),
+                "{status:?}"
+            );
+        }
+        assert!(!pull_wakes(
+            Idle,
+            Some("Waiting for a background task"),
+            false,
+            &open,
+            &merged
+        ));
+        // Only a pull request that ended since: not one merged before, nor
+        // checks that changed, nor one that opened.
+        assert!(!pull_wakes(Stopped, None, false, &merged, &merged));
+        assert!(!pull_wakes(Stopped, None, false, &merged, &closed));
+        assert!(!pull_wakes(Stopped, None, false, &open, &open));
+        assert!(!pull_wakes(Stopped, None, false, &[], &[pr(69, "open")]));
+        // One it hadn't listed that GitHub says merged already.
+        assert!(pull_wakes(Stopped, None, false, &[], &[pr(69, "merged")]));
+        // A message that came since it last changed sets one that ended
+        // its turn working: its turn's end wakes it, and until then it
+        // counts among those at work, which a wake now would undo.
+        assert!(!pull_wakes(Idle, None, true, &open, &merged));
+        // One still stopped after a message (its resume failed) has no
+        // turn to end.
+        for status in [Stopped, Failed] {
+            assert!(pull_wakes(status, None, true, &open, &merged), "{status:?}");
+        }
+    }
+
+    #[test]
     fn replaces_one_section_of_its_plan() {
         let plan = "# Plan\n\n## In flight\n\n- shop#12 adds Apple Pay\n\n### Waiting\n\n- CI on #41\n\n## Done\n\n- [x] Checkout\n\n```sh\n# not a heading\n```\n";
         // The section's body, under its own heading, up to the next heading
@@ -2589,6 +2681,16 @@ mod tests {
         };
         assert!(b(&[Merge]).contains("Your sessions merge their own pull requests"));
         assert!(b(&[Settings]).contains("leave merging to people"));
+        // Whoever merges, a merge wakes it: it waits for none with a script.
+        assert!(b(&[Merge]).contains(
+            "A pull request of your sessions that merges or closes wakes you, whoever merged it: as it does, or once that session's turn ends if it is at work."
+        ));
+        assert!(b(&[Settings]).contains(
+            "go on meanwhile with what doesn't: a pull request of your sessions that merges or closes wakes you, as it does, or once that session's turn ends if it is at work."
+        ));
+        assert!(b(&[]).contains(
+            "fctl wakes you once the first's pull request has merged (as it merges, or as the first's turn ends if it is at work), and you tell the second to go on."
+        ));
         assert!(!b(&[Merge]).contains("You may also"));
         // Its sessions' models by the aliases people read by name.
         assert!(b(&[]).contains("`fctl run --model sonnet --effort low …`"));

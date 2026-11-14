@@ -671,7 +671,8 @@ requests with their checks, the start of what it said as its turn ended
 (or that it ended its turn without a word, as a turn cut off does), and
 who else wrote to it and what, so that it doesn't contradict them. People
 writing to one of its sessions don't wake it: it hears of them at its next
-wake.
+wake. A pull request of one that rests merging or closing does, whoever
+merged it, so that it needs no script to wait for a merge.
 
 It looks after the sessions people start themselves too: its brief lists
 those at work and those whose pull requests are still open, with their

@@ -3191,6 +3191,12 @@ impl SessionObject {
         if changed {
             let merged_more = merged(&s.pull_requests).len() > merged_before;
             self.want_done(&s, progress_before, merged_more).await;
+            if Self::pull_moved(&s, &before) {
+                // It changed for its autopilot's wake, which lists those
+                // that did since it last woke.
+                s.updated_at = now;
+                self.wake_autopilot(&s, now);
+            }
             self.pull_requests_changed(s, now).await;
         }
         // After the pull requests, which tell whether failed checks are news.
@@ -3741,6 +3747,26 @@ impl SessionObject {
         }
     }
 
+    /// Whether a pull request of the session, which an autopilot started,
+    /// merged or closed while it rests, its pull requests having been
+    /// `before`, so that its autopilot hears of it now rather than at its
+    /// check-in (`fctl_domain::autopilot::pull_wakes`). Not while it ended its
+    /// turn and a message came since it last changed:
+    /// `autopilots::CREW_WORKING` counts it at work by that, which bumping
+    /// `updated_at` for the wake would undo.
+    fn pull_moved(s: &Session, before: &[PullRequestRef]) -> bool {
+        s.autopilot
+            .as_ref()
+            .is_some_and(|a| a.role == fctl_proto::autopilot::AutopilotRole::Crew)
+            && fctl_domain::autopilot::pull_wakes(
+                s.status,
+                s.status_reason.as_deref(),
+                s.messaged_at.is_some_and(|m| m >= s.updated_at),
+                before,
+                &s.pull_requests,
+            )
+    }
+
     /// A session of an autopilot's moved from `before` (its status; `None`:
     /// it asks something now, between its turns)
     /// (`crate::autopilots::session_moved`): its turn ended, it asks or
@@ -3748,7 +3774,7 @@ impl SessionObject {
     /// `fctl_domain::autopilot::crew_wakes` says: not while it waits for its
     /// own background work.
     fn autopilot_moved(&self, s: &Session, before: Option<SessionStatus>, now: i64) {
-        let Some(a) = s.autopilot.clone() else {
+        let Some(a) = s.autopilot.as_ref() else {
             return;
         };
         if a.role == fctl_proto::autopilot::AutopilotRole::Crew {
@@ -3775,6 +3801,15 @@ impl SessionObject {
                 return;
             }
         }
+        self.wake_autopilot(s, now);
+    }
+
+    /// Tells the session's autopilot that it moved on, which wakes it
+    /// (`crate::autopilots::session_moved`).
+    fn wake_autopilot(&self, s: &Session, now: i64) {
+        let Some(a) = s.autopilot.clone() else {
+            return;
+        };
         let env = self.env.clone();
         let id = s.id.0.clone();
         let status = s.status;
