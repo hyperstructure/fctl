@@ -20,8 +20,9 @@ pub struct Extras<'a> {
     /// How long published screenshots' links work, in projects that
     /// publish them.
     pub screenshot_days: Option<u32>,
-    /// The project's memory as the run started, in projects that keep one.
-    pub memory: Option<&'a MemorySpec>,
+    /// The project's memory, in projects that keep one: its section of
+    /// `~/AGENTS.md` ([`memory_md`]) as Claude's conversation started.
+    pub memory: Option<&'a str>,
     /// The project asks for retrospectives.
     pub retrospectives: bool,
     /// The sandbox's fctl updates them too (`fctl retro update`), so the
@@ -33,8 +34,6 @@ pub struct Extras<'a> {
     /// The session is an autopilot's own: it passes screenshots on to its
     /// sessions rather than putting them in pull requests.
     pub autopilot: bool,
-    /// Now, for how old the notes are.
-    pub now: i64,
 }
 
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
@@ -62,7 +61,7 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
         s.push_str(&md.replace("{lasts}", &lasts));
     }
     if let Some(memory) = extras.memory {
-        s.push_str(&memory_md(memory, extras.now));
+        s.push_str(memory);
     }
     if extras.retrospectives {
         s.push_str(RETROSPECTIVES_MD);
@@ -80,8 +79,14 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
 }
 
 /// The project's memory as `~/AGENTS.md` gives it: the notes, newest
-/// first, and how to keep them.
-fn memory_md(memory: &MemorySpec, now: i64) -> String {
+/// first, with how old they are at `now`, and how to keep them.
+///
+/// Claude Code keeps what its memory files said in the conversation, and
+/// gives a file whole again whenever it changes, as it starts. So a run
+/// that carries on with a conversation keeps the section that conversation
+/// started with, rather than one with the notes added since and new ages:
+/// each would cost the conversation the whole file again, at every resume.
+pub fn memory_md(memory: &MemorySpec, now: i64) -> String {
     let mut s = String::from(
         "\n## Project memory\n\nAgents of this project keep notes for the agents that come after them: what\nthey learned that the repository doesn't say.",
     );
@@ -1972,9 +1977,9 @@ mod tests {
             ],
             more: 4,
         };
+        let section = memory_md(&memory, NOW);
         let md = agents_md(&Extras {
-            memory: Some(&memory),
-            now: NOW,
+            memory: Some(&section),
             ..Default::default()
         });
         assert!(md.contains("## Project memory"));
@@ -1994,10 +1999,9 @@ mod tests {
         assert!(md.contains("with `--replaces mem_…` for each of them"));
         assert!(!md.contains("fctl retro"));
         // A project without notes yet still says how to keep them.
-        let empty = MemorySpec::default();
+        let empty = memory_md(&MemorySpec::default(), NOW);
         let md = agents_md(&Extras {
             memory: Some(&empty),
-            now: NOW,
             ..Default::default()
         });
         assert!(md.contains("It has none yet; yours\nmay be the first."));
@@ -2035,7 +2039,7 @@ mod tests {
         assert!(!md.contains("gets one of its own"));
         assert!(md.ends_with("- If `fctl retro` fails, carry on.\n"));
         // With memory, what a future agent should know goes there too.
-        let memory = MemorySpec::default();
+        let memory = memory_md(&MemorySpec::default(), NOW);
         let md = agents_md(&Extras {
             retrospectives: true,
             memory: Some(&memory),

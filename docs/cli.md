@@ -759,7 +759,9 @@ each said as its turn ended and what people wrote to it meanwhile
 
 ```sh
 fctl autopilot brief                           # where things stand, as it wakes
+fctl autopilot plan > plan.md                  # its plan as fctl has it
 fctl autopilot plan --file plan.md             # its plan, whole (Markdown; - for stdin)
+fctl autopilot plan --section "In flight" --file part.md   # one section, to the next heading of its level
 fctl autopilot log "Started crm#12 for the board; imports wait for the CSV format."
 fctl autopilot ask "Which layout should the board use?" --detail-file options.md -o Compact -o Roomy
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"

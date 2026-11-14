@@ -1144,7 +1144,11 @@ moves its own: each wake moves its own session, unless it works, and the
 sessions it started that wait or stopped in the last week, to its owner's
 connection, so that taking it over, or its owner choosing or connecting
 another connection (which wakes it with the reason `moved`), carries it
-on there. A message that comes
+on there. A move that leaves the session as it is (stopped, or queued)
+leaves when it last changed as it was too, in D1 (`sessions.updated_at`)
+and in SessionDO's summary: an autopilot's wakes list its sessions that
+changed since it last woke, and a move is no news of them.
+A message that comes
 while the session stops queues it too: FleetDO starts the new run once the
 last one has ended, so that two runs of a session never overlap, and
 SessionDO ignores what the last run's uplink still says about stopping.
@@ -2146,16 +2150,28 @@ sessions to do it, and sets up what the work needs, as far as they let it
    next session needs while its cache is warm; the briefing tells it when
    a fresh session takes over, and to keep its context lean: to read what
    it needs of a session rather than all of its transcript, and to hand
-   long reading to a subagent. Its last section passes on what an
-   autopilot that ran a project for a day learned about getting good work
-   from its sessions (`work_lines`): what a task needs, among it the files
-   its other open pull requests change; putting what every session should
-   know in the project's memory or instructions, and fixing the cause of
-   a mistake sessions repeat; reading a session's last turn (`fctl logs
+   long reading to a subagent. Its last section passes on what autopilots
+   that ran projects for days learned about getting good work from their
+   sessions (`work_lines`): what a task needs, among it the files its
+   other open pull requests change and, where its sessions merge, what
+   may merge without its look (a session that doesn't know ends its turn
+   to ask, which costs a wake); sessions that change the same screen at
+   once, which get one shared layout and go one after the other; a spike
+   with real numbers before big, uncertain work; putting what every
+   session should know in the project's memory or instructions, fixing
+   the cause of a mistake sessions repeat, and having a session tidy the
+   memory once it grows long; reading a session's last turn (`fctl logs
    --last-turn`) before taking its word that it's done, as sessions stop
-   short; one round of
-   changes; reviewing screenshots; people's own messages to its sessions;
-   and background scripts that wait on what doesn't wake it. Each wake
+   short; one round of changes; reviewing screenshots with a subagent, and
+   asking people to check right after a ship what no sandbox can; a person
+   watching the first run of work that drives hardware; licenses that
+   bind the project; people's own messages to its sessions; background
+   scripts that wait on what doesn't wake it, on plain HTTP APIs; and
+   holding ships while people are away. Its plan reads as if a stranger
+   took over at the next wake, and it changes the plan as fctl has it
+   (`fctl autopilot plan` prints it), whole or a section at a time
+   (`fctl autopilot plan --section`, which fails when the plan lacks the
+   section rather than write one without it). Each wake
    message and the brief say the time in UTC (`clock`), and its sessions'
    open pull requests say how their checks stand (`pull_line`). Changing
    the handoff, as changing its model, changes how much it spends.
@@ -3211,12 +3227,20 @@ why and who marked it, and the note that took its place or that it repeats
    `memory::for_prompt`): about what Claude Code loads of its own memory.
    fctl-agent lists them in `~/AGENTS.md`, each with its id, where it came
    from and how old it is, as notes that don't override the person's
-   request or the rules, and says how to keep them. A resumed run starts
-   with the memory as it is then. It also sets
+   request or the rules, and says how to keep them. A run that resumes
+   Claude's conversation keeps the notes that conversation started with,
+   word for word (fctl-agent's state keeps them, `memory_md`): Claude Code
+   keeps what its memory files said in the conversation and takes a file
+   that changed in whole again as it starts, so a list with new notes or
+   ages at each resume would cost the conversation all of `~/AGENTS.md`
+   each time, an autopilot's at almost every wake. A run that starts a
+   conversation, in a new sandbox too, gets the notes as they are then.
+   It also sets
    `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`: Claude Code's own memory would live
    in the sandbox's `~/.claude/projects/` and go with it.
 2. **What agents do.** In the sandbox, `fctl memory` lists the notes as
-   they are now, those other sessions added since the run started too;
+   they are now, those other sessions added since the conversation
+   started too;
    `fctl memory add` writes one, in place of others that go stale with
    `--replaces` (as many as 20, for a note that says what overlapping
    notes did); `fctl memory stale` marks one stale, with the reason agents

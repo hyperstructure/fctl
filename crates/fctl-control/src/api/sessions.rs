@@ -950,13 +950,7 @@ pub async fn move_to(
     // From here on a failure leaves it stopped, or stopping, on the new
     // connection: a message, a resume or taking it over again starts it
     // there.
-    q(
-        db,
-        "UPDATE sessions SET credential_id = ?, updated_at = ? WHERE id = ?",
-        &[s(&credential.id), n(now), s(id.as_str())],
-    )?
-    .run()
-    .await?;
+    connect(db, id.as_str(), &credential.id).await?;
     let stub = internal::session_stub(env, id.as_str())?;
     if !again {
         let _: serde_json::Value = internal::post(
@@ -964,6 +958,7 @@ pub async fn move_to(
             "/control",
             &ControlState {
                 claude_user: Some(user.clone()),
+                keep_updated_at: true,
                 ..Default::default()
             },
         )
@@ -996,6 +991,24 @@ pub async fn move_to(
             session_id: id.clone(),
         },
     )
+    .await?;
+    Ok(())
+}
+
+/// Puts session `id`'s runs on Claude connection `credential_id` in D1
+/// ([`move_to`]). When it last changed stays as it was: a session that
+/// rests where it is, now on another subscription, did nothing new, and
+/// its autopilot's wakes take its sessions that changed since it last
+/// woke for news (`autopilots::News`). SessionDO keeps its summary's as
+/// it was too (`ControlState::keep_updated_at`). One that starts again
+/// changes as it does.
+pub async fn connect(db: &worker::D1Database, id: &str, credential_id: &str) -> AppResult<()> {
+    q(
+        db,
+        "UPDATE sessions SET credential_id = ? WHERE id = ?",
+        &[s(credential_id), s(id)],
+    )?
+    .run()
     .await?;
     Ok(())
 }

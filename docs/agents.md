@@ -640,7 +640,9 @@ fctl run --title "Pipeline board" "Build the pipeline board: …"   # a session 
 fctl show crm#12 && fctl logs crm#12 --last-turn   # what one did in its last turn
 fctl send crm#12 "Use the existing Card component."   # answer it, steer it
 fctl resume crm#12 "Carry on where you left off."      # one that failed, once what failed it has passed
+fctl autopilot plan > plan.md                # its plan as fctl has it, to change
 fctl autopilot plan --file plan.md           # its plan, whole
+fctl autopilot plan --section "In flight" --file part.md   # one section; fails without it
 fctl autopilot log "Started crm#12 for the board: everything else builds on deals moving."
 fctl autopilot ask "Which layout?" --detail-file options.md -o Compact -o Roomy   # doesn't wait
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"

@@ -2568,3 +2568,99 @@ async fn notify_people(
         worker::console_error!("notifying of an autopilot: {}", e.0.message);
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::api::sessions::connect;
+    use crate::db::Count;
+    use crate::error::internal;
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const NOW: i64 = 1_790_000_000_000;
+    const HOUR: i64 = 3_600_000;
+    const DAY: i64 = 24 * HOUR;
+
+    /// Web's autopilot, on Ada's Claude connection `crd_old`, which last
+    /// woke an hour ago; and Ada's other connection, `crd_new`.
+    async fn autopilot(db: &D1Database) -> AppResult<AutopilotRow> {
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at, autopilots) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0, 1)",
+            "INSERT INTO workspace_members (workspace_id, user_id, email, role, created_at) \
+             VALUES ('wsp_acme', 'usr_ada', 'ada@example.com', 'owner', 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_web', 'web', 'Web', 'acme', 'web', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO claude_credentials (id, user_id, kind, secret_enc, created_at, updated_at) \
+             VALUES ('crd_old', 'usr_ada', 'oauth', 'sealed', 0, 0)",
+            "INSERT INTO claude_credentials (id, user_id, kind, secret_enc, created_at, updated_at) \
+             VALUES ('crd_new', 'usr_ada', 'oauth', 'sealed', 0, 0)",
+        ] {
+            q(db, sql, &[])?.run().await?;
+        }
+        q(
+            db,
+            "INSERT INTO autopilots (project_id, workspace_id, owner_id, direction, direction_at, woken_at, created_at, updated_at) \
+             VALUES ('prj_web', 'wsp_acme', 'usr_ada', 'Keep the shop running.', 0, ?1, 0, ?1)",
+            &[n(NOW - HOUR)],
+        )?
+        .run()
+        .await?;
+        row(db, "prj_web")
+            .await?
+            .ok_or_else(|| internal("no autopilot"))
+    }
+
+    /// Its session `number`, on `crd_old`, that last changed at `at`.
+    async fn crew(db: &D1Database, number: i64, status: &str, at: i64) -> AppResult<String> {
+        let id = format!("ses_{number}");
+        q(
+            db,
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, \
+             claude_session_id, created_at, updated_at, ended_at, autopilot_id, autopilot_role) \
+             VALUES (?1, 'prj_web', ?2, 'Fix the cart', 'Fix the cart', ?3, 'usr_ada', 'crd_old', ?1, ?4, ?4, ?4, \
+             'prj_web', 'crew')",
+            &[s(&id), n(number), s(status), n(at)],
+        )?
+        .run()
+        .await?;
+        Ok(id)
+    }
+
+    /// How many of its sessions a wake would move to `credential` now.
+    async fn to_move(db: &D1Database, credential: &str) -> AppResult<i64> {
+        let c: Option<Count> = q(
+            db,
+            &format!("SELECT COUNT(*) AS n FROM sessions WHERE {CREW_TO_MOVE}"),
+            &[s("prj_web"), s(credential), n(NOW - 7 * DAY)],
+        )?
+        .first()
+        .await?;
+        Ok(c.map_or(0, |c| c.n))
+    }
+
+    /// Its owner chose another connection, and its wakes move the sessions
+    /// it started that rest to that one: that is no news of them. Its next
+    /// wake lists the one whose turn ended since it last woke, rather than
+    /// ten of those moved.
+    #[wasm_bindgen_test]
+    async fn sessions_moved_to_another_subscription_are_no_news() -> AppResult<()> {
+        let db = testing::database();
+        let row = autopilot(&db).await?;
+        let mut stopped = Vec::new();
+        for number in 1..=12 {
+            stopped.push(crew(&db, number, "stopped", NOW - 3 * DAY).await?);
+        }
+        crew(&db, 13, "idle", NOW - 5 * 60_000).await?;
+        assert_eq!(to_move(&db, "crd_new").await?, 12);
+        for id in &stopped {
+            connect(&db, id, "crd_new").await?;
+        }
+        assert_eq!(to_move(&db, "crd_new").await?, 0);
+        let news = News::gather(&db, &row, NOW).await?;
+        let listed: Vec<i64> = news.crew.iter().map(|c| c.number).collect();
+        assert_eq!(listed, [13]);
+        Ok(())
+    }
+}
