@@ -231,6 +231,10 @@ const HELD_REVIEWS: &str = "held_reviews";
 /// which a person's message, or their comment on GitHub, ends
 /// (`fctl_domain::follow_ups::MAX_CHECKS_IN_A_ROW`).
 const CHECKS_IN_A_ROW: &str = "checks_in_a_row";
+/// Meta of a session an autopilot started: it ended a turn only to wait for
+/// its background work, which didn't wake the autopilot, and no wake went
+/// out since (`fctl_domain::autopilot::owes`).
+const AUTOPILOT_OWED: &str = "autopilot_owed";
 /// The meta key that counts the conflicts the agent heard of in a row, as
 /// [`CHECKS_IN_A_ROW`] does failed checks
 /// (`fctl_domain::follow_ups::MAX_CONFLICTS_IN_A_ROW`).
@@ -1670,7 +1674,7 @@ impl SessionObject {
             self.publish(&mut s, now).await;
             if s.question.is_some() && matches!(s.status, SessionStatus::Idle) {
                 self.notify(&s, notify::Kind::Asking, now);
-                self.autopilot_moved(&s, now);
+                self.autopilot_moved(&s, None, now);
             }
         }
         Ok(internal::Ask {
@@ -3719,7 +3723,8 @@ impl SessionObject {
     }
 
     /// Tells the people who follow the session when a status change means it
-    /// finished a turn, paused or failed.
+    /// finished a turn, paused or failed, and its autopilot what that means
+    /// to it.
     fn notify_followers(&self, s: &Session, before: SessionStatus, now: i64) {
         // A new turn: whoever interrupted the last one is not part of it.
         if s.status == SessionStatus::Running && before != SessionStatus::Running {
@@ -3732,16 +3737,44 @@ impl SessionObject {
             self.notify(s, kind, now);
         }
         if s.autopilot.is_some() && s.status != before {
-            self.autopilot_moved(s, now);
+            self.autopilot_moved(s, Some(before), now);
         }
     }
 
-    /// A session of an autopilot's moved (`crate::autopilots::session_moved`):
-    /// its turn ended, it asks something or failed.
-    fn autopilot_moved(&self, s: &Session, now: i64) {
+    /// A session of an autopilot's moved from `before` (its status; `None`:
+    /// it asks something now, between its turns)
+    /// (`crate::autopilots::session_moved`): its turn ended, it asks or
+    /// failed. One it started wakes it only as
+    /// `fctl_domain::autopilot::crew_wakes` says: not while it waits for its
+    /// own background work.
+    fn autopilot_moved(&self, s: &Session, before: Option<SessionStatus>, now: i64) {
         let Some(a) = s.autopilot.clone() else {
             return;
         };
+        if a.role == fctl_proto::autopilot::AutopilotRole::Crew {
+            // A wake held back while it waits for its background work is
+            // owed until one goes out (`fctl_domain::autopilot::owes`). A
+            // question it asks between its turns (no `before`) wakes it.
+            let owed = self.meta(AUTOPILOT_OWED).is_some();
+            let reason = s.status_reason.as_deref();
+            let wakes = before.is_none_or(|before| {
+                fctl_domain::autopilot::crew_wakes(
+                    before,
+                    s.status,
+                    reason,
+                    s.question.is_some(),
+                    owed,
+                )
+            });
+            match fctl_domain::autopilot::owes(s.status, reason, wakes, owed) {
+                true if !owed => self.set_meta(AUTOPILOT_OWED, "1"),
+                false if owed => self.delete_meta(AUTOPILOT_OWED),
+                _ => {}
+            }
+            if !wakes {
+                return;
+            }
+        }
         let env = self.env.clone();
         let id = s.id.0.clone();
         let status = s.status;

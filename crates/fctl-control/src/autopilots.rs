@@ -8,7 +8,10 @@
 //! Claude subscription. ScheduleObject's alarm wakes it ([`run_due`]): at
 //! its check-in, at the time it asked for, and soon after something needs
 //! it ([`nudge`]): people steered or answered it, one of its sessions ended
-//! a turn, asks something or failed ([`session_moved`]). A wake is a
+//! a turn, asks something or failed ([`session_moved`]); not one that ended
+//! its turn only to wait for its background work, whose wake comes with its
+//! next turn's end, or as it stops (`fctl_domain::autopilot::crew_wakes`).
+//! A wake is a
 //! message from fctl to its session ([`take_up`]), which a session that
 //! started less than [`fctl_domain::autopilot::SHIFT_MS`] ago takes as it
 //! is; otherwise fctl starts it a fresh one, briefed.
@@ -1783,8 +1786,9 @@ pub fn other_view<'a>(c: &'a CrewRow, question: Option<&'a str>) -> ap::OtherVie
 /// What a session that moved means to its autopilot (from SessionObject):
 /// its own session's turn ended (it checks in next at its time, or the
 /// time it asked for) or failed (fctl tries again, then pauses it); one of
-/// those it started ended a turn, asks something or failed (fctl wakes it
-/// soon).
+/// those it started ended a turn, asks something, failed or stopped while
+/// it waited for its background work (fctl wakes it soon: SessionObject
+/// tells it of those alone, `ap::crew_wakes`).
 pub async fn session_moved(
     env: &Env,
     autopilot: &str,
@@ -1797,7 +1801,13 @@ pub async fn session_moved(
     let db = env.d1("DB")?;
     match role {
         AutopilotRole::Crew => {
-            if matches!(status, SessionStatus::Idle | SessionStatus::Failed) {
+            if matches!(
+                status,
+                SessionStatus::Idle
+                    | SessionStatus::Failed
+                    | SessionStatus::Stopping
+                    | SessionStatus::Stopped
+            ) {
                 nudge(
                     env,
                     &db,
