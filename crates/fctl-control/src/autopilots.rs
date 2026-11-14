@@ -1347,6 +1347,15 @@ pub struct AskRow {
     #[serde(deserialize_with = "opt_int", default)]
     pub session_number: Option<i64>,
     pub session_title: Option<String>,
+    /// The session a question is about, while it is there.
+    pub about_id: Option<String>,
+    pub about_project_id: Option<String>,
+    pub about_project_slug: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub about_number: Option<i64>,
+    pub about_title: Option<String>,
+    /// The files its answer sent to that session, as JSON.
+    pub files: Option<String>,
     #[serde(deserialize_with = "int")]
     pub created_at: i64,
 }
@@ -1354,13 +1363,45 @@ pub struct AskRow {
 pub const ASK_SELECT: &str = "SELECT k.id, k.kind, k.text, k.detail, k.options, k.secret_name, k.secret_project_id, \
     sp.slug AS secret_project_slug, k.status, k.answer, k.answered_by, au.name AS answered_by_name, \
     au.avatar_url AS answered_by_avatar, k.answered_at, k.seen_at, k.session_id, ks.number AS session_number, \
-    ks.title AS session_title, k.created_at \
+    ks.title AS session_title, xs.id AS about_id, xs.project_id AS about_project_id, xp.slug AS about_project_slug, \
+    xs.number AS about_number, xs.title AS about_title, k.files, k.created_at \
     FROM autopilot_asks k \
     LEFT JOIN projects sp ON sp.id = k.secret_project_id \
     LEFT JOIN users au ON au.id = k.answered_by \
-    LEFT JOIN sessions ks ON ks.id = k.session_id";
+    LEFT JOIN sessions ks ON ks.id = k.session_id \
+    LEFT JOIN sessions xs ON xs.id = k.about_id \
+    LEFT JOIN projects xp ON xp.id = xs.project_id";
 
 impl AskRow {
+    /// The session a question is about, while it is there.
+    pub fn about(&self) -> Option<fctl_proto::autopilot::AskedSession> {
+        match (
+            &self.about_id,
+            &self.about_project_id,
+            &self.about_project_slug,
+            self.about_number,
+        ) {
+            (Some(id), Some(project_id), Some(slug), Some(number)) => {
+                Some(fctl_proto::autopilot::AskedSession {
+                    id: fctl_proto::SessionId(id.clone()),
+                    project_id: fctl_proto::ProjectId(project_id.clone()),
+                    project_slug: slug.clone(),
+                    number: u32::try_from(number).unwrap_or(0),
+                    title: self.about_title.clone().unwrap_or_default(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The files its answer sent to the session it is about.
+    pub fn files(&self) -> Vec<fctl_proto::event::Attachment> {
+        self.files
+            .as_deref()
+            .and_then(|f| serde_json::from_str(f).ok())
+            .unwrap_or_default()
+    }
+
     pub fn options(&self) -> Vec<String> {
         self.options
             .as_deref()
@@ -1456,6 +1497,31 @@ fn others_where(row: &AutopilotRow, params: &mut Vec<crate::db::Val>) -> String 
         "{place} AND s.archived = 0 AND (s.autopilot_role IS NULL OR (s.autopilot_role = 'crew' \
          AND s.autopilot_id != ?{home})) AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)"
     )
+}
+
+/// Whether session `id` is one a question of autopilot `row` may be about:
+/// in its places (its project, or for a workspace's autopilot the
+/// workspace's projects), and not a review agent's, which takes no
+/// messages.
+pub async fn askable(db: &D1Database, row: &AutopilotRow, id: &str) -> AppResult<bool> {
+    let (place, at) = match row.scope() {
+        AutopilotScope::Project => ("s.project_id = ?2", &row.project_id),
+        AutopilotScope::Workspace => (
+            "p.workspace_id = ?2 AND p.archived_at IS NULL",
+            &row.workspace_id,
+        ),
+    };
+    let found: Option<crate::db::Count> = q(
+        db,
+        &format!(
+            "SELECT COUNT(*) AS n FROM sessions s JOIN projects p ON p.id = s.project_id WHERE s.id = ?1 AND {place} \
+             AND NOT EXISTS (SELECT 1 FROM reviews rv WHERE rv.session_id = s.id)"
+        ),
+        &[s(id), s(at)],
+    )?
+    .first()
+    .await?;
+    Ok(found.is_some_and(|c| c.n > 0))
 }
 
 /// The sessions people started in its places that work now, or rest with
@@ -1749,6 +1815,10 @@ pub fn ask_view<'a>(a: &'a AskRow, options: &'a [String]) -> ap::AskView<'a> {
         by: a.answered_by_name.as_deref(),
         at: a.answered_at.unwrap_or(a.created_at),
         new: a.seen_at.is_none(),
+        about: a
+            .about()
+            .map(|x| format!("{}#{}", x.project_slug, x.number)),
+        files: a.files().into_iter().map(|f| f.name).collect(),
     }
 }
 

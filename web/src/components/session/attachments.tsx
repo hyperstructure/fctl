@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { IconButton, Lightbox, Thumbnail, toast, useLightbox } from "@/components/ui";
+import { Button, IconButton, Lightbox, Thumbnail, toast, useLightbox } from "@/components/ui";
 import type * as G from "@/gen";
 import { api, type UploadScope } from "@/lib/api";
 import {
@@ -358,30 +358,49 @@ export function useFileDrop(onFiles: (files: File[]) => void, enabled = true): b
   return dragging;
 }
 
-/** The paperclip: picks files with the system dialog. */
+/**
+ * The paperclip: picks files with the system dialog. With `field`, it is a
+ * Button as tall as the field beside it.
+ */
 export function AttachButton({
   onFiles,
   disabled,
+  field,
   className,
 }: {
   onFiles: (files: File[]) => void;
   disabled?: boolean;
+  field?: boolean;
   className?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <>
-      <IconButton
-        type="button"
-        label="Attach files"
-        title="Attach files (or paste, or drop them here)"
-        disabled={disabled}
-        onClick={() => input.current?.click()}
-        // A row of controls that runs short on a phone squeezes the others first.
-        className={cn("shrink-0", className)}
-      >
-        <Paperclip className="size-4" />
-      </IconButton>
+      {field ? (
+        <Button
+          type="button"
+          size="field"
+          aria-label="Attach files"
+          title="Attach files (or paste, or drop them here)"
+          disabled={disabled}
+          onClick={() => input.current?.click()}
+          className={cn("shrink-0 px-3", className)}
+        >
+          <Paperclip className="size-3.5" />
+        </Button>
+      ) : (
+        <IconButton
+          type="button"
+          label="Attach files"
+          title="Attach files (or paste, or drop them here)"
+          disabled={disabled}
+          onClick={() => input.current?.click()}
+          // A row of controls that runs short on a phone squeezes the others first.
+          className={cn("shrink-0", className)}
+        >
+          <Paperclip className="size-4" />
+        </IconButton>
+      )}
       <input
         ref={input}
         type="file"
