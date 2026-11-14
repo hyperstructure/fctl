@@ -196,16 +196,24 @@ pub async fn resolve(api: &Api, reference: &str) -> Result<Session> {
         let n: u32 = number
             .parse()
             .context("use project#number, like my-app#12")?;
-        let list = look_up(api, || api.sessions_with_reviews(project, 200)).await?;
-        return list
-            .sessions
-            .into_iter()
-            .find(|s| s.number == n)
-            .with_context(|| {
-                format!("{project} has no session #{n} (or it is older than the last 200)")
-            });
+        let list = look_up(api, || api.session_numbered(project, n)).await?;
+        return numbered(list.sessions, project, n);
     }
     bail!("Refer to a session by id (ses_…) or as project#number")
+}
+
+/// Session `project#n` among `found`, which a control plane gives alone,
+/// or among the project's latest 200 where it doesn't look sessions up by
+/// number.
+fn numbered(found: Vec<Session>, project: &str, n: u32) -> Result<Session> {
+    let older = !found.is_empty();
+    found.into_iter().find(|s| s.number == n).with_context(|| {
+        if older {
+            format!("{project} has no session #{n} (or it is older than the last 200)")
+        } else {
+            format!("{project} has no session #{n}")
+        }
+    })
 }
 
 /// Looks a session up with `read`, trying again while the error may pass
@@ -1541,6 +1549,46 @@ mod tests {
                 .map(|(method, path, _)| (method, path))
                 .collect::<Vec<_>>(),
             [("GET".to_owned(), "/api/v1/sessions/ses_01ABC".to_owned())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finds_a_session_by_its_number_however_old() {
+        let (api, asked) = relayed(vec![Some(fctl_proto::ErrorCode::Internal)]);
+        let _ = resolve(&api, "shop#12").await;
+        assert_eq!(
+            got(&asked)
+                .into_iter()
+                .map(|(method, path, _)| (method, path))
+                .collect::<Vec<_>>(),
+            [(
+                "GET".to_owned(),
+                "/api/v1/sessions?limit=200&project=shop&number=12&reviews=1&archived=1&hidden=1"
+                    .to_owned()
+            )]
+        );
+        let session = |number: u32| -> Session {
+            serde_json::from_value(serde_json::json!({
+                "id": format!("ses_{number}"), "project_id": "prj_1", "project_slug": "shop",
+                "number": number, "title": "T", "status": "stopped",
+                "created_by": { "id": "usr_1", "name": "Ada" },
+                "created_at": 0, "updated_at": 0, "stats": {}, "archived": false
+            }))
+            .unwrap_or_else(|e| panic!("session: {e}"))
+        };
+        let found = numbered(vec![session(12)], "shop", 12);
+        assert_eq!(found.ok().map(|s| s.id.0), Some("ses_12".into()));
+        let none = numbered(Vec::new(), "shop", 12);
+        assert_eq!(
+            none.err().map(|e| e.to_string()),
+            Some("shop has no session #12".into())
+        );
+        // A control plane that doesn't look sessions up by number gives its
+        // latest 200, among which it may not be.
+        let older = numbered(vec![session(400), session(399)], "shop", 12);
+        assert_eq!(
+            older.err().map(|e| e.to_string()),
+            Some("shop has no session #12 (or it is older than the last 200)".into())
         );
     }
 

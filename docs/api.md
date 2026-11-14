@@ -117,7 +117,9 @@ It answers with the session, `queued`. A session is:
   agents and GitHub last said; one nobody looked up counts as open: the
   app's pull requests page and `fctl pulls` ask for `any`, with `archived=1`
   and `hidden=1`, and group them, each pull request as the session that
-  heard of it last says), `?limit=` (50 unless set, at most 200), `?before=` (a
+  heard of it last says), `?number=` with `?project=` (the one session
+  `project#12`, however old: add `reviews=1`, `archived=1` and `hidden=1`
+  to find any), `?limit=` (50 unless set, at most 200), `?before=` (a
   `created_at`). Answers `{"sessions": […], "next_before": …}`.
 - `GET /api/v1/sessions/{id}`: one session.
 - `GET /api/v1/search?q=…`: the sessions whose title, description,

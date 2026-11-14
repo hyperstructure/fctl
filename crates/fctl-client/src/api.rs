@@ -695,12 +695,14 @@ impl Api {
         self.get(&q).await
     }
 
-    /// A project's sessions with its review agents', its archived ones and
-    /// those its schedules hide among them, which the other lists leave
-    /// out: to find one by its number.
-    pub async fn sessions_with_reviews(&self, project: &str, limit: u32) -> Result<SessionList> {
+    /// The session `project#number`, with review agents', archived ones and
+    /// those schedules hide among those it looks through, which the other
+    /// lists leave out, however many came after it. A control plane before
+    /// `?number=` gives the project's latest 200 instead, among which the
+    /// caller looks for it.
+    pub async fn session_numbered(&self, project: &str, number: u32) -> Result<SessionList> {
         self.get(&format!(
-            "/sessions?limit={limit}&project={}&reviews=1&archived=1&hidden=1",
+            "/sessions?limit=200&project={}&number={number}&reviews=1&archived=1&hidden=1",
             enc(project)
         ))
         .await
