@@ -1144,7 +1144,11 @@ moves its own: each wake moves its own session, unless it works, and the
 sessions it started that wait or stopped in the last week, to its owner's
 connection, so that taking it over, or its owner choosing or connecting
 another connection (which wakes it with the reason `moved`), carries it
-on there. A message that comes
+on there. A move that leaves the session as it is (stopped, or queued)
+leaves when it last changed as it was too, in D1 (`sessions.updated_at`)
+and in SessionDO's summary: an autopilot's wakes list its sessions that
+changed since it last woke, and a move is no news of them.
+A message that comes
 while the session stops queues it too: FleetDO starts the new run once the
 last one has ended, so that two runs of a session never overlap, and
 SessionDO ignores what the last run's uplink still says about stopping.

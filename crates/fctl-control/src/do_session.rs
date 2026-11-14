@@ -2048,7 +2048,12 @@ impl SessionObject {
         {
             self.broadcast_events(&[json]);
         }
-        s.updated_at = now;
+        // A move to another connection is no change of its own: a later
+        // write-through would otherwise put the move's time in D1, which
+        // `api::sessions::move_to` left as it was.
+        if !b.keep_updated_at || status_changed || described {
+            s.updated_at = now;
+        }
         self.save_summary(&s);
         self.broadcast_summary(&s);
         // After the summary: viewers of a session that the fleet stopped

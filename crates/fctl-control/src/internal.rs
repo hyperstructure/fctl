@@ -90,6 +90,12 @@ pub struct ControlState {
     /// goes, as nobody will answer it.
     #[serde(default)]
     pub drop_question: bool,
+    /// Nothing the session did: when it last changed (`updated_at`) stays
+    /// as it was, as `api::sessions::move_to` leaves it in D1 for a move to
+    /// another Claude connection that leaves the session as it is. Its
+    /// autopilot's wakes take its sessions that changed for news.
+    #[serde(default)]
+    pub keep_updated_at: bool,
 }
 
 /// The question a session's agent asks people now (`/ask`, from `fctl ask`
