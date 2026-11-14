@@ -269,16 +269,10 @@ pub enum AutopilotCmd {
     },
 }
 
-/// A part of the brief, by name.
+/// A part of the brief, by name: `--only sessions,` fails on the empty
+/// name rather than ask for some other part.
 fn brief_part(name: &str) -> Result<fctl_domain::autopilot::BriefPart, String> {
-    fctl_domain::autopilot::brief_parts(Some(name))
-        .map_err(|e| e.message)
-        .and_then(|parts| {
-            parts
-                .first()
-                .copied()
-                .ok_or_else(|| "Name a part".to_owned())
-        })
+    fctl_domain::autopilot::brief_part(name).map_err(|e| e.message)
 }
 
 pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Result<()> {
@@ -1286,6 +1280,9 @@ mod tests {
             [BriefPart::Sessions, BriefPart::Asks, BriefPart::People]
         );
         assert!(parse(&["brief", "--only", "crew"]).is_none());
+        // An empty name asks for no part, rather than the first.
+        assert!(parse(&["brief", "--only", "sessions,"]).is_none());
+        assert!(parse(&["brief", "--only", ""]).is_none());
     }
 
     #[test]

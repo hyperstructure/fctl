@@ -662,9 +662,9 @@ fctl autopilot pause --reason "The direction is done."
 It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people
 set, and steers only the sessions it started. At most as many of those work
-at once as people allow: those queued, starting, working or paused on a
-usage limit count, as does one it just messaged, and those that ended their
-turn, stopped or failed don't.
+at once as people allow: those queued, starting, working, paused on a
+usage limit or still stopping count, as does one it just messaged, and
+those that ended their turn, stopped or failed don't.
 
 Its wakes and brief say how each of its sessions stands: its pull
 requests with their checks, the start of what it said as its turn ended

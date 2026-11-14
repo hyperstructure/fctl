@@ -2032,7 +2032,7 @@ async fn crew_room_for(
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::Conflict,
             format!(
-                "{} of this autopilot's sessions work already, as many as its people allow at once (those queued, starting, working or paused on a usage limit count, as does one just messaged): fctl wakes you when one ends its turn, so start this one then, or stop one (fctl stop) to make room.",
+                "{} of this autopilot's sessions work already, as many as its people allow at once (those queued, starting, working, paused on a usage limit or still stopping count, as does one just messaged): fctl wakes you when one ends its turn, so start this one then, or stop one (fctl stop) to make room.",
                 counts.working
             ),
         )));

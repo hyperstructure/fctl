@@ -952,7 +952,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     s.push_str(direction.trim());
     s.push_str("\n\n## How you work\n\n");
     s.push_str(&format!(
-        "- Work through sessions of your own: start one for each piece of work with `fctl run -p <project> \"<task>\"`, at most {n} at once, with a complete task (below). Each works on its own branch and opens a pull request; fctl wakes you when one ends its turn, asks something or fails. Those queued, starting, working or paused on a usage limit count toward the {n}, as does one you just messaged; one that ended its turn, stopped or failed doesn't. With {n} at work, `fctl run` fails: keep the next pieces of work in your plan, and start one as fctl wakes you for a session that ended its turn.\n",
+        "- Work through sessions of your own: start one for each piece of work with `fctl run -p <project> \"<task>\"`, at most {n} at once, with a complete task (below). Each works on its own branch and opens a pull request; fctl wakes you when one ends its turn, asks something or fails. Those queued, starting, working, paused on a usage limit or still stopping count toward the {n}, as does one you just messaged; one that ended its turn, stopped or failed doesn't. With {n} at work, `fctl run` fails: keep the next pieces of work in your plan, and start one as fctl wakes you for a session that ended its turn.\n",
         n = rules.crew_max
     ));
     s.push_str(&format!(
@@ -1418,9 +1418,27 @@ impl BriefPart {
     }
 }
 
+/// The part of its brief called `name` (`sessions`, `People`); an error
+/// that lists the parts for any other name, a blank one too.
+pub fn brief_part(name: &str) -> Result<BriefPart> {
+    BriefPart::parse(name).ok_or_else(|| {
+        let all: Vec<&str> = BriefPart::ALL.iter().map(|p| p.as_str()).collect();
+        let name = name.trim();
+        let message = if name.is_empty() {
+            format!("Name a part of the brief: {}", all.join(", "))
+        } else {
+            format!(
+                "No part of the brief is called {name}: use {}",
+                all.join(", ")
+            )
+        };
+        ApiError::validation("only", message)
+    })
+}
+
 /// The parts of its brief that `only` names, a list such as
 /// `sessions,asks` (`?only=`), in the brief's order; every part when it
-/// names none.
+/// names none. Empty names between commas (`sessions,`) name nothing.
 pub fn brief_parts(only: Option<&str>) -> Result<Vec<BriefPart>> {
     let names: Vec<&str> = only
         .unwrap_or_default()
@@ -1431,20 +1449,10 @@ pub fn brief_parts(only: Option<&str>) -> Result<Vec<BriefPart>> {
     if names.is_empty() {
         return Ok(BriefPart::ALL.to_vec());
     }
-    let mut asked = Vec::with_capacity(names.len());
-    for name in names {
-        let Some(part) = BriefPart::parse(name) else {
-            let all: Vec<&str> = BriefPart::ALL.iter().map(|p| p.as_str()).collect();
-            return Err(ApiError::validation(
-                "only",
-                format!(
-                    "No part of the brief is called {name}: use {}",
-                    all.join(", ")
-                ),
-            ));
-        };
-        asked.push(part);
-    }
+    let asked = names
+        .into_iter()
+        .map(brief_part)
+        .collect::<Result<Vec<_>>>()?;
     Ok(BriefPart::ALL
         .into_iter()
         .filter(|p| asked.contains(p))
@@ -2776,7 +2784,7 @@ mod tests {
         // shots of the case that matters, cancelled runs on the base
         // branch, and what people's files show.
         assert!(b.contains(
-            "Those queued, starting, working or paused on a usage limit count toward the 3, as does one you just messaged; one that ended its turn, stopped or failed doesn't."
+            "Those queued, starting, working, paused on a usage limit or still stopping count toward the 3, as does one you just messaged; one that ended its turn, stopped or failed doesn't."
         ));
         assert!(b.contains("never with a placeholder or a number you guess"));
         assert!(b.contains("starting with what they must act on first"));
@@ -3097,7 +3105,18 @@ mod tests {
         );
         for p in BriefPart::ALL {
             assert_eq!(BriefPart::parse(p.as_str()), Some(p));
+            assert_eq!(brief_part(p.as_str()).ok(), Some(p));
         }
+        // One part at a time, as `--only` takes them: a blank one names
+        // none, rather than all.
+        assert_eq!(
+            brief_part(" ").err().map(|e| e.message),
+            Some(
+                "Name a part of the brief: direction, notes, asks, sessions, people, plan, log"
+                    .to_owned()
+            )
+        );
+        assert!(brief_part("crew").is_err());
     }
 
     #[test]
