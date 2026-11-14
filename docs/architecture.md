@@ -2205,8 +2205,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    that rests (its turn ended, it stopped or failed) merged or closed,
    whoever merged it: the session's row then counts as changed, so that
    the wake lists it with its pull requests
-   (`fctl_domain::autopilot::pull_wakes`; one at work wakes it as its turn
-   ends instead); and at once when someone wakes it. A
+   (`fctl_domain::autopilot::pull_wakes`; one at work, or just messaged,
+   which counts among those at work by `messaged_at`, wakes it as its
+   turn ends instead); and at once when someone wakes it. A
    session that ends its turn only to wait for its background work (checks
    it watches; fctl-agent's "Waiting for a background task") doesn't wake
    it, nor does fctl-agent saying it waits for a message as the last task
