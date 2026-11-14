@@ -6,20 +6,23 @@ import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { AutopilotTab } from "./autopilot";
 
-const { answer, autopilot, autopilotLog, put, resume, toast, wake } = vi.hoisted(() => ({
+const { answer, autopilot, autopilotLog, put, resume, toast, upload, wake } = vi.hoisted(() => ({
   answer: vi.fn(),
   autopilot: vi.fn(),
   autopilotLog: vi.fn(),
   put: vi.fn(),
   resume: vi.fn(),
   toast: vi.fn(),
+  upload: vi.fn(),
   wake: vi.fn(),
 }));
-// The autopilot, its log, answering, changing, resuming and waking it are answered; other requests wait.
+// The autopilot, its log, answering, uploading, changing, resuming and waking it are answered; other
+// requests wait.
 const answered: Record<string, unknown> = {
   autopilot,
   autopilotLog,
   answerAutopilot: answer,
+  uploadAttachment: upload,
   putAutopilot: put,
   resumeAutopilot: resume,
   wakeAutopilot: wake,
@@ -291,6 +294,83 @@ describe("a project's Autopilot tab", () => {
     await settle();
     expect(answer).toHaveBeenCalledWith("prj_1", "apa_1", { answer: "Stripe" });
     expect(toast).toHaveBeenCalledWith("Answered: it hears now");
+  });
+
+  it("links the session it asks about, and sends that session the files attached to the answer", async () => {
+    const asked = on({
+      asks: [
+        {
+          id: "apa_3",
+          kind: "question",
+          text: "Could you send shop#41 the two product models?",
+          options: ["Sent"],
+          about: {
+            id: "ses_41",
+            project_id: "prj_1",
+            project_slug: "shop",
+            number: 41,
+            title: "Colour matching",
+          },
+          status: "open",
+          created_at: Date.now(),
+        },
+      ],
+    });
+    autopilot.mockResolvedValue(asked);
+    answer.mockResolvedValue(on());
+    const file: G.Attachment = { id: "att_1", name: "hotdog.3mf", media_type: "model/3mf", size: 1200 };
+    upload.mockReturnValue({ promise: Promise.resolve(file), abort: vi.fn() });
+    queryClient.setQueryData(keys.autopilot("prj_1"), asked);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    const link = [...page.querySelectorAll("a")].find((x) => x.textContent?.startsWith("shop#41"));
+    expect(link?.textContent).toBe("shop#41Colour matching");
+    expect(page.textContent).toContain(
+      "It goes on with what it can meanwhile. Files you attach go to shop#41 with your answer, in a message from you.",
+    );
+    const input = page.querySelector<HTMLInputElement>("input[type=file]");
+    expect(input).toBeTruthy();
+    await act(async () => {
+      if (!input) return;
+      Object.defineProperty(input, "files", {
+        value: [new File(["solid"], "hotdog.3mf", { type: "model/3mf" })],
+        configurable: true,
+      });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    expect(upload).toHaveBeenCalledWith(
+      { session: "ses_41" },
+      expect.any(File),
+      "hotdog.3mf",
+      expect.any(Function),
+    );
+    expect(page.querySelector("[aria-label='Attached files']")?.textContent).toContain("hotdog.3mf");
+    await click("Sent");
+    expect(answer).toHaveBeenCalledWith("prj_1", "apa_3", { answer: "Sent", attachments: ["att_1"] });
+    expect(toast).toHaveBeenCalledWith("Sent shop#41 the file: it hears now");
+  });
+
+  it("offers no files for an ask about no session", async () => {
+    const asked = on({
+      asks: [
+        {
+          id: "apa_1",
+          kind: "question",
+          text: "Which payment provider?",
+          status: "open",
+          created_at: Date.now(),
+        },
+      ],
+    });
+    autopilot.mockResolvedValue(asked);
+    queryClient.setQueryData(keys.autopilot("prj_1"), asked);
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    expect(page.querySelector("input[type=file]")).toBeNull();
+    expect(page.textContent).toContain(
+      "It goes on with what it can meanwhile, and hears your answer at once.",
+    );
   });
 
   it("shows those who can't steer a workspace's autopilot that it runs, and not what it does", async () => {

@@ -163,12 +163,19 @@ pub enum AutopilotCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Answer what it asked.
+    /// Answer what it asked. Files you attach go to the session it asks
+    /// about, in a message from you with your answer.
+    #[command(after_help = "Examples:
+  fctl autopilot answer apa_… \"Stripe\"
+  fctl autopilot answer apa_… --attach hotdog.3mf --attach hotdog-v2.3mf \"The v2 one is newer\"")]
     Answer {
         /// What it asked (its id, apa_…).
         ask: String,
-        /// The answer (or pipe it in).
+        /// The answer (or pipe it in); it may be left out with --attach.
         answer: Vec<String>,
+        /// A file for the session it asks about (repeatable, up to 10).
+        #[arg(short, long = "attach", value_name = "FILE")]
+        attach: Vec<PathBuf>,
     },
     /// Give it the secret it asked for: asked without showing what you
     /// type, or read from stdin. It goes into the project's secrets; the
@@ -218,7 +225,8 @@ pub enum AutopilotCmd {
     #[command(after_help = "Examples:
   fctl autopilot ask \"Which payment provider should checkout use?\" -o \"Stripe\" -o \"Adyen\"
   fctl autopilot ask \"Which of these two pipeline boards?\" --detail-file options.md -o \"A, the compact one\" -o \"B, with avatars\"
-  fctl autopilot ask --secret CLOUDFLARE_API_TOKEN \"To deploy the app to Cloudflare Workers from CI\"")]
+  fctl autopilot ask --secret CLOUDFLARE_API_TOKEN \"To deploy the app to Cloudflare Workers from CI\"
+  fctl autopilot ask --session shop#41 \"Could you send shop#41 the product photos?\" -o \"Sent\"")]
     Ask {
         /// The question, or what the secret is for, in a sentence or two.
         text: Vec<String>,
@@ -239,6 +247,12 @@ pub enum AutopilotCmd {
         /// The project the secret goes into: default, its own.
         #[arg(long = "for", value_name = "PROJECT", requires = "secret")]
         for_project: Option<String>,
+        /// The session the question is about (ses_… or project#number), in
+        /// your projects: one that needs files only people have, say.
+        /// People open it from the ask, and the files they attach to their
+        /// answer go to it.
+        #[arg(long, value_name = "SESSION", conflicts_with = "secret")]
+        session: Option<String>,
     },
     /// The autopilot takes back what it asked: it found out itself.
     Withdraw {
@@ -459,25 +473,66 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             }
         }
         AutopilotCmd::Asks { all: true } => unreachable!("handled above"),
-        AutopilotCmd::Answer { ask, answer } => {
-            let text = words_or_stdin(
-                answer,
-                "Write the answer: fctl autopilot answer apa_… \"…\"",
-            )?;
+        AutopilotCmd::Answer {
+            ask,
+            answer,
+            attach,
+        } => {
+            let text = match attach.is_empty() {
+                true => words_or_stdin(
+                    answer,
+                    "Write the answer: fctl autopilot answer apa_… \"…\"",
+                )?,
+                false => answer.join(" ").trim().to_owned(),
+            };
+            // Files go to the session it asks about.
+            let (attachments, to) = match attach.is_empty() {
+                true => (Vec::new(), None),
+                false => {
+                    let a = api.autopilot(p).await?;
+                    let Some(asked) = a.asks.iter().find(|x| x.id == ask) else {
+                        bail!(
+                            "It asks nothing by that id: fctl autopilot asks -p {p} lists what it asks"
+                        );
+                    };
+                    let Some(about) = &asked.about else {
+                        bail!(
+                            "That ask is about no session, so the files have nowhere to go: answer in words, or send them to a session with fctl send --attach"
+                        );
+                    };
+                    let ids = crate::cmd::sessions::upload(
+                        &api,
+                        crate::cmd::sessions::UploadTo::Session(&about.id.0),
+                        &attach,
+                    )
+                    .await?;
+                    (
+                        ids,
+                        Some(format!("{}#{}", about.project_slug, about.number)),
+                    )
+                }
+            };
             let a = api
                 .answer_ask(
                     p,
                     &ask,
                     &AnswerAutopilotAskRequest {
-                        answer: Some(text),
+                        answer: Some(text).filter(|t| !t.is_empty()),
                         secret: None,
+                        attachments,
                     },
                 )
                 .await?;
             if json {
                 return style::print_json(&a);
             }
-            println!("{} Answered: it hears now", style::accent("✓"));
+            match to {
+                Some(to) => println!(
+                    "{} Answered, and sent {to} the files: the autopilot hears now",
+                    style::accent("✓")
+                ),
+                None => println!("{} Answered: it hears now", style::accent("✓")),
+            }
         }
         AutopilotCmd::Secret { ask } => {
             let a = api.autopilot(p).await?;
@@ -495,6 +550,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                     &AnswerAutopilotAskRequest {
                         answer: None,
                         secret: Some(value),
+                        attachments: Vec::new(),
                     },
                 )
                 .await?;
@@ -600,6 +656,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             detail_file,
             secret,
             for_project,
+            session,
         } => {
             let text = text.join(" ");
             if text.trim().is_empty() {
@@ -615,6 +672,10 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                 (None, Some(f)) => Some(read_file_or_stdin(&f)?),
                 (None, None) => None,
             };
+            let about = match session {
+                Some(r) => Some(crate::cmd::sessions::resolve(&api, &r).await?.id),
+                None => None,
+            };
             let ask = api
                 .ask_people(
                     p,
@@ -624,6 +685,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                         options,
                         secret,
                         project: for_project,
+                        about,
                     },
                 )
                 .await?;
@@ -1057,6 +1119,17 @@ fn print_ask(ask: &AutopilotAsk) {
         style::dim(&style::ago(ask.created_at))
     );
     println!("    {}", style::plain(&what));
+    if let Some(about) = &ask.about {
+        println!(
+            "    {}",
+            style::dim(&format!(
+                "About {}#{} “{}”",
+                about.project_slug,
+                about.number,
+                style::terminal_safe(&about.title)
+            ))
+        );
+    }
     if !ask.options.is_empty() {
         println!(
             "    {}",
@@ -1075,6 +1148,23 @@ fn print_ask(ask: &AutopilotAsk) {
             .as_ref()
             .map_or("Someone", |u| u.name.as_str());
         println!("    {}", style::dim(&format!("{by}: {answer}")));
+    }
+    if !ask.files.is_empty() {
+        let by = ask
+            .answered_by
+            .as_ref()
+            .map_or("Someone", |u| u.name.as_str());
+        let to = ask.about.as_ref().map_or("the session".to_owned(), |a| {
+            format!("{}#{}", a.project_slug, a.number)
+        });
+        let names: Vec<&str> = ask.files.iter().map(|f| f.name.as_str()).collect();
+        println!(
+            "    {}",
+            style::dim(&format!(
+                "{by} sent {to}: {}",
+                style::terminal_safe(&names.join(", "))
+            ))
+        );
     }
 }
 
@@ -1118,6 +1208,48 @@ fn print_log(log: &AutopilotLog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Fctl {
+        #[command(flatten)]
+        autopilot: AutopilotArgs,
+    }
+
+    fn parse(args: &[&str]) -> Option<AutopilotCmd> {
+        Fctl::try_parse_from(["fctl"].iter().chain(args).copied())
+            .ok()
+            .and_then(|f| f.autopilot.cmd)
+    }
+
+    #[test]
+    fn asks_about_a_session_and_answers_with_files() {
+        let Some(AutopilotCmd::Ask { session, text, .. }) = parse(&[
+            "ask",
+            "--session",
+            "shop#41",
+            "Could you send the photos?",
+            "-o",
+            "Sent",
+        ]) else {
+            panic!("parses");
+        };
+        assert_eq!(session.as_deref(), Some("shop#41"));
+        assert_eq!(text, ["Could you send the photos?"]);
+        // A secret goes to no session.
+        assert!(parse(&["ask", "--secret", "KEY", "--session", "shop#41", "For CI"]).is_none());
+        let Some(AutopilotCmd::Answer {
+            ask,
+            answer,
+            attach,
+        }) = parse(&["answer", "apa_1", "-a", "a.3mf", "--attach", "b.3mf"])
+        else {
+            panic!("parses");
+        };
+        assert_eq!(ask, "apa_1");
+        assert!(answer.is_empty());
+        assert_eq!(attach, [PathBuf::from("a.3mf"), PathBuf::from("b.3mf")]);
+    }
 
     #[test]
     fn a_brief_keeps_its_lines() {

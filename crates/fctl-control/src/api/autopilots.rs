@@ -339,8 +339,10 @@ async fn ask_of(ctx: &Ctx, r: &engine::AskRow) -> AppResult<AutopilotAsk> {
         detail: r.detail.clone(),
         options: r.options(),
         secret,
+        about: r.about(),
         status: r.status(),
         answer: r.answer.clone(),
+        files: r.files(),
         answered_by: engine::user_ref(
             r.answered_by.as_deref(),
             r.answered_by_name.as_deref(),
@@ -1529,6 +1531,26 @@ pub async fn ask(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             ("question", text, options, None)
         }
     };
+    // The session a question is about: one in its places that it sees.
+    let about = match &body.about {
+        Some(_) if secret.is_some() => {
+            return Err(validation(
+                "about",
+                "A secret goes into a project's secrets, not to a session: ask for it without one.",
+            ));
+        }
+        Some(id) => {
+            let session = access::session(ctx, id.as_str()).await?;
+            if !engine::askable(&ctx.db, &row, &session.row.id).await? {
+                return Err(validation(
+                    "about",
+                    "Ask about a session in your projects: one you started, say, that needs files only people have.",
+                ));
+            }
+            Some(session.row.id.clone())
+        }
+        None => None,
+    };
     #[derive(Deserialize)]
     struct Count {
         #[serde(deserialize_with = "int", default)]
@@ -1552,7 +1574,7 @@ pub async fn ask(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     q(
         &ctx.db,
         "INSERT INTO autopilot_asks (id, project_id, kind, text, detail, options, secret_name, secret_project_id, status, \
-         session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)",
+         session_id, about_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
         &[
             s(&ask_id),
             s(&row.project_id),
@@ -1565,6 +1587,7 @@ pub async fn ask(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             os(secret.as_ref().map(|(name, _)| name.as_str())),
             os(secret.as_ref().map(|(_, project)| project.as_str())),
             os(session.as_deref()),
+            os(about.as_deref()),
             n(ctx.now),
         ],
     )?
@@ -1692,7 +1715,10 @@ pub async fn remove_note(ctx: &mut Ctx, id: &str, note: &str) -> AppResult<Respo
 
 /// `POST …/autopilot/asks/{ask}/answer`: answers a question, or gives the
 /// secret it asked for, which goes into the project's secrets: the
-/// autopilot hears only that it's set.
+/// autopilot hears only that it's set. Files attached to the answer go to
+/// the session the question is about, in a message from the caller with
+/// the answer as its text, before the answer is theirs: when they can't,
+/// the ask stays open.
 pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> AppResult<Response> {
     let body: AnswerAutopilotAskRequest = http::body(req).await?;
     let l = load(ctx, id).await?;
@@ -1712,9 +1738,16 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
         ));
     }
     let me = ctx.user()?.clone();
+    let files = fctl_domain::validate::attachment_ids(&body.attachments)?;
     // A secret, and where it goes; else the answer.
     let (answer, secret) = match (found.kind(), &found.secret_name, &found.secret_project_id) {
         (AutopilotAskKind::Secret, Some(name), Some(project)) => {
+            if !files.is_empty() {
+                return Err(validation(
+                    "attachments",
+                    "A secret takes no files: type it in.",
+                ));
+            }
             let value = body
                 .secret
                 .as_deref()
@@ -1727,51 +1760,99 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
         }
         _ => {
             let text = body.answer.as_deref().map(str::trim).unwrap_or_default();
-            if text.is_empty() {
+            if text.is_empty() && files.is_empty() {
                 return Err(validation("answer", "Write an answer, or pick one"));
             }
-            (
-                Some(fctl_domain::validate::text("answer", text, 4_000)?),
-                None,
-            )
+            let answer = match text {
+                "" => None,
+                text => Some(fctl_domain::validate::text("answer", text, 4_000)?),
+            };
+            (answer, None)
         }
     };
+    let sending = match files.is_empty() {
+        true => None,
+        false => Some(files_for(ctx, &found, answer.as_deref(), &files).await?),
+    };
+    // The files go first, so that an ask stays open unless they went: the
+    // session may have taken the message even where delivering it failed
+    // (in waking the session), which an ask opened again would hide. The
+    // same answer sent again goes once.
+    if let Some(f) = &sending {
+        f.deliver(ctx, ask, &me).await?;
+    }
+    let sent = sending
+        .as_ref()
+        .map(|f| serde_json::to_string(&f.attachments))
+        .transpose()?;
     // It's theirs to answer once they claim it: two people at once, or one
     // after it was taken back, are told so, and store nothing.
     let claim = q(
         &ctx.db,
-        "UPDATE autopilot_asks SET status = 'answered', answer = ?, answered_by = ?, answered_at = ? WHERE id = ? \
-         AND status = 'open'",
-        &[os(answer.as_deref()), s(&me.id), n(ctx.now), s(ask)],
+        "UPDATE autopilot_asks SET status = 'answered', answer = ?, answered_by = ?, answered_at = ?, files = ? \
+         WHERE id = ? AND status = 'open'",
+        &[
+            os(answer.as_deref()),
+            s(&me.id),
+            n(ctx.now),
+            os(sent.as_deref()),
+            s(ask),
+        ],
     )?;
-    let taken = || conflict("Someone answered it already, or it was taken back.");
-    let line = match (secret, &answer) {
+    let taken = || match &sending {
+        Some(f) => conflict(&format!(
+            "Someone answered it meanwhile, or it was taken back: your message went to {} all the same.",
+            f.reference
+        )),
+        None => conflict("Someone answered it already, or it was taken back."),
+    };
+    let line = match (secret, &answer, &sending) {
         // The secret goes in with the claim, in one transaction.
-        (Some((target, name, value)), _) => {
+        (Some((target, name, value)), _, _) => {
             let stored =
                 crate::api::projects::store_asked_secret(ctx, &target, &name, &value, ask, claim)
                     .await?
                     .ok_or_else(taken)?;
             format!("{} set the secret `{stored}` for it", ap::WHO)
         }
-        (None, text) => {
+        (None, text, sending) => {
             if claim.run().await? == 0 {
                 return Err(taken());
             }
-            format!(
-                "{} answered “{}”",
-                ap::WHO,
-                short(text.as_deref().unwrap_or_default())
-            )
+            match (text, sending) {
+                (_, Some(f)) => {
+                    let what = match f.attachments.len() {
+                        1 => "a file".to_owned(),
+                        n => format!("{n} files"),
+                    };
+                    match text {
+                        Some(text) => format!(
+                            "{} answered “{}”, and sent {} {what}",
+                            ap::WHO,
+                            short(text),
+                            f.reference
+                        ),
+                        None => format!("{} sent {} {what}", ap::WHO, f.reference),
+                    }
+                }
+                (text, None) => format!(
+                    "{} answered “{}”",
+                    ap::WHO,
+                    short(text.as_deref().unwrap_or_default())
+                ),
+            }
         }
     };
-    engine::log(
-        &ctx.db,
-        &row.project_id,
-        Entry::new(AutopilotEntryKind::Answered, line).by(&me.id),
-        ctx.now,
-    )
-    .await;
+    let about = sending.as_ref().map(|f| f.session.clone());
+    let elsewhere = sending
+        .as_ref()
+        .filter(|f| f.project_id != row.project_id)
+        .map(|f| f.project_id.clone());
+    let mut entry = Entry::new(AutopilotEntryKind::Answered, line)
+        .by(&me.id)
+        .about(about.as_deref());
+    entry.other_project = elsewhere.as_deref();
+    engine::log(&ctx.db, &row.project_id, entry, ctx.now).await;
     if row.state() == AutopilotState::On {
         engine::nudge(
             &ctx.env,
@@ -1783,6 +1864,92 @@ pub async fn answer(ctx: &mut Ctx, req: &mut Request, id: &str, ask: &str) -> Ap
         .await?;
     }
     get(ctx, id).await
+}
+
+/// Files an answer sends to the session its question is about.
+struct Sending {
+    session: String,
+    project_id: String,
+    /// `project#number`.
+    reference: String,
+    text: String,
+    attachments: Vec<fctl_proto::event::Attachment>,
+}
+
+impl Sending {
+    /// Sends them, in a message from `me` with the answer as its text. The
+    /// same answer to `ask` sent again within a day goes once, and wakes
+    /// the session again where waking it failed; a changed one goes too.
+    async fn deliver(&self, ctx: &Ctx, ask: &str, me: &crate::model::UserRow) -> AppResult<()> {
+        crate::api::sessions::deliver_message(
+            ctx,
+            &self.session,
+            self.text.clone(),
+            me,
+            crate::api::sessions::source_of(ctx),
+            Some(ap::answer_key(
+                &me.id,
+                ask,
+                &self.text,
+                &self
+                    .attachments
+                    .iter()
+                    .map(|a| a.id.as_str())
+                    .collect::<Vec<_>>(),
+            )),
+            self.attachments.clone(),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+/// The files `files` the caller attached to their answer to `ask`, for the
+/// session it is about, which they must be able to message: claimed for
+/// it, with the message's text.
+async fn files_for(
+    ctx: &Ctx,
+    ask: &engine::AskRow,
+    answer: Option<&str>,
+    files: &[fctl_proto::AttachmentId],
+) -> AppResult<Sending> {
+    let about = ask.about().ok_or_else(|| {
+        validation(
+            "attachments",
+            "It asks about no session, so the files have nowhere to go: answer in words, or send them to a session yourself.",
+        )
+    })?;
+    let reference = format!("{}#{}", about.project_slug, about.number);
+    let target = access::session(ctx, &about.id.0).await?;
+    target.require_editor()?;
+    crate::api::sessions::refuse_review(&target.row)?;
+    let status = target.row.status();
+    if !status.accepts_messages() && !status.resumes_for_messages() {
+        return Err(conflict(&format!(
+            "{reference} failed: resume it, then answer with the files."
+        )));
+    }
+    let text = fctl_domain::validate::message_with_files(
+        "answer",
+        answer.unwrap_or_default(),
+        files.len(),
+    )?;
+    let user = ctx.user()?;
+    let attachments = crate::internal::claim_files(
+        &ctx.env,
+        &target.row.project_id,
+        &target.row.session_id(),
+        &user.id,
+        files,
+    )
+    .await?;
+    Ok(Sending {
+        session: target.row.id.clone(),
+        project_id: target.row.project_id.clone(),
+        reference,
+        text,
+        attachments,
+    })
 }
 
 /// `POST …/autopilot/asks/{ask}/decline`: no, maybe saying why.

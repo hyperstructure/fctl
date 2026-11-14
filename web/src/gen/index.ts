@@ -23,6 +23,7 @@ export type { AllowList } from "./AllowList";
 export type { AnswerAutopilotAskRequest } from "./AnswerAutopilotAskRequest";
 export type { ApiError } from "./ApiError";
 export type { AskedSecret } from "./AskedSecret";
+export type { AskedSession } from "./AskedSession";
 export type { Attachment } from "./Attachment";
 export type { AttachmentId } from "./AttachmentId";
 export type { AuditEntry } from "./AuditEntry";

@@ -42,9 +42,10 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { ProjectMark } from "@/components/project/project-icon";
+import { AttachButton, DraftTray, DropHint, useAttachments } from "@/components/session/attachments";
 import { ScheduleNamed } from "@/components/session/autopilot";
 import {
   AutopilotIcon,
@@ -69,6 +70,7 @@ import {
 } from "@/components/ui";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
+import { dragHasFiles, filesFromPaste } from "@/lib/attachments";
 import {
   atWork,
   CHECK_INS,
@@ -1567,6 +1569,7 @@ function AskCard({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
           <p className="mt-1.5 text-[15px] leading-relaxed whitespace-pre-line text-ink [overflow-wrap:anywhere]">
             {ask.text}
           </p>
+          {ask.about && <AskedAbout a={a} about={ask.about} />}
           {ask.detail && <AskDetail text={ask.detail} />}
           {a.can.steer ? (
             secret && ask.secret ? (
@@ -1584,6 +1587,32 @@ function AskCard({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
         </div>
       </div>
     </article>
+  );
+}
+
+/** `shop#41`: the session an ask is about. */
+function aboutRef(about: G.AskedSession): string {
+  return `${about.project_slug}#${about.number}`;
+}
+
+/** The session it asks about, a click away, with how it stands when it is one of its own. */
+function AskedAbout({ a, about }: { a: G.Autopilot; about: G.AskedSession }) {
+  const crew = a.crew.find((c) => c.id === about.id);
+  return (
+    <Link
+      to="/s/$id"
+      params={{ id: about.id }}
+      title={`Open ${aboutRef(about)}: ${about.title}`}
+      className="group mt-2.5 flex max-w-full items-center gap-2 rounded-lg border border-line bg-canvas/40 px-3 py-2 transition-colors hover:bg-hover sm:inline-flex"
+    >
+      {crew && <StatusDot status={crew.status} />}
+      <span className="shrink-0 font-mono text-[12px] text-ink-3">{aboutRef(about)}</span>
+      <span className="min-w-0 truncate text-[13px] text-ink-2 group-hover:text-ink">{about.title}</span>
+      <ArrowRight
+        aria-hidden="true"
+        className="ml-auto size-3.5 shrink-0 text-ink-4 transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transition-none"
+      />
+    </Link>
   );
 }
 
@@ -1616,25 +1645,45 @@ function AskDetail({ text }: { text: string }) {
 
 function QuestionAnswer({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
   const [text, setText] = useState("");
-  const [sending, setSending] = useState<string>();
+  // What is on its way: the option clicked, or what was typed.
+  const [sending, setSending] = useState<{ value: string }>();
   const [declining, setDeclining] = useState(false);
-  const answer = useMutation({
-    mutationFn: (value: string) => api.answerAutopilot(a.project_id, ask.id, { answer: value }),
-    onSuccess: (x) => {
+  // Files go to the session it asks about, with the answer.
+  const about = ask.about;
+  const files = useAttachments(about ? { session: about.id } : undefined);
+  const drop = useCardDrop(files.add, !!about);
+  const send = async (value: string) => {
+    const answer = value.trim();
+    if (sending || (!answer && !files.drafts.length)) return;
+    setSending({ value });
+    let restore: (() => void) | undefined;
+    try {
+      // Waits for files still uploading.
+      const taken = await files.take();
+      restore = taken.restore;
+      const attachments = taken.files.attachments.map((f) => f.id);
+      const x = await api.answerAutopilot(a.project_id, ask.id, {
+        answer: answer || undefined,
+        attachments: attachments.length ? attachments : undefined,
+      });
+      for (const url of Object.values(taken.files.previews)) URL.revokeObjectURL(url);
       patched(x);
-      toast("Answered: it hears now");
-    },
-    onError: (e) => failed(e, "Not sent"),
-    onSettled: () => setSending(undefined),
-  });
-  const send = (value: string) => {
-    if (sending || !value.trim()) return;
-    setSending(value);
-    answer.mutate(value.trim());
+      toast(
+        attachments.length && about
+          ? `Sent ${aboutRef(about)} ${attachments.length === 1 ? "the file" : `the ${attachments.length} files`}: it hears now`
+          : "Answered: it hears now",
+      );
+    } catch (e) {
+      restore?.();
+      failed(e, "Not answered");
+    } finally {
+      setSending(undefined);
+    }
   };
   const options = ask.options ?? [];
+  const ready = !!text.trim() || files.drafts.length > 0;
   return (
-    <div className="mt-3">
+    <div className="relative mt-3 rounded-xl" {...drop.handlers}>
       {options.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {options.map((o) => (
@@ -1642,25 +1691,26 @@ function QuestionAnswer({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
               key={o}
               type="button"
               disabled={!!sending}
-              onClick={() => send(o)}
+              onClick={() => void send(o)}
               className={cn(
                 "inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border px-3.5 py-1 text-left text-[13px] transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.97]",
-                sending === o
+                sending?.value === o
                   ? "border-blue/50 bg-blue-soft text-ink"
                   : "border-line-strong bg-raised text-ink-2 hover:border-blue/45 hover:bg-blue-soft hover:text-ink disabled:opacity-60",
               )}
             >
-              {sending === o && <Spinner className="size-3" />}
+              {sending?.value === o && <Spinner className="size-3" />}
               <span className="[overflow-wrap:anywhere]">{o}</span>
             </button>
           ))}
         </div>
       )}
+      <DraftTray drafts={files.drafts} onRemove={files.remove} onRetry={files.retry} className="mt-2.5" />
       <form
         className="mt-2.5 flex items-end gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          send(text);
+          void send(text);
         }}
       >
         <Textarea
@@ -1674,22 +1724,34 @@ function QuestionAnswer({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
-              send(text);
+              void send(text);
             }
           }}
+          onPaste={(e) => {
+            if (!about) return;
+            const pasted = filesFromPaste(e.clipboardData);
+            if (!pasted.length) return;
+            e.preventDefault();
+            files.add(pasted, { pasted: true });
+          }}
         />
+        {about && <AttachButton field onFiles={files.add} disabled={!!sending} />}
         <Button
           type="submit"
           size="field"
-          disabled={!text.trim() || !!sending}
-          loading={sending === text.trim() && !!text.trim()}
+          disabled={!ready || !!sending}
+          loading={!!sending && sending.value === text && ready}
         >
           <Send className="size-3.5" />
           <span className="sr-only">Send</span>
         </Button>
       </form>
-      <div className="mt-2 flex items-center gap-3 text-[12px] text-ink-4">
-        <span>It goes on with what it can meanwhile, and hears your answer at once.</span>
+      <div className="mt-2 flex items-start gap-3 text-[12px] leading-snug text-ink-4">
+        <span>
+          {about
+            ? `It goes on with what it can meanwhile. Files you attach go to ${aboutRef(about)} with your answer, in a message from you.`
+            : "It goes on with what it can meanwhile, and hears your answer at once."}
+        </span>
         <button
           type="button"
           onClick={() => setDeclining(true)}
@@ -1699,8 +1761,48 @@ function QuestionAnswer({ a, ask }: { a: G.Autopilot; ask: G.AutopilotAsk }) {
         </button>
       </div>
       <DeclineDialog a={a} ask={ask} open={declining} onClose={() => setDeclining(false)} />
+      {about && <DropHint show={drop.over} />}
     </div>
   );
+}
+
+/**
+ * Files dropped on an ask's answer go to `onFiles`, while `enabled`: only
+ * there, as the tab may show several asks. Returns the handlers to spread
+ * on it, and whether files are dragged over it.
+ */
+function useCardDrop(onFiles: (files: File[]) => void, enabled: boolean) {
+  const [over, setOver] = useState(false);
+  const depth = useRef(0);
+  const handlers = enabled
+    ? {
+        onDragEnter: (e: DragEvent) => {
+          if (!dragHasFiles(e)) return;
+          e.preventDefault();
+          depth.current++;
+          setOver(true);
+        },
+        onDragOver: (e: DragEvent) => {
+          if (!dragHasFiles(e)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        },
+        onDragLeave: (e: DragEvent) => {
+          if (!dragHasFiles(e)) return;
+          depth.current = Math.max(0, depth.current - 1);
+          if (depth.current === 0) setOver(false);
+        },
+        onDrop: (e: DragEvent) => {
+          if (!dragHasFiles(e)) return;
+          e.preventDefault();
+          depth.current = 0;
+          setOver(false);
+          const dropped = Array.from(e.dataTransfer.files);
+          if (dropped.length) onFiles(dropped);
+        },
+      }
+    : {};
+  return { handlers, over };
 }
 
 function SecretAnswer({ a, ask, secret }: { a: G.Autopilot; ask: G.AutopilotAsk; secret: G.AskedSecret }) {

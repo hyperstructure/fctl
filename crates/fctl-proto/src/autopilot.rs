@@ -434,10 +434,23 @@ pub struct AutopilotAsk {
     pub options: Vec<String>,
     /// The secret it needs, for a secret.
     pub secret: Option<AskedSecret>,
+    /// The session it asks about, for a question: people open it from the
+    /// ask, and files they attach to their answer go to it. Control planes
+    /// before it leave it out.
+    pub about: Option<AskedSession>,
     pub status: AutopilotAskStatus,
     /// The answer, for a question someone answered, or why someone
-    /// declined. Never a secret's value.
+    /// declined. Never a secret's value. Absent for an answer of files
+    /// alone.
     pub answer: Option<String>,
+    /// The files the answer sent to the session it asks about (`about`), in
+    /// a message from whoever answered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        feature = "ts",
+        ts(as = "Option<Vec<crate::event::Attachment>>", optional)
+    )]
+    pub files: Vec<crate::event::Attachment>,
     /// Who answered, gave the secret or declined.
     pub answered_by: Option<UserRef>,
     pub answered_at: Option<Millis>,
@@ -459,6 +472,18 @@ pub struct AskedSecret {
     /// replaces.
     #[serde(default)]
     pub exists: bool,
+}
+
+/// A session an autopilot asks about: one it started, say, that needs
+/// files only people have. Files attached to the answer go to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AskedSession {
+    pub id: SessionId,
+    pub project_id: ProjectId,
+    pub project_slug: String,
+    pub number: u32,
+    pub title: String,
 }
 
 /// A session an autopilot started, to do part of the work.
@@ -798,6 +823,11 @@ pub struct CreateAutopilotAskRequest {
     /// The project the secret goes into (id or slug); absent: the
     /// autopilot's own.
     pub project: Option<String>,
+    /// The session a question is about (its id), in the autopilot's
+    /// projects: one it started that needs files only people have, say.
+    /// People open it from the ask, and the files they attach to their
+    /// answer go to it.
+    pub about: Option<SessionId>,
 }
 
 /// `POST …/autopilot/asks/{ask}/answer`: answers a question. `secret`
@@ -807,8 +837,16 @@ pub struct CreateAutopilotAskRequest {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct AnswerAutopilotAskRequest {
+    /// May be empty when `attachments` are given.
     pub answer: Option<String>,
     pub secret: Option<String>,
+    /// Files for the session the question is about (`AutopilotAsk.about`):
+    /// ids from `POST /api/v1/sessions/{about}/attachments`. They go to it
+    /// in a message from the caller, with the answer as its text, and the
+    /// autopilot hears which files went.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<crate::AttachmentId>>", optional))]
+    pub attachments: Vec<crate::AttachmentId>,
 }
 
 /// `POST …/autopilot/asks/{ask}/decline`.
