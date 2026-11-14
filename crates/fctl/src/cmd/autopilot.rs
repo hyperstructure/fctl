@@ -261,7 +261,18 @@ pub enum AutopilotCmd {
     },
     /// Where things stand, as Markdown: what the autopilot reads as it
     /// wakes.
-    Brief,
+    Brief {
+        /// Only these parts, a list: direction, notes, asks, sessions (its
+        /// own), people (people's sessions), plan, log. Default: all.
+        #[arg(long, value_name = "PARTS", value_delimiter = ',', value_parser = brief_part)]
+        only: Vec<fctl_domain::autopilot::BriefPart>,
+    },
+}
+
+/// A part of the brief, by name: `--only sessions,` fails on the empty
+/// name rather than ask for some other part.
+fn brief_part(name: &str) -> Result<fctl_domain::autopilot::BriefPart, String> {
+    fctl_domain::autopilot::brief_part(name).map_err(|e| e.message)
 }
 
 pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Result<()> {
@@ -705,8 +716,9 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             }
             println!("{} Took it back", style::accent("✓"));
         }
-        AutopilotCmd::Brief => {
-            let b = api.autopilot_brief(p).await?;
+        AutopilotCmd::Brief { only } => {
+            let only: Vec<&str> = only.iter().map(|part| part.as_str()).collect();
+            let b = api.autopilot_brief(p, &only).await?;
             if json {
                 return style::print_json(&b);
             }
@@ -1249,6 +1261,28 @@ mod tests {
         assert_eq!(ask, "apa_1");
         assert!(answer.is_empty());
         assert_eq!(attach, [PathBuf::from("a.3mf"), PathBuf::from("b.3mf")]);
+    }
+
+    #[test]
+    fn reads_parts_of_the_brief() {
+        use fctl_domain::autopilot::BriefPart;
+        let Some(AutopilotCmd::Brief { only }) = parse(&["brief"]) else {
+            panic!("parses");
+        };
+        assert!(only.is_empty());
+        let Some(AutopilotCmd::Brief { only }) =
+            parse(&["brief", "--only", "sessions,asks", "--only", "People"])
+        else {
+            panic!("parses");
+        };
+        assert_eq!(
+            only,
+            [BriefPart::Sessions, BriefPart::Asks, BriefPart::People]
+        );
+        assert!(parse(&["brief", "--only", "crew"]).is_none());
+        // An empty name asks for no part, rather than the first.
+        assert!(parse(&["brief", "--only", "sessions,"]).is_none());
+        assert!(parse(&["brief", "--only", ""]).is_none());
     }
 
     #[test]

@@ -408,7 +408,7 @@ async fn dispatch(
         }
         (Post, ["projects", id, "autopilot", "resume"]) => api::autopilots::resume(ctx, id).await,
         (Post, ["projects", id, "autopilot", "wake"]) => api::autopilots::wake(ctx, req, id).await,
-        (Get, ["projects", id, "autopilot", "brief"]) => api::autopilots::brief(ctx, id).await,
+        (Get, ["projects", id, "autopilot", "brief"]) => api::autopilots::brief(ctx, req, id).await,
         (Get, ["projects", id, "autopilot", "log"]) => api::autopilots::log(ctx, req, id).await,
         (Post, ["projects", id, "autopilot", "log"]) => {
             api::autopilots::write_log(ctx, req, id).await

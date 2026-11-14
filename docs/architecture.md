@@ -2162,13 +2162,20 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the cause of a mistake sessions repeat, and having a session tidy the
    memory once it grows long; reading a session's last turn (`fctl logs
    --last-turn`) before taking its word that it's done, as sessions stop
-   short; one round of changes; reviewing screenshots with a subagent, and
+   short; one round of changes; reviewing screenshots with a subagent,
+   asking for shots of the case that matters rather than the default, and
    asking people to check right after a ship what no sandbox can; a person
    watching the first run of work that drives hardware; licenses that
    bind the project; people's own messages to its sessions; background
-   scripts that wait on what doesn't wake it, on plain HTTP APIs; and
-   holding ships while people are away. Its plan reads as if a stranger
-   took over at the next wake, and it changes the plan as fctl has it
+   scripts that wait on what doesn't wake it, on plain HTTP APIs, and
+   follow the base branch's newest run when a newer merge cancels one;
+   looking at what people send before publishing it or passing it on, as
+   it may show more of them than they meant to share; and holding ships
+   while people are away. Its first lines say which of its sessions count
+   toward how many work at once, and to name sessions as fctl does, never
+   with a placeholder. Its plan reads as if a stranger
+   took over at the next wake, holds the scripts the work relies on whole,
+   and it changes the plan as fctl has it
    (`fctl autopilot plan` prints it), whole or a section at a time
    (`fctl autopilot plan --section`, which fails when the plan lacks the
    section rather than write one without it). Each wake
@@ -2190,7 +2197,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    stand: the direction, people's notes (the new ones marked), its asks
    and their answers, its sessions, people's sessions in its places that
    work or have a pull request open (point 8), its plan and log
-   (`fctl_domain::autopilot::brief`). Its owner follows its own session, which
+   (`fctl_domain::autopilot::brief`), or only the parts it names
+   (`--only sessions,people,asks`, `?only=`; `brief_parts`), as the whole
+   runs to tens of kilobytes that each wake would read again, and it has
+   heard of the notes and answers of the parts it read. Its owner follows its own session, which
    notifies only of what it asks, and of fctl pausing it after its sessions
    kept failing ([Notifications](#notifications)).
 3. **Waking** (`crate::autopilots`). ScheduleObject's alarm, which starts
@@ -2251,7 +2261,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    means its own). Never people, roles, shares, tokens, runners, GitHub
    accounts, the workspace's settings, deleting a project, or anything
    that takes [confirming it's you](#confirming-its-you).
-   At most as many of its sessions work at once as people allow, and it
+   At most as many of its sessions work at once as people allow (those
+   queued, starting, working, paused on a usage limit or stopping, and
+   one resting that it just messaged: `autopilots::CREW_WORKING`; a
+   message or resume to one resting needs room too), and it
    starts at most 20 an hour. What it did goes in its log, in its own
    transcript (an `autopilot_action` notice, with the session it started or
    steered) and in the workspace's audit log, as its owner, with the

@@ -1064,10 +1064,15 @@ impl Api {
             .await
     }
 
-    /// Where things stand, as Markdown for the autopilot.
-    pub async fn autopilot_brief(&self, project: &str) -> Result<AutopilotBrief> {
-        self.get(&format!("/projects/{}/autopilot/brief", enc(project)))
-            .await
+    /// Where things stand, as Markdown for the autopilot: only the parts
+    /// `only` names (`sessions`, `asks`…), or all of them when it names
+    /// none. A control plane before parts gives all of them.
+    pub async fn autopilot_brief(&self, project: &str, only: &[&str]) -> Result<AutopilotBrief> {
+        let mut path = format!("/projects/{}/autopilot/brief", enc(project));
+        if !only.is_empty() {
+            path.push_str(&format!("?only={}", enc(&only.join(","))));
+        }
+        self.get(&path).await
     }
 
     /// Its log, newest first.
