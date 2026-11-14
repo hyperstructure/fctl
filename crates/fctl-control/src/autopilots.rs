@@ -2713,6 +2713,88 @@ mod tests {
         Ok(c.map_or(0, |c| c.n))
     }
 
+    /// A question may be about a session in its places, but not one of
+    /// another workspace's projects, nor a review agent's; it reads back
+    /// with that session, and the files its answer sent there.
+    #[wasm_bindgen_test]
+    async fn an_ask_is_about_a_session_in_its_places() -> AppResult<()> {
+        let db = testing::database();
+        let row = autopilot(&db).await?;
+        let mine = crew(&db, 41, "idle", NOW).await?;
+        let reviewing = crew(&db, 42, "idle", NOW).await?;
+        for sql in [
+            "INSERT INTO reviews (session_id, project_id, repo, repo_key, number, head_sha, url, created_at) \
+             VALUES ('ses_42', 'prj_web', 'acme/web', 'acme/web', 7, 'abc', 'https://github.com/acme/web/pull/7', 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_else', 'else', 'Else', 0, 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_api', 'api', 'API', 'else', 'api', 'usr_ada', 0, 0, 'wsp_else')",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_docs', 'docs', 'Docs', 'acme', 'docs', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at) \
+             VALUES ('ses_api', 'prj_api', 1, 'Rate limits', 'Rate limits', 'idle', 'usr_ada', 'c1', 0, 0)",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at) \
+             VALUES ('ses_docs', 'prj_docs', 3, 'Pricing page', 'Pricing page', 'idle', 'usr_ada', 'c2', 0, 0)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        assert!(askable(&db, &row, &mine).await?);
+        assert!(!askable(&db, &row, &reviewing).await?);
+        assert!(!askable(&db, &row, "ses_api").await?);
+        assert!(!askable(&db, &row, "ses_none").await?);
+        // A project's autopilot keeps to its project; a workspace's reaches
+        // the workspace's others.
+        assert!(!askable(&db, &row, "ses_docs").await?);
+        q(
+            &db,
+            "UPDATE autopilots SET scope = 'workspace' WHERE project_id = 'prj_web'",
+            &[],
+        )?
+        .run()
+        .await?;
+        let wide = row_of(&db).await?;
+        assert!(askable(&db, &wide, "ses_docs").await?);
+        assert!(!askable(&db, &wide, "ses_api").await?);
+
+        q(
+            &db,
+            "INSERT INTO autopilot_asks (id, project_id, kind, text, status, answered_by, answered_at, about_id, files, \
+             created_at) VALUES ('apa_1', 'prj_web', 'question', 'Could you send web#41 the models?', 'answered', \
+             'usr_ada', ?2, ?1, ?3, ?2)",
+            &[
+                s(&mine),
+                n(NOW),
+                s(r#"[{"id":"att_1","name":"hotdog.3mf","media_type":"model/3mf","size":5}]"#),
+            ],
+        )?
+        .run()
+        .await?;
+        let ask: Option<AskRow> = q(&db, &format!("{ASK_SELECT} WHERE k.id = 'apa_1'"), &[])?
+            .first()
+            .await?;
+        let ask = ask.ok_or_else(|| internal("no ask"))?;
+        let about = ask.about().ok_or_else(|| internal("about no session"))?;
+        assert_eq!(
+            (
+                about.project_slug.as_str(),
+                about.number,
+                about.title.as_str()
+            ),
+            ("web", 41, "Fix the cart")
+        );
+        let options = ask.options();
+        let view = ask_view(&ask, &options);
+        assert_eq!(view.about.as_deref(), Some("web#41"));
+        assert_eq!(view.files, ["hotdog.3mf"]);
+        assert_eq!(view.answer, None);
+        Ok(())
+    }
+
+    async fn row_of(db: &D1Database) -> AppResult<AutopilotRow> {
+        row(db, "prj_web")
+            .await?
+            .ok_or_else(|| internal("no autopilot"))
+    }
+
     /// Its owner chose another connection, and its wakes move the sessions
     /// it started that rest to that one: that is no news of them. Its next
     /// wake lists the one whose turn ended since it last woke, rather than

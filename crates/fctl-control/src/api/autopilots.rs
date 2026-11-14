@@ -1911,8 +1911,11 @@ async fn files_for(
             "{reference} failed: resume it, then answer with the files."
         )));
     }
-    let text =
-        fctl_domain::validate::message_with_files("answer", answer.unwrap_or_default(), files.len())?;
+    let text = fctl_domain::validate::message_with_files(
+        "answer",
+        answer.unwrap_or_default(),
+        files.len(),
+    )?;
     let user = ctx.user()?;
     let attachments = crate::internal::claim_files(
         &ctx.env,

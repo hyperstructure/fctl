@@ -506,7 +506,10 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                         &attach,
                     )
                     .await?;
-                    (ids, Some(format!("{}#{}", about.project_slug, about.number)))
+                    (
+                        ids,
+                        Some(format!("{}#{}", about.project_slug, about.number)),
+                    )
                 }
             };
             let a = api

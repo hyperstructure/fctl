@@ -2554,7 +2554,9 @@ mod tests {
         assert!(b.contains("`fctl schedules add`"));
         assert!(!b.contains("fctl projects repos add"));
         assert!(b.contains("fctl autopilot ask --secret NAME"));
-        assert!(b.contains("ask with `--session <ref>` naming it: people attach the files to their answer"));
+        assert!(b.contains(
+            "ask with `--session <ref>` naming it: people attach the files to their answer"
+        ));
         assert!(b.contains("Don't use `fctl ask`"));
         assert!(b.ends_with("your sessions and theirs, and your log.\n"));
         // People's own sessions are theirs, but their pull requests its
