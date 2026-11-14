@@ -2,6 +2,12 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.34.2 (2026-11-14)
+
+### Features
+
+- **autopilot:** Send an answer's files to the session the ask names ([#543](https://github.com/hyperstructure/fctl/pull/543))
+
 ## 0.34.1 (2026-11-14)
 
 ### Features
