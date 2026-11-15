@@ -35,6 +35,13 @@ pub const KEEP_MS: i64 = 3 * 86_400_000;
 const MAX_WAITING: i64 = 50;
 const MAX_BRANCHES: usize = 3;
 
+/// How long after a merge, and after it last looked, the hourly job looks
+/// up the checks of a merge still waiting itself ([`sweep`]), and the most
+/// commits it looks up in a run.
+const SWEEP_AFTER_MS: i64 = 15 * 60_000;
+const SWEEP_AGAIN_MS: i64 = 50 * 60_000;
+const SWEEP_LOOKUPS: usize = 30;
+
 /// A pull request that merged, as a `pull_request` delivery says.
 pub struct Merged<'a> {
     pub repo: &'a RepoRef,
@@ -300,6 +307,190 @@ pub async fn on_delivery(
         }
         None => Ok(autopilots.len()),
     }
+}
+
+/// A merge still waiting, with its repository, for [`sweep`].
+#[derive(Clone, Debug, Deserialize)]
+pub struct Stale {
+    pub repo: String,
+    #[serde(deserialize_with = "int")]
+    pub number: i64,
+    pub session_id: String,
+    pub autopilot_id: String,
+    pub base_ref: String,
+    pub merge_sha: String,
+}
+
+impl Stale {
+    fn waiting(&self) -> Waiting {
+        Waiting {
+            number: self.number,
+            session_id: self.session_id.clone(),
+            autopilot_id: self.autopilot_id.clone(),
+            base_ref: self.base_ref.clone(),
+            merge_sha: self.merge_sha.clone(),
+        }
+    }
+}
+
+/// The merges [`sweep`] looks the checks of up: still waiting
+/// [`SWEEP_AFTER_MS`] after they merged, and as long since it last looked,
+/// those it looked at longest ago first, of sessions whose workspaces
+/// still connect their repository's account.
+pub async fn stale(db: &D1Database, now: i64) -> AppResult<Vec<Stale>> {
+    q(
+        db,
+        &format!(
+            "SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id, l.autopilot_id AS autopilot_id, \
+             l.base_ref AS base_ref, l.merge_sha AS merge_sha FROM merge_checks l \
+             WHERE l.ended_at IS NULL AND l.merged_at < ?1 AND (l.looked_at IS NULL OR l.looked_at < ?2) AND {} \
+             ORDER BY COALESCE(l.looked_at, 0), l.merged_at LIMIT {MAX_WAITING}",
+            in_reach(None)
+        ),
+        &[n(now - SWEEP_AFTER_MS), n(now - SWEEP_AGAIN_MS)],
+    )?
+    .all()
+    .await
+}
+
+/// Marks merges into `branch` of `repo` that still wait looked at:
+/// [`sweep`] looked their checks up.
+pub async fn looked(
+    db: &D1Database,
+    repo: &RepoRef,
+    branch: &str,
+    merges: &[i64],
+    now: i64,
+) -> AppResult<()> {
+    q(
+        db,
+        "UPDATE merge_checks SET looked_at = ? WHERE repo = ? AND base_ref = ? AND ended_at IS NULL \
+         AND number IN (SELECT value FROM json_each(?))",
+        &[
+            n(now),
+            s(&key(repo)),
+            s(branch),
+            s(&serde_json::to_string(merges)?),
+        ],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// Looks up, from the hourly job, the checks of merges whose webhook
+/// delivery never came or whose lookup failed then (GitHub sends a
+/// delivery once, however the control plane answered), and settles those
+/// they tell of ([`sweep_branch`]), which wakes their autopilots. Returns
+/// how many autopilots it woke.
+pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
+    let cfg = Config::from_env(env);
+    if !crate::pull_requests::enabled(&cfg) {
+        return Ok(0);
+    }
+    let stale = stale(db, now).await?;
+    if stale.is_empty() {
+        return Ok(0);
+    }
+    let gh = github::from_config(&cfg, now)?;
+    let mut branches: Vec<((String, String), Vec<Waiting>)> = Vec::new();
+    for m in &stale {
+        let at = (m.repo.clone(), m.base_ref.clone());
+        match branches.iter_mut().find(|(b, _)| *b == at) {
+            Some((_, w)) => w.push(m.waiting()),
+            None => branches.push((at, vec![m.waiting()])),
+        }
+    }
+    let mut lookups = 0;
+    let mut autopilots: Vec<String> = Vec::new();
+    for ((repo, branch), waiting) in branches {
+        if lookups >= SWEEP_LOOKUPS {
+            break;
+        }
+        let Some(repo) = RepoRef::parse(&repo) else {
+            continue;
+        };
+        let numbers: Vec<i64> = waiting.iter().map(|w| w.number).collect();
+        // A failure leaves this branch's merges to the next run, and
+        // what it settled to wake their autopilots.
+        match sweep_branch(&gh, db, &repo, &branch, waiting, &mut lookups, now).await {
+            Ok(woke) => autopilots.extend(woke),
+            Err(e) => worker::console_error!(
+                "looking up the checks after merges into {} {branch}: {}",
+                repo.full_name(),
+                e.0.message
+            ),
+        }
+        if let Err(e) = looked(db, &repo, &branch, &numbers, now).await {
+            worker::console_error!(
+                "marking the merges into {} {branch} looked at: {}",
+                repo.full_name(),
+                e.0.message
+            );
+        }
+    }
+    autopilots.sort();
+    autopilots.dedup();
+    if !autopilots.is_empty() {
+        crate::autopilots::ring(env).await;
+    }
+    Ok(autopilots.len())
+}
+
+/// Looks up the commit of each merge into `branch` of `repo` among
+/// `waiting`, oldest first, while it still waits, and then the commit the
+/// branch is at now, which holds them all, settling those they tell of
+/// ([`settle`]), with at most [`SWEEP_LOOKUPS`] lookups counted in
+/// `lookups`. Returns the autopilots of the merges it settled.
+async fn sweep_branch(
+    gh: &github::Github<'_>,
+    db: &D1Database,
+    repo: &RepoRef,
+    branch: &str,
+    mut waiting: Vec<Waiting>,
+    lookups: &mut usize,
+    now: i64,
+) -> AppResult<Vec<String>> {
+    let installation = gh.installation(&repo.owner).await?.id;
+    let mut autopilots = Vec::new();
+    let mut looked_up: Vec<String> = Vec::new();
+    let mut head: Option<String> = None;
+    let new =
+        |sha: &String, looked_up: &[String]| !looked_up.iter().any(|l| l.eq_ignore_ascii_case(sha));
+    while !waiting.is_empty() && *lookups < SWEEP_LOOKUPS {
+        let next = waiting
+            .iter()
+            .map(|w| &w.merge_sha)
+            .find(|s| new(s, &looked_up))
+            .or(head.as_ref().filter(|h| new(h, &looked_up)))
+            .cloned();
+        let Some(sha) = next else {
+            break;
+        };
+        looked_up.push(sha.clone());
+        *lookups += 1;
+        let answer = gh
+            .lookup(installation, webhooks::commit_query(repo, &sha, branch))
+            .await?;
+        let Some(commit) = webhooks::looked_up_commit(&answer) else {
+            continue;
+        };
+        if head.is_none() {
+            head = commit.head.clone();
+        }
+        let merges: Vec<&str> = waiting.iter().map(|w| w.merge_sha.as_str()).collect();
+        let Some((_, held)) = mc::settles(&commit, &merges) else {
+            continue;
+        };
+        autopilots.extend(settle(db, repo, &waiting, &commit, now).await?);
+        waiting = waiting
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !held.contains(i))
+            .map(|(_, w)| w)
+            .collect();
+    }
+    Ok(autopilots)
 }
 
 /// A merge of an autopilot's session whose checks on its base branch
@@ -591,6 +782,50 @@ mod tests {
         told(&db, &ids, NOW + 3).await?;
         let (ended, _) = untold(&db, "prj_web").await?;
         assert!(ended.is_empty());
+        Ok(())
+    }
+
+    /// The hourly job looks up merges still waiting a while after they
+    /// merged, each again an hour later at the soonest.
+    #[wasm_bindgen_test]
+    async fn the_hourly_job_looks_up_merges_still_waiting() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        merge(&db, 12, "aaa").await?;
+        merge(&db, 13, "bbb").await?;
+        let numbers = |s: Vec<Stale>| {
+            let mut n: Vec<(i64, String)> =
+                s.into_iter().map(|m| (m.number, m.session_id)).collect();
+            n.sort();
+            n
+        };
+        // Just merged: the webhook still has time to say.
+        assert!(stale(&db, NOW + 60_000).await?.is_empty());
+        let later = NOW + SWEEP_AFTER_MS + 1;
+        assert_eq!(
+            numbers(stale(&db, later).await?),
+            vec![
+                (12, "ses_1".to_owned()),
+                (12, "ses_2".to_owned()),
+                (13, "ses_2".to_owned())
+            ]
+        );
+        // Looked at: not again within the hour, while #13 settles.
+        looked(&db, &repo(), "main", &[12, 13], later).await?;
+        assert!(stale(&db, later + 60_000).await?.is_empty());
+        let w = waits(&db).await?;
+        let c = commit("bbb", &["bbb"], "bbb", checks(14, 0, 0, 0));
+        assert_eq!(settle(&db, &repo(), &w, &c, later).await?.len(), 1);
+        let again = later + SWEEP_AGAIN_MS + 1;
+        assert_eq!(
+            numbers(stale(&db, again).await?),
+            vec![(12, "ses_1".to_owned()), (12, "ses_2".to_owned())]
+        );
+        // Nor once the workspace no longer connects the account.
+        q(&db, "UPDATE workspace_github SET status = 'requested'", &[])?
+            .run()
+            .await?;
+        assert!(stale(&db, again).await?.is_empty());
         Ok(())
     }
 

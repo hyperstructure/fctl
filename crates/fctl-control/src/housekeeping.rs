@@ -6,7 +6,9 @@
 //! from the Worker's hourly cron trigger; deleting a project or a workspace
 //! also purges its sessions and files right away. It also looks up the
 //! pull requests sessions list that GitHub hasn't told about for a while
-//! (`pull_requests::sweep`), and sets the alarm of schedules again
+//! (`pull_requests::sweep`) and the checks after autopilots' merges that
+//! its webhook didn't say ended (`merge_checks::sweep`), and sets the
+//! alarm of schedules again
 //! (`schedules::wake`), in case a change never reached it. It forgets the
 //! delegations in Linear that waited an hour for their person, and gives
 //! up fctl's access to Linear workspaces no fctl workspace works in. And it
@@ -276,6 +278,14 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
             worker::console_log!("housekeeping: told {told} sessions of their pull requests")
         }
         Err(e) => worker::console_error!("looking up pull requests: {}", e.0.message),
+    }
+    // Merges whose checks' end GitHub's webhook didn't bring.
+    match crate::merge_checks::sweep(env, &db, now).await {
+        Ok(0) => {}
+        Ok(woke) => worker::console_log!(
+            "housekeeping: the checks after merges ended for {woke} autopilots"
+        ),
+        Err(e) => worker::console_error!("looking up the checks after merges: {}", e.0.message),
     }
     match crate::reviews::sweep(env, &db).await {
         Ok(0) => {}
