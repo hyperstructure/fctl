@@ -2367,9 +2367,10 @@ async fn fates(
 /// its sessions that work, and while fewer work than its people allow, to
 /// those that rest. Those that never can go (their session failed or is
 /// gone) it drops, saying so in its log. One whose sending failed waits
-/// for the next try. Returns the ids of those it sent. SessionObject calls
-/// it as one of its sessions ends its turn, stops, fails or starts working
-/// again; its wakes and its messages call it too.
+/// for the next try, and those held for its session after it with it.
+/// Returns the ids of those it sent. SessionObject calls it as one of its
+/// sessions ends its turn, stops, fails or starts working again; its wakes
+/// and its messages call it too.
 pub async fn release(
     env: &Env,
     db: &D1Database,
@@ -2387,22 +2388,36 @@ pub async fn release(
         return Ok(Vec::new());
     };
     let mut sent = Vec::new();
+    // Sessions a message failed to reach in this pass: those held for them
+    // after it wait for the next, so that they arrive in order.
+    let mut stuck: Vec<&str> = Vec::new();
     for (h, fate) in queue.iter().zip(fates(db, &row, &queue).await?) {
-        match fate {
-            ap::Release::Wait => {}
-            ap::Release::Drop => drop_held(env, db, &row, h, now).await?,
+        let failed = match fate {
+            ap::Release::Wait => None,
+            ap::Release::Send if stuck.contains(&h.session_id.as_str()) => None,
+            ap::Release::Drop => drop_held(env, db, &row, h, now).await.err(),
             ap::Release::Send => match send_held(env, db, &row, h, now).await {
-                Ok(()) => sent.push(h.id.clone()),
+                Ok(()) => {
+                    sent.push(h.id.clone());
+                    None
+                }
                 // It failed meanwhile, as D1 didn't say yet.
                 Err(e) if e.0.code == fctl_proto::ErrorCode::Conflict => {
-                    drop_held(env, db, &row, h, now).await?;
+                    drop_held(env, db, &row, h, now).await.err()
                 }
-                Err(e) => worker::console_error!(
-                    "autopilot {project_id}: sending its held message {}: {}",
-                    h.id,
-                    e.0.message
-                ),
+                Err(e) => {
+                    stuck.push(&h.session_id);
+                    Some(e)
+                }
             },
+        };
+        // The others go on: the next pass tries this one again.
+        if let Some(e) = failed {
+            worker::console_error!(
+                "autopilot {project_id}: its held message {}: {}",
+                h.id,
+                e.0.message
+            );
         }
     }
     Ok(sent)
