@@ -163,4 +163,14 @@ describe("follow-ups in the transcript", () => {
     // Muted, as what the agent didn't hear of.
     expect(c.querySelector("svg.text-amber")).toBeNull();
   });
+
+  it("say that the agent most likely merged what fctl didn't tell it of", () => {
+    const f = followUp([{ kind: "merged", by: "fctl-sh[bot]", base: "main" }]);
+    const c = render(<HeldFollowUp followUp={f} code="follow_up_own" ts={1} />);
+    expect(c.textContent).toContain("Not passed on: merged by fctl's app while the agent was at work");
+    expect(c.textContent).not.toContain("three times in a row");
+    const closed = followUp([{ kind: "closed", by: "fctl-sh[bot]" }]);
+    const d = render(<HeldFollowUp followUp={closed} code="follow_up_own" ts={1} />);
+    expect(d.textContent).toContain("Not passed on: closed by fctl's app");
+  });
 });

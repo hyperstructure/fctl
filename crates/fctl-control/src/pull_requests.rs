@@ -465,6 +465,7 @@ fn news(
             .clone()
             .or_else(|| payload.and_then(|p| p.head_ref.clone())),
         events,
+        bot: payload.and_then(|p| p.bot.clone()),
         unsure,
         seen: now,
     })

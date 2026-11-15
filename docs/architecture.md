@@ -1913,7 +1913,8 @@ off:
    bot `fctl` where REST says `fctl[bot]`.
 3. **Merged or closed** (`pull_request` deliveries of `closed`): who
    merged or closed it, an app's bot (a merge queue's) counting as nobody,
-   and the branch it went into.
+   and the branch it went into, and whether fctl's own app did
+   (`Payload::bot`), as agents do with its token.
 4. **Conflicts with the base branch** (GitHub's `mergeable` is
    `CONFLICTING`, `fctl_domain::follow_ups::conflicts`), for pull requests
    neither merged nor closed, drafts too. No delivery says when a pull
@@ -1961,7 +1962,14 @@ reach the agent this way. Failed checks and conflicts wait while a turn
 runs, since the agent may be at them, and ten seconds more once it ends,
 for what it pushed then, and go only while GitHub still says that they are
 the pull request's newest commit's: a newer commit, the agent's or
-anyone's, or for checks a re-run that passed, makes them old news. After
+anyone's, or for checks a re-run that passed, makes them old news. A merge
+or a close by fctl's own app while the agent was at work (its turn ran,
+it waited for its background work, or its turn ended after it, as
+SessionObject's `turn_ended_at` says) is most likely the agent's own: the
+transcript says so (`follow_up_own`, with `Notice.follow_up`) rather than
+tell the agent, which would cut into its turn, or start one with nothing
+to do (`fctl_domain::follow_ups::own_doing`). A person's merge reaches it
+at its next step, and tells it to carry on with its task. After
 three failed checks in a row (`MAX_CHECKS_IN_A_ROW`) while nobody messaged
 the agent, nor wrote to it on GitHub, the transcript says what failed
 instead (`follow_up_held`, with `Notice.follow_up`), until someone does;

@@ -16,7 +16,7 @@ use crate::reviews::{by_app, short};
 use crate::webhooks::{Looked, Mergeable, Payload};
 use fctl_proto::Millis;
 use fctl_proto::event::{FollowUp, FollowUpComment, FollowUpEvent};
-use fctl_proto::session::{PullRequestRef, RepoRef};
+use fctl_proto::session::{PullRequestRef, RepoRef, SessionStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -570,6 +570,14 @@ pub struct Item {
     /// lookup the session heard of since is newer ([`conflicts_still`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<Millis>,
+    /// When it happened, as GitHub says: when a merge or a close did
+    /// ([`at_work_then`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Millis>,
+    /// fctl's GitHub App merged or closed it, whose token agents use
+    /// ([`own_doing`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_app: bool,
 }
 
 impl Item {
@@ -579,8 +587,66 @@ impl Item {
             pull,
             event,
             seen: None,
+            at,
+            by_app: false,
         }
     }
+}
+
+/// Whether the agent was at work when its pull request merged or closed,
+/// at `at` (GitHub's time): its turn runs now (`status`), or it ended its
+/// turn only to wait for work it started in the background, which brings
+/// it back, or its last turn ended at or after then (`turn_ended_at`, as
+/// the session heard), so that it saw the pull request merge, or merged
+/// it, as it worked.
+pub fn at_work_then(
+    status: SessionStatus,
+    reason: Option<&str>,
+    turn_ended_at: Option<Millis>,
+    at: Option<Millis>,
+) -> bool {
+    match status {
+        SessionStatus::Running => true,
+        SessionStatus::Idle if crate::autopilot::waits_for_background(reason) => true,
+        _ => matches!((turn_ended_at, at), (Some(ended), Some(at)) if ended >= at),
+    }
+}
+
+/// Whether the agent most likely merged or closed its pull request itself,
+/// as `event` says: fctl's GitHub App did (`by_app`), whose token the
+/// agent's `gh` uses, while the agent was at work ([`at_work_then`]). It
+/// knows then, and a message from fctl about it would only cut into its
+/// turn, or start one with nothing to do: the transcript says it instead
+/// ([`own_doing_notice`]). A person's merge, or the app's while the agent
+/// rested, still reaches it.
+pub fn own_doing(event: &FollowUpEvent, by_app: bool, at_work: bool) -> bool {
+    matches!(
+        event,
+        FollowUpEvent::Merged { .. } | FollowUpEvent::Closed { .. }
+    ) && by_app
+        && at_work
+}
+
+/// What the transcript says of a merge or a close that fctl didn't pass
+/// on, as the agent did it itself ([`own_doing`]).
+pub fn own_doing_notice(f: &FollowUp) -> Option<String> {
+    let pr = format!("{}#{}", f.repo.full_name(), f.number);
+    f.events.iter().find_map(|e| match e {
+        FollowUpEvent::Merged { base, .. } => {
+            let into = base
+                .as_deref()
+                .or(f.base.as_deref())
+                .map(|b| format!(" into {b}"))
+                .unwrap_or_default();
+            Some(format!(
+                "{pr} was merged{into} by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+            ))
+        }
+        FollowUpEvent::Closed { .. } => Some(format!(
+            "{pr} was closed by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+        )),
+        _ => None,
+    })
 }
 
 /// Whether conflicts at commit `sha`, which a lookup at `seen` found, are
@@ -1018,13 +1084,15 @@ fn checks_part(f: &FollowUp, sha: &str, failed: &[String], passed: u32, pending:
     s
 }
 
-/// That it merged: what may be left to do.
+/// That it merged: what may be left to do. A person may merge it as the
+/// agent works, which reaches it at its next step: that doesn't end its
+/// task.
 fn merged_part(f: &FollowUp, by: Option<&str>, base: Option<&str>) -> String {
     let base = base.or(f.base.as_deref());
     let into = base.map(|b| format!(" into {b}")).unwrap_or_default();
     let by = by.map(|b| format!(" by @{b}")).unwrap_or_default();
     format!(
-        "On GitHub, {} was merged{into}{by}.\n\nDo what is left to do now that it merged, if anything is: what your instructions say to do after a merge, such as noting it in the issue it fixes. Don't push to its branch again: more changes go in a new pull request from {}. If nothing is left, say so in a sentence.",
+        "On GitHub, {} was merged{into}{by}.\n\nIf you are in the middle of your task, this doesn't end it: carry on with it. Don't push to its branch again: more changes go in a new pull request from {}. Then do what is left to do now that it merged, if anything is: what your instructions say to do after a merge, such as noting it in the issue it fixes. If nothing is left, say so in a sentence.",
         your_pull_request_then(f),
         updated(base)
     )
@@ -1802,7 +1870,8 @@ mod tests {
             by: Some("ada".into()),
             base: Some("main".into()),
         }]));
-        assert!(m.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, was merged into main by @ada.\n\nDo what is left to do now that it merged"), "{m}");
+        assert!(m.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, was merged into main by @ada.\n\nIf you are in the middle of your task, this doesn't end it: carry on with it."), "{m}");
+        assert!(m.contains("Then do what is left to do now that it merged"));
         assert!(m.contains("more changes go in a new pull request from the updated main."));
         let m = message(&follow_up(vec![FollowUpEvent::Closed {
             by: Some("bob".into()),
@@ -1824,6 +1893,60 @@ mod tests {
             m.contains("a new pull request from its base branch, updated."),
             "{m}"
         );
+    }
+
+    #[test]
+    fn the_agent_was_at_work_as_it_merged() {
+        let at = Some(1_000);
+        // Its turn runs, or it waits for its background work.
+        assert!(at_work_then(SessionStatus::Running, None, None, at));
+        assert!(at_work_then(
+            SessionStatus::Idle,
+            Some("Waiting for 2 background tasks"),
+            Some(500),
+            at
+        ));
+        // Its turn ended after the merge, as it does once it merged.
+        assert!(at_work_then(SessionStatus::Idle, None, Some(1_000), at));
+        assert!(at_work_then(SessionStatus::Stopped, None, Some(4_000), at));
+        // Before it, or nobody said when either was.
+        assert!(!at_work_then(SessionStatus::Idle, None, Some(999), at));
+        assert!(!at_work_then(SessionStatus::Idle, None, None, at));
+        assert!(!at_work_then(SessionStatus::Idle, None, Some(4_000), None));
+        assert!(!at_work_then(SessionStatus::Queued, None, None, at));
+    }
+
+    #[test]
+    fn what_the_agent_merged_itself_is_its_own_doing() {
+        let merged = FollowUpEvent::Merged {
+            by: None,
+            base: Some("main".into()),
+        };
+        assert!(own_doing(&merged, true, true));
+        assert!(own_doing(&FollowUpEvent::Closed { by: None }, true, true));
+        // A person's or another app's, or the app's while the agent rested.
+        assert!(!own_doing(&merged, false, true));
+        assert!(!own_doing(&merged, true, false));
+        // Only merges and closes.
+        let conflicts = FollowUpEvent::Conflicts {
+            sha: "abc".into(),
+            base: None,
+        };
+        assert!(!own_doing(&conflicts, true, true));
+
+        assert_eq!(
+            own_doing_notice(&follow_up(vec![merged])).as_deref(),
+            Some(
+                "acme/web#12 was merged into main by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+            )
+        );
+        assert_eq!(
+            own_doing_notice(&follow_up(vec![FollowUpEvent::Closed { by: None }])).as_deref(),
+            Some(
+                "acme/web#12 was closed by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+            )
+        );
+        assert_eq!(own_doing_notice(&follow_up(vec![conflicts])), None);
     }
 
     fn looked(state: &str, failing: &[&str]) -> Looked {
