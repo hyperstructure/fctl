@@ -1147,11 +1147,6 @@ impl Cast {
         }
         Ok(())
     }
-
-    /// The autopilot of `project`, if the story has one.
-    pub fn autopilot(&self, project: &str) -> Option<&AutopilotSpec> {
-        self.autopilots.iter().find(|a| a.project == project)
-    }
 }
 
 #[cfg(test)]
