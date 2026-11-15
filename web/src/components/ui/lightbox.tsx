@@ -7,6 +7,7 @@ import { own } from "@/lib/dialog";
 import { bytes } from "@/lib/format";
 import { useHoldPage } from "@/lib/hold-page";
 import { FITS, type Point, Trail, type View, Zoom, zoomedIn } from "@/lib/zoom";
+import { Pull } from "./sheet";
 
 /** What a lightbox shows. Attachments and published screenshots are these. */
 export interface LightboxFile {
@@ -55,11 +56,13 @@ const SLOP = 10;
 /** How far a picture follows a finger toward a side with no more pictures. */
 const RESIST = 0.3;
 /**
- * How long a swiped picture takes to slide into place at most, or a zoomed
- * one to settle (`.lightbox-track` and `.lightbox-picture` in app.css), and a
- * margin.
+ * How long a swiped picture takes to slide into place at most, a zoomed one
+ * to settle, or a pulled one to go (`.lightbox-track`, `.lightbox-picture`
+ * and `.lightbox[data-closing]` in app.css), and a margin.
  */
 const SLIDE_MS = 400;
+/** How far down an image is pulled (a fraction of the window's height) when the page shows through fully. */
+const SHOWS_THROUGH = 0.5;
 /** A finger that lets go sooner than this (ms) after it touched, having hardly moved, taps. */
 const TAP_MS = 300;
 /** Two taps this close together, in time (ms) and on the screen (px), are a double tap. */
@@ -123,7 +126,8 @@ export class Swipe {
  * the arrow keys, the buttons at its sides or a swipe step to the previous
  * or next one. On a touch screen, two fingers zoom in on an image (the page
  * itself doesn't zoom), one moves it about, and a double tap zooms in on it
- * or back out.
+ * or back out. A finger that pulls an image down, as it fits, puts it away
+ * and closes the lightbox.
  */
 export function Lightbox({
   items,
@@ -181,9 +185,10 @@ export function Lightbox({
 
   // A finger swipes the picture aside, and the one beside it follows it in.
   // Two fingers zoom in on an image; then one moves it about, and past its
-  // left or right edge swipes on. A double tap zooms in or back out. Touch
-  // events, not pointer events: a mouse sends none, so that its drags stay
-  // the browser's (dragging the picture out, selecting the caption).
+  // left or right edge swipes on. A double tap zooms in or back out. A finger
+  // pulls an image as it fits down, and away. Touch events, not pointer
+  // events: a mouse sends none, so that its drags stay the browser's
+  // (dragging the picture out, selecting the caption).
   useEffect(() => {
     const d = ref.current;
     const t = track.current;
@@ -247,6 +252,12 @@ export function Lightbox({
           to: [Point, Point];
         }
       | undefined;
+    // A finger pulling the image down, to close the lightbox: the image, where
+    // it fits, and where the finger was as it began to pull.
+    let pull: { img: HTMLImageElement; zoom: Zoom; from: Point; gesture: Pull } | undefined;
+    // A pulled image going on down as the lightbox closes: what closes it at once.
+    let leaving: (() => void) | undefined;
+    let leaveTimer: ReturnType<typeof setTimeout> | undefined;
     // A finger tapping the image, and the tap before it, for a double tap.
     let tap: { img: HTMLImageElement; x: number; y: number; at: number } | undefined;
     let tapped: { x: number; y: number; at: number } | undefined;
@@ -325,20 +336,55 @@ export function Lightbox({
       };
       frame = requestAnimationFrame(step);
     };
+    // The page shows through behind an image pulled `by` px down, as do the
+    // buttons and the caption over it, or no longer (`undefined`).
+    const showThrough = (by?: number) => {
+      if (by === undefined) {
+        delete d.dataset.pulling;
+        d.style.removeProperty("--lightbox-pulled");
+        return;
+      }
+      d.dataset.pulling = "";
+      const through = Math.min(1, by / Math.max(1, d.clientHeight * SHOWS_THROUGH));
+      d.style.setProperty("--lightbox-pulled", String(through));
+    };
+    // On down out of sight from where the finger let go, as the page shows
+    // again; then the lightbox closes.
+    const leave = (img: HTMLImageElement) => {
+      const view = viewOf(img);
+      still(img);
+      showThrough();
+      d.dataset.closing = "";
+      show(img, { ...view, y: view.y + d.clientHeight });
+      const done = () => {
+        clearTimeout(leaveTimer);
+        img.removeEventListener("transitionend", ended);
+        leaving = undefined;
+        d.close();
+      };
+      const ended = (e: TransitionEvent) => {
+        if (e.target === img && e.propertyName === "translate") done();
+      };
+      img.addEventListener("transitionend", ended, { signal: off.signal });
+      leaveTimer = setTimeout(done, SLIDE_MS);
+      leaving = done;
+    };
     unzoom.current = () => {
       cancelAnimationFrame(frame);
       settling?.();
       pan = undefined;
       pinch = undefined;
+      pull = undefined;
       tapped = undefined;
+      showThrough();
       if (zoomed.current) restore(zoomed.current.img);
     };
 
     // What the fingers on the screen do from now on: two zoom the image, and
-    // one moves a zoomed image about, or swipes. An image one finger moves is
-    // drawn on a layer of its own meanwhile, which moves without being drawn
-    // again. Not one two fingers zoom: browsers would draw it at the size it
-    // had when they touched, blurred as it grows.
+    // one moves a zoomed image about, swipes, or pulls an image away. An image
+    // one finger moves is drawn on a layer of its own meanwhile, which moves
+    // without being drawn again. Not one two fingers zoom: browsers would draw
+    // it at the size it had when they touched, blurred as it grows.
     const begin = (e: TouchEvent) => {
       const a = e.touches[0];
       const b = e.touches[1];
@@ -346,6 +392,11 @@ export function Lightbox({
       touched = undefined;
       pan = undefined;
       pinch = undefined;
+      // A pull another finger joins stops: the page goes back behind the
+      // image, and the fingers zoom it from where it is.
+      const pulled = pull;
+      pull = undefined;
+      if (pulled) showThrough();
       if (img) still(img);
       if (a && b && img) {
         // Nor is it a click outside the picture.
@@ -363,6 +414,8 @@ export function Lightbox({
       } else if (swipe) {
         // A swipe that another finger joins settles back.
         slide(0);
+      } else if (pulled) {
+        settle(pulled.img, FITS);
       }
       swipe = undefined;
       if (a && !b) {
@@ -372,10 +425,12 @@ export function Lightbox({
           trail.moved(spot(a), e.timeStamp);
           pan = { img, zoom: measure(img), view, from: spot(a), trail, moved: false };
           img.dataset.moving = "";
-        } else if (several) touched = spot(a);
+        } else if (several || img) touched = spot(a);
       }
     };
     const start = (e: TouchEvent) => {
+      // Not on an image going away.
+      if (leaving) return;
       sliding.current?.();
       cancelAnimationFrame(frame);
       settling?.();
@@ -436,22 +491,39 @@ export function Lightbox({
         swipe.moved(f.clientX, e.timeStamp);
         follow(swipe.distance);
       } else if (touched) {
-        if (!swipe) {
+        if (!swipe && !pull) {
           const dx = f.clientX - touched.x;
           const dy = f.clientY - touched.y;
           if (Math.abs(dx) < SLOP && Math.abs(dy) < SLOP) return;
-          // Sideways more than up or down, or it isn't a swipe.
+          const img = image();
           if (Math.abs(dy) >= Math.abs(dx)) {
+            // Down more than sideways, it pulls an image away; up, or on
+            // anything else, it is nothing.
+            if (dy < 0 || !img) {
+              touched = undefined;
+              return;
+            }
+            pull = { img, zoom: measure(img), from: spot(f), gesture: new Pull(f.clientY, e.timeStamp) };
+            img.dataset.moving = "";
+          } else if (several) {
+            // Sideways, it swipes, with pictures to swipe to.
+            swipe = new Swipe(f.clientX, e.timeStamp);
+          } else {
             touched = undefined;
             return;
           }
-          swipe = new Swipe(f.clientX, e.timeStamp);
           // Nor is it a click outside the picture.
           pressedOutside.current = false;
         }
         e.preventDefault();
-        swipe.moved(f.clientX, e.timeStamp);
-        follow(swipe.distance);
+        if (pull) {
+          pull.gesture.moved(f.clientY, e.timeStamp);
+          show(pull.img, pull.zoom.pull(pull.from, spot(f)));
+          showThrough(pull.gesture.distance);
+        } else if (swipe) {
+          swipe.moved(f.clientX, e.timeStamp);
+          follow(swipe.distance);
+        }
       }
     };
     const end = (e: TouchEvent) => {
@@ -487,6 +559,16 @@ export function Lightbox({
         const by = e.type === "touchend" ? s.step(e.timeStamp, t.offsetWidth) : 0;
         slide(index + by >= 0 && index + by < count ? by : 0);
       }
+      // A pulled image goes on down and the lightbox closes, or it settles back.
+      const pulled = pull;
+      pull = undefined;
+      if (pulled) {
+        if (e.type === "touchend" && pulled.gesture.away(e.timeStamp, d.clientHeight)) leave(pulled.img);
+        else {
+          showThrough();
+          settle(pulled.img, FITS);
+        }
+      }
       // A double tap on the image zooms in on it, or back out.
       if (!tapping || e.type !== "touchend" || e.timeStamp - tapping.at > TAP_MS) tapped = undefined;
       else if (
@@ -509,14 +591,18 @@ export function Lightbox({
       clearTimeout(timer);
       cancelAnimationFrame(frame);
       settling?.();
-      // A pinch or a move under way, which the listeners that come next don't
-      // know, ends where it may.
+      // A pulled image going away goes at once.
+      leaving?.();
+      // A pinch, a move or a pull under way, which the listeners that come
+      // next don't know, ends where it may.
       const under = pinch ? { ...pinch, at: between(pinch.to) } : pan && { ...pan, at: pan.from };
       if (under) {
         const rest = under.zoom.settle(viewOf(under.img), under.at);
         if (zoomedIn(rest)) show(under.img, rest);
         else restore(under.img);
       }
+      if (pull) restore(pull.img);
+      showThrough();
       if (zoomed.current) still(zoomed.current.img);
       sliding.current = undefined;
       unzoom.current = undefined;
@@ -556,7 +642,8 @@ export function Lightbox({
         go(by);
       }}
       className={cn(
-        "m-0 size-full max-h-none max-w-none overflow-hidden bg-transparent p-0 outline-none backdrop:animate-fade backdrop:bg-black/75 backdrop:backdrop-blur-[3px]",
+        // The backdrop fades in, and out as an image is pulled away (`.lightbox` in app.css).
+        "lightbox m-0 size-full max-h-none max-w-none overflow-hidden bg-transparent p-0 outline-none backdrop:bg-black/75 backdrop:backdrop-blur-[3px]",
         // Moved, rather than placed, onto the screen: its fixed buttons go along.
         "translate-y-(--viewport-shift)",
         // Fingers swipe and zoom from the start: the browser doesn't take them for a scroll.
@@ -567,7 +654,7 @@ export function Lightbox({
         type="button"
         onClick={close}
         aria-label="Close"
-        className="group fixed top-[calc(0.75rem+var(--safe-top))] right-3 z-10 rounded-full border border-line-strong bg-surface/90 p-1 backdrop-blur-xl"
+        className="lightbox-chrome group fixed top-[calc(0.75rem+var(--safe-top))] right-3 z-10 rounded-full border border-line-strong bg-surface/90 p-1 backdrop-blur-xl"
       >
         <span className="flex size-7 items-center justify-center rounded-full text-ink-3 transition-colors duration-150 group-hover:bg-hover group-hover:text-ink">
           <X className="size-4" />
@@ -577,7 +664,7 @@ export function Lightbox({
         <>
           <p
             aria-live="polite"
-            className="fixed top-[calc(0.75rem+var(--safe-top))] left-3 z-10 flex h-9.5 items-center rounded-full border border-line-strong bg-surface/90 px-3.5 font-mono text-[11.5px] text-ink-3 tabular-nums backdrop-blur-xl"
+            className="lightbox-chrome fixed top-[calc(0.75rem+var(--safe-top))] left-3 z-10 flex h-9.5 items-center rounded-full border border-line-strong bg-surface/90 px-3.5 font-mono text-[11.5px] text-ink-3 tabular-nums backdrop-blur-xl"
           >
             <span className="sr-only">{current.file.name}: </span>
             {index + 1} of {items.length}
@@ -678,7 +765,7 @@ function Slide({ item, offset, steps }: { item: LightboxItem; offset: number; st
       {/* Over the picture, zoomed in. */}
       <figcaption
         className={cn(
-          "relative flex h-9 items-center gap-3 rounded-full border border-line-strong bg-surface/90 pl-4 text-[12.5px] text-ink-2 backdrop-blur-xl",
+          "lightbox-chrome relative flex h-9 items-center gap-3 rounded-full border border-line-strong bg-surface/90 pl-4 text-[12.5px] text-ink-2 backdrop-blur-xl",
           wide,
           download ? "pr-1 pointer-coarse:pr-4" : "pr-4",
         )}

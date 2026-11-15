@@ -356,14 +356,15 @@ describe("Lightbox with several pictures", () => {
     expect(shown()).toBe("before.png");
   });
 
-  it("leaves a finger that moves up or down, or hardly at all, and settles back when the browser takes it", () => {
+  it("leaves a finger that moves up, or hardly at all, and settles back when the browser takes it", () => {
     const { dialog, track, shown, sliding } = browse(1);
-    const [down] = finger(dialog, [
+    layOut(dialog);
+    const [up] = finger(dialog, [
       [300, 300],
-      [304, 340],
-      [150, 360],
+      [304, 260],
+      [150, 240],
     ]);
-    expect(down?.defaultPrevented).toBe(false);
+    expect(up?.defaultPrevented).toBe(false);
     expect(track.style.translate).toBe("");
     // A tap.
     finger(dialog, [300, 296]);
@@ -880,6 +881,192 @@ describe("Lightbox zooming in", () => {
     const { dialog } = open();
     // Positioned, it comes after the zoomed image.
     expect(dialog.querySelector("figcaption")?.className).toMatch(/\brelative\b/);
+  });
+});
+
+/** A pulled image went on down out of sight. */
+function gone(img: HTMLImageElement) {
+  act(() => {
+    const ended = new Event("transitionend");
+    Object.defineProperty(ended, "propertyName", { value: "translate" });
+    img.dispatchEvent(ended);
+  });
+}
+
+describe("Lightbox pulled down", () => {
+  /** How far the page shows through behind the image, and whether a finger is pulling it. */
+  const through = (dialog: HTMLDialogElement) => [
+    dialog.style.getPropertyValue("--lightbox-pulled"),
+    dialog.hasAttribute("data-pulling"),
+  ];
+
+  it("follows a finger that pulls the image down, shrinking it, as the page shows through", () => {
+    const { dialog, onClose } = open();
+    const img = layOut(dialog)();
+    // From where it moved more than a tap does: 200 px down (a quarter of the window) and 30 px right.
+    const moves = hand(dialog, ["200,300", "200,320", "230,520"], { ms: 100, held: true });
+    expect(moves.map((m) => m.defaultPrevented)).toEqual([true, true]);
+    // The spot it touched stays under it.
+    expect(zoomOf(img)).toEqual(["0.875", "30px 190px"]);
+    expect(img.hasAttribute("data-moving")).toBe(true);
+    expect(through(dialog)).toEqual(["0.5", true]);
+    expect(dialog.open).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    // The buttons and the caption over it fade along with the page.
+    expect(dialog.querySelector('button[aria-label="Close"]')?.className).toMatch(/\blightbox-chrome\b/);
+    expect(dialog.querySelector("figcaption")?.className).toMatch(/\blightbox-chrome\b/);
+  });
+
+  it("closes once pulled a quarter of the window down, as the image goes on down out of sight", () => {
+    const { dialog, onClose } = open();
+    const img = layOut(dialog)();
+    hand(dialog, ["200,300", "200,320", "200,540"], { ms: 200 });
+    // From where the finger let go, a window's height further down.
+    expect(dialog.hasAttribute("data-closing")).toBe(true);
+    expect(zoomOf(img)).toEqual(["0.8625", "0px 1009px"]);
+    expect(img.hasAttribute("data-moving")).toBe(false);
+    expect(through(dialog)).toEqual(["", false]);
+    expect(dialog.open).toBe(true);
+    gone(img);
+    expect(dialog.open).toBe(false);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("closes with a flick down", () => {
+    const { dialog, onClose } = open();
+    const img = layOut(dialog)();
+    // 40 px in 32 ms.
+    hand(dialog, ["200,300", "200,320", "200,340", "200,360"]);
+    gone(img);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("closes even when the image's transition doesn't end", () => {
+    vi.useFakeTimers();
+    const { dialog, onClose } = open();
+    layOut(dialog);
+    hand(dialog, ["200,300", "200,320", "200,340", "200,360"]);
+    act(() => vi.advanceTimersByTime(400));
+    expect(dialog.open).toBe(false);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("settles back after a short pull, as the page goes back behind it", () => {
+    const { dialog, onClose } = open();
+    const img = layOut(dialog)();
+    hand(dialog, ["200,300", "200,320", "200,420"], { ms: 200 });
+    expect(dialog.hasAttribute("data-closing")).toBe(false);
+    expect(img.hasAttribute("data-settling")).toBe(true);
+    expect(zoomOf(img)).toEqual(["1", "0px 0px"]);
+    expect(through(dialog)).toEqual(["", false]);
+    settled(img);
+    expect(zoomOf(img)).toEqual(["", ""]);
+    expect(dialog.open).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("settles back after a flick back up, however far it was pulled", () => {
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    hand(dialog, ["200,300", "200,320", "200,600"], { ms: 200, held: true });
+    hand(dialog, ["200,580", "200,560"], { on: 1, start: 2000 });
+    expect(dialog.hasAttribute("data-closing")).toBe(false);
+    expect(zoomOf(img)).toEqual(["1", "0px 0px"]);
+  });
+
+  it("settles back when the browser takes the finger", () => {
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    finger(
+      dialog,
+      [
+        [200, 300],
+        [200, 320],
+        [200, 600],
+      ],
+      { end: "touchcancel" },
+    );
+    expect(dialog.hasAttribute("data-closing")).toBe(false);
+    expect(zoomOf(img)).toEqual(["1", "0px 0px"]);
+    expect(through(dialog)).toEqual(["", false]);
+  });
+
+  it("pulls one of several pictures away, and doesn't swipe", () => {
+    const { dialog, track, shown } = browse(1);
+    const img = layOut(dialog)();
+    hand(dialog, ["200,300", "200,320", "180,560"], { ms: 200 });
+    expect(track.style.translate).toBe("");
+    expect(shown()).toBe("after.png");
+    gone(img);
+    expect(dialog.open).toBe(false);
+  });
+
+  it("zooms the image a second finger joins a pull on from where it is, as the page goes back behind it", () => {
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    hand(dialog, ["200,300", "200,320", "200,520"], { ms: 100, held: true });
+    expect(zoomOf(img)).toEqual(["0.875", "0px 190px"]);
+    hand(dialog, ["200,520 300,520"], { on: 1, start: 2000, held: true });
+    expect(zoomOf(img)).toEqual(["0.875", "0px 190px"]);
+    expect(through(dialog)).toEqual(["", false]);
+    // Twice as far apart, about the spot between them.
+    hand(dialog, ["150,520 350,520"], { on: 2, start: 2100 });
+    expect(dialog.hasAttribute("data-closing")).toBe(false);
+    expect(img.style.scale).toBe("1.75");
+  });
+
+  it("doesn't pull a zoomed image, an image up, or one that hasn't loaded", () => {
+    const zoomed = open();
+    const img = layOut(zoomed.dialog)();
+    pinch(zoomed.dialog, "150,400 250,400", "100,400 300,400");
+    // Down along it, it moves it about.
+    hand(zoomed.dialog, ["200,300", "200,320", "200,600"], { start: 2000, ms: 200, held: true });
+    expect(img.style.scale).toBe("2");
+    expect(through(zoomed.dialog)).toEqual(["", false]);
+    lift(zoomed.dialog);
+    expect(zoomed.dialog.hasAttribute("data-closing")).toBe(false);
+    for (const unmount of roots.splice(0)) unmount();
+
+    const up = open();
+    layOut(up.dialog);
+    expect(hand(up.dialog, ["200,500", "200,480", "200,300"]).map((m) => m.defaultPrevented)).toEqual([
+      false,
+      false,
+    ]);
+    for (const unmount of roots.splice(0)) unmount();
+
+    const loading = open();
+    expect(finger(loading.dialog, [300, [300, 340], [300, 500]]).map((m) => m.defaultPrevented)).toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  it("doesn't close from a pull that starts outside the picture and settles back", () => {
+    const { dialog, onClose, press } = open();
+    layOut(dialog);
+    const stage = dialog.querySelector("figure") as HTMLElement;
+    act(() => {
+      stage.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    hand(stage, ["200,100", "200,120", "200,160"], { ms: 200 });
+    act(() => {
+      stage.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    // A click there still closes it.
+    press(stage);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("leaves fingers on an image going away", () => {
+    const { dialog } = open();
+    const img = layOut(dialog)();
+    hand(dialog, ["200,300", "200,320", "200,540"], { ms: 200 });
+    const leaving = zoomOf(img);
+    const [move] = hand(dialog, ["200,300", "200,500"], { start: 2000, ms: 200 });
+    expect(move?.defaultPrevented).toBe(false);
+    expect(zoomOf(img)).toEqual(leaving);
   });
 });
 
