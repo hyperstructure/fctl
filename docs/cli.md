@@ -759,7 +759,8 @@ there; fctl wakes it when its sessions move on (a turn that ends, a
 question, a failure, a pull request of one that rests merging or
 closing, or the checks on the base branch ending after one merged), with
 the start of what
-each said as its turn ended and what people wrote to it meanwhile
+each said as its turn ended (or why it said nothing, where fctl knows)
+and what people wrote to it meanwhile
 (people's messages don't wake it themselves). `fctl logs <ref>
 --last-turn` prints a session's last turn whole.
 

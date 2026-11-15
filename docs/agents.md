@@ -670,7 +670,9 @@ as that work ends.
 
 Its wakes and brief say how each of its sessions stands: its pull
 requests with their checks, the start of what it said as its turn ended
-(or that it ended its turn without a word, as a turn cut off does), and
+(or that it ended its turn without a word, as a turn cut off does, and
+why where fctl knows: Claude Code cut off twice in ten minutes, someone
+interrupting it, or a message that reached it mid-turn), and
 who else wrote to it and what, so that it doesn't contradict them. People
 writing to one of its sessions don't wake it: it hears of them at its next
 wake. A pull request of one that rests merging or closing does, whoever
