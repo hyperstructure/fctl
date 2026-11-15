@@ -2551,13 +2551,15 @@ pub async fn release(
             ap::Release::Send if stuck.contains(&h.session_id.as_str()) => None,
             ap::Release::Drop => drop_held(env, db, &row, h, now).await.err(),
             ap::Release::Send => match send_held(env, db, &row, h, now).await {
-                Ok(true) => {
+                Ok(Claim::Ours) => {
                     sent.push(h.id.clone());
                     None
                 }
-                // Taken back, or another pass sends it: those after it to
-                // its session wait for that.
-                Ok(false) => {
+                // Taken back: those after it to its session go on.
+                Ok(Claim::Gone) => None,
+                // Another pass sends it: those after it to its session wait
+                // for that.
+                Ok(Claim::Theirs) => {
                     stuck.push(&h.session_id);
                     None
                 }
@@ -2583,8 +2585,8 @@ pub async fn release(
     Ok(sent)
 }
 
-/// Sends a held message once this pass claimed it ([`claim`]; `false`
-/// when it couldn't: it was taken back, or another pass sends it), as the
+/// Sends a held message once this pass claimed it ([`claim`]: otherwise
+/// it was taken back, or another pass sends it, which it says), as the
 /// delivery the API answered with, from the autopilot as the person it
 /// acted as (or its owner now, once their account is gone), with the
 /// idempotency key of the request that sent it, or one of its own: a pass
@@ -2597,9 +2599,10 @@ async fn send_held(
     row: &AutopilotRow,
     h: &HeldRow,
     now: i64,
-) -> AppResult<bool> {
-    if !claim(db, &h.id, now).await? {
-        return Ok(false);
+) -> AppResult<Claim> {
+    let claim = claim(db, &h.id, now).await?;
+    if claim != Claim::Ours {
+        return Ok(claim);
     }
     let sent = deliver_held(env, db, row, h).await;
     if let Err(e) = sent {
@@ -2626,17 +2629,28 @@ async fn send_held(
         now,
     )
     .await;
-    Ok(true)
+    Ok(Claim::Ours)
+}
+
+/// Whose a held message is to send ([`claim`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Claim {
+    /// This pass's.
+    Ours,
+    /// Nobody's: it was taken back, or went.
+    Gone,
+    /// Another pass's, which sends it now.
+    Theirs,
 }
 
 /// How long a pass's claim on a held message holds ([`claim`]): one older
 /// is a pass that died before it sent it or let it go.
 const SENDING_FOR_MS: i64 = 60_000;
 
-/// Claims held message `id` for this pass to send at `now`: `false` when it
-/// is gone (taken back) or another pass sends it. Once claimed, it can't
-/// be taken back ([`unhold`]).
-async fn claim(db: &D1Database, id: &str, now: i64) -> AppResult<bool> {
+/// Claims held message `id` for this pass to send at `now`, unless it is
+/// gone or another pass has. Once claimed, it can't be taken back
+/// ([`unhold`]).
+async fn claim(db: &D1Database, id: &str, now: i64) -> AppResult<Claim> {
     let claimed = q(
         db,
         "UPDATE autopilot_held SET sending_at = ?1 WHERE id = ?2 \
@@ -2645,7 +2659,21 @@ async fn claim(db: &D1Database, id: &str, now: i64) -> AppResult<bool> {
     )?
     .run()
     .await?;
-    Ok(claimed > 0)
+    if claimed > 0 {
+        return Ok(Claim::Ours);
+    }
+    let left: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM autopilot_held WHERE id = ?",
+        &[s(id)],
+    )?
+    .first()
+    .await?;
+    Ok(if left.is_some_and(|c| c.n > 0) {
+        Claim::Theirs
+    } else {
+        Claim::Gone
+    })
 }
 
 /// Delivers a held message ([`send_held`]).
@@ -3633,8 +3661,8 @@ mod tests {
         let idle = crew(&db, 3, "idle", NOW - HOUR).await?;
         held_for(&db, "aph_1", &idle, NOW - 2).await?;
         held_for(&db, "aph_2", &idle, NOW - 1).await?;
-        assert!(claim(&db, "aph_1", NOW).await?);
-        assert!(!claim(&db, "aph_1", NOW + 1).await?);
+        assert_eq!(claim(&db, "aph_1", NOW).await?, Claim::Ours);
+        assert_eq!(claim(&db, "aph_1", NOW + 1).await?, Claim::Theirs);
         assert_eq!(
             unhold(&db, "prj_web", "aph_1", NOW + 1).await?,
             Unheld::Going
@@ -3642,12 +3670,12 @@ mod tests {
         // Taken back, it's gone for good.
         assert_eq!(unhold(&db, "prj_web", "aph_2", NOW).await?, Unheld::Taken);
         assert_eq!(unhold(&db, "prj_web", "aph_2", NOW).await?, Unheld::Gone);
-        assert!(!claim(&db, "aph_2", NOW).await?);
+        assert_eq!(claim(&db, "aph_2", NOW).await?, Claim::Gone);
         // Another autopilot's id isn't this one's to take back.
         assert_eq!(unhold(&db, "prj_api", "aph_1", NOW).await?, Unheld::Gone);
         // A pass that died leaves its claim to the next, a minute on.
         let later = NOW + SENDING_FOR_MS + 1;
-        assert!(claim(&db, "aph_1", later).await?);
+        assert_eq!(claim(&db, "aph_1", later).await?, Claim::Ours);
         Ok(())
     }
 
