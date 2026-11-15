@@ -1,0 +1,367 @@
+# farm-portal#1 · Noor's autopilot, last Friday 17:40 · Farm portal autopilot: its first session, from being put on to
+# asking Noor which harvest list to build (a fresh session takes over as she answers on Saturday morning)
+match = "You are the autopilot of the project Farm portal"
+
+[[turn]]
+duration = "6m"
+result = "Planned the portal and started three sessions: deploys and CI (#2), sign-in by email (#3) and two designs of the harvest list (#4). Asked for RESEND_API_KEY for the sign-in emails. I wake when one of them ends its turn, or in two hours."
+
+[[turn.step]]
+bash = "fctl autopilot brief"
+description = "Read where things stand"
+output = """# Autopilot of Farm portal
+
+It's {{clock}}. You run the project Farm portal (farm-portal) for Noor Haddad. At most 3 of your sessions work at once; fctl wakes you at least every 2 hours. You may merge pull requests that are ready (your sessions do), change the project's settings, set secrets and set up schedules.
+
+## Direction
+
+Build the farm portal: where our farms tell us what they'll harvest next week, and see what we ordered from them and what we owe them.
+
+- Farmers sign in with a link we email them, no passwords. Most of them open it on a phone, in the field.
+- The harvest list comes first: by Thursday noon, each farm says what it can deliver next week, and how much.
+- Orders and payouts come from Platform's API, read-only. Ask Asha before anything changes in Platform.
+- Swedish first, then English.
+- Deploy to Cloudflare from main, with a preview of every pull request.
+
+Leave the shop and the driver app alone.
+
+(Set by Noor Haddad, just now)
+
+## Notes
+
+None.
+
+## What you asked
+
+Nothing open.
+
+## Your sessions
+
+None yet. Start one with `fctl run -p <project> "<task>"`.
+
+## People's sessions
+
+None: no session people started in the project works now or has a pull request open.
+
+## Your plan
+
+None yet. Write one with `fctl autopilot plan --file plan.md`: people read it on the Autopilot tab.
+
+## Your log
+
+Empty. Write down what you do and decide with `fctl autopilot log "…"`."""
+
+[[turn.step]]
+tools = [
+  { read = "README.md" },
+  { read = "package.json" },
+  { read = "app/page.tsx" },
+]
+
+[[turn.step]]
+think = "A create-next-app skeleton and nothing else: no deploys, no sign-in, no data. The direction puts the harvest list first, but everything stands on three foundations: deploys with previews (so people can try each pull request on a phone), sign-in by email, and the list's design, which is Noor's call rather than mine. Those three don't touch the same files, so they can run at once. Sign-in needs a Resend key: the shop sends its emails through Resend, so the quickest way is to ask for that key, and let the sign-in session build without sending meanwhile. Orders and payouts come later, from Platform's API."
+
+[[turn.step]]
+write = "tasks/setup.md"
+content = """Set up deploys for the farm portal (romanescohq/farm-portal, a fresh create-next-app skeleton on main).
+
+- Deploy to Cloudflare Workers with OpenNext (`@opennextjs/cloudflare`): main to production at farm.romanesco.farm, and a preview of every pull request at a URL of its own, posted on the pull request.
+- CI on GitHub Actions: lint, type-check, build and the Playwright tests, on every push.
+- The Cloudflare token is the organization's Actions secret CLOUDFLARE_API_TOKEN, which the shop's deploys use: use it as it is.
+- Say in the README how to run, test and deploy.
+
+Done when a pull request shows its preview link and its checks pass. Merge it yourself once they do.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Set up deploys to Cloudflare, with CI and previews' -f tasks/setup.md"
+description = "Start the deploys session"
+
+[[turn.step]]
+write = "tasks/sign-in.md"
+content = """Sign farms in to the farm portal with a link by email: no passwords, no accounts to make.
+
+- A farm types its email address; if it's one of our farms', it gets a link that signs it in on that phone for 30 days. The link works once, for 15 minutes.
+- Emails go out through Resend, from Romanesco <gardar@romanesco.farm>. I've asked people for RESEND_API_KEY: until your session has it, send nothing, and show the link in development instead.
+- Which addresses are farms' comes from Platform's API later: for now, a FARMS list in an environment variable.
+- The page and the email in Swedish.
+- Playwright tests for the whole way in, with the email caught in development.
+
+Another session sets up deploys and CI meanwhile: don't add any. Merge it yourself once checks pass.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Sign farms in with a link by email' -f tasks/sign-in.md"
+description = "Start the sign-in session"
+
+[[turn.step]]
+write = "tasks/harvest.md"
+content = """Draw two designs for the farm portal's harvest list: the page where a farm says what it can deliver next week, and how much, by Thursday noon. Farmers open it on a phone, often in the field.
+
+- A: one list, a row per crop, the amount beside it.
+- B: a grid of the week, crops down and delivery days across.
+- Both in Swedish, at a phone's width (390 px), with a week that looks real: carrots, beetroot, kale, potatoes and leeks, each with last week's amount.
+- Make them pages of the app (app/harvest/list and app/harvest/grid) rather than pictures, so that the one we keep is half built.
+- Publish a screenshot of the two side by side (`fctl publish`) and end your turn with its link: I'll ask Noor which one to build. Don't merge before then.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Two designs for the harvest list' -f tasks/harvest.md"
+description = "Start the design session"
+
+[[turn.step]]
+run = "fctl autopilot ask --secret RESEND_API_KEY 'To email farms their sign-in links. The shop already sends its emails through Resend from romanesco.farm, so its key is all the farm portal needs.'"
+description = "Ask for the Resend key"
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #2 Deploys to Cloudflare, CI and a preview of every pull request
+- #3 Sign-in with a link by email: builds without sending until RESEND_API_KEY is set (asked)
+- #4 Two designs of the harvest list, for Noor to choose from
+
+## Next
+
+- [ ] Swedish and English, once #2 lands
+- [ ] The harvest list, as Noor chooses it
+- [ ] This week's orders, from Platform's API (read-only)
+- [ ] Payouts, from Platform's API
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish.
+- Platform is Asha's: ask before anything there changes.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Write the plan"
+
+[[turn.step]]
+run = "fctl autopilot log 'Planned the portal in parts and started the three that hold everything else up, side by side: deploys and CI (#2), sign-in by email (#3) and two designs of the harvest list (#4), which is for Noor to choose. Asked for the shop’s Resend key for the sign-in emails.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Planned the portal and started three sessions that don't get in each other's way: deploys to Cloudflare with CI and previews (#2), sign-in with a link by email (#3), and two designs of the harvest list (#4), whose choice is Noor's. I asked for `RESEND_API_KEY`, the shop's Resend key, for the sign-in emails; #3 builds without sending until it's there. I wake when one of them ends its turn, or in two hours."
+
+[[turn]]
+duration = "1m"
+result = "RESEND_API_KEY is set, the shop's Resend key from Tomás. #3 started before it was, so it builds without sending; the next session that sends email has it."
+
+[[turn.step]]
+think = "Tomás gave it: the shop's key, so the portal's emails come from the same domain the farms already get Romanesco's emails from. #3 started before the secret existed, so its sandbox doesn't have it; its task already says to build without sending until then, so nothing changes for it now."
+
+[[turn.step]]
+run = "fctl autopilot log 'Tomás set RESEND_API_KEY, the shop’s Resend key: sessions that start from now on have it. #3 started before it, so it builds without sending, as its task says.'"
+description = "Write down the answer"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "`RESEND_API_KEY` is set: Tomás gave the shop's Resend key. #3 started before it was, so it builds without sending; sessions from now on have it."
+
+[[turn]]
+duration = "3m"
+result = "#2 merged the deploys: every pull request gets a preview on Cloudflare, and CI runs lint, types, the build and Playwright. Started #5 on Swedish and English. #3 and #4 are still at work."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#2 --last-turn"
+description = "Read how #2 ended"
+output = """farm-portal#2 · Set up deploys to Cloudflare, with CI and previews · idle
+
+⏺ Merged romanescohq/farm-portal#1 once its checks passed. The portal deploys to Cloudflare Workers with OpenNext: main to farm.romanesco.farm, and each pull request to a preview whose link fctl-sh's comment on it keeps current. CI on GitHub Actions runs lint, type-check, the build and the Playwright tests on every push, in about two minutes. The README says how to run, test and deploy; the deploys use the organization's CLOUDFLARE_API_TOKEN."""
+
+[[turn.step]]
+think = "Deploys work, and a preview exists for every pull request from here on, so Noor can try what the next sessions build on her phone. Two slots are taken (#3 and #4), so one is free: Swedish and English is the piece every later page needs, and it only touches the layout and the home page, which #3 and #4 leave alone."
+
+[[turn.step]]
+write = "tasks/i18n.md"
+content = """Put the farm portal in Swedish and English: Swedish by default, English for farms that choose it.
+
+- Every string in messages/sv.json and messages/en.json, read with a small t() of our own (no library): a page takes the farm's language from a cookie, then from the browser.
+- A switch at the foot of every page: Svenska / English.
+- Move what main has to it now (the layout and the home page). #3's sign-in pages and #4's harvest list move over as they land.
+- A Playwright test of the home page in both languages.
+
+Merge it yourself once checks pass.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Swedish and English on every page' -f tasks/i18n.md"
+description = "Start the language session"
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #3 Sign-in with a link by email
+- #4 Two designs of the harvest list, for Noor to choose from
+- #5 Swedish and English
+
+## Next
+
+- [ ] The harvest list, as Noor chooses it
+- [ ] This week's orders, from Platform's API (read-only)
+- [ ] Payouts, from Platform's API
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish.
+- Platform is Asha's: ask before anything there changes.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log '#2 merged the deploys (PR 1): main goes to farm.romanesco.farm, and every pull request gets a preview to try on a phone. Started #5 on Swedish and English, which only the layout and home page need from main.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#2 is merged: the portal deploys to Cloudflare, every pull request gets a preview, and CI runs lint, types, the build and Playwright. I started #5 on Swedish and English; #3 and #4 are still at work."
+
+[[turn]]
+duration = "4m"
+result = "#3 merged sign-in by email and #5 Swedish and English. The project's instructions now tell every session about strings, screenshots and farms' privacy, and the memory keeps where strings go. #4 is still drawing the harvest list."
+
+[[turn.step]]
+tools = [
+  { bash = "fctl logs farm-portal#3 --last-turn", description = "Read how #3 ended", output = """farm-portal#3 · Sign farms in with a link by email · idle
+
+⏺ Merged romanescohq/farm-portal#2. A farm types its email address, and if it's on the FARMS list it gets a link, through Resend, that signs it in on that phone for 30 days; the link works once, for 15 minutes. Until the session has RESEND_API_KEY it sends nothing and shows the link in development. The page and the email are in Swedish. Three Playwright tests cover the way in, a used link and an expired one.""" },
+  { bash = "fctl logs farm-portal#5 --last-turn", description = "Read how #5 ended", output = """farm-portal#5 · Swedish and English on every page · idle
+
+⏺ Merged romanescohq/farm-portal#3. Strings live in messages/sv.json and messages/en.json, read with t() from lib/i18n.ts; a page takes the farm's language from a cookie, then the browser, and a switch at its foot changes it. The layout and home page use it, and a Playwright test checks both languages. #3's sign-in pages still have their Swedish in the page: the next session that touches them should move it.""" },
+]
+
+[[turn.step]]
+think = "Both merged within a minute of each other. #5's note matters for every session after it: strings go in the message files. Rather than repeat that in every task, it belongs in the project's instructions, with the screenshots rule and the one about farms' data, which every page from here on must respect. The memory should hold the how: where the strings live."
+
+[[turn.step]]
+write = "instructions.md"
+content = """Farmers read the portal on their phones, in Swedish first: every page works at 390 px, and every string goes in messages/sv.json and messages/en.json, read with t() from lib/i18n.ts. Run `npm run lint` and `npm run test:e2e` before you push, and show the pages you change in screenshots at a phone's width, in Swedish. No farm may see another farm's harvest, orders or payouts: a page that shows them has a test that tries.
+"""
+
+[[turn.step]]
+run = "fctl projects set -p farm-portal --instructions-file instructions.md"
+description = "Give every session the project's rules"
+
+[[turn.step]]
+run = "fctl memory add 'Farm portal: strings live in messages/sv.json and messages/en.json, read with t() from lib/i18n.ts, which takes the farm’s language from the lang cookie, then the browser. Add every new string to both files.'"
+description = "Keep where strings go"
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #4 Two designs of the harvest list, for Noor to choose from
+
+## Next
+
+- [ ] The harvest list, as Noor chooses it
+- [ ] Move #3's sign-in pages to the message files
+- [ ] This week's orders, from Platform's API (read-only)
+- [ ] Payouts, from Platform's API
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log '#3 merged sign-in by email (PR 2) and #5 Swedish and English (PR 3). Put what every session must know in the project’s instructions (strings in the message files, screenshots at 390 px, no farm sees another’s data) and where strings live in the memory.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 3h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#3 and #5 are merged: farms sign in with a link by email, and the portal speaks Swedish and English. Every session now starts with the project's rules (strings in the message files, screenshots at a phone's width, no farm sees another's data), and the memory keeps where strings go. #4 is still drawing the harvest list."
+
+[[turn]]
+duration = "4m"
+result = "Asked Noor which harvest list farms should get, with #4's two designs side by side. #4 waits for her answer; I wake when she gives it, or in the morning."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#4 --last-turn"
+description = "Read how #4 ended"
+output = """farm-portal#4 · Two designs for the harvest list · idle
+
+⏺ Both designs are pages of the app, in Swedish at 390 px, with a week of Ängsbacka gård's crops: app/harvest/list (A, a row per crop) and app/harvest/grid (B, crops down and days across). Side by side:
+
+![harvest-lists.webp](https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp)
+
+romanescohq/farm-portal#4 is a draft with both. I'll build the one Noor chooses and drop the other."""
+
+[[turn.step]]
+agent = "Compare the two harvest list designs"
+prompt = "Look at the screenshot at https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp: two designs of a page where a farm enters next week's harvest on a phone. Say in a few sentences what each does well and badly for a farmer standing in a field, and which you'd build."
+report = "A, a list per crop, works one-handed: big targets, last week's amount right under each crop, and a farm with twenty crops scrolls two screens. B, a grid of the week, shows which day each crop comes, but its cells are about 28 px wide on a phone, too small for a thumb, and most farms deliver the same amounts each day. Build A; if a day ever matters, a farm can open a crop to split it."
+
+  [[turn.step.steps]]
+  bash = "curl -sO https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp"
+  description = "Download the screenshot"
+  output = ""
+
+  [[turn.step.steps]]
+  read = "harvest-lists.webp"
+  output = "[Image: harvest-lists.webp, 1464 × 1404]"
+
+[[turn.step]]
+write = "ask.md"
+content = """#4 built both as pages of the app, in Swedish at a phone's width:
+
+![The two harvest lists side by side](https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp)
+
+- **A list per crop** (left): a row per crop, with last week's amount under it. Quick with one thumb, and a farm's twenty crops fit in two screens.
+- **A grid of the week** (right): crops down, delivery days across. It shows which day each crop comes, but its cells are small for a thumb, and most farms send the same each day.
+
+I'd build the list. #4 builds the one you choose and merges it.
+"""
+
+[[turn.step]]
+run = "fctl autopilot ask 'Which harvest list should farms get?' -o 'A list per crop' -o 'A grid of the week' --detail-file ask.md --session farm-portal#4"
+description = "Ask Noor which design to build"
+
+[[turn.step]]
+run = "fctl autopilot log 'Asked Noor which harvest list farms should get, with #4’s two designs side by side: a list per crop, or a grid of the week. I’d build the list; #4 waits for her answer.'"
+description = "Write down what I asked"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 12h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#4 drew both designs as pages of the app, and I asked Noor which one farms should get, with the two side by side: I'd build the list per crop. Nothing else can start before Monday's orders without her answer or Platform's API, so I wake when she answers, or in the morning."

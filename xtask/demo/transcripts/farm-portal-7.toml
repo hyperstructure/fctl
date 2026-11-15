@@ -1,0 +1,207 @@
+# farm-portal#7 · Noor's autopilot, Sunday 09:14 · Farm portal autopilot: a fresh session looks in on Sunday, takes
+# Jonas's note on units, and sends #8 back for screenshots of a week filled in before it merges
+match = "You take over from your last session, farm-portal#6,"
+
+[[turn]]
+duration = "2m"
+result = "Nothing has moved since yesterday: the harvest list is live, and orders and payouts wait for Monday. I look in again tonight."
+
+[[turn.step]]
+bash = "fctl autopilot brief --only notes,asks,sessions"
+description = "Read where things stand"
+output = """# Autopilot of Farm portal
+
+It's {{clock}}. You run the project Farm portal (farm-portal) for Noor Haddad. At most 3 of your sessions work at once; fctl wakes you at least every 2 hours, next in 2 hours.
+
+## Notes
+
+None.
+
+## What you asked
+
+Nothing open.
+
+## Your sessions
+
+The latest first, with what people wrote to each and the start of what each said as its turn ended (`fctl logs <ref> --last-turn` prints a session's last turn whole):
+
+- farm-portal#5 Swedish and English on every page · stopped · PR 3 merged
+- farm-portal#4 Two designs for the harvest list · stopped · PR 4 merged
+- farm-portal#3 Sign farms in with a link by email · stopped · PR 2 merged
+- farm-portal#2 Set up deploys to Cloudflare, with CI and previews · stopped · PR 1 merged"""
+
+[[turn.step]]
+think = "A Sunday morning with nothing new: no notes, no answers, every session done. My last session promised nobody anything for the weekend, and the plan's next items need Platform's API, which is Monday's. Look again this evening rather than every two hours."
+
+[[turn.step]]
+run = "fctl autopilot log 'Sunday morning: nothing has moved. The harvest list is live; orders and payouts wait for Monday and Platform’s API.'"
+description = "Write down where things stand"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 12h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Nothing has moved since yesterday: the harvest list is live, and orders and payouts wait for Monday. I look in again tonight, or sooner if someone steers me."
+
+[[turn]]
+duration = "5m"
+result = "Jonas's note: farms count in crates, bunches and kilos. Started #8 to let each farm choose the unit for each crop, and to show me its screenshots before it merges."
+
+[[turn.step]]
+think = "Jonas is right, and the list as it is asks for kilos of everything: a farm that thinks in crates would have to convert, and get it wrong. Each crop needs its own unit, chosen by the farm and remembered; what we order still has to add up, so each crop keeps how many kilos a crate or a bunch is. The list's rows change, which is easy to get wrong in a way only a screenshot shows: this one shows me its screenshots before it merges."
+
+[[turn.step]]
+write = "tasks/units.md"
+content = """Let each farm choose the unit for each crop on the harvest list: crates, bunches or kilos. Jonas: farms count in crates, bunches and kilos, and it differs by crop (a crate of carrots is about 10 kg).
+
+- A unit beside each crop's amount, remembered for the farm's next week; kilos until it chooses.
+- What we order still adds up: keep each crop's kilos per crate and per bunch in lib/units.ts, and show what a crate or a bunch comes to in kilos.
+- The lists farms have sent are in kilos: keep them as they are.
+- A Playwright test: choose a unit, reload, it's still chosen.
+- Screenshots of the list at 390 px, in Swedish.
+
+Don't merge before I've looked at your screenshots: end your turn with them.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Let farms choose the unit for each crop' -f tasks/units.md"
+description = "Start the units session"
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #8 A unit for each crop (Jonas's note): shows me its screenshots before it merges
+
+## Next
+
+- [ ] This week's orders, from Platform's API (read-only): Monday
+- [ ] Payouts, from Platform's API: ask Asha what's there
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log 'Jonas’s note: farms count in crates, bunches and kilos, and it differs by crop. Started #8 to let each farm choose the unit for each crop, keeping what we order in kilos; it shows me its screenshots before it merges.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Jonas's note makes sense: farms count in crates, bunches and kilos. I started #8 to let each farm choose the unit for each crop, keep what we order adding up in kilos, and show me its screenshots before it merges."
+
+[[turn]]
+duration = "3m"
+result = "#8's screenshots show an empty list, so they show none of the units. Sent it back for a week with six crops filled in, at a phone's width, in Swedish; it merges after that."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#8 --last-turn"
+description = "Read how #8 ended"
+output = """farm-portal#8 · Let farms choose the unit for each crop · idle
+
+⏺ Each crop on the harvest list has a unit now, crates, bunches or kilos, remembered for the farm's next week; lib/units.ts keeps the kilos per crate and per bunch, and the list shows what a crate comes to. A Playwright test chooses a unit, reloads and finds it chosen. The list at 390 px, in Swedish:
+
+![units-empty.webp](https://app.fctl.sh/api/v1/published/4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb/units-empty.webp)
+
+romanescohq/farm-portal#5 is open with its checks passing; I'll merge it once you've looked."""
+
+[[turn.step]]
+agent = "Check #8's screenshot against its task"
+prompt = "farm-portal#8 was asked to let each farm choose a unit (crates, bunches or kilos) for each crop on the harvest list, and to show it in screenshots at 390 px, in Swedish. Look at its screenshot at https://app.fctl.sh/api/v1/published/4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb/units-empty.webp and say whether it shows that, and if not, exactly what a screenshot that does would show."
+report = "It doesn't show the change. The screenshot is the list with no crops in it (\"Inga grödor än\", No crops yet), so no unit control is on screen; the units only appear on a crop's row. A useful screenshot fills in a week: about six crops, some in crates, some in bunches, some in kilos, with the kilos a crate comes to under it."
+
+  [[turn.step.steps]]
+  bash = "curl -sO https://app.fctl.sh/api/v1/published/4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb/units-empty.webp"
+  description = "Download the screenshot"
+  output = ""
+
+  [[turn.step.steps]]
+  read = "units-empty.webp"
+  output = "[Image: units-empty.webp, 1600 × 1280]"
+
+[[turn.step]]
+run = "fctl send farm-portal#8 'Your screenshots show an empty list, so they show none of the units. Show a week with six crops filled in, some in crates, some in bunches and some in kilos, at a phone’s width, in Swedish. Then merge once checks pass.'"
+description = "Send #8 back for better screenshots"
+
+[[turn.step]]
+run = "fctl autopilot log 'Sent #8 back: its screenshot shows the harvest list empty, so none of the units it added. Asked for a week with six crops filled in, at 390 px, in Swedish; it merges after that.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 1h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#8's screenshot shows the harvest list empty, so it shows none of the units it added. I sent it back for a week with six crops filled in, at a phone's width, in Swedish; it merges after that."
+
+[[turn]]
+duration = "2m"
+result = "#8 merged units per crop (PR 5), with a screenshot of a week filled in: carrots and beetroot in crates, kale and leeks in bunches, potatoes and spinach in kilos. Monday's orders next."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#8 --last-turn"
+description = "Read how #8 ended"
+output = """farm-portal#8 · Let farms choose the unit for each crop · idle
+
+⏺ Merged romanescohq/farm-portal#5. Ängsbacka gård's week, filled in at 390 px, in Swedish: carrots and beetroot in crates (about 120 and 80 kg), kale and leeks in bunches, potatoes and spinach in kilos.
+
+![units-week.webp](https://app.fctl.sh/api/v1/published/djJfihDRgb1Z4B6XOc5G1bEf1l8zArqxpkdLTvRlDCn/units-week.webp)"""
+
+[[turn.step]]
+write = "plan.md"
+content = """## Next
+
+- [ ] This week's orders, from Platform's API (read-only): Monday
+- [ ] Payouts, from Platform's API: ask Asha what's there
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+- [x] A unit for each crop: crates, bunches or kilos (#8, PR 5)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish, filled in as a farm would.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log '#8 merged units per crop (PR 5), with a screenshot of a week filled in. Next: this week’s orders from Platform’s API, on Monday.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 12h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#8 merged: each crop has its unit, and its new screenshot shows a week filled in, carrots and beetroot in crates, kale and leeks in bunches, potatoes and spinach in kilos. This week's orders come next, on Monday."

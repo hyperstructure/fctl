@@ -16,6 +16,7 @@
 //! 3. The control plane again, its hosts reconnected: the sessions still at
 //!    work in the story work on, and the people watching them watch.
 
+mod autopilot;
 pub mod cast;
 mod clock;
 mod github;
@@ -214,11 +215,16 @@ fn check_transcripts(cast: &Cast, transcripts: &world::Transcripts) -> Result<()
 /// without a written `output` finds its file: in its project's repository
 /// as the stand-in makes it (`repos/<owner>/<name>`), as the transcript's
 /// earlier steps left it; a review's, as the session that opened the pull
-/// request left it. Files a command names go unchecked after it, since
-/// what it did to them isn't known.
+/// request left it; in a project whose sessions build on what merged
+/// before them (`merges`), with what those merged. Files a command names go
+/// unchecked after it, since what it did to them isn't known.
 fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
     let mut wrong = Vec::new();
     let mut left: BTreeMap<&str, Files> = BTreeMap::new();
+    // What each session of such a project changed, by when it merged, and
+    // the files it changed in ways the check can't follow.
+    type Merged = (i64, BTreeMap<String, String>, BTreeSet<String>);
+    let mut merged: BTreeMap<&str, Vec<Merged>> = BTreeMap::new();
     // The sessions that open pull requests before the reviews of them.
     let (reviews, others): (Vec<_>, Vec<_>) =
         cast.sessions.iter().partition(|s| s.review.is_some());
@@ -231,7 +237,8 @@ fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
         let v: toml::Value =
             toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
         let (project, _) = cast::session_ref(&s.id)?;
-        let Some(repo) = &cast.project(project)?.repo else {
+        let p = cast.project(project)?;
+        let Some(repo) = &p.repo else {
             continue;
         };
         let opened = s
@@ -239,10 +246,27 @@ fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
             .as_ref()
             .and_then(|r| cast.pull_session(&r.of))
             .and_then(|o| left.get(o.id.as_str()));
+        // Main as it started from: what merged before, in the order it did.
+        let mut main = BTreeMap::new();
+        let mut unknown = BTreeSet::new();
+        if p.merges {
+            let mut before: Vec<&Merged> = merged
+                .get(project)
+                .into_iter()
+                .flatten()
+                .filter(|(at, _, _)| *at <= s.start.offset())
+                .collect();
+            before.sort_by_key(|(at, _, _)| *at);
+            for (_, files, lost) in before {
+                main.extend(files.clone());
+                unknown.extend(lost.iter().cloned());
+            }
+        }
         let mut files = Files {
             base: data.join("repos").join(repo),
-            changed: opened.map(|o| o.changed.clone()).unwrap_or_default(),
-            unknown: opened.map(|o| o.unknown.clone()).unwrap_or_default(),
+            changed: opened.map_or(main, |o| o.changed.clone()),
+            unknown: opened.map_or(unknown, |o| o.unknown.clone()),
+            touched: BTreeSet::new(),
         };
         let turns = v.get("turn").and_then(toml::Value::as_array);
         for turn in turns.into_iter().flatten() {
@@ -250,6 +274,21 @@ fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
             for step in steps.into_iter().flatten() {
                 files.step(step, &name, &mut wrong);
             }
+        }
+        if p.merges
+            && let Some(pr) = &s.pr
+            && pr.state == "merged"
+            && let Some(at) = &pr.at
+        {
+            let own = files
+                .touched
+                .iter()
+                .filter_map(|f| Some((f.clone(), files.changed.get(f)?.clone())))
+                .collect();
+            merged
+                .entry(project)
+                .or_default()
+                .push((at.offset(), own, files.unknown.clone()));
         }
         left.insert(s.id.as_str(), files);
     }
@@ -267,6 +306,8 @@ struct Files {
     base: std::path::PathBuf,
     changed: BTreeMap<String, String>,
     unknown: BTreeSet<String>,
+    /// The files its own steps wrote or edited.
+    touched: BTreeSet<String>,
 }
 
 impl Files {
@@ -307,6 +348,7 @@ impl Files {
                 .then(|| path.trim_start_matches("./").to_owned())
         };
         if let Some(path) = text("write").and_then(relative) {
+            self.touched.insert(path.clone());
             self.changed
                 .insert(path, text("content").unwrap_or_default().to_owned());
         }
@@ -328,6 +370,7 @@ impl Files {
                     } else {
                         c.replacen(old, new, 1)
                     };
+                    self.touched.insert(path.clone());
                     self.changed.insert(path, c);
                 }
                 Some(_) => wrong.push(format!("{name}: the edit of {path} doesn't find {old:?}")),
@@ -587,11 +630,18 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     }
     std::fs::write(replays.join("speed"), SEEDING_SPEED)?;
     std::fs::write(replays.join("version"), claude_code_version())?;
-    let env: String = github
-        .git_env()
-        .iter()
-        .map(|(k, v)| format!("{k}={v}\n"))
-        .collect();
+    // Where crew sessions' waiting turns look for the seed's go-ahead, and
+    // the screenshots the cast's agents publish.
+    let mut env = github.git_env();
+    env.push((
+        "DEMO_SIGNALS".into(),
+        state.join(autopilot::SIGNALS).display().to_string(),
+    ));
+    env.push((
+        "DEMO_PUBLISHED".into(),
+        data.join("published").display().to_string(),
+    ));
+    let env: String = env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
     std::fs::write(replays.join("env"), env)?;
 
     let mut control = Children(Vec::new());
@@ -629,6 +679,8 @@ fn seed(root: &Path, opts: DemoOpts, state: &Path) -> Result<()> {
     step("sessions, as the story has them");
     world.sessions(&mut others)?;
     world.drains()?;
+    step("autopilots, as their stories have them");
+    world.autopilots(&mut others)?;
     drop(offline);
     world.until_agents_gone(&mut others)?;
 

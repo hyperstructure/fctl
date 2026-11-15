@@ -1,0 +1,146 @@
+# farm-portal#12 · Noor's autopilot, today 08:21 · Farm portal autopilot: a fresh session on Tuesday morning starts the
+# pickup windows and rests, two asks waiting for people (the turns after the first answer later wakes, should the demo
+# run on past its next check-in)
+match = "You take over from your last session, farm-portal#9,"
+
+[[turn]]
+duration = "5m"
+result = "Started #13 on each farm's pickup windows. Two things wait for people: PLATFORM_API_TOKEN, and which Wednesday reminder farms get. I wake when they answer, or #13 ends its turn."
+
+[[turn.step]]
+bash = "fctl autopilot brief --only asks,sessions,plan"
+description = "Read where things stand"
+output = """# Autopilot of Farm portal
+
+It's {{clock}}. You run the project Farm portal (farm-portal) for Noor Haddad. At most 3 of your sessions work at once; fctl wakes you at least every 2 hours, next in 2 hours.
+
+## What you asked
+
+- The secret PLATFORM_API_TOKEN: A read-only token for Platform's API, for the orders page and its previews: until it's set, they show recorded orders and say so. (asked yesterday 08:56)
+- Which Wednesday reminder should farms get? (answers: The short one, The one with last week's list) about farm-portal#11 (asked yesterday 11:36)
+
+## Your sessions
+
+The latest first, with what people wrote to each and the start of what each said as its turn ended (`fctl logs <ref> --last-turn` prints a session's last turn whole):
+
+- farm-portal#11 Two designs for the Wednesday reminder · stopped · PR 6 draft, checks passed · said: "Two React Email templates in emails/, in Swedish…"
+- farm-portal#10 Show each farm this week's orders · stopped · PR 7 merged
+- farm-portal#8 Let farms choose the unit for each crop · stopped · PR 5 merged
+
+## Your plan
+
+## Waiting for people
+
+- PLATFORM_API_TOKEN (asked): until it's set, the orders page's previews show recorded orders.
+- Which Wednesday reminder (asked Noor, #11's two designs): #11 keeps the one she picks.
+
+## Waiting
+
+- Payouts: Platform's GET /v1/farms/{id}/payouts lands this week (Asha). Not the CSV.
+
+## Next
+
+- [ ] Each farm's pickup windows, from Platform's API: tomorrow
+
+(Written 19 hours ago)"""
+
+[[turn.step]]
+think = "Neither ask is answered yet, and neither blocks the next piece: pickup windows are in Platform's API already, behind the same token as the orders, and go on the orders page. Start that, and keep the plan saying what waits for whom, so Noor sees at a glance what's hers."
+
+[[turn.step]]
+write = "tasks/pickup.md"
+content = """Show each farm its pickup windows on the farm portal: when our vans come for its crates on each delivery day, from Platform's API (GET /v1/farms/{id}/pickup-windows, with the same token as the orders, PLATFORM_API_TOKEN; recorded windows until it's set).
+
+- On the orders page above each day's orders, and on the home page as the next pickup.
+- A window that moved since last week says so.
+- At 390 px, in Swedish.
+
+Merge it yourself once checks pass.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Show each farm its pickup windows' -f tasks/pickup.md"
+description = "Start the pickup windows session"
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #13 Each farm's pickup windows, from Platform's API: on the orders page and the home page
+
+## Waiting for people
+
+- **PLATFORM_API_TOKEN** (asked yesterday): until it's set, the orders page and pickup windows show recorded data in previews.
+- **Which Wednesday reminder** (asked Noor yesterday, #11's two designs): #11 keeps the one she picks, and a schedule sends it on Wednesdays at 07:00.
+
+## Waiting
+
+- Payouts: Platform's GET /v1/farms/{id}/payouts lands this week (Asha). Not the CSV.
+
+## Next
+
+- [ ] The Wednesday reminder and its schedule, once Noor has chosen
+- [ ] Payouts, once Platform has them
+- [ ] Move #3's sign-in pages to the message files
+- [ ] Ask Noor which farms try it first
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+- [x] A unit for each crop: crates, bunches or kilos (#8, PR 5)
+- [x] This week's orders, from Platform's API (#10, PR 7)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish, filled in as a farm would.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log 'Started #13 on each farm’s pickup windows, from Platform’s API. Still waiting for people: PLATFORM_API_TOKEN, and Noor’s choice of Wednesday reminder.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Started #13 on each farm's pickup windows. Two things wait for people, and nothing waits for them meanwhile: `PLATFORM_API_TOKEN`, and which Wednesday reminder farms get. I wake when they answer, when #13 ends its turn, or in two hours."
+
+[[turn]]
+duration = "1m"
+result = "Nothing has changed since this morning: the two asks are still open, and #13 is at work."
+
+[[turn.step]]
+run = "fctl autopilot log 'Checked in: the two asks are still open, and #13 is at work.'"
+description = "Write down where things stand"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Nothing has changed since this morning: the two asks are still open, and #13 is at work."
+
+[[turn]]
+duration = "1m"
+result = "Nothing has changed: the two asks are still open, and #13 is at work."
+
+[[turn.step]]
+run = "fctl autopilot log 'Checked in: nothing has changed.'"
+description = "Write down where things stand"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 4h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Nothing has changed: the two asks are still open, and #13 is at work."

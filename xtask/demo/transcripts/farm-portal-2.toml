@@ -1,0 +1,246 @@
+# farm-portal#2 · Noor's autopilot, last Friday 17:42 · Set up deploys to Cloudflare, with CI and previews (merged)
+match = "Set up deploys for the farm portal"
+
+[[turn]]
+duration = "40m"
+result = "Merged romanescohq/farm-portal#1: the portal deploys to Cloudflare Workers with OpenNext, main to farm.romanesco.farm and each pull request to a preview, and CI runs lint, types, the build and Playwright on every push."
+
+[[turn.step]]
+silently = '''f="$DEMO_SIGNALS/farm-portal-2-1"; t=0; until [ -e "$f" ] || [ $t -ge 9000 ]; do sleep 0.1; t=$((t+1)); done'''
+
+[[turn.step]]
+run = "fctl edit --description 'Deploys the farm portal to Cloudflare Workers with OpenNext, main to farm.romanesco.farm and each pull request to a preview, with CI on GitHub Actions.'"
+description = "Say what the session does"
+
+[[turn.step]]
+todo = [["Add OpenNext for Cloudflare", "in_progress"], ["Deploy main, and a preview per pull request", "pending"], ["CI: lint, types, build, Playwright", "pending"], ["README", "pending"], ["Open the pull request", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "package.json" },
+  { read = "next.config.ts" },
+  { read = "README.md" },
+]
+
+[[turn.step]]
+bash = "npm install --save-dev @opennextjs/cloudflare@^1.11 wrangler@^4"
+description = "Add OpenNext's Cloudflare adapter and wrangler"
+seconds = 14
+output = """added 214 packages, and audited 643 packages in 13s
+
+found 0 vulnerabilities"""
+
+[[turn.step]]
+edit = "package.json"
+old = """    "lint": "eslint",
+    "test:e2e": "playwright test"
+  },"""
+new = """    "lint": "eslint",
+    "test:e2e": "playwright test",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+  },"""
+
+[[turn.step]]
+edit = "package.json"
+old = """    "@playwright/test": "^1.56.1","""
+new = """    "@opennextjs/cloudflare": "^1.11.0",
+    "@playwright/test": "^1.56.1","""
+
+[[turn.step]]
+edit = "package.json"
+old = """    "typescript": "^5"
+  }"""
+new = """    "typescript": "^5",
+    "wrangler": "^4.45.0"
+  }"""
+
+[[turn.step]]
+write = "open-next.config.ts"
+content = """import { defineCloudflareConfig } from "@opennextjs/cloudflare";
+
+export default defineCloudflareConfig();
+"""
+
+[[turn.step]]
+write = "wrangler.jsonc"
+content = """{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "farm-portal",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "routes": [{ "pattern": "farm.romanesco.farm", "custom_domain": true }],
+  "observability": { "enabled": true }
+}
+"""
+
+[[turn.step]]
+edit = "next.config.ts"
+old = """export default nextConfig;"""
+new = """export default nextConfig;
+
+// The Cloudflare bindings in `next dev`, as the deployed Worker has them.
+import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
+initOpenNextCloudflareForDev();"""
+
+[[turn.step]]
+todo = [["Add OpenNext for Cloudflare", "completed"], ["Deploy main, and a preview per pull request", "in_progress"], ["CI: lint, types, build, Playwright", "pending"], ["README", "pending"], ["Open the pull request", "pending"]]
+
+[[turn.step]]
+write = ".github/workflows/ci.yml"
+content = """name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+"""
+
+[[turn.step]]
+write = ".github/workflows/preview.yml"
+content = """name: Preview
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx opennextjs-cloudflare build
+      - id: upload
+        run: |
+          url=$(npx wrangler versions upload --preview-alias "pr-${{ github.event.number }}" | grep -o 'https://pr-[^ ]*')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          message: "Preview: ${{ steps.upload.outputs.url }}"
+"""
+
+[[turn.step]]
+edit = "README.md"
+old = """Made with `create-next-app`. `npm run dev` serves it at
+http://localhost:3000, and `npm run test:e2e` runs the end-to-end tests."""
+new = """Made with `create-next-app`. `npm run dev` serves it at
+http://localhost:3000, and `npm run test:e2e` runs the end-to-end tests.
+
+## Deploys
+
+It runs on Cloudflare Workers through OpenNext. Every push to `main`
+deploys to https://farm.romanesco.farm once CI passes; every pull request
+gets a preview of its own, whose link the Preview workflow keeps in a
+comment on it. Both use the organization's `CLOUDFLARE_API_TOKEN`.
+
+`npm run preview` builds the Worker and serves it locally, as Cloudflare
+runs it."""
+
+[[turn.step]]
+bash = "npm run lint && npx tsc --noEmit && npx opennextjs-cloudflare build"
+description = "Check and build the Worker"
+seconds = 38
+output = """> farm-portal@0.1.0 lint
+> eslint
+
+┌─────────────────────────────┐
+│ OpenNext — Cloudflare build │
+└─────────────────────────────┘
+
+App directory: /home/agent/farm-portal
+Next.js version : 16.0.3
+@opennextjs/cloudflare version: 1.11.0
+
+▲ Next.js 16.0.3 (Turbopack)
+✓ Compiled successfully in 7.4s
+✓ Generating static pages (4/4)
+
+Worker saved in `.open-next/worker.js` 🚀"""
+
+[[turn.step]]
+todo = [["Add OpenNext for Cloudflare", "completed"], ["Deploy main, and a preview per pull request", "completed"], ["CI: lint, types, build, Playwright", "completed"], ["README", "completed"], ["Open the pull request", "in_progress"]]
+
+[[turn.step]]
+commit = "Deploy to Cloudflare with OpenNext, with CI and a preview of every pull request"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Set up deploys to Cloudflare, with CI and previews"
+number = 1
+body = """The farm portal deploys to Cloudflare Workers through OpenNext: `main` to https://farm.romanesco.farm once CI passes, and every pull request to a preview of its own, whose link the Preview workflow keeps in a comment.
+
+CI runs lint, the type check, the build and the Playwright tests on every push. Both workflows use the organization's `CLOUDFLARE_API_TOKEN`, as the shop's deploys do, and the README says how to run, test and deploy."""
+
+[[turn.step]]
+bash = "gh pr checks 1 --watch"
+description = "Wait for the checks"
+seconds = 120
+output = """All checks were successful
+0 cancelled, 0 failing, 3 successful, 0 skipped, and 0 pending checks
+
+   NAME                 DESCRIPTION  ELAPSED  URL
+✓  CI/check (pull_request)            1m48s    https://github.com/romanescohq/farm-portal/actions/runs/19358210444/job/55381992071
+✓  Preview/preview (pull_request)     1m12s    https://github.com/romanescohq/farm-portal/actions/runs/19358210452/job/55381992083
+✓  Cloudflare Workers                  31s      https://dash.cloudflare.com/"""
+
+[[turn.step]]
+bash = "gh pr view 1 --json comments --jq '.comments[-1].body'"
+description = "Read the preview's link"
+output = "Preview: https://pr-1-farm-portal.romanesco.workers.dev"
+
+[[turn.step]]
+bash = "gh pr merge 1 --squash --delete-branch"
+description = "Merge the pull request"
+output = "✓ Squashed and merged pull request romanescohq/farm-portal#1 (Set up deploys to Cloudflare, with CI and previews)\n✓ Deleted branch fctl/2-set-up-deploys-to-cloudflare-with-ci-and"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Deploys for the farm portal: Cloudflare Workers through OpenNext, a preview for every pull request, and CI with lint, types, build and Playwright (farm-portal#1).' --approach 'OpenNext’s Cloudflare adapter rather than Pages, as the shop does; previews as Worker version aliases, whose link a sticky comment keeps.' --insights 'npm run preview serves the Worker as Cloudflare runs it; the Preview workflow’s comment has each pull request’s link.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Merged romanescohq/farm-portal#1. The portal deploys to Cloudflare Workers with OpenNext: `main` to farm.romanesco.farm, and each pull request to a preview whose link a comment on it keeps current (this one's was https://pr-1-farm-portal.romanesco.workers.dev). CI on GitHub Actions runs lint, the type check, the build and the Playwright tests on every push, in about two minutes. The README says how to run, test and deploy; the deploys use the organization's `CLOUDFLARE_API_TOKEN`."

@@ -1,0 +1,216 @@
+# farm-portal#5 · Noor's autopilot, last Friday 18:25 · Swedish and English on every page (merged)
+match = "Put the farm portal in Swedish and English"
+
+[[turn]]
+duration = "1h13m"
+result = "Merged romanescohq/farm-portal#3: strings live in messages/sv.json and messages/en.json, read with t() from lib/i18n.ts, and a switch at the foot of every page changes the language."
+
+[[turn.step]]
+silently = '''f="$DEMO_SIGNALS/farm-portal-5-1"; t=0; until [ -e "$f" ] || [ $t -ge 9000 ]; do sleep 0.1; t=$((t+1)); done'''
+
+[[turn.step]]
+run = "fctl edit --description 'Puts the farm portal in Swedish by default and English for farms that choose it, with every string in message files and a switch at the foot of each page.'"
+description = "Say what the session does"
+
+[[turn.step]]
+todo = [["Message files and t()", "in_progress"], ["The language from a cookie, then the browser", "pending"], ["A switch at the foot of every page", "pending"], ["Move the layout and home page over", "pending"], ["Playwright: both languages", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "app/layout.tsx" },
+  { read = "app/page.tsx" },
+]
+
+[[turn.step]]
+write = "messages/sv.json"
+content = """{
+  "home.title": "Gårdsportalen",
+  "home.lede": "Nästa veckas skörd, veckans beställningar och vad vi är skyldiga er.",
+  "footer.language": "Språk",
+  "meta.description": "Där Romanescos gårdar skickar nästa veckas skörd"
+}
+"""
+
+[[turn.step]]
+write = "messages/en.json"
+content = """{
+  "home.title": "Farm portal",
+  "home.lede": "Next week's harvest, this week's orders and what we owe you.",
+  "footer.language": "Language",
+  "meta.description": "Where Romanesco's farms post next week's harvest"
+}
+"""
+
+[[turn.step]]
+write = "lib/i18n.ts"
+content = """import { cookies, headers } from "next/headers";
+import en from "@/messages/en.json";
+import sv from "@/messages/sv.json";
+
+const MESSAGES = { sv, en } as const;
+export type Lang = keyof typeof MESSAGES;
+export type Key = keyof typeof sv;
+
+/** The farm's language: the `lang` cookie it chose, else its browser's, else Swedish. */
+export async function lang(): Promise<Lang> {
+  const chosen = (await cookies()).get("lang")?.value;
+  if (chosen === "sv" || chosen === "en") return chosen;
+  const accept = (await headers()).get("accept-language") ?? "";
+  return /^en\\b/i.test(accept) ? "en" : "sv";
+}
+
+/** The string `key` in the farm's language. */
+export async function t(key: Key): Promise<string> {
+  return MESSAGES[await lang()][key];
+}
+"""
+
+[[turn.step]]
+write = "app/language-switch.tsx"
+content = """import { cookies } from "next/headers";
+import { lang, t } from "@/lib/i18n";
+
+async function choose(form: FormData) {
+  "use server";
+  (await cookies()).set("lang", String(form.get("lang")), { maxAge: 365 * 24 * 60 * 60, path: "/" });
+}
+
+export async function LanguageSwitch() {
+  const current = await lang();
+  return (
+    <form action={choose} className="mt-12 flex items-center justify-center gap-3 text-sm text-stone-500">
+      <span>{await t("footer.language")}:</span>
+      <button name="lang" value="sv" aria-pressed={current === "sv"} className="aria-pressed:font-semibold">Svenska</button>
+      <button name="lang" value="en" aria-pressed={current === "en"} className="aria-pressed:font-semibold">English</button>
+    </form>
+  );
+}
+"""
+
+[[turn.step]]
+edit = "app/layout.tsx"
+old = """import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "Farm portal",
+  description: "Where Romanesco's farms post next week's harvest",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="en">
+      <body className="min-h-dvh bg-stone-50 text-stone-900 antialiased">{children}</body>
+    </html>
+  );
+}"""
+new = """import type { Metadata } from "next";
+import { lang, t } from "@/lib/i18n";
+import { LanguageSwitch } from "./language-switch";
+import "./globals.css";
+
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: await t("home.title"), description: await t("meta.description") };
+}
+
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang={await lang()}>
+      <body className="min-h-dvh bg-stone-50 text-stone-900 antialiased">
+        {children}
+        <LanguageSwitch />
+      </body>
+    </html>
+  );
+}"""
+
+[[turn.step]]
+edit = "app/page.tsx"
+old = """export default function Home() {
+  return (
+    <main className="mx-auto max-w-md px-5 py-10">
+      <h1 className="text-2xl font-semibold">Farm portal</h1>
+      <p className="mt-2 text-stone-600">Next week's harvest, this week's orders and what we owe you.</p>
+    </main>
+  );
+}"""
+new = """import { t } from "@/lib/i18n";
+
+export default async function Home() {
+  return (
+    <main className="mx-auto max-w-md px-5 py-10">
+      <h1 className="text-2xl font-semibold">{await t("home.title")}</h1>
+      <p className="mt-2 text-stone-600">{await t("home.lede")}</p>
+    </main>
+  );
+}"""
+
+[[turn.step]]
+write = "e2e/home.spec.ts"
+content = """import { expect, test } from "@playwright/test";
+
+test.use({ viewport: { width: 390, height: 844 } });
+
+test("the home page in Swedish", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Gårdsportalen" })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "sv");
+});
+
+test("the home page in English", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "English" }).click();
+  await expect(page.getByRole("heading", { name: "Farm portal" })).toBeVisible();
+});
+"""
+
+[[turn.step]]
+bash = "npm run lint && npx tsc --noEmit && npm run test:e2e -- e2e/home.spec.ts"
+description = "Lint, type-check and run the tests"
+seconds = 26
+output = """> farm-portal@0.1.0 lint
+> eslint
+
+Running 2 tests using 2 workers
+
+  ✓  1 e2e/home.spec.ts:5:5 › the home page in Swedish (1.3s)
+  ✓  2 e2e/home.spec.ts:11:5 › the home page in English (1.6s)
+
+  2 passed (3.9s)"""
+
+[[turn.step]]
+commit = "Put the portal in Swedish and English, with message files and a switch"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Swedish and English on every page"
+number = 3
+body = """Every string lives in `messages/sv.json` and `messages/en.json`, read with `t()` from `lib/i18n.ts`. A page takes the farm's language from the `lang` cookie it chose, else from its browser, else Swedish; a switch at the foot of every page changes it.
+
+The layout and the home page use it now. #3's sign-in pages keep their Swedish in the page for the moment: whichever session touches them next moves it. Two Playwright tests check the home page in both languages."""
+
+[[turn.step]]
+bash = "gh pr checks 3 --watch"
+description = "Wait for the checks"
+seconds = 110
+output = """All checks were successful
+0 cancelled, 0 failing, 3 successful, 0 skipped, and 0 pending checks
+
+   NAME                 DESCRIPTION  ELAPSED  URL
+✓  CI/check (pull_request)            1m57s    https://github.com/romanescohq/farm-portal/actions/runs/19360132907/job/55387755120
+✓  Preview/preview (pull_request)     1m14s    https://github.com/romanescohq/farm-portal/actions/runs/19360132915/job/55387755131
+✓  Cloudflare Workers                  28s      https://dash.cloudflare.com/"""
+
+[[turn.step]]
+bash = "gh pr merge 3 --squash --delete-branch"
+description = "Merge the pull request"
+output = "✓ Squashed and merged pull request romanescohq/farm-portal#3 (Swedish and English on every page)"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'Swedish and English for the farm portal: message files, t(), and a switch on every page (farm-portal#3).' --approach 'A dozen lines of our own rather than an i18n library: two languages, server components only.' --insights 'Strings go in messages/sv.json and messages/en.json; t() is async, as it reads the lang cookie.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Merged romanescohq/farm-portal#3. Strings live in `messages/sv.json` and `messages/en.json`, read with `t()` from `lib/i18n.ts`; a page takes the farm's language from a cookie, then the browser, and a switch at its foot changes it. The layout and home page use it, and a Playwright test checks both languages. #3's sign-in pages still have their Swedish in the page: the next session that touches them should move it."

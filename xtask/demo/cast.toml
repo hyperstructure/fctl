@@ -295,6 +295,11 @@ created = "-1y"
 by = "lucia"
 
 [[repo]]
+name = "romanescohq/farm-portal"
+created = "friday 17:20"
+by = "noor"
+
+[[repo]]
 name = "milkfloat/milkfloat"
 created = "-2y"
 by = "noor"
@@ -584,6 +589,22 @@ history = [
   "Plan the Copenhagen region's resources",
   "Check production and staging for Terraform drift",
 ]
+
+[[project]]
+slug = "farm-portal"
+workspace = "romanesco"
+name = "Farm portal"
+description = "Where our farms post next week's harvest, and see our orders and what we owe them. Next.js on Cloudflare, on Platform's API."
+icon = { name = "wheat", hex = "#d4a72c", style = "duotone" }
+by = "noor"
+created = "friday 17:25"
+repo = "romanescohq/farm-portal"
+maintainers = ["jonas", "tomas", "asha"]
+model = "opus"
+effort = "high"
+idle_timeout = 720
+# Its autopilot's sessions build on what the ones before them merged.
+merges = true
 
 [[project]]
 slug = "milkfloat"
@@ -1549,3 +1570,317 @@ start = "today 09:09"
 state = "working"
 runner = "Noors-MacBook-Pro"
 review = { of = "milkfloat/milkfloat#313", result = "running" }
+
+# ── Farm portal, on autopilot since last Friday ──
+# Its autopilot's sessions (`autopilot`), which it starts and fctl wakes: the
+# seed starts none of them, and plays the story below (`[[autopilot]]`).
+
+[[session]]
+id = "farm-portal#1"
+by = "noor"
+autopilot = "pilot"
+start = "friday 17:40"
+took = "4h24m"
+runner = "celeriac"
+model = "opus"
+title = "Farm portal autopilot"
+  [[session.message]]
+  at = "friday 18:03:05"
+  from = "fctl"
+  [[session.message]]
+  at = "friday 18:23"
+  from = "fctl"
+  [[session.message]]
+  at = "friday 19:39"
+  from = "fctl"
+  [[session.message]]
+  at = "friday 22:00"
+  from = "fctl"
+
+[[session]]
+id = "farm-portal#2"
+by = "noor"
+autopilot = "crew"
+start = "friday 17:42"
+took = "40m"
+runner = "celeriac"
+title = "Set up deploys to Cloudflare, with CI and previews"
+pr = { number = 1, state = "merged", at = "friday 18:21", passed = 3 }
+
+[[session]]
+id = "farm-portal#3"
+by = "noor"
+autopilot = "crew"
+start = "friday 17:43"
+took = "1h54m30s"
+runner = "celeriac"
+title = "Sign farms in with a link by email"
+pr = { number = 2, state = "merged", at = "friday 19:36", passed = 3 }
+
+[[session]]
+id = "farm-portal#4"
+by = "noor"
+autopilot = "crew"
+start = "friday 17:44"
+took = "15h27m"
+runner = "celeriac"
+title = "Two designs for the harvest list"
+pr = { number = 4, state = "merged", at = "saturday 09:10", title = "Add the harvest list, a row per crop", passed = 3 }
+published = [{ name = "harvest-lists.webp", token = "tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu" }]
+  [[session.message]]
+  at = "saturday 08:13"
+  from = "autopilot"
+  text = "Noor chose a list per crop. Build that one at app/harvest, with saving and last week’s amounts, drop the grid, and merge once checks pass."
+
+[[session]]
+id = "farm-portal#5"
+by = "noor"
+autopilot = "crew"
+start = "friday 18:25"
+took = "1h13m"
+runner = "celeriac"
+title = "Swedish and English on every page"
+pr = { number = 3, state = "merged", at = "friday 19:37", passed = 3 }
+
+[[session]]
+id = "farm-portal#6"
+by = "noor"
+autopilot = "pilot"
+start = "saturday 08:12:05"
+took = "1h1m55s"
+runner = "celeriac"
+model = "opus"
+title = "Farm portal autopilot"
+  [[session.message]]
+  at = "saturday 09:12"
+  from = "fctl"
+
+[[session]]
+id = "farm-portal#7"
+by = "noor"
+autopilot = "pilot"
+start = "sunday 09:14:05"
+took = "11h38m55s"
+runner = "celeriac"
+model = "opus"
+title = "Farm portal autopilot"
+  [[session.message]]
+  at = "sunday 19:02:05"
+  from = "fctl"
+  [[session.message]]
+  at = "sunday 20:22"
+  from = "fctl"
+  [[session.message]]
+  at = "sunday 20:51"
+  from = "fctl"
+
+[[session]]
+id = "farm-portal#8"
+by = "noor"
+autopilot = "crew"
+start = "sunday 19:05"
+took = "1h45m"
+runner = "celeriac"
+title = "Let farms choose the unit for each crop"
+pr = { number = 5, state = "merged", at = "sunday 20:49", passed = 3 }
+published = [
+  { name = "units-empty.webp", token = "4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb" },
+  { name = "units-week.webp", token = "djJfihDRgb1Z4B6XOc5G1bEf1l8zArqxpkdLTvRlDCn" },
+]
+  [[session.message]]
+  at = "sunday 20:24"
+  from = "autopilot"
+  text = "Your screenshots show an empty list, so they show none of the units. Show a week with six crops filled in, some in crates, some in bunches and some in kilos, at a phone’s width, in Swedish. Then merge once checks pass."
+
+[[session]]
+id = "farm-portal#9"
+by = "noor"
+autopilot = "pilot"
+start = "monday 08:53:05"
+took = "4h27m55s"
+runner = "celeriac"
+model = "opus"
+title = "Farm portal autopilot"
+  [[session.message]]
+  at = "monday 09:41:05"
+  from = "fctl"
+  [[session.message]]
+  at = "monday 11:33"
+  from = "fctl"
+  [[session.message]]
+  at = "monday 13:19"
+  from = "fctl"
+
+[[session]]
+id = "farm-portal#10"
+by = "noor"
+autopilot = "crew"
+start = "monday 08:57"
+took = "4h21m"
+runner = "celeriac"
+title = "Show each farm this week’s orders"
+pr = { number = 7, state = "merged", at = "monday 13:17", title = "Show each farm this week's orders", passed = 3 }
+
+[[session]]
+id = "farm-portal#11"
+by = "noor"
+autopilot = "crew"
+start = "monday 08:58"
+took = "2h34m"
+runner = "celeriac"
+title = "Two designs for the Wednesday reminder"
+pr = { number = 6, state = "draft", passed = 3 }
+published = [{ name = "reminders.webp", token = "zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl" }]
+
+[[session]]
+id = "farm-portal#12"
+by = "noor"
+autopilot = "pilot"
+start = "today 08:21:05"
+took = "5m"
+state = "waiting"
+runner = "celeriac"
+model = "opus"
+title = "Farm portal autopilot"
+
+[[session]]
+id = "farm-portal#13"
+by = "noor"
+autopilot = "crew"
+start = "today 08:24"
+state = "working"
+runner = "celeriac"
+title = "Show each farm its pickup windows"
+
+# ─────────────────────────────── autopilots ─────────────────────────────
+# Noor put the farm portal on autopilot last Friday evening. Each beat is
+# what people did, or what moves the story on, once the replays the one
+# before it waits for got there (`then`, lines of fake-claude's replay log).
+
+[[autopilot]]
+project = "farm-portal"
+by = "noor"
+at = "friday 17:40"
+direction = """Build the farm portal: where our farms tell us what they'll harvest next week, and see what we ordered from them and what we owe them.
+
+- Farmers sign in with a link we email them, no passwords. Most of them open it on a phone, in the field.
+- The harvest list comes first: by Thursday noon, each farm says what it can deliver next week, and how much.
+- Orders and payouts come from Platform's API, read-only. Ask Asha before anything changes in Platform.
+- Swedish first, then English.
+- Deploy to Cloudflare from main, with a preview of every pull request.
+
+Leave the shop and the driver app alone."""
+powers = ["merge", "settings", "secrets", "schedules"]
+check_in = 120
+crew = 3
+model = "opus"
+effort = "high"
+runner = "celeriac"
+then = ["farm-portal-1: turn 1 played"]
+
+  # Tomás gives the shop's Resend key.
+  [[autopilot.beat]]
+  at = "friday 18:03"
+  by = "tomas"
+  secret = "RESEND_API_KEY"
+  then = ["farm-portal-1: turn 2 played"]
+
+  # Deploys and CI end first, and merge.
+  [[autopilot.beat]]
+  release = ["farm-portal#2"]
+  then = ["farm-portal-2: turn 1 played"]
+
+  [[autopilot.beat]]
+  merge = ["farm-portal#2"]
+  then = ["farm-portal-1: turn 3 played"]
+
+  # Sign-in and the languages end within a minute: one wake for both.
+  [[autopilot.beat]]
+  release = ["farm-portal#3", "farm-portal#5"]
+  then = ["farm-portal-3: turn 1 played", "farm-portal-5: turn 1 played"]
+
+  [[autopilot.beat]]
+  merge = ["farm-portal#3", "farm-portal#5"]
+  then = ["farm-portal-1: turn 4 played"]
+
+  # The two designs, which it asks Noor about.
+  [[autopilot.beat]]
+  release = ["farm-portal#4"]
+  then = ["farm-portal-4: turn 1 played", "farm-portal-1: turn 5 played"]
+
+  # Overnight, #2, #3 and #5 stopped after being idle (12 hours). Noor
+  # answers from her phone on Saturday morning: a fresh session takes over,
+  # and has #4 build the list.
+  [[autopilot.beat]]
+  stop = ["farm-portal#2", "farm-portal#3", "farm-portal#5"]
+  handoff = true
+  at = "saturday 08:12"
+  by = "noor"
+  answer = "Which harvest list"
+  text = "A list per crop"
+  then = ["farm-portal-6: turn 1 played", "farm-portal-4: turn 2 played"]
+
+  [[autopilot.beat]]
+  merge = ["farm-portal#4"]
+  then = ["farm-portal-6: turn 2 played"]
+
+  # It looks in on Sunday morning, as it asked, in a fresh session.
+  [[autopilot.beat]]
+  stop = ["farm-portal#4"]
+  handoff = true
+  wake = true
+  at = "sunday 09:14"
+  then = ["farm-portal-7: turn 1 played"]
+
+  [[autopilot.beat]]
+  at = "sunday 19:02"
+  by = "jonas"
+  note = "Farms count in crates, bunches and kilos, and it differs by crop: a crate of carrots is about 10 kg. Let each farm choose the unit for each crop."
+  then = ["farm-portal-7: turn 2 played"]
+
+  # Units per crop: sent back for screenshots of a week filled in, then merged.
+  [[autopilot.beat]]
+  release = ["farm-portal#8"]
+  then = ["farm-portal-8: turn 1 played", "farm-portal-7: turn 3 played", "farm-portal-8: turn 2 played"]
+
+  [[autopilot.beat]]
+  merge = ["farm-portal#8"]
+  then = ["farm-portal-7: turn 4 played"]
+
+  # Monday's check-in, as it asked, in a fresh session.
+  [[autopilot.beat]]
+  stop = ["farm-portal#8"]
+  handoff = true
+  wake = true
+  at = "monday 08:53"
+  then = ["farm-portal-9: turn 1 played"]
+
+  [[autopilot.beat]]
+  at = "monday 09:41"
+  by = "asha"
+  note = "Payouts land in Platform this week, as GET /v1/farms/{id}/payouts. Build on that, not on the monthly CSV."
+  then = ["farm-portal-9: turn 2 played"]
+
+  [[autopilot.beat]]
+  release = ["farm-portal#11"]
+  then = ["farm-portal-11: turn 1 played", "farm-portal-9: turn 3 played"]
+
+  [[autopilot.beat]]
+  release = ["farm-portal#10"]
+  then = ["farm-portal-10: turn 1 played"]
+
+  [[autopilot.beat]]
+  merge = ["farm-portal#10"]
+  then = ["farm-portal-9: turn 4 played"]
+
+  # Tuesday morning, as it asked, in a fresh session: #13 is at work at 09:10.
+  [[autopilot.beat]]
+  stop = ["farm-portal#10", "farm-portal#11"]
+  handoff = true
+  wake = true
+  at = "today 08:21"
+  then = ["farm-portal-12: turn 1 played"]
+
+  [[autopilot.beat]]
+  release = ["farm-portal#13"]
+  then = ["farm-portal-13: holds"]

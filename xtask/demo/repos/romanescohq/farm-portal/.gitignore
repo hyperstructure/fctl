@@ -1,0 +1,8 @@
+/node_modules
+/.next/
+/out/
+/test-results/
+/playwright-report/
+.env*.local
+.open-next
+.wrangler

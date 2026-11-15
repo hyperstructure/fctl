@@ -1,0 +1,111 @@
+# farm-portal#6 · Noor's autopilot, Saturday 08:12 · Farm portal autopilot: a fresh session takes over as Noor
+# answers from her phone, has #4 build the list per crop, and rests until Sunday
+match = "You take over from your last session, farm-portal#1,"
+
+[[turn]]
+duration = "3m"
+result = "Noor chose the list per crop. Told #4 to build it and drop the grid; it merges once its checks pass. I wake when it ends its turn."
+
+[[turn.step]]
+bash = "fctl autopilot brief --only asks,sessions,plan"
+description = "Read where things stand"
+output = """# Autopilot of Farm portal
+
+It's {{clock}}. You run the project Farm portal (farm-portal) for Noor Haddad. At most 3 of your sessions work at once; fctl wakes you at least every 2 hours, next in 2 hours.
+
+## What you asked
+
+- Which harvest list should farms get? (answers: A list per crop, A grid of the week) about farm-portal#4
+  Noor Haddad answered 1m ago: A list per crop
+
+## Your sessions
+
+The latest first, with what people wrote to each and the start of what each said as its turn ended (`fctl logs <ref> --last-turn` prints a session's last turn whole):
+
+- farm-portal#5 Swedish and English on every page · stopped · PR 3 merged
+- farm-portal#4 Two designs for the harvest list · idle since yesterday 21:59 · PR 4 draft, checks passed · said: "Both designs are pages of the app, in Swedish at 390 px…"
+- farm-portal#3 Sign farms in with a link by email · stopped · PR 2 merged
+- farm-portal#2 Set up deploys to Cloudflare, with CI and previews · stopped · PR 1 merged
+
+## Your plan
+
+## In flight
+
+- #4 Two designs of the harvest list, for Noor to choose from
+
+## Next
+
+- [ ] The harvest list, as Noor chooses it
+- [ ] Move #3's sign-in pages to the message files
+- [ ] This week's orders, from Platform's API (read-only)
+- [ ] Payouts, from Platform's API
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+
+(Written 12 hours ago)"""
+
+[[turn.step]]
+think = "Noor answered from her phone: the list per crop, the one I'd have picked. #4 has both designs on its branch and still rests, so it can go on in the same conversation, with the grid's code to delete. Nothing in the plan promised people anything else for the weekend."
+
+[[turn.step]]
+run = "fctl send farm-portal#4 'Noor chose a list per crop. Build that one at app/harvest, with saving and last week’s amounts, drop the grid, and merge once checks pass.'"
+description = "Tell #4 which design to build"
+
+[[turn.step]]
+run = "fctl autopilot log 'Noor chose a list per crop. Told #4 to build it at app/harvest, drop the grid and merge once its checks pass.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Noor chose the list per crop. I told #4 to build it, drop the grid and merge once its checks pass; I wake when it ends its turn."
+
+[[turn]]
+duration = "2m"
+result = "#4 merged the harvest list (PR 4): farms fill in next week's crops and amounts, with last week's beside them, and send it. Nothing else can start before Monday, so I wake tomorrow."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#4 --last-turn"
+description = "Read how #4 ended"
+output = """farm-portal#4 · Two designs for the harvest list · idle
+
+⏺ Merged romanescohq/farm-portal#4. The harvest list is at /harvest: a row per crop with last week's amount under it, saved as the farm types and sent with one button before Thursday noon. The grid is gone. Its strings are in the message files, a Playwright test fills in and sends a week, and another checks that a farm only ever loads its own list."""
+
+[[turn.step]]
+write = "plan.md"
+content = """## Next
+
+- [ ] This week's orders, from Platform's API (read-only): Monday
+- [ ] Payouts, from Platform's API: ask Asha what's there
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log '#4 merged the harvest list (PR 4): a row per crop with last week’s amount, saved as the farm types. Orders and payouts wait for Monday and Platform’s API; I look in tomorrow.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 24h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#4 merged the harvest list: farms fill in next week's crops and amounts, with last week's beside them. Orders and payouts need Platform's API, which is a Monday job, so I wake tomorrow unless someone steers me sooner."

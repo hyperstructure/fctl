@@ -166,6 +166,32 @@ async function newToken(page) {
   return dialog;
 }
 
+/** The card of the Autopilot tab: its header and what it asks, from the header's corner. */
+const autopilotCard = async (page) => {
+  const r = await page.getByRole("region", { name: "Where it stands" }).boundingBox({ timeout: 10_000 });
+  return [Math.round(r.x - 16), Math.max(0, Math.round(r.y - 16)), 760, 420];
+};
+
+/** Puts a project on autopilot as far as the form that says how, filled in for the shot. */
+async function engage(page) {
+  await page.getByRole("button", { name: "Write your own" }).click();
+  const direction = page.getByLabel(/Where it should take/);
+  await direction.fill(
+    "Get the driver app ready for Copenhagen's first deliveries on 1 December.\n\n" +
+      "- Danish for drivers who choose it, with Copenhagen's addresses and door codes as they're written there.\n" +
+      "- The Copenhagen depot's routes, from Platform's route plans: no new endpoints without Asha.\n" +
+      "- A photo at the door works offline and uploads once the van has signal.\n\n" +
+      "Leave the shop alone, and ship nothing to the app stores: Aiko does that.",
+  );
+  await direction.blur();
+  // The form from its header down: the direction, then what it may do.
+  await page.getByRole("heading", { name: "Put Driver app on autopilot" }).evaluate((e) => {
+    const form = e.closest("form") ?? e;
+    window.scrollTo({ top: form.getBoundingClientRect().top + window.scrollY - 20, behavior: "instant" });
+  });
+  await page.waitForTimeout(400);
+}
+
 // The shots of fctl.sh's feature pages (`--features`), by page: what to
 // show and how to get there. `act` runs once the page has settled, and
 // `size` gives a shot a window of its own size. `card` is the part of a
@@ -332,6 +358,70 @@ const pages = {
     { name: "phone-schedules", path: "/p/shop?tab=schedules", phone: true },
     { name: "phone-empty", path: "/p/driver-app?tab=schedules", phone: true },
   ],
+  // Farm portal's autopilot at 09:10: it rests between wakes, asks Noor two things, and #13 works.
+  autopilots: [
+    { name: "tab", path: "/p/farm-portal?tab=autopilot", settle: 2500 },
+    // The features overview's tile: the tab's header and what it asks, in a window that keeps them whole.
+    {
+      name: "card",
+      path: "/p/farm-portal?tab=autopilot",
+      size: "1100x900",
+      settle: 2500,
+      card: autopilotCard,
+      cardOnly: true,
+    },
+    { name: "phone-tab", path: "/p/farm-portal?tab=autopilot", phone: true, settle: 2500, act: showTab },
+    // Its log by day, beside its direction, plan and sessions.
+    {
+      name: "log",
+      path: "/p/farm-portal?tab=autopilot",
+      settle: 2500,
+      act: (page) => scrollTo(page, "What it did, and what happened to it", 24),
+    },
+    // What it asks: the two reminders to choose from, and the secret it needs.
+    // In a bigger window, of the same shape, that holds both whole.
+    {
+      name: "asks",
+      path: "/p/farm-portal?tab=autopilot",
+      size: "1760x1100",
+      settle: 2500,
+      act: async (page) => {
+        await page.getByRole("heading", { name: /It asks you/ }).evaluate((e) => {
+          window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - 28, behavior: "instant" });
+        });
+        await page.waitForTimeout(400);
+      },
+    },
+    // Its own session this morning: a fresh one takes over, and starts #13, live.
+    { name: "pilot", path: session("farm-portal#12"), settle: 3000 },
+    // #8, sent back for screenshots of a week filled in, and its answer.
+    {
+      name: "crew",
+      path: session("farm-portal#8"),
+      settle: 3000,
+      act: async (page) => {
+        // The turn its message started, from the message down.
+        const message = page
+          .locator('[data-find^="msg:"]')
+          .filter({ hasText: "Your screenshots show an empty list" })
+          .first();
+        await message.evaluate((e) => {
+          window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - 150, behavior: "instant" });
+        });
+        await page.waitForTimeout(500);
+      },
+    },
+    // The secret it needs, typed in where it asks, and the notes people steer it with.
+    {
+      name: "secret",
+      path: "/p/farm-portal?tab=autopilot",
+      settle: 2500,
+      act: (page) => scrollTo(page, "It needs a secret", 40),
+    },
+    { name: "phone-needs", path: "/", phone: true, settle: 3000, act: openMenu },
+    { name: "engage", path: "/p/driver-app?tab=autopilot", settle: 2000, act: engage },
+    { name: "sessions", path: "/p/farm-portal", settle: 2500 },
+  ],
   "access-tokens": [
     { name: "tokens", path: "/settings?tab=tokens" },
     { name: "new", path: "/settings?tab=tokens", act: newToken, card: [394, 210, 500, 320] },
@@ -481,6 +571,14 @@ async function noor(browser, { theme, phone, flowing, signedOut }) {
     await route.fulfill({ response, json: body });
   });
   await context.route("**/api/v1/github/repos?*", (route) => route.fulfill({ json: { repos: [] } }));
+  // The screenshots the cast's agents published, at app.fctl.sh's links their transcripts show:
+  // the stack serves them under the same tokens (the rewrite gives them those).
+  await context.route("https://app.fctl.sh/api/v1/published/**", (route) =>
+    route.fetch({ url: new URL(new URL(route.request().url()).pathname, manifest.app).href }).then(
+      (response) => route.fulfill({ response }),
+      () => route.abort(),
+    ),
+  );
   // Review agents need a GitHub App, which the stack has none of.
   await context.route("**/api/v1/projects/*/review-agents", async (route) => {
     const response = await route.fetch();
