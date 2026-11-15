@@ -216,7 +216,11 @@ pub fn allows(access: TokenAccess, method: &str, segs: &[&str]) -> Result<()> {
             "GET",
             ["sessions"]
             | ["sessions", _]
-            | ["sessions", _, "events" | "retrospectives" | "ws" | "shares"]
+            | [
+                "sessions",
+                _,
+                "events" | "retrospectives" | "ws" | "shares" | "attachments",
+            ]
             | ["sessions", _, "attachments", _],
         ) => Read,
         // Searching what its sessions said.
@@ -550,6 +554,7 @@ mod tests {
                 ("GET", "sessions"),
                 ("GET", "sessions/ses_1/events"),
                 ("GET", "sessions/ses_1/ws"),
+                ("GET", "sessions/ses_1/attachments"),
                 ("GET", "sessions/ses_1/attachments/att_1"),
                 ("GET", "search"),
                 ("GET", "workspaces"),

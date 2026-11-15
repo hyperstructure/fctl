@@ -881,6 +881,18 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
     }
 }
 
+/// Whether `path` (`/api/v1/…`, with its query) may go through the relay:
+/// one of the API's, with no `..` or `//` in the part before its query,
+/// which would reach another route. The query may hold them: a file's name
+/// goes there (`?name=v1..2.pdf`).
+pub fn relayable_path(path: &str) -> bool {
+    let (route, _) = path.split_once('?').unwrap_or((path, ""));
+    route.starts_with("/api/v1/")
+        && path.len() <= 2_000
+        && !route.contains("..")
+        && !route.contains("//")
+}
+
 /// Whether a request it may make carries a file rather than JSON, in its
 /// body or its answer: an upload (`POST …/attachments`) or a file sent in a
 /// session (`GET sessions/{id}/attachments/{file}`). Those go through the
@@ -2461,6 +2473,26 @@ mod tests {
         }
         // Published screenshots are people's to delete.
         assert!(allows(c, "DELETE", &["published", "tok"]).is_err());
+    }
+
+    #[test]
+    fn relays_only_the_apis_paths() {
+        assert!(relayable_path("/api/v1/projects/shop"));
+        assert!(relayable_path(
+            "/api/v1/sessions/ses_9/attachments?name=v1..2.pdf&type=application%2Fpdf"
+        ));
+        assert!(relayable_path("/api/v1/search?q=a//b"));
+        for path in [
+            "/api/v1/sessions/../auth/tokens",
+            "/api/v1/sessions/..?name=x",
+            "/api/v1//auth/tokens",
+            "/api/v2/projects",
+            "/projects",
+        ] {
+            assert!(!relayable_path(path), "{path}");
+        }
+        let long = format!("/api/v1/search?q={}", "a".repeat(2_000));
+        assert!(!relayable_path(&long));
     }
 
     #[test]

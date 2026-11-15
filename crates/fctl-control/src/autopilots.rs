@@ -2308,11 +2308,7 @@ async fn relayed(ctx: &Ctx, session_id: &str, method: &str, path: &str) -> AppRe
             )));
         }
     };
-    if !path.starts_with("/api/v1/")
-        || path.len() > 2_000
-        || path.contains("..")
-        || path.contains("//")
-    {
+    if !ap::relayable_path(path) {
         return Err(AppError(ApiError::bad_request(
             "The path is one of the API's, like /api/v1/projects/my-app",
         )));

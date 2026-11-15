@@ -1349,7 +1349,7 @@ impl Api {
     /// runner token): `path` is the whole one, `/api/v1/…` with its query.
     /// Gives back the relayed request's status, media type and body; an
     /// error is the relay's own (the autopilot isn't on, the session isn't
-    /// this runner's).
+    /// this runner's). It gives up after `within`.
     pub async fn runner_relay(
         &self,
         session: &str,
@@ -1357,6 +1357,7 @@ impl Api {
         path: &str,
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
+        within: std::time::Duration,
     ) -> Result<(u16, Option<String>, bytes::Bytes)> {
         let url = self.url(&format!(
             "/runner/sessions/{}/relay?method={}&path={}",
@@ -1364,8 +1365,7 @@ impl Api {
             enc(method),
             enc(path)
         ));
-        // fctl-agent gives up on a call after two minutes.
-        let client = HttpClient::new(std::time::Duration::from_secs(110));
+        let client = HttpClient::new(within);
         let content_type = content_type.or(body.as_ref().map(|_| "application/octet-stream"));
         let (status, headers, bytes) = client
             .send(Method::POST, &url, self.token(), body, content_type)

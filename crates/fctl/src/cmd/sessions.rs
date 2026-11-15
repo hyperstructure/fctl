@@ -948,9 +948,16 @@ pub(crate) async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result
     let (read, mut write) = stream.into_split();
     let mut line = serde_json::to_string(request)?;
     line.push('\n');
-    write.write_all(line.as_bytes()).await?;
+    // fctl-agent may answer before it read it all, and close: one older
+    // than files does for a request larger than it takes (8 MiB), which
+    // fails the write. Its answer says why.
+    let wrote = write.write_all(line.as_bytes()).await;
     let mut reply = String::new();
-    BufReader::new(read).read_line(&mut reply).await?;
+    let read = BufReader::new(read).read_line(&mut reply).await;
+    if reply.trim().is_empty() {
+        wrote?;
+        read?;
+    }
     serde_json::from_str(reply.trim()).context("reading fctl-agent's answer")
 }
 
@@ -1490,6 +1497,43 @@ pub async fn open(server: Option<&str>, target: Option<&str>, claude: bool) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hears_why_fctl_agent_refused_a_request_it_read_only_part_of() -> anyhow::Result<()> {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir()?;
+        let socket = dir.path().join("agent.session.sock");
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        // An fctl-agent from before files: it reads so much, answers, and
+        // closes with the rest unread.
+        let agent = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let (read, mut write) = stream.into_split();
+            let mut head = vec![0u8; 64 * 1024];
+            read.take(64 * 1024).read_exact(&mut head).await?;
+            write
+                .write_all(b"{\"type\":\"error\",\"error\":{\"code\":\"bad_request\",\"message\":\"The request is larger than fctl-agent takes (8 MiB)\"}}\n")
+                .await?;
+            write.shutdown().await?;
+            anyhow::Ok(())
+        });
+        let request = SessionRequest::Call {
+            session_id: None,
+            call: fctl_proto::api::AgentCall::ApiBytes {
+                method: "POST".into(),
+                path: "/api/v1/sessions/ses_1/attachments?name=big.stl".into(),
+                body: Some("A".repeat(4 * 1024 * 1024)),
+                content_type: None,
+            },
+        };
+        let reply = ask_agent(&socket, &request).await?;
+        agent.await??;
+        assert!(
+            matches!(reply, SessionReply::Error { ref error } if older_agent(&error.message)),
+            "{reply:?}"
+        );
+        Ok(())
+    }
 
     /// What a stand-in for an autopilot's relay got: each request's
     /// method, path and body.
