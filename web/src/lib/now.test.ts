@@ -81,6 +81,9 @@ describe("what the agent does now", () => {
   it("says nothing while it waits for people, and what it waits for in the background", () => {
     expect(at([ask()], emptyLive(), { status: "idle" })).toBeUndefined();
     expect(at([ask()], emptyLive(), { status: "idle", reason: "Waiting for a message" })).toBeUndefined();
+    expect(
+      at([ask()], emptyLive(), { status: "idle", reason: "Cut off twice: waiting for a message" }),
+    ).toBeUndefined();
     expect(at([ask()], emptyLive(), { status: "idle", reason: "Waiting for 2 background tasks" })?.kind).toBe(
       "background",
     );
