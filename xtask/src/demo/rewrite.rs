@@ -421,6 +421,10 @@ fn session(
         {
             data["text"] = json!(format!("Started Claude Code (pid {pid})"));
         }
+        if s.autopilot.is_some() {
+            // What its transcript says the time is, as the story has it.
+            story_clock(&mut data, clock.map(ts(r)));
+        }
         if k == "user_message" && s.autopilot.is_some() {
             // As fctl and the autopilot wrote them, at the story's time.
             wake_clock(&mut data, clock.map(ts(r)));
@@ -591,6 +595,19 @@ fn session(
     // Its published screenshots, memory and retrospectives move with it,
     // in `memory`.
     Ok(clock)
+}
+
+/// `{{clock}}` in what an autopilot's transcript shows (the brief's "It's
+/// …"), as fctl writes the time in UTC at `at`.
+fn story_clock(v: &mut Value, at: i64) {
+    match v {
+        Value::String(t) if t.contains("{{clock}}") => {
+            *t = t.replace("{{clock}}", &fctl_domain::autopilot::clock(at));
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| story_clock(x, at)),
+        Value::Object(m) => m.values_mut().for_each(|x| story_clock(x, at)),
+        _ => {}
+    }
 }
 
 /// A message that woke an autopilot says when, in UTC (`fctl woke you, the
