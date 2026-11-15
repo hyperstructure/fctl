@@ -851,6 +851,7 @@ export function SessionPage() {
                 plan={planNow}
                 onReply={yourTurn ? focusReply : undefined}
                 autopilot={session?.autopilot}
+                movedTo={movedOn?.session.number}
                 background={
                   waiting && {
                     waiting,

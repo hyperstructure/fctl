@@ -370,6 +370,7 @@ export function NowLine({
   onReply,
   background,
   autopilot,
+  movedTo,
 }: {
   now?: Now;
   /**
@@ -377,6 +378,8 @@ export function NowLine({
    * turn but the autopilot's, or for its own session, fctl's to wake it.
    */
   autopilot?: G.SessionAutopilot;
+  /** In an earlier session of its own: the number of the one it works in now, which fctl wakes. */
+  movedTo?: number;
   /** The plan of the turn the agent works on. */
   plan?: Plan;
   /** It's the reader's turn while the agent does nothing: the line says so, and goes to their reply. */
@@ -499,6 +502,11 @@ export function NowLine({
           {took}
         </span>
       )}
+    </>
+  ) : autopilot?.role === "pilot" && movedTo !== undefined ? (
+    <>
+      <span className="shrink-0 font-medium text-ink">Handed over</span>
+      <span className="min-w-0 truncate text-ink-3 max-sm:hidden">The autopilot works in #{movedTo} now</span>
     </>
   ) : autopilot?.role === "pilot" ? (
     <>

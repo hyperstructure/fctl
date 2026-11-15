@@ -295,7 +295,7 @@ describe("the session page", () => {
     expect(open()).toEqual(["Changes"]);
   });
 
-  it("shows an autopilot's own session its autopilot, plan and sessions, and leaves out what it doesn't keep", () => {
+  it("shows an autopilot's own session its autopilot, plan and sessions, and leaves out what it doesn't keep", async () => {
     const pilot: G.Session = {
       ...session("running"),
       title: "Autopilot of web",
@@ -376,6 +376,16 @@ describe("the session page", () => {
     p.snapshot([], pilot);
     expect(rail()).toContain("It works in its session #20 now.");
     expect(rail()).toContain("This is an earlier session of its own: fctl wakes it in #20 now.");
+    // Above the message box too, where a message would otherwise go to it unawares.
+    expect(document.body.textContent).toContain("The autopilot works in#20now, not in this earlier session");
+
+    // At rest, it handed over: fctl wakes the autopilot in #20, not here.
+    p.snapshot(turn("Carry on"), { ...pilot, status: "idle" });
+    // The step it showed holds until it has shown long enough to be read.
+    await act(() => new Promise((r) => setTimeout(r, 700)));
+    expect(nowSays(p.container)).toContain("Handed over");
+    expect(nowSays(p.container)).toContain("The autopilot works in #20 now");
+    expect(nowSays(p.container)).not.toContain("fctl wakes it when something needs it");
   });
 
   it("shows or hides the details with d: the rail where it fits, else the sheet", () => {
