@@ -8,6 +8,9 @@ describe("status", () => {
 
   it("shows the reasons the status pill doesn't give", () => {
     expect(statusReason({ status: "idle", status_reason: "Waiting for a message" })).toBeUndefined();
+    expect(
+      statusReason({ status: "idle", status_reason: "Cut off twice: waiting for a message" }),
+    ).toBeUndefined();
     expect(statusReason(background)).toBe("Waiting for 2 background tasks");
     expect(
       statusReason({ status: "running", status_reason: "Resuming after the usage limit reset" }),
@@ -21,6 +24,8 @@ describe("status", () => {
   it("tells sessions that wait for you from ones that wait for background work", () => {
     expect(waitsForYou({ status: "idle", status_reason: "Waiting for a message" })).toBe(true);
     expect(waitsForYou({ status: "idle" })).toBe(true);
+    // Claude Code was cut off twice, and waits for a message rather than carry on.
+    expect(waitsForYou({ status: "idle", status_reason: "Cut off twice: waiting for a message" })).toBe(true);
     expect(waitsForYou(background)).toBe(false);
     expect(waitsForYou({ status: "running" })).toBe(false);
   });

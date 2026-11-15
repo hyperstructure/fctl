@@ -19,7 +19,8 @@ use fctl_proto::autopilot::{
     AutopilotAskKind, AutopilotAskStatus, AutopilotEntryKind, AutopilotPower, AutopilotScope,
     AutopilotWakeReason,
 };
-use fctl_proto::session::{PullRequestRef, SessionStatus};
+use fctl_proto::session::{PullRequestRef, SessionStatus, UserRef};
+use fctl_proto::uplink::DeliveryKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -568,6 +569,12 @@ pub fn stopped_waiting_for_background(reason: Option<&str>) -> bool {
     })
 }
 
+/// fctl-agent's reason for an idle session whose turn was cut off (Claude
+/// Code exited, or fctl-agent stopped, under it) within ten minutes of
+/// carrying on with another that was: rather than carry on again, Claude
+/// waits for a message. The apps take it for a session that waits for one.
+pub const CUT_OFF_TWICE: &str = "Cut off twice: waiting for a message";
+
 /// Whether one of the sessions it started wakes it, moving from `before`
 /// (with its reason) to `status`: one that ended a turn, asked something
 /// as it did (`asks`) or failed. Not one that ended its turn only to wait
@@ -1072,7 +1079,7 @@ fn work_lines(powers: &[AutopilotPower]) -> Vec<String> {
         "For a big or uncertain piece of work, start with a spike: a session that tries it, reports a short proposal with real numbers (what it measured, what each way would cost), and carries on unless something blocks it. You get a checkpoint without stalling the work.".to_owned(),
         format!("Put what every session should know (a trap, a rule, a command that works) where every session reads it, rather than in each task: {everyone}. When sessions keep making the same mistake, fix its cause with a session of its own (a script that does harm by default, a missing check) rather than warn each one again. Once the memory grows long, have a session tidy it, so that sessions start with what bears on their work: notes that overlap become one (`fctl memory add --replaces`), and those out of date go stale."),
         "A pass that ends with \"nothing to fix\" (a review, a design look) is rarely the last word: name one concrete thing you see, such as a panel that covers 40% of a phone's screen, and ask the session to look again from there. Sessions reach that verdict quickly, and find real improvements once they have something specific to start from.".to_owned(),
-        "Before you take a session's word that its work is done, read its last turn (`fctl logs <project>#<n> --last-turn`) and its pull request. Sessions stop short: some end their turn after their first pull request or skip part of their own list, and one whose Claude Code restarted under it may wait without a word (fctl says it ended its turn without one, and its log says `resuming the conversation`). Send such a one what is left, item by item. Check what a session claims before you act on it, such as a failure that is \"already on main\", against main's own checks.".to_owned(),
+        "Before you take a session's word that its work is done, read its last turn (`fctl logs <project>#<n> --last-turn`) and its pull request. Sessions stop short: some end their turn after their first pull request or skip part of their own list, and one whose Claude Code was cut off twice, or that someone interrupted, waits without a word (fctl says it ended its turn without one, and why where it knows). Send such a one what is left, item by item. Check what a session claims before you act on it, such as a failure that is \"already on main\", against main's own checks.".to_owned(),
         format!("Review a session's work in one round: ask for all the changes you want in one message{merge}."),
         "For work people see, look at screenshots: download those a session published and have a subagent review them in the background, while you look at a crop or two yourself, scaled down, and check what it reports before you ask for changes. Ask for the case that matters, not only the default: when a problem comes from someone's setup (a narrow window, their own file, a long name), ask for a shot of that, as the default often looks fine. Say what nobody could check in a sandbox (a real phone, another browser engine, an app installed on a home screen), and ask people to as soon as it ships: \"Live now: X. Does it work?\", with answers to click, is the cheapest such check.".to_owned(),
         "Work that drives physical hardware (a device, a machine, anything that moves or switches) needs a person watching its first run: say so plainly when you ask, and never call it ready until a person has checked it.".to_owned(),
@@ -1318,6 +1325,91 @@ pub fn heard_since(heard: &[Heard], since: Millis) -> &[Heard] {
     &heard[..n]
 }
 
+/// Why one of its sessions' last turn ended without a word, as fctl saw it
+/// happen: its line says so, with what to do ([`crew_line`]), rather than
+/// send the autopilot to the session's log. Its SessionObject keeps it,
+/// as JSON (`sessions.silence` in D1), from what cut into the turn
+/// ([`cut_into`]) and how the turn ended ([`silence_moved`]), until the
+/// next turn starts. Shown only when that turn said nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "why", rename_all = "snake_case")]
+pub enum Silence {
+    /// Claude Code was cut off twice within ten minutes, and waits for a
+    /// message rather than carry on again ([`CUT_OFF_TWICE`]).
+    CutOffTwice,
+    /// Someone interrupted the turn.
+    Interrupted { by: Sender },
+    /// A message reached the agent mid-turn: a turn that takes one in can
+    /// end with nothing said after it.
+    MessagedMidTurn { by: Sender },
+}
+
+/// Who interrupted one of its sessions, or wrote to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sender {
+    /// fctl itself: news of the session's pull requests, a review's
+    /// findings.
+    Fctl,
+    /// The autopilot, which writes as its owner.
+    Autopilot,
+    /// A person, by name.
+    Person(String),
+}
+
+/// The silence a session's row keeps (`stored`, from [`Silence`]'s JSON):
+/// none where it keeps none, or one it doesn't read.
+pub fn silence(stored: Option<&str>) -> Option<Silence> {
+    stored.and_then(|s| serde_json::from_str(s).ok())
+}
+
+/// Why the turn under way may end without a word, once a message or an
+/// interrupt (`kind`, which the autopilot sent when `by_autopilot`) reached
+/// the agent mid-turn, given what cut into the turn before (`kept`): an
+/// interrupt, which outweighs any message, else the latest message. A
+/// change of model or effort level cuts into nothing.
+pub fn cut_into(kind: &DeliveryKind, by_autopilot: bool, kept: Option<Silence>) -> Option<Silence> {
+    let who = |user: Option<&UserRef>| match (by_autopilot, user) {
+        (true, _) => Sender::Autopilot,
+        (false, Some(u)) => Sender::Person(u.name.clone()),
+        (false, None) => Sender::Fctl,
+    };
+    match kind {
+        DeliveryKind::Interrupt { by } => Some(Silence::Interrupted {
+            by: who(by.as_ref()),
+        }),
+        DeliveryKind::Message { author, .. } => match kept {
+            Some(s @ Silence::Interrupted { .. }) => Some(s),
+            _ => Some(Silence::MessagedMidTurn {
+                by: who(author.as_ref()),
+            }),
+        },
+        DeliveryKind::Settings { .. } => kept,
+    }
+}
+
+/// What a session keeps of why its last turn ended without a word (`kept`)
+/// once its status moves from `before` to `status`, with `reason`: Claude
+/// Code cut off twice, whatever cut into the turn; nothing once a turn
+/// starts, nor for a turn that ended otherwise than with the agent
+/// waiting (stopped, failed or paused, which says why itself); else what
+/// cut into the turn, also once a session that waited stops.
+pub fn silence_moved(
+    before: SessionStatus,
+    status: SessionStatus,
+    reason: Option<&str>,
+    kept: Option<Silence>,
+) -> Option<Silence> {
+    let running = |s: SessionStatus| s == SessionStatus::Running;
+    if status == SessionStatus::Idle && reason == Some(CUT_OFF_TWICE) {
+        Some(Silence::CutOffTwice)
+    } else if running(before) != running(status) && status != SessionStatus::Idle {
+        None
+    } else {
+        kept
+    }
+}
+
 /// One of its sessions, for what fctl tells it.
 #[derive(Clone, Debug)]
 pub struct CrewView<'a> {
@@ -1335,6 +1427,9 @@ pub struct CrewView<'a> {
     /// Absent where fctl kept none (sessions from before it). Shown while
     /// it isn't at work.
     pub said: Option<&'a str>,
+    /// Why that turn ended without a word, where fctl knows: shown in
+    /// place of `said` when it is empty, while it waits or once it stopped.
+    pub silence: Option<&'a Silence>,
     /// What people wrote to it, newest first: for a wake, those since the
     /// autopilot last woke ([`heard_since`]).
     pub heard: &'a [Heard],
@@ -1830,22 +1925,60 @@ fn quoted(s: &str) -> String {
 /// One of its sessions: how it stands, with its pull requests, then, on
 /// lines of their own, what people wrote to it (oldest first) and what it
 /// said as its turn ended, as they happened. A turn that ended without a
-/// word (cut off, interrupted) says so, as the session may not be done.
+/// word (cut off, interrupted) says so, and why where fctl knows, as the
+/// session may not be done.
 fn crew_line(c: &CrewView<'_>, now: Millis) -> String {
     let mut s = crew_state(c);
     for h in c.heard.iter().rev() {
         s.push_str(&format!("\n  {}", heard_line(h, now)));
     }
-    match c.said.map(str::trim) {
+    match (c.said.map(str::trim), c.silence) {
         _ if at_work(c.status) => {}
-        Some("") if c.status == SessionStatus::Idle => s.push_str(&format!(
+        (Some(""), Some(why))
+            if matches!(c.status, SessionStatus::Idle | SessionStatus::Stopped) =>
+        {
+            s.push_str(&format!("\n  {}", silence_line(why, &c.reference)));
+        }
+        (Some(""), None) if c.status == SessionStatus::Idle => s.push_str(&format!(
             "\n  It ended its turn without a word: `fctl logs {} --last-turn` shows how far it got.",
             c.reference
         )),
-        Some("") | None => {}
-        Some(said) => s.push_str(&format!("\n  It said as its turn ended: {}", quoted(said))),
+        (Some("") | None, _) => {}
+        (Some(said), _) => s.push_str(&format!("\n  It said as its turn ended: {}", quoted(said))),
     }
     s
+}
+
+/// Why one of its sessions ended its turn without a word, and what to do
+/// about it.
+fn silence_line(why: &Silence, reference: &str) -> String {
+    let start = "It ended its turn without a word";
+    match why {
+        Silence::CutOffTwice => format!(
+            "{start}: Claude Code was cut off twice in ten minutes, and waits rather than carry on again. Send it what is left."
+        ),
+        Silence::Interrupted {
+            by: Sender::Autopilot,
+        } => format!("{start}: you interrupted it, and it waits for what you send it."),
+        Silence::Interrupted {
+            by: Sender::Person(name),
+        } => format!(
+            "{start}: {name} interrupted it. Check with them before you send it on, unless what they wrote to it says what they want."
+        ),
+        Silence::Interrupted { by: Sender::Fctl } => {
+            format!("{start}: fctl interrupted it. Send it what is left.")
+        }
+        Silence::MessagedMidTurn { by } => {
+            let message = match by {
+                Sender::Fctl => "a message from fctl".to_owned(),
+                Sender::Autopilot => "your message".to_owned(),
+                Sender::Person(name) => format!("{name}'s message"),
+            };
+            format!(
+                "{start} after {message} reached it mid-turn: send it what is left (`fctl logs {reference} --last-turn` shows how far it got)."
+            )
+        }
+    }
 }
 
 /// "Ada wrote to it 5 minutes ago: “…”".
@@ -2466,6 +2599,7 @@ mod tests {
             question: None,
             pull_requests: vec![],
             said: Some("Waiting for CI on #41."),
+            silence: None,
             heard: &[],
         };
         assert_eq!(
@@ -3081,6 +3215,7 @@ mod tests {
                 question: Some("Which merchant id?"),
                 pull_requests: vec!["#12 open".into()],
                 said: Some("I need the merchant id to go on."),
+                silence: None,
                 heard: &heard,
             },
             CrewView {
@@ -3091,6 +3226,7 @@ mod tests {
                 question: None,
                 pull_requests: vec![],
                 said: Some(""),
+                silence: None,
                 heard: &[],
             },
             CrewView {
@@ -3101,6 +3237,7 @@ mod tests {
                 question: None,
                 pull_requests: vec![],
                 said: Some("Done with the first part."),
+                silence: None,
                 heard: &[],
             },
         ];
@@ -3332,6 +3469,7 @@ mod tests {
                     question: None,
                     pull_requests: vec![],
                     said: Some(""),
+                    silence: None,
                     heard: &[],
                 },
                 CrewView {
@@ -3342,6 +3480,7 @@ mod tests {
                     question: None,
                     pull_requests: vec!["#70 (open, checks running)".into()],
                     said: Some("Opened #70: wishlists on the account page."),
+                    silence: None,
                     heard: &heard,
                 },
             ],
@@ -3500,5 +3639,208 @@ mod tests {
         // Nothing kept, or what doesn't read, is nothing.
         assert!(heard(None).is_empty());
         assert!(heard(Some("not json")).is_empty());
+    }
+
+    #[test]
+    fn keeps_why_a_turn_ended_without_a_word() {
+        use SessionStatus::*;
+        let ada = UserRef {
+            id: fctl_proto::UserId("usr_ada".into()),
+            name: "Ada".into(),
+            avatar_url: None,
+        };
+        let message = |author: Option<&UserRef>| DeliveryKind::Message {
+            text: "Also the footer".into(),
+            author: author.cloned(),
+            author_called: None,
+            attachments: Vec::new(),
+        };
+        let interrupt = DeliveryKind::Interrupt {
+            by: Some(ada.clone()),
+        };
+        let ada_wrote = Silence::MessagedMidTurn {
+            by: Sender::Person("Ada".into()),
+        };
+        // A message mid-turn, from fctl, a person or the autopilot, which
+        // writes as its owner.
+        assert_eq!(
+            cut_into(&message(None), false, None),
+            Some(Silence::MessagedMidTurn { by: Sender::Fctl })
+        );
+        assert_eq!(
+            cut_into(&message(Some(&ada)), false, None),
+            Some(ada_wrote.clone())
+        );
+        assert_eq!(
+            cut_into(&message(Some(&ada)), true, None),
+            Some(Silence::MessagedMidTurn {
+                by: Sender::Autopilot
+            })
+        );
+        // An interrupt outweighs any message, before it or after.
+        let stopped = Silence::Interrupted {
+            by: Sender::Person("Ada".into()),
+        };
+        assert_eq!(
+            cut_into(&interrupt, false, Some(ada_wrote)),
+            Some(stopped.clone())
+        );
+        assert_eq!(
+            cut_into(&message(None), false, Some(stopped.clone())),
+            Some(stopped.clone())
+        );
+        assert_eq!(
+            cut_into(&interrupt, true, None),
+            Some(Silence::Interrupted {
+                by: Sender::Autopilot
+            })
+        );
+        // A change of model cuts into nothing.
+        let settings = DeliveryKind::Settings {
+            model: Some("opus".into()),
+            effort: None,
+            by: None,
+        };
+        assert_eq!(cut_into(&settings, false, None), None);
+        assert_eq!(
+            cut_into(&settings, false, Some(stopped.clone())),
+            Some(stopped.clone())
+        );
+
+        // A turn that ends with the agent waiting keeps what cut into it,
+        // also once the session stops; one that starts has nothing yet.
+        let kept = Some(stopped.clone());
+        let waiting = Some("Waiting for a message");
+        assert_eq!(silence_moved(Running, Idle, waiting, kept.clone()), kept);
+        assert_eq!(
+            silence_moved(Idle, Stopped, Some("Idle"), kept.clone()),
+            kept
+        );
+        assert_eq!(silence_moved(Running, Running, None, kept.clone()), kept);
+        assert_eq!(silence_moved(Idle, Running, None, kept.clone()), None);
+        assert_eq!(
+            silence_moved(Stopped, Queued, Some("Resuming"), kept.clone()),
+            kept
+        );
+        // One stopped, failed or paused mid-turn says why itself.
+        for status in [Stopping, Stopped, Failed, Paused] {
+            assert_eq!(
+                silence_moved(Running, status, None, kept.clone()),
+                None,
+                "{status:?}"
+            );
+        }
+        // Claude Code cut off twice, whatever cut in, and however the
+        // session came to wait (a new run after fctl-agent stopped).
+        for before in [Running, Preparing, Idle] {
+            assert_eq!(
+                silence_moved(before, Idle, Some(CUT_OFF_TWICE), kept.clone()),
+                Some(Silence::CutOffTwice),
+                "{before:?}"
+            );
+        }
+
+        // As a session's row keeps it.
+        let json = serde_json::to_string(&stopped).unwrap_or_default();
+        assert_eq!(json, r#"{"why":"interrupted","by":{"person":"Ada"}}"#);
+        assert_eq!(silence(Some(&json)), Some(stopped));
+        assert_eq!(
+            serde_json::to_string(&Silence::MessagedMidTurn { by: Sender::Fctl }).ok(),
+            Some(r#"{"why":"messaged_mid_turn","by":"fctl"}"#.to_owned())
+        );
+        assert_eq!(
+            silence(Some(r#"{"why":"cut_off_twice"}"#)),
+            Some(Silence::CutOffTwice)
+        );
+        // Nothing kept, or what a later fctl keeps, is nothing.
+        assert_eq!(silence(None), None);
+        assert_eq!(silence(Some(r#"{"why":"lost"}"#)), None);
+    }
+
+    #[test]
+    fn says_why_a_session_ended_its_turn_without_a_word() {
+        use SessionStatus::*;
+        let line = |status: SessionStatus, said: Option<&str>, why: Option<Silence>| {
+            let c = CrewView {
+                reference: "shop#42".into(),
+                title: "Fix the footer",
+                status,
+                status_reason: None,
+                question: None,
+                pull_requests: vec![],
+                said,
+                silence: why.as_ref(),
+                heard: &[],
+            };
+            crew_line(&c, 0)
+        };
+        let why = |s: Silence| line(Idle, Some(""), Some(s));
+        let head = "shop#42 “Fix the footer”: ended its turn, waiting for a message\n  It ended its turn without a word";
+        assert_eq!(
+            why(Silence::CutOffTwice),
+            format!(
+                "{head}: Claude Code was cut off twice in ten minutes, and waits rather than carry on again. Send it what is left."
+            )
+        );
+        assert_eq!(
+            why(Silence::Interrupted {
+                by: Sender::Person("Ada".into())
+            }),
+            format!(
+                "{head}: Ada interrupted it. Check with them before you send it on, unless what they wrote to it says what they want."
+            )
+        );
+        assert_eq!(
+            why(Silence::Interrupted {
+                by: Sender::Autopilot
+            }),
+            format!("{head}: you interrupted it, and it waits for what you send it.")
+        );
+        assert_eq!(
+            why(Silence::MessagedMidTurn { by: Sender::Fctl }),
+            format!(
+                "{head} after a message from fctl reached it mid-turn: send it what is left (`fctl logs shop#42 --last-turn` shows how far it got)."
+            )
+        );
+        assert!(
+            why(Silence::MessagedMidTurn {
+                by: Sender::Person("Bo".into())
+            })
+            .contains(" after Bo's message reached it mid-turn: ")
+        );
+        assert!(
+            why(Silence::MessagedMidTurn {
+                by: Sender::Autopilot
+            })
+            .contains(" after your message reached it mid-turn: ")
+        );
+        // Where fctl doesn't know why, the log says.
+        assert_eq!(
+            line(Idle, Some(""), None),
+            format!("{head}: `fctl logs shop#42 --last-turn` shows how far it got.")
+        );
+        // Once it stopped, why it waited still shows; what it said, if
+        // anything, says it all; and one at work or failed says nothing
+        // of its last turn.
+        assert_eq!(
+            line(Stopped, Some(""), Some(Silence::CutOffTwice)),
+            "shop#42 “Fix the footer”: stopped (a message resumes it)\n  It ended its turn without a word: Claude Code was cut off twice in ten minutes, and waits rather than carry on again. Send it what is left."
+        );
+        assert_eq!(
+            line(Idle, Some("Done."), Some(Silence::CutOffTwice)),
+            "shop#42 “Fix the footer”: ended its turn, waiting for a message\n  It said as its turn ended: “Done.”"
+        );
+        assert_eq!(
+            line(Running, Some(""), Some(Silence::CutOffTwice)),
+            "shop#42 “Fix the footer”: working"
+        );
+        assert_eq!(
+            line(Failed, Some(""), Some(Silence::CutOffTwice)),
+            "shop#42 “Fix the footer”: failed (`fctl resume` starts it again)"
+        );
+        assert_eq!(
+            line(Stopped, None, None),
+            "shop#42 “Fix the footer”: stopped (a message resumes it)"
+        );
     }
 }

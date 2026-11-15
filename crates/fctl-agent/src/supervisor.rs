@@ -22,6 +22,7 @@ use crate::workspace::{self, Moment, Paths};
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use fctl_domain::autopilot::CUT_OFF_TWICE;
 use fctl_domain::events::{self as ev, BillingGuard, ClaudeKind};
 use fctl_domain::models::ModelName;
 use fctl_domain::{files, published, validate};
@@ -222,6 +223,10 @@ pub struct Supervisor {
     claude_running: bool,
     /// Claude's background tasks that still run.
     tasks: Tasks,
+    /// Claude waits for a message after a second turn cut off within ten
+    /// minutes ([`Self::carry_on`]), until its next turn starts: the
+    /// session says so as it waits ([`CUT_OFF_TWICE`]).
+    cut_off_waits: bool,
     /// Why the session stops, and when it stops anyway.
     stopping: Option<(String, Instant)>,
     /// Since when the session has waited with nothing running: the idle
@@ -361,6 +366,7 @@ impl Supervisor {
                 claude_turn: false,
                 claude_running: false,
                 tasks: Tasks::default(),
+                cut_off_waits: false,
                 stopping: None,
                 idle_since: None,
                 waiting_since: None,
@@ -1970,6 +1976,7 @@ impl Supervisor {
             content.extend(images);
             c.send_user(content, &fctl_domain::ids::uuid_v4());
             self.turn_active = true;
+            self.cut_off_waits = false;
             // A turn of Claude's own now has this message to answer too.
             self.claude_turn = false;
             self.idle_since = None;
@@ -2238,6 +2245,8 @@ impl Supervisor {
             // It waits for nobody: fctl-agent reminds it to post, once,
             // and a minute after its last turn it stops.
             "The review session stops in a minute".to_owned()
+        } else if self.cut_off_waits && self.tasks.is_empty() {
+            CUT_OFF_TWICE.to_owned()
         } else {
             tasks::waiting_reason(self.tasks.len())
         };
@@ -2258,6 +2267,7 @@ impl Supervisor {
     fn claude_started_turn(&mut self) {
         self.turn_active = true;
         self.claude_turn = true;
+        self.cut_off_waits = false;
         self.idle_since = None;
         if self.stopping.is_some() || self.state.status == SessionStatus::Paused {
             // A session that stops takes no more turns, and a paused one
@@ -2576,6 +2586,7 @@ impl Supervisor {
             None,
         );
         if again {
+            self.cut_off_waits = true;
             return;
         }
         self.persisted.carried_on_at = Some(now);
@@ -5426,8 +5437,11 @@ done
         );
         assert_eq!(next.state.status, SessionStatus::Running);
 
-        // Cut off again soon after, it waits for a message instead.
+        // Cut off again soon after, it waits for a message instead, as
+        // its status says, once Claude runs again (`start_claude`).
+        next.turn_active = false;
         next.carry_on(CutOff::Stopped).await;
+        next.wait().await;
         next.flush();
         assert_eq!(
             notices_sent(&mut host),
@@ -5436,8 +5450,20 @@ done
                 "Claude's turn was cut off: fctl-agent stopped in the sandbox while Claude worked. It was cut off shortly before too, so Claude waits for a message.".to_owned()
             )]
         );
+        assert_eq!(
+            (next.state.status, next.state.reason.as_deref()),
+            (SessionStatus::Idle, Some(CUT_OFF_TWICE))
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(sent_to_claude(dir.path(), 1).await?.len(), 1);
+        // Until its next turn.
+        next.send_turn("Carry on", None, None, &[]).await;
+        assert_eq!(next.state.status, SessionStatus::Running);
+        next.on_claude_message(result()).await;
+        assert_eq!(
+            (next.state.status, next.state.reason.as_deref()),
+            (SessionStatus::Idle, Some("Waiting for a message"))
+        );
         // Said once.
         let (saved, _claude, _work) = Supervisor::new(dir.path().join("state"), None)?;
         assert_eq!(saved.persisted.cut_off, None);

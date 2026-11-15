@@ -6,6 +6,7 @@ import type * as G from "@/gen";
 import type { Json } from "./claude-types";
 import { describe, kindOf, type Target, toolName } from "./runs";
 import { type Stall, stallLabel } from "./stall";
+import { waitsForAMessage } from "./status";
 import { type BackgroundTask, type Item, isSubagent, type LiveTurn, type Tool } from "./transcript";
 
 export type NowKind =
@@ -264,7 +265,7 @@ export function nowOf({
     case "idle": {
       // Waiting for its background work, which its status says, rather than for a message: one
       // task the transcript knows by what it does, and since when it runs.
-      if (!reason || reason === "Waiting for a message") return undefined;
+      if (!reason || waitsForAMessage(reason)) return undefined;
       const one = waiting?.tasks.length === 1 && !waiting.more ? waiting.tasks[0] : undefined;
       return one
         ? { kind: "background", text: "Waiting for", target: taskLabel(one), since: one.task.ts }

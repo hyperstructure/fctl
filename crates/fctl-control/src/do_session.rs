@@ -294,6 +294,15 @@ const LAST_RESULT_CHARS: usize = 12_000;
 /// people's latest messages to it (`fctl_domain::autopilot::hear`).
 const SAID: &str = "said";
 const HEARD: &str = "heard";
+/// The meta key of why an autopilot's session last ended its turn without
+/// a word, where SessionDO knows (`fctl_domain::autopilot::Silence`, as
+/// JSON), which D1's row gets beside `said` (`sessions.silence`): what cut
+/// into the turn under way, then how it ended, until the next one starts.
+const SILENCE: &str = "silence";
+/// The meta key of the latest message or interrupt that an autopilot sent
+/// its session, by delivery id, which a message reaching the agent names
+/// only its owner for (`fctl_domain::autopilot::cut_into`).
+const AUTOPILOT_SENT: &str = "autopilot_sent";
 
 /// Whether `s` is one of the sessions an autopilot started.
 fn crew(s: &Session) -> bool {
@@ -985,6 +994,13 @@ impl SessionObject {
         if let DeliveryKind::Interrupt { by: Some(by) } = &b.delivery.kind {
             self.set_meta("interrupted_by", by.id.as_str());
         }
+        // What an autopilot sent its session, which reaches the agent as
+        // its owner's.
+        let by_autopilot = b.by_autopilot
+            || matches!(&b.event, EventBody::UserMessage(m) if m.autopilot.is_some());
+        if by_autopilot && self.summary().is_some_and(|s| crew(&s)) {
+            self.set_meta(AUTOPILOT_SENT, b.delivery.id.as_str());
+        }
         // An autopilot's session: its autopilot hears what people, rather
         // than it, wrote (`UserMessage::autopilot` marks its own). Before
         // the summary's write below, which takes it to D1.
@@ -1200,6 +1216,7 @@ impl SessionObject {
                 },
             },
             client_key: Some(key),
+            by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
                 autopilot: None,
@@ -1631,6 +1648,7 @@ impl SessionObject {
                     },
                 },
                 client_key: None,
+                by_autopilot: false,
                 event: EventBody::UserMessage(UserMessage {
                     ticket: None,
                     autopilot: None,
@@ -2164,6 +2182,20 @@ impl SessionObject {
         if status == SessionStatus::Failed {
             s.question = None;
         }
+        // An autopilot's session: why its last turn ended without a word,
+        // as the turn starts or ends (`fctl_domain::autopilot::silence_moved`).
+        if crew(s) {
+            let kept = self.silence();
+            let why = fctl_domain::autopilot::silence_moved(
+                s.status,
+                status,
+                reason.as_deref(),
+                kept.clone(),
+            );
+            if why != kept {
+                self.keep_silence(why.as_ref());
+            }
+        }
         s.status = status;
         s.status_reason = reason.clone();
         s.resume_at = resume_at;
@@ -2511,6 +2543,7 @@ impl SessionObject {
                 },
             },
             client_key: Some(format!("{}:{client_id}", author.id)),
+            by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
                 autopilot: None,
@@ -2549,6 +2582,7 @@ impl SessionObject {
                 },
             },
             client_key: None,
+            by_autopilot: false,
             event: EventBody::Interrupt(fctl_proto::event::Interrupt { id, by: Some(by) }),
         })
         .await
@@ -2937,12 +2971,26 @@ impl SessionObject {
                 // An autopilot's session: the turn a message starts has said
                 // nothing yet. Only once the agent takes it, as one waiting
                 // for it leaves what the last turn said standing; the
-                // running status that follows takes it to D1.
+                // running status that follows takes it to D1. One that
+                // reaches it mid-turn, or an interrupt, may end that turn
+                // without a word, which its autopilot hears.
                 if ok
-                    && matches!(kind, Some(DeliveryKind::Message { .. }))
-                    && self.summary().is_some_and(|s| crew(&s))
+                    && let Some(kind) = &kind
+                    && let Some(s) = self.summary().filter(crew)
                 {
-                    self.set_meta(SAID, "");
+                    if matches!(kind, DeliveryKind::Message { .. }) {
+                        self.set_meta(SAID, "");
+                    }
+                    let by_autopilot =
+                        self.meta(AUTOPILOT_SENT).as_deref() == Some(delivery_id.as_str());
+                    if by_autopilot {
+                        self.delete_meta(AUTOPILOT_SENT);
+                    }
+                    if s.status == SessionStatus::Running {
+                        let why =
+                            fctl_domain::autopilot::cut_into(kind, by_autopilot, self.silence());
+                        self.keep_silence(why.as_ref());
+                    }
                 }
                 if !ok
                     && matches!(
@@ -3533,6 +3581,21 @@ impl SessionObject {
                 worker::console_error!("recording plan usage failed: {}", e.0.message);
             }
         });
+    }
+
+    /// Why an autopilot's session last ended its turn without a word, as
+    /// it keeps it ([`SILENCE`]).
+    fn silence(&self) -> Option<fctl_domain::autopilot::Silence> {
+        fctl_domain::autopilot::silence(self.meta(SILENCE).as_deref())
+    }
+
+    /// Keeps `why` as why an autopilot's session last ended its turn
+    /// without a word, for its summary's next write to D1.
+    fn keep_silence(&self, why: Option<&fctl_domain::autopilot::Silence>) {
+        match why.and_then(|w| serde_json::to_string(w).ok()) {
+            Some(json) => self.set_meta(SILENCE, &json),
+            None => self.delete_meta(SILENCE),
+        }
     }
 
     /// The end of a turn: what the agent said last, for the notification that
@@ -4651,13 +4714,14 @@ impl SessionObject {
         // What an autopilot's session keeps for its autopilot.
         let said = self.meta(SAID);
         let heard = self.meta(HEARD);
+        let silence = self.meta(SILENCE);
         // `requested_at` stays D1's while the summary has none: sessions from
         // before it took their `messaged_at` there (migration 0056).
         let res = crate::db::q(
             &db,
             "UPDATE sessions SET title = ?, description = ?, status = ?, status_reason = ?, resume_at = ?, model = COALESCE(?, model), \
              claude_effort = ?, branch = COALESCE(?, branch), remote_control = ?, stats = ?, pr_number = ?, pr_url = ?, pr_title = ?, pr_state = ?, \
-             pull_requests = ?, question = ?, said = ?, heard = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, requested_at = COALESCE(?, requested_at), started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
+             pull_requests = ?, question = ?, said = ?, heard = ?, silence = ?, updated_at = ?, last_activity_at = ?, messaged_at = ?, requested_at = COALESCE(?, requested_at), started_at = COALESCE(started_at, ?), ended_at = ? WHERE id = ?",
             &[
                 crate::db::s(&s.title),
                 crate::db::os(s.description.as_deref()),
@@ -4677,6 +4741,7 @@ impl SessionObject {
                 crate::db::os(question.as_deref()),
                 crate::db::os(said.as_deref()),
                 crate::db::os(heard.as_deref()),
+                crate::db::os(silence.as_deref()),
                 crate::db::n(s.updated_at),
                 crate::db::on(s.last_activity_at),
                 crate::db::on(s.messaged_at),
