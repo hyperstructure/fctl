@@ -640,7 +640,9 @@ pub fn own_doing(event: &FollowUpEvent, by_app: bool, at_work: bool, ran: bool) 
 /// Whether a message of Claude's, `v`, runs a command that merges or
 /// closes a pull request, in a Bash call of its own or of a subagent's:
 /// `gh pr merge`, `gh pr close`, or a merge through GitHub's API
-/// (`gh api …/pulls/12/merge`).
+/// (`gh api -X PUT …/pulls/12/merge`), wherever it stands in the command line
+/// (after `;` or `&&`, in quotes for `bash -c`) and with gh's flags
+/// before its subcommands (`gh -R acme/web pr merge`).
 pub fn merges_or_closes(v: &Value) -> bool {
     if v.get("type").and_then(Value::as_str) != Some("assistant") {
         return false;
@@ -653,17 +655,44 @@ pub fn merges_or_closes(v: &Value) -> bool {
         .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
         .filter(|b| b.get("name").and_then(Value::as_str) == Some("Bash"))
         .filter_map(|b| b.pointer("/input/command").and_then(Value::as_str))
-        .any(|command| {
-            let words: Vec<&str> = command.split_whitespace().collect();
-            words
-                .windows(3)
-                .any(|w| w[0] == "gh" && w[1] == "pr" && matches!(w[2], "merge" | "close"))
-                || (words.contains(&"api")
-                    && words.iter().any(|w| {
-                        let w = w.trim_matches(|c| c == '"' || c == '\'');
-                        w.contains("pulls/") && w.ends_with("/merge")
-                    }))
-        })
+        .any(runs_merge)
+}
+
+/// Whether a command line runs `gh pr merge`, `gh pr close` or a merge
+/// through `gh api` ([`merges_or_closes`]).
+fn runs_merge(command: &str) -> bool {
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || ";&|()'\"`".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    // The next word that isn't one of gh's flags, from `i`: `-R acme/web`
+    // and `--repo acme/web` take the word after them.
+    let past_flags = |mut i: usize| {
+        while let Some(w) = words.get(i).filter(|w| w.starts_with('-')) {
+            i += if matches!(*w, "-R" | "--repo") { 2 } else { 1 };
+        }
+        i
+    };
+    words.iter().enumerate().any(|(i, w)| {
+        if *w != "gh" && !w.ends_with("/gh") {
+            return false;
+        }
+        let i = past_flags(i + 1);
+        match words.get(i).copied() {
+            Some("pr") => matches!(
+                words.get(past_flags(i + 1)).copied(),
+                Some("merge" | "close")
+            ),
+            // A PUT: a GET only asks whether it merged.
+            Some("api") => {
+                let rest = &words[i + 1..];
+                rest.iter()
+                    .any(|w| w.contains("pulls/") && w.ends_with("/merge"))
+                    && rest.iter().any(|w| w.ends_with("PUT"))
+            }
+            _ => false,
+        }
+    })
 }
 
 /// What the transcript says of a merge or a close that fctl didn't pass
@@ -2018,11 +2047,30 @@ mod tests {
         assert!(merges_or_closes(&bash(
             "gh api --method PUT \"repos/acme/web/pulls/12/merge\""
         )));
+        // Wherever it stands, with gh's flags first.
+        assert!(merges_or_closes(&bash(
+            "gh -R acme/web pr merge 12 --squash"
+        )));
+        assert!(merges_or_closes(&bash("gh --repo acme/web pr close 12")));
+        assert!(merges_or_closes(&bash("cd web;gh pr merge")));
+        assert!(merges_or_closes(&bash("cd web&&gh pr merge --auto")));
+        assert!(merges_or_closes(&bash("bash -c 'gh pr merge 12'")));
+        assert!(merges_or_closes(&bash(
+            "sleep 60 && /usr/bin/gh pr merge 12"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge -X PUT"
+        )));
         // Not one that only looks.
         assert!(!merges_or_closes(&bash("gh pr view 12 --json mergeable")));
         assert!(!merges_or_closes(&bash("gh pr checks 12 --watch")));
         assert!(!merges_or_closes(&bash("git merge origin/main")));
         assert!(!merges_or_closes(&bash("echo gh pr")));
+        assert!(!merges_or_closes(&bash("gh pr list --search merge")));
+        // A GET of …/merge only asks whether it merged.
+        assert!(!merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge"
+        )));
         // Only Claude's own calls to Bash.
         let read = serde_json::json!({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
