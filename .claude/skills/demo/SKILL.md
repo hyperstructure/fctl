@@ -238,7 +238,7 @@ it puts the project on autopilot as Noor (confirming it's her with her
 authenticator code), then does the autopilot's beats in order, each once
 fake-claude's replay log has the lines the one before waits for. fctl
 wakes the autopilot and starts its sessions, which play
-`transcripts/farm-portal-<n>.toml`; its own sessions' run the sandbox's
+`transcripts/farm-portal-<n>.toml`; its own sessions run the sandbox's
 `fctl` for real, through the relay. A crew session's first turn waits
 for the seed's go-ahead (a file in `.fctl-demo/signals`), so that it ends,
 and wakes the autopilot a minute later, where the story has it; a beat
