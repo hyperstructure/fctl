@@ -660,31 +660,48 @@ pub fn merges_or_closes(v: &Value) -> bool {
 
 /// Whether a command line runs `gh pr merge`, `gh pr close` or a merge
 /// through `gh api` ([`merges_or_closes`]), in any of its commands
-/// ([`commands`]), or in a command line it hands a shell (`bash -c '…'`).
+/// ([`commands`]), in what they substitute (`"$(…)"`), or in a command line
+/// it hands a shell (`bash -c '…'`).
 fn runs_merge(line: &str) -> bool {
     fn within(line: &str, depth: u8) -> bool {
-        commands(line).iter().any(|words| {
+        let (commands, substituted) = commands(line);
+        let deeper = |l: &String| depth < 3 && within(l, depth + 1);
+        commands.iter().any(|words| {
             words.iter().enumerate().any(|(i, w)| {
                 ((w == "gh" || w.ends_with("/gh")) && gh_merges(&words[i + 1..]))
-                    // What a shell runs: `bash -c '…'`, `sh -lc '…'`.
-                    || (depth < 2
-                        && i > 0
-                        && words[i - 1].starts_with('-')
-                        && !words[i - 1].starts_with("--")
-                        && words[i - 1].ends_with('c')
-                        && within(w, depth + 1))
+                    || (runs_in_shell(words, i) && deeper(w))
             })
-        })
+        }) || substituted.iter().any(deeper)
     }
     within(line, 0)
+}
+
+/// Whether word `i` of a command is the command line a shell runs: the
+/// argument of its `-c` (`bash -c '…'`, `sh -lc '…'`, `/bin/bash -e -c '…'`).
+fn runs_in_shell(words: &[String], i: usize) -> bool {
+    let Some(flag) = i.checked_sub(1).and_then(|f| words.get(f)) else {
+        return false;
+    };
+    if !(flag.starts_with('-') && !flag.starts_with("--") && flag.ends_with('c')) {
+        return false;
+    }
+    words[..i - 1]
+        .iter()
+        .rev()
+        .find(|w| !w.starts_with('-'))
+        .and_then(|w| w.rsplit('/').next())
+        .is_some_and(|shell| matches!(shell, "sh" | "bash" | "zsh" | "dash" | "ksh"))
 }
 
 /// The commands of a command line, each as its words, as a shell splits
 /// them: at `;`, `&`, `|`, new lines, parentheses and backticks outside
 /// quotes, and words at whitespace outside quotes, which they lose. A
-/// backslash before a new line continues the line.
-fn commands(line: &str) -> Vec<Vec<String>> {
+/// backslash before a new line continues the line. With them, the command
+/// lines that double quotes substitute (`"$(…)"`, `` "`…`" ``), which a
+/// word keeps as they are.
+fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
     let mut out: Vec<Vec<String>> = Vec::new();
+    let mut substituted: Vec<String> = Vec::new();
     let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
     // The word has quotes in it, so that `""` is a word.
@@ -696,7 +713,7 @@ fn commands(line: &str) -> Vec<Vec<String>> {
         }
         *quoted = false;
     };
-    let mut chars = line.chars();
+    let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
@@ -704,6 +721,31 @@ fn commands(line: &str) -> Vec<Vec<String>> {
                 if let Some(n) = chars.next() {
                     word.push(n);
                 }
+            }
+            // What double quotes substitute: up to the parenthesis that
+            // closes it, or the next backtick.
+            (Some('"'), '$') if chars.peek() == Some(&'(') => {
+                chars.next();
+                let mut depth = 1;
+                let mut inner = String::new();
+                for n in chars.by_ref() {
+                    depth += match n {
+                        '(' => 1,
+                        ')' => -1,
+                        _ => 0,
+                    };
+                    if depth == 0 {
+                        break;
+                    }
+                    inner.push(n);
+                }
+                word.push_str(&inner);
+                substituted.push(inner);
+            }
+            (Some('"'), '`') => {
+                let inner: String = chars.by_ref().take_while(|&n| n != '`').collect();
+                word.push_str(&inner);
+                substituted.push(inner);
             }
             (Some(_), c) => word.push(c),
             (None, '\'' | '"') => {
@@ -728,7 +770,7 @@ fn commands(line: &str) -> Vec<Vec<String>> {
     if !words.is_empty() {
         out.push(words);
     }
-    out
+    (out, substituted)
 }
 
 /// Whether gh, given `args`, merges or closes a pull request: `pr merge`,
@@ -2182,6 +2224,18 @@ mod tests {
         assert!(!merges_or_closes(&bash(
             "git commit -m 'gh pr merge 12 later'"
         )));
+        // What double quotes substitute runs; only a shell's -c runs its
+        // argument.
+        assert!(merges_or_closes(&bash("r=\"$(gh pr merge 12 --squash)\"")));
+        assert!(merges_or_closes(&bash("echo \"`gh pr merge 12`\"")));
+        assert!(merges_or_closes(&bash(
+            "echo \"merged: $(cd web && gh pr merge 12)\""
+        )));
+        assert!(merges_or_closes(&bash("/bin/bash -e -c 'gh pr merge 12'")));
+        assert!(merges_or_closes(&bash("sudo sh -lc \"gh pr close 12\"")));
+        assert!(!merges_or_closes(&bash("grep -c 'gh pr merge' log.txt")));
+        assert!(!merges_or_closes(&bash("git log -c \"gh pr close\"")));
+        assert!(!merges_or_closes(&bash("echo 'r=$(gh pr merge 12)'")));
         // Only Claude's own calls to Bash.
         let read = serde_json::json!({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
