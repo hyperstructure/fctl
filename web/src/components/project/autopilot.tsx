@@ -14,8 +14,11 @@ import {
   CircleAlert,
   Clock,
   Ellipsis,
+  FileCode,
+  FileText,
   Flame,
   FlaskConical,
+  FolderOpen,
   FolderPlus,
   Gauge,
   GitFork,
@@ -52,6 +55,7 @@ import {
   Avatar,
   Banner,
   Button,
+  CopyButton,
   Dialog,
   IconButton,
   Input,
@@ -95,7 +99,7 @@ import {
 import { connectionIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
 import { MAX_TOKENS, MIN_TOKENS, parseTokens, tokensText, validWindow } from "@/lib/context";
-import { ago, agoShort, agoShortWords, clock, day, num, stamp } from "@/lib/format";
+import { ago, agoShort, agoShortWords, bytes, clock, day, num, stamp } from "@/lib/format";
 import { EFFORTS, effortLabel, modelLabel, modelOffers } from "@/lib/models";
 import { keys, queryClient, useMe, useProjects, useWorkspace } from "@/lib/queries";
 import { planOf } from "@/lib/usage";
@@ -883,8 +887,8 @@ function Cockpit({ project, a }: { project: G.Project; a: G.Autopilot }) {
           <Card title="What it does" icon={<ShieldCheck />}>
             <p className="text-[13.5px] leading-relaxed text-ink-3">
               It works across {project.workspace?.name ?? "the workspace"}, in projects you may not see, so
-              its plan, sessions, asks and log are for the workspace's admins, who steer it. Its sessions in
-              your projects show there, with its mark.
+              its plan, files, sessions, asks and log are for the workspace's admins, who steer it. Its
+              sessions in your projects show there, with its mark.
             </p>
           </Card>
           <Rules a={a} project={project} />
@@ -914,10 +918,11 @@ function Cockpit({ project, a }: { project: G.Project; a: G.Autopilot }) {
         </div>
         <aside
           className="flex min-w-0 flex-col gap-4 max-md:order-1"
-          aria-label="Its direction, plan and sessions"
+          aria-label="Its direction, plan, files and sessions"
         >
           <Direction a={a} />
           <Plan a={a} />
+          <Files a={a} />
           <Crew a={a} />
           <Rules a={a} project={project} />
         </aside>
@@ -2204,6 +2209,115 @@ function Plan({ a }: { a: G.Autopilot }) {
   );
 }
 
+/** Names of files that hold code, which get the code icon: scripts and the like. */
+const CODE = /\.(sh|bash|zsh|py|js|mjs|cjs|ts|rb|go|rs|sql|json|jsonl|toml|ya?ml|jq|awk)$/i;
+
+/**
+ * The files it keeps across its sessions (`fctl autopilot files`): the scripts it relies on and
+ * drafts, which its next session gets back in a new sandbox. Shown once it keeps any, each a row
+ * that opens what it holds.
+ */
+function Files({ a }: { a: G.Autopilot }) {
+  const q = useQuery({
+    queryKey: keys.autopilotFiles(a.project_id),
+    queryFn: () => api.autopilotFiles(a.project_id),
+    refetchInterval: a.state === "on" ? (atWork(a) ? 5_000 : 20_000) : false,
+  });
+  const [open, setOpen] = useState<G.AutopilotFile | null>(null);
+  const files = q.data?.files ?? [];
+  if (!q.data || files.length === 0) return null;
+  return (
+    <Card
+      title="Its files"
+      icon={<FolderOpen />}
+      action={<span className="text-[12px] text-ink-4 tabular-nums">{bytes(q.data.bytes)}</span>}
+      footer="Kept for its next sessions, which start in a new sandbox"
+    >
+      <ul className="-mx-2 flex flex-col">
+        {files.map((f) => (
+          <li key={f.name}>
+            <button
+              type="button"
+              onClick={() => setOpen(f)}
+              className="group flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-hover"
+              title={`Open ${f.name}`}
+            >
+              <span aria-hidden="true" className="shrink-0 text-ink-4 [&_svg]:size-3.5">
+                {CODE.test(f.name) ? <FileCode /> : <FileText />}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink-2 group-hover:text-ink">
+                {f.name}
+              </span>
+              <span className="shrink-0 text-[11.5px] text-ink-4 tabular-nums" title={stamp(f.updated_at)}>
+                {agoShort(f.updated_at)}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <FileDialog a={a} file={open} onClose={() => setOpen(null)} />
+    </Card>
+  );
+}
+
+/** What one of its files holds, as it wrote it last, to read and copy. */
+function FileDialog({
+  a,
+  file,
+  onClose,
+}: {
+  a: G.Autopilot;
+  file: G.AutopilotFile | null;
+  onClose: () => void;
+}) {
+  const name = file?.name ?? "";
+  const q = useQuery({
+    queryKey: keys.autopilotFile(a.project_id, name),
+    queryFn: () => api.autopilotFile(a.project_id, name),
+    enabled: file !== null,
+  });
+  // The one it opened, or one it rewrote since: read again as it opens.
+  const stale = q.data && file && q.data.updated_at !== file.updated_at;
+  useEffect(() => {
+    if (stale) void q.refetch();
+  }, [stale, q.refetch]);
+  return (
+    <Dialog
+      open={file !== null}
+      onClose={onClose}
+      wide
+      fit
+      title={<span className="font-mono text-[18px]">{name}</span>}
+      description={
+        file && (
+          <>
+            {bytes(file.size)}, written{" "}
+            <span title={stamp(file.updated_at)}>{agoShortWords(file.updated_at)}</span>. Its next session
+            gets it back in a new sandbox.
+          </>
+        )
+      }
+    >
+      {q.isError ? (
+        <Banner tone="error">It didn't load: {q.error.message}</Banner>
+      ) : !q.data ? (
+        <div className="flex justify-center py-10">
+          <Spinner />
+        </div>
+      ) : (
+        <>
+          <pre className="min-h-0 flex-auto overflow-auto rounded-xl bg-sunken/60 px-3.5 py-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 [overflow-wrap:anywhere]">
+            {q.data.content || <span className="text-ink-4">Empty</span>}
+          </pre>
+          <div className="mt-3 flex justify-end">
+            <CopyButton text={q.data.content ?? ""} />
+          </div>
+        </>
+      )}
+    </Dialog>
+  );
+}
+
 const WORKING = new Set<G.SessionStatus>([
   "queued",
   "provisioning",
@@ -2380,6 +2494,7 @@ const ENTRY_ICONS: Record<G.AutopilotEntryKind, ReactNode> = {
   schedule: <Repeat />,
   project: <FolderPlus />,
   plan: <ListChecks />,
+  file: <FileText />,
   asked: <MessageCircleQuestion />,
   answered: <Check />,
   direction: <Waypoints />,
