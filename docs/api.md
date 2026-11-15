@@ -293,7 +293,7 @@ session calls the endpoints marked *autopilot*, through its sandbox's
 | `GET …/autopilot/files`, `GET …/autopilot/files/{name}` | `{"files": [{"name", "size", "created_at", "updated_at"}…], "bytes", "max_bytes", "max_file_bytes", "max_files"}`: the files it keeps across its sessions, by name; one of them with its `content` too |
 | `PUT …/autopilot/files/{name}`, `DELETE …/autopilot/files/{name}` | *autopilot*: `{"content"}`, a file whole (text, at most 256 KB, and its files 4 MB and 100 in all; `201` for a new one), or removes it. A name has letters, digits, dots, dashes and underscores, and starts with a letter or a digit |
 | `POST …/autopilot/asks`, `DELETE …/autopilot/asks/{ask}` | *autopilot*: `{"text", "options", "detail", "secret": "NAME", "project", "about": "ses_…"}` (`about`: a session in its places that the question is about), takes it back |
-| `DELETE …/autopilot/held/{held}` | takes back a message it sent one of its sessions that waits for room (*autopilot* too) |
+| `DELETE …/autopilot/held/{held}` | takes back a message it sent one of its sessions that waits for room (*autopilot* too); `409` once it is going out |
 | `GET /api/v1/autopilots/asks` | `{"asks": […]}`: what autopilots ask that the caller may answer, across their workspaces |
 
 Sessions say what they are to an autopilot (`"autopilot": {"role": "pilot"

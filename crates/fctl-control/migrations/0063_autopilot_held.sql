@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS autopilot_held (
   client_key TEXT,
   -- Its own session that sent it.
   from_session_id TEXT,
+  -- When a pass of crate::autopilots::release claimed it to send it: it
+  -- can no longer be taken back, and other passes leave it, unless the
+  -- claim is a minute old (that pass died).
+  sending_at INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS autopilot_held_project ON autopilot_held (project_id, created_at, id);

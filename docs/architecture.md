@@ -2322,7 +2322,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    says too. They wait while it is paused, and taking it off autopilot
    drops them. Its brief lists them under its sessions, `fctl autopilot
    held` for people too, and it or those who steer it take one back
-   (`DELETE …/autopilot/held/{id}`). What it did goes in its log, in its own
+   (`DELETE …/autopilot/held/{id}`) until a pass claims it to send it
+   (`autopilot_held.sending_at`, which other passes leave for a minute).
+   What it did goes in its log, in its own
    transcript (an `autopilot_action` notice, with the session it started or
    steered) and in the workspace's audit log, as its owner, with the
    autopilot named. `fctl run` there returns at once, and nothing follows

@@ -1823,10 +1823,13 @@ pub async fn take_back(ctx: &mut Ctx, id: &str, held: &str) -> AppResult<Respons
         require_steer(&l)?;
         Some(ctx.user()?.id.clone())
     };
-    if !engine::take_back(&ctx.env, &ctx.db, &row, held, by.as_deref(), ctx.now).await? {
-        return Err(not_found("Held message"));
+    match engine::take_back(&ctx.env, &ctx.db, &row, held, by.as_deref(), ctx.now).await? {
+        engine::Unheld::Taken => get(ctx, id).await,
+        engine::Unheld::Gone => Err(not_found("Held message")),
+        engine::Unheld::Going => Err(conflict(
+            "It's going out to its session now: it can't be taken back any more.",
+        )),
     }
-    get(ctx, id).await
 }
 
 // ───────────────────────────── what people say ─────────────────────────────

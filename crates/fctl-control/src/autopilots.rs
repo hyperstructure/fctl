@@ -2551,8 +2551,14 @@ pub async fn release(
             ap::Release::Send if stuck.contains(&h.session_id.as_str()) => None,
             ap::Release::Drop => drop_held(env, db, &row, h, now).await.err(),
             ap::Release::Send => match send_held(env, db, &row, h, now).await {
-                Ok(()) => {
+                Ok(true) => {
                     sent.push(h.id.clone());
+                    None
+                }
+                // Taken back, or another pass sends it: those after it to
+                // its session wait for that.
+                Ok(false) => {
+                    stuck.push(&h.session_id);
                     None
                 }
                 // It failed meanwhile, as D1 didn't say yet.
@@ -2577,17 +2583,77 @@ pub async fn release(
     Ok(sent)
 }
 
-/// Sends a held message as the delivery the API answered with, from the
-/// autopilot as the person it acted as (or its owner now, once their
-/// account is gone), with the idempotency key of the request that sent it,
-/// or one of its own: a try that raced another delivers it once. Then it
-/// is no longer held, and its log says it went.
+/// Sends a held message once this pass claimed it ([`claim`]; `false`
+/// when it couldn't: it was taken back, or another pass sends it), as the
+/// delivery the API answered with, from the autopilot as the person it
+/// acted as (or its owner now, once their account is gone), with the
+/// idempotency key of the request that sent it, or one of its own: a pass
+/// that took over a dead one's claim delivers it once. Then it is no longer
+/// held, and its log says it went; should sending fail, it waits for the
+/// next pass.
 async fn send_held(
     env: &Env,
     db: &D1Database,
     row: &AutopilotRow,
     h: &HeldRow,
     now: i64,
+) -> AppResult<bool> {
+    if !claim(db, &h.id, now).await? {
+        return Ok(false);
+    }
+    let sent = deliver_held(env, db, row, h).await;
+    if let Err(e) = sent {
+        // The next pass tries again.
+        q(
+            db,
+            "UPDATE autopilot_held SET sending_at = NULL WHERE id = ?",
+            &[s(&h.id)],
+        )?
+        .run()
+        .await?;
+        return Err(e);
+    }
+    q(db, "DELETE FROM autopilot_held WHERE id = ?", &[s(&h.id)])?
+        .run()
+        .await?;
+    held_logged(
+        env,
+        db,
+        row,
+        h,
+        ap::HELD_SENT_LINE,
+        Some(&h.session_id),
+        now,
+    )
+    .await;
+    Ok(true)
+}
+
+/// How long a pass's claim on a held message holds ([`claim`]): one older
+/// is a pass that died before it sent it or let it go.
+const SENDING_FOR_MS: i64 = 60_000;
+
+/// Claims held message `id` for this pass to send at `now`: `false` when it
+/// is gone (taken back) or another pass sends it. Once claimed, it can't
+/// be taken back ([`unhold`]).
+async fn claim(db: &D1Database, id: &str, now: i64) -> AppResult<bool> {
+    let claimed = q(
+        db,
+        "UPDATE autopilot_held SET sending_at = ?1 WHERE id = ?2 \
+         AND (sending_at IS NULL OR sending_at < ?3)",
+        &[n(now), s(id), n(now - SENDING_FOR_MS)],
+    )?
+    .run()
+    .await?;
+    Ok(claimed > 0)
+}
+
+/// Delivers a held message ([`send_held`]).
+async fn deliver_held(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    h: &HeldRow,
 ) -> AppResult<()> {
     let mut author: Option<UserRow> = None;
     for id in [h.author_id.as_deref(), row.owner_id.as_deref()]
@@ -2630,19 +2696,6 @@ async fn send_held(
         }),
     )
     .await?;
-    q(db, "DELETE FROM autopilot_held WHERE id = ?", &[s(&h.id)])?
-        .run()
-        .await?;
-    held_logged(
-        env,
-        db,
-        row,
-        h,
-        ap::HELD_SENT_LINE,
-        Some(&h.session_id),
-        now,
-    )
-    .await;
     Ok(())
 }
 
@@ -2700,23 +2753,17 @@ pub async fn take_back(
     id: &str,
     by: Option<&str>,
     now: i64,
-) -> AppResult<bool> {
+) -> AppResult<Unheld> {
     let Some(h) = held(db, &row.project_id)
         .await?
         .into_iter()
         .find(|h| h.id == id)
     else {
-        return Ok(false);
+        return Ok(Unheld::Gone);
     };
-    let gone = q(
-        db,
-        "DELETE FROM autopilot_held WHERE id = ? AND project_id = ?",
-        &[s(id), s(&row.project_id)],
-    )?
-    .run()
-    .await?;
-    if gone == 0 {
-        return Ok(false);
+    let unheld = unhold(db, &row.project_id, id, now).await?;
+    if unheld != Unheld::Taken {
+        return Ok(unheld);
     }
     let session = h.status.is_some().then_some(h.session_id.as_str());
     match by {
@@ -2734,7 +2781,45 @@ pub async fn take_back(
         }
         None => held_logged(env, db, row, &h, ap::HELD_TAKEN_BACK_LINE, session, now).await,
     }
-    Ok(true)
+    Ok(Unheld::Taken)
+}
+
+/// What became of taking a held message back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unheld {
+    Taken,
+    /// None is held by that id: it went, or was taken back already.
+    Gone,
+    /// A pass claimed it, and sends it now ([`claim`]).
+    Going,
+}
+
+/// Takes the autopilot of `project_id`'s held message `id` back at `now`,
+/// unless a pass claimed it to send it.
+async fn unhold(db: &D1Database, project_id: &str, id: &str, now: i64) -> AppResult<Unheld> {
+    let gone = q(
+        db,
+        "DELETE FROM autopilot_held WHERE id = ?1 AND project_id = ?2 \
+         AND (sending_at IS NULL OR sending_at < ?3)",
+        &[s(id), s(project_id), n(now - SENDING_FOR_MS)],
+    )?
+    .run()
+    .await?;
+    if gone > 0 {
+        return Ok(Unheld::Taken);
+    }
+    let left: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM autopilot_held WHERE id = ? AND project_id = ?",
+        &[s(id), s(project_id)],
+    )?
+    .first()
+    .await?;
+    Ok(if left.is_some_and(|c| c.n > 0) {
+        Unheld::Going
+    } else {
+        Unheld::Gone
+    })
 }
 
 // ───────────────────────────── requests from its sandbox ─────────────────────────────
@@ -3536,6 +3621,33 @@ mod tests {
             .map(|h| h.id)
             .collect();
         assert_eq!(left, ["aph_1", "aph_3", "aph_4"]);
+        Ok(())
+    }
+
+    /// A message a pass claimed to send can't be taken back, nor claimed
+    /// by another, until the claim is stale; one taken back can't be sent.
+    #[wasm_bindgen_test]
+    async fn a_message_going_out_cant_be_taken_back() -> AppResult<()> {
+        let db = testing::database();
+        autopilot(&db).await?;
+        let idle = crew(&db, 3, "idle", NOW - HOUR).await?;
+        held_for(&db, "aph_1", &idle, NOW - 2).await?;
+        held_for(&db, "aph_2", &idle, NOW - 1).await?;
+        assert!(claim(&db, "aph_1", NOW).await?);
+        assert!(!claim(&db, "aph_1", NOW + 1).await?);
+        assert_eq!(
+            unhold(&db, "prj_web", "aph_1", NOW + 1).await?,
+            Unheld::Going
+        );
+        // Taken back, it's gone for good.
+        assert_eq!(unhold(&db, "prj_web", "aph_2", NOW).await?, Unheld::Taken);
+        assert_eq!(unhold(&db, "prj_web", "aph_2", NOW).await?, Unheld::Gone);
+        assert!(!claim(&db, "aph_2", NOW).await?);
+        // Another autopilot's id isn't this one's to take back.
+        assert_eq!(unhold(&db, "prj_api", "aph_1", NOW).await?, Unheld::Gone);
+        // A pass that died leaves its claim to the next, a minute on.
+        let later = NOW + SENDING_FOR_MS + 1;
+        assert!(claim(&db, "aph_1", later).await?);
         Ok(())
     }
 
