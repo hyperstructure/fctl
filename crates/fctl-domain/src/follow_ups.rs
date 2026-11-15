@@ -667,13 +667,50 @@ fn runs_merge(line: &str) -> bool {
         let (commands, substituted) = commands(line);
         let deeper = |l: &String| depth < 3 && within(l, depth + 1);
         commands.iter().any(|words| {
-            words.iter().enumerate().any(|(i, w)| {
-                ((w == "gh" || w.ends_with("/gh")) && gh_merges(&words[i + 1..]))
-                    || (runs_in_shell(words, i) && deeper(w))
-            })
+            let at = command_at(words);
+            words
+                .get(at)
+                .is_some_and(|w| w == "gh" || w.ends_with("/gh"))
+                && gh_merges(&words[at + 1..])
+                || words
+                    .iter()
+                    .enumerate()
+                    .any(|(i, w)| runs_in_shell(words, i) && deeper(w))
         }) || substituted.iter().any(deeper)
     }
     within(line, 0)
+}
+
+/// Where a command's command word is: past the variables it sets
+/// (`GH_TOKEN=… gh …`) and what runs it (`sudo -E`, `env`, `timeout 60`).
+fn command_at(words: &[String]) -> usize {
+    let mut i = 0;
+    while let Some(w) = words.get(i) {
+        let assigns = w
+            .split_once('=')
+            .is_some_and(|(name, _)| !name.is_empty() && !name.starts_with('-'));
+        let runs = matches!(
+            w.as_str(),
+            "sudo" | "env" | "time" | "command" | "exec" | "nohup" | "nice"
+        );
+        if assigns || runs || w.starts_with('-') {
+            i += 1;
+        } else if w == "timeout" {
+            // Its flags (a signal, a time to kill after), then how long.
+            i += 1;
+            while let Some(flag) = words.get(i).filter(|w| w.starts_with('-')) {
+                i += if matches!(flag.as_str(), "-s" | "--signal" | "-k" | "--kill-after") {
+                    2
+                } else {
+                    1
+                };
+            }
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i
 }
 
 /// Whether word `i` of a command is the command line a shell runs: the
@@ -696,9 +733,10 @@ fn runs_in_shell(words: &[String], i: usize) -> bool {
 /// The commands of a command line, each as its words, as a shell splits
 /// them: at `;`, `&`, `|`, new lines, parentheses and backticks outside
 /// quotes, and words at whitespace outside quotes, which they lose. A
-/// backslash before a new line continues the line. With them, the command
-/// lines that double quotes substitute (`"$(…)"`, `` "`…`" ``), which a
-/// word keeps as they are.
+/// backslash before a new line continues the line, and a heredoc's lines
+/// (`<<'EOF'` up to `EOF`) are its text, not commands. With them, the
+/// command lines that double quotes substitute (`"$(…)"`, `` "`…`" ``),
+/// which a word keeps as they are.
 fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
     let mut out: Vec<Vec<String>> = Vec::new();
     let mut substituted: Vec<String> = Vec::new();
@@ -707,6 +745,8 @@ fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
     // The word has quotes in it, so that `""` is a word.
     let mut quoted = false;
     let mut quote: Option<char> = None;
+    // The delimiters of heredocs whose text starts at the next new line.
+    let mut heredocs: Vec<String> = Vec::new();
     let end_word = |words: &mut Vec<String>, word: &mut String, quoted: &mut bool| {
         if !word.is_empty() || *quoted {
             words.push(std::mem::take(word));
@@ -756,10 +796,49 @@ fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
                 Some('\n') | None => {}
                 Some(n) => word.push(n),
             },
+            // A heredoc (`<<EOF`, `<<-'EOF'`), not a here-string (`<<<`).
+            (None, '<') if chars.peek() == Some(&'<') => {
+                chars.next();
+                if chars.peek() == Some(&'<') {
+                    chars.next();
+                    continue;
+                }
+                if chars.peek() == Some(&'-') {
+                    chars.next();
+                }
+                while chars.peek().is_some_and(|n| *n == ' ' || *n == '\t') {
+                    chars.next();
+                }
+                let mut delimiter = String::new();
+                while let Some(&n) = chars.peek() {
+                    if n.is_whitespace() || ";&|()<>".contains(n) {
+                        break;
+                    }
+                    chars.next();
+                    if !matches!(n, '\'' | '"' | '\\') {
+                        delimiter.push(n);
+                    }
+                }
+                if !delimiter.is_empty() {
+                    heredocs.push(delimiter);
+                }
+            }
             (None, ';' | '&' | '|' | '\n' | '(' | ')' | '`') => {
                 end_word(&mut words, &mut word, &mut quoted);
                 if !words.is_empty() {
                     out.push(std::mem::take(&mut words));
+                }
+                // The heredocs' text, line by line, up to each one's
+                // delimiter.
+                if c == '\n' {
+                    for delimiter in std::mem::take(&mut heredocs) {
+                        loop {
+                            let text: String = chars.by_ref().take_while(|&n| n != '\n').collect();
+                            if text.trim() == delimiter || chars.peek().is_none() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             (None, c) if c.is_whitespace() => end_word(&mut words, &mut word, &mut quoted),
@@ -2236,6 +2315,21 @@ mod tests {
         assert!(!merges_or_closes(&bash("grep -c 'gh pr merge' log.txt")));
         assert!(!merges_or_closes(&bash("git log -c \"gh pr close\"")));
         assert!(!merges_or_closes(&bash("echo 'r=$(gh pr merge 12)'")));
+        // gh as the command, past what it sets and what runs it; a
+        // heredoc's text is no command.
+        assert!(merges_or_closes(&bash("GH_TOKEN=x sudo -E gh pr merge 12")));
+        assert!(merges_or_closes(&bash("timeout -s KILL 60 gh pr merge 12")));
+        assert!(!merges_or_closes(&bash("echo gh pr merge 12")));
+        assert!(!merges_or_closes(&bash(
+            "git commit -m \"$(cat <<'EOF'\nfix: stop using\ngh pr merge here\nEOF\n)\""
+        )));
+        assert!(!merges_or_closes(&bash(
+            "gh pr create --body-file - <<-EOF\n\tgh pr merge 12 once it passes\n\tEOF\ngh pr view"
+        )));
+        assert!(merges_or_closes(&bash(
+            "cat > notes.md <<EOF\nnotes\nEOF\ngh pr merge 12"
+        )));
+        assert!(!merges_or_closes(&bash("cat <<< 'gh pr merge 12'")));
         // Only Claude's own calls to Bash.
         let read = serde_json::json!({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
