@@ -192,15 +192,6 @@ async function engage(page) {
   await page.waitForTimeout(400);
 }
 
-/** Opens the ⋯ menu's "Change how it works…" on the Autopilot tab. */
-async function autopilotSettings(page) {
-  await page.getByRole("button", { name: "More" }).first().click();
-  await page.getByRole("menuitem", { name: /Change how it works/ }).click();
-  await page.getByRole("dialog").waitFor();
-  await page.mouse.move(1, 1);
-  await page.waitForTimeout(500);
-}
-
 // The shots of fctl.sh's feature pages (`--features`), by page: what to
 // show and how to get there. `act` runs once the page has settled, and
 // `size` gives a shot a window of its own size. `card` is the part of a
@@ -429,13 +420,7 @@ const pages = {
     },
     { name: "phone-needs", path: "/", phone: true, settle: 3000, act: openMenu },
     { name: "engage", path: "/p/driver-app?tab=autopilot", settle: 2000, act: engage },
-    { name: "settings", path: "/p/farm-portal?tab=autopilot", settle: 2500, act: autopilotSettings },
     { name: "sessions", path: "/p/farm-portal", settle: 2500 },
-    {
-      name: "workspace-settings",
-      path: "/w/romanesco?tab=settings",
-      act: (page) => scrollTo(page, "Autopilots are token hungry", 260),
-    },
   ],
   "access-tokens": [
     { name: "tokens", path: "/settings?tab=tokens" },
