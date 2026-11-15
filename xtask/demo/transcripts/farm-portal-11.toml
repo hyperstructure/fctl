@@ -116,7 +116,7 @@ silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/reminders.webp" shots/ && fc
 [[turn.step]]
 bash = "fctl publish shots/reminders.webp"
 description = "Publish the screenshot"
-output = """✓ Published reminders.webp (1864×1180, 69 KB) for 60 days
+output = """✓ Published reminders.webp (1864×1180, 69 KB) for 30 days
   ![reminders.webp](https://app.fctl.sh/api/v1/published/zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl/reminders.webp)"""
 
 [[turn.step]]

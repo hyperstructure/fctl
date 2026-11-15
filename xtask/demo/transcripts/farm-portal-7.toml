@@ -137,7 +137,7 @@ report = "It doesn't show the change. The screenshot is the list with no crops i
 
   [[turn.step.steps]]
   read = "units-empty.webp"
-  output = "[Image: units-empty.webp, 780 × 1520]"
+  output = "[Image: units-empty.webp, 1600 × 1280]"
 
 [[turn.step]]
 run = "fctl send farm-portal#8 'Your screenshots show an empty list, so they show none of the units. Show a week with six crops filled in, some in crates, some in bunches and some in kilos, at a phone’s width, in Swedish. Then merge once checks pass.'"

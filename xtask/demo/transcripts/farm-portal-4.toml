@@ -136,7 +136,7 @@ silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/harvest-lists.webp" shots/ &
 [[turn.step]]
 bash = "fctl publish shots/harvest-lists.webp"
 description = "Publish the screenshot"
-output = """✓ Published harvest-lists.webp (1464×1404, 76 KB) for 60 days
+output = """✓ Published harvest-lists.webp (1464×1404, 76 KB) for 30 days
   ![harvest-lists.webp](https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp)"""
 
 [[turn.step]]

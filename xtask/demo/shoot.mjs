@@ -184,7 +184,12 @@ async function engage(page) {
       "Leave the shop alone, and ship nothing to the app stores: Aiko does that.",
   );
   await direction.blur();
-  await scrollTo(page, "Put Driver app on autopilot", 52);
+  // The form from its header down: the direction, then what it may do.
+  await page.getByRole("heading", { name: "Put Driver app on autopilot" }).evaluate((e) => {
+    const form = e.closest("form") ?? e;
+    window.scrollTo({ top: form.getBoundingClientRect().top + window.scrollY - 20, behavior: "instant" });
+  });
+  await page.waitForTimeout(400);
 }
 
 /** Opens the ⋯ menu's "Change how it works…" on the Autopilot tab. */
@@ -403,7 +408,24 @@ const pages = {
       name: "crew",
       path: session("farm-portal#8"),
       settle: 3000,
-      act: (page) => scrollTo(page, "Your screenshots show an empty list", 160),
+      act: async (page) => {
+        // The turn its message started, from the message down.
+        const message = page
+          .locator('[data-find^="msg:"]')
+          .filter({ hasText: "Your screenshots show an empty list" })
+          .first();
+        await message.evaluate((e) => {
+          window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - 150, behavior: "instant" });
+        });
+        await page.waitForTimeout(500);
+      },
+    },
+    // The secret it needs, typed in where it asks, and the notes people steer it with.
+    {
+      name: "secret",
+      path: "/p/farm-portal?tab=autopilot",
+      settle: 2500,
+      act: (page) => scrollTo(page, "It needs a secret", 40),
     },
     { name: "phone-needs", path: "/", phone: true, settle: 3000, act: openMenu },
     { name: "engage", path: "/p/driver-app?tab=autopilot", settle: 2000, act: engage },

@@ -91,6 +91,16 @@ fn rehome(v: &mut Value, home: &str) {
     }
 }
 
+/// A published screenshot's token `old` as `new`, wherever `v` has it.
+fn retoken(v: &mut Value, old: &str, new: &str) {
+    match v {
+        Value::String(t) if t.contains(old) => *t = t.replace(old, new),
+        Value::Array(a) => a.iter_mut().for_each(|x| retoken(x, old, new)),
+        Value::Object(m) => m.values_mut().for_each(|x| retoken(x, old, new)),
+        _ => {}
+    }
+}
+
 /// A session's SQLite, by session id.
 fn session_objects(state: &std::path::Path) -> Result<BTreeMap<String, PathBuf>> {
     let mut out = BTreeMap::new();
@@ -391,6 +401,23 @@ fn session(
         .filter(|r| matches!(r.driver.as_str(), "apple" | "docker"))
         .map(|_| 41 + spin % 60);
 
+    // The screenshots it published answer at the story's links: their
+    // notices name the tokens the rewrite gives them (`autopilots`).
+    let tokens: Vec<(String, String)> = s
+        .published
+        .iter()
+        .filter_map(|f| {
+            events.iter().find_map(|r| {
+                let d: Value = serde_json::from_str(r.get("data")?.as_str()?).ok()?;
+                let url = d["published"]["url"].as_str()?;
+                (d["published"]["name"] == f.name.as_str())
+                    .then(|| fctl_domain::published::token_in(url).map(str::to_owned))
+                    .flatten()
+                    .map(|old| (old, f.token.clone()))
+            })
+        })
+        .collect();
+
     // Its events.
     let mut first_message = true;
     let mut stopping = 0;
@@ -406,6 +433,9 @@ fn session(
         remap(&mut data, &clock, ctx.window);
         for home in &homes {
             rehome(&mut data, home);
+        }
+        for (old, new) in &tokens {
+            retoken(&mut data, old, new);
         }
         // Its setup's steps name the runner the story has.
         if let (Some(r), Some(reason)) = (runner, data["reason"].as_str())
@@ -2320,9 +2350,16 @@ fn audit(
             continue;
         };
         let target = r.get("target").and_then(Value::as_str).unwrap_or_default();
+        let action = r.get("action").and_then(Value::as_str).unwrap_or_default();
+        // What an autopilot did, or what was done to it: in its project.
+        let theirs = action.starts_with("autopilot")
+            || w.cast
+                .autopilots
+                .iter()
+                .any(|a| w.projects.get(&a.project).is_some_and(|id| id == target));
         let autopilot = autopilots
             .iter()
-            .filter(|(since, _)| ts >= *since - 60_000)
+            .filter(|(since, _)| theirs && ts >= *since - 60_000)
             .max_by_key(|(since, _)| *since)
             .map(|(_, c)| c.map(ts));
         let new = clocks

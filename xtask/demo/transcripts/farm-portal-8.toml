@@ -263,7 +263,7 @@ silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/units-empty.webp" shots/ && 
 [[turn.step]]
 bash = "fctl publish shots/units-empty.webp"
 description = "Publish the screenshot"
-output = """✓ Published units-empty.webp (780×1520, 28 KB) for 60 days
+output = """✓ Published units-empty.webp (1600×1280, 31 KB) for 30 days
   ![units-empty.webp](https://app.fctl.sh/api/v1/published/4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb/units-empty.webp)"""
 
 [[turn.step]]
@@ -341,7 +341,7 @@ silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/units-week.webp" shots/ && f
 [[turn.step]]
 bash = "fctl publish shots/units-week.webp"
 description = "Publish the screenshot"
-output = """✓ Published units-week.webp (780×1520, 45 KB) for 60 days
+output = """✓ Published units-week.webp (1600×1280, 47 KB) for 30 days
   ![units-week.webp](https://app.fctl.sh/api/v1/published/djJfihDRgb1Z4B6XOc5G1bEf1l8zArqxpkdLTvRlDCn/units-week.webp)"""
 
 [[turn.step]]
