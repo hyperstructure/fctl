@@ -136,9 +136,10 @@ export function AutopilotTab({ project }: { project: G.Project }) {
 }
 
 /** The autopilot of `project` (id or slug), or null while it has none; polled while the tab shows it. */
-export function useAutopilot(project: string) {
+export function useAutopilot(project: string, enabled = true) {
   return useQuery({
     queryKey: keys.autopilot(project),
+    enabled,
     queryFn: () =>
       api.autopilot(project).catch((e) => {
         if (e instanceof ApiFailure && e.status === 404) return null;

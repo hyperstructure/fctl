@@ -9,8 +9,10 @@ import {
   handoffChoice,
   handoffWords,
   hasPlaceholders,
+  movedOn,
   phase,
   planDone,
+  sessionWord,
   splitBriefing,
   splitCrewNote,
   wakeLead,
@@ -128,6 +130,41 @@ describe("where an autopilot stands", () => {
     expect(phase(a, NOW).line).toBe(
       "Noor Haddad paused it 2 minutes ago: Launch week It wakes again once someone resumes it.",
     );
+  });
+});
+
+describe("an earlier session of its own", () => {
+  const session = { id: "ses_2", number: 20, status: "running" as const, started_at: NOW };
+
+  it("names the session it works in now, from an earlier one", () => {
+    expect(movedOn(autopilot({ session }), "ses_1")).toEqual(session);
+    // Paused, it still wakes there once resumed.
+    expect(movedOn(autopilot({ session, state: "paused" }), "ses_1")).toEqual(session);
+  });
+
+  it("names none in the session it works in, while off, or before it has one", () => {
+    expect(movedOn(autopilot({ session }), "ses_2")).toBeUndefined();
+    expect(movedOn(autopilot({ session, state: "off" }), "ses_1")).toBeUndefined();
+    expect(movedOn(autopilot(), "ses_1")).toBeUndefined();
+    expect(movedOn(undefined, "ses_1")).toBeUndefined();
+  });
+
+  it("says how that session stands, in a word", () => {
+    expect(sessionWord(autopilot({ session }))).toEqual({ tone: "accent", word: "At work" });
+    expect(sessionWord(autopilot({ session: { ...session, status: "provisioning" } }))).toEqual({
+      tone: "accent",
+      word: "Waking",
+    });
+    expect(sessionWord(autopilot({ session: { ...session, status: "idle" } }))).toEqual({
+      tone: "ink",
+      word: "Resting",
+    });
+    expect(sessionWord(autopilot({ session, state: "paused" }))).toEqual({ tone: "pink", word: "Paused" });
+    // It takes no message: fctl starts a fresh one at its next wake.
+    expect(sessionWord(autopilot({ session: { ...session, status: "failed" } }))).toEqual({
+      tone: "danger",
+      word: "Failed",
+    });
   });
 });
 

@@ -1,6 +1,8 @@
 // Writing to the agent. Enter sends, Shift+Enter breaks the line, Escape leaves
 // the box for the page's keys, and r, on the page, comes back to it. Files come
-// along with the paperclip, a paste, or a drop anywhere on the page.
+// along with the paperclip, a paste, or a drop anywhere on the page. In an
+// earlier session of an autopilot's own, a message asks first whether it goes
+// to the session the autopilot works in now (moved-on.tsx).
 
 import { ArrowUp, Square } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
@@ -17,6 +19,7 @@ import {
   useAttachments,
   useFileDrop,
 } from "./attachments";
+import { type MovedOn, MovedOnCard, MovedOnLine } from "./moved-on";
 
 export function Composer({
   status,
@@ -31,6 +34,7 @@ export function Composer({
   choices,
   onTakeOver,
   limitOf,
+  movedOn,
 }: {
   status?: G.SessionStatus;
   role?: G.SessionRole;
@@ -50,9 +54,17 @@ export function Composer({
   onTakeOver?: () => void;
   /** Whose subscription's limit it waits for, when not yours. */
   limitOf?: string;
+  /** An earlier session of an autopilot's own: where it works now, which a message goes to instead. */
+  movedOn?: MovedOn;
 }) {
   const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState<"here" | "there">();
+  // The session whose earlier-session card is open, and the one sent to anyway: the page stays as
+  // it goes to another session, and they are this one's.
+  const [asking, setAsking] = useState<string>();
+  const [anyway, setAnyway] = useState<string>();
+  // Each Enter while it asks takes the focus back to the card's first way.
+  const [asked, setAsked] = useState(0);
   const ref = useRef<HTMLTextAreaElement>(null);
   // A message resumes a stopped session; a failed one needs its owner to resume it.
   const resumes = status === "stopped" || status === "stopping";
@@ -68,25 +80,45 @@ export function Composer({
   }, canSend);
   const ready = !!text.trim() || files.drafts.length > 0;
   useShortcut("reply", () => ref.current?.focus());
+  // The card closes with the message (once it's emptied, unless on its way) and with the session:
+  // a message typed afresh asks afresh. Sent here anyway, it asks no more until the reader leaves.
+  if (asking !== undefined && ((!ready && !sending) || asking !== sessionId)) setAsking(undefined);
+  if (anyway !== undefined && anyway !== sessionId) setAnyway(undefined);
+  const asks = !!movedOn && anyway !== sessionId;
+  const askOpen = asks && asking === sessionId;
+  const keepEditing = () => {
+    setAsking(undefined);
+    ref.current?.focus();
+  };
 
-  const submit = async () => {
+  /** Sends it here, or, from an earlier session of the autopilot's, where it works now. */
+  const submit = async (to?: "here" | "there") => {
     const t = text.trim();
     if (!ready || sending) return;
-    setSending(true);
+    if (asks && !to) {
+      setAsking(sessionId);
+      setAsked((n) => n + 1);
+      return;
+    }
+    const where = to ?? "here";
+    setSending(where);
     let restore: (() => void) | undefined;
     try {
       // Waits for files still uploading.
       const taken = await files.take();
       restore = taken.restore;
       setText("");
-      if (failed) await onResume(t, taken.files);
+      if (where === "there" && movedOn) await movedOn.send(t, taken.files);
+      else if (failed) await onResume(t, taken.files);
       else await onSend(t, taken.files);
+      if (where === "here" && movedOn) setAnyway(sessionId);
+      setAsking(undefined);
     } catch (e) {
       setText(t);
       restore?.();
       toast(e instanceof Error ? e.message : "Not sent", "error");
     } finally {
-      setSending(false);
+      setSending(undefined);
       ref.current?.focus();
     }
   };
@@ -97,8 +129,10 @@ export function Composer({
       e.preventDefault();
       void submit();
     } else if (e.key === "Escape") {
-      // Out of the box, the page's keys work again.
-      e.currentTarget.blur();
+      // The card it asks in goes first, back to the message; then out of the box, where the
+      // page's keys work again.
+      if (askOpen) setAsking(undefined);
+      else e.currentTarget.blur();
     }
   };
 
@@ -114,11 +148,24 @@ export function Composer({
 
   return (
     <div className="flex flex-col gap-1.5">
+      {askOpen && movedOn && (
+        <MovedOnCard
+          to={movedOn}
+          nudge={asked}
+          sending={sending}
+          resume={failed}
+          onThere={() => void submit("there")}
+          onHere={() => void submit("here")}
+          onClose={keepEditing}
+        />
+      )}
       <div className="flex h-4 min-w-0 items-center gap-1.5 pl-3 text-[11.5px] text-ink-4">
         {typing.length > 0 ? (
           <span className="animate-fade truncate">
             {typing.map((v) => v.user.name).join(", ")} {typing.length === 1 ? "is" : "are"} typing…
           </span>
+        ) : movedOn && !askOpen ? (
+          <MovedOnLine to={movedOn} />
         ) : (
           onTakeOver && (
             <span className="animate-fade flex min-w-0 items-center gap-1.5">
@@ -211,7 +258,7 @@ export function Composer({
             <button
               type="button"
               aria-label={failed ? "Resume" : "Send"}
-              disabled={!ready || sending}
+              disabled={!ready || !!sending}
               onClick={() => void submit()}
               className={cn(
                 "flex size-8 items-center justify-center rounded-full transition-all duration-200 ease-[var(--ease-spring)]",
