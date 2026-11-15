@@ -417,6 +417,28 @@ impl Commit {
     }
 }
 
+/// Whether GitHub answered a [`commit_query`]: it said where the
+/// repository is (the commit may still be missing), or that it has no such
+/// repository (`NOT_FOUND`). An answer of errors alone, such as a rate
+/// limit or a query that took too long, says nothing of the commit.
+pub fn commit_answered(answer: &Value) -> bool {
+    if answer
+        .pointer("/data/repository")
+        .is_some_and(|r| !r.is_null())
+    {
+        return true;
+    }
+    answer
+        .get("errors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|e| {
+            e.get("type").and_then(Value::as_str) == Some("NOT_FOUND")
+                && e.pointer("/path/0").and_then(Value::as_str) == Some("repository")
+        })
+}
+
 /// What GitHub's answer to [`commit_query`] says of the commit: `None`
 /// when GitHub has none.
 pub fn looked_up_commit(answer: &Value) -> Option<Commit> {
@@ -1738,10 +1760,26 @@ mod tests {
                 failing: Vec::new(),
             }
         );
-        // A commit GitHub doesn't have.
+        // A commit GitHub doesn't have: an answer all the same.
         let mut gone = commit_answer();
         gone["data"]["repository"]["object"] = Value::Null;
         assert_eq!(looked_up_commit(&gone), None);
+        assert!(commit_answered(&gone) && commit_answered(&commit_answer()));
+        // Nor a repository: GitHub says so.
+        let no_repo = json!({
+            "data": { "repository": null },
+            "errors": [{ "type": "NOT_FOUND", "path": ["repository"],
+                "message": "Could not resolve to a Repository with the name 'acme/app'." }],
+        });
+        assert!(commit_answered(&no_repo));
+        // A rate limit or a timeout says nothing of the commit.
+        let limited = json!({
+            "data": null,
+            "errors": [{ "type": "RATE_LIMITED", "message": "API rate limit exceeded" }],
+        });
+        assert!(!commit_answered(&limited) && looked_up_commit(&limited).is_none());
+        let timeout = json!({ "errors": [{ "message": "Something went wrong while executing your query. This may be the result of a timeout." }] });
+        assert!(!commit_answered(&timeout));
         // History GitHub left out still holds the commit itself.
         let mut bare = commit_answer();
         bare["data"]["repository"]["object"]

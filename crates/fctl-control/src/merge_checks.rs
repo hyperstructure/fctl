@@ -15,7 +15,7 @@
 
 use crate::config::Config;
 use crate::db::{int, n, opt_int, os, q, s};
-use crate::error::AppResult;
+use crate::error::{AppResult, unavailable};
 use crate::github;
 use crate::pull_requests::{in_reach, key};
 use fctl_domain::autopilot as ap;
@@ -498,6 +498,10 @@ async fn sweep_branch(
         let answer = gh
             .lookup(installation, webhooks::commit_query(repo, &sha, branch))
             .await?;
+        // Errors alone (a rate limit, a timeout) count as no lookup.
+        if !webhooks::commit_answered(&answer) {
+            return Err(unavailable("GitHub answered the lookup with errors"));
+        }
         let commit = webhooks::looked_up_commit(&answer);
         for number in answered_for(&waiting, &sha, commit.as_ref()) {
             if !reached.contains(&number) {
@@ -526,8 +530,10 @@ async fn sweep_branch(
 }
 
 /// The merges among `waiting` that GitHub's answer to a lookup of commit
-/// `sha` (`commit`, `None` when it has none) answered for: those of that
-/// commit, found or not, and those that a commit on the branch holds.
+/// `sha` (`commit`, `None` when it has none; an answer of errors alone
+/// counts as none, `fctl_domain::webhooks::commit_answered`) answered for:
+/// those of that commit, found or not, and those that a commit on the
+/// branch holds.
 fn answered_for(waiting: &[Waiting], sha: &str, commit: Option<&Commit>) -> Vec<i64> {
     waiting
         .iter()
