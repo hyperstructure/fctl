@@ -887,8 +887,8 @@ function Cockpit({ project, a }: { project: G.Project; a: G.Autopilot }) {
           <Card title="What it does" icon={<ShieldCheck />}>
             <p className="text-[13.5px] leading-relaxed text-ink-3">
               It works across {project.workspace?.name ?? "the workspace"}, in projects you may not see, so
-              its plan, sessions, asks and log are for the workspace's admins, who steer it. Its sessions in
-              your projects show there, with its mark.
+              its plan, files, sessions, asks and log are for the workspace's admins, who steer it. Its
+              sessions in your projects show there, with its mark.
             </p>
           </Card>
           <Rules a={a} project={project} />

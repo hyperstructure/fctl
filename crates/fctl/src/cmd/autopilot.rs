@@ -895,8 +895,16 @@ async fn files(api: &fctl_client::Api, p: &str, cmd: FilesCmd, json: bool) -> Re
             let mut got = Vec::new();
             for listed in &list.files {
                 let f = api.autopilot_file(p, &listed.name).await?;
-                // A name the control plane checked: one segment, no `..`.
-                write_file(&dir.join(&f.name), f.content.as_deref().unwrap_or_default())?;
+                // The name comes from the control plane, which checked it:
+                // checked again before it becomes a path, so that one that
+                // misbehaves can't have fctl write outside the directory.
+                let name = fctl_domain::autopilot::file_name(&f.name).map_err(|_| {
+                    anyhow::anyhow!(
+                        "The control plane sent a file named {:?}, which isn't a file's name here: nothing written for it",
+                        f.name
+                    )
+                })?;
+                write_file(&dir.join(name), f.content.as_deref().unwrap_or_default())?;
                 got.push(AutopilotFile { content: None, ..f });
             }
             if json {

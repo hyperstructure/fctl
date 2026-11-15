@@ -386,7 +386,9 @@ describe("a project's Autopilot tab", () => {
     queryClient.setQueryData(keys.autopilot("prj_1"), runs);
     const page = render(<AutopilotTab project={project()} />);
     await settle();
-    expect(page.textContent).toContain("its plan, sessions, asks and log are for the workspace's admins");
+    expect(page.textContent).toContain(
+      "its plan, files, sessions, asks and log are for the workspace's admins",
+    );
     expect(page.textContent).not.toContain("Ship the");
     expect(page.textContent).toContain("Checks in every hour");
   });
