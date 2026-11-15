@@ -250,8 +250,10 @@ The rewrite maps its sessions' turns, its log, notes and asks onto the
 story's times. The screenshots its sessions publish are drawn in
 `xtask/demo/published`; their links in the transcripts are app.fctl.sh's,
 with tokens the rewrite gives them, which `shoot.mjs` serves from the
-stack. Its next check-in is real: shoot within an hour or so of the seed,
-or it wakes and plays its transcript's spare turns.
+stack. The instance lets projects publish screenshots, as app.fctl.sh
+does. Its next wake, 10:26 in the story, is real: shoot before then (the
+seed says how long ago 09:10 was), or it wakes and plays its transcript's
+spare turns, which add to its log.
 
 ## Making the shots
 
