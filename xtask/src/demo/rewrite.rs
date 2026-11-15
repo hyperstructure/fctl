@@ -91,6 +91,16 @@ fn rehome(v: &mut Value, home: &str) {
     }
 }
 
+/// A published screenshot's token `old` as `new`, wherever `v` has it.
+fn retoken(v: &mut Value, old: &str, new: &str) {
+    match v {
+        Value::String(t) if t.contains(old) => *t = t.replace(old, new),
+        Value::Array(a) => a.iter_mut().for_each(|x| retoken(x, old, new)),
+        Value::Object(m) => m.values_mut().for_each(|x| retoken(x, old, new)),
+        _ => {}
+    }
+}
+
 /// A session's SQLite, by session id.
 fn session_objects(state: &std::path::Path) -> Result<BTreeMap<String, PathBuf>> {
     let mut out = BTreeMap::new();
@@ -149,15 +159,31 @@ pub fn rewrite(w: &World, story: &Story) -> Result<()> {
     let mut d1 = Db::open(&sqlite::d1(&state)?);
     let objects = session_objects(&state)?;
     let mut clocks: BTreeMap<String, Clock> = BTreeMap::new();
+    // What happened to each autopilot, on one clock: its sessions' fixed
+    // points that agree with each other's, and what people did to it.
+    let mut shared: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
     for s in &w.cast.sessions {
         let made = &w.sessions[&s.id];
         let path = objects
             .get(&made.id)
             .with_context(|| format!("no stored session for {}", s.id))?;
-        let clock =
-            session(&ctx, s, path, &mut d1).with_context(|| format!("rewriting {}", s.id))?;
+        let (project, _) = cast::session_ref(&s.id)?;
+        let points = shared.entry(project.to_owned()).or_default();
+        let clock = session(&ctx, s, path, &mut d1, points)
+            .with_context(|| format!("rewriting {}", s.id))?;
         clocks.insert(made.id.clone(), clock);
     }
+    autopilots(&ctx, &mut shared, &mut d1)?;
+    let autopilot_clocks: Vec<(i64, Clock)> = w
+        .cast
+        .autopilots
+        .iter()
+        .filter_map(|a| {
+            let points = shared.remove(&a.project)?;
+            let since = points.iter().map(|(r, _)| *r).min()?;
+            Some((since, Clock::new(points)))
+        })
+        .collect();
     reviews(&ctx, &mut d1)?;
     fillers(&ctx, &mut d1)?;
     memory(&ctx, &clocks, &mut d1)?;
@@ -167,13 +193,21 @@ pub fn rewrite(w: &World, story: &Story) -> Result<()> {
     sign_ins(&ctx, &mut d1)?;
     sandboxes(&ctx, &mut d1)?;
     runners(&ctx, &state, &mut d1)?;
-    audit(&ctx, &clocks, &mut d1)?;
+    audit(&ctx, &clocks, &autopilot_clocks, &mut d1)?;
     d1.commit()?;
     Ok(())
 }
 
 /// One session: its events and summary in its own SQLite, and its row in D1.
-fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> Result<Clock> {
+/// An autopilot's session adds to `shared` the fixed points its autopilot's
+/// clock takes from it.
+fn session(
+    ctx: &Ctx,
+    s: &SessionSpec,
+    path: &std::path::Path,
+    d1: &mut Db,
+    shared: &mut Vec<(i64, i64)>,
+) -> Result<Clock> {
     let w = ctx.w;
     let made = &w.sessions[&s.id];
     let (project, _) = cast::session_ref(&s.id)?;
@@ -222,7 +256,74 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         .next();
     let last = events.iter().map(ts).max().unwrap_or(created);
     let spin = spin(&s.id);
+    let status_of = |r: &sqlite::Row| {
+        r.get("data")
+            .and_then(Value::as_str)
+            .and_then(|d| serde_json::from_str::<Value>(d).ok())
+            .and_then(|v| v["status"].as_str().map(str::to_owned))
+    };
+    // An autopilot's session: each turn ends as long after the message that
+    // started it as it says it took, and a turn that waited for the seed's
+    // go-ahead went on a moment after it started; the rest of what the
+    // story has it do happens between turns.
+    let mut turn_ends = Vec::new();
+    if s.autopilot.is_some() {
+        let opening = |k: usize| match k {
+            0 => Some(ctx.at(&s.start)),
+            k => s.messages.get(k - 1).map(|m| ctx.at(&m.at)),
+        };
+        let results = events.iter().filter_map(|r| {
+            let d: Value = serde_json::from_str(r.get("data")?.as_str()?).ok()?;
+            (kind(r) == "claude" && d["type"] == "result")
+                .then(|| (ts(r), d["duration_ms"].as_i64().unwrap_or_default()))
+        });
+        for (k, (real, took)) in results.enumerate() {
+            if let Some(open) = opening(k) {
+                turn_ends.push((real, open + took));
+            }
+        }
+        shared.push((created, ctx.at(&s.start)));
+        shared.extend(
+            messages
+                .iter()
+                .zip(&s.messages)
+                .map(|(m, spec)| (*m, ctx.at(&spec.at))),
+        );
+        shared.extend(&turn_ends);
+        for ((id, turn), at) in &w.releases {
+            if id == &s.id
+                && let Some(open) = opening(turn - 1)
+            {
+                points.push((*at, open + 45_000));
+            }
+        }
+        points.extend(&turn_ends);
+        // A pilot stops as the next one takes over.
+        if s.autopilot == Some(cast::AutopilotRole::Pilot)
+            && let Some(next) = w.cast.sessions.iter().find(|x| {
+                x.autopilot == Some(cast::AutopilotRole::Pilot)
+                    && cast::session_ref(&x.id).ok().map(|(p, _)| p) == Some(project)
+                    && x.start.offset() > s.start.offset()
+            })
+        {
+            let stop = events
+                .iter()
+                .find(|r| {
+                    kind(r) == "status"
+                        && matches!(status_of(r).as_deref(), Some("stopping" | "stopped"))
+                })
+                .map(ts);
+            if let Some(stop) = stop {
+                points.push((stop, ctx.at(&next.start) + 3_000));
+                shared.push((stop, ctx.at(&next.start) + 3_000));
+            }
+        }
+    }
     let end_story = match (s.took, s.state) {
+        // Its last turn's end, as its turns tell it.
+        _ if s.state != State::Working && !turn_ends.is_empty() => {
+            turn_ends.iter().map(|(_, t)| *t).max().unwrap_or_default()
+        }
         (Some(took), _) => ctx.at(&s.start) + took.0 * 1000,
         // Still at work: what it stored last is from a minute or few
         // before the shots.
@@ -230,12 +331,6 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     };
     // Its sandbox was ready in the half minute or so a host takes, however
     // long the seed's took.
-    let status_of = |r: &sqlite::Row| {
-        r.get("data")
-            .and_then(Value::as_str)
-            .and_then(|d| serde_json::from_str::<Value>(d).ok())
-            .and_then(|v| v["status"].as_str().map(str::to_owned))
-    };
     if let Some(ready) = events
         .iter()
         .find(|r| kind(r) == "status" && status_of(r).as_deref() == Some("running"))
@@ -249,11 +344,16 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         State::Stopped => last_result.unwrap_or(last),
         _ => last,
     };
-    points.push((end_real, end_story));
+    // An autopilot's session's turns' ends are fixed points already.
+    if turn_ends.is_empty() || s.state == State::Working {
+        points.push((end_real, end_story));
+    }
     let clock = Clock::new(points);
     // A session the story has stopped stopped once it had been idle for its
-    // project's idle timeout, as sessions do; fctl stops its reviews itself.
-    let idle_stop = (s.state == State::Stopped && s.review.is_none()).then(|| {
+    // project's idle timeout, as sessions do; fctl stops its reviews itself,
+    // and an autopilot's own sessions as a fresh one takes over.
+    let pilot = s.autopilot == Some(cast::AutopilotRole::Pilot);
+    let idle_stop = (s.state == State::Stopped && s.review.is_none() && !pilot).then(|| {
         let idle = i64::from(p.idle_timeout.unwrap_or(10)) * 60_000;
         (end_story + idle).min(ctx.anchor - 60_000)
     });
@@ -301,6 +401,23 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         .filter(|r| matches!(r.driver.as_str(), "apple" | "docker"))
         .map(|_| 41 + spin % 60);
 
+    // The screenshots it published answer at the story's links: their
+    // notices name the tokens the rewrite gives them (`autopilots`).
+    let tokens: Vec<(String, String)> = s
+        .published
+        .iter()
+        .filter_map(|f| {
+            events.iter().find_map(|r| {
+                let d: Value = serde_json::from_str(r.get("data")?.as_str()?).ok()?;
+                let url = d["published"]["url"].as_str()?;
+                (d["published"]["name"] == f.name.as_str())
+                    .then(|| fctl_domain::published::token_in(url).map(str::to_owned))
+                    .flatten()
+                    .map(|old| (old, f.token.clone()))
+            })
+        })
+        .collect();
+
     // Its events.
     let mut first_message = true;
     let mut stopping = 0;
@@ -317,6 +434,9 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         for home in &homes {
             rehome(&mut data, home);
         }
+        for (old, new) in &tokens {
+            retoken(&mut data, old, new);
+        }
         // Its setup's steps name the runner the story has.
         if let (Some(r), Some(reason)) = (runner, data["reason"].as_str())
             && k == "status"
@@ -331,7 +451,14 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
         {
             data["text"] = json!(format!("Started Claude Code (pid {pid})"));
         }
-        if k == "user_message" {
+        if s.autopilot.is_some() {
+            // What its transcript says the time is, as the story has it.
+            story_clock(&mut data, clock.map(ts(r)));
+        }
+        if k == "user_message" && s.autopilot.is_some() {
+            // As fctl and the autopilot wrote them, at the story's time.
+            wake_clock(&mut data, clock.map(ts(r)));
+        } else if k == "user_message" {
             if first_message {
                 first_user_message(ctx, s, &mut data)?;
                 first_message = false;
@@ -498,6 +625,129 @@ fn session(ctx: &Ctx, s: &SessionSpec, path: &std::path::Path, d1: &mut Db) -> R
     // Its published screenshots, memory and retrospectives move with it,
     // in `memory`.
     Ok(clock)
+}
+
+/// `{{clock}}` in what an autopilot's transcript shows (the brief's "It's
+/// …"), as fctl writes the time in UTC at `at`.
+fn story_clock(v: &mut Value, at: i64) {
+    match v {
+        Value::String(t) if t.contains("{{clock}}") => {
+            *t = t.replace("{{clock}}", &fctl_domain::autopilot::clock(at));
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| story_clock(x, at)),
+        Value::Object(m) => m.values_mut().for_each(|x| story_clock(x, at)),
+        _ => {}
+    }
+}
+
+/// A message that woke an autopilot says when, in UTC (`fctl woke you, the
+/// autopilot, at 2026-11-12 14:05 UTC: …`): at `at`, as the story has it.
+fn wake_clock(data: &mut Value, at: i64) {
+    const WOKE: &str = "fctl woke you, the autopilot, at ";
+    let Some(text) = data["text"].as_str() else {
+        return;
+    };
+    let Some(i) = text.find(WOKE).map(|i| i + WOKE.len()) else {
+        return;
+    };
+    let Some(end) = text[i..].find(" UTC").map(|e| i + e + " UTC".len()) else {
+        return;
+    };
+    let fixed = format!(
+        "{}{}{}",
+        &text[..i],
+        fctl_domain::autopilot::clock(at),
+        &text[end..]
+    );
+    data["text"] = json!(fixed);
+}
+
+/// Each autopilot as the story has it: its row, the notes people steered it
+/// with, what it asked them and its log, on the clock of what happened to
+/// it (`shared`, with what people did as the story times it); the
+/// project's secrets people gave it; and the screenshots its sessions
+/// published, at the links their transcripts show.
+fn autopilots(
+    ctx: &Ctx,
+    shared: &mut BTreeMap<String, Vec<(i64, i64)>>,
+    d1: &mut Db,
+) -> Result<()> {
+    let w = ctx.w;
+    for a in &w.cast.autopilots {
+        let points = shared.entry(a.project.clone()).or_default();
+        let since = points.iter().map(|(r, _)| *r).min().unwrap_or(w.started);
+        points.extend(
+            w.beat_times
+                .iter()
+                .filter(|(real, _)| *real >= since - 60_000)
+                .map(|(real, at)| (*real, ctx.at(at))),
+        );
+        points.sort_unstable();
+        let clock = Clock::new(points.clone());
+        let pid = &w.projects[&a.project];
+        let at = |v: Option<&Value>| v.and_then(Value::as_i64).map(|t| clock.map(t));
+        for (table, key, columns) in [
+            (
+                "autopilots",
+                "project_id",
+                &[
+                    "created_at",
+                    "updated_at",
+                    "direction_at",
+                    "plan_at",
+                    "woken_at",
+                    "wake_at",
+                    "asked_wake_at",
+                    "paused_at",
+                ][..],
+            ),
+            ("autopilot_notes", "id", &["created_at", "seen_at"][..]),
+            (
+                "autopilot_asks",
+                "id",
+                &["created_at", "answered_at", "seen_at"][..],
+            ),
+            ("autopilot_log", "id", &["at"][..]),
+            ("project_secrets", "name", &["updated_at"][..]),
+        ] {
+            let rows = d1.query(
+                &format!(
+                    "SELECT {key}, {} FROM {table} WHERE project_id = ?",
+                    columns.join(", ")
+                ),
+                &[json!(pid)],
+            )?;
+            for r in rows {
+                let sets: Vec<String> = columns.iter().map(|c| format!("{c} = ?")).collect();
+                let mut values: Vec<Value> = columns.iter().map(|c| json!(at(r.get(*c)))).collect();
+                values.push(r.get(key).cloned().unwrap_or(Value::Null));
+                values.push(json!(pid));
+                d1.exec(
+                    &format!(
+                        "UPDATE {table} SET {} WHERE {key} = ? AND project_id = ?",
+                        sets.join(", ")
+                    ),
+                    values,
+                );
+            }
+        }
+    }
+    // The screenshots the story's sessions published answer at the links
+    // their transcripts show: the token's hash is what finds them.
+    for s in &w.cast.sessions {
+        let made = &w.sessions[&s.id];
+        for f in &s.published {
+            d1.exec(
+                "UPDATE published_files SET token_hash = ? WHERE session_id = ? AND name = ?",
+                vec![
+                    json!(fctl_domain::tokens::hash_secret(&f.token)),
+                    json!(made.id),
+                    json!(f.name),
+                ],
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Where a review is on GitHub: its summary, above its findings.
@@ -1629,7 +1879,7 @@ fn sign_ins(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         "INSERT INTO settings (key, value) VALUES ('instance_settings', ?) \
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         vec![json!(
-            json!({ "verify_sensitive_actions": true }).to_string()
+            json!({ "verify_sensitive_actions": true, "publish_screenshots": true }).to_string()
         )],
     );
     Ok(())
@@ -2062,7 +2312,16 @@ fn filler_outcomes(
 }
 
 /// The audit log: each entry when the story has what it records.
-fn audit(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()> {
+/// The workspaces' audit logs at the story's times: what concerns a
+/// session on its clock, what an autopilot did or was done to it, from when
+/// its story started, on its autopilot's (`autopilots`, by when each
+/// started), the rest when what it names was made.
+fn audit(
+    ctx: &Ctx,
+    clocks: &BTreeMap<String, Clock>,
+    autopilots: &[(i64, Clock)],
+    d1: &mut Db,
+) -> Result<()> {
     let w = ctx.w;
     let rows = d1.query("SELECT id, ts, action, target FROM audit_log", &[])?;
     let mut when: BTreeMap<&str, i64> = BTreeMap::new();
@@ -2091,9 +2350,22 @@ fn audit(ctx: &Ctx, clocks: &BTreeMap<String, Clock>, d1: &mut Db) -> Result<()>
             continue;
         };
         let target = r.get("target").and_then(Value::as_str).unwrap_or_default();
+        let action = r.get("action").and_then(Value::as_str).unwrap_or_default();
+        // What an autopilot did, or what was done to it: in its project.
+        let theirs = action.starts_with("autopilot")
+            || w.cast
+                .autopilots
+                .iter()
+                .any(|a| w.projects.get(&a.project).is_some_and(|id| id == target));
+        let autopilot = autopilots
+            .iter()
+            .filter(|(since, _)| theirs && ts >= *since - 60_000)
+            .max_by_key(|(since, _)| *since)
+            .map(|(_, c)| c.map(ts));
         let new = clocks
             .get(target)
             .map(|c| c.map(ts))
+            .or(autopilot)
             .or_else(|| when.get(target).copied())
             // The rest a month back, in their order.
             .unwrap_or(ctx.anchor - 30 * 86_400_000 + (ts - w.started).max(0));

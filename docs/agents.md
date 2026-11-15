@@ -645,6 +645,8 @@ fctl autopilot brief --only sessions,people,asks   # the part that changes betwe
 fctl run --title "Pipeline board" "Build the pipeline board: …"   # a session of its own; returns at once
 fctl show crm#12 && fctl logs crm#12 --last-turn   # what one did in its last turn
 fctl send crm#12 "Use the existing Card component."   # answer it, steer it
+fctl run --attach logo.svg "Put the logo people sent in the header: …"   # files people sent it, or it made
+fctl files get crm#12 deals.csv && fctl send crm#14 --attach deals.csv "Import these."   # one sent in another session
 fctl resume crm#12 "Carry on where you left off."      # one that failed, once what failed it has passed
 fctl autopilot plan > plan.md                # its plan as fctl has it, to change
 fctl autopilot plan --file plan.md           # its plan, whole
@@ -658,6 +660,12 @@ fctl schedules add "Weekly dependencies" --cron "0 9 * * 1" -m "…"   # with th
 fctl autopilot wake --in 45m                 # when to wake next, if not at its check-in
 fctl autopilot pause --reason "The direction is done."
 ```
+
+Its sessions see only what it writes them and the files it attaches: it
+attaches the files people sent it, those it made, and those sent in
+another of its sessions (`fctl files list` and `fctl files get` read
+them), up to 10 of at most 20 MB each to a task or message. Its sessions
+send it no files: what one makes for another goes on its branch.
 
 It never manages people, roles, shares, tokens, runners, GitHub accounts or
 the workspace's settings, deletes projects, or replaces the secrets people

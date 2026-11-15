@@ -715,6 +715,23 @@ async fn ask(
     session: &SessionId,
     call: &AgentCall,
 ) -> std::result::Result<AgentAnswer, ApiError> {
+    if let AgentCall::ApiBytes {
+        method,
+        path,
+        body,
+        content_type,
+    } = call
+    {
+        return relay_file(
+            api,
+            session,
+            method,
+            path,
+            body.as_deref(),
+            content_type.as_deref(),
+        )
+        .await;
+    }
     let again = match call {
         AgentCall::Memories { .. }
         | AgentCall::MarkStale { .. }
@@ -753,6 +770,97 @@ async fn ask(
             }
         }
     }
+}
+
+/// How long the host tries an autopilot's file for, every try included:
+/// fctl-agent tells the autopilot to try again after two minutes
+/// (`CALL_TIMEOUT`), and a try still going then would upload or download
+/// it a second time, for nobody.
+const RELAY_FILE_WITHIN: Duration = Duration::from_secs(110);
+
+/// The least time left worth another try of a file.
+const RELAY_FILE_AGAIN_WITH: Duration = Duration::from_secs(15);
+
+/// An autopilot's upload or download of a file (`AgentCall::ApiBytes`):
+/// the host sends the file to the control plane as it is, rather than in
+/// JSON, and hands the answer back in base64, retrying what may pass while
+/// fctl-agent still waits ([`RELAY_FILE_WITHIN`]). An upload sent twice
+/// leaves one unsent, which the control plane deletes after a day.
+async fn relay_file(
+    api: &fctl_client::Api,
+    session: &SessionId,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    content_type: Option<&str>,
+) -> std::result::Result<AgentAnswer, ApiError> {
+    let bytes = match body {
+        Some(data) => {
+            let most = 4 * (fctl_domain::files::MAX_FILE_BYTES as usize).div_ceil(3);
+            if data.len() > most {
+                return Err(ApiError::validation(
+                    "file",
+                    format!(
+                        "Files can be at most {}",
+                        fctl_domain::files::human_size(fctl_domain::files::MAX_FILE_BYTES)
+                    ),
+                ));
+            }
+            Some(STANDARD.decode(data.as_bytes()).map_err(|e| {
+                ApiError::bad_request(format!("The file's bytes are not base64: {e}"))
+            })?)
+        }
+        None => None,
+    };
+    let deadline = Instant::now() + RELAY_FILE_WITHIN;
+    let mut delay = Duration::from_secs(1);
+    let mut attempt = 1;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match api
+            .runner_relay(
+                session.as_str(),
+                method,
+                path,
+                bytes.clone(),
+                content_type,
+                left,
+            )
+            .await
+        {
+            Ok((status, content_type, data)) => {
+                return Ok(AgentAnswer::ApiBytes {
+                    status,
+                    content_type,
+                    body: STANDARD.encode(&data),
+                });
+            }
+            Err(e)
+                if e.is_transient()
+                    && attempt < 3
+                    && again_within(deadline, delay, Instant::now()) =>
+            {
+                tracing::warn!("a file of the agent of {session} (attempt {attempt}): {e}");
+                tokio::time::sleep(delay).await;
+                delay *= 3;
+                attempt += 1;
+            }
+            Err(e) => {
+                return Err(e.api().cloned().unwrap_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Unavailable,
+                        format!("The host could not reach the control plane: {e}"),
+                    )
+                }));
+            }
+        }
+    }
+}
+
+/// Whether another try of a file, after waiting `delay` from `now`, still
+/// has [`RELAY_FILE_AGAIN_WITH`] before `deadline`.
+fn again_within(deadline: Instant, delay: Duration, now: Instant) -> bool {
+    deadline.saturating_duration_since(now + delay) >= RELAY_FILE_AGAIN_WITH
 }
 
 /// How long a sandbox that stayed paused as it was resumed waits before the
@@ -1962,6 +2070,24 @@ fn agent_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tries_a_file_again_only_while_fctl_agent_waits() {
+        let start = Instant::now();
+        let deadline = start + RELAY_FILE_WITHIN;
+        let second = Duration::from_secs(1);
+        // A quick failure is tried again.
+        assert!(again_within(deadline, second, start + second));
+        // A try that took most of the time leaves too little for another.
+        assert!(!again_within(
+            deadline,
+            Duration::from_secs(3),
+            start + Duration::from_secs(95)
+        ));
+        assert!(!again_within(deadline, second, start + RELAY_FILE_WITHIN));
+        // Every try ends before fctl-agent gives up on the call (2 minutes).
+        assert!(RELAY_FILE_WITHIN < Duration::from_secs(120));
+    }
 
     fn credential(stand_in: bool) -> Option<ClaudeCredential> {
         Some(ClaudeCredential {

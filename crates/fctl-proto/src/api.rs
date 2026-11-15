@@ -2707,6 +2707,27 @@ pub struct SendMessageResponse {
     pub held: Option<crate::autopilot::HeldMessage>,
 }
 
+/// A file sent in a session, with a message or as it started.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SessionFile {
+    #[serde(flatten)]
+    #[cfg_attr(feature = "ts", ts(flatten))]
+    pub file: crate::event::Attachment,
+    /// When the message that sent it went (one fctl held for an autopilot:
+    /// when it was held).
+    pub sent_at: Millis,
+}
+
+/// `GET /api/v1/sessions/{id}/attachments`: the files sent in a session,
+/// oldest first, without those of an autopilot's messages fctl still holds
+/// for room. `GET /api/v1/sessions/{id}/attachments/{file}` reads one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SessionFiles {
+    pub files: Vec<SessionFile>,
+}
+
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -3791,7 +3812,34 @@ pub enum AgentCall {
         #[cfg_attr(feature = "ts", ts(optional))]
         body: Option<serde_json::Value>,
     },
+    /// A request to the REST API whose body or answer is a file, from an
+    /// autopilot's own session as [`AgentCall::Api`]: an upload to send
+    /// with a message or a new session, or a download of a file sent in a
+    /// session. The host sends the bytes as they are (`POST
+    /// /api/v1/runner/sessions/{id}/relay`), and the control plane takes
+    /// only those requests this way
+    /// (`fctl_domain::autopilot::carries_files`). Hosts, fctl-agents and
+    /// control planes from before it refuse it.
+    ApiBytes {
+        /// `GET` or `POST`.
+        method: String,
+        /// The path after the instance's address, with its query:
+        /// `/api/v1/sessions/ses_…/attachments?name=model.3mf`.
+        path: String,
+        /// The body, base64: the file to upload.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        body: Option<String>,
+        /// The body's media type; `application/octet-stream` when absent.
+        #[cfg_attr(feature = "ts", ts(optional))]
+        content_type: Option<String>,
+    },
 }
+
+/// The header of `POST /api/v1/runner/sessions/{id}/relay`'s answer (an
+/// [`AgentCall::ApiBytes`] from a host) that carries the status of the
+/// request it relayed, whose media type and body the answer then has. An
+/// answer without it is the relay's own error.
+pub const RELAYED_STATUS_HEADER: &str = "Fctl-Relayed-Status";
 
 /// The control plane's answer to an [`AgentCall`].
 #[skip_serializing_none]
@@ -3855,6 +3903,17 @@ pub enum AgentAnswer {
         status: u16,
         #[serde(default)]
         body: serde_json::Value,
+    },
+    /// The API's answer to an [`AgentCall::ApiBytes`]: its HTTP status,
+    /// media type and body as they came (a file, or an [`crate::ApiError`]
+    /// in JSON for a status of 400 or more).
+    ApiBytes {
+        status: u16,
+        #[cfg_attr(feature = "ts", ts(optional))]
+        content_type: Option<String>,
+        /// The body, base64.
+        #[serde(default)]
+        body: String,
     },
 }
 

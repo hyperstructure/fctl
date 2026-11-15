@@ -2362,6 +2362,19 @@ sessions to do it, and sets up what the work needs, as far as they let it
    steered) and in the workspace's audit log, as its owner, with the
    autopilot named. `fctl run` there returns at once, and nothing follows
    sessions live over the relay: wakes tell it when they move on.
+   Files go through the relay as they are, not in JSON
+   (`AgentCall::ApiBytes`, only for what
+   `fctl_domain::autopilot::carries_files` says carries one): uploads to
+   send with a session it starts or a message to one it started, and the
+   files sent in the sessions it reads. Its `fctl` sends a file to
+   fctl-agent in base64, on one line of at most 32 MiB
+   (`MAX_SESSION_REQUEST_BYTES`, enough for a 20 MB file), and the host
+   posts the bytes to `POST /api/v1/runner/sessions/{id}/relay?method=…&path=…`,
+   which the Worker routes as the JSON relay does, with the body streamed
+   into the request it routes and the answer streamed back (the relayed
+   status in the `Fctl-Relayed-Status` header), so that a file never goes
+   into the Worker's memory. Older fctl-agents refuse the call, which
+   `fctl` reports as its runner needing a newer fctl.
 5. **Its sessions.** A session it starts gets the task, then fctl's note
    of who started it and how to reach it (`fctl ask` in that session wakes
    the autopilot). Its messages to them carry it as their author's
@@ -2386,9 +2399,15 @@ sessions to do it, and sets up what the work needs, as far as they let it
    on, unless someone follows one; while it is paused or off, they are its
    owner's there as any session they started. They show the autopilot's
    mark in lists and link back to its tab. They see only what it writes
-   them, and it may not upload attachments: it passes a screenshot on as
-   the link `fctl publish` gives it, where the project publishes them
-   ([Published screenshots](#published-screenshots)).
+   them and the files it attaches (`fctl run --attach`, `fctl send
+   --attach`): a screenshot or a model people sent it, or a file sent in
+   another of its sessions, which `fctl files get` downloads. Their agents
+   send it no files: what one makes for another goes on its branch, or as
+   a screenshot it publishes
+   ([Published screenshots](#published-screenshots)). Where the
+   autopilot's sandbox's `fctl` has no `fctl files` (an older image), it
+   passes screenshots on as the links `fctl publish` gives it instead, as
+   its `~/AGENTS.md` says.
 6. **Asking people** (`fctl autopilot ask`). A question of at most 500
    characters with up to six answers to click and Markdown that helps
    answer (`detail`, such as screenshots of two designs it published), or
@@ -3239,8 +3258,13 @@ A task, message or resume can carry files: up to 10, of at most 20 MB each.
    the message too; Claude reads anything else with its tools, which resize
    large images.
 
-Viewers of a session read its files with
-`GET /api/v1/sessions/{id}/attachments/{attachment}`. It answers a single
+Viewers of a session list its files with
+`GET /api/v1/sessions/{id}/attachments` (oldest first, with when each was
+sent; `fctl files list`) and read one with
+`GET /api/v1/sessions/{id}/attachments/{attachment}` (`fctl files get`).
+An autopilot does both for the sessions it reads, and uploads for those it
+starts and steers, through its session's relay
+([Autopilots](#autopilots)). The read answers a single
 byte range (`Range`, `206 Partial Content`) from only the chunks that hold
 it, because Safari plays a video only from a server that does: the session
 page plays attached videos, and shows images, in a lightbox. Hosts and
@@ -3294,10 +3318,12 @@ allows it too, and through hosts that know it: an older host leaves it out
 of the agent's configuration, so its agents never offer `fctl publish`.
 When it is on, and the sandbox's fctl has the command, `~/AGENTS.md` tells
 Claude to try `--attach` and publish when GitHub refuses. An autopilot's
-own session opens no pull requests and may not upload attachments, so its
-`~/AGENTS.md` tells it instead to pass a screenshot on to one of its
-sessions (one people attached to a message to it, or one it made) by
-publishing it and putting the link in the session's task or a message.
+own session opens no pull requests: it attaches files to its sessions'
+tasks and messages, and publishes a screenshot only to show it to people
+in what it asks them. Where its sandbox's `fctl` is older than `fctl
+files`, which carries files through its relay, its `~/AGENTS.md` tells it
+instead to pass a screenshot on to one of its sessions by publishing it
+and putting the link in the session's task or a message.
 
 ### Images agents read
 

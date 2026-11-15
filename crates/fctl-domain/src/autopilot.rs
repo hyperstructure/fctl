@@ -941,7 +941,12 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             | ["schedules", _, "runs"]
             | ["sessions"]
             | ["sessions", _]
-            | ["sessions", _, "events" | "retrospectives" | "diff"],
+            | [
+                "sessions",
+                _,
+                "events" | "retrospectives" | "diff" | "attachments",
+            ]
+            | ["sessions", _, "attachments", _],
         ) => Ok(Gate::Open),
         // Itself.
         (
@@ -962,11 +967,18 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
         | ("PUT", ["projects", _, "autopilot", "plan"])
         | ("PUT" | "DELETE", ["projects", _, "autopilot", "files", _])
         | ("DELETE", ["projects", _, "autopilot", "asks", _]) => Ok(Gate::Home),
-        // Starting sessions, and steering those it started.
-        ("POST", ["projects", _, "sessions"]) => Ok(Gate::Open),
+        // Starting sessions, and steering those it started, with files.
+        ("POST", ["projects", _, "sessions" | "attachments"]) => Ok(Gate::Open),
         // Taking back a message fctl holds for room.
         ("DELETE", ["projects", _, "autopilot", "held", _]) => Ok(Gate::Home),
-        ("POST", ["sessions", id, "messages" | "interrupt" | "stop" | "resume"])
+        (
+            "POST",
+            [
+                "sessions",
+                id,
+                "messages" | "interrupt" | "stop" | "resume" | "attachments",
+            ],
+        )
         | ("PATCH", ["sessions", id]) => Ok(Gate::Crew((*id).to_owned())),
         // The project's memory, as its agents keep it.
         ("POST", ["projects", _, "memories"]) | ("PATCH", ["memories", _]) => Ok(Gate::Open),
@@ -988,6 +1000,30 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             "An autopilot can't do that: people do. It reads its projects, starts and steers its own sessions, and as far as its powers go changes settings, secrets, repositories and schedules, and creates projects; never people, roles, shares, tokens, runners, GitHub accounts, the workspace's settings, or deleting a project.",
         )),
     }
+}
+
+/// Whether `path` (`/api/v1/…`, with its query) may go through the relay:
+/// one of the API's, with no `..` or `//` in the part before its query,
+/// which would reach another route. The query may hold them: a file's name
+/// goes there (`?name=v1..2.pdf`).
+pub fn relayable_path(path: &str) -> bool {
+    let (route, _) = path.split_once('?').unwrap_or((path, ""));
+    route.starts_with("/api/v1/")
+        && path.len() <= 2_000
+        && !route.contains("..")
+        && !route.contains("//")
+}
+
+/// Whether a request it may make carries a file rather than JSON, in its
+/// body or its answer: an upload (`POST …/attachments`) or a file sent in a
+/// session (`GET sessions/{id}/attachments/{file}`). Those go through the
+/// relay as bytes (`AgentCall::ApiBytes`), and only those.
+pub fn carries_files(method: &str, segs: &[&str]) -> bool {
+    matches!(
+        (method, segs),
+        ("POST", ["projects" | "sessions", _, "attachments"])
+            | ("GET", ["sessions", _, "attachments", _])
+    )
 }
 
 /// The most an autopilot does in a project: what a maintainer does, never
@@ -2570,6 +2606,70 @@ mod tests {
             allows(c, "POST", &["projects", "shop", "sessions"]).ok(),
             Some(Gate::Open)
         );
+    }
+
+    #[test]
+    fn passes_files_to_and_reads_them_from_sessions() {
+        let c = project_pilot();
+        // Uploads for a session it starts, and for those it started only.
+        assert_eq!(
+            allows(c, "POST", &["projects", "shop", "attachments"]).ok(),
+            Some(Gate::Open)
+        );
+        assert_eq!(
+            allows(c, "POST", &["sessions", "ses_9", "attachments"]).ok(),
+            Some(Gate::Crew("ses_9".into()))
+        );
+        // It reads the files of the sessions it reads, as their transcripts.
+        for path in [
+            vec!["sessions", "ses_1", "attachments"],
+            vec!["sessions", "ses_1", "attachments", "att_1"],
+        ] {
+            assert_eq!(allows(c, "GET", &path).ok(), Some(Gate::Open), "{path:?}");
+        }
+        // Published screenshots are people's to delete.
+        assert!(allows(c, "DELETE", &["published", "tok"]).is_err());
+    }
+
+    #[test]
+    fn relays_only_the_apis_paths() {
+        assert!(relayable_path("/api/v1/projects/shop"));
+        assert!(relayable_path(
+            "/api/v1/sessions/ses_9/attachments?name=v1..2.pdf&type=application%2Fpdf"
+        ));
+        assert!(relayable_path("/api/v1/search?q=a//b"));
+        for path in [
+            "/api/v1/sessions/../auth/tokens",
+            "/api/v1/sessions/..?name=x",
+            "/api/v1//auth/tokens",
+            "/api/v2/projects",
+            "/projects",
+        ] {
+            assert!(!relayable_path(path), "{path}");
+        }
+        let long = format!("/api/v1/search?q={}", "a".repeat(2_000));
+        assert!(!relayable_path(&long));
+    }
+
+    #[test]
+    fn only_files_go_as_bytes() {
+        for (m, path) in [
+            ("POST", vec!["projects", "shop", "attachments"]),
+            ("POST", vec!["sessions", "ses_9", "attachments"]),
+            ("GET", vec!["sessions", "ses_9", "attachments", "att_1"]),
+        ] {
+            assert!(carries_files(m, &path), "{m} {path:?}");
+        }
+        for (m, path) in [
+            ("GET", vec!["sessions", "ses_9", "attachments"]),
+            ("POST", vec!["sessions", "ses_9", "messages"]),
+            ("POST", vec!["projects", "shop", "sessions"]),
+            ("GET", vec!["projects", "shop", "attachments"]),
+            ("POST", vec!["sessions", "ses_9", "attachments", "att_1"]),
+            ("GET", vec!["sessions", "ses_9", "images", "img_1"]),
+        ] {
+            assert!(!carries_files(m, &path), "{m} {path:?}");
+        }
     }
 
     #[test]

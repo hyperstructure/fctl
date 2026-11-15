@@ -307,9 +307,10 @@ pub const SESSION_SOCKET_ENV: &str = "FCTL_SESSION_SOCKET";
 /// that project's autopilot.
 pub const AUTOPILOT_ENV: &str = "FCTL_AUTOPILOT";
 
-/// Longest request the session socket accepts: a screenshot to publish, in
-/// base64.
-pub const MAX_SESSION_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+/// Longest request the session socket accepts: a screenshot to publish, or
+/// a file an autopilot uploads (at most `fctl_domain::files::MAX_FILE_BYTES`,
+/// 20 MB), in base64. fctl-agents from before files took 8 MiB.
+pub const MAX_SESSION_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 
 /// From `fctl` in the sandbox to fctl-agent: one per connection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1221,13 +1221,7 @@ pub async fn off(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     .await?;
     // What it held for room would go out once it's put on again, long
     // after it meant it.
-    q(
-        &ctx.db,
-        "DELETE FROM autopilot_held WHERE project_id = ?",
-        &[s(&row.project_id)],
-    )?
-    .run()
-    .await?;
+    engine::drop_all_held(&ctx.env, &ctx.db, &row.project_id).await?;
     let stopped = stop_sessions(ctx, &row, body.stop_sessions).await?;
     engine::log(
         &ctx.db,

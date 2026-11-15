@@ -1,0 +1,372 @@
+# farm-portal#8 · Noor's autopilot, Sunday 19:05 · Let farms choose the unit for each crop: its first screenshot shows
+# an empty list, the autopilot sends it back for a week filled in, and it merges (merged)
+match = "Let each farm choose the unit for each crop on the harvest list"
+
+[[turn]]
+duration = "1h16m"
+result = "Each crop on the harvest list has a unit now, crates, bunches or kilos, remembered for the farm's next week. romanescohq/farm-portal#5 is open with its checks passing, and its screenshot published; it waits for the autopilot's look before it merges."
+
+[[turn.step]]
+silently = '''f="$DEMO_SIGNALS/farm-portal-8-1"; t=0; until [ -e "$f" ] || [ $t -ge 9000 ]; do sleep 0.1; t=$((t+1)); done'''
+
+[[turn.step]]
+run = "fctl edit --description 'Lets each farm choose the unit for each crop on the harvest list, crates, bunches or kilos, with what we order still adding up in kilos.'"
+description = "Say what the session does"
+
+[[turn.step]]
+todo = [["Kilos per crate and per bunch, by crop", "in_progress"], ["A unit beside each amount, remembered", "pending"], ["Show what a crate or a bunch comes to", "pending"], ["Playwright: a chosen unit survives a reload", "pending"], ["Screenshots at 390 px, in Swedish", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "app/harvest/page.tsx" },
+  { read = "app/harvest/form.tsx" },
+  { read = "app/harvest/crops.ts" },
+  { read = "messages/sv.json" },
+]
+
+[[turn.step]]
+think = "Lines are kilos today, and Platform orders in kilos, so the unit is the farm's way of counting, not ours: keep a unit and an amount per line, and the kilos they come to beside them. Kilos per crate differ by crop (a crate of carrots is about 10 kg, of kale much less), so that table is per crop, with kilos as the fallback for anything not in it. Lists already sent stay as they are: they're kilos."
+
+[[turn.step]]
+write = "lib/units.ts"
+content = """export type Unit = "crate" | "bunch" | "kg";
+
+/** About how many kilos one crate or bunch of a crop is, as Romanesco's packers weigh them. */
+const KG: Record<string, Partial<Record<Unit, number>>> = {
+  Morötter: { crate: 10, bunch: 0.8 },
+  Rödbetor: { crate: 10, bunch: 1 },
+  Grönkål: { crate: 4, bunch: 0.375 },
+  Potatis: { crate: 15 },
+  Purjolök: { crate: 8, bunch: 0.85 },
+  Spenat: { crate: 3 },
+};
+
+/** The units a farm can choose for `crop`: those we know its weight in, and kilos. */
+export function unitsFor(crop: string): Unit[] {
+  return [...(Object.keys(KG[crop] ?? {}) as Unit[]), "kg"];
+}
+
+/** What `amount` of `crop` in `unit` comes to in kilos, which Platform orders in. */
+export function kilos(crop: string, amount: number, unit: Unit): number {
+  return unit === "kg" ? amount : Math.round(amount * (KG[crop]?.[unit] ?? 1));
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/crops.ts"
+content = """import { farmEmail } from "@/lib/session";
+import type { Unit } from "@/lib/units";
+
+export type Crop = { crop: string; amount: number; unit: Unit; last: number };
+
+/** A week to start from until a farm has sent one: kilos, until it chooses. */
+const SAMPLE: Crop[] = [
+  { crop: "Morötter", amount: 120, unit: "kg", last: 110 },
+  { crop: "Rödbetor", amount: 80, unit: "kg", last: 80 },
+  { crop: "Grönkål", amount: 15, unit: "kg", last: 14 },
+  { crop: "Potatis", amount: 150, unit: "kg", last: 150 },
+  { crop: "Purjolök", amount: 25, unit: "kg", last: 22 },
+];
+
+/** Next week's list as a farm starts it: what it sent last week, in the units it chose then. */
+export async function lastWeek(): Promise<Crop[]> {
+  const email = await farmEmail();
+  if (!email || !process.env.PLATFORM_API_TOKEN) return SAMPLE;
+  const res = await fetch(`${process.env.PLATFORM_URL}/v1/farms/by-email/${encodeURIComponent(email)}/harvest?week=last`, {
+    headers: { Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}` },
+  });
+  if (!res.ok) return SAMPLE;
+  // Lists sent before units were kilos.
+  return ((await res.json()).lines as Crop[]).map((l) => ({ ...l, unit: l.unit ?? "kg" }));
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/form.tsx"
+content = """"use client";
+
+import { useState, useTransition } from "react";
+import { kilos, type Unit, unitsFor } from "@/lib/units";
+import { saveHarvest } from "./actions";
+import type { Crop } from "./crops";
+
+export function HarvestForm({ crops, labels }: { crops: Crop[]; labels: Record<Unit | "send" | "sent" | "approx", string> }) {
+  const [lines, setLines] = useState(crops);
+  const [done, setDone] = useState(false);
+  const [, start] = useTransition();
+  const change = (crop: string, part: Partial<Crop>) => {
+    const next = lines.map((l) => (l.crop === crop ? { ...l, ...part } : l));
+    setLines(next);
+    start(() => saveHarvest(next, false));
+  };
+  return (
+    <>
+      <ul>
+        {lines.map((l) => (
+          <li key={l.crop} className="flex items-center gap-2.5 border-b border-stone-100 px-5 py-2.5">
+            <span className="flex-1 font-semibold">
+              {l.crop}
+              {l.unit !== "kg" && <small className="block font-normal text-stone-500">{labels.approx.replace("{kg}", String(kilos(l.crop, l.amount, l.unit)))}</small>}
+            </span>
+            <input inputMode="numeric" value={l.amount} onChange={(e) => change(l.crop, { amount: Number(e.target.value) || 0 })} aria-label={`${l.crop}, ${labels[l.unit]}`} className="h-9 w-16 rounded-lg border border-stone-300 text-right font-semibold" />
+            <div role="radiogroup" aria-label={`${l.crop}: enhet`} className="flex overflow-hidden rounded-lg border border-stone-300 text-xs">
+              {unitsFor(l.crop).map((u) => (
+                <button key={u} role="radio" aria-checked={l.unit === u} onClick={() => change(l.crop, { unit: u })} className="px-2 py-2 aria-checked:bg-[var(--green)] aria-checked:font-semibold aria-checked:text-white">
+                  {labels[u]}
+                </button>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <button onClick={() => start(async () => (await saveHarvest(lines, true), setDone(true)))} className="fixed inset-x-4 bottom-4 h-12 rounded-xl bg-[var(--green)] font-semibold text-white">
+        {done ? labels.sent : labels.send}
+      </button>
+    </>
+  );
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/page.tsx"
+content = """import { t } from "@/lib/i18n";
+import { lastWeek } from "./crops";
+import { HarvestForm } from "./form";
+
+/** Next week's harvest: a row per crop, its amount in the unit the farm counts it in. */
+export default async function Harvest() {
+  const crops = await lastWeek();
+  const labels = {
+    crate: await t("units.crate"),
+    bunch: await t("units.bunch"),
+    kg: await t("units.kg"),
+    approx: await t("units.approx"),
+    send: await t("harvest.send"),
+    sent: await t("harvest.sent"),
+  };
+  return (
+    <main className="mx-auto max-w-md pb-24">
+      <header className="border-b border-stone-200 px-5 pt-4 pb-3">
+        <h1 className="text-2xl font-bold">{await t("harvest.title")}</h1>
+        <p className="mt-2 inline-block rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
+          {await t("harvest.due")}
+        </p>
+      </header>
+      <HarvestForm crops={crops} labels={labels} />
+    </main>
+  );
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/actions.ts"
+content = """"use server";
+
+import { farmEmail } from "@/lib/session";
+import { kilos } from "@/lib/units";
+import type { Crop } from "./crops";
+
+/** Saves a farm's list for next week as it types, in its units and in the kilos Platform orders in; `sent` once it presses the button. */
+export async function saveHarvest(lines: Crop[], sent: boolean) {
+  const email = await farmEmail();
+  if (!email) throw new Error("Not signed in");
+  const res = await fetch(`${process.env.PLATFORM_URL}/v1/farms/by-email/${encodeURIComponent(email)}/harvest`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ week: "next", sent, lines: lines.map((l) => ({ ...l, kg: kilos(l.crop, l.amount, l.unit) })) }),
+  });
+  if (!res.ok) throw new Error(`Platform answered ${res.status}`);
+}
+"""
+
+[[turn.step]]
+write = "messages/sv.json"
+content = """{
+  "home.title": "Gårdsportalen",
+  "home.lede": "Nästa veckas skörd, veckans beställningar och vad vi är skyldiga er.",
+  "footer.language": "Språk",
+  "meta.description": "Där Romanescos gårdar skickar nästa veckas skörd",
+  "harvest.title": "Nästa veckas skörd",
+  "harvest.due": "Senast torsdag kl. 12",
+  "harvest.send": "Skicka skörden",
+  "harvest.sent": "Skickat",
+  "units.crate": "lådor",
+  "units.bunch": "knippen",
+  "units.kg": "kg",
+  "units.approx": "≈ {kg} kg"
+}
+"""
+
+[[turn.step]]
+write = "messages/en.json"
+content = """{
+  "home.title": "Farm portal",
+  "home.lede": "Next week's harvest, this week's orders and what we owe you.",
+  "footer.language": "Language",
+  "meta.description": "Where Romanesco's farms post next week's harvest",
+  "harvest.title": "Next week's harvest",
+  "harvest.due": "By Thursday noon",
+  "harvest.send": "Send the harvest",
+  "harvest.sent": "Sent",
+  "units.crate": "crates",
+  "units.bunch": "bunches",
+  "units.kg": "kg",
+  "units.approx": "≈ {kg} kg"
+}
+"""
+
+[[turn.step]]
+write = "e2e/units.spec.ts"
+content = """import { expect, test } from "@playwright/test";
+import { signInAs } from "./helpers";
+
+test.use({ viewport: { width: 390, height: 844 } });
+
+test("a crop's unit stays chosen", async ({ page }) => {
+  await signInAs(page, "angsbacka@example.se");
+  await page.goto("/harvest");
+  await page.getByRole("radiogroup", { name: "Morötter: enhet" }).getByRole("radio", { name: "lådor" }).click();
+  await page.getByLabel("Morötter, lådor").fill("12");
+  await page.reload();
+  await expect(page.getByRole("radiogroup", { name: "Morötter: enhet" }).getByRole("radio", { name: "lådor" })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText("≈ 120 kg")).toBeVisible();
+});
+"""
+
+[[turn.step]]
+bash = "npm run lint && npx tsc --noEmit && FARMS=angsbacka@example.se npm run test:e2e -- e2e/units.spec.ts e2e/harvest.spec.ts"
+description = "Lint, type-check and run the tests"
+seconds = 33
+output = """> farm-portal@0.1.0 lint
+> eslint
+
+Running 3 tests using 3 workers
+
+  ✓  1 e2e/units.spec.ts:6:5 › a crop's unit stays chosen (3.1s)
+  ✓  2 e2e/harvest.spec.ts:6:5 › a farm fills in next week and sends it (2.7s)
+  ✓  3 e2e/harvest.spec.ts:14:5 › a farm only ever loads its own list (1.8s)
+
+  3 passed (6.2s)"""
+
+[[turn.step]]
+todo = [["Kilos per crate and per bunch, by crop", "completed"], ["A unit beside each amount, remembered", "completed"], ["Show what a crate or a bunch comes to", "completed"], ["Playwright: a chosen unit survives a reload", "completed"], ["Screenshots at 390 px, in Swedish", "in_progress"]]
+
+[[turn.step]]
+bash = "mkdir -p shots && node scripts/screenshots.mjs /harvest && magick shots/harvest.png shots/units-empty.webp"
+description = "Screenshot the list at a phone's width"
+seconds = 7
+output = ""
+
+[[turn.step]]
+silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/units-empty.webp" shots/ && fctl publish shots/units-empty.webp'''
+
+[[turn.step]]
+bash = "fctl publish shots/units-empty.webp"
+description = "Publish the screenshot"
+output = """✓ Published units-empty.webp (1600×1280, 31 KB) for 30 days
+  ![units-empty.webp](https://app.fctl.sh/api/v1/published/4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb/units-empty.webp)"""
+
+[[turn.step]]
+commit = "Let each farm choose the unit for each crop: crates, bunches or kilos"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Let farms choose the unit for each crop"
+number = 5
+body = """Farms count in crates, bunches and kilos, and it differs by crop (Jonas). Each crop on the harvest list now has a unit beside its amount, remembered for the farm's next week; kilos until it chooses.
+
+What we order still adds up: `lib/units.ts` keeps each crop's kilos per crate and per bunch, the list shows what a crate or a bunch comes to, and what goes to Platform carries the kilos too. Lists sent before this were kilos and stay so. A Playwright test chooses a unit, reloads and finds it chosen."""
+
+[[turn.step]]
+bash = "gh pr checks 5 --watch"
+description = "Wait for the checks"
+seconds = 120
+output = """All checks were successful
+0 cancelled, 0 failing, 3 successful, 0 skipped, and 0 pending checks
+
+   NAME                 DESCRIPTION  ELAPSED  URL
+✓  CI/check (pull_request)            2m33s    https://github.com/romanescohq/farm-portal/actions/runs/19391846102/job/55462790114
+✓  Preview/preview (pull_request)     1m21s    https://github.com/romanescohq/farm-portal/actions/runs/19391846117/job/55462790128
+✓  Cloudflare Workers                  31s      https://dash.cloudflare.com/"""
+
+[[turn.step]]
+say = """Each crop on the harvest list has a unit now, crates, bunches or kilos, remembered for the farm's next week; `lib/units.ts` keeps the kilos per crate and per bunch, and the list shows what a crate comes to. A Playwright test chooses a unit, reloads and finds it chosen. The list at 390 px, in Swedish:
+
+![units-empty.webp](https://app.fctl.sh/api/v1/published/4ymWZGNjXNQc8VLljPDvHKw3vuPAKDxIUUMW7FJz1bb/units-empty.webp)
+
+romanescohq/farm-portal#5 is open with its checks passing; I'll merge it once you've looked."""
+
+[[turn]]
+match = "Your screenshots show an empty list"
+duration = "26m"
+result = "Merged romanescohq/farm-portal#5, with a screenshot of a week filled in: carrots and beetroot in crates, kale and leeks in bunches, potatoes and spinach in kilos."
+
+[[turn.step]]
+think = "Right: the dev server's farm has sent nothing, so the list starts empty, and an empty list has no rows to show a unit on. The screenshots need a farm with a week in it. A fixture for the screenshot script, used only in development, rather than a branch in the page."
+
+[[turn.step]]
+write = "e2e/fixtures/angsbacka-week.json"
+content = """{
+  "farm": "angsbacka@example.se",
+  "lines": [
+    { "crop": "Morötter", "amount": 12, "unit": "crate", "last": 110 },
+    { "crop": "Rödbetor", "amount": 8, "unit": "crate", "last": 80 },
+    { "crop": "Grönkål", "amount": 40, "unit": "bunch", "last": 14 },
+    { "crop": "Potatis", "amount": 150, "unit": "kg", "last": 150 },
+    { "crop": "Purjolök", "amount": 30, "unit": "bunch", "last": 22 },
+    { "crop": "Spenat", "amount": 25, "unit": "kg", "last": 20 }
+  ]
+}
+"""
+
+[[turn.step]]
+edit = "scripts/screenshots.mjs"
+old = """const browser = await chromium.launch();"""
+new = """// A farm with a week filled in, for pages that show one (the dev server reads it).
+process.env.FARM_FIXTURE ??= "e2e/fixtures/angsbacka-week.json";
+
+const browser = await chromium.launch();"""
+
+[[turn.step]]
+bash = "FARM_FIXTURE=e2e/fixtures/angsbacka-week.json node scripts/screenshots.mjs /harvest && magick shots/harvest.png shots/units-week.webp"
+description = "Screenshot a week filled in"
+seconds = 7
+output = ""
+
+[[turn.step]]
+silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/units-week.webp" shots/ && fctl publish shots/units-week.webp'''
+
+[[turn.step]]
+bash = "fctl publish shots/units-week.webp"
+description = "Publish the screenshot"
+output = """✓ Published units-week.webp (1600×1280, 47 KB) for 30 days
+  ![units-week.webp](https://app.fctl.sh/api/v1/published/djJfihDRgb1Z4B6XOc5G1bEf1l8zArqxpkdLTvRlDCn/units-week.webp)"""
+
+[[turn.step]]
+commit = "Screenshot the harvest list with a week filled in"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+bash = "gh pr checks 5 --watch && gh pr merge 5 --squash --delete-branch"
+description = "Wait for the checks, then merge"
+seconds = 120
+output = """All checks were successful
+0 cancelled, 0 failing, 3 successful, 0 skipped, and 0 pending checks
+✓ Squashed and merged pull request romanescohq/farm-portal#5 (Let farms choose the unit for each crop)"""
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'A unit for each crop on the farm portal’s harvest list, crates, bunches or kilos, with kilos for Platform (farm-portal#5).' --approach 'The unit is how the farm counts; Platform keeps ordering in kilos, from a table of kilos per crate and bunch by crop.' --challenges 'The first screenshot showed an empty list, as the dev server’s farm had sent nothing, so it showed none of the change; the autopilot sent it back.' --insights 'Take screenshots with FARM_FIXTURE=e2e/fixtures/angsbacka-week.json, which fills in a week.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+run = "fctl memory add 'Farm portal: screenshots of the harvest list need a week in it: run scripts/screenshots.mjs with FARM_FIXTURE=e2e/fixtures/angsbacka-week.json, or the dev server’s farm shows an empty list.'"
+description = "Keep how to screenshot a filled-in list"
+
+[[turn.step]]
+say = """Merged romanescohq/farm-portal#5. Ängsbacka gård's week, filled in at 390 px, in Swedish: carrots and beetroot in crates (about 120 and 80 kg), kale and leeks in bunches, potatoes and spinach in kilos.
+
+![units-week.webp](https://app.fctl.sh/api/v1/published/djJfihDRgb1Z4B6XOc5G1bEf1l8zArqxpkdLTvRlDCn/units-week.webp)"""

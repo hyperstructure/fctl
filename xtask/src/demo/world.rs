@@ -41,6 +41,14 @@ pub struct World<'a> {
     pub stopped: std::collections::BTreeSet<String>,
     /// When the seed started: what the real times of what it made follow.
     pub started: i64,
+    /// Noor's authenticator app's key, for the codes that confirm it's her.
+    pub totp: Option<Vec<u8>>,
+    /// When the seed let an autopilot's session's waiting turn go on, by
+    /// the session and the turn (the first is 1).
+    pub releases: BTreeMap<(String, usize), i64>,
+    /// What people did to the autopilots, as the story times it: when the
+    /// seed did it, and the story's time.
+    pub beat_times: Vec<(i64, cast::When)>,
 }
 
 /// A session the seed made.
@@ -170,6 +178,9 @@ impl<'a> World<'a> {
             numbers: BTreeMap::new(),
             stopped: std::collections::BTreeSet::new(),
             started: now_ms(),
+            totp: None,
+            releases: BTreeMap::new(),
+            beat_times: Vec::new(),
         }
     }
 
@@ -640,7 +651,7 @@ impl<'a> World<'a> {
     /// Noor's authenticator app, set up through the API as the app sets
     /// one up, with a code made from its secret; her passkeys, browsers and
     /// CLI come in the rewrite. Her sign-in from before stays signed in.
-    pub fn two_factor(&self) -> Result<()> {
+    pub fn two_factor(&mut self) -> Result<()> {
         let cookie = Auth::Cookie(self.cookies["noor"].clone());
         let res = dev::call(
             "POST",
@@ -661,6 +672,7 @@ impl<'a> World<'a> {
             ),
         )?;
         dev::ok("turning on Noor's authenticator app", &res)?;
+        self.totp = Some(key);
         Ok(())
     }
 
@@ -969,7 +981,8 @@ impl<'a> World<'a> {
             Message(&'s SessionSpec, usize),
         }
         let mut steps: Vec<(i64, Step)> = Vec::new();
-        for s in &self.cast.sessions {
+        // An autopilot's sessions are its story's (`autopilots`).
+        for s in self.cast.sessions.iter().filter(|s| s.autopilot.is_none()) {
             steps.push((s.start.offset(), Step::Start(s)));
             for (i, m) in s.messages.iter().enumerate() {
                 steps.push((m.at.offset(), Step::Message(s, i)));
@@ -1045,7 +1058,7 @@ impl<'a> World<'a> {
         }
         // The story's end: stopped sessions stop once their last turn ends;
         // the others hold, wait or pause.
-        for s in &self.cast.sessions {
+        for s in self.cast.sessions.iter().filter(|s| s.autopilot.is_none()) {
             let made = self.sessions[&s.id].clone();
             let name = transcript_of(s);
             match s.state {
@@ -1078,7 +1091,7 @@ impl<'a> World<'a> {
             .cast
             .sessions
             .iter()
-            .filter(|s| s.state == State::Stopped)
+            .filter(|s| s.state == State::Stopped && s.autopilot.is_none())
         {
             let made = self.sessions[&s.id].clone();
             self.until(&made.id, &s.by, children, Duration::from_secs(120), |v| {
@@ -1096,7 +1109,9 @@ impl<'a> World<'a> {
             .cast
             .sessions
             .iter()
-            .filter(|s| s.state == State::Stopped && !self.stopped.contains(&s.id))
+            .filter(|s| {
+                s.state == State::Stopped && s.autopilot.is_none() && !self.stopped.contains(&s.id)
+            })
             .filter_map(|s| {
                 let made = self.sessions.get(&s.id)?;
                 (made.messages.len() == s.messages.len()).then(|| {
@@ -1419,7 +1434,7 @@ impl<'a> World<'a> {
     }
 
     /// Polls session `id` as `who` until `done` says so.
-    fn until(
+    pub(crate) fn until(
         &self,
         id: &str,
         who: &str,
@@ -1449,7 +1464,12 @@ impl<'a> World<'a> {
     }
 
     /// Waits until fake-claude's replay log says `name` `what`s.
-    fn until_logged(&self, name: &str, what: &str, children: &mut Children) -> Result<()> {
+    pub(crate) fn until_logged(
+        &self,
+        name: &str,
+        what: &str,
+        children: &mut Children,
+    ) -> Result<()> {
         let log = self.state.join("replays/replay.log");
         let line = format!("{name}: {what}");
         let deadline = Instant::now() + Duration::from_secs(240);

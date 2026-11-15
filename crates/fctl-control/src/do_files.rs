@@ -13,9 +13,10 @@
 
 use crate::ctx::now_ms;
 use crate::internal::{
-    self, ClaimFiles, ClaimedFiles, PublishFile, PublishedBytes, StoreFile, Unpublish,
+    self, ClaimFiles, ClaimedFiles, PublishFile, PublishedBytes, StoreFile, UnclaimFiles, Unpublish,
 };
 use fctl_domain::{files, published};
+use fctl_proto::api::{SessionFile, SessionFiles};
 use fctl_proto::event::Attachment;
 use fctl_proto::{ApiError, AttachmentId, ErrorCode};
 use serde::Deserialize;
@@ -110,7 +111,12 @@ impl DurableObject for FilesObject {
                 Ok(b) => self.claim(b),
                 Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
             },
+            (worker::Method::Post, "/unclaim") => match req.json::<UnclaimFiles>().await {
+                Ok(b) => self.unclaim(b).await,
+                Err(e) => Err(api_err(ErrorCode::BadRequest, &e.to_string())),
+            },
             (worker::Method::Get, "/file") => return self.file(&req),
+            (worker::Method::Get, "/files") => self.files(&req),
             (worker::Method::Post, "/publish") => self.publish(&mut req).await,
             (worker::Method::Get, "/published") => return self.published(&req),
             (worker::Method::Post, "/unpublish") => match req.json::<Unpublish>().await {
@@ -291,6 +297,65 @@ impl FilesObject {
             );
         }
         serde_json::to_value(ClaimedFiles { attachments: out })
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))
+    }
+
+    /// Hands files claimed for a session back as unsent uploads, which are
+    /// deleted a day later: those of a message that never went (one fctl
+    /// held for an autopilot, then dropped or took back).
+    async fn unclaim(&self, b: UnclaimFiles) -> std::result::Result<serde_json::Value, ApiError> {
+        let now = now_ms();
+        for id in &b.ids {
+            let _ = self.sql.exec(
+                "UPDATE files SET session_id = NULL, claimed_at = NULL, created_at = ? \
+                 WHERE id = ? AND session_id = ?",
+                Some(vec![iv(now), sv(id.as_str()), sv(b.session_id.as_str())]),
+            );
+        }
+        if let Err(e) = self.schedule(now + files::UNSENT_TTL_MS, now).await {
+            worker::console_error!("scheduling the files alarm: {e}");
+        }
+        Ok(serde_json::json!({}))
+    }
+
+    /// The files sent in a session (`?session=`), oldest first.
+    fn files(&self, req: &Request) -> std::result::Result<serde_json::Value, ApiError> {
+        #[derive(Deserialize)]
+        struct Sent {
+            id: String,
+            name: String,
+            media_type: String,
+            size: f64,
+            width: Option<f64>,
+            height: Option<f64>,
+            sent_at: f64,
+        }
+        let session = crate::http::query(req, "session").unwrap_or_default();
+        let rows: Vec<Sent> = self
+            .sql
+            .exec(
+                "SELECT id, name, media_type, size, width, height, \
+                 COALESCE(claimed_at, created_at) AS sent_at FROM files WHERE session_id = ? \
+                 ORDER BY sent_at, id",
+                Some(vec![sv(&session)]),
+            )
+            .and_then(|c| c.to_array())
+            .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))?;
+        let files = rows
+            .into_iter()
+            .map(|r| SessionFile {
+                file: Attachment {
+                    id: AttachmentId(r.id),
+                    name: r.name,
+                    media_type: r.media_type,
+                    size: r.size as u64,
+                    width: r.width.map(|w| w as u32),
+                    height: r.height.map(|h| h as u32),
+                },
+                sent_at: r.sent_at as i64,
+            })
+            .collect();
+        serde_json::to_value(SessionFiles { files })
             .map_err(|e| api_err(ErrorCode::Internal, &e.to_string()))
     }
 
