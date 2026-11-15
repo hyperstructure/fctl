@@ -7,13 +7,20 @@ import { type DiskShort, diskLabel, type Stall, stallLabel } from "./stall";
 type Status = Pick<G.Session, "status" | "status_reason">;
 
 /** What fctl-agent says when an idle session waits for a message, and for
- * nothing else. */
-const WAITING_FOR_A_MESSAGE = "Waiting for a message";
+ * nothing else: also after Claude Code was cut off twice in ten minutes
+ * (`fctl_domain::autopilot::CUT_OFF_TWICE`), which the transcript tells. */
+const WAITING_FOR_A_MESSAGE = new Set(["Waiting for a message", "Cut off twice: waiting for a message"]);
+
+/** Whether an idle session's reason says it waits for a message alone, not
+ * for its agent's background work. */
+export function waitsForAMessage(reason?: string): boolean {
+  return !reason || WAITING_FOR_A_MESSAGE.has(reason);
+}
 
 /** Whether a session waits for a person: it is idle, and waits for nothing
  * else, such as its agent's background work. */
 export function waitsForYou(s: Status): boolean {
-  return s.status === "idle" && (!s.status_reason || s.status_reason === WAITING_FOR_A_MESSAGE);
+  return s.status === "idle" && waitsForAMessage(s.status_reason);
 }
 
 /** What sits beside a session's status pill: its reason, unless the pill

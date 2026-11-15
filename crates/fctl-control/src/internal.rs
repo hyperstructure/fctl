@@ -38,6 +38,12 @@ pub struct Deliver {
     pub client_key: Option<String>,
     /// Stored for the transcript (the user message or interrupt).
     pub event: fctl_proto::event::EventBody,
+    /// An interrupt from the session's autopilot, which `event` says its
+    /// owner made, as whom it acts; a message from it says so itself
+    /// (`UserMessage::autopilot`). For what its autopilot hears of why
+    /// the turn ended (`fctl_domain::autopilot::cut_into`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_autopilot: bool,
 }
 
 #[derive(Serialize, Deserialize)]

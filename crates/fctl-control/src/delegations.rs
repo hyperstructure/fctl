@@ -1212,6 +1212,7 @@ async fn deliver(
                 },
             },
             client_key,
+            by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
                 id,
                 author: Some(author),
@@ -1245,6 +1246,7 @@ async fn interrupt(env: &Env, session_id: &str, by: UserRef) -> AppResult<()> {
                 },
             },
             client_key: None,
+            by_autopilot: false,
             event: EventBody::Interrupt(fctl_proto::event::Interrupt { id, by: Some(by) }),
         },
     )

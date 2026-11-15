@@ -692,6 +692,7 @@ pub async fn deliver_as(
                 },
             },
             client_key,
+            by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
                 autopilot,
@@ -728,6 +729,7 @@ pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
                 },
             },
             client_key: None,
+            by_autopilot: ctx.autopilot().is_some(),
             event: EventBody::Interrupt(Interrupt {
                 id: delivery_id,
                 by: Some(by),

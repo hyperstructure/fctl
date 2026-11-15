@@ -2324,10 +2324,16 @@ sessions to do it, and sets up what the work needs, as far as they let it
    SessionObject keeps for the autopilot the start of what the agent said
    as its last turn ended (`fctl_domain::autopilot::SAID_CHARS`; empty from
    when the agent takes a message until that turn ends with words, so that
-   a turn cut off says so) and people's three latest messages to it, which its
+   a turn cut off says so), why a turn that ended without a word did, where
+   it saw (`fctl_domain::autopilot::Silence`: Claude Code cut off twice, as
+   the idle reason says, an interrupt and by whom, or a message that reached
+   the agent mid-turn and from whom, an autopilot's own by the delivery it
+   marks; kept from when the turn ends with the agent waiting until the
+   next starts) and people's three latest messages to it, which its
    own aren't (`fctl_domain::autopilot::hear`), and writes them through to
-   D1 with its summary (`sessions.said`, `sessions.heard`): its sessions'
-   lines in wakes and the brief show them (`CrewView`), and
+   D1 with its summary (`sessions.said`, `sessions.silence`,
+   `sessions.heard`): its sessions' lines in wakes and the brief show them,
+   why with what to do (`CrewView`), and
    `fctl logs --last-turn` prints a session's last turn whole. *Needs you* leaves them to the autopilot while it is
    on, unless someone follows one; while it is paused or off, they are its
    owner's there as any session they started. They show the autopilot's
@@ -3847,7 +3853,9 @@ never share it. When the session was running, it
 says in the transcript that Claude's turn was cut off (a `turn_cut_off`
 notice) and has Claude carry on with it, from a message that tells Claude
 what happened; a second turn cut off within ten minutes of that waits for
-a person's message instead. The state keeps a cut-off turn until Claude
+a person's message instead, and the session's idle reason says so (`Cut
+off twice: waiting for a message`, which the apps take for one waiting for
+a message, and an autopilot hears of). The state keeps a cut-off turn until Claude
 carries on with it, also across another supervisor that dies first.
 
 Claude Code that exits on its own is started again on the conversation

@@ -758,7 +758,8 @@ projects create`, as far as its powers go. `fctl run` returns at once
 there; fctl wakes it when its sessions move on (a turn that ends, a
 question, a failure, or a pull request of one that rests merging or
 closing), with the start of what
-each said as its turn ended and what people wrote to it meanwhile
+each said as its turn ended (or why it said nothing, where fctl knows)
+and what people wrote to it meanwhile
 (people's messages don't wake it themselves). `fctl logs <ref>
 --last-turn` prints a session's last turn whole. With as many of its
 sessions at work as its people allow, `fctl run` and `fctl resume` fail,
