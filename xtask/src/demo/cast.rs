@@ -34,6 +34,8 @@ pub struct Cast {
     pub tickets: Vec<Ticket>,
     #[serde(rename = "session")]
     pub sessions: Vec<SessionSpec>,
+    #[serde(rename = "autopilot", default)]
+    pub autopilots: Vec<AutopilotSpec>,
 }
 
 /// The instance the cast lives on.
@@ -286,6 +288,12 @@ pub struct Project {
     /// the one the web app finds for its name and description, in gray
     /// lines.
     pub icon: Option<Icon>,
+    /// Its sessions build on what the ones before them merged: the seed
+    /// merges their branches into main on the stand-in as the story merges
+    /// them (`[[autopilot.beat]]`'s `merge`), and the cast's check reads
+    /// each session's repository with what merged before it started.
+    #[serde(default)]
+    pub merges: bool,
 }
 
 /// A project's icon: a glyph of the web app's set
@@ -453,6 +461,105 @@ pub struct SessionSpec {
     /// question, say, waits for them in their sidebar's Needs you.
     #[serde(default)]
     pub followers: Vec<String>,
+    /// An autopilot's session (`[[autopilot]]`): one of its own (`pilot`),
+    /// which fctl starts and wakes, or one it started (`crew`). The seed
+    /// starts neither: it finds them by their numbers as the autopilot's
+    /// story makes them, and its `by` is the autopilot's owner.
+    pub autopilot: Option<AutopilotRole>,
+    /// The screenshots its agent published (`fctl publish`), and the token
+    /// their links have in the story, which its transcript and the
+    /// autopilot's show: the rewrite gives them that token.
+    #[serde(rename = "published", default)]
+    pub published: Vec<Published>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AutopilotRole {
+    Pilot,
+    Crew,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Published {
+    /// The file's name, as the link ends.
+    pub name: String,
+    /// 43 letters and digits, as `fctl publish` makes them.
+    pub token: String,
+}
+
+/// A project on autopilot (experimental), put on by `by` at `at`. fctl
+/// wakes it in sessions of its own, which play their transcripts, as do
+/// the sessions it starts (the cast's sessions with `autopilot`); what
+/// people do meanwhile, and what moves the story on, are its `beat`s, which
+/// the seed does in order, each once fake-claude's replay log has the lines
+/// the one before it waits for (`then`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutopilotSpec {
+    pub project: String,
+    pub by: String,
+    pub at: When,
+    pub direction: String,
+    /// What it may do besides starting and steering sessions.
+    pub powers: Vec<String>,
+    /// The longest it goes without waking, in minutes.
+    pub check_in: u32,
+    /// How many of its sessions work at once.
+    pub crew: u32,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// The runner its sessions run on in the story: the seed drains its
+    /// workspace's others while it runs.
+    pub runner: String,
+    /// Replay log lines to wait for once it's on (`farm-portal-1: turn 1
+    /// played`).
+    #[serde(default)]
+    pub then: Vec<String>,
+    #[serde(rename = "beat", default)]
+    pub beats: Vec<Beat>,
+}
+
+/// One step of an autopilot's story, as people take it or as the seed moves
+/// it on: what people do has its time in the story (`at`) and who did it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Beat {
+    pub at: Option<When>,
+    pub by: Option<String>,
+    /// A note that steers it.
+    pub note: Option<String>,
+    /// The open question it asked that starts with this, answered with
+    /// `text`.
+    pub answer: Option<String>,
+    pub text: Option<String>,
+    /// The secret of this name it asked for, given.
+    pub secret: Option<String>,
+    /// Sessions of its whose waiting turn goes on now: a crew session's
+    /// first turn waits (its transcript's first step) until the seed lets
+    /// it, so that its turn ends, and wakes the autopilot, where the story
+    /// has it.
+    #[serde(default)]
+    pub release: Vec<String>,
+    /// Sessions whose branch merges into main on the stand-in now (their
+    /// pull requests' squash merges), for the sessions after them.
+    #[serde(default)]
+    pub merge: Vec<String>,
+    /// Sessions whose story is over, which stop now: they stopped after
+    /// being idle, as the rewrite has it.
+    #[serde(default)]
+    pub stop: Vec<String>,
+    /// Its own session is more than 12 hours old from now, as in the story,
+    /// so that its next wake goes to a fresh one.
+    #[serde(default)]
+    pub handoff: bool,
+    /// It wakes now for the time it asked for, which the story had come.
+    #[serde(default)]
+    pub wake: bool,
+    /// Replay log lines to wait for afterwards.
+    #[serde(default)]
+    pub then: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -507,7 +614,9 @@ pub struct ReviewSpec {
 #[serde(deny_unknown_fields)]
 pub struct Message {
     pub at: When,
-    /// A person, or `fctl` for fctl's own messages.
+    /// A person, `fctl` for fctl's own messages (an autopilot's wakes
+    /// among them), or `autopilot` for its autopilot's, which the seed
+    /// doesn't send: the story's autopilot does.
     pub from: String,
     /// What the agent reads; for a follow-up, fctl writes it.
     #[serde(default)]
@@ -557,7 +666,8 @@ pub struct Finding {
 
 /// A moment of the story, as it tells it: `now`, `-18m`, `-3w`, `-14mo`,
 /// `today 08:52`, `yesterday 22:40`, `saturday 03:00`, `last thursday
-/// 14:20`, all from the moment of the shots, a Tuesday at 09:10.
+/// 14:20` (`14:20:05` to the second), all from the moment of the shots, a
+/// Tuesday at 09:10.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(try_from = "String")]
 pub struct When(pub String);
@@ -607,12 +717,21 @@ fn offset_of(s: &str) -> std::result::Result<i64, String> {
         "tuesday" => 7,
         _ => return Err(bad()),
     };
-    let (h, m) = clock.split_once(':').ok_or_else(bad)?;
-    let (h, m): (i64, i64) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
-    if !(0..24).contains(&h) || !(0..60).contains(&m) {
+    // `14:20`, or `14:20:05` where seconds tell what came first.
+    let mut parts = clock.split(':');
+    let mut part = || -> std::result::Result<i64, String> {
+        parts.next().ok_or_else(bad)?.parse().map_err(|_| bad())
+    };
+    let (h, m) = (part()?, part()?);
+    let sec = match clock.matches(':').count() {
+        1 => 0,
+        2 => part()?,
+        _ => return Err(bad()),
+    };
+    if !(0..24).contains(&h) || !(0..60).contains(&m) || !(0..60).contains(&sec) {
         return Err(bad());
     }
-    Ok((h * 60 + m - SHOT_MINUTE) * 60 - back * 86_400)
+    Ok((h * 60 + m - SHOT_MINUTE) * 60 + sec - back * 86_400)
 }
 
 /// A length of time: `90s`, `51m`, `1m31s`, `2h`, `3d`, `3w`, `14mo`, `3y`.
@@ -920,8 +1039,20 @@ impl Cast {
                     );
                 }
             }
+            if s.autopilot.is_some() && !self.autopilots.iter().any(|a| a.project == project) {
+                bail!(
+                    "{} is an autopilot's session, but {project} has no autopilot",
+                    s.id
+                );
+            }
             for m in &s.messages {
-                if m.from != "fctl" {
+                if m.from == "autopilot" && s.autopilot != Some(AutopilotRole::Crew) {
+                    bail!(
+                        "{}: only the sessions an autopilot started hear from it",
+                        s.id
+                    );
+                }
+                if m.from != "fctl" && m.from != "autopilot" {
                     self.person(&m.from)?;
                 }
                 if m.follow_up.is_some() && (m.from != "fctl" || s.pr.is_none()) {
@@ -967,7 +1098,59 @@ impl Cast {
             self.project(&s.project)?;
             self.person(&s.owner)?;
         }
+        for a in &self.autopilots {
+            let p = self.project(&a.project)?;
+            let w = self.workspace(&p.workspace)?;
+            for id in std::iter::once(&a.by).chain(a.beats.iter().filter_map(|b| b.by.as_ref())) {
+                self.person(id)?;
+            }
+            if !self
+                .runners
+                .iter()
+                .any(|r| r.name == a.runner && r.workspaces.contains(&w.slug))
+            {
+                bail!(
+                    "{}'s autopilot runs on {}, which doesn't run its sessions",
+                    p.slug,
+                    a.runner
+                );
+            }
+            for b in &a.beats {
+                for id in b.release.iter().chain(&b.merge).chain(&b.stop) {
+                    let s = self.session(id)?;
+                    if s.autopilot.is_none() || session_ref(id)?.0 != p.slug {
+                        bail!(
+                            "{}'s autopilot's story names {id}, which isn't one of its sessions",
+                            p.slug
+                        );
+                    }
+                }
+                if (b.note.is_some() || b.answer.is_some() || b.secret.is_some())
+                    && (b.at.is_none() || b.by.is_none())
+                {
+                    bail!(
+                        "{}: what people do to its autopilot says who and when",
+                        p.slug
+                    );
+                }
+                if b.answer.is_some() != b.text.is_some() {
+                    bail!("{}: an answer to its autopilot has its `text`", p.slug);
+                }
+            }
+        }
+        for s in &self.sessions {
+            for f in &s.published {
+                if f.token.len() != 43 || !f.token.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    bail!("{}: {}'s token isn't 43 letters and digits", s.id, f.name);
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// The autopilot of `project`, if the story has one.
+    pub fn autopilot(&self, project: &str) -> Option<&AutopilotSpec> {
+        self.autopilots.iter().find(|a| a.project == project)
     }
 }
 
@@ -993,6 +1176,9 @@ mod tests {
         assert!(offset_of("today 25:00").is_err());
         assert!(offset_of("soon").is_err());
         assert_eq!(When("today 09:00".into()).offset(), -600);
+        assert_eq!(offset_of("today 09:00:05"), Ok(-595));
+        assert!(offset_of("today 09:00:60").is_err());
+        assert!(offset_of("today 09:00:05:01").is_err());
     }
 
     #[test]

@@ -161,6 +161,46 @@ impl Github {
         Ok(())
     }
 
+    /// Squash-merges `branch` of `repo` into its `main`, as GitHub does a
+    /// pull request's (`title (#number)`), for the sessions that start from
+    /// main after it: by `author` (name, email).
+    pub fn merge(
+        &self,
+        repo: &str,
+        branch: &str,
+        (title, number): (&str, u64),
+        author: (&str, &str),
+    ) -> Result<()> {
+        let bare = self.dir.join(format!("{repo}.git"));
+        let work = tempdir(&self.dir.join(".work"), &format!("{repo}-{number}"))?;
+        let git = |args: &[&str]| -> Result<()> {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", author.0)
+                .env("GIT_AUTHOR_EMAIL", author.1)
+                .env("GIT_COMMITTER_NAME", "GitHub")
+                .env("GIT_COMMITTER_EMAIL", "noreply@github.com")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .context("running git")?;
+            if !out.status.success() {
+                bail!(
+                    "git {} merging {branch} into {repo}'s main: {}",
+                    args.join(" "),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Ok(())
+        };
+        git(&["clone", "-q", &bare.display().to_string(), "."])?;
+        git(&["merge", "-q", "--squash", &format!("origin/{branch}")])?;
+        git(&["commit", "-q", "-m", &format!("{title} (#{number})")])?;
+        git(&["push", "-q", "origin", "main"])?;
+        std::fs::remove_dir_all(&work).ok();
+        Ok(())
+    }
+
     /// The commits on `branch` of `repo` that `main` doesn't have, oldest
     /// first: the full SHA of each.
     pub fn commits(&self, repo: &str, branch: &str) -> Result<Vec<String>> {
