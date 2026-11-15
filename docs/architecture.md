@@ -2249,8 +2249,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the wake lists it with its pull requests
    (`fctl_domain::autopilot::pull_wakes`; one at work, or one that ended
    its turn and was just messaged, which counts among those at work by
-   `messaged_at`, wakes it as its turn ends instead); and at once when
-   someone wakes it. A
+   `messaged_at`, wakes it as its turn ends instead); a minute after the
+   checks on the base branch end after a pull request of one merged
+   (below); and at once when someone wakes it. A
    session that ends its turn only to wait for its background work (checks
    it watches; fctl-agent's "Waiting for a background task") doesn't wake
    it, nor does fctl-agent saying it waits for a message as the last task
@@ -2276,6 +2277,38 @@ sessions to do it, and sets up what the work needs, as far as they let it
    at its next wake and says why (`Autopilot.problem` beforehand). It
    pauses itself once its direction is done (`fctl autopilot pause
    --reason …`), and people pause, resume and take it off.
+
+   The checks on a base branch after a merge (`crate::merge_checks`,
+   `fctl_domain::merge_checks`) tell it whether the work holds there before
+   it deploys it or says it shipped. As GitHub's webhook says a pull
+   request merged, D1 keeps it with its merge commit (`merge_commit_sha`)
+   in `merge_checks`, once for each crew session that lists it. When a
+   check suite completes, or a commit status no longer waits, on a branch
+   such merges went into, the control plane looks that commit up
+   (`fctl_domain::webhooks::commit_query`, with a token of the installation
+   that sent it): its checks, each once by its latest run, the 50 commits
+   before it, and where the branch is now with the 50 commits before that,
+   which say whether the commit is on the branch at all (a fork's pull
+   request names the fork's branch, which may share the base branch's
+   name). Once all of its checks ended, a commit on the branch settles the
+   merges it holds: passed, failed (one failed, errored or timed out), or
+   cancelled while the branch is still at that commit. A commit whose
+   checks were cancelled, none failing, while the branch moved on settles
+   nothing: a newer merge's run took over, as a workflow's `concurrency`
+   makes it, and the newer commit, which holds the merge too, tells
+   instead. The first commit to settle a merge tells its autopilot, which
+   wakes a minute later (`merge_checks`, set in the batch that settles it,
+   so that a failure after it can't lose the wake) with a line for each
+   pull request: how many checks passed, which failed, and at which commit.
+   GitHub sends each delivery once, however the control plane answers it,
+   so the hourly job looks up the checks of merges still waiting 15 minutes
+   after they merged, and an hour after it last looked, six times at most
+   (`merge_checks::sweep`): a merge's commit, then the commit the branch is
+   at, which holds them all, then the other merges' commits, which settle
+   them as a delivery would. A merge whose branch runs no checks never
+   settles. A push straight to the base branch, or a pull request no crew
+   session lists, waits for nothing; housekeeping deletes a merge's row
+   three days after it merged, told or not.
 4. **Acting** (`AgentCall::Api`). Its own session's spec says it is the
    autopilot's (`SessionSpec.autopilot`); fctl-agent then sets
    `FCTL_AUTOPILOT` to its project's slug, and the sandbox's `fctl`, which

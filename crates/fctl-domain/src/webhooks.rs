@@ -17,6 +17,7 @@ use fctl_proto::{Millis, SessionId};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
+use std::collections::BTreeMap;
 
 /// Whether `signature`, a delivery's `X-Hub-Signature-256` (`sha256=` and
 /// the HMAC-SHA256 of its body in hex), is GitHub's, with the webhook's
@@ -65,6 +66,15 @@ pub struct Hook {
     /// It says that checks changed (`check_run`, `check_suite`, `status`):
     /// failed ones are news to pass on (`crate::follow_ups`).
     pub checks: bool,
+    /// The branches its commit is on, as a check suite or a commit status
+    /// says: those whose checks may tell how a merge into them went
+    /// (`crate::merge_checks`).
+    pub branches: Vec<String>,
+    /// It says that checks of its commit ended: a check suite completed,
+    /// or a commit status that no longer waits. A check run's end, which
+    /// its suite's follows, doesn't count, so that a commit's checks are
+    /// looked up once a workflow rather than once a job.
+    pub ended: bool,
 }
 
 /// What a `pull_request` event says of its pull request.
@@ -93,6 +103,10 @@ pub struct Payload {
     /// did (`fctl[bot]`, `github-merge-queue[bot]`): fctl's own app's is
     /// most likely an agent's doing, as agents use its token.
     pub bot: Option<String>,
+    /// Once it merged, the commit that holds it on its base branch
+    /// (`merge_commit_sha`): a merge commit, a squashed one, or the last
+    /// one rebased.
+    pub merge_sha: Option<String>,
 }
 
 impl Payload {
@@ -124,7 +138,7 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
     let owner_id = payload
         .pointer("/repository/owner/id")
         .and_then(Value::as_u64);
-    let hook = |repo, numbers, sha, payload| {
+    let hook = |repo, numbers, sha, payload, branches, ended| {
         Delivery::Hook(Hook {
             installation,
             owner_id,
@@ -133,6 +147,8 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
             sha,
             payload,
             checks: matches!(event, "check_run" | "check_suite" | "status"),
+            branches,
+            ended,
         })
     };
     let at = |v: &Value, path: &str| v.pointer(path).and_then(Value::as_str).map(str::to_owned);
@@ -159,6 +175,9 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
             };
             let head = at(pr, "/head/sha");
             let numbers = vec![seen.number];
+            // GitHub names a commit that would merge it while it's open.
+            let merge_sha =
+                at(pr, "/merge_commit_sha").filter(|_| seen.state.as_deref() == Some("merged"));
             let payload = Payload {
                 action,
                 seen,
@@ -174,8 +193,9 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
                     Some(merger) => bot(Some(merger)),
                     None => bot(payload.get("sender")),
                 },
+                merge_sha,
             };
-            hook(repo, numbers, head, Some(payload))
+            hook(repo, numbers, head, Some(payload), Vec::new(), false)
         }
         "check_run" | "check_suite" => {
             let (Some(repo), Some(check)) = (repo(), payload.get(event)) else {
@@ -197,13 +217,45 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
                 }
                 all
             });
-            hook(repo, numbers, text(check, "head_sha"), None)
+            // A check run's branch is its suite's. A fork's pull request
+            // names the fork's, which may share the base branch's name:
+            // the lookup checks that the commit is on the base branch.
+            let branches = text(check, "head_branch")
+                .or_else(|| at(check, "/check_suite/head_branch"))
+                .into_iter()
+                .collect();
+            let ended =
+                event == "check_suite" && text(payload, "action").as_deref() == Some("completed");
+            hook(
+                repo,
+                numbers,
+                text(check, "head_sha"),
+                None,
+                branches,
+                ended,
+            )
         }
         "status" => {
             let Some(repo) = repo() else {
                 return Delivery::Other;
             };
-            hook(repo, Vec::new(), text(payload, "sha"), None)
+            // Up to ten branches that hold the commit, at their heads or not.
+            let branches = payload
+                .get("branches")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|b| text(b, "name"))
+                .collect();
+            let ended = text(payload, "state").is_some_and(|s| s != "pending");
+            hook(
+                repo,
+                Vec::new(),
+                text(payload, "sha"),
+                None,
+                branches,
+                ended,
+            )
         }
         _ => Delivery::Other,
     }
@@ -265,16 +317,13 @@ const PULL: &str = "number url title state isDraft createdAt updatedAt mergedAt 
   mergeStateStatus mergeable
   mergeQueueEntry { enqueuedAt }";
 
-/// What a lookup of [`Fields::All`] asks besides: the checks of its head
-/// commit counted by their state, with the first 100 checks among them, in
-/// which [`replaced`] finds the runs that a later run of the same check
-/// replaced, [`failing`] the checks that failed, and [`review_runs`] the
-/// instance's review of the commit.
-const CHECKS: &str = "commits(last: 1) {
-    nodes {
-      commit {
-        oid
-        statusCheckRollup {
+/// What a lookup asks of a commit's checks: counted by their state, with
+/// the first 100 checks among them, in which [`replaced`] finds the runs
+/// that a later run of the same check replaced, [`failing`] the checks
+/// that failed, and [`review_runs`] the instance's review of the commit.
+macro_rules! rollup {
+    () => {
+        "statusCheckRollup {
           contexts(first: 100) {
             checkRunCountsByState { state count }
             statusContextCountsByState { state count }
@@ -286,10 +335,149 @@ const CHECKS: &str = "commits(last: 1) {
               ... on StatusContext { context state }
             }
           }
-        }
-      }
+        }"
+    };
+}
+
+/// What a lookup of [`Fields::All`] asks besides: the checks of its head
+/// commit ([`rollup`]).
+const CHECKS: &str = concat!(
+    "commits(last: 1) {\n    nodes {\n      commit {\n        oid\n        ",
+    rollup!(),
+    "\n      }\n    }\n  }"
+);
+
+/// What a lookup of a commit on a base branch ([`commit_query`]) asks of
+/// it: its checks ([`rollup`]) and the commits before it, newest first,
+/// up to [`HISTORY`] with it, which tell whether it holds a merge.
+const COMMIT: &str = concat!(
+    "... on Commit {\n      oid\n      history(first: 50) { nodes { oid } }\n      ",
+    rollup!(),
+    "\n    }"
+);
+
+/// How many commits, back from one on a base branch, a lookup of it
+/// lists ([`COMMIT`]): a merge further back counts as not in it.
+pub const HISTORY: usize = 50;
+
+/// The GraphQL request that looks up commit `sha` of `repo`, which a check
+/// suite or a commit status says is on `branch`: its checks and the
+/// commits before it ([`COMMIT`]), and the commit `branch` is at now with
+/// those before it, up to [`HISTORY`], which tell whether `sha` is on it
+/// ([`looked_up_commit`] reads them). A check suite of a fork's pull
+/// request names the fork's branch, which may share the base branch's
+/// name.
+pub fn commit_query(repo: &RepoRef, sha: &str, branch: &str) -> Value {
+    json!({
+        "query": format!(
+            "query($owner: String!, $name: String!, $sha: GitObjectID!, $branch: String!) {{\n  \
+             rateLimit {{ remaining }}\n  \
+             repository(owner: $owner, name: $name) {{\n    \
+             ref(qualifiedName: $branch) {{ target {{ oid ... on Commit {{ history(first: {HISTORY}) {{ nodes {{ oid }} }} }} }} }}\n    \
+             object(oid: $sha) {{\n      {COMMIT}\n    }}\n  }}\n}}"
+        ),
+        "variables": {
+            "owner": repo.owner,
+            "name": repo.name,
+            "sha": sha,
+            "branch": format!("refs/heads/{branch}"),
+        },
+    })
+}
+
+/// A commit on a base branch, as a lookup of it ([`commit_query`]) found
+/// it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    /// It and the commits before it, newest first, up to [`HISTORY`].
+    pub history: Vec<String>,
+    /// The commit its branch is at now: `None` when GitHub didn't say, as
+    /// for a branch deleted since.
+    pub head: Option<String>,
+    /// Whether it is on its branch: the commit the branch is at, or one of
+    /// the [`HISTORY`] before that. A fork's commit isn't, though its
+    /// branch has the base branch's name.
+    pub on_branch: bool,
+    pub checks: CommitChecks,
+}
+
+impl Commit {
+    /// Whether it holds commit `sha`: it is that commit, or comes after it
+    /// ([`HISTORY`] at most).
+    pub fn holds(&self, sha: &str) -> bool {
+        self.history.iter().any(|h| h.eq_ignore_ascii_case(sha))
     }
-  }";
+
+    /// Whether its branch moved on since: it is at another commit now.
+    pub fn superseded(&self) -> bool {
+        self.head
+            .as_deref()
+            .is_some_and(|head| !head.eq_ignore_ascii_case(&self.sha))
+    }
+}
+
+/// Whether GitHub answered a [`commit_query`]: it said where the
+/// repository is (the commit may still be missing), or that it has no such
+/// repository (`NOT_FOUND`). An answer of errors alone, such as a rate
+/// limit or a query that took too long, says nothing of the commit.
+pub fn commit_answered(answer: &Value) -> bool {
+    if answer
+        .pointer("/data/repository")
+        .is_some_and(|r| !r.is_null())
+    {
+        return true;
+    }
+    answer
+        .get("errors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|e| {
+            e.get("type").and_then(Value::as_str) == Some("NOT_FOUND")
+                && e.pointer("/path/0").and_then(Value::as_str) == Some("repository")
+        })
+}
+
+/// What GitHub's answer to [`commit_query`] says of the commit: `None`
+/// when GitHub has none.
+pub fn looked_up_commit(answer: &Value) -> Option<Commit> {
+    let repo = answer.pointer("/data/repository")?;
+    let commit = repo.get("object").filter(|c| !c.is_null())?;
+    let sha = commit.get("oid")?.as_str()?.to_owned();
+    let mut history: Vec<String> = commit
+        .pointer("/history/nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|n| Some(n.get("oid")?.as_str()?.to_owned()))
+        .collect();
+    if !history.iter().any(|h| h.eq_ignore_ascii_case(&sha)) {
+        history.insert(0, sha.clone());
+    }
+    let head = repo
+        .pointer("/ref/target/oid")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let on_branch = head
+        .iter()
+        .map(String::as_str)
+        .chain(
+            repo.pointer("/ref/target/history/nodes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.get("oid")?.as_str()),
+        )
+        .any(|h| h.eq_ignore_ascii_case(&sha));
+    Some(Commit {
+        history,
+        head,
+        on_branch,
+        checks: commit_checks(commit.pointer("/statusCheckRollup/contexts")),
+        sha,
+    })
+}
 
 /// What a lookup asks of each pull request ([`query`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -475,32 +663,15 @@ pub fn looked_up(
     let failing = failing(commit.and_then(|c| c.pointer("/statusCheckRollup/contexts")));
     let checks = commit.map(|c| {
         let contexts = c.pointer("/statusCheckRollup/contexts");
-        let counts = |key: &str| {
-            contexts
-                .and_then(|x| x.get(key))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|s| Some((s.get("state")?.as_str()?, s.get("count")?.as_u64()?)))
-        };
         let mut checks = PullRequestChecks {
             sha: head.clone(),
             at,
             ..Default::default()
         };
-        for (state, count) in
-            counts("checkRunCountsByState").chain(counts("statusContextCountsByState"))
-        {
+        for (state, count) in latest_counts(contexts) {
             if let Some(check) = check_state(state) {
                 let n = check.of(&mut checks);
-                *n = n.saturating_add(u32::try_from(count).unwrap_or(u32::MAX));
-            }
-        }
-        // GitHub counts every run of a check; the pull request shows its latest.
-        for state in replaced(contexts) {
-            if let Some(check) = check_state(state) {
-                let n = check.of(&mut checks);
-                *n = n.saturating_sub(1);
+                *n = n.saturating_add(count);
             }
         }
         // The instance's review says how it went in place of a count: the
@@ -600,6 +771,81 @@ fn failing(contexts: Option<&Value>) -> Vec<String> {
         }
     }
     names
+}
+
+/// How many of `contexts`' checks are in each state (`CheckRunState`,
+/// `StatusState`), each check once, by its latest run: GitHub counts every
+/// run of a check, but a pull request or a commit shows its latest
+/// ([`replaced`]).
+fn latest_counts(contexts: Option<&Value>) -> BTreeMap<&str, u32> {
+    let counts = |key: &str| {
+        contexts
+            .and_then(|x| x.get(key))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|s| Some((s.get("state")?.as_str()?, s.get("count")?.as_u64()?)))
+    };
+    let mut by_state: BTreeMap<&str, u32> = BTreeMap::new();
+    for (state, count) in
+        counts("checkRunCountsByState").chain(counts("statusContextCountsByState"))
+    {
+        let n = by_state.entry(state).or_default();
+        *n = n.saturating_add(u32::try_from(count).unwrap_or(u32::MAX));
+    }
+    for state in replaced(contexts) {
+        if let Some(n) = by_state.get_mut(state) {
+            *n = n.saturating_sub(1);
+        }
+    }
+    by_state
+}
+
+/// The checks of a commit, each once, by its latest run ([`commit_checks`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitChecks {
+    /// Succeeded, or were skipped or neutral.
+    pub passed: u32,
+    /// Failed, errored, timed out or couldn't start, or wait for someone to
+    /// act.
+    pub failed: u32,
+    /// Were cancelled: as a newer run of their workflow took over, say.
+    pub cancelled: u32,
+    /// Queued or running, or expected and not reported yet.
+    pub pending: u32,
+    /// Those that failed, by name ([`failing`]): the first 100 checks'.
+    pub failing: Vec<String>,
+}
+
+impl CommitChecks {
+    /// How many checks it has.
+    pub fn total(&self) -> u32 {
+        self.passed
+            .saturating_add(self.failed)
+            .saturating_add(self.cancelled)
+            .saturating_add(self.pending)
+    }
+}
+
+/// The checks of a commit, from its status check rollup's `contexts`
+/// (asked as [`CHECKS`] asks them): unlike a pull request's, those
+/// cancelled count apart from those that failed.
+pub fn commit_checks(contexts: Option<&Value>) -> CommitChecks {
+    let mut checks = CommitChecks {
+        failing: failing(contexts),
+        ..Default::default()
+    };
+    for (state, count) in latest_counts(contexts) {
+        let n = match (state, check_state(state)) {
+            ("CANCELLED", _) => &mut checks.cancelled,
+            (_, Some(Check::Passed)) => &mut checks.passed,
+            (_, Some(Check::Failed)) => &mut checks.failed,
+            (_, Some(Check::Pending)) => &mut checks.pending,
+            (_, None) => continue,
+        };
+        *n = n.saturating_add(count);
+    }
+    checks
 }
 
 enum Check {
@@ -1348,6 +1594,199 @@ mod tests {
         assert!(hook(delivery("status", &status)).checks);
         let suite = json!({ "check_suite": { "head_sha": "abc" }, "repository": { "full_name": "acme/app" } });
         assert!(hook(delivery("check_suite", &suite)).checks);
+    }
+
+    #[test]
+    fn deliveries_say_where_a_merge_went_and_when_a_branchs_checks_end() {
+        // Merged: the commit that holds it on its base branch.
+        let mut pr = open_pr();
+        pr["merge_commit_sha"] = json!("9e8d7c6");
+        pr["state"] = json!("closed");
+        pr["merged"] = json!(true);
+        pr["merged_at"] = json!("2026-10-21T11:00:00Z");
+        let p = hook(delivery(
+            "pull_request",
+            &pull_request_event("closed", pr.clone()),
+        ))
+        .payload
+        .unwrap_or_else(|| panic!("no payload"));
+        assert_eq!(p.merge_sha.as_deref(), Some("9e8d7c6"));
+        // While open, GitHub's is a test merge, which holds nothing.
+        let mut open = open_pr();
+        open["merge_commit_sha"] = json!("1a2b3c4");
+        let p = hook(delivery(
+            "pull_request",
+            &pull_request_event("synchronize", open),
+        ))
+        .payload
+        .unwrap_or_else(|| panic!("no payload"));
+        assert_eq!(p.merge_sha, None);
+        let h = hook(delivery("pull_request", &pull_request_event("closed", pr)));
+        assert!(!h.ended && h.branches.is_empty());
+        // A check suite that completed on a branch: its checks may have ended.
+        let repository = json!({ "full_name": "acme/app" });
+        let suite = |action: &str| {
+            json!({
+                "action": action,
+                "check_suite": { "head_sha": "9e8d7c6", "head_branch": "main", "status": "completed", "pull_requests": [] },
+                "repository": repository,
+            })
+        };
+        let h = hook(delivery("check_suite", &suite("completed")));
+        assert_eq!(
+            (h.ended, h.branches, h.sha.as_deref()),
+            (true, vec!["main".to_owned()], Some("9e8d7c6"))
+        );
+        assert!(!hook(delivery("check_suite", &suite("requested"))).ended);
+        // A check run's end waits for its suite's.
+        let run = json!({
+            "action": "completed",
+            "check_run": { "head_sha": "9e8d7c6", "check_suite": { "head_branch": "main" } },
+            "repository": repository,
+        });
+        let h = hook(delivery("check_run", &run));
+        assert_eq!((h.ended, h.branches), (false, vec!["main".to_owned()]));
+        // A fork's suite names no branch.
+        let fork = json!({
+            "action": "completed",
+            "check_suite": { "head_sha": "9e8d7c6", "head_branch": null },
+            "repository": repository,
+        });
+        assert!(hook(delivery("check_suite", &fork)).branches.is_empty());
+        // A commit status that no longer waits, on the branches that hold it.
+        let status = |state: &str| {
+            json!({
+                "sha": "9e8d7c6", "state": state, "repository": repository,
+                "branches": [{ "name": "main" }, { "name": "release" }],
+            })
+        };
+        let h = hook(delivery("status", &status("success")));
+        assert_eq!(
+            (h.ended, h.branches),
+            (true, vec!["main".to_owned(), "release".to_owned()])
+        );
+        assert!(hook(delivery("status", &status("error"))).ended);
+        assert!(!hook(delivery("status", &status("pending"))).ended);
+    }
+
+    /// GitHub's answer to a [`commit_query`] of a commit on main whose
+    /// checks ended: two check runs, one of them run again, and a commit
+    /// status, while main moved on to a newer commit.
+    fn commit_answer() -> Value {
+        let run = |name: &str, id: u64, conclusion: &str| {
+            json!({
+                "name": name, "status": "COMPLETED", "conclusion": conclusion, "databaseId": id,
+                "checkSuite": { "app": { "databaseId": 15368 },
+                    "workflowRun": { "event": "push", "workflow": { "databaseId": 1 } } },
+            })
+        };
+        json!({ "data": {
+            "rateLimit": { "remaining": 4990 },
+            "repository": {
+                "ref": { "target": { "oid": "ccc333",
+                    "history": { "nodes": [{ "oid": "ccc333" }, { "oid": "bbb222" }, { "oid": "aaa111" }] } } },
+                "object": {
+                    "oid": "bbb222",
+                    "history": { "nodes": [{ "oid": "bbb222" }, { "oid": "aaa111" }] },
+                    "statusCheckRollup": { "contexts": {
+                        "checkRunCountsByState": [
+                            { "state": "SUCCESS", "count": 1 },
+                            { "state": "FAILURE", "count": 1 },
+                            { "state": "CANCELLED", "count": 1 },
+                        ],
+                        "statusContextCountsByState": [{ "state": "SUCCESS", "count": 1 }],
+                        "nodes": [
+                            run("test", 1, "FAILURE"),
+                            run("test", 2, "SUCCESS"),
+                            run("deploy", 3, "CANCELLED"),
+                            { "context": "ci/vercel", "state": "SUCCESS" },
+                        ],
+                    } },
+                },
+            },
+        } })
+    }
+
+    #[test]
+    fn a_lookup_of_a_commit_on_a_branch_says_its_checks_and_what_it_holds() {
+        let repo = RepoRef::parse("acme/app").unwrap_or_else(|| panic!("no repo"));
+        let q = commit_query(&repo, "bbb222", "main");
+        assert_eq!(
+            q["variables"],
+            json!({ "owner": "acme", "name": "app", "sha": "bbb222", "branch": "refs/heads/main" })
+        );
+        let text = q["query"].as_str().unwrap_or_default();
+        assert!(
+            text.contains(&format!("history(first: {HISTORY})")),
+            "{text}"
+        );
+        assert!(text.contains("statusCheckRollup"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "ref(qualifiedName: $branch) {{ target {{ oid ... on Commit {{ history(first: {HISTORY}) {{ nodes {{ oid }} }} }} }} }}"
+            )),
+            "{text}"
+        );
+        let c = looked_up_commit(&commit_answer()).unwrap_or_else(|| panic!("no commit"));
+        assert_eq!(c.sha, "bbb222");
+        assert_eq!(c.head.as_deref(), Some("ccc333"));
+        assert!(c.superseded() && c.on_branch);
+        assert!(c.holds("aaa111") && c.holds("BBB222") && !c.holds("ccc333"));
+        // A fork's commit, whose branch has main's name: not on main.
+        let mut fork = commit_answer();
+        fork["data"]["repository"]["ref"]["target"]["history"]["nodes"] =
+            json!([{ "oid": "ccc333" }, { "oid": "aaa111" }]);
+        let c = looked_up_commit(&fork).unwrap_or_else(|| panic!("no commit"));
+        assert!(!c.on_branch);
+        // The commit main is at is on it, whatever its history says.
+        let mut head = commit_answer();
+        head["data"]["repository"]["ref"] = json!({ "target": { "oid": "BBB222" } });
+        let c = looked_up_commit(&head).unwrap_or_else(|| panic!("no commit"));
+        assert!(c.on_branch && !c.superseded());
+        // A branch GitHub doesn't have.
+        let mut gone = commit_answer();
+        gone["data"]["repository"]["ref"] = Value::Null;
+        let c = looked_up_commit(&gone).unwrap_or_else(|| panic!("no commit"));
+        assert!(!c.on_branch && c.head.is_none());
+        // The test that failed and passed when run again counts once,
+        // passed; the cancelled deploy apart from the failures.
+        assert_eq!(
+            c.checks,
+            CommitChecks {
+                passed: 2,
+                failed: 0,
+                cancelled: 1,
+                pending: 0,
+                failing: Vec::new(),
+            }
+        );
+        // A commit GitHub doesn't have: an answer all the same.
+        let mut gone = commit_answer();
+        gone["data"]["repository"]["object"] = Value::Null;
+        assert_eq!(looked_up_commit(&gone), None);
+        assert!(commit_answered(&gone) && commit_answered(&commit_answer()));
+        // Nor a repository: GitHub says so.
+        let no_repo = json!({
+            "data": { "repository": null },
+            "errors": [{ "type": "NOT_FOUND", "path": ["repository"],
+                "message": "Could not resolve to a Repository with the name 'acme/app'." }],
+        });
+        assert!(commit_answered(&no_repo));
+        // A rate limit or a timeout says nothing of the commit.
+        let limited = json!({
+            "data": null,
+            "errors": [{ "type": "RATE_LIMITED", "message": "API rate limit exceeded" }],
+        });
+        assert!(!commit_answered(&limited) && looked_up_commit(&limited).is_none());
+        let timeout = json!({ "errors": [{ "message": "Something went wrong while executing your query. This may be the result of a timeout." }] });
+        assert!(!commit_answered(&timeout));
+        // History GitHub left out still holds the commit itself.
+        let mut bare = commit_answer();
+        bare["data"]["repository"]["object"]
+            .as_object_mut()
+            .map(|o| o.remove("history"));
+        let c = looked_up_commit(&bare).unwrap_or_else(|| panic!("no commit"));
+        assert_eq!(c.history, vec!["bbb222".to_owned()]);
     }
 
     #[test]

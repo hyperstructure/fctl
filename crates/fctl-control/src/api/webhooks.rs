@@ -4,13 +4,15 @@
 //! starts a review where a project's review agents are on
 //! (`crate::reviews`); and what people write on pull requests fctl's
 //! agents opened, their failed checks and their merges bring those agents
-//! back where their projects say so (`crate::follow_ups`). GitHub signs
+//! back where their projects say so (`crate::follow_ups`); and the checks
+//! on a base branch after a merge of an autopilot's session wake that
+//! autopilot as they end (`crate::merge_checks`). GitHub signs
 //! each delivery with the webhook's secret (`GITHUB_WEBHOOK_SECRET`);
 //! without the secret the instance takes none.
 
 use crate::ctx::Ctx;
 use crate::error::{AppError, AppResult, not_configured};
-use crate::{http, pull_requests};
+use crate::{http, merge_checks, pull_requests};
 use fctl_domain::webhooks::{self, Delivery};
 use fctl_proto::{ApiError, ErrorCode};
 use serde_json::{Value, json};
@@ -84,6 +86,27 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
         Delivery::Ping => return http::ok(&json!({ "ok": true })),
         Delivery::Other => 0,
         Delivery::Hook(hook) => {
+            // A merge, or checks that ended on its base branch, for
+            // autopilots; a failure there doesn't keep the sessions that
+            // list the pull request from hearing of it.
+            let woke = match merge_checks::on_delivery(&ctx.env, &ctx.cfg, &ctx.db, &hook, ctx.now)
+                .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    worker::console_error!(
+                        "webhook {delivery}: the checks after merges: {}",
+                        e.0.message
+                    );
+                    0
+                }
+            };
+            if woke > 0 {
+                worker::console_log!(
+                    "webhook {delivery} ({event}, {}): the checks after merges ended for {woke} autopilots",
+                    hook.repo.full_name()
+                );
+            }
             let told = pull_requests::hook(&ctx.env, &ctx.cfg, &ctx.db, &hook, ctx.now).await?;
             if told > 0 || reviews > 0 {
                 worker::console_log!(

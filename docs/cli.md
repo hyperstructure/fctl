@@ -766,8 +766,9 @@ sessions it starts and those it started (`fctl run --attach`, `fctl send
 --attach`): one people sent it, one it made, or one sent in another of its
 sessions, which `fctl files get` downloads. `fctl run` returns at once
 there; fctl wakes it when its sessions move on (a turn that ends, a
-question, a failure, or a pull request of one that rests merging or
-closing), with the start of what
+question, a failure, a pull request of one that rests merging or
+closing, or the checks on the base branch ending after one merged), with
+the start of what
 each said as its turn ended (or why it said nothing, where fctl knows)
 and what people wrote to it meanwhile
 (people's messages don't wake it themselves). `fctl logs <ref>
