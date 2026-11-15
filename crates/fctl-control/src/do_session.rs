@@ -299,9 +299,10 @@ const HEARD: &str = "heard";
 /// JSON), which D1's row gets beside `said` (`sessions.silence`): what cut
 /// into the turn under way, then how it ended, until the next one starts.
 const SILENCE: &str = "silence";
-/// The meta key of the latest message or interrupt that an autopilot sent
-/// its session, by delivery id, which a message reaching the agent names
-/// only its owner for (`fctl_domain::autopilot::cut_into`).
+/// The meta key of the messages and interrupts that an autopilot sent its
+/// session and its agent hasn't taken yet, by delivery id
+/// (`fctl_domain::autopilot::sent`): the agent takes them as its owner's
+/// (`fctl_domain::autopilot::cut_into`).
 const AUTOPILOT_SENT: &str = "autopilot_sent";
 
 /// Whether `s` is one of the sessions an autopilot started.
@@ -999,7 +1000,9 @@ impl SessionObject {
         let by_autopilot = b.by_autopilot
             || matches!(&b.event, EventBody::UserMessage(m) if m.autopilot.is_some());
         if by_autopilot && self.summary().is_some_and(|s| crew(&s)) {
-            self.set_meta(AUTOPILOT_SENT, b.delivery.id.as_str());
+            let kept = self.meta(AUTOPILOT_SENT);
+            let sent = fctl_domain::autopilot::sent(kept.as_deref(), b.delivery.id.as_str());
+            self.set_meta(AUTOPILOT_SENT, &sent);
         }
         // An autopilot's session: its autopilot hears what people, rather
         // than it, wrote (`UserMessage::autopilot` marks its own). Before
@@ -2981,10 +2984,14 @@ impl SessionObject {
                     if matches!(kind, DeliveryKind::Message { .. }) {
                         self.set_meta(SAID, "");
                     }
-                    let by_autopilot =
-                        self.meta(AUTOPILOT_SENT).as_deref() == Some(delivery_id.as_str());
+                    let kept = self.meta(AUTOPILOT_SENT);
+                    let (by_autopilot, rest) =
+                        fctl_domain::autopilot::taken(kept.as_deref(), delivery_id.as_str());
                     if by_autopilot {
-                        self.delete_meta(AUTOPILOT_SENT);
+                        match rest {
+                            Some(rest) => self.set_meta(AUTOPILOT_SENT, &rest),
+                            None => self.delete_meta(AUTOPILOT_SENT),
+                        }
                     }
                     if s.status == SessionStatus::Running {
                         let why =

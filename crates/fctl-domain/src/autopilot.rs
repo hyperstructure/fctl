@@ -1363,6 +1363,43 @@ pub fn silence(stored: Option<&str>) -> Option<Silence> {
     stored.and_then(|s| serde_json::from_str(s).ok())
 }
 
+/// How many of the messages and interrupts an autopilot sent one of its
+/// sessions, which its agent hasn't taken yet, the session keeps by
+/// delivery id ([`sent`]): an interrupt and the message after it, and a
+/// few more that a runner gone for a while still owes.
+pub const SENT_KEPT: usize = 10;
+
+/// What a session keeps of the deliveries its autopilot sent that its
+/// agent hasn't taken (`kept`, as stored), once it sent `id`: the newest
+/// [`SENT_KEPT`], as JSON. The agent takes one as its owner's, as whom
+/// the autopilot acts, so only these tell them apart ([`taken`]).
+pub fn sent(kept: Option<&str>, id: &str) -> String {
+    let mut all = sent_ids(kept);
+    all.retain(|i| i != id);
+    all.push(id.to_owned());
+    let drop = all.len().saturating_sub(SENT_KEPT);
+    all.drain(..drop);
+    serde_json::to_string(&all).unwrap_or_else(|_| "[]".to_owned())
+}
+
+/// Whether the delivery `id` that the agent took is one the autopilot sent
+/// (`kept`, from [`sent`]), and what the session keeps from then on:
+/// `None` once it keeps none.
+pub fn taken(kept: Option<&str>, id: &str) -> (bool, Option<String>) {
+    let mut all = sent_ids(kept);
+    let before = all.len();
+    all.retain(|i| i != id);
+    let rest = (!all.is_empty())
+        .then(|| serde_json::to_string(&all).ok())
+        .flatten();
+    (all.len() != before, rest)
+}
+
+fn sent_ids(kept: Option<&str>) -> Vec<String> {
+    kept.and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
+}
+
 /// Why the turn under way may end without a word, once a message or an
 /// interrupt (`kind`, which the autopilot sent when `by_autopilot`) reached
 /// the agent mid-turn, given what cut into the turn before (`kept`): an
@@ -3842,5 +3879,31 @@ mod tests {
             line(Stopped, None, None),
             "shop#42 “Fix the footer”: stopped (a message resumes it)"
         );
+    }
+
+    #[test]
+    fn tells_what_the_autopilot_sent_from_its_owners_messages() {
+        // An interrupt, then the message with what to do, both sent before
+        // the agent takes the first: each is the autopilot's.
+        let kept = sent(None, "dlv_1");
+        let kept = sent(Some(&kept), "dlv_2");
+        let (theirs, rest) = taken(Some(&kept), "dlv_1");
+        assert!(theirs);
+        assert_eq!(rest.as_deref(), Some(r#"["dlv_2"]"#));
+        // Its owner's own, taken between them, isn't.
+        assert_eq!(taken(rest.as_deref(), "dlv_9"), (false, rest.clone()));
+        assert_eq!(taken(rest.as_deref(), "dlv_2"), (true, None));
+        // The newest few, once each.
+        let mut kept = sent(None, "dlv_0");
+        for i in 0..=SENT_KEPT {
+            kept = sent(Some(&kept), &format!("dlv_{i}"));
+        }
+        assert!(!taken(Some(&kept), "dlv_0").0);
+        assert!(taken(Some(&kept), "dlv_1").0);
+        assert!(taken(Some(&kept), &format!("dlv_{SENT_KEPT}")).0);
+        assert_eq!(sent_ids(Some(&kept)).len(), SENT_KEPT);
+        // Nothing kept, or what doesn't read, is nothing.
+        assert_eq!(taken(None, "dlv_1"), (false, None));
+        assert_eq!(taken(Some("not json"), "dlv_1"), (false, None));
     }
 }
