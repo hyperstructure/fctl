@@ -289,4 +289,13 @@ describe("Pull", () => {
     twitch.moved(12, 10);
     expect(twitch.away(16, 600)).toBe(false);
   });
+
+  it("keeps it with a flick back up, however far it was pulled", () => {
+    const p = new Pull(0, 0);
+    for (let y = 10, at = 100; y <= 300; y += 10, at += 100) p.moved(y, at);
+    expect(p.away(3050, 600)).toBe(true);
+    p.moved(270, 3010);
+    p.moved(240, 3020);
+    expect(p.away(3030, 600)).toBe(false);
+  });
 });

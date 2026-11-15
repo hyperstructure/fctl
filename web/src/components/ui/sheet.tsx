@@ -12,7 +12,7 @@ const CLOSING_MS = 400;
 /**
  * A finger that lets go of a sheet pulled down this far (a fraction of its
  * height), or moving down this fast (px/ms) over its last moments, puts it
- * away; otherwise it settles back.
+ * away, unless it flicks it back up; otherwise it settles back.
  */
 const PULL_AWAY = 0.25;
 const FLICK = 0.4;
@@ -20,9 +20,10 @@ const FLICK = 0.4;
 const RECENT_MS = 100;
 
 /**
- * A finger pulling a sheet down, from where it touched it: how far it has
- * pulled, and whether letting go puts the sheet away. It takes measurements
- * rather than reading the page, so that tests can drive it.
+ * A finger pulling a sheet down, or a picture in the lightbox, from where it
+ * touched it: how far it has pulled, and whether letting go puts it away. It
+ * takes measurements rather than reading the page, so that tests can drive
+ * it.
  */
 export class Pull {
   private moves: { y: number; at: number }[];
@@ -51,6 +52,8 @@ export class Pull {
     const first = recent[0];
     const last = recent[recent.length - 1];
     const speed = first && last && last.at > first.at ? (last.y - first.y) / (last.at - first.at) : 0;
+    // A flick back up keeps it.
+    if (speed < -FLICK) return false;
     return this.distance > height * PULL_AWAY || (speed > FLICK && this.distance > 16);
   }
 }

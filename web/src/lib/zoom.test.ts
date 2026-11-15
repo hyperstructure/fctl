@@ -57,6 +57,27 @@ describe("Zoom", () => {
     expect(zoom.pinch(most, [p(150, 400), p(250, 400)], [p(100, 400), p(300, 400)]).scale).toBeCloseTo(5.2);
   });
 
+  it("starts a pinch where a pull left the picture, without a jump", () => {
+    const zoom = new Zoom(win, fit, 1440);
+    const pulled = { scale: 0.8, x: 10, y: 120 };
+    // Two fingers that haven't moved yet.
+    expect(zoom.pinch(pulled, [p(150, 400), p(250, 400)], [p(150, 400), p(250, 400)])).toEqual(pulled);
+  });
+
+  it("follows a finger that pulls the picture down, shrinking it about the spot it touched", () => {
+    const zoom = new Zoom(win, fit, 1440);
+    // Touched 100 px left of its middle, then pulled a quarter of the window down and 30 px right.
+    expect(zoom.pull(p(100, 400), p(130, 600))).toEqual({ scale: 0.875, x: 17.5, y: 200 });
+    // The window's height down, or further, it is half its size.
+    expect(zoom.pull(p(200, 0), p(200, 800)).scale).toBe(0.5);
+    expect(zoom.pull(p(200, 0), p(200, 900)).scale).toBe(0.5);
+  });
+
+  it("resists a pull up past where the finger started, at the picture's size", () => {
+    const zoom = new Zoom(win, fit, 1440);
+    expect(zoom.pull(p(200, 400), p(200, 300))).toEqual({ scale: 1, x: 0, y: -30 });
+  });
+
   it("lets a picture larger than the window cover it, and a smaller one stay in it", () => {
     const zoom = new Zoom(win, fit, 1440);
     // 720 × 400: wider than the window, not as tall.

@@ -45,6 +45,8 @@ const DOUBLE_TAP_ZOOM = 3;
 const ZOOMED = 1.01;
 /** How far a picture follows fingers that zoom or move it past where it may go. */
 const RESIST = 0.3;
+/** A picture pulled down the window's height shrinks to this much of its size. */
+const PULLED = 0.5;
 /** How much of its speed a gliding picture keeps for each ms. */
 const GLIDE = 0.995;
 /** A gliding picture this slow (px/ms) stops. */
@@ -99,11 +101,28 @@ export class Zoom {
   /**
    * The view after two fingers moved from `from` to `to`, from `start`: the
    * spot between them stays between them. It resists zooming out past the
-   * fitting size, or in past the most.
+   * fitting size, or past the size it starts at if that is smaller (a pull
+   * can leave it there), so that it doesn't jump; or in past the most.
    */
   pinch(start: View, from: [Point, Point], to: [Point, Point]): View {
-    const scale = resist(start.scale * (apart(to) / Math.max(apart(from), 1)), 1, this.max);
+    const scale = resist(
+      start.scale * (apart(to) / Math.max(apart(from), 1)),
+      Math.min(1, start.scale),
+      this.max,
+    );
     return this.about(start, scale, between(from), between(to));
+  }
+
+  /**
+   * The view as a finger pulls the picture as it fits from `from` to `to`, to
+   * put it away: the spot it touched stays under it, and it shrinks as it
+   * goes down, to half its size the window's height down. It resists going
+   * up past where the finger started.
+   */
+  pull(from: Point, to: Point): View {
+    const down = to.y - from.y;
+    const scale = 1 - (1 - PULLED) * clamp(down / Math.max(this.window.height, 1), 0, 1);
+    return this.about(FITS, scale, from, { x: to.x, y: down < 0 ? from.y + down * RESIST : to.y });
   }
 
   /**

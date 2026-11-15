@@ -1287,7 +1287,10 @@
    into place as the page dims behind it. A picture swiped aside slides on
    from where the finger left it, to the next or previous one or back. One
    zoomed in on settles into place once the fingers let go, and a double tap
-   zooms it in or out. */
+   zooms it in or out. An image pulled down follows the finger as the page
+   shows through behind it, and the buttons and caption over it fade, gone
+   where letting go closes it; let go, it goes on down out of sight as the
+   lightbox closes, or settles back. */
 @theme {
   --animate-zoom-in: zoom-in 220ms var(--ease-out) both;
 }
@@ -1308,6 +1311,35 @@
 /* While a finger moves it, or it glides on, on a layer of its own. */
 .lightbox-picture[data-moving] {
   will-change: transform;
+}
+.lightbox::backdrop {
+  opacity: calc(1 - var(--lightbox-pulled, 0));
+}
+.lightbox-chrome {
+  opacity: calc(1 - 2 * var(--lightbox-pulled, 0));
+}
+.lightbox::backdrop,
+.lightbox-chrome {
+  transition: opacity 300ms var(--ease-out);
+}
+@starting-style {
+  .lightbox[open]::backdrop {
+    opacity: 0;
+  }
+}
+.lightbox[data-pulling]::backdrop,
+.lightbox[data-pulling] .lightbox-chrome {
+  transition: none;
+}
+.lightbox[data-closing]::backdrop,
+.lightbox[data-closing] .lightbox-chrome {
+  opacity: 0;
+  transition-duration: 220ms;
+}
+.lightbox[data-closing] .lightbox-picture {
+  transition:
+    translate 220ms var(--ease-out),
+    scale 220ms var(--ease-out);
 }
 
 /* Sheets (components/ui/sheet.tsx): on phones a sheet slides up from the

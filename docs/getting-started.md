@@ -467,9 +467,9 @@ started.
   as it takes them, in the background too, and its report. A click on an
   image or a screenshot shows it at full size, where the arrow keys, or a
   swipe on a phone, step through the session's others, and on a phone a
-  pinch or a double tap zooms in on it. The details beside the transcript
-  show how full Claude's context is, with where Claude compacts the
-  conversation to make room. On every page, the sidebar lists each
+  pinch or a double tap zooms in on it and a swipe down closes it. The
+  details beside the transcript show how full Claude's context is, with
+  where Claude compacts the conversation to make room. On every page, the sidebar lists each
   project's sessions under it, in all your workspaces: those that haven't
   ended (starting, at work, waiting or paused), and for an hour those that
   stopped or failed, dimmer, the one you are on marked, so a click switches
