@@ -120,8 +120,8 @@ pub enum AutopilotState {
     /// fctl wakes it no more until someone resumes it: a person paused it,
     /// it paused itself (its direction is done), or fctl did, saying why.
     Paused,
-    /// Taken off: it keeps its direction, notes, plan, log and asks, for
-    /// putting the project on autopilot again.
+    /// Taken off: it keeps its direction, notes, plan, files, log and asks,
+    /// for putting the project on autopilot again.
     Off,
 }
 

@@ -721,6 +721,7 @@ fctl autopilot answer -p crm apa_01JC… --attach logo.svg "The dark one"   # fi
 fctl autopilot secret -p crm apa_01JC…         # the value it asked for, without showing it (or from stdin)
 fctl autopilot decline -p crm apa_01JC… --reason "Not yet: after launch"
 fctl autopilot log -p crm --limit 100
+fctl autopilot files -p crm                    # the files it keeps for its next sessions; get NAME prints one
 fctl autopilot set -p crm --check-in 2h --direction-file direction.md   # how it works, or its direction
 fctl autopilot set -p crm --handoff-at 250k    # a fresh session takes over once its own holds 250K tokens of context (never: only after 12 hours)
 fctl autopilot wake -p crm                     # now, with what's new
@@ -729,7 +730,7 @@ fctl autopilot pause -p crm --reason "Launch week"
 fctl autopilot resume -p crm                   # on your subscription, if it ran on someone else's (unless they keep it)
 fctl autopilot set -p crm --keep-owner on      # its owner: others' changes and resumes run on your plan too
 fctl autopilot set -p crm --mine               # run it on your subscription from now on
-fctl autopilot off -p crm --stop-sessions      # its direction, notes, plan, log and asks stay
+fctl autopilot off -p crm --stop-sessions      # its direction, notes, plan, files, log and asks stay
 ```
 
 `--check-in` is how long it goes without waking, at most: 15m, 30m, 1h,
@@ -764,10 +765,15 @@ each said as its turn ended and what people wrote to it meanwhile
 
 ```sh
 fctl autopilot brief                           # where things stand, as it wakes
-fctl autopilot brief --only sessions,people,asks   # some parts: direction, notes, asks, sessions, people, plan, log
+fctl autopilot brief --only sessions,people,asks   # some parts: direction, notes, asks, sessions, people, plan, files, log
 fctl autopilot plan > plan.md                  # its plan as fctl has it
 fctl autopilot plan --file plan.md             # its plan, whole (Markdown; - for stdin)
 fctl autopilot plan --section "In flight" --file part.md   # one section, to the next heading of its level
+fctl autopilot files put watch-deploy.sh       # a file its next sessions get back (text: 256 KB each, 4 MB in all)
+fctl autopilot files put - --name reply.md < draft.md
+fctl autopilot files get --all                 # all of them, into the current directory (--dir DIR); scripts executable
+fctl autopilot files get watch-deploy.sh       # one, printed (-o FILE to write it)
+fctl autopilot files rm watch-deploy.sh
 fctl autopilot log "Started crm#12 for the board; imports wait for the CSV format."
 fctl autopilot ask "Which layout should the board use?" --detail-file options.md -o Compact -o Roomy
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"

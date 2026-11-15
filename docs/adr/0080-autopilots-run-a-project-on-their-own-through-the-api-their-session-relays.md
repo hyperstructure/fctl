@@ -38,7 +38,12 @@ agent that manages a project needs most of the API besides.
   after that, or once one failed, fctl starts it a fresh one with a
   briefing (and, added later, once its context passes the size people
   chose: `handoff_at`). It keeps what must outlast a conversation where people see it:
-  a plan, a log, and the project's memory. Sessions it starts are its
+  a plan, a log, and the project's memory; and, added later, files: text
+  such as the scripts it relies on and drafts, which its next session
+  gets back in its new sandbox, kept beside the plan rather than in it,
+  as each wake that reads its brief whole reads the plan again (an
+  autopilot filled its 20,000 characters with watcher scripts and message
+  drafts). Sessions it starts are its
   crew: up to as many at once as people allow, at most 20 an hour.
 - **fctl wakes it** on the schedules' alarm, which ScheduleObject already
   rings: at least at its check-in (15 minutes to a day), at the time it
@@ -102,5 +107,7 @@ agent that manages a project needs most of the API besides.
   people they all trust: whoever steers it then spends their plan, as
   them.
 - Its sessions' events go through SessionDO as any session's; the
-  autopilot's log, notes and asks are rows in D1, kept per project and
-  deleted with it.
+  autopilot's log, notes, asks and files are rows in D1, kept per project
+  and deleted with it. A file is text of at most 256 KB, which a D1 row
+  holds whole, so files need no Durable Object's chunks, as people's
+  attachments do.

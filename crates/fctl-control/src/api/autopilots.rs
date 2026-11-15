@@ -123,8 +123,8 @@ fn require_pilot(ctx: &Ctx, l: &Loaded) -> AppResult<()> {
 /// `GET /api/v1/projects/{id}/autopilot`.
 pub async fn get(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
-    // One that is off too: it keeps its direction, notes, plan, log and
-    // asks for when the project is put on autopilot again.
+    // One that is off too: it keeps its direction, notes, plan, files, log
+    // and asks for when the project is put on autopilot again.
     let row = l.row.clone().ok_or_else(|| not_found("Autopilot"))?;
     http::ok(&view(ctx, &l.p, &row, l.can).await?)
 }
@@ -1168,8 +1168,8 @@ fn join(items: &[&str]) -> String {
 }
 
 /// `POST …/autopilot/off`: takes the project off autopilot. It keeps its
-/// direction, notes, plan, log and asks; its own session stops, and with
-/// `stop_sessions` those it started that still work.
+/// direction, notes, plan, files, log and asks; its own session stops, and
+/// with `stop_sessions` those it started that still work.
 pub async fn off(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: AutopilotOffRequest = if http::header(req, "Content-Type").is_some() {
         http::body(req).await?
