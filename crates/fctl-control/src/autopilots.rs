@@ -30,8 +30,8 @@ use fctl_domain::autopilot::{self as ap, Gate};
 use fctl_domain::limits::{Limits, Places};
 use fctl_proto::api::{AgentAnswer, SendMessageResponse, TokenAccess, TokenKind};
 use fctl_proto::autopilot::{
-    AutopilotEntryKind, AutopilotPower, AutopilotRole, AutopilotScope, AutopilotSpec,
-    AutopilotState, AutopilotWake, AutopilotWakeReason, HeldMessage,
+    AutopilotEntryKind, AutopilotFile, AutopilotPower, AutopilotRole, AutopilotScope,
+    AutopilotSpec, AutopilotState, AutopilotWake, AutopilotWakeReason, HeldMessage,
 };
 use fctl_proto::event::{Attachment, EventBody, MessageSource, UserMessage};
 use fctl_proto::session::{SessionRef, SessionSchedule, SessionStatus, WorkspaceRole};
@@ -361,6 +361,160 @@ pub async fn log(db: &D1Database, project_id: &str, entry: Entry<'_>, now: i64) 
     if let Err(e) = written {
         worker::console_error!("autopilot log: {}", e.0.message);
     }
+}
+
+// ───────────────────────────── its files ─────────────────────────────
+
+/// One of the files it keeps across its sessions (`autopilot_files`), with
+/// what it holds when read alone.
+#[derive(Deserialize)]
+pub struct FileRow {
+    pub name: String,
+    #[serde(deserialize_with = "int")]
+    pub size: i64,
+    #[serde(deserialize_with = "int")]
+    pub created_at: i64,
+    #[serde(deserialize_with = "int")]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+impl FileRow {
+    pub fn file(self) -> AutopilotFile {
+        AutopilotFile {
+            name: self.name,
+            size: u64::try_from(self.size).unwrap_or(0),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            content: self.content,
+        }
+    }
+}
+
+/// The files of the autopilot of `project_id`, by name, without what they
+/// hold.
+pub async fn files(db: &D1Database, project_id: &str) -> AppResult<Vec<FileRow>> {
+    q(
+        db,
+        "SELECT name, size, created_at, updated_at FROM autopilot_files WHERE project_id = ? ORDER BY name",
+        &[s(project_id)],
+    )?
+    .all()
+    .await
+}
+
+/// Its file `name`, with what it holds.
+pub async fn file(db: &D1Database, project_id: &str, name: &str) -> AppResult<Option<FileRow>> {
+    q(
+        db,
+        "SELECT name, size, created_at, updated_at, content FROM autopilot_files WHERE project_id = ? AND name = ?",
+        &[s(project_id), s(name)],
+    )?
+    .first()
+    .await
+}
+
+/// What a write of a file did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Put {
+    /// It added a file.
+    New,
+    /// It replaced the one of that name.
+    Replaced,
+}
+
+/// Writes its file `name` whole (a name and content checked already), from
+/// its own session `from`, where it fits beside its other files
+/// (`fctl_domain::autopilot::file_room`). The write checks the room
+/// itself, in one statement, so that two at once can't both take the last
+/// of it.
+pub async fn put_file(
+    db: &D1Database,
+    project_id: &str,
+    name: &str,
+    content: &str,
+    from: Option<&str>,
+    now: i64,
+) -> AppResult<Put> {
+    #[derive(Deserialize)]
+    struct Room {
+        #[serde(deserialize_with = "int", default)]
+        others: i64,
+        #[serde(deserialize_with = "int", default)]
+        bytes: i64,
+        #[serde(deserialize_with = "int_bool", default)]
+        had: bool,
+    }
+    let room = || async {
+        let r: Option<Room> = q(
+            db,
+            "SELECT COALESCE(SUM(name != ?2), 0) AS others, \
+             COALESCE(SUM(CASE WHEN name != ?2 THEN size ELSE 0 END), 0) AS bytes, \
+             COALESCE(MAX(name = ?2), 0) AS had FROM autopilot_files WHERE project_id = ?1",
+            &[s(project_id), s(name)],
+        )?
+        .first()
+        .await?;
+        let r = r.unwrap_or(Room {
+            others: 0,
+            bytes: 0,
+            had: false,
+        });
+        AppResult::Ok(r)
+    };
+    let size = content.len() as u64;
+    let fits = |r: &Room| {
+        ap::file_room(
+            u32::try_from(r.others).unwrap_or(u32::MAX),
+            u64::try_from(r.bytes).unwrap_or(u64::MAX),
+            size,
+        )
+        .map_err(AppError)
+    };
+    let before = room().await?;
+    fits(&before)?;
+    let written = q(
+        db,
+        "INSERT INTO autopilot_files (project_id, name, content, size, created_at, updated_at, session_id) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?5, ?6 \
+         WHERE (SELECT COUNT(*) FROM autopilot_files WHERE project_id = ?1 AND name != ?2) < ?7 \
+         AND (SELECT COALESCE(SUM(size), 0) FROM autopilot_files WHERE project_id = ?1 AND name != ?2) + ?4 <= ?8 \
+         ON CONFLICT (project_id, name) DO UPDATE SET content = excluded.content, size = excluded.size, \
+         updated_at = excluded.updated_at, session_id = excluded.session_id",
+        &[
+            s(project_id),
+            s(name),
+            s(content),
+            n(i64::try_from(size).unwrap_or(i64::MAX)),
+            n(now),
+            os(from),
+            n(i64::from(ap::MAX_FILES)),
+            n(i64::try_from(ap::MAX_FILES_BYTES).unwrap_or(i64::MAX)),
+        ],
+    )?
+    .run()
+    .await?;
+    if written == 0 {
+        // Another write took the room meanwhile.
+        fits(&room().await?)?;
+        return Err(AppError(ApiError::conflict(
+            "Its files changed meanwhile: look again with `fctl autopilot files`, then try again",
+        )));
+    }
+    Ok(if before.had { Put::Replaced } else { Put::New })
+}
+
+/// Removes its file `name`: whether it had one.
+pub async fn remove_file(db: &D1Database, project_id: &str, name: &str) -> AppResult<bool> {
+    let gone = q(
+        db,
+        "DELETE FROM autopilot_files WHERE project_id = ? AND name = ?",
+        &[s(project_id), s(name)],
+    )?
+    .run()
+    .await?;
+    Ok(gone > 0)
 }
 
 /// An entry in the workspace's audit log for what fctl did for an
@@ -3412,6 +3566,100 @@ mod tests {
         let news = News::gather(&db, &row, NOW).await?;
         let listed: Vec<i64> = news.crew.iter().map(|c| c.number).collect();
         assert_eq!(listed, [13]);
+        Ok(())
+    }
+
+    /// Its files: a new one, the same one written again (its size counted
+    /// once, when it was made kept), and one past its room refused, with
+    /// what holds the room; once removed, gone.
+    #[wasm_bindgen_test]
+    async fn files_keep_within_their_room() -> AppResult<()> {
+        let db = testing::database();
+        autopilot(&db).await?;
+        let web = "prj_web";
+        assert_eq!(
+            put_file(&db, web, "watch.sh", "echo 1", Some("ses_1"), NOW).await?,
+            Put::New
+        );
+        assert_eq!(
+            put_file(&db, web, "watch.sh", "echo 22", Some("ses_2"), NOW + 1).await?,
+            Put::Replaced
+        );
+        let one = file(&db, web, "watch.sh")
+            .await?
+            .ok_or_else(|| internal("no file"))?;
+        assert_eq!(one.content.as_deref(), Some("echo 22"));
+        assert_eq!(
+            (one.size, one.created_at, one.updated_at),
+            (7, NOW, NOW + 1)
+        );
+        // 15 of the largest, and the 159,993 bytes left of 4 MB.
+        let big = "x".repeat(256_000);
+        for i in 0..15 {
+            put_file(&db, web, &format!("big-{i:02}.txt"), &big, None, NOW).await?;
+        }
+        let rest = "y".repeat(159_993);
+        assert_eq!(
+            put_file(&db, web, "rest.txt", &rest, None, NOW).await?,
+            Put::New
+        );
+        let full = put_file(&db, web, "more.txt", "z", None, NOW).await;
+        assert_eq!(
+            full.err().map(|e| e.0.message),
+            Some("Its files hold at most 4 MB in all, and the others hold 4 MB already: remove those it no longer needs first (`fctl autopilot files rm <name>`)".to_owned())
+        );
+        // In place of one, only the others count.
+        assert_eq!(
+            put_file(&db, web, "watch.sh", "echo 33", None, NOW).await?,
+            Put::Replaced
+        );
+        assert!(
+            put_file(&db, web, "watch.sh", "echo 333", None, NOW)
+                .await
+                .is_err()
+        );
+        let listed = files(&db, web).await?;
+        assert_eq!(listed.len(), 17);
+        assert_eq!(listed.first().map(|f| f.name.as_str()), Some("big-00.txt"));
+        assert!(listed.iter().all(|f| f.content.is_none()));
+        let all: i64 = listed.iter().map(|f| f.size).sum();
+        assert_eq!(all, 4_000_000);
+        assert!(remove_file(&db, web, "rest.txt").await?);
+        assert!(!remove_file(&db, web, "rest.txt").await?);
+        assert!(file(&db, web, "rest.txt").await?.is_none());
+        Ok(())
+    }
+
+    /// Two writes at once that each fit alone, but not together: the room
+    /// is checked as each writes, so one of them is refused.
+    #[wasm_bindgen_test]
+    async fn files_racing_for_the_last_room_dont_both_fit() -> AppResult<()> {
+        let db = testing::database();
+        autopilot(&db).await?;
+        let web = "prj_web";
+        let big = "x".repeat(256_000);
+        for i in 0..15 {
+            put_file(&db, web, &format!("big-{i:02}.txt"), &big, None, NOW).await?;
+        }
+        let half = "h".repeat(100_000);
+        let (a, b) = futures::join!(
+            put_file(&db, web, "a.txt", &half, None, NOW),
+            put_file(&db, web, "b.txt", &half, None, NOW)
+        );
+        assert_eq!(u8::from(a.is_ok()) + u8::from(b.is_ok()), 1);
+        let all: i64 = files(&db, web).await?.iter().map(|f| f.size).sum();
+        assert_eq!(all, 3_940_000);
+        // And at most so many files, whatever their size.
+        let db = testing::database();
+        autopilot(&db).await?;
+        for i in 0..ap::MAX_FILES {
+            put_file(&db, web, &format!("n-{i:03}"), "1", None, NOW).await?;
+        }
+        let many = put_file(&db, web, "one-more", "1", None, NOW).await;
+        assert!(
+            many.err()
+                .is_some_and(|e| e.0.message.starts_with("It keeps at most 100 files"))
+        );
         Ok(())
     }
 }

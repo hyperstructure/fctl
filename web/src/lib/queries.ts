@@ -68,6 +68,9 @@ export const keys = {
   /** A project's autopilot, by project id or slug, and its log under it. */
   autopilot: (project: string) => ["autopilot", project] as const,
   autopilotLog: (project: string) => ["autopilot", project, "log"] as const,
+  /** The files it keeps across its sessions, and one with what it holds. */
+  autopilotFiles: (project: string) => ["autopilot", project, "files"] as const,
+  autopilotFile: (project: string, name: string) => ["autopilot", project, "files", name] as const,
   /** What autopilots ask you, across your workspaces. */
   autopilotAsks: ["autopilot-asks"] as const,
   /** A project's schedules, by project id. */

@@ -276,6 +276,94 @@ pub fn plan_section(plan: &str, heading: &str, text: &str) -> Result<String> {
     Ok(s)
 }
 
+// ───────────────────────────── its files ─────────────────────────────
+
+/// The largest file it keeps, in bytes: 256 KB.
+pub const MAX_FILE_BYTES: u64 = 256_000;
+/// What all its files hold together, at most: 4 MB.
+pub const MAX_FILES_BYTES: u64 = 4_000_000;
+/// The most files it keeps.
+pub const MAX_FILES: u32 = 100;
+/// The longest name of one, in characters.
+pub const MAX_FILE_NAME: usize = 100;
+
+/// The name of one of its files (`watch-deploy.sh`): letters, digits, dots,
+/// dashes and underscores, starting with a letter or a digit and without
+/// `..`, so that it is one segment of the API's path (whose relay refuses
+/// `..`) and a file's name in any sandbox.
+pub fn file_name(input: &str) -> Result<String> {
+    if input.is_empty() {
+        return Err(ApiError::validation("name", "Name the file"));
+    }
+    if input.chars().count() > MAX_FILE_NAME {
+        return Err(ApiError::validation(
+            "name",
+            format!("Use at most {MAX_FILE_NAME} characters"),
+        ));
+    }
+    let named = input.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && !input.contains("..")
+        && input
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !named {
+        return Err(ApiError::validation(
+            "name",
+            format!(
+                "Name it with letters, digits, dots, dashes and underscores, starting with a letter or a digit, like watch-deploy.sh: {input:?} isn't one"
+            ),
+        ));
+    }
+    Ok(input.to_owned())
+}
+
+/// What one of its files holds: text of at most [`MAX_FILE_BYTES`], kept
+/// as it is, without NUL characters (which binary files hold).
+pub fn file_content(content: &str) -> Result<()> {
+    let size = content.len() as u64;
+    if size > MAX_FILE_BYTES {
+        return Err(ApiError::validation(
+            "content",
+            format!(
+                "A file holds at most {}: this one holds {}",
+                file_size(MAX_FILE_BYTES),
+                file_size(size)
+            ),
+        ));
+    }
+    if content.contains('\0') {
+        return Err(ApiError::validation(
+            "content",
+            "Its files keep text, such as scripts, drafts and notes: this one holds NUL characters, as binary files do",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a file of `size` bytes fits beside the `others` it keeps, which
+/// hold `others_bytes` (both without the file it replaces): an error that
+/// says what to remove when it doesn't.
+pub fn file_room(others: u32, others_bytes: u64, size: u64) -> Result<()> {
+    if others >= MAX_FILES {
+        return Err(ApiError::conflict(format!(
+            "It keeps at most {MAX_FILES} files: remove one it no longer needs first (`fctl autopilot files rm <name>`)"
+        )));
+    }
+    if others_bytes.saturating_add(size) > MAX_FILES_BYTES {
+        return Err(ApiError::conflict(format!(
+            "Its files hold at most {} in all, and the others hold {} already: remove those it no longer needs first (`fctl autopilot files rm <name>`)",
+            file_size(MAX_FILES_BYTES),
+            file_size(others_bytes)
+        )));
+    }
+    Ok(())
+}
+
+/// A file's size, as people read it: "2 KB", "3.9 MB", "4 MB".
+pub fn file_size(bytes: u64) -> String {
+    crate::files::human_size(bytes).replace(".0 ", " ")
+}
+
 /// What helps people answer an ask: Markdown, at most 4,000 characters;
 /// empty for none.
 pub fn detail(input: Option<&str>) -> Result<Option<String>> {
@@ -521,7 +609,7 @@ pub fn takes_over_from(why: Fresh, from: &str, handoff_at: Option<u32>) -> Optio
         ),
     };
     Some(format!(
-        "{because} Go on from your plan and log, which it kept for you, and `fctl autopilot brief`; read its transcript (`fctl logs {from}`) only for what they don't say, as it would fill your context again. Check what it promised people (in your plan, its log and its asks) against what is live now, and tell them of what shipped that they wait for: it may not have."
+        "{because} Go on from your plan, log and files, which it kept for you (`fctl autopilot files get --all` writes the files here), and `fctl autopilot brief`; read its transcript (`fctl logs {from}`) only for what they don't say, as it would fill your context again. Check what it promised people (in your plan, its log and its asks) against what is live now, and tell them of what shipped that they wait for: it may not have."
     ))
 }
 
@@ -856,9 +944,12 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             | ["sessions", _, "events" | "retrospectives" | "diff"],
         ) => Ok(Gate::Open),
         // Itself.
-        ("GET", ["projects", _, "autopilot"] | ["projects", _, "autopilot", "log" | "brief"]) => {
-            Ok(Gate::Home)
-        }
+        (
+            "GET",
+            ["projects", _, "autopilot"]
+            | ["projects", _, "autopilot", "log" | "brief" | "files"]
+            | ["projects", _, "autopilot", "files", _],
+        ) => Ok(Gate::Home),
         (
             "POST",
             [
@@ -869,6 +960,7 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
             ],
         )
         | ("PUT", ["projects", _, "autopilot", "plan"])
+        | ("PUT" | "DELETE", ["projects", _, "autopilot", "files", _])
         | ("DELETE", ["projects", _, "autopilot", "asks", _]) => Ok(Gate::Home),
         // Starting sessions, and steering those it started.
         ("POST", ["projects", _, "sessions"]) => Ok(Gate::Open),
@@ -1138,7 +1230,12 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
         "- Your sessions open pull requests and leave merging to people. When the next piece of work waits on one, ask people to merge it (`fctl autopilot ask`), and go on meanwhile with what doesn't: a pull request of your sessions that merges or closes wakes you, as it does, or once that session's turn ends if it is at work.\n"
     });
     s.push_str(&format!("- {}\n", others_line(scope, rules.powers)));
-    s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well. Write it as if a stranger takes over at your next wake, starting with what they must act on first: what is in flight, what you wait for and what you promised people. Change the plan as fctl has it (`fctl autopilot plan > plan.md` prints it), not a copy from earlier, and write it whole, or one section of it with `fctl autopilot plan --section \"In flight\" --file part.md`, which fails when the plan has no such section. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them, in a new sandbox: what you don't write down, it won't know, and the files you made here (a script, notes) won't be there, so put in your plan what it needs of them, the scripts you rely on whole, as it can't look them up.\n");
+    s.push_str("- Keep your plan with `fctl autopilot plan --file plan.md` (or from stdin): Markdown, a checklist works well. Write it as if a stranger takes over at your next wake, starting with what they must act on first: what is in flight, what you wait for and what you promised people. Change the plan as fctl has it (`fctl autopilot plan > plan.md` prints it), not a copy from earlier, and write it whole, or one section of it with `fctl autopilot plan --section \"In flight\" --file part.md`, which fails when the plan has no such section. Write down what you did, decided and why with `fctl autopilot log \"…\"`, a few sentences at a time. People read both on the Autopilot tab, and your next session starts from them, in a new sandbox: what you don't write down, it won't know.\n");
+    s.push_str(&format!(
+        "- The files you make here (a script, a draft, notes) won't be in that sandbox. Keep those your next session needs in your files, where it gets them back: `fctl autopilot files put watch-deploy.sh` (text, at most {} each and {} in all, which people see on the Autopilot tab too), `fctl autopilot files` lists them, `fctl autopilot files get --all` writes them all into the current directory and `fctl autopilot files rm <name>` removes one. Keep there the scripts you rely on (watchers, retries) and the drafts of what you'll send, and in your plan the work, naming the file each part relies on, rather than copying files into it: each wake that reads your brief whole reads your plan again.\n",
+        file_size(MAX_FILE_BYTES),
+        file_size(MAX_FILES_BYTES)
+    ));
     s.push_str(&format!("- {}\n", handoff_line(rules.handoff_at)));
     let powers = powers_line(rules.powers, scope);
     if !powers.is_empty() {
@@ -1155,7 +1252,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     for line in work_lines(rules.powers) {
         s.push_str(&format!("- {line}\n"));
     }
-    s.push_str("\nStart by running `fctl autopilot brief`: it shows where things stand, with your plan, people's notes and answers, your sessions and theirs, and your log.\n");
+    s.push_str("\nStart by running `fctl autopilot brief`: it shows where things stand, with your plan, people's notes and answers, your sessions and theirs, your files and your log.\n");
     s
 }
 
@@ -1655,6 +1752,15 @@ pub fn pull_line(pr: &PullRequestRef) -> String {
     })
 }
 
+/// One of its files, for its brief.
+#[derive(Clone, Copy, Debug)]
+pub struct FileView<'a> {
+    pub name: &'a str,
+    pub size: u64,
+    /// When it last wrote it.
+    pub at: Millis,
+}
+
 /// An entry of its log, for its brief.
 #[derive(Clone, Debug)]
 pub struct EntryView<'a> {
@@ -1679,18 +1785,21 @@ pub enum BriefPart {
     /// The sessions people started in its places.
     People,
     Plan,
+    /// What it keeps with `fctl autopilot files`, by name.
+    Files,
     Log,
 }
 
 impl BriefPart {
     /// Every part, in the brief's order.
-    pub const ALL: [BriefPart; 7] = [
+    pub const ALL: [BriefPart; 8] = [
         BriefPart::Direction,
         BriefPart::Notes,
         BriefPart::Asks,
         BriefPart::Sessions,
         BriefPart::People,
         BriefPart::Plan,
+        BriefPart::Files,
         BriefPart::Log,
     ];
 
@@ -1703,6 +1812,7 @@ impl BriefPart {
             BriefPart::Sessions => "sessions",
             BriefPart::People => "people",
             BriefPart::Plan => "plan",
+            BriefPart::Files => "files",
             BriefPart::Log => "log",
         }
     }
@@ -1775,6 +1885,8 @@ pub struct Brief<'a> {
     /// The sessions people started in its projects, at work or with a pull
     /// request open, the latest first.
     pub others: &'a [OtherView<'a>],
+    /// Its files, by name.
+    pub files: &'a [FileView<'a>],
     pub log: &'a [EntryView<'a>],
     /// The projects it works in, by slug, for a workspace's autopilot.
     pub projects: &'a [String],
@@ -1853,6 +1965,9 @@ pub fn brief(b: &Brief<'_>) -> String {
     }
     if shows(BriefPart::Plan) {
         brief_plan(&mut s, b);
+    }
+    if shows(BriefPart::Files) {
+        brief_files(&mut s, b);
     }
     if shows(BriefPart::Log) {
         brief_log(&mut s, b);
@@ -1995,6 +2110,28 @@ fn brief_plan(s: &mut String, b: &Brief<'_>) {
         None => s.push_str(
             "None yet. Write one with `fctl autopilot plan --file plan.md`: people read it on the Autopilot tab.\n",
         ),
+    }
+}
+
+fn brief_files(s: &mut String, b: &Brief<'_>) {
+    s.push_str("\n## Your files\n\n");
+    if b.files.is_empty() {
+        s.push_str("None. Keep what your next session needs besides your plan (the scripts you rely on, drafts) with `fctl autopilot files put <file>`.\n");
+        return;
+    }
+    let all: u64 = b.files.iter().map(|f| f.size).sum();
+    s.push_str(&format!(
+        "{} of {} (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one):\n\n",
+        file_size(all),
+        file_size(MAX_FILES_BYTES)
+    ));
+    for f in b.files {
+        s.push_str(&format!(
+            "- {} ({}, written {})\n",
+            f.name,
+            file_size(f.size),
+            ago(b.now, f.at)
+        ));
     }
 }
 
@@ -2324,7 +2461,7 @@ pub fn wake_message(news: &News<'_>) -> String {
     }
     if let Some((tokens, at)) = news.handoff {
         s.push_str(&format!(
-            "\n\nYour context holds {} tokens: at {}, a fresh session takes over from you at your next wake, starting from your plan and log. Before you end this turn, write down in them what it needs to go on: what you're in the middle of, what you wait for, what you promised people, what you learned, and the scripts you rely on, as the files here won't come along.",
+            "\n\nYour context holds {} tokens: at {}, a fresh session takes over from you at your next wake, starting from your plan, log and files. Before you end this turn, write down in your plan and log what it needs to go on: what you're in the middle of, what you wait for, what you promised people, what you learned; and keep the scripts and drafts it needs in your files (`fctl autopilot files put`), as the files here won't come along.",
             crate::context::short(u32::try_from(tokens).unwrap_or(u32::MAX)),
             crate::context::short(at)
         ));
@@ -2500,9 +2637,79 @@ mod tests {
             ("PUT", vec!["projects", "shop", "autopilot", "plan"]),
             ("POST", vec!["projects", "shop", "autopilot", "wake"]),
             ("POST", vec!["projects", "shop", "autopilot", "pause"]),
+            ("GET", vec!["projects", "shop", "autopilot", "files"]),
+            (
+                "GET",
+                vec!["projects", "shop", "autopilot", "files", "watch.sh"],
+            ),
+            (
+                "PUT",
+                vec!["projects", "shop", "autopilot", "files", "watch.sh"],
+            ),
+            (
+                "DELETE",
+                vec!["projects", "shop", "autopilot", "files", "watch.sh"],
+            ),
         ] {
             assert_eq!(allows(c, m, &path).ok(), Some(Gate::Home), "{m} {path:?}");
         }
+        // Its files one at a time: never the list's address written to.
+        for m in ["PUT", "POST", "DELETE"] {
+            let path = ["projects", "shop", "autopilot", "files"];
+            assert!(allows(c, m, &path).is_err(), "{m} {path:?}");
+        }
+    }
+
+    #[test]
+    fn files_keep_text_within_bounds() {
+        assert_eq!(
+            file_name("watch-deploy.sh").ok(),
+            Some("watch-deploy.sh".to_owned())
+        );
+        assert_eq!(
+            file_name("2026_notes.v2.md").ok(),
+            Some("2026_notes.v2.md".to_owned())
+        );
+        for bad in [
+            "",
+            ".env",
+            "..",
+            "a..md",
+            "-x",
+            "a/b",
+            "a b",
+            "naïve.md",
+            "a\\b",
+            " a.md",
+        ] {
+            assert!(file_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(file_name(&"a".repeat(MAX_FILE_NAME)).is_ok());
+        assert!(file_name(&"a".repeat(MAX_FILE_NAME + 1)).is_err());
+        assert!(file_content("").is_ok());
+        assert!(file_content("#!/bin/sh\r\necho \u{1b}[1mhi\n").is_ok());
+        assert!(file_content(&"x".repeat(256_000)).is_ok());
+        assert_eq!(
+            file_content(&"x".repeat(256_001)).err().map(|e| e.message),
+            Some("A file holds at most 256 KB: this one holds 256 KB".to_owned())
+        );
+        assert!(
+            file_content(&"x".repeat(300_000))
+                .err()
+                .is_some_and(|e| e.message.ends_with("holds 300 KB"))
+        );
+        assert!(file_content("a\0b").is_err());
+        // Room beside the others, without the one it replaces.
+        assert!(file_room(0, 0, MAX_FILE_BYTES).is_ok());
+        assert!(file_room(MAX_FILES - 1, MAX_FILES_BYTES - 10, 10).is_ok());
+        assert_eq!(
+            file_room(MAX_FILES, 0, 1).err().map(|e| e.message),
+            Some("It keeps at most 100 files: remove one it no longer needs first (`fctl autopilot files rm <name>`)".to_owned())
+        );
+        assert_eq!(
+            file_room(3, 3_900_000, 200_000).err().map(|e| e.message),
+            Some("Its files hold at most 4 MB in all, and the others hold 3.9 MB already: remove those it no longer needs first (`fctl autopilot files rm <name>`)".to_owned())
+        );
     }
 
     #[test]
@@ -2677,6 +2884,9 @@ mod tests {
             full.as_deref()
                 .is_some_and(|t| t.contains("`fctl logs shop#12`"))
         );
+        assert!(full.as_deref().is_some_and(|t| t.contains(
+            "Go on from your plan, log and files, which it kept for you (`fctl autopilot files get --all` writes the files here)"
+        )));
         assert!(full.as_deref().is_some_and(|t| t.ends_with(
             "Check what it promised people (in your plan, its log and its asks) against what is live now, and tell them of what shipped that they wait for: it may not have."
         )));
@@ -3228,7 +3438,7 @@ mod tests {
             "ask with `--session <ref>` naming it: people attach the files to their answer"
         ));
         assert!(b.contains("Don't use `fctl ask`"));
-        assert!(b.ends_with("your sessions and theirs, and your log.\n"));
+        assert!(b.ends_with("your sessions and theirs, your files and your log.\n"));
         // People's own sessions are theirs, but their pull requests its
         // concern: it asks before it helps, with a session of its own.
         assert!(b.contains("Look after the rest of the project's work too"));
@@ -3306,7 +3516,17 @@ mod tests {
         assert!(b.contains("reach them only for what someone asked you for"));
         assert!(b.contains("never with a placeholder or a number you guess"));
         assert!(b.contains("starting with what they must act on first"));
-        assert!(b.contains("the scripts you rely on whole, as it can't look them up"));
+        // Files outlast its sessions, rather than crowd the plan.
+        assert!(b.contains(
+            "`fctl autopilot files put watch-deploy.sh` (text, at most 256 KB each and 4 MB in all, which people see on the Autopilot tab too)"
+        ));
+        assert!(b.contains(
+            "`fctl autopilot files get --all` writes them all into the current directory"
+        ));
+        assert!(
+            b.contains("naming the file each part relies on, rather than copying files into it")
+        );
+        assert!(!b.contains("the scripts you rely on whole"));
         assert!(b.contains("`fctl autopilot brief --only sessions,asks`"));
         assert!(b.contains("send long output to a file and read what you need of it"));
         assert!(b.contains("Ask for the case that matters, not only the default"));
@@ -3524,6 +3744,18 @@ mod tests {
                 at: now,
             },
         ];
+        let files = [
+            FileView {
+                name: "watch-deploy.sh",
+                size: 2_140,
+                at: now - 3 * HOUR_MS,
+            },
+            FileView {
+                name: "summary-draft.md",
+                size: 48_600,
+                at: now - 5 * MINUTE_MS,
+            },
+        ];
         let text = brief(&Brief {
             place: place(),
             rules: Rules {
@@ -3542,6 +3774,7 @@ mod tests {
             crew: &crew,
             held: &held_views,
             others: &others,
+            files: &files,
             log: &[],
             projects: &[],
             wake_at: Some(now + 25 * MINUTE_MS),
@@ -3576,7 +3809,7 @@ mod tests {
         ), "{text}");
         assert!(!text.contains("Keep the old checkout"), "{text}");
         // With nothing else to list, the count stands on its own.
-        let only_heard = brief(&Brief {
+        let alone = Brief {
             place: place(),
             rules: Rules {
                 powers: &[],
@@ -3594,12 +3827,23 @@ mod tests {
             crew: &[],
             held: &[],
             others: &[],
+            files: &[],
             log: &[],
             projects: &[],
             wake_at: None,
             now,
             parts: &[BriefPart::Asks],
+        };
+        let only_heard = brief(&alone);
+        assert!(!only_heard.contains("## Your files"), "{only_heard}");
+        // No files yet: how to keep some.
+        let no_files = brief(&Brief {
+            parts: &[BriefPart::Files],
+            ..alone.clone()
         });
+        assert!(no_files.ends_with(
+            "## Your files\n\nNone. Keep what your next session needs besides your plan (the scripts you rely on, drafts) with `fctl autopilot files put <file>`.\n"
+        ), "{no_files}");
         assert!(only_heard.ends_with(
             "## Your asks\n\nNone open. One ask was answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists it.\n"
         ), "{only_heard}");
@@ -3623,6 +3867,10 @@ mod tests {
             "- shop#38 “Wishlists”, Bo's: ended its turn 2 days ago; pull request #67 (open, checks pass)\n- shop#44 “Gift cards”, Ada's: working\n"
         ));
         assert!(text.contains("- [ ] Apple Pay\n\n(Written 1 hour ago)"));
+        // Its files after its plan, by name, with how to get them back.
+        assert!(text.contains(
+            "(Written 1 hour ago)\n\n## Your files\n\n51 KB of 4 MB (`fctl autopilot files get --all` writes them into the current directory, `fctl autopilot files get <name>` prints one):\n\n- watch-deploy.sh (2 KB, written 3 hours ago)\n- summary-draft.md (49 KB, written 5 minutes ago)\n\n## Your log"
+        ), "{text}");
         assert!(text.contains("Empty. Write down what you do"));
         // Only the parts it asks for, after where it runs: what it heard of
         // is what it was shown.
@@ -3646,6 +3894,7 @@ mod tests {
             crew: &crew,
             held: &[],
             others: &others,
+            files: &files,
             log: &[],
             projects: &[],
             wake_at: Some(now + 25 * MINUTE_MS),
@@ -3668,6 +3917,7 @@ mod tests {
             "## Notes from people",
             "## People's sessions",
             "## Your plan",
+            "## Your files",
             "## Your log",
             "Apple Pay\n\n(Written",
         ] {
@@ -3694,7 +3944,7 @@ mod tests {
         );
         assert_eq!(
             brief_parts(Some("sessions,crew")).err().map(|e| e.message),
-            Some("No part of the brief is called crew: use direction, notes, asks, sessions, people, plan, log".to_owned())
+            Some("No part of the brief is called crew: use direction, notes, asks, sessions, people, plan, files, log".to_owned())
         );
         for p in BriefPart::ALL {
             assert_eq!(BriefPart::parse(p.as_str()), Some(p));
@@ -3705,7 +3955,7 @@ mod tests {
         assert_eq!(
             brief_part(" ").err().map(|e| e.message),
             Some(
-                "Name a part of the brief: direction, notes, asks, sessions, people, plan, log"
+                "Name a part of the brief: direction, notes, asks, sessions, people, plan, files, log"
                     .to_owned()
             )
         );

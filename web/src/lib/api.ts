@@ -340,6 +340,12 @@ export const api = {
   /** Wakes it now; `fresh`, in a fresh session of its own, once its session's turn ends. */
   wakeAutopilot: (project: string, body: G.WakeAutopilotRequest = {}) =>
     request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/wake`, body),
+  /** The files it keeps across its sessions, by name, without what they hold. */
+  autopilotFiles: (project: string) =>
+    request<G.AutopilotFiles>("GET", `/projects/${enc(project)}/autopilot/files`),
+  /** One of its files, with what it holds. */
+  autopilotFile: (project: string, name: string) =>
+    request<G.AutopilotFile>("GET", `/projects/${enc(project)}/autopilot/files/${enc(name)}`),
   /** Its log, newest first, a page at a time. */
   autopilotLog: (project: string, before?: string, limit = 50) => {
     const p = new URLSearchParams({ limit: String(limit) });
