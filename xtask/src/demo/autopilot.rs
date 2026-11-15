@@ -44,6 +44,13 @@ impl World<'_> {
         let pid = self.projects[&p.slug].clone();
         let wid = self.workspaces[&p.workspace].clone();
         std::fs::create_dir_all(self.state.join(SIGNALS))?;
+        // Its sessions publish screenshots, which the instance allows.
+        self.api(
+            "ops",
+            "PATCH",
+            "/admin/settings",
+            Some(json!({ "publish_screenshots": true })),
+        )?;
         // Putting a project on autopilot is a sensitive action.
         self.confirm(&a.by)?;
         // Its workspace's admins let its projects have autopilots.

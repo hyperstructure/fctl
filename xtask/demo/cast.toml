@@ -1796,7 +1796,6 @@ then = ["farm-portal-1: turn 1 played"]
 
   # Sign-in and the languages end within a minute: one wake for both.
   [[autopilot.beat]]
-  stop = ["farm-portal#2"]
   release = ["farm-portal#3", "farm-portal#5"]
   then = ["farm-portal-3: turn 1 played", "farm-portal-5: turn 1 played"]
 
@@ -1806,13 +1805,14 @@ then = ["farm-portal-1: turn 1 played"]
 
   # The two designs, which it asks Noor about.
   [[autopilot.beat]]
-  stop = ["farm-portal#3", "farm-portal#5"]
   release = ["farm-portal#4"]
   then = ["farm-portal-4: turn 1 played", "farm-portal-1: turn 5 played"]
 
-  # Noor answers from her phone on Saturday morning: a fresh session takes
-  # over, and has #4 build the list.
+  # Overnight, #2, #3 and #5 stopped after being idle (12 hours). Noor
+  # answers from her phone on Saturday morning: a fresh session takes over,
+  # and has #4 build the list.
   [[autopilot.beat]]
+  stop = ["farm-portal#2", "farm-portal#3", "farm-portal#5"]
   handoff = true
   at = "saturday 08:12"
   by = "noor"
@@ -1866,7 +1866,6 @@ then = ["farm-portal-1: turn 1 played"]
   then = ["farm-portal-11: turn 1 played", "farm-portal-9: turn 3 played"]
 
   [[autopilot.beat]]
-  stop = ["farm-portal#11"]
   release = ["farm-portal#10"]
   then = ["farm-portal-10: turn 1 played"]
 
@@ -1876,7 +1875,7 @@ then = ["farm-portal-1: turn 1 played"]
 
   # Tuesday morning, as it asked, in a fresh session: #13 is at work at 09:10.
   [[autopilot.beat]]
-  stop = ["farm-portal#10"]
+  stop = ["farm-portal#10", "farm-portal#11"]
   handoff = true
   wake = true
   at = "today 08:21"

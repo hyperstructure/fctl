@@ -1849,7 +1849,7 @@ fn sign_ins(ctx: &Ctx, d1: &mut Db) -> Result<()> {
         "INSERT INTO settings (key, value) VALUES ('instance_settings', ?) \
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         vec![json!(
-            json!({ "verify_sensitive_actions": true }).to_string()
+            json!({ "verify_sensitive_actions": true, "publish_screenshots": true }).to_string()
         )],
     );
     Ok(())

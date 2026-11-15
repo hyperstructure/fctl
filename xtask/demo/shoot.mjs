@@ -184,7 +184,7 @@ async function engage(page) {
       "Leave the shop alone, and ship nothing to the app stores: Aiko does that.",
   );
   await direction.blur();
-  await scrollTo(page, "Put Driver app on autopilot", 24);
+  await scrollTo(page, "Put Driver app on autopilot", 52);
 }
 
 /** Opens the ⋯ menu's "Change how it works…" on the Autopilot tab. */
@@ -383,7 +383,19 @@ const pages = {
       act: (page) => scrollTo(page, "What it did, and what happened to it", 24),
     },
     // What it asks: the two reminders to choose from, and the secret it needs.
-    { name: "asks", path: "/p/farm-portal?tab=autopilot", settle: 2500, act: (page) => scrollTo(page, "It asks you", 24) },
+    // In a bigger window, of the same shape, that holds both whole.
+    {
+      name: "asks",
+      path: "/p/farm-portal?tab=autopilot",
+      size: "1760x1100",
+      settle: 2500,
+      act: async (page) => {
+        await page.getByRole("heading", { name: /It asks you/ }).evaluate((e) => {
+          window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - 28, behavior: "instant" });
+        });
+        await page.waitForTimeout(400);
+      },
+    },
     // Its own session this morning: a fresh one takes over, and starts #13, live.
     { name: "pilot", path: session("farm-portal#12"), settle: 3000 },
     // #8, sent back for screenshots of a week filled in, and its answer.
