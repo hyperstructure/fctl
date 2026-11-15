@@ -5,6 +5,8 @@ use crate::config;
 use crate::render::Renderer;
 use crate::style;
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::Args;
 use fctl_client::Api;
 use fctl_domain::{diffs, files, pulls, reviews};
@@ -845,6 +847,7 @@ pub(crate) fn autopilot_api() -> Option<fctl_client::Api> {
         .ok()
         .and_then(|u| fctl_client::http::origin(&u))
         .unwrap_or_else(|| "https://app.fctl.sh".to_owned());
+    let files = files_relay(socket.clone(), session.clone());
     let relay: fctl_client::Relay = std::sync::Arc::new(move |method, path, body| {
         let socket = socket.clone();
         let session = session.clone();
@@ -874,7 +877,68 @@ pub(crate) fn autopilot_api() -> Option<fctl_client::Api> {
             }
         })
     });
-    Some(fctl_client::Api::relayed(&base, relay))
+    Some(fctl_client::Api::relayed(&base, relay).with_files(files))
+}
+
+/// How an autopilot's files go to the control plane and back: as they are,
+/// in base64 to fctl-agent (`AgentCall::ApiBytes`), which its host sends
+/// on as bytes.
+fn files_relay(socket: PathBuf, session: String) -> fctl_client::FilesRelay {
+    std::sync::Arc::new(move |method, path, body| {
+        let socket = socket.clone();
+        let session = session.clone();
+        Box::pin(async move {
+            let (body, content_type) = match body {
+                Some((bytes, t)) => (Some(STANDARD.encode(bytes)), Some(t)),
+                None => (None, None),
+            };
+            let request = SessionRequest::Call {
+                session_id: Some(SessionId(session)),
+                call: fctl_proto::api::AgentCall::ApiBytes {
+                    method: method.as_str().to_owned(),
+                    path,
+                    body,
+                    content_type,
+                },
+            };
+            let reply =
+                tokio::time::timeout(Duration::from_secs(180), ask_agent(&socket, &request))
+                    .await
+                    .map_err(|_| fctl_client::Error::Timeout(Duration::from_secs(180)))?
+                    .map_err(|e| fctl_client::Error::Other(format!("{e:#}")))?;
+            match reply {
+                SessionReply::Answer {
+                    answer:
+                        fctl_proto::api::AgentAnswer::ApiBytes {
+                            status,
+                            content_type,
+                            body,
+                        },
+                } => {
+                    let bytes = STANDARD.decode(body.as_bytes()).map_err(|e| {
+                        fctl_client::Error::Decode(format!("the file's bytes: {e}"))
+                    })?;
+                    Ok((status, content_type, bytes))
+                }
+                // fctl-agent comes with its host, which may be older.
+                SessionReply::Error { error } if older_agent(&error.message) => {
+                    Err(fctl_client::Error::Other(OLD_AGENT_FILES.to_owned()))
+                }
+                SessionReply::Error { error } => Err(fctl_client::Error::Api(error)),
+                _ => Err(fctl_client::Error::Other(OLD_AGENT_FILES.to_owned())),
+            }
+        })
+    })
+}
+
+/// What an autopilot hears when its runner's fctl-agent carries no files.
+const OLD_AGENT_FILES: &str = "This sandbox's fctl-agent can't carry files for the autopilot: its runner needs a newer fctl (`fctl self update` there). Meanwhile, publish a screenshot with `fctl publish` and send its link.";
+
+/// Whether fctl-agent refused a request it doesn't know, or one larger
+/// than it took before files (8 MiB).
+fn older_agent(message: &str) -> bool {
+    message.contains("did not understand the request")
+        || message.contains("larger than fctl-agent takes")
 }
 
 pub(crate) async fn ask_agent(socket: &Path, request: &SessionRequest) -> Result<SessionReply> {

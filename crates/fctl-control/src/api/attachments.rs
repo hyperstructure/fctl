@@ -12,6 +12,7 @@ use crate::error::{AppError, AppResult, not_found, validation};
 use crate::http;
 use crate::internal::{self, StoreFile};
 use fctl_domain::files;
+use fctl_proto::api::SessionFiles;
 use fctl_proto::event::Attachment;
 use fctl_proto::{ApiError, AttachmentId};
 use worker::{Request, Response};
@@ -88,6 +89,16 @@ async fn store(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppResult<
     let path = format!("/store?meta={}", enc(&serde_json::to_string(&meta)?));
     let att: Attachment = internal::post_body(&stub, &path, body).await?;
     http::created(&att)
+}
+
+/// `GET /api/v1/sessions/{id}/attachments`: the files sent in the session,
+/// oldest first ([`SessionFiles`]), for anyone who can see it.
+pub async fn list(ctx: &Ctx, session_id: &str) -> AppResult<Response> {
+    let a = access::session(ctx, session_id).await?;
+    let stub = internal::files_stub(&ctx.env, &a.row.project_id)?;
+    let files: SessionFiles =
+        internal::get(&stub, &format!("/files?session={}", enc(&a.row.id))).await?;
+    http::ok(&files)
 }
 
 /// `GET /api/v1/sessions/{id}/attachments/{attachment}`: a file sent in the

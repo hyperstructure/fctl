@@ -3,7 +3,9 @@
 //! review` and `fctl ticket` in a sandbox go through fctl-agent to its
 //! host, which sends them here with its runner token, for a session it
 //! runs, and so does an autopilot's own session's `fctl`, whose requests to
-//! the API come as [`AgentCall::Api`] (`crate::autopilots::relay`). Each needs its project's setting: `project_memory` for the memory,
+//! the API come as [`AgentCall::Api`] (`crate::autopilots::relay`), and
+//! its files as they are, to [`runner_relay`]. Each needs its project's
+//! setting: `project_memory` for the memory,
 //! `retrospectives` for retrospectives, a ticket tracker for tickets
 //! (`crate::tickets`); resolving review threads needs an agent that may
 //! comment on GitHub, and reviews a review agent's session
@@ -12,7 +14,7 @@
 use crate::api::{memories, retrospectives, runners};
 use crate::ctx::Ctx;
 use crate::db::{q, s};
-use crate::error::{AppResult, forbidden, not_found};
+use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::http;
 use fctl_proto::api::{AgentAnswer, AgentCall, ReviewThread};
 use fctl_proto::session::{GithubAccess, ProjectSettings, RepoAccess, RepoRef};
@@ -282,8 +284,29 @@ pub async fn runner_call(
         AgentCall::Api { method, path, body } => {
             crate::autopilots::relay(ctx, &session.id, &method, &path, body).await?
         }
+        AgentCall::ApiBytes { .. } => {
+            return Err(AppError(fctl_proto::ApiError::bad_request(
+                "Files go to POST /api/v1/runner/sessions/{id}/relay as they are, not in JSON.",
+            )));
+        }
     };
     http::ok(&answer)
+}
+
+/// `POST /api/v1/runner/sessions/{id}/relay?method=…&path=…`: an
+/// autopilot's request whose body or answer is a file
+/// ([`AgentCall::ApiBytes`]), which the host of its own session sends with
+/// the file as the body, as it is (`crate::autopilots::relay_file`).
+pub async fn runner_relay(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    session_id: &str,
+) -> AppResult<Response> {
+    let r = runners::runner_auth(ctx, req).await?;
+    let session = RunnerSession::load(ctx, &r.id, session_id).await?;
+    let method = http::query(req, "method").unwrap_or_default();
+    let path = http::query(req, "path").unwrap_or_default();
+    crate::autopilots::relay_file(ctx, &session.id, &method, &path, req).await
 }
 
 /// Resolves a review thread for an agent that may comment on GitHub, or

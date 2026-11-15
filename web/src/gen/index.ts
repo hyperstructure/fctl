@@ -298,6 +298,8 @@ export type { SessionAutopilot } from "./SessionAutopilot";
 export type { SessionCredentials } from "./SessionCredentials";
 export type { SessionDiff } from "./SessionDiff";
 export type { SessionEvent } from "./SessionEvent";
+export type { SessionFile } from "./SessionFile";
+export type { SessionFiles } from "./SessionFiles";
 export type { SessionId } from "./SessionId";
 export type { SessionList } from "./SessionList";
 export type { SessionMatches } from "./SessionMatches";

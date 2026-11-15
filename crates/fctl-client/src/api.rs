@@ -37,6 +37,20 @@ pub type Relay = Arc<
         + Sync,
 >;
 
+/// Sends a request whose body or answer is a file through the same relay
+/// (`AgentCall::ApiBytes`): the method, the whole path, and the body with
+/// its media type, if any; gives back the status, the answer's media type
+/// and its bytes.
+pub type FilesRelay = Arc<
+    dyn Fn(
+            Method,
+            String,
+            Option<(Vec<u8>, String)>,
+        ) -> BoxFuture<'static, Result<(u16, Option<String>, Vec<u8>)>>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub struct Api {
     base: String,
@@ -44,10 +58,23 @@ pub struct Api {
     http: HttpClient,
     verifier: Option<Verifier>,
     relay: Option<Relay>,
+    files_relay: Option<FilesRelay>,
 }
 
 fn enc(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+/// The error an answer with `status` and `body` that isn't a success
+/// stands for: the API's, where it says one.
+fn status_error(status: u16, body: &[u8]) -> Error {
+    match serde_json::from_slice::<ApiError>(body) {
+        Ok(e) => Error::Api(e),
+        Err(_) => Error::Status {
+            status,
+            body: String::from_utf8_lossy(body).chars().take(500).collect(),
+        },
+    }
 }
 
 impl Api {
@@ -59,18 +86,26 @@ impl Api {
             http: HttpClient::default(),
             verifier: None,
             relay: None,
+            files_relay: None,
         }
     }
 
     /// A client whose JSON requests go through `relay` rather than over
     /// HTTP: an autopilot's, in its own session's sandbox. `base` is the
-    /// instance's address, for links. Uploads and live connections, which
-    /// need HTTP, don't work through it.
+    /// instance's address, for links. Live connections, which need HTTP,
+    /// don't work through it, nor do files without [`Api::with_files`].
     pub fn relayed(base: &str, relay: Relay) -> Self {
         Self {
             relay: Some(relay),
             ..Self::new(base, None)
         }
+    }
+
+    /// The same relayed client, whose uploads and downloads of files go
+    /// through `files`.
+    pub fn with_files(mut self, files: FilesRelay) -> Self {
+        self.files_relay = Some(files);
+        self
     }
 
     /// Whether its requests go through a relay.
@@ -821,6 +856,12 @@ impl Api {
         serde_json::from_slice(&body).map_err(|e| Error::Decode(e.to_string()))
     }
 
+    /// The files sent in a session, oldest first.
+    pub async fn session_files(&self, session: &str) -> Result<SessionFiles> {
+        self.get(&format!("/sessions/{}/attachments", enc(session)))
+            .await
+    }
+
     /// A file sent in a session.
     pub async fn attachment(&self, session: &str, attachment: &str) -> Result<Vec<u8>> {
         let path = format!("/sessions/{}/attachments/{}", enc(session), enc(attachment));
@@ -1256,8 +1297,50 @@ impl Api {
             .await
     }
 
+    /// An autopilot's request whose body or answer is a file
+    /// (`AgentCall::ApiBytes`), for a session this runner runs (with the
+    /// runner token): `path` is the whole one, `/api/v1/…` with its query.
+    /// Gives back the relayed request's status, media type and body; an
+    /// error is the relay's own (the autopilot isn't on, the session isn't
+    /// this runner's).
+    pub async fn runner_relay(
+        &self,
+        session: &str,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+    ) -> Result<(u16, Option<String>, bytes::Bytes)> {
+        let url = self.url(&format!(
+            "/runner/sessions/{}/relay?method={}&path={}",
+            enc(session),
+            enc(method),
+            enc(path)
+        ));
+        // fctl-agent gives up on a call after two minutes.
+        let client = HttpClient::new(std::time::Duration::from_secs(110));
+        let content_type = content_type.or(body.as_ref().map(|_| "application/octet-stream"));
+        let (status, headers, bytes) = client
+            .send(Method::POST, &url, self.token(), body, content_type)
+            .await?;
+        let relayed = headers
+            .get(fctl_proto::api::RELAYED_STATUS_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u16>().ok());
+        match relayed {
+            Some(relayed) if status.is_success() => {
+                let media_type = headers
+                    .get(http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
+                Ok((relayed, media_type, bytes))
+            }
+            _ => Err(status_error(status.as_u16(), &bytes)),
+        }
+    }
+
     /// A request with a raw body and answer; files can be large, so it may
-    /// take minutes.
+    /// take minutes. Through a relay, it goes through its files' relay.
     async fn raw(
         &self,
         method: Method,
@@ -1265,18 +1348,28 @@ impl Api {
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
     ) -> Result<bytes::Bytes> {
+        if self.relay.is_some() {
+            let Some(files) = &self.files_relay else {
+                return Err(Error::Other(
+                    "Files don't go through this relay: update fctl here".to_owned(),
+                ));
+            };
+            let body = body.map(|b| {
+                let t = content_type.unwrap_or("application/octet-stream");
+                (b, t.to_owned())
+            });
+            let (status, _, bytes) = files(method, format!("/api/v1{path}"), body).await?;
+            if !(200..300).contains(&status) {
+                return Err(status_error(status, &bytes));
+            }
+            return Ok(bytes::Bytes::from(bytes));
+        }
         let http = HttpClient::new(std::time::Duration::from_secs(600));
         let (status, _, bytes) = http
             .send(method, &self.url(path), self.token(), body, content_type)
             .await?;
         if !status.is_success() {
-            if let Ok(e) = serde_json::from_slice::<fctl_proto::ApiError>(&bytes) {
-                return Err(Error::Api(e));
-            }
-            return Err(Error::Status {
-                status: status.as_u16(),
-                body: String::from_utf8_lossy(&bytes).chars().take(500).collect(),
-            });
+            return Err(status_error(status.as_u16(), &bytes));
         }
         Ok(bytes)
     }

@@ -156,8 +156,14 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
     // routes: an autopilot's requests to the API come this way, and go
     // through `dispatch` themselves (`route_autopilot`), which so runs once
     // at a time on the stack, as its frames are large.
-    if let (Method::Post, ["runner", "sessions", id, "calls"]) = (&method, segs.as_slice()) {
-        return api::calls::runner_call(ctx, req, id).await;
+    match (&method, segs.as_slice()) {
+        (Method::Post, ["runner", "sessions", id, "calls"]) => {
+            return api::calls::runner_call(ctx, req, id).await;
+        }
+        (Method::Post, ["runner", "sessions", id, "relay"]) => {
+            return api::calls::runner_relay(ctx, req, id).await;
+        }
+        _ => {}
     }
     dispatch(ctx, req, method, segs.as_slice()).await
 }
@@ -482,6 +488,7 @@ async fn dispatch(
         (Post, ["sessions", id, "attachments"]) => {
             api::attachments::upload_to_session(ctx, req, id).await
         }
+        (Get, ["sessions", id, "attachments"]) => api::attachments::list(ctx, id).await,
         (Get, ["sessions", id, "attachments", file]) => {
             api::attachments::download(ctx, req, id, file).await
         }

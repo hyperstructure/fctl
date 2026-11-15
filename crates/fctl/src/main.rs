@@ -261,6 +261,17 @@ Examples:
         #[arg(short, long = "attach", value_name = "FILE")]
         attach: Vec<std::path::PathBuf>,
     },
+    /// The files sent in a session, with its messages or as it started:
+    /// list them, and download them.
+    #[command(
+        subcommand,
+        after_help = "Examples:
+  fctl files list my-app#12                  # name, size, when, id
+  fctl files get my-app#12 model.3mf         # writes ./model.3mf
+  fctl files get my-app#12 --all --dir in/   # every file, the newest of each name
+  fctl send my-app#14 --attach model.3mf \"Slice this one\"   # and pass it on"
+    )]
+    Files(cmd::files::FilesCmd),
     /// Interrupt the agent's current turn.
     Interrupt {
         /// A session: its id (ses_…), its URL, or project#number.
@@ -525,6 +536,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             last_turn,
         } => cmd::sessions::logs(server, &session, follow, last_turn, json).await,
         Command::Diff(args) => cmd::sessions::diff(server, args, json).await,
+        Command::Files(cmd) => cmd::files::run(server, cmd, json).await,
         Command::Send {
             session,
             message,

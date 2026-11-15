@@ -34,6 +34,10 @@ pub struct Extras<'a> {
     /// The session is an autopilot's own: it passes screenshots on to its
     /// sessions rather than putting them in pull requests.
     pub autopilot: bool,
+    /// An autopilot's sandbox's fctl carries files (`fctl files`, `fctl
+    /// send --attach` through its session): it attaches them to its
+    /// sessions, rather than publishing screenshots for them.
+    pub autopilot_files: bool,
 }
 
 /// `~/AGENTS.md`: how the agent keeps its session's title and description
@@ -47,18 +51,27 @@ pub fn agents_md(extras: &Extras<'_>) -> String {
     if extras.review_threads {
         s.push_str(REVIEW_THREADS_MD);
     }
-    if let Some(days) = extras.screenshot_days {
-        let lasts = if days == 1 {
+    let lasts = extras.screenshot_days.map(|days| {
+        if days == 1 {
             "24 hours".to_owned()
         } else {
             format!("{days} days")
-        };
+        }
+    });
+    if extras.autopilot && extras.autopilot_files {
+        s.push_str(AUTOPILOT_FILES_MD);
+        if let Some(lasts) = &lasts {
+            s.push_str(&AUTOPILOT_PUBLISH_MD.replace("{lasts}", lasts));
+        } else {
+            s.push_str(AUTOPILOT_NO_PUBLISH_MD);
+        }
+    } else if let Some(lasts) = &lasts {
         let md = if extras.autopilot {
             AUTOPILOT_SCREENSHOTS_MD
         } else {
             SCREENSHOTS_MD
         };
-        s.push_str(&md.replace("{lasts}", &lasts));
+        s.push_str(&md.replace("{lasts}", lasts));
     }
     if let Some(memory) = extras.memory {
         s.push_str(memory);
@@ -296,11 +309,60 @@ screenshot shows.
 - If `fctl publish` fails, describe the screenshots in words instead.
 "#;
 
-/// An autopilot's own session opens no pull requests: it publishes
-/// screenshots to pass them on to the sessions it starts, which see only
-/// what it writes them, and to people in what it asks them. It can't
-/// attach files (`fctl run --attach`, `fctl send --attach`): the API
-/// refuses it uploads.
+/// An autopilot's own session opens no pull requests: it attaches files
+/// to the tasks and messages of the sessions it starts, which see only what
+/// it writes and attaches, and reads those sent in its sessions, to pass
+/// them on. Then [`AUTOPILOT_PUBLISH_MD`] or [`AUTOPILOT_NO_PUBLISH_MD`].
+const AUTOPILOT_FILES_MD: &str = r#"
+## Files for your sessions
+
+Your sessions see only what you write them and the files you attach: not
+the files people attach to your messages, nor those in this sandbox. To
+pass a file on (a screenshot or a model people sent you, one you made, or
+one sent in another of your sessions), attach it to the session's task or
+to a message, and say what it is and what to do with it:
+
+```sh
+fctl run -p <project> --attach checkout.png "People see this on the checkout page (attached). Make the total fit on one line."
+fctl send <project>#<n> --attach model.3mf "The model people sent: slice it for a 0.4 mm nozzle."
+```
+
+The files people send one of your sessions stay with it. List and
+download them to read one or pass it on to another session:
+
+```sh
+fctl files list <project>#<n>
+fctl files get <project>#<n> model.3mf
+```
+
+- Files of at most 20 MB, up to 10 to a message.
+"#;
+
+/// The rest of [`AUTOPILOT_FILES_MD`] in a project that publishes
+/// screenshots: they show images to people, in what it asks them.
+const AUTOPILOT_PUBLISH_MD: &str = r#"- Your sessions can't attach files for you: what one makes for another
+  goes on its branch, or as a screenshot it publishes (`fctl publish`),
+  whose link it gives you.
+- To show people a screenshot in what you ask them (`fctl autopilot ask
+  --detail`), publish it on fctl, which talks to this session directly,
+  and put the Markdown it prints, `![checkout.png](https://…)`, in the
+  detail: `fctl publish checkout.png`. Anyone who has a link can open it,
+  for {lasts}; then it stops working. Publish only what people need to
+  see, never secrets, tokens or people's details. If you publish one by
+  mistake, say so in your log: people who manage the session can delete
+  it. PNG, JPEG, GIF and WebP images of at most 5 MB.
+"#;
+
+/// The rest of [`AUTOPILOT_FILES_MD`] in a project that doesn't publish
+/// screenshots.
+const AUTOPILOT_NO_PUBLISH_MD: &str = r#"- Your sessions can't attach files for you: what one makes for another
+  goes on its branch.
+"#;
+
+/// An autopilot's own session whose sandbox's fctl carries no files (from
+/// before `fctl files`) publishes screenshots to pass them on to the
+/// sessions it starts, which see only what it writes them, and to people
+/// in what it asks them.
 const AUTOPILOT_SCREENSHOTS_MD: &str = r#"
 ## Screenshots for your sessions
 
@@ -1960,6 +2022,34 @@ mod tests {
         assert!(md.contains("for 30 days; then it stops working"));
         assert!(md.contains("If you publish one by mistake, say so"));
         assert!(agents_md(&screenshots(1)).contains("for 24 hours; then"));
+    }
+
+    #[test]
+    fn an_autopilot_attaches_files_for_its_sessions() {
+        let md = agents_md(&Extras {
+            autopilot: true,
+            autopilot_files: true,
+            ..screenshots(30)
+        });
+        assert!(md.contains("## Files for your sessions"));
+        assert!(md.contains("fctl run -p <project> --attach checkout.png \"People see this"));
+        assert!(md.contains("fctl send <project>#<n> --attach model.3mf"));
+        assert!(md.contains("fctl files get <project>#<n> model.3mf\n"));
+        // It publishes for people, not for its sessions.
+        assert!(md.contains("--detail`), publish it on fctl"));
+        assert!(md.contains("for 30 days; then it stops working"));
+        assert!(md.contains("or as a screenshot it publishes"));
+        assert!(!md.contains("## Screenshots"));
+        assert!(!md.contains("don't work for you"));
+        // Where the project doesn't publish, it hears nothing of it.
+        let md = agents_md(&Extras {
+            autopilot: true,
+            autopilot_files: true,
+            ..Extras::default()
+        });
+        assert!(md.contains("## Files for your sessions"));
+        assert!(md.contains("what one makes for another\n  goes on its branch.\n"));
+        assert!(!md.contains("fctl publish"));
     }
 
     #[test]

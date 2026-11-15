@@ -203,6 +203,8 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::SendMessageRequest,
         api::SendMessageResponse,
         api::ResumeSessionRequest,
+        api::SessionFile,
+        api::SessionFiles,
         api::EventPage,
         api::SessionDiff,
         api::SearchResults,

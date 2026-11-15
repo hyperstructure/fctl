@@ -6,6 +6,7 @@ pub mod auth;
 pub mod autopilot;
 pub mod claude;
 pub mod completions;
+pub mod files;
 pub mod host;
 pub mod host_claude;
 pub mod memory;
