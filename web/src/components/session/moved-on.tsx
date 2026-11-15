@@ -69,7 +69,7 @@ export function useMovedOn(session: G.Session | undefined): MovedOn | undefined 
 /** The line above the message box: where the autopilot works now, a link there. */
 export function MovedOnLine({ to }: { to: MovedOn }) {
   return (
-    <span className="animate-fade flex min-w-0 items-center gap-1.5">
+    <span className="animate-fade flex min-w-0 items-center gap-1.5 text-ink-3">
       <AutopilotIcon className="size-3 shrink-0 text-amber" />
       <span className="shrink-0">The autopilot works in</span>
       <Link
@@ -147,7 +147,7 @@ export function MovedOnCard({
       aria-describedby={text}
       onKeyDown={onKey}
       className={cn(
-        "animate-rise mb-1.5 rounded-2xl border border-amber/30 p-4 shadow-[0_10px_40px_rgb(0_0_0/0.22)] backdrop-blur-xl",
+        "animate-rise rounded-2xl border border-amber/30 p-4 shadow-[0_10px_40px_rgb(0_0_0/0.22)] backdrop-blur-xl",
         "bg-surface/95 bg-[linear-gradient(to_bottom,var(--c-amber-soft),transparent_70%)]",
       )}
     >
