@@ -124,9 +124,11 @@ pub async fn waiting(
 
 /// Settles the merges among `waiting` (into one branch of `repo`) that
 /// commit `c` holds, once its checks tell how they went
-/// (`fctl_domain::merge_checks::settles`). Returns the autopilots of those
-/// it settled, each once, which a delivery settling them too at the same
-/// time leaves out.
+/// (`fctl_domain::merge_checks::settles`), and wakes their autopilots a
+/// minute later in the same batch, so that a merge settled never misses
+/// its wake. Returns the autopilots of those it settled, each once, which
+/// a delivery settling them too at the same time leaves out; ring
+/// ScheduleObject's alarm for them (`crate::autopilots::ring`).
 pub async fn settle(
     db: &D1Database,
     repo: &RepoRef,
@@ -161,6 +163,24 @@ pub async fn settle(
         )?);
         settled.push(w.autopilot_id.clone());
     }
+    // Each autopilot wakes once the batch settled one of its merges, which
+    // the merges it settled say: a delivery that settled them first wakes
+    // it instead.
+    let mut autopilots = settled.clone();
+    autopilots.sort();
+    autopilots.dedup();
+    for a in &autopilots {
+        statements.push(crate::autopilots::nudging(
+            db,
+            a,
+            AutopilotWakeReason::MergeChecks,
+            now + ap::CREW_GATHER_MS,
+            Some((
+                "EXISTS (SELECT 1 FROM merge_checks WHERE autopilot_id = ?1 AND sha = ?4 AND ended_at = ?5 AND told_at IS NULL)",
+                vec![s(&c.sha), n(now)],
+            )),
+        )?);
+    }
     let changes = crate::db::batch_changes(db, statements).await?;
     let mut autopilots: Vec<String> = settled
         .into_iter()
@@ -171,6 +191,33 @@ pub async fn settle(
     autopilots.sort();
     autopilots.dedup();
     Ok(autopilots)
+}
+
+/// Looks commit `sha` up as one on `branch` and settles the merges into it
+/// among `waiting` that it holds ([`settle`]).
+#[allow(clippy::too_many_arguments)]
+async fn settle_on(
+    gh: &github::Github<'_>,
+    db: &D1Database,
+    repo: &RepoRef,
+    installation: u64,
+    sha: &str,
+    branch: &str,
+    waiting: &[Waiting],
+    now: i64,
+) -> AppResult<Vec<String>> {
+    let answer = gh
+        .lookup(installation, webhooks::commit_query(repo, sha, branch))
+        .await?;
+    let Some(commit) = webhooks::looked_up_commit(&answer) else {
+        return Ok(Vec::new());
+    };
+    let on: Vec<Waiting> = waiting
+        .iter()
+        .filter(|w| w.base_ref == branch)
+        .cloned()
+        .collect();
+    settle(db, repo, &on, &commit, now).await
 }
 
 /// What a webhook delivery means for merges' checks: a pull request of an
@@ -224,34 +271,35 @@ pub async fn on_delivery(
     let mut branches: Vec<&str> = waiting.iter().map(|w| w.base_ref.as_str()).collect();
     branches.sort_unstable();
     branches.dedup();
+    // Each branch apart: one that fails (GitHub's answer, D1) leaves the
+    // others, and what they settled, to wake their autopilots.
     let mut autopilots: Vec<String> = Vec::new();
+    let mut failed = None;
     for branch in branches.into_iter().take(MAX_BRANCHES) {
-        let answer = gh
-            .lookup(answered.1, webhooks::commit_query(&hook.repo, sha, branch))
-            .await?;
-        let Some(commit) = webhooks::looked_up_commit(&answer) else {
-            continue;
-        };
-        let on: Vec<Waiting> = waiting
-            .iter()
-            .filter(|w| w.base_ref == branch)
-            .cloned()
-            .collect();
-        autopilots.extend(settle(db, &hook.repo, &on, &commit, now).await?);
+        match settle_on(&gh, db, &hook.repo, answered.1, sha, branch, &waiting, now).await {
+            Ok(woke) => autopilots.extend(woke),
+            Err(e) => {
+                failed.get_or_insert(e);
+            }
+        }
     }
     autopilots.sort();
     autopilots.dedup();
-    for a in &autopilots {
-        crate::autopilots::nudge(
-            env,
-            db,
-            a,
-            AutopilotWakeReason::MergeChecks,
-            now + ap::CREW_GATHER_MS,
-        )
-        .await?;
+    if !autopilots.is_empty() {
+        crate::autopilots::ring(env).await;
     }
-    Ok(autopilots.len())
+    match failed {
+        Some(e) if autopilots.is_empty() => Err(e),
+        Some(e) => {
+            worker::console_error!(
+                "the checks after merges into {}: {}",
+                hook.repo.full_name(),
+                e.0.message
+            );
+            Ok(autopilots.len())
+        }
+        None => Ok(autopilots.len()),
+    }
 }
 
 /// A merge of an autopilot's session whose checks on its base branch
@@ -396,6 +444,8 @@ mod tests {
             "INSERT INTO pull_request_sessions (repo, number, session_id, state) VALUES \
              ('acme/web', 12, 'ses_1', 'merged'), ('acme/web', 13, 'ses_2', 'merged'), ('acme/web', 12, 'ses_2', 'merged'), \
              ('acme/web', 14, 'ses_3', 'merged')",
+            "INSERT INTO autopilots (project_id, workspace_id, owner_id, direction, direction_at, wake_at, wake_reasons, created_at, updated_at) \
+             VALUES ('prj_web', 'wsp_acme', 'usr_ada', 'Keep the shop running.', 0, 1900000000000, 'crew', 0, 0)",
         ] {
             q(db, sql, &[])?.run().await?;
         }
@@ -427,6 +477,7 @@ mod tests {
             sha: sha.into(),
             history: history.iter().map(|h| (*h).to_owned()).collect(),
             head: Some(head.into()),
+            on_branch: true,
             checks,
         }
     }
@@ -447,6 +498,25 @@ mod tests {
 
     async fn waits(db: &D1Database) -> AppResult<Vec<Waiting>> {
         waiting(db, &repo(), &["main".to_owned()], ANSWERED).await
+    }
+
+    /// When the autopilot wakes next, and why.
+    async fn wake(db: &D1Database) -> AppResult<(Option<i64>, String)> {
+        #[derive(Deserialize)]
+        struct Row {
+            #[serde(deserialize_with = "opt_int", default)]
+            wake_at: Option<i64>,
+            wake_reasons: String,
+        }
+        let r: Option<Row> = q(
+            db,
+            "SELECT wake_at, wake_reasons FROM autopilots WHERE project_id = 'prj_web'",
+            &[],
+        )?
+        .first()
+        .await?;
+        let r = r.ok_or_else(|| internal("no autopilot"))?;
+        Ok((r.wake_at, r.wake_reasons))
     }
 
     /// Two merges in a row: the first's run is cancelled as the second's
@@ -477,15 +547,28 @@ mod tests {
         assert!(settle(&db, &repo(), &w, &second, NOW).await?.is_empty());
         let (ended, _) = untold(&db, "prj_web").await?;
         assert!(ended.is_empty());
-        // Then it passes, for both merges.
+        // Nothing woke the autopilot sooner than it would.
+        assert_eq!(
+            wake(&db).await?,
+            (Some(1_900_000_000_000), "crew".to_owned())
+        );
+        // Then it passes, for both merges, and wakes the autopilot a
+        // minute later with what woke it already.
         let second = commit("bbb", &["bbb", "aaa"], "bbb", checks(14, 0, 0, 0));
         assert_eq!(
             settle(&db, &repo(), &w, &second, NOW + 1).await?,
             vec!["prj_web".to_owned()]
         );
         assert!(waits(&db).await?.is_empty());
-        // A later delivery about the same commit settles nothing again.
+        let woke = (
+            Some(NOW + 1 + ap::CREW_GATHER_MS),
+            "crew,merge_checks".to_owned(),
+        );
+        assert_eq!(wake(&db).await?, woke);
+        // A later delivery about the same commit settles nothing again,
+        // nor wakes it.
         assert!(settle(&db, &repo(), &w, &second, NOW + 2).await?.is_empty());
+        assert_eq!(wake(&db).await?, woke);
         // The autopilot hears of each pull request once.
         let (ended, ids) = untold(&db, "prj_web").await?;
         assert_eq!(ids.len(), 3);
@@ -521,6 +604,12 @@ mod tests {
         // A commit from before the merge doesn't hold it.
         let before = commit("aaa", &["aaa"], "bbb", checks(10, 1, 0, 0));
         assert!(settle(&db, &repo(), &w, &before, NOW).await?.is_empty());
+        // Nor does one that isn't on main: a fork's, whose branch has its name.
+        let fork = Commit {
+            on_branch: false,
+            ..commit("fff", &["fff", "bbb", "aaa"], "bbb", checks(14, 0, 0, 0))
+        };
+        assert!(settle(&db, &repo(), &w, &fork, NOW).await?.is_empty());
         let failed = commit("bbb", &["bbb", "aaa"], "bbb", checks(13, 1, 0, 0));
         assert_eq!(settle(&db, &repo(), &w, &failed, NOW).await?.len(), 1);
         let (ended, _) = untold(&db, "prj_web").await?;

@@ -217,7 +217,9 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
                 }
                 all
             });
-            // A check run's branch is its suite's; a fork's is none.
+            // A check run's branch is its suite's. A fork's pull request
+            // names the fork's, which may share the base branch's name:
+            // the lookup checks that the commit is on the base branch.
             let branches = text(check, "head_branch")
                 .or_else(|| at(check, "/check_suite/head_branch"))
                 .into_iter()
@@ -360,15 +362,18 @@ pub const HISTORY: usize = 50;
 
 /// The GraphQL request that looks up commit `sha` of `repo`, which a check
 /// suite or a commit status says is on `branch`: its checks and the
-/// commits before it ([`COMMIT`]), and the commit `branch` is at now
-/// ([`looked_up_commit`] reads them).
+/// commits before it ([`COMMIT`]), and the commit `branch` is at now with
+/// those before it, up to [`HISTORY`], which tell whether `sha` is on it
+/// ([`looked_up_commit`] reads them). A check suite of a fork's pull
+/// request names the fork's branch, which may share the base branch's
+/// name.
 pub fn commit_query(repo: &RepoRef, sha: &str, branch: &str) -> Value {
     json!({
         "query": format!(
             "query($owner: String!, $name: String!, $sha: GitObjectID!, $branch: String!) {{\n  \
              rateLimit {{ remaining }}\n  \
              repository(owner: $owner, name: $name) {{\n    \
-             ref(qualifiedName: $branch) {{ target {{ oid }} }}\n    \
+             ref(qualifiedName: $branch) {{ target {{ oid ... on Commit {{ history(first: {HISTORY}) {{ nodes {{ oid }} }} }} }} }}\n    \
              object(oid: $sha) {{\n      {COMMIT}\n    }}\n  }}\n}}"
         ),
         "variables": {
@@ -390,6 +395,10 @@ pub struct Commit {
     /// The commit its branch is at now: `None` when GitHub didn't say, as
     /// for a branch deleted since.
     pub head: Option<String>,
+    /// Whether it is on its branch: the commit the branch is at, or one of
+    /// the [`HISTORY`] before that. A fork's commit isn't, though its
+    /// branch has the base branch's name.
+    pub on_branch: bool,
     pub checks: CommitChecks,
 }
 
@@ -424,12 +433,25 @@ pub fn looked_up_commit(answer: &Value) -> Option<Commit> {
     if !history.iter().any(|h| h.eq_ignore_ascii_case(&sha)) {
         history.insert(0, sha.clone());
     }
+    let head = repo
+        .pointer("/ref/target/oid")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let on_branch = head
+        .iter()
+        .map(String::as_str)
+        .chain(
+            repo.pointer("/ref/target/history/nodes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.get("oid")?.as_str()),
+        )
+        .any(|h| h.eq_ignore_ascii_case(&sha));
     Some(Commit {
         history,
-        head: repo
-            .pointer("/ref/target/oid")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        head,
+        on_branch,
         checks: commit_checks(commit.pointer("/statusCheckRollup/contexts")),
         sha,
     })
@@ -1639,7 +1661,8 @@ mod tests {
         json!({ "data": {
             "rateLimit": { "remaining": 4990 },
             "repository": {
-                "ref": { "target": { "oid": "ccc333" } },
+                "ref": { "target": { "oid": "ccc333",
+                    "history": { "nodes": [{ "oid": "ccc333" }, { "oid": "bbb222" }, { "oid": "aaa111" }] } } },
                 "object": {
                     "oid": "bbb222",
                     "history": { "nodes": [{ "oid": "bbb222" }, { "oid": "aaa111" }] },
@@ -1677,14 +1700,32 @@ mod tests {
         );
         assert!(text.contains("statusCheckRollup"), "{text}");
         assert!(
-            text.contains("ref(qualifiedName: $branch) { target { oid } }"),
+            text.contains(&format!(
+                "ref(qualifiedName: $branch) {{ target {{ oid ... on Commit {{ history(first: {HISTORY}) {{ nodes {{ oid }} }} }} }} }}"
+            )),
             "{text}"
         );
         let c = looked_up_commit(&commit_answer()).unwrap_or_else(|| panic!("no commit"));
         assert_eq!(c.sha, "bbb222");
         assert_eq!(c.head.as_deref(), Some("ccc333"));
-        assert!(c.superseded());
+        assert!(c.superseded() && c.on_branch);
         assert!(c.holds("aaa111") && c.holds("BBB222") && !c.holds("ccc333"));
+        // A fork's commit, whose branch has main's name: not on main.
+        let mut fork = commit_answer();
+        fork["data"]["repository"]["ref"]["target"]["history"]["nodes"] =
+            json!([{ "oid": "ccc333" }, { "oid": "aaa111" }]);
+        let c = looked_up_commit(&fork).unwrap_or_else(|| panic!("no commit"));
+        assert!(!c.on_branch);
+        // The commit main is at is on it, whatever its history says.
+        let mut head = commit_answer();
+        head["data"]["repository"]["ref"] = json!({ "target": { "oid": "BBB222" } });
+        let c = looked_up_commit(&head).unwrap_or_else(|| panic!("no commit"));
+        assert!(c.on_branch && !c.superseded());
+        // A branch GitHub doesn't have.
+        let mut gone = commit_answer();
+        gone["data"]["repository"]["ref"] = Value::Null;
+        let c = looked_up_commit(&gone).unwrap_or_else(|| panic!("no commit"));
+        assert!(!c.on_branch && c.head.is_none());
         // The test that failed and passed when run again counts once,
         // passed; the cancelled deploy apart from the failures.
         assert_eq!(

@@ -23,7 +23,7 @@
 
 use crate::access;
 use crate::ctx::{Authed, AutopilotCaller, Ctx};
-use crate::db::{int, int_bool, n, opt_int, os, q, s};
+use crate::db::{Query, int, int_bool, n, opt_int, os, q, s};
 use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use fctl_domain::autopilot::{self as ap, Gate};
@@ -527,8 +527,9 @@ pub async fn workspace_allows(db: &D1Database, workspace_id: &str) -> AppResult<
 
 // ───────────────────────────── waking ─────────────────────────────
 
-/// The ScheduleObject, whose alarm wakes autopilots as it starts schedules.
-async fn ring(env: &Env) {
+/// The ScheduleObject, whose alarm wakes autopilots as it starts schedules:
+/// to ring after changing when one wakes.
+pub async fn ring(env: &Env) {
     crate::schedules::wake(env).await;
 }
 
@@ -541,20 +542,39 @@ pub async fn nudge(
     reason: AutopilotWakeReason,
     at: i64,
 ) -> AppResult<()> {
-    let moved = q(
-        db,
-        "UPDATE autopilots SET wake_at = CASE WHEN wake_at IS NULL OR wake_at > ?2 THEN ?2 ELSE wake_at END, \
-         wake_reasons = CASE WHEN instr(',' || wake_reasons || ',', ',' || ?3 || ',') > 0 THEN wake_reasons \
-           WHEN wake_reasons = '' THEN ?3 ELSE wake_reasons || ',' || ?3 END \
-         WHERE project_id = ?1 AND state = 'on'",
-        &[s(project_id), n(at), s(reason.as_str())],
-    )?
-    .run()
-    .await?;
+    let moved = nudging(db, project_id, reason, at, None)?.run().await?;
     if moved > 0 {
         ring(env).await;
     }
     Ok(())
+}
+
+/// What [`nudge`] writes, for a batch that wakes an autopilot together
+/// with what it hears of then; [`ring`] once it ran. `only_if` adds a
+/// condition, with its parameters from `?4` on.
+pub fn nudging(
+    db: &D1Database,
+    project_id: &str,
+    reason: AutopilotWakeReason,
+    at: i64,
+    only_if: Option<(&str, Vec<crate::db::Val>)>,
+) -> AppResult<Query> {
+    let (condition, extra) = match only_if {
+        Some((c, params)) => (format!(" AND {c}"), params),
+        None => (String::new(), Vec::new()),
+    };
+    let mut params = vec![s(project_id), n(at), s(reason.as_str())];
+    params.extend(extra);
+    q(
+        db,
+        &format!(
+            "UPDATE autopilots SET wake_at = CASE WHEN wake_at IS NULL OR wake_at > ?2 THEN ?2 ELSE wake_at END, \
+             wake_reasons = CASE WHEN instr(',' || wake_reasons || ',', ',' || ?3 || ',') > 0 THEN wake_reasons \
+               WHEN wake_reasons = '' THEN ?3 ELSE wake_reasons || ',' || ?3 END \
+             WHERE project_id = ?1 AND state = 'on'{condition}"
+        ),
+        &params,
+    )
 }
 
 /// When the earliest autopilot that is on wakes.

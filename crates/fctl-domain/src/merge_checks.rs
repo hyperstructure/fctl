@@ -44,12 +44,13 @@ impl Outcome {
 }
 
 /// How the checks of a commit on a base branch ended: `None` while any is
-/// still to finish, of one GitHub knows no checks of, and of one whose
-/// checks were cancelled, none failing, while its branch moved on since
-/// (the newer commit's tell instead).
+/// still to finish, of one GitHub knows no checks of, of one whose checks
+/// were cancelled, none failing, while its branch moved on since (the
+/// newer commit's tell instead), and of one that isn't on the branch, such
+/// as a fork's whose branch has the base branch's name.
 pub fn outcome(c: &Commit) -> Option<Outcome> {
     let checks = &c.checks;
-    if checks.total() == 0 || checks.pending > 0 {
+    if !c.on_branch || checks.total() == 0 || checks.pending > 0 {
         return None;
     }
     if checks.failed > 0 {
@@ -160,6 +161,7 @@ mod tests {
             sha: sha.to_owned(),
             history: history.iter().map(|h| (*h).to_owned()).collect(),
             head: Some(head.to_owned()),
+            on_branch: true,
             checks,
         }
     }
@@ -197,12 +199,27 @@ mod tests {
         // And checks that passed don't wait for the newer commit's.
         let passed = commit("aaa", &["aaa"], "bbb", checks(24, 0, 0, 0));
         assert_eq!(outcome(&passed), Some(Outcome::Passed));
-        // A branch GitHub didn't say where it is.
+        // A branch GitHub didn't say where it is: nothing says the commit
+        // is on it.
         let unknown = Commit {
             head: None,
+            on_branch: false,
             ..moved
         };
-        assert_eq!(outcome(&unknown), Some(Outcome::Cancelled));
+        assert_eq!(outcome(&unknown), None);
+    }
+
+    #[test]
+    fn a_commit_off_the_base_branch_settles_nothing() {
+        // A fork's pull request from its own main, up to date with the
+        // upstream main: its commit holds the merge, but main's checks are
+        // those of main's commits.
+        let fork = Commit {
+            on_branch: false,
+            ..commit("fff", &["fff", "bbb", "aaa"], "bbb", checks(24, 0, 0, 0))
+        };
+        assert_eq!(outcome(&fork), None);
+        assert_eq!(settles(&fork, &["bbb"]), None);
     }
 
     #[test]
