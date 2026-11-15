@@ -133,7 +133,7 @@ async fn get(server: Option<&str>, args: GetArgs, json: bool) -> Result<()> {
             .with_context(|| format!("downloading {}", f.file.name))?;
         let part = dir.join(format!(".fctl-{}.part", f.file.id.as_str()));
         parts.0.push(part.clone());
-        std::fs::write(&part, &bytes).with_context(|| format!("writing {}", part.display()))?;
+        write_part(&part, &bytes).with_context(|| format!("writing {}", part.display()))?;
     }
     let mut written = Vec::with_capacity(wanted.len());
     let downloaded = parts.0.clone();
@@ -200,6 +200,27 @@ impl Drop for Parts {
             let _ = std::fs::remove_file(part);
         }
     }
+}
+
+/// Writes a download to `part`, a new file: never through a link there,
+/// nor into a file someone else made. One left from a run cut short goes
+/// first (a link itself, not what it points to).
+fn write_part(part: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let create = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(part)
+    };
+    let mut file = match create() {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(part)?;
+            create()?
+        }
+        other => other?,
+    };
+    file.write_all(bytes)
 }
 
 /// Puts the download at `part` in place at `path`: as a new file, or over
@@ -322,6 +343,18 @@ mod tests {
         place(&p, &new, false)?;
         assert_eq!(std::fs::read_to_string(&new)?, "theirs");
         assert!(!p.exists());
+        // A part goes through no link there: the link goes instead.
+        #[cfg(unix)]
+        {
+            let target = dir.path().join("target");
+            std::fs::write(&target, "kept")?;
+            let planted = dir.path().join(".fctl-att_5.part");
+            std::os::unix::fs::symlink(&target, &planted)?;
+            write_part(&planted, b"download")?;
+            assert_eq!(std::fs::read_to_string(&target)?, "kept");
+            assert!(!planted.symlink_metadata()?.file_type().is_symlink());
+            assert_eq!(std::fs::read_to_string(&planted)?, "download");
+        }
         // Downloads that never went in place leave nothing behind.
         let left = [part("att_3")?, part("att_4")?];
         drop(Parts(left.to_vec()));
