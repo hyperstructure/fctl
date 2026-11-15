@@ -144,6 +144,18 @@ is delivered once, and answers with the same `delivery_id`, so retry with
 it after a timeout. Files for a message go to `POST
 /api/v1/sessions/{id}/attachments` first.
 
+### Files
+
+A task, message or resume carries up to 10 files of at most 20 MB each,
+uploaded first, each on its own as an `application/octet-stream` body.
+
+| Request | What it does |
+|---|---|
+| `POST /api/v1/projects/{project}/attachments?name=…&type=…` | uploads a file to start a session with (`type`, its media type, guessed from the name without it). Answers `{"id": "att_…", "name", "media_type", "size", "width", "height"}` (the pixel size of images); uploads no task or message sends are deleted after a day |
+| `POST /api/v1/sessions/{id}/attachments?name=…&type=…` | the same, for a message or resume in the session, for anyone who may message it |
+| `GET /api/v1/sessions/{id}/attachments` | the files sent in the session, oldest first: `{"files": [{"id", "name", "media_type", "size", "sent_at"…}]}` |
+| `GET /api/v1/sessions/{id}/attachments/{attachment}` | a file's bytes, or the single byte range a `Range` header asks for |
+
 ### Events
 
 `GET /api/v1/sessions/{id}/events` returns a page of the transcript,
@@ -297,7 +309,9 @@ Sessions say what they are to an autopilot (`"autopilot": {"role": "pilot"
 | "crew", "project_slug"}`); its own stay off `GET /api/v1/sessions` unless
 asked (`?hidden=1`), and `?autopilot={project}` lists an autopilot's
 sessions. Its session's other requests reach the API as its owner, held to
-its project or workspace, a maintainer's role and its powers. Projects say
+its project or workspace, a maintainer's role and its powers: among them,
+it uploads [files](#files) for the sessions it starts and those it
+started, and reads the files sent in the sessions it reads. Projects say
 how their autopilot stands (`"autopilot": {"allowed", "state", "scope",
 "asks", "working", "session", "wake_at"}`), its own `session` (`id`,
 `number`, `status`) only to those who may open it.

@@ -526,7 +526,9 @@ its VM, and nothing outside it except through these channels:
   from people you don't trust.
 - **Attached files** are saved in the sandbox under `~/attachments/`, where
   anything the agent runs can read them, and Claude sees images in the
-  message.
+  message. An autopilot reads the files sent in the sessions of its
+  project or workspace, as it reads their transcripts, and attaches them
+  to the sessions it starts.
 
 The `process` driver has no isolation at all and is for development only.
 
