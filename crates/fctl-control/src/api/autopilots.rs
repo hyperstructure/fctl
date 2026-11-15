@@ -550,18 +550,7 @@ async fn brief_of(
         .collect();
     // Since its own session started: what it heard since is in that
     // session's conversation already.
-    #[derive(Deserialize)]
-    struct Started {
-        #[serde(deserialize_with = "int")]
-        created_at: i64,
-    }
-    let started: Option<i64> = match &row.session_id {
-        Some(id) => q(db, "SELECT created_at FROM sessions WHERE id = ?", &[s(id)])?
-            .first::<Started>()
-            .await?
-            .map(|r| r.created_at),
-        None => None,
-    };
+    let started = row.session_created_at;
     let options: Vec<Vec<String>> = ask_rows.iter().map(engine::AskRow::options).collect();
     let ask_views: Vec<ap::AskView> = ask_rows
         .iter()

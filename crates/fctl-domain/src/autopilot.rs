@@ -1661,18 +1661,19 @@ fn brief_asks(s: &mut String, b: &Brief<'_>) {
         }
     }
     if !heard.is_empty() {
-        if !open.is_empty() || !closed.is_empty() {
+        let alone = open.is_empty() && closed.is_empty();
+        if !alone {
             s.push('\n');
         }
         let n = heard.len();
+        let (how_many, it) = match (n, alone) {
+            (1, true) => ("None open. One ask was".to_owned(), "it"),
+            (n, true) => (format!("None open. {n} asks were"), "them"),
+            (1, false) => ("And one more was".to_owned(), "it"),
+            (n, false) => (format!("And {n} more were"), "them"),
+        };
         s.push_str(&format!(
-            "And {} answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists {}.\n",
-            if n == 1 {
-                "one more".to_owned()
-            } else {
-                format!("{n} more")
-            },
-            if n == 1 { "it" } else { "them" }
+            "{how_many} answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists {it}.\n"
         ));
     }
 }
@@ -3170,9 +3171,36 @@ mod tests {
             "- (new) You asked “Could you send shop#41 the logo?”; Bo answered “The dark one is newer”, and sent shop#41 2 files in a message: logo.svg, logo-dark.svg\n"
         ), "{text}");
         assert!(text.contains(
-            "- You asked “Could you send shop#43 the gift card terms?”; Bo sent shop#43 a file in a message: terms.pdf\n\nAnd one more answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists it.\n"
+            "- You asked “Could you send shop#43 the gift card terms?”; Bo sent shop#43 a file in a message: terms.pdf\n\nAnd one more was answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists it.\n"
         ), "{text}");
         assert!(!text.contains("Keep the old checkout"), "{text}");
+        // With nothing else to list, the count stands on its own.
+        let only_heard = brief(&Brief {
+            place: place(),
+            rules: Rules {
+                powers: &[],
+                crew_max: 2,
+                check_in_minutes: 60,
+                handoff_at: None,
+            },
+            direction: "Ship the checkout.",
+            direction_by: None,
+            direction_at: now,
+            plan: None,
+            plan_at: None,
+            notes: &[],
+            asks: &asks[5..],
+            crew: &[],
+            others: &[],
+            log: &[],
+            projects: &[],
+            wake_at: None,
+            now,
+            parts: &[BriefPart::Asks],
+        });
+        assert!(only_heard.ends_with(
+            "## Your asks\n\nNone open. One ask was answered, declined or taken back in the last two days, which you heard of earlier in this session: `fctl autopilot asks` lists it.\n"
+        ), "{only_heard}");
         // What people wrote to it, oldest first, then what it said.
         assert!(text.contains(
             "\n\n- shop#41 “Add Apple Pay”: asks “Which merchant id?”; pull requests #12 open\n  Ada sent it a file 2 hours ago\n  Bo wrote to it 5 minutes ago, with 2 files: “Use the new button styles”\n  It said as its turn ended: “I need the merchant id to go on.”\n"
