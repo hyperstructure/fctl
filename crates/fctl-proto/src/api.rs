@@ -2714,12 +2714,14 @@ pub struct SessionFile {
     #[serde(flatten)]
     #[cfg_attr(feature = "ts", ts(flatten))]
     pub file: crate::event::Attachment,
-    /// When the message that sent it went.
+    /// When the message that sent it went (one fctl held for an autopilot:
+    /// when it was held).
     pub sent_at: Millis,
 }
 
 /// `GET /api/v1/sessions/{id}/attachments`: the files sent in a session,
-/// oldest first. `GET /api/v1/sessions/{id}/attachments/{file}` reads one.
+/// oldest first, without those of an autopilot's messages fctl still holds
+/// for room. `GET /api/v1/sessions/{id}/attachments/{file}` reads one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct SessionFiles {

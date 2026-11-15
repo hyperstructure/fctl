@@ -153,7 +153,7 @@ uploaded first, each on its own as an `application/octet-stream` body.
 |---|---|
 | `POST /api/v1/projects/{project}/attachments?name=…&type=…` | uploads a file to start a session with (`type`, its media type, guessed from the name without it). Answers `{"id": "att_…", "name", "media_type", "size", "width", "height"}` (the pixel size of images); uploads no task or message sends are deleted after a day |
 | `POST /api/v1/sessions/{id}/attachments?name=…&type=…` | the same, for a message or resume in the session, for anyone who may message it |
-| `GET /api/v1/sessions/{id}/attachments` | the files sent in the session, oldest first: `{"files": [{"id", "name", "media_type", "size", "sent_at"…}]}` |
+| `GET /api/v1/sessions/{id}/attachments` | the files sent in the session, oldest first: `{"files": [{"id", "name", "media_type", "size", "sent_at"…}]}`, without those of an autopilot's messages fctl still holds for room |
 | `GET /api/v1/sessions/{id}/attachments/{attachment}` | a file's bytes, or the single byte range a `Range` header asks for |
 
 ### Events

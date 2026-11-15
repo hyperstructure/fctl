@@ -36,6 +36,10 @@ pub struct GetArgs {
     /// The directory to write them to (default: the current one).
     #[arg(long, value_name = "DIR")]
     pub dir: Option<PathBuf>,
+    /// Write over files of the same names there: the names are those of
+    /// whoever sent the files.
+    #[arg(long)]
+    pub force: bool,
 }
 
 pub async fn run(server: Option<&str>, cmd: FilesCmd, json: bool) -> Result<()> {
@@ -96,7 +100,25 @@ async fn get(server: Option<&str>, args: GetArgs, json: bool) -> Result<()> {
             )
         })?
     };
+    if let Some(name) = clashing_name(&wanted) {
+        bail!(
+            "Two of them would be written as {}: get them one at a time, each with a --dir of its own",
+            name.display()
+        );
+    }
     let dir = args.dir.unwrap_or_else(|| PathBuf::from("."));
+    // Nothing is written over unasked, before anything is downloaded.
+    if !args.force
+        && let Some(path) = wanted
+            .iter()
+            .map(|f| dir.join(file_name(&f.file.name)))
+            .find(|p| p.symlink_metadata().is_ok())
+    {
+        bail!(
+            "{} exists: pass --force to write over it, or --dir to write somewhere else",
+            path.display()
+        );
+    }
     if !wanted.is_empty() {
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -107,7 +129,7 @@ async fn get(server: Option<&str>, args: GetArgs, json: bool) -> Result<()> {
             .await
             .with_context(|| format!("downloading {}", f.file.name))?;
         let path = dir.join(file_name(&f.file.name));
-        std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+        write(&path, &bytes, args.force).with_context(|| format!("writing {}", path.display()))?;
         if !json {
             println!(
                 "{} {} {}",
@@ -156,6 +178,29 @@ fn newest_of_each(sent: &[SessionFile]) -> Vec<&SessionFile> {
         .filter(|(i, f)| !sent[i + 1..].iter().any(|g| g.file.name == f.file.name))
         .map(|(_, f)| f)
         .collect()
+}
+
+/// Writes `bytes` to a new file at `path`, or over one there with `force`.
+fn write(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    if force {
+        return std::fs::write(path, bytes);
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?
+        .write_all(bytes)
+}
+
+/// The name two of `files` would both be written as, if any.
+fn clashing_name(files: &[&SessionFile]) -> Option<PathBuf> {
+    let names: Vec<PathBuf> = files.iter().map(|f| file_name(&f.file.name)).collect();
+    names
+        .iter()
+        .enumerate()
+        .find(|(i, n)| names[i + 1..].contains(n))
+        .map(|(_, n)| n.clone())
 }
 
 /// The name to write a file under: the control plane's, without anything
@@ -217,6 +262,33 @@ mod tests {
             ids(&newest_of_each(&all)),
             vec!["att_2".to_owned(), "att_3".to_owned()]
         );
+    }
+
+    #[test]
+    fn writes_no_file_over_another() -> anyhow::Result<()> {
+        let all = [
+            sent("att_1", "model.3mf", 1),
+            sent("att_2", "plate.gcode.3mf", 2),
+            sent("att_3", "model.3mf", 3),
+        ];
+        // Two files of one name in one go would write over each other.
+        assert_eq!(clashing_name(&[&all[0], &all[1]]), None);
+        assert_eq!(
+            clashing_name(&[&all[0], &all[1], &all[2]]),
+            Some(PathBuf::from("model.3mf"))
+        );
+        // A file there stays, unless asked.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("AGENTS.md");
+        std::fs::write(&path, "mine")?;
+        assert!(write(&path, b"theirs", false).is_err());
+        assert_eq!(std::fs::read_to_string(&path)?, "mine");
+        write(&path, b"theirs", true)?;
+        assert_eq!(std::fs::read_to_string(&path)?, "theirs");
+        let new = dir.path().join("model.3mf");
+        write(&new, b"abc", false)?;
+        assert_eq!(std::fs::read(&new)?, b"abc");
+        Ok(())
     }
 
     #[test]

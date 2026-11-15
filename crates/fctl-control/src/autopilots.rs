@@ -2400,6 +2400,9 @@ pub async fn hold(
         return Ok(None);
     }
     if queue.len() >= ap::MAX_HELD {
+        // Its files were claimed for the session: they wait for another
+        // message, or go a day later.
+        unsend_files(&ctx.env, db, session_id, attachments).await;
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::Conflict,
             format!(
@@ -2741,8 +2744,91 @@ async fn drop_held(
         .run()
         .await?;
     let gone = h.status.is_none();
+    if !gone {
+        unsend_files(env, db, &h.session_id, &h.attachments()).await;
+    }
     let session = (!gone).then_some(h.session_id.as_str());
     held_logged(env, db, row, h, ap::held_dropped_line(gone), session, now).await;
+    Ok(())
+}
+
+/// Hands the files of a held message that won't go back as unsent
+/// uploads, which are deleted a day later: they were claimed for its
+/// session as it was held, and would otherwise stay listed among the
+/// session's files though its agent never got them. A failure is logged.
+async fn unsend_files(env: &Env, db: &D1Database, session_id: &str, files: &[Attachment]) {
+    if files.is_empty() {
+        return;
+    }
+    #[derive(Deserialize)]
+    struct Found {
+        project_id: String,
+    }
+    let found: AppResult<Option<Found>> = async {
+        q(
+            db,
+            "SELECT project_id FROM sessions WHERE id = ?",
+            &[s(session_id)],
+        )?
+        .first()
+        .await
+    }
+    .await;
+    let ids: Vec<fctl_proto::AttachmentId> = files.iter().map(|f| f.id.clone()).collect();
+    let done = match found {
+        // A session that is gone took its files with it.
+        Ok(None) => Ok(()),
+        Ok(Some(f)) => {
+            crate::internal::unclaim_files(env, &f.project_id, &SessionId(session_id.into()), &ids)
+                .await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = done {
+        worker::console_error!(
+            "handing back the files of a message held for {session_id}: {}",
+            e.0.message
+        );
+    }
+}
+
+/// The files of the messages fctl holds for session `session_id` now: its
+/// agent hasn't got them yet.
+pub async fn held_files(db: &D1Database, session_id: &str) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Held {
+        attachments: Option<String>,
+    }
+    let rows: Vec<Held> = q(
+        db,
+        "SELECT attachments FROM autopilot_held WHERE session_id = ? AND attachments IS NOT NULL",
+        &[s(session_id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.attachments.as_deref())
+        .filter_map(|a| serde_json::from_str::<Vec<Attachment>>(a).ok())
+        .flatten()
+        .map(|a| a.id.0)
+        .collect())
+}
+
+/// Drops every message fctl holds for the autopilot of `project_id`, as it
+/// goes off, handing their files back.
+pub async fn drop_all_held(env: &Env, db: &D1Database, project_id: &str) -> AppResult<()> {
+    let dropped = held(db, project_id).await?;
+    q(
+        db,
+        "DELETE FROM autopilot_held WHERE project_id = ?",
+        &[s(project_id)],
+    )?
+    .run()
+    .await?;
+    for h in &dropped {
+        unsend_files(env, db, &h.session_id, &h.attachments()).await;
+    }
     Ok(())
 }
 
@@ -2795,6 +2881,7 @@ pub async fn take_back(
     if unheld != Unheld::Taken {
         return Ok(unheld);
     }
+    unsend_files(env, db, &h.session_id, &h.attachments()).await;
     let session = h.status.is_some().then_some(h.session_id.as_str());
     match by {
         Some(person) => {

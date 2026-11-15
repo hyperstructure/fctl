@@ -96,8 +96,12 @@ async fn store(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppResult<
 pub async fn list(ctx: &Ctx, session_id: &str) -> AppResult<Response> {
     let a = access::session(ctx, session_id).await?;
     let stub = internal::files_stub(&ctx.env, &a.row.project_id)?;
-    let files: SessionFiles =
+    let mut files: SessionFiles =
         internal::get(&stub, &format!("/files?session={}", enc(&a.row.id))).await?;
+    // Those of an autopilot's message that fctl holds for room are the
+    // session's, but its agent hasn't got them yet.
+    let held = crate::autopilots::held_files(&ctx.db, &a.row.id).await?;
+    files.files.retain(|f| !held.contains(&f.file.id.0));
     http::ok(&files)
 }
 

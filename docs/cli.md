@@ -109,7 +109,7 @@ fctl attach --read-only my-app#12
 fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it, and it answers what its agent asks (fctl show prints the question)
 fctl send my-app#12 -a ci.log "This is what CI printed"
 fctl files list my-app#12        # the files sent in it (with messages or its task), oldest first
-fctl files get my-app#12 model.3mf      # writes ./model.3mf (the newest of that name, or by id: att_…)
+fctl files get my-app#12 model.3mf      # writes ./model.3mf (the newest of that name, or by id: att_…); --force to write over one there
 fctl files get my-app#12 --all --dir in/   # every file, the newest of each name
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
@@ -207,7 +207,8 @@ understand the task, and again when the work turns to something else.
 `~/attachments/` in its sandbox, and sees images that Claude accepts as
 they are (PNG, JPEG, GIF, WebP up to 2000 px a side) in the message itself.
 `fctl files` lists and downloads the files sent in a session, for anyone
-who sees it.
+who sees it. It writes no file over one already there unless you pass
+`--force`: their names are those of whoever sent them.
 
 ### Screenshots in pull requests
 
