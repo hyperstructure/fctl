@@ -220,6 +220,21 @@ pub enum AutopilotCmd {
         #[arg(long, value_name = "HEADING", requires = "file")]
         section: Option<String>,
     },
+    /// The files it keeps across its sessions: text, such as the scripts it
+    /// relies on and drafts, which its next session gets back in a new
+    /// sandbox and people read on the Autopilot tab. In its sandbox, the
+    /// autopilot keeps and removes them.
+    #[command(after_help = "Examples:
+  fctl autopilot files                        # list them
+  fctl autopilot files put watch-deploy.sh    # keep a file, by its name
+  fctl autopilot files put - --name summary.md < draft.md
+  fctl autopilot files get watch-deploy.sh    # print one
+  fctl autopilot files get --all              # write them all into the current directory
+  fctl autopilot files rm watch-deploy.sh")]
+    Files {
+        #[command(subcommand)]
+        cmd: Option<FilesCmd>,
+    },
     /// The autopilot asks people a question, with answers to click, or for
     /// a secret, and goes on meanwhile: fctl wakes it with the answer.
     #[command(after_help = "Examples:
@@ -266,6 +281,48 @@ pub enum AutopilotCmd {
         /// own), people (people's sessions), plan, log. Default: all.
         #[arg(long, value_name = "PARTS", value_delimiter = ',', value_parser = brief_part)]
         only: Vec<fctl_domain::autopilot::BriefPart>,
+    },
+}
+
+/// `fctl autopilot files`.
+#[derive(Subcommand)]
+pub enum FilesCmd {
+    /// List them by name, with their sizes and when it wrote them (the
+    /// default).
+    List,
+    /// Keep files whole, each by its own name (or --name), in place of one
+    /// of that name: the autopilot, in its sandbox. Text alone, at most
+    /// 256 KB each and 4 MB in all.
+    Put {
+        /// The files (`-`: stdin, with --name).
+        #[arg(required = true, value_name = "FILE")]
+        files: Vec<PathBuf>,
+        /// The name to keep it by (one file): letters, digits, dots, dashes
+        /// and underscores.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Print one, or write them all into a directory (--all). Those that
+    /// start with `#!` are written executable.
+    Get {
+        /// The file's name.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        name: Option<String>,
+        /// Write it into this file rather than print it.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Every file, written into the current directory (or --dir), in
+        /// place of those of their names there.
+        #[arg(long, conflicts_with = "output")]
+        all: bool,
+        /// Where --all writes them.
+        #[arg(long, value_name = "DIR", conflicts_with = "name")]
+        dir: Option<PathBuf>,
+    },
+    /// Remove files: the autopilot, in its sandbox.
+    Rm {
+        #[arg(required = true, value_name = "NAME")]
+        names: Vec<String>,
     },
 }
 
@@ -709,6 +766,7 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
                 ask.id
             );
         }
+        AutopilotCmd::Files { cmd } => files(&api, p, cmd.unwrap_or(FilesCmd::List), json).await?,
         AutopilotCmd::Withdraw { ask } => {
             let answer = api.withdraw_ask(p, &ask).await?;
             if json {
@@ -737,6 +795,168 @@ fn project(named: Option<String>) -> Result<String> {
         .context(
             "Which project? Pass --project, or set a default with `fctl projects use <project>`.",
         )
+}
+
+/// `fctl autopilot files …`.
+async fn files(api: &fctl_client::Api, p: &str, cmd: FilesCmd, json: bool) -> Result<()> {
+    match cmd {
+        FilesCmd::List => {
+            let list = api.autopilot_files(p).await?;
+            if json {
+                return style::print_json(&list);
+            }
+            if list.files.is_empty() {
+                println!(
+                    "No files. The autopilot keeps them with fctl autopilot files put, in its sandbox."
+                );
+                return Ok(());
+            }
+            let wide = list.files.iter().map(|f| f.name.len()).max().unwrap_or(0);
+            for f in &list.files {
+                println!(
+                    "{:wide$}  {:>7}  {}",
+                    style::plain(&f.name),
+                    fctl_domain::autopilot::file_size(f.size),
+                    style::dim(&format!("written {}", style::ago(f.updated_at)))
+                );
+            }
+            println!(
+                "{}",
+                style::dim(&format!(
+                    "{} of {} in {}",
+                    fctl_domain::autopilot::file_size(list.bytes),
+                    fctl_domain::autopilot::file_size(list.max_bytes),
+                    style::count(list.files.len() as u64, "file", "files")
+                ))
+            );
+        }
+        FilesCmd::Put { files, name } => {
+            if name.is_some() && files.len() > 1 {
+                bail!("--name names one file: keep the others by their own names");
+            }
+            let mut kept = Vec::new();
+            for f in &files {
+                let named = match (&name, f.file_name()) {
+                    (Some(n), _) => n.clone(),
+                    (None, _) if f.as_os_str() == "-" => {
+                        bail!("Name what stdin holds: fctl autopilot files put - --name draft.md")
+                    }
+                    (None, Some(n)) => n.to_string_lossy().into_owned(),
+                    (None, None) => bail!("Name {} with --name", f.display()),
+                };
+                let content = text_of(f)?;
+                kept.push(api.put_autopilot_file(p, &named, &content).await?);
+            }
+            if json {
+                return style::print_json(&kept);
+            }
+            for f in &kept {
+                println!(
+                    "{} Kept {} ({}): people see it on the Autopilot tab, and your next sessions get it back with fctl autopilot files get",
+                    style::accent("✓"),
+                    style::bold(&f.name),
+                    fctl_domain::autopilot::file_size(f.size)
+                );
+            }
+        }
+        FilesCmd::Get {
+            name: Some(name),
+            output,
+            ..
+        } => {
+            let f = api.autopilot_file(p, &name).await?;
+            if json {
+                return style::print_json(&f);
+            }
+            let content = f.content.unwrap_or_default();
+            match output {
+                Some(to) => {
+                    write_file(&to, &content)?;
+                    println!("{} Wrote {}", style::accent("✓"), to.display());
+                }
+                None => {
+                    use std::io::Write;
+                    let mut out = std::io::stdout().lock();
+                    out.write_all(content.as_bytes())?;
+                    if std::io::stdout().is_terminal() && !content.ends_with('\n') {
+                        out.write_all(b"\n")?;
+                    }
+                }
+            }
+        }
+        FilesCmd::Get { dir, .. } => {
+            let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+            let list = api.autopilot_files(p).await?;
+            std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+            let mut got = Vec::new();
+            for listed in &list.files {
+                let f = api.autopilot_file(p, &listed.name).await?;
+                // A name the control plane checked: one segment, no `..`.
+                write_file(&dir.join(&f.name), f.content.as_deref().unwrap_or_default())?;
+                got.push(AutopilotFile { content: None, ..f });
+            }
+            if json {
+                return style::print_json(&got);
+            }
+            if got.is_empty() {
+                println!("No files to get.");
+                return Ok(());
+            }
+            let names: Vec<&str> = got.iter().map(|f| f.name.as_str()).collect();
+            println!(
+                "{} Wrote {} into {}: {}",
+                style::accent("✓"),
+                style::count(got.len() as u64, "file", "files"),
+                dir.display(),
+                style::plain(&names.join(", "))
+            );
+        }
+        FilesCmd::Rm { names } => {
+            for name in &names {
+                api.remove_autopilot_file(p, name).await?;
+            }
+            if json {
+                return style::print_json(&serde_json::json!({ "removed": names }));
+            }
+            println!(
+                "{} Removed {}",
+                style::accent("✓"),
+                style::plain(&names.join(", "))
+            );
+        }
+    }
+    Ok(())
+}
+
+/// What a file to keep holds, as text: its files keep no binary ones.
+fn text_of(f: &std::path::Path) -> Result<String> {
+    let bytes = if f.as_os_str() == "-" {
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut bytes)
+            .context("reading stdin")?;
+        bytes
+    } else {
+        std::fs::read(f).with_context(|| format!("reading {}", f.display()))?
+    };
+    String::from_utf8(bytes).map_err(|_| {
+        anyhow::anyhow!(
+            "{} isn't text (UTF-8): the autopilot's files keep text, such as scripts, drafts and notes",
+            f.display()
+        )
+    })
+}
+
+/// Writes one of its files at `to`, executable when it starts with `#!`.
+fn write_file(to: &std::path::Path, content: &str) -> Result<()> {
+    std::fs::write(to, content).with_context(|| format!("writing {}", to.display()))?;
+    #[cfg(unix)]
+    if content.starts_with("#!") {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", to.display()))?;
+    }
+    Ok(())
 }
 
 /// Whether this runs in an autopilot's own session's sandbox.
@@ -1283,6 +1503,63 @@ mod tests {
         // An empty name asks for no part, rather than the first.
         assert!(parse(&["brief", "--only", "sessions,"]).is_none());
         assert!(parse(&["brief", "--only", ""]).is_none());
+    }
+
+    #[test]
+    fn keeps_gets_and_removes_files() {
+        assert!(matches!(
+            parse(&["files"]),
+            Some(AutopilotCmd::Files { cmd: None })
+        ));
+        let Some(AutopilotCmd::Files {
+            cmd: Some(FilesCmd::Put { files, name }),
+        }) = parse(&["files", "put", "watch.sh", "draft.md"])
+        else {
+            panic!("parses");
+        };
+        assert_eq!(
+            files,
+            [PathBuf::from("watch.sh"), PathBuf::from("draft.md")]
+        );
+        assert!(name.is_none());
+        assert!(parse(&["files", "put"]).is_none());
+        let Some(AutopilotCmd::Files {
+            cmd: Some(FilesCmd::Get { name, all, dir, .. }),
+        }) = parse(&["files", "get", "--all", "--dir", "scratch"])
+        else {
+            panic!("parses");
+        };
+        assert_eq!(
+            (name, all, dir),
+            (None, true, Some(PathBuf::from("scratch")))
+        );
+        // One file or all of them, and a directory only for all.
+        assert!(parse(&["files", "get"]).is_none());
+        assert!(parse(&["files", "get", "watch.sh", "--all"]).is_none());
+        assert!(parse(&["files", "get", "watch.sh", "--dir", "scratch"]).is_none());
+        assert!(parse(&["files", "get", "--all", "-o", "x"]).is_none());
+        assert!(parse(&["files", "get", "watch.sh", "-o", "w.sh"]).is_some());
+        assert!(parse(&["files", "rm"]).is_none());
+        assert!(parse(&["files", "rm", "a.md", "b.md", "-p", "shop"]).is_some());
+    }
+
+    #[test]
+    fn writes_scripts_executable() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("fctl-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        write_file(&dir.join("watch.sh"), "#!/bin/sh\necho hi\n")?;
+        write_file(&dir.join("draft.md"), "# Draft\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |n: &str| std::fs::metadata(dir.join(n)).map(|m| m.permissions().mode() & 0o111);
+            assert_eq!(mode("watch.sh")?, 0o111);
+            assert_eq!(mode("draft.md")?, 0);
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("draft.md"))?, "# Draft\n");
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 
     #[test]

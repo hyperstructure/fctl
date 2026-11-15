@@ -536,6 +536,9 @@ pub enum AutopilotEntryKind {
     Project,
     /// It changed its plan.
     Plan,
+    /// It added a file to those it keeps across its sessions, or removed
+    /// one.
+    File,
     /// It asked people something, or took it back.
     Asked,
     /// Someone answered or declined what it asked.
@@ -563,6 +566,7 @@ impl AutopilotEntryKind {
             Self::Schedule => "schedule",
             Self::Project => "project",
             Self::Plan => "plan",
+            Self::File => "file",
             Self::Asked => "asked",
             Self::Answered => "answered",
             Self::Direction => "direction",
@@ -584,6 +588,7 @@ impl AutopilotEntryKind {
             Self::Schedule,
             Self::Project,
             Self::Plan,
+            Self::File,
             Self::Asked,
             Self::Answered,
             Self::Direction,
@@ -870,6 +875,47 @@ pub struct AutopilotLogRequest {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AutopilotPlanRequest {
     pub plan: String,
+}
+
+/// One of the files an autopilot keeps across its sessions (`fctl
+/// autopilot files`): text it writes from its own session, such as the
+/// scripts it relies on and drafts of what it will send, which its next
+/// session gets back in a new sandbox and people read on its tab.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct AutopilotFile {
+    /// `watch-deploy.sh`: letters, digits, dots, dashes and underscores.
+    pub name: String,
+    /// In bytes.
+    pub size: u64,
+    pub created_at: Millis,
+    /// When it last wrote it.
+    pub updated_at: Millis,
+    /// What it holds: in `GET …/autopilot/files/{name}` alone, not in lists.
+    pub content: Option<String>,
+}
+
+/// `GET …/autopilot/files`: its files by name, without what they hold,
+/// and how much room they take.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AutopilotFiles {
+    pub files: Vec<AutopilotFile>,
+    /// What they hold together, in bytes, and the most they may.
+    pub bytes: u64,
+    pub max_bytes: u64,
+    /// The largest a file may be, in bytes, and the most files it keeps.
+    pub max_file_bytes: u64,
+    pub max_files: u32,
+}
+
+/// `PUT …/autopilot/files/{name}`: what the file holds, whole (text). It
+/// replaces the file of that name, if any.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PutAutopilotFileRequest {
+    pub content: String,
 }
 
 /// `GET …/autopilot/brief`: what the autopilot needs to know to go on, as
