@@ -2132,8 +2132,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    without it. D1 keeps it (`autopilots`, one
    per project, its home) with the notes people steer it with
    (`autopilot_notes`), what it asks them (`autopilot_asks`), its log
-   (`autopilot_log`, its newest 1,000 entries) and its files
-   (`autopilot_files`, point 2).
+   (`autopilot_log`, its newest 1,000 entries), its files
+   (`autopilot_files`, point 2) and its messages that wait for room under
+   its limit (`autopilot_held`, point 4).
 2. **Its own sessions** (`sessions.autopilot_role = 'pilot'`, in its home
    project, off session lists unless asked with `?hidden=1`). A workspace's
    autopilot's, which show what it does across the workspace, are its
@@ -2330,9 +2331,27 @@ sessions to do it, and sets up what the work needs, as far as they let it
    queued, starting, working, paused on a usage limit or stopping, and
    one resting that it just messaged, but not one that ended its turn to
    wait for its background work until its own turn starts:
-   `autopilots::CREW_WORKING`; a message or resume to one resting needs
-   room too), and it
-   starts at most 20 an hour. What it did goes in its log, in its own
+   `autopilots::CREW_WORKING`; a resume of one resting needs room too),
+   and it starts at most 20 an hour. A message to one resting doesn't
+   fail at the limit ([ADR 0081](adr/0081-an-autopilots-messages-wait-for-room-at-its-session-limit.md)):
+   fctl holds it (`autopilot_held`, at most 30, in the
+   order it sent them; `SendMessageResponse.held`), as it does a message
+   to any of them that rests while it holds others, which go first, and
+   one to a session that messages held for it wait for. SessionObject
+   sends those that may go (`autopilots::release`,
+   `fctl_domain::autopilot::releases`) as one of its sessions ends its
+   turn, stops or fails, making room, or starts working again, taking its
+   own without room; its wakes, its messages and people raising its limit
+   do too. Each goes out as the delivery the API answered with, from the
+   person it acted as, with the request's idempotency key (or one of its
+   own, so that two tries that race deliver it once), and its log says
+   so; one for a session that failed or is gone is dropped, which its log
+   says too. They wait while it is paused, and taking it off autopilot
+   drops them. Its brief lists them under its sessions, `fctl autopilot
+   held` for people too, and it or those who steer it take one back
+   (`DELETE …/autopilot/held/{id}`) until a pass claims it to send it
+   (`autopilot_held.sending_at`, which other passes leave for a minute).
+   What it did goes in its log, in its own
    transcript (an `autopilot_action` notice, with the session it started or
    steered) and in the workspace's audit log, as its owner, with the
    autopilot named. `fctl run` there returns at once, and nothing follows

@@ -8,6 +8,7 @@ import type { AutopilotScope } from "./AutopilotScope";
 import type { AutopilotSession } from "./AutopilotSession";
 import type { AutopilotState } from "./AutopilotState";
 import type { AutopilotWakeReason } from "./AutopilotWakeReason";
+import type { HeldMessage } from "./HeldMessage";
 import type { ProjectId } from "./ProjectId";
 import type { UserRef } from "./UserRef";
 
@@ -131,6 +132,12 @@ crew: Array<AutopilotCrew>,
  * How many sessions it started in all.
  */
 crew_total: number, 
+/**
+ * The messages it sent its sessions that wait for room under its
+ * limit, in the order they go out. Control planes before it leave it
+ * out.
+ */
+held?: Array<HeldMessage>, 
 /**
  * What the caller may do with it.
  */

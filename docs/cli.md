@@ -763,7 +763,13 @@ the start of what
 each said as its turn ended (or why it said nothing, where fctl knows)
 and what people wrote to it meanwhile
 (people's messages don't wake it themselves). `fctl logs <ref>
---last-turn` prints a session's last turn whole.
+--last-turn` prints a session's last turn whole. With as many of its
+sessions at work as its people allow, `fctl run` and `fctl resume` fail,
+but `fctl send` to one that rests doesn't: fctl holds the message
+(`aph_…`) and sends it as soon as one of its sessions ends its turn,
+stops or fails, those held in the order it sent them, while it is on
+(taking it off autopilot drops them). `fctl autopilot held` lists them,
+for people too, and takes one back.
 
 ```sh
 fctl autopilot brief                           # where things stand, as it wakes
@@ -781,6 +787,8 @@ fctl autopilot ask "Which layout should the board use?" --detail-file options.md
 fctl autopilot ask --secret CLOUDFLARE_API_TOKEN "To deploy previews from CI"
 fctl autopilot ask --session crm#12 "Could you send crm#12 the logo files?" -o Sent   # people's files go to crm#12
 fctl autopilot withdraw apa_01JC…              # found out itself
+fctl autopilot held                            # its messages that wait for room, in the order they go
+fctl autopilot held --take-back aph_01JC…      # before it goes
 fctl autopilot wake --in 45m                   # when to wake next, 5m to 1d
 fctl autopilot pause --reason "The direction is done: all four features shipped."
 ```
