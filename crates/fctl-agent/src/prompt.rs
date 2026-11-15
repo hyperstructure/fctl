@@ -314,7 +314,7 @@ screenshot shows.
 /// it writes and attaches, and reads those sent in its sessions, to pass
 /// them on. Then [`AUTOPILOT_PUBLISH_MD`] or [`AUTOPILOT_NO_PUBLISH_MD`].
 const AUTOPILOT_FILES_MD: &str = r#"
-## Files for your sessions
+## Attaching files to your sessions
 
 Your sessions see only what you write them and the files you attach: not
 the files people attach to your messages, nor those in this sandbox. To
@@ -336,6 +336,8 @@ fctl files get <project>#<n> model.3mf
 ```
 
 - Files of at most 20 MB, up to 10 to a message.
+- These go to your sessions. What you keep for your own next session (a
+  script, a draft) goes in your files instead (`fctl autopilot files`).
 "#;
 
 /// The rest of [`AUTOPILOT_FILES_MD`] in a project that publishes
@@ -2031,7 +2033,7 @@ mod tests {
             autopilot_files: true,
             ..screenshots(30)
         });
-        assert!(md.contains("## Files for your sessions"));
+        assert!(md.contains("## Attaching files to your sessions"));
         assert!(md.contains("fctl run -p <project> --attach checkout.png \"People see this"));
         assert!(md.contains("fctl send <project>#<n> --attach model.3mf"));
         assert!(md.contains("fctl files get <project>#<n> model.3mf\n"));
@@ -2047,7 +2049,7 @@ mod tests {
             autopilot_files: true,
             ..Extras::default()
         });
-        assert!(md.contains("## Files for your sessions"));
+        assert!(md.contains("## Attaching files to your sessions"));
         assert!(md.contains("what one makes for another\n  goes on its branch.\n"));
         assert!(!md.contains("fctl publish"));
     }
