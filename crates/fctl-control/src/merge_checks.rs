@@ -36,10 +36,12 @@ const MAX_WAITING: i64 = 50;
 const MAX_BRANCHES: usize = 3;
 
 /// How long after a merge, and after it last looked, the hourly job looks
-/// up the checks of a merge still waiting itself ([`sweep`]), and the most
-/// commits it looks up in a run.
+/// up the checks of a merge still waiting itself ([`sweep`]), how many
+/// times at most (a merge into a branch whose commits run no checks never
+/// settles), and the most commits it looks up in a run.
 const SWEEP_AFTER_MS: i64 = 15 * 60_000;
 const SWEEP_AGAIN_MS: i64 = 50 * 60_000;
+const SWEEP_LOOKS: i64 = 6;
 const SWEEP_LOOKUPS: usize = 30;
 
 /// A pull request that merged, as a `pull_request` delivery says.
@@ -335,16 +337,17 @@ impl Stale {
 
 /// The merges [`sweep`] looks the checks of up: still waiting
 /// [`SWEEP_AFTER_MS`] after they merged, and as long since it last looked,
-/// those it looked at longest ago first, of sessions whose workspaces
-/// still connect their repository's account.
+/// fewer than [`SWEEP_LOOKS`] times, those it looked at least first, of
+/// sessions whose workspaces still connect their repository's account.
 pub async fn stale(db: &D1Database, now: i64) -> AppResult<Vec<Stale>> {
     q(
         db,
         &format!(
             "SELECT l.repo AS repo, l.number AS number, l.session_id AS session_id, l.autopilot_id AS autopilot_id, \
              l.base_ref AS base_ref, l.merge_sha AS merge_sha FROM merge_checks l \
-             WHERE l.ended_at IS NULL AND l.merged_at < ?1 AND (l.looked_at IS NULL OR l.looked_at < ?2) AND {} \
-             ORDER BY COALESCE(l.looked_at, 0), l.merged_at LIMIT {MAX_WAITING}",
+             WHERE l.ended_at IS NULL AND l.merged_at < ?1 AND (l.looked_at IS NULL OR l.looked_at < ?2) \
+             AND l.looks < {SWEEP_LOOKS} AND {} \
+             ORDER BY l.looks, l.merged_at LIMIT {MAX_WAITING}",
             in_reach(None)
         ),
         &[n(now - SWEEP_AFTER_MS), n(now - SWEEP_AGAIN_MS)],
@@ -353,8 +356,8 @@ pub async fn stale(db: &D1Database, now: i64) -> AppResult<Vec<Stale>> {
     .await
 }
 
-/// Marks merges into `branch` of `repo` that still wait looked at:
-/// [`sweep`] looked their checks up.
+/// Marks merges into `branch` of `repo` that still wait looked at once
+/// more: [`sweep`] looked up a commit that holds them.
 pub async fn looked(
     db: &D1Database,
     repo: &RepoRef,
@@ -364,7 +367,7 @@ pub async fn looked(
 ) -> AppResult<()> {
     q(
         db,
-        "UPDATE merge_checks SET looked_at = ? WHERE repo = ? AND base_ref = ? AND ended_at IS NULL \
+        "UPDATE merge_checks SET looked_at = ?, looks = looks + 1 WHERE repo = ? AND base_ref = ? AND ended_at IS NULL \
          AND number IN (SELECT value FROM json_each(?))",
         &[
             n(now),
@@ -410,18 +413,32 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
         let Some(repo) = RepoRef::parse(&repo) else {
             continue;
         };
-        let numbers: Vec<i64> = waiting.iter().map(|w| w.number).collect();
-        // A failure leaves this branch's merges to the next run, and
-        // what it settled to wake their autopilots.
-        match sweep_branch(&gh, db, &repo, &branch, waiting, &mut lookups, now).await {
-            Ok(woke) => autopilots.extend(woke),
-            Err(e) => worker::console_error!(
+        // Only the merges a lookup reached count as looked at: a failure,
+        // or the run's last lookup, leaves the others to the next run.
+        let mut reached: Vec<i64> = Vec::new();
+        let swept = sweep_branch(
+            &gh,
+            db,
+            &repo,
+            &branch,
+            waiting,
+            &mut lookups,
+            &mut reached,
+            &mut autopilots,
+            now,
+        )
+        .await;
+        if let Err(e) = swept {
+            worker::console_error!(
                 "looking up the checks after merges into {} {branch}: {}",
                 repo.full_name(),
                 e.0.message
-            ),
+            );
         }
-        if let Err(e) = looked(db, &repo, &branch, &numbers, now).await {
+        if reached.is_empty() {
+            continue;
+        }
+        if let Err(e) = looked(db, &repo, &branch, &reached, now).await {
             worker::console_error!(
                 "marking the merges into {} {branch} looked at: {}",
                 repo.full_name(),
@@ -437,11 +454,15 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
     Ok(autopilots.len())
 }
 
-/// Looks up the commit of each merge into `branch` of `repo` among
-/// `waiting`, oldest first, while it still waits, and then the commit the
-/// branch is at now, which holds them all, settling those they tell of
-/// ([`settle`]), with at most [`SWEEP_LOOKUPS`] lookups counted in
-/// `lookups`. Returns the autopilots of the merges it settled.
+/// Looks up commits on `branch` of `repo` for the merges into it among
+/// `waiting` and settles those they tell of ([`settle`]), adding their
+/// autopilots to `autopilots`: the commit of the first merge (looked at
+/// least, then oldest), then the commit the branch is at now, which holds
+/// them all, then each other merge's in that order, until none waits, with
+/// at most
+/// [`SWEEP_LOOKUPS`] lookups counted in `lookups`. Adds to `reached` the
+/// merges that a commit it looked up holds.
+#[allow(clippy::too_many_arguments)]
 async fn sweep_branch(
     gh: &github::Github<'_>,
     db: &D1Database,
@@ -449,25 +470,29 @@ async fn sweep_branch(
     branch: &str,
     mut waiting: Vec<Waiting>,
     lookups: &mut usize,
+    reached: &mut Vec<i64>,
+    autopilots: &mut Vec<String>,
     now: i64,
-) -> AppResult<Vec<String>> {
+) -> AppResult<()> {
     let installation = gh.installation(&repo.owner).await?.id;
-    let mut autopilots = Vec::new();
-    let mut looked_up: Vec<String> = Vec::new();
+    let mut tried: Vec<String> = Vec::new();
     let mut head: Option<String> = None;
-    let new =
-        |sha: &String, looked_up: &[String]| !looked_up.iter().any(|l| l.eq_ignore_ascii_case(sha));
+    let new = |sha: &String, tried: &[String]| !tried.iter().any(|t| t.eq_ignore_ascii_case(sha));
     while !waiting.is_empty() && *lookups < SWEEP_LOOKUPS {
-        let next = waiting
-            .iter()
-            .map(|w| &w.merge_sha)
-            .find(|s| new(s, &looked_up))
-            .or(head.as_ref().filter(|h| new(h, &looked_up)))
+        let next = head
+            .as_ref()
+            .filter(|h| new(h, &tried))
+            .or_else(|| {
+                waiting
+                    .iter()
+                    .map(|w| &w.merge_sha)
+                    .find(|s| new(s, &tried))
+            })
             .cloned();
         let Some(sha) = next else {
             break;
         };
-        looked_up.push(sha.clone());
+        tried.push(sha.clone());
         *lookups += 1;
         let answer = gh
             .lookup(installation, webhooks::commit_query(repo, &sha, branch))
@@ -477,6 +502,13 @@ async fn sweep_branch(
         };
         if head.is_none() {
             head = commit.head.clone();
+        }
+        if commit.on_branch {
+            for w in waiting.iter().filter(|w| commit.holds(&w.merge_sha)) {
+                if !reached.contains(&w.number) {
+                    reached.push(w.number);
+                }
+            }
         }
         let merges: Vec<&str> = waiting.iter().map(|w| w.merge_sha.as_str()).collect();
         let Some((_, held)) = mc::settles(&commit, &merges) else {
@@ -490,7 +522,7 @@ async fn sweep_branch(
             .map(|(_, w)| w)
             .collect();
     }
-    Ok(autopilots)
+    Ok(())
 }
 
 /// A merge of an autopilot's session whose checks on its base branch
@@ -821,11 +853,25 @@ mod tests {
             numbers(stale(&db, again).await?),
             vec![(12, "ses_1".to_owned()), (12, "ses_2".to_owned())]
         );
-        // Nor once the workspace no longer connects the account.
+        // After six looks it stops (the first was above): a branch whose
+        // commits run no checks never settles them.
+        let mut at = again;
+        for _ in 2..SWEEP_LOOKS {
+            looked(&db, &repo(), "main", &[12], at).await?;
+            at += SWEEP_AGAIN_MS + 1;
+            assert_eq!(stale(&db, at).await?.len(), 2);
+        }
+        looked(&db, &repo(), "main", &[12], at).await?;
+        assert!(stale(&db, at + SWEEP_AGAIN_MS + 1).await?.is_empty());
+        // Nor while the workspace no longer connects the account.
+        q(&db, "UPDATE merge_checks SET looks = 0", &[])?
+            .run()
+            .await?;
+        assert_eq!(stale(&db, at + SWEEP_AGAIN_MS + 1).await?.len(), 2);
         q(&db, "UPDATE workspace_github SET status = 'requested'", &[])?
             .run()
             .await?;
-        assert!(stale(&db, again).await?.is_empty());
+        assert!(stale(&db, at + SWEEP_AGAIN_MS + 1).await?.is_empty());
         Ok(())
     }
 

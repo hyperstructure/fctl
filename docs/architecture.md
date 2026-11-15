@@ -2302,12 +2302,13 @@ sessions to do it, and sets up what the work needs, as far as they let it
    pull request: how many checks passed, which failed, and at which commit.
    GitHub sends each delivery once, however the control plane answers it,
    so the hourly job looks up the checks of merges still waiting 15 minutes
-   after they merged, and an hour after it last looked
-   (`merge_checks::sweep`): each merge's commit, then the commit the branch
-   is at, which settle them as a delivery would. A push straight to the
-   base branch, or a pull request no crew session lists, waits for nothing;
-   housekeeping deletes a merge's row three days after it merged, told or
-   not.
+   after they merged, and an hour after it last looked, six times at most
+   (`merge_checks::sweep`): a merge's commit, then the commit the branch is
+   at, which holds them all, then the other merges' commits, which settle
+   them as a delivery would. A merge whose branch runs no checks never
+   settles. A push straight to the base branch, or a pull request no crew
+   session lists, waits for nothing; housekeeping deletes a merge's row
+   three days after it merged, told or not.
 4. **Acting** (`AgentCall::Api`). Its own session's spec says it is the
    autopilot's (`SessionSpec.autopilot`); fctl-agent then sets
    `FCTL_AUTOPILOT` to its project's slug, and the sandbox's `fctl`, which

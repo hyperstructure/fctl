@@ -32,8 +32,10 @@ CREATE TABLE IF NOT EXISTS merge_checks (
   -- When a wake told the autopilot how they ended.
   told_at INTEGER,
   -- When the hourly job last looked the checks up itself, in case
-  -- GitHub's word that they ended went missing (merge_checks::sweep).
+  -- GitHub's word that they ended went missing (merge_checks::sweep), and
+  -- how many times it did: it stops after a few.
   looked_at INTEGER,
+  looks INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, number, session_id)
 );
 CREATE INDEX IF NOT EXISTS merge_checks_waiting ON merge_checks (repo, ended_at);
