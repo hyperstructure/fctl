@@ -844,6 +844,10 @@ async fn files(api: &fctl_client::Api, p: &str, cmd: FilesCmd, json: bool) -> Re
                     (None, Some(n)) => n.to_string_lossy().into_owned(),
                     (None, None) => bail!("Name {} with --name", f.display()),
                 };
+                // Here rather than on the way: the relay of its session
+                // refuses a path with `..` without saying why.
+                let named = fctl_domain::autopilot::file_name(&named)
+                    .map_err(|e| anyhow::anyhow!(e.message))?;
                 let content = text_of(f)?;
                 kept.push(api.put_autopilot_file(p, &named, &content).await?);
             }
