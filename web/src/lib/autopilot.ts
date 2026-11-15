@@ -167,6 +167,32 @@ export function phase(a: G.Autopilot, now = Date.now(), here?: G.SessionId): Pha
 }
 
 /**
+ * The session an autopilot works in now, when `here` is an earlier session of its own: fctl wakes
+ * it there, and only there does its agent act as the autopilot (its `fctl` reaches the API), so a
+ * message meant for the autopilot belongs there. None while it's off, when its sessions are
+ * anyone's.
+ */
+export function movedOn(
+  a: Pick<G.Autopilot, "state" | "session"> | null | undefined,
+  here: G.SessionId,
+): G.AutopilotSession | undefined {
+  if (!a || a.state === "off" || !a.session || a.session.id === here) return;
+  return a.session;
+}
+
+/** How the session it works in now stands, in a word beside a dot: "At work", "Resting". */
+export function sessionWord(a: Pick<G.Autopilot, "state" | "session">): {
+  tone: Phase["tone"];
+  word: string;
+} {
+  const s = a.session?.status;
+  if (a.state === "paused") return { tone: "pink", word: "Paused" };
+  if (s === "queued" || s === "provisioning" || s === "preparing") return { tone: "accent", word: "Waking" };
+  if (s === "running" || s === "stopping") return { tone: "accent", word: "At work" };
+  return { tone: "ink", word: "Resting" };
+}
+
+/**
  * A project's autopilot as the sidebar shows it: the project list's summary (`G.ProjectAutopilot`),
  * or what the sidebar kept of one, which has its state and session alone.
  */

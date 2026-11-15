@@ -43,6 +43,7 @@ import {
   useRetrospectives,
   useSessionMemory,
 } from "@/components/session/kept";
+import { useMovedOn } from "@/components/session/moved-on";
 import { JumpPill, NowLine, toBottom, useAtBottom } from "@/components/session/now-line";
 import { AgentOrb } from "@/components/session/orb";
 import { PilotDetails } from "@/components/session/pilot";
@@ -148,6 +149,8 @@ export function SessionPage() {
   const stall = useStall(session, s);
   const disk = diskOf(session, s, stall);
   const review = useSessionReview(session);
+  // An earlier session of an autopilot's own: where it works now, which messages go to instead.
+  const movedOn = useMovedOn(session);
   const [rail, setRail] = useState(true);
   // The details sheet, where the rail doesn't fit.
   const [details, setDetails] = useState(false);
@@ -892,6 +895,7 @@ export function SessionPage() {
                   onTyping={() => store.typing()}
                   onTakeOver={takeOver?.waits ? () => setMoving(true) : undefined}
                   limitOf={takeOver?.whose}
+                  movedOn={movedOn}
                   choices={
                     isOwner && session ? (
                       <SessionChoices session={session} perTurnEffort={s.perTurnEffort} />

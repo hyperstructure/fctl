@@ -18,7 +18,7 @@ import {
 } from "@/components/project/autopilot";
 import { Skeleton } from "@/components/ui";
 import type * as G from "@/gen";
-import { atWork, openAsks, phase, planDone } from "@/lib/autopilot";
+import { atWork, movedOn, openAsks, phase, planDone } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { agoShortWords, stamp } from "@/lib/format";
 import { RailSection } from "./rail";
@@ -65,7 +65,7 @@ function Standing({ a, session }: { a: G.Autopilot; session: G.Session }) {
   const live = atWork(a);
   const asks = a.can.read ? openAsks(a) : [];
   // Wakes go to its current session: an earlier one says where it works now.
-  const earlier = a.state !== "off" && a.session && a.session.id !== session.id ? a.session : undefined;
+  const earlier = movedOn(a, session.id);
   const tab = { to: "/p/$slug", params: { slug: a.project_slug }, search: { tab: "autopilot" } } as const;
   return (
     <section aria-label="Its autopilot" className="px-5 pt-4 pb-2">
