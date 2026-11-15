@@ -2694,10 +2694,17 @@ pub struct SendMessageRequest {
     pub attachments: Vec<AttachmentId>,
 }
 
+#[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct SendMessageResponse {
+    /// The message's delivery; a held one goes out as this one later.
     pub delivery_id: DeliveryId,
+    /// An autopilot's message to one of its sessions that rests, while as
+    /// many of its sessions work as its people allow: fctl holds it, and
+    /// sends it once one of them makes room. Absent for one that went.
+    #[serde(default)]
+    pub held: Option<crate::autopilot::HeldMessage>,
 }
 
 /// A file sent in a session, with a message or as it started.

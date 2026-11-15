@@ -28,15 +28,17 @@ use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use fctl_domain::autopilot::{self as ap, Gate};
 use fctl_domain::limits::{Limits, Places};
-use fctl_proto::api::{AgentAnswer, RELAYED_STATUS_HEADER, TokenAccess, TokenKind};
+use fctl_proto::api::{
+    AgentAnswer, RELAYED_STATUS_HEADER, SendMessageResponse, TokenAccess, TokenKind,
+};
 use fctl_proto::autopilot::{
     AutopilotEntryKind, AutopilotFile, AutopilotPower, AutopilotRole, AutopilotScope,
-    AutopilotSpec, AutopilotState, AutopilotWake, AutopilotWakeReason,
+    AutopilotSpec, AutopilotState, AutopilotWake, AutopilotWakeReason, HeldMessage,
 };
-use fctl_proto::event::{EventBody, MessageSource, UserMessage};
+use fctl_proto::event::{Attachment, EventBody, MessageSource, UserMessage};
 use fctl_proto::session::{SessionRef, SessionSchedule, SessionStatus, WorkspaceRole};
 use fctl_proto::uplink::{Delivery, DeliveryKind};
-use fctl_proto::{ApiError, ProjectId, ScheduleId, SessionId};
+use fctl_proto::{ApiError, DeliveryId, ProjectId, ScheduleId, SessionId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use worker::{D1Database, Env};
@@ -859,6 +861,15 @@ async fn take_up(env: &Env, db: &D1Database, row: &AutopilotRow, now: i64) -> Ap
                 return Ok(true);
             }
         };
+        // Its messages held for room go, should there be room that no move
+        // of its sessions' freed, or should it have been paused meanwhile.
+        if let Err(e) = release(env, db, &row.project_id, now).await {
+            worker::console_error!(
+                "autopilot {}: sending its held messages: {}",
+                row.project_id,
+                e.0.message
+            );
+        }
         // Its owner's plan at its limit: it wakes once the limit resets, with
         // what it would have woken for.
         let limits = crate::schedules::usage_of(db, &owner.credential.id).await?;
@@ -2161,9 +2172,9 @@ pub async fn crew_room(db: &D1Database, caller: &AutopilotCaller, now: i64) -> A
     crew_room_for(db, caller, now, true).await
 }
 
-/// [`crew_room`], for a session of its own that a message or a resume sets
-/// working again (`new` false): only the room at once counts, as it starts
-/// nothing new.
+/// [`crew_room`], for a session of its own that a resume sets working
+/// again (`new` false): only the room at once counts, as it starts nothing
+/// new.
 async fn crew_room_for(
     db: &D1Database,
     caller: &AutopilotCaller,
@@ -2196,10 +2207,15 @@ async fn crew_room_for(
         lately: 0,
     });
     if counts.working >= row.crew_max {
+        let then = if new {
+            "start this one then"
+        } else {
+            "resume this one then (a message to one that rests waits for room by itself)"
+        };
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::Conflict,
             format!(
-                "{} of this autopilot's sessions work already, as many as its people allow at once (those queued, starting, working, paused on a usage limit or still stopping count, as does one just messaged; one waiting for its background work doesn't until its own turn starts): fctl wakes you when one ends its turn, so start this one then, or stop one (fctl stop) to make room.",
+                "{} of this autopilot's sessions work already, as many as its people allow at once (those queued, starting, working, paused on a usage limit or still stopping count, as does one just messaged; one waiting for its background work doesn't until its own turn starts): fctl wakes you when one ends its turn, so {then}, or stop one (fctl stop) to make room.",
                 counts.working
             ),
         )));
@@ -2247,6 +2263,593 @@ pub async fn crew_prompt(
 #[derive(Deserialize)]
 struct NameRow {
     name: String,
+}
+
+// ───────────────────────────── its held messages ─────────────────────────────
+
+/// A message fctl holds for one of its sessions (`autopilot_held`), with
+/// that session as D1 has it now: its fields absent once it is gone.
+#[derive(Deserialize)]
+pub struct HeldRow {
+    pub id: String,
+    pub session_id: String,
+    pub delivery_id: String,
+    pub text: String,
+    pub attachments: Option<String>,
+    pub author_id: Option<String>,
+    pub client_key: Option<String>,
+    pub from_session_id: Option<String>,
+    #[serde(deserialize_with = "int")]
+    pub created_at: i64,
+    pub project_slug: Option<String>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub number: Option<i64>,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    /// It works, or a message sent it sets it working ([`CREW_WORKING`]).
+    #[serde(deserialize_with = "int_bool", default)]
+    pub working: bool,
+}
+
+impl HeldRow {
+    pub fn attachments(&self) -> Vec<Attachment> {
+        self.attachments
+            .as_deref()
+            .and_then(|a| serde_json::from_str(a).ok())
+            .unwrap_or_default()
+    }
+
+    fn status(&self) -> Option<SessionStatus> {
+        self.status.as_deref().and_then(SessionStatus::parse)
+    }
+
+    /// The session it goes to, as people name it: `shop#41`.
+    pub fn reference(&self) -> String {
+        format!(
+            "{}#{}",
+            self.project_slug.as_deref().unwrap_or_default(),
+            self.number.unwrap_or_default()
+        )
+    }
+
+    /// It as the API shows it, with `ahead` held messages before it.
+    pub fn view(&self, ahead: usize) -> HeldMessage {
+        HeldMessage {
+            id: self.id.clone(),
+            session: SessionRef {
+                id: SessionId(self.session_id.clone()),
+                number: self.number.and_then(|n| u32::try_from(n).ok()).unwrap_or(0),
+                title: self.title.clone().unwrap_or_default(),
+            },
+            project_slug: self.project_slug.clone().unwrap_or_default(),
+            text: self.text.clone(),
+            files: self.attachments().into_iter().map(|a| a.name).collect(),
+            ahead: u32::try_from(ahead).unwrap_or(u32::MAX),
+            created_at: self.created_at,
+        }
+    }
+}
+
+/// The messages fctl holds for an autopilot's sessions, in the order they
+/// go out: the order it sent them.
+pub async fn held(db: &D1Database, project_id: &str) -> AppResult<Vec<HeldRow>> {
+    q(
+        db,
+        &format!(
+            "SELECT h.id, h.session_id, h.delivery_id, h.text, h.attachments, h.author_id, h.client_key, \
+             h.from_session_id, h.created_at, p.slug AS project_slug, s.number, s.title, s.status, \
+             COALESCE((SELECT {CREW_WORKING} FROM sessions WHERE id = h.session_id), 0) AS working \
+             FROM autopilot_held h LEFT JOIN sessions s ON s.id = h.session_id \
+             LEFT JOIN projects p ON p.id = s.project_id \
+             WHERE h.project_id = ? ORDER BY h.created_at, h.id LIMIT {}",
+            ap::MAX_HELD * 2
+        ),
+        &[s(project_id)],
+    )?
+    .all()
+    .await
+}
+
+/// How many of its sessions work now, or are set working by a message
+/// sent them ([`CREW_WORKING`]).
+async fn crew_working(db: &D1Database, project_id: &str) -> AppResult<i64> {
+    let c: Option<crate::db::Count> = q(
+        db,
+        &format!(
+            "SELECT COUNT(*) AS n FROM sessions WHERE autopilot_id = ? AND autopilot_role = 'crew' \
+             AND {CREW_WORKING}"
+        ),
+        &[s(project_id)],
+    )?
+    .first()
+    .await?;
+    Ok(c.map_or(0, |c| c.n))
+}
+
+/// An autopilot's message to session `session_id` of its own (`fctl
+/// send`), checked, with its files claimed: `None` when it goes now as any
+/// message does. Otherwise fctl holds it for room under the autopilot's
+/// limit ([`ap::waits_for_room`]): the answer says so, with how many go
+/// before it, unless it went out at once, after those held for its session
+/// ([`release`]). A retry of a request it holds (`client_key`) finds it.
+pub async fn hold(
+    ctx: &Ctx,
+    caller: &AutopilotCaller,
+    session_id: &str,
+    text: &str,
+    attachments: &[Attachment],
+    client_key: Option<&str>,
+) -> AppResult<Option<SendMessageResponse>> {
+    let db = &ctx.db;
+    let queue = held(db, &caller.project_id).await?;
+    if let Some(key) = client_key
+        && let Some((ahead, h)) = queue
+            .iter()
+            .enumerate()
+            .find(|(_, h)| h.client_key.as_deref() == Some(key))
+    {
+        return Ok(Some(SendMessageResponse {
+            delivery_id: DeliveryId(h.delivery_id.clone()),
+            held: Some(h.view(ahead)),
+        }));
+    }
+    let Some(row) = row(db, &caller.project_id).await? else {
+        return Ok(None);
+    };
+    if waits(db, &row, &queue, session_id).await? != Some(true) {
+        return Ok(None);
+    }
+    if queue.len() >= ap::MAX_HELD {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::Conflict,
+            format!(
+                "fctl holds {} of this autopilot's messages for room already, as many as it holds: they go out as its sessions end their turns, stop or fail. Take back those it no longer needs (fctl autopilot held --take-back <id>), or send this one later.",
+                queue.len()
+            ),
+        )));
+    }
+    let id = fctl_domain::ids::new_id("aph", ctx.now);
+    let delivery_id = fctl_domain::ids::delivery_id(ctx.now);
+    let files = if attachments.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(attachments)?)
+    };
+    q(
+        db,
+        "INSERT INTO autopilot_held (id, project_id, session_id, delivery_id, text, attachments, author_id, \
+         client_key, from_session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        &[
+            s(&id),
+            s(&caller.project_id),
+            s(session_id),
+            s(delivery_id.as_str()),
+            s(text),
+            os(files.as_deref()),
+            os(ctx.auth.as_ref().map(|a| a.user.id.as_str())),
+            os(client_key),
+            s(&caller.session_id),
+            n(ctx.now),
+        ],
+    )?
+    .run()
+    .await?;
+    // Those held before it may go now, and it with them: one held for a
+    // session that works, say, which a move of that session's should have
+    // sent.
+    match release(&ctx.env, db, &caller.project_id, ctx.now).await {
+        Ok(sent) if sent.contains(&id) => {
+            return Ok(Some(SendMessageResponse {
+                delivery_id,
+                held: None,
+            }));
+        }
+        Ok(_) => {}
+        Err(e) => worker::console_error!(
+            "autopilot {}: sending its held messages: {}",
+            caller.project_id,
+            e.0.message
+        ),
+    }
+    let queue = held(db, &caller.project_id).await?;
+    let held = queue
+        .iter()
+        .enumerate()
+        .find(|(_, h)| h.id == id)
+        .map(|(ahead, h)| h.view(ahead));
+    Ok(Some(SendMessageResponse { delivery_id, held }))
+}
+
+/// Whether a message of the autopilot `row`'s to its session `session_id`
+/// waits for room now, behind those it holds already (`queue`, as [`held`]
+/// has them) ([`ap::waits_for_room`]); `None` when that isn't one of its
+/// sessions, which `gate` lets it message no more than people's.
+async fn waits(
+    db: &D1Database,
+    row: &AutopilotRow,
+    queue: &[HeldRow],
+    session_id: &str,
+) -> AppResult<Option<bool>> {
+    #[derive(Deserialize)]
+    struct Target {
+        #[serde(deserialize_with = "int_bool")]
+        working: bool,
+    }
+    let target: Option<Target> = q(
+        db,
+        &format!(
+            "SELECT {CREW_WORKING} AS working FROM sessions WHERE id = ? AND autopilot_id = ? \
+             AND autopilot_role = 'crew'"
+        ),
+        &[s(session_id), s(&row.project_id)],
+    )?
+    .first()
+    .await?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let room = crew_working(db, &row.project_id).await? < row.crew_max;
+    let held_for_it = queue.iter().any(|h| h.session_id == session_id);
+    Ok(Some(ap::waits_for_room(
+        target.working,
+        room,
+        !queue.is_empty(),
+        held_for_it,
+    )))
+}
+
+/// What becomes now of each message fctl holds for the autopilot `row`'s
+/// sessions (`queue`, as [`held`] has them) ([`ap::releases`]).
+async fn fates(
+    db: &D1Database,
+    row: &AutopilotRow,
+    queue: &[HeldRow],
+) -> AppResult<Vec<ap::Release>> {
+    let working = crew_working(db, &row.project_id).await?;
+    let room = u32::try_from((row.crew_max - working).max(0)).unwrap_or(0);
+    let weighed: Vec<ap::HeldFor> = queue
+        .iter()
+        .map(|h| ap::HeldFor {
+            session: &h.session_id,
+            status: h.status(),
+            working: h.working,
+        })
+        .collect();
+    Ok(ap::releases(&weighed, room))
+}
+
+/// Sends the messages fctl holds for an autopilot's sessions that may go
+/// now ([`ap::releases`]), in the order it sent them, while it is on: to
+/// its sessions that work, and while fewer work than its people allow, to
+/// those that rest. Those that never can go (their session failed or is
+/// gone) it drops, saying so in its log. One whose sending failed waits
+/// for the next try, and those held for its session after it with it.
+/// Returns the ids of those it sent. SessionObject calls it as one of its
+/// sessions ends its turn, stops, fails or starts working again; its wakes
+/// and its messages call it too.
+pub async fn release(
+    env: &Env,
+    db: &D1Database,
+    project_id: &str,
+    now: i64,
+) -> AppResult<Vec<String>> {
+    let queue = held(db, project_id).await?;
+    if queue.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(row) = row(db, project_id)
+        .await?
+        .filter(|r| r.state() == AutopilotState::On)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut sent = Vec::new();
+    // Sessions a message failed to reach in this pass: those held for them
+    // after it wait for the next, so that they arrive in order.
+    let mut stuck: Vec<&str> = Vec::new();
+    for (h, fate) in queue.iter().zip(fates(db, &row, &queue).await?) {
+        let failed = match fate {
+            ap::Release::Wait => None,
+            ap::Release::Send if stuck.contains(&h.session_id.as_str()) => None,
+            ap::Release::Drop => drop_held(env, db, &row, h, now).await.err(),
+            ap::Release::Send => match send_held(env, db, &row, h, now).await {
+                Ok(Claim::Ours) => {
+                    sent.push(h.id.clone());
+                    None
+                }
+                // Taken back: those after it to its session go on.
+                Ok(Claim::Gone) => None,
+                // Another pass sends it: those after it to its session wait
+                // for that.
+                Ok(Claim::Theirs) => {
+                    stuck.push(&h.session_id);
+                    None
+                }
+                // It failed meanwhile, as D1 didn't say yet.
+                Err(e) if e.0.code == fctl_proto::ErrorCode::Conflict => {
+                    drop_held(env, db, &row, h, now).await.err()
+                }
+                Err(e) => {
+                    stuck.push(&h.session_id);
+                    Some(e)
+                }
+            },
+        };
+        // The others go on: the next pass tries this one again.
+        if let Some(e) = failed {
+            worker::console_error!(
+                "autopilot {project_id}: its held message {}: {}",
+                h.id,
+                e.0.message
+            );
+        }
+    }
+    Ok(sent)
+}
+
+/// Sends a held message once this pass claimed it ([`claim`]: otherwise
+/// it was taken back, or another pass sends it, which it says), as the
+/// delivery the API answered with, from the autopilot as the person it
+/// acted as (or its owner now, once their account is gone), with the
+/// idempotency key of the request that sent it, or one of its own: a pass
+/// that took over a dead one's claim delivers it once. Then it is no longer
+/// held, and its log says it went; should sending fail, it waits for the
+/// next pass.
+async fn send_held(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    h: &HeldRow,
+    now: i64,
+) -> AppResult<Claim> {
+    let claim = claim(db, &h.id, now).await?;
+    if claim != Claim::Ours {
+        return Ok(claim);
+    }
+    let sent = deliver_held(env, db, row, h).await;
+    if let Err(e) = sent {
+        // The next pass tries again.
+        q(
+            db,
+            "UPDATE autopilot_held SET sending_at = NULL WHERE id = ?",
+            &[s(&h.id)],
+        )?
+        .run()
+        .await?;
+        return Err(e);
+    }
+    q(db, "DELETE FROM autopilot_held WHERE id = ?", &[s(&h.id)])?
+        .run()
+        .await?;
+    held_logged(
+        env,
+        db,
+        row,
+        h,
+        ap::HELD_SENT_LINE,
+        Some(&h.session_id),
+        now,
+    )
+    .await;
+    Ok(Claim::Ours)
+}
+
+/// Whose a held message is to send ([`claim`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Claim {
+    /// This pass's.
+    Ours,
+    /// Nobody's: it was taken back, or went.
+    Gone,
+    /// Another pass's, which sends it now.
+    Theirs,
+}
+
+/// How long a pass's claim on a held message holds ([`claim`]): one older
+/// is a pass that died before it sent it or let it go.
+const SENDING_FOR_MS: i64 = 60_000;
+
+/// Claims held message `id` for this pass to send at `now`, unless it is
+/// gone or another pass has. Once claimed, it can't be taken back
+/// ([`unhold`]).
+async fn claim(db: &D1Database, id: &str, now: i64) -> AppResult<Claim> {
+    let claimed = q(
+        db,
+        "UPDATE autopilot_held SET sending_at = ?1 WHERE id = ?2 \
+         AND (sending_at IS NULL OR sending_at < ?3)",
+        &[n(now), s(id), n(now - SENDING_FOR_MS)],
+    )?
+    .run()
+    .await?;
+    if claimed > 0 {
+        return Ok(Claim::Ours);
+    }
+    let left: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM autopilot_held WHERE id = ?",
+        &[s(id)],
+    )?
+    .first()
+    .await?;
+    Ok(if left.is_some_and(|c| c.n > 0) {
+        Claim::Theirs
+    } else {
+        Claim::Gone
+    })
+}
+
+/// Delivers a held message ([`send_held`]).
+async fn deliver_held(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    h: &HeldRow,
+) -> AppResult<()> {
+    let mut author: Option<UserRow> = None;
+    for id in [h.author_id.as_deref(), row.owner_id.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        author = q(
+            db,
+            &format!("SELECT {} FROM users u WHERE u.id = ?", user_columns("u")),
+            &[s(id)],
+        )?
+        .first()
+        .await?;
+        if author.is_some() {
+            break;
+        }
+    }
+    let Some(author) = author else {
+        return Err(crate::error::internal(
+            "the account it was sent as is gone, and so is its owner's",
+        ));
+    };
+    let project_slug = slug_of(db, &row.project_id).await.unwrap_or_default();
+    let key = h
+        .client_key
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", author.id, h.id));
+    crate::api::sessions::deliver_as(
+        env,
+        &h.session_id,
+        DeliveryId(h.delivery_id.clone()),
+        h.text.clone(),
+        &author,
+        MessageSource::Api,
+        Some(key),
+        h.attachments(),
+        Some(fctl_proto::autopilot::AutopilotAuthor {
+            project_id: ProjectId(row.project_id.clone()),
+            project_slug,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Drops a held message that never can go, saying so in its log.
+async fn drop_held(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    h: &HeldRow,
+    now: i64,
+) -> AppResult<()> {
+    q(db, "DELETE FROM autopilot_held WHERE id = ?", &[s(&h.id)])?
+        .run()
+        .await?;
+    let gone = h.status.is_none();
+    let session = (!gone).then_some(h.session_id.as_str());
+    held_logged(env, db, row, h, ap::held_dropped_line(gone), session, now).await;
+    Ok(())
+}
+
+/// Says in its log, and in its own session's transcript, what became of a
+/// held message.
+async fn held_logged(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    h: &HeldRow,
+    text: &str,
+    session: Option<&str>,
+    now: i64,
+) {
+    if let Some(pilot) = row.session_id.as_deref() {
+        transcript(
+            env,
+            db,
+            pilot,
+            AutopilotEntryKind::Steered,
+            text,
+            session,
+            None,
+        )
+        .await;
+    }
+    let mut entry = Entry::new(AutopilotEntryKind::Steered, text).about(session);
+    entry.from = h.from_session_id.as_deref();
+    log(db, &row.project_id, entry, now).await;
+}
+
+/// Takes back a message fctl holds for one of its sessions, `by` the person
+/// who does (`None`: the autopilot): `false` when none is held by that id.
+pub async fn take_back(
+    env: &Env,
+    db: &D1Database,
+    row: &AutopilotRow,
+    id: &str,
+    by: Option<&str>,
+    now: i64,
+) -> AppResult<Unheld> {
+    let Some(h) = held(db, &row.project_id)
+        .await?
+        .into_iter()
+        .find(|h| h.id == id)
+    else {
+        return Ok(Unheld::Gone);
+    };
+    let unheld = unhold(db, &row.project_id, id, now).await?;
+    if unheld != Unheld::Taken {
+        return Ok(unheld);
+    }
+    let session = h.status.is_some().then_some(h.session_id.as_str());
+    match by {
+        Some(person) => {
+            let text = format!("{} {}", ap::WHO, ap::HELD_TAKEN_BACK_LINE.to_lowercase());
+            log(
+                db,
+                &row.project_id,
+                Entry::new(AutopilotEntryKind::Steered, text)
+                    .about(session)
+                    .by(person),
+                now,
+            )
+            .await;
+        }
+        None => held_logged(env, db, row, &h, ap::HELD_TAKEN_BACK_LINE, session, now).await,
+    }
+    Ok(Unheld::Taken)
+}
+
+/// What became of taking a held message back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unheld {
+    Taken,
+    /// None is held by that id: it went, or was taken back already.
+    Gone,
+    /// A pass claimed it, and sends it now ([`claim`]).
+    Going,
+}
+
+/// Takes the autopilot of `project_id`'s held message `id` back at `now`,
+/// unless a pass claimed it to send it.
+async fn unhold(db: &D1Database, project_id: &str, id: &str, now: i64) -> AppResult<Unheld> {
+    let gone = q(
+        db,
+        "DELETE FROM autopilot_held WHERE id = ?1 AND project_id = ?2 \
+         AND (sending_at IS NULL OR sending_at < ?3)",
+        &[s(id), s(project_id), n(now - SENDING_FOR_MS)],
+    )?
+    .run()
+    .await?;
+    if gone > 0 {
+        return Ok(Unheld::Taken);
+    }
+    let left: Option<crate::db::Count> = q(
+        db,
+        "SELECT COUNT(*) AS n FROM autopilot_held WHERE id = ? AND project_id = ?",
+        &[s(id), s(project_id)],
+    )?
+    .first()
+    .await?;
+    Ok(if left.is_some_and(|c| c.n > 0) {
+        Unheld::Going
+    } else {
+        Unheld::Gone
+    })
 }
 
 // ───────────────────────────── requests from its sandbox ─────────────────────────────
@@ -2462,7 +3065,8 @@ pub async fn relay(
             // Its own transcript shows what it did, the session it started
             // or steered with it.
             transcript(
-                ctx,
+                &ctx.env,
+                &ctx.db,
                 session_id,
                 kind,
                 &text,
@@ -2556,7 +3160,8 @@ pub async fn relay_file(
 /// `autopilot_action` notice with the session it concerns, which the apps
 /// show as that session, live. A failure is logged: nothing hangs on it.
 async fn transcript(
-    ctx: &Ctx,
+    env: &Env,
+    db: &D1Database,
     pilot: &str,
     kind: AutopilotEntryKind,
     text: &str,
@@ -2576,7 +3181,7 @@ async fn transcript(
     let posted: AppResult<Value> = async {
         let found: Option<Found> = match session {
             Some(id) => q(
-                &ctx.db,
+                db,
                 "SELECT s.id, s.number, s.title, p.slug, s.schedule_id, sc.name AS schedule_name \
                      FROM sessions s JOIN projects p ON p.id = s.project_id \
                      LEFT JOIN schedules sc ON sc.id = s.schedule_id WHERE s.id = ?",
@@ -2592,7 +3197,7 @@ async fn transcript(
         }
         let project_slug = match (&found, project) {
             (Some(f), _) => Some(f.slug.clone()),
-            (None, Some(p)) => q(&ctx.db, "SELECT slug FROM projects WHERE id = ?", &[s(p)])?
+            (None, Some(p)) => q(db, "SELECT slug FROM projects WHERE id = ?", &[s(p)])?
                 .first::<Slug>()
                 .await?
                 .map(|s| s.slug),
@@ -2627,7 +3232,7 @@ async fn transcript(
             }),
             project_slug,
         });
-        let stub = crate::internal::session_stub(&ctx.env, pilot)?;
+        let stub = crate::internal::session_stub(env, pilot)?;
         crate::internal::post(&stub, "/notice", &notice).await
     }
     .await;
@@ -2796,11 +3401,11 @@ pub async fn gate(ctx: &Ctx, method: &str, segs: &[&str], body: Option<&Value>) 
                     "An autopilot steers only the sessions it started: people steer theirs. Read this one with fctl show or fctl logs.",
                 ));
             };
-            // A message or a resume sets one that rests working again:
-            // only with room for it, as many at once as its people allow.
-            let sets_working =
-                method == "POST" && matches!(segs.get(2), Some(&("messages" | "resume")));
-            if sets_working && !found.working {
+            // A resume sets one that stopped working again: only with room
+            // for it, as many at once as its people allow. A message waits
+            // for room instead (`hold`).
+            let resumes = method == "POST" && segs.get(2) == Some(&"resume");
+            if resumes && !found.working {
                 crew_room_for(&ctx.db, caller, ctx.now, false).await?;
             }
             Ok(())
@@ -3061,6 +3666,126 @@ mod tests {
         assert_eq!(view.about.as_deref(), Some("web#41"));
         assert_eq!(view.files, ["hotdog.3mf"]);
         assert_eq!(view.answer, None);
+        Ok(())
+    }
+
+    /// A message it holds for its session `session`, sent at `at`.
+    async fn held_for(db: &D1Database, id: &str, session: &str, at: i64) -> AppResult<()> {
+        q(
+            db,
+            "INSERT INTO autopilot_held (id, project_id, session_id, delivery_id, text, author_id, created_at) \
+             VALUES (?1, 'prj_web', ?2, 'dlv_' || ?1, 'Go on', 'usr_ada', ?3)",
+            &[s(id), s(session), n(at)],
+        )?
+        .run()
+        .await?;
+        Ok(())
+    }
+
+    /// At its limit, a message to one of its sessions that rests waits,
+    /// and one to a session that works goes; those held go in turn as its
+    /// sessions make room, and those for one that failed are dropped.
+    #[wasm_bindgen_test]
+    async fn messages_wait_for_room_and_go_in_turn() -> AppResult<()> {
+        use ap::Release::{Drop, Send, Wait};
+        let db = testing::database();
+        autopilot(&db).await?;
+        q(
+            &db,
+            "UPDATE autopilots SET crew_max = 2 WHERE project_id = 'prj_web'",
+            &[],
+        )?
+        .run()
+        .await?;
+        let row = row_of(&db).await?;
+        // At work: one running, and one that ended its turn but was just
+        // messaged.
+        let running = crew(&db, 1, "running", NOW).await?;
+        let messaged = crew(&db, 2, "idle", NOW - HOUR).await?;
+        q(
+            &db,
+            "UPDATE sessions SET messaged_at = ?1 WHERE id = ?2",
+            &[n(NOW - HOUR), s(&messaged)],
+        )?
+        .run()
+        .await?;
+        let idle = crew(&db, 3, "idle", NOW - HOUR).await?;
+        let stopped = crew(&db, 4, "stopped", NOW - HOUR).await?;
+        let failed = crew(&db, 5, "failed", NOW - HOUR).await?;
+        assert_eq!(crew_working(&db, "prj_web").await?, 2);
+        assert_eq!(waits(&db, &row, &[], &running).await?, Some(false));
+        assert_eq!(waits(&db, &row, &[], &messaged).await?, Some(false));
+        assert_eq!(waits(&db, &row, &[], &idle).await?, Some(true));
+        assert_eq!(waits(&db, &row, &[], &stopped).await?, Some(true));
+        assert_eq!(waits(&db, &row, &[], "ses_none").await?, None);
+
+        held_for(&db, "aph_1", &idle, NOW - 3).await?;
+        held_for(&db, "aph_2", &stopped, NOW - 2).await?;
+        held_for(&db, "aph_3", &running, NOW - 1).await?;
+        held_for(&db, "aph_4", &failed, NOW).await?;
+        let queue = held(&db, "prj_web").await?;
+        let ids: Vec<&str> = queue.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["aph_1", "aph_2", "aph_3", "aph_4"]);
+        let working: Vec<bool> = queue.iter().map(|h| h.working).collect();
+        assert_eq!(working, [false, false, true, false]);
+        let first = queue.first().ok_or_else(|| internal("none held"))?;
+        assert_eq!(first.reference(), "web#3");
+        let view = first.view(0);
+        assert_eq!((view.session.number, view.ahead), (3, 0));
+        // At its limit, only the session at work takes its own.
+        assert_eq!(fates(&db, &row, &queue).await?, [Wait, Wait, Send, Drop]);
+        // A message to another that works still goes; to one that rests,
+        // it waits behind those held.
+        assert_eq!(waits(&db, &row, &queue, &messaged).await?, Some(false));
+        assert_eq!(waits(&db, &row, &queue, &idle).await?, Some(true));
+
+        // One ends its turn: the oldest goes, and the rest wait.
+        q(
+            &db,
+            "UPDATE sessions SET status = 'idle', updated_at = ?1 WHERE id = ?2",
+            &[n(NOW + 1), s(&running)],
+        )?
+        .run()
+        .await?;
+        let queue = held(&db, "prj_web").await?;
+        assert_eq!(fates(&db, &row, &queue).await?, [Send, Wait, Wait, Drop]);
+        // A session gone takes its messages with it.
+        q(&db, "DELETE FROM sessions WHERE id = ?", &[s(&stopped)])?
+            .run()
+            .await?;
+        let left: Vec<String> = held(&db, "prj_web")
+            .await?
+            .into_iter()
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(left, ["aph_1", "aph_3", "aph_4"]);
+        Ok(())
+    }
+
+    /// A message a pass claimed to send can't be taken back, nor claimed
+    /// by another, until the claim is stale; one taken back can't be sent.
+    #[wasm_bindgen_test]
+    async fn a_message_going_out_cant_be_taken_back() -> AppResult<()> {
+        let db = testing::database();
+        autopilot(&db).await?;
+        let idle = crew(&db, 3, "idle", NOW - HOUR).await?;
+        held_for(&db, "aph_1", &idle, NOW - 2).await?;
+        held_for(&db, "aph_2", &idle, NOW - 1).await?;
+        assert_eq!(claim(&db, "aph_1", NOW).await?, Claim::Ours);
+        assert_eq!(claim(&db, "aph_1", NOW + 1).await?, Claim::Theirs);
+        assert_eq!(
+            unhold(&db, "prj_web", "aph_1", NOW + 1).await?,
+            Unheld::Going
+        );
+        // Taken back, it's gone for good.
+        assert_eq!(unhold(&db, "prj_web", "aph_2", NOW).await?, Unheld::Taken);
+        assert_eq!(unhold(&db, "prj_web", "aph_2", NOW).await?, Unheld::Gone);
+        assert_eq!(claim(&db, "aph_2", NOW).await?, Claim::Gone);
+        // Another autopilot's id isn't this one's to take back.
+        assert_eq!(unhold(&db, "prj_api", "aph_1", NOW).await?, Unheld::Gone);
+        // A pass that died leaves its claim to the next, a minute on.
+        let later = NOW + SENDING_FOR_MS + 1;
+        assert_eq!(claim(&db, "aph_1", later).await?, Claim::Ours);
         Ok(())
     }
 

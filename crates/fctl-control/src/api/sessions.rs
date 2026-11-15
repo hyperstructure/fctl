@@ -600,6 +600,21 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
     // Each person's own, as over the viewer socket: someone else's id,
     // which is easy to guess, would make their message count as sent.
     let client_key = body.client_id.map(|c| format!("{}:{c}", author.id));
+    // An autopilot's message to one of its sessions that rests, while as
+    // many of them work as its people allow, waits for room.
+    if let Some(caller) = ctx.autopilot()
+        && let Some(held) = crate::autopilots::hold(
+            ctx,
+            caller,
+            &a.row.id,
+            &text,
+            &attachments,
+            client_key.as_deref(),
+        )
+        .await?
+    {
+        return http::ok(&held);
+    }
     let delivery_id = deliver_message(
         ctx,
         id,
@@ -610,7 +625,10 @@ pub async fn send_message(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResu
         attachments,
     )
     .await?;
-    http::ok(&SendMessageResponse { delivery_id })
+    http::ok(&SendMessageResponse {
+        delivery_id,
+        held: None,
+    })
 }
 
 /// The autopilot whose request this is, as a message's author shows it.
@@ -629,9 +647,37 @@ pub async fn deliver_message(
     client_key: Option<String>,
     attachments: Vec<Attachment>,
 ) -> AppResult<fctl_proto::DeliveryId> {
-    let delivery_id = fctl_domain::ids::delivery_id(ctx.now);
+    deliver_as(
+        &ctx.env,
+        session_id,
+        fctl_domain::ids::delivery_id(ctx.now),
+        text,
+        user,
+        source,
+        client_key,
+        attachments,
+        message_autopilot(ctx),
+    )
+    .await
+}
+
+/// [`deliver_message`] as the delivery `delivery_id`, from `autopilot`
+/// when one sends it: a message fctl held for room goes out this way
+/// (`crate::autopilots::release`).
+#[allow(clippy::too_many_arguments)]
+pub async fn deliver_as(
+    env: &worker::Env,
+    session_id: &str,
+    delivery_id: fctl_proto::DeliveryId,
+    text: String,
+    user: &UserRow,
+    source: MessageSource,
+    client_key: Option<String>,
+    attachments: Vec<Attachment>,
+    autopilot: Option<fctl_proto::autopilot::AutopilotAuthor>,
+) -> AppResult<fctl_proto::DeliveryId> {
     let author = user.to_ref();
-    let stub = internal::session_stub(&ctx.env, session_id)?;
+    let stub = internal::session_stub(env, session_id)?;
     let out: Delivered = internal::post(
         &stub,
         "/deliver",
@@ -649,7 +695,7 @@ pub async fn deliver_message(
             by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
                 ticket: None,
-                autopilot: message_autopilot(ctx),
+                autopilot,
                 wake: None,
                 id: delivery_id,
                 author: Some(author),
@@ -693,6 +739,7 @@ pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     .await?;
     http::ok(&SendMessageResponse {
         delivery_id: out.delivery_id,
+        held: None,
     })
 }
 
@@ -725,6 +772,7 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
         );
         return http::ok(&SendMessageResponse {
             delivery_id: out.delivery_id,
+            held: None,
         });
     }
     let stub = internal::session_stub(&ctx.env, id)?;
@@ -746,6 +794,7 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
     );
     http::ok(&SendMessageResponse {
         delivery_id: out.delivery_id,
+        held: None,
     })
 }
 

@@ -3911,6 +3911,20 @@ impl SessionObject {
             return;
         };
         if a.role == fctl_proto::autopilot::AutopilotRole::Crew {
+            // It made room under its autopilot's limit (it ended its turn,
+            // stopped or failed), or works again and takes messages without
+            // room: those fctl holds for its sessions may go now.
+            if before.is_some()
+                && matches!(
+                    s.status,
+                    SessionStatus::Running
+                        | SessionStatus::Idle
+                        | SessionStatus::Stopped
+                        | SessionStatus::Failed
+                )
+            {
+                self.release_held(a.project_id.as_str(), now);
+            }
             // A wake held back while it waits for its background work is
             // owed until one goes out (`fctl_domain::autopilot::owes`). A
             // question it asks between its turns (no `before`) wakes it.
@@ -3935,6 +3949,26 @@ impl SessionObject {
             }
         }
         self.wake_autopilot(s, now);
+    }
+
+    /// Sends the messages its autopilot holds for room that may go now
+    /// (`crate::autopilots::release`).
+    fn release_held(&self, autopilot: &str, now: i64) {
+        let env = self.env.clone();
+        let autopilot = autopilot.to_owned();
+        self.state.wait_until(async move {
+            let released = async {
+                let db = env.d1("DB")?;
+                crate::autopilots::release(&env, &db, &autopilot, now).await
+            }
+            .await;
+            if let Err(e) = released {
+                worker::console_error!(
+                    "sending autopilot {autopilot}'s held messages: {}",
+                    e.0.message
+                );
+            }
+        });
     }
 
     /// Tells the session's autopilot that it moved on, which wakes it
