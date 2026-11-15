@@ -301,6 +301,9 @@ pub enum AutopilotWakeReason {
     /// one it works in (`fctl autopilot wake --fresh`): the wake starts
     /// one, once that one's turn ends.
     Fresh,
+    /// The checks of a commit on the base branch that holds a pull request
+    /// of its sessions' that merged all ended, passed or not.
+    MergeChecks,
     /// A reason a newer control plane gives.
     #[serde(other)]
     Other,
@@ -320,6 +323,7 @@ impl AutopilotWakeReason {
             Self::Retry => "retry",
             Self::Moved => "moved",
             Self::Fresh => "fresh",
+            Self::MergeChecks => "merge_checks",
             Self::Other => "other",
         }
     }
@@ -337,6 +341,7 @@ impl AutopilotWakeReason {
             Self::Retry,
             Self::Moved,
             Self::Fresh,
+            Self::MergeChecks,
         ]
         .into_iter()
         .find(|r| r.as_str() == s)
@@ -651,6 +656,16 @@ pub struct AutopilotWake {
     /// Its direction changed.
     #[serde(default)]
     pub direction: bool,
+    /// How many of its sessions' merged pull requests the checks on their
+    /// base branch ended for since it last woke. Absent when none, and
+    /// from control planes before it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<u32>", optional))]
+    pub merge_checks: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// What an autopilot did, for its own session's transcript: the line its
@@ -935,6 +950,21 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&wake).ok().as_deref(),
             Some(r#"{"reasons":["check_in"],"notes":0,"answers":0,"direction":false}"#)
+        );
+        let wake = AutopilotWake {
+            reasons: vec![AutopilotWakeReason::MergeChecks],
+            merge_checks: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&wake).ok().as_deref(),
+            Some(
+                r#"{"reasons":["merge_checks"],"notes":0,"answers":0,"direction":false,"merge_checks":2}"#
+            )
+        );
+        assert_eq!(
+            AutopilotWakeReason::parse("merge_checks"),
+            Some(AutopilotWakeReason::MergeChecks)
         );
     }
 }

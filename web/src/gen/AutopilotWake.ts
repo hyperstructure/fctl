@@ -27,4 +27,10 @@ crew?: Array<SessionRef>,
 /**
  * Its direction changed.
  */
-direction: boolean, };
+direction: boolean, 
+/**
+ * How many of its sessions' merged pull requests the checks on their
+ * base branch ended for since it last woke. Absent when none, and
+ * from control planes before it.
+ */
+merge_checks?: number, };

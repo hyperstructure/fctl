@@ -25,6 +25,7 @@ mod http;
 mod instance;
 mod internal;
 mod linear;
+mod merge_checks;
 mod model;
 mod notify;
 mod pull_requests;

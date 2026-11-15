@@ -1100,6 +1100,11 @@ fn woke_line(reasons: &[AutopilotWakeReason], wake: &AutopilotWake) -> String {
             AutopilotWakeReason::Retry => "a retry after its session failed".into(),
             AutopilotWakeReason::Moved => "it was moved to another Claude subscription".into(),
             AutopilotWakeReason::Fresh => FRESH_ASKED.into(),
+            AutopilotWakeReason::MergeChecks => match wake.merge_checks {
+                0 => "its merges' checks".into(),
+                1 => "a merge's checks".into(),
+                n => format!("{n} merges' checks"),
+            },
             AutopilotWakeReason::Other => continue,
         });
     }
@@ -1605,6 +1610,11 @@ struct News {
     /// People's sessions that ended a turn since, with a pull request
     /// open: they come with what wakes it, and wake it for nothing.
     others: Vec<CrewRow>,
+    /// Its sessions' merges whose checks on their base branch ended, which
+    /// it hasn't heard of, and the ids of their rows
+    /// (`crate::merge_checks::untold`).
+    merge_checks: Vec<crate::merge_checks::Ended>,
+    merge_check_ids: Vec<i64>,
 }
 
 impl News {
@@ -1674,6 +1684,8 @@ impl News {
         .all()
         .await?;
         let _ = now;
+        let (merge_checks, merge_check_ids) =
+            crate::merge_checks::untold(db, &row.project_id).await?;
         Ok(Self {
             since,
             notes,
@@ -1684,6 +1696,8 @@ impl News {
             crew,
             heard,
             others,
+            merge_checks,
+            merge_check_ids,
         })
     }
 
@@ -1692,6 +1706,7 @@ impl News {
             && self.direction.is_none()
             && self.answers.is_empty()
             && self.crew.is_empty()
+            && self.merge_checks.is_empty()
     }
 
     fn wake(&self, reasons: &[AutopilotWakeReason]) -> AutopilotWake {
@@ -1701,6 +1716,7 @@ impl News {
             answers: u32::try_from(self.answers.len()).unwrap_or(0),
             crew: self.crew.iter().map(CrewRow::session_ref).collect(),
             direction: self.direction.is_some(),
+            merge_checks: u32::try_from(self.merge_checks.len()).unwrap_or(0),
         }
     }
 
@@ -1742,6 +1758,17 @@ impl News {
             })
             .collect();
         let others: Vec<ap::OtherView> = self.others.iter().map(|o| other_view(o, None)).collect();
+        let failing: Vec<Vec<String>> = self
+            .merge_checks
+            .iter()
+            .map(crate::merge_checks::Ended::failing)
+            .collect();
+        let merge_checks: Vec<fctl_domain::merge_checks::View> = self
+            .merge_checks
+            .iter()
+            .zip(failing.iter())
+            .filter_map(|(m, failing)| m.view(failing))
+            .collect();
         ap::wake_message(&ap::News {
             reasons: reasons.to_vec(),
             notes,
@@ -1752,6 +1779,7 @@ impl News {
             answers,
             crew,
             others,
+            merge_checks,
             handoff,
             now,
         })
@@ -1762,7 +1790,8 @@ impl News {
     async fn mark_seen(&self, db: &D1Database, row: &AutopilotRow, now: i64) -> AppResult<()> {
         let notes: Vec<String> = self.notes.iter().map(|n| n.id.clone()).collect();
         let answers: Vec<String> = self.answers.iter().map(|a| a.id.clone()).collect();
-        mark_seen(db, &row.project_id, &notes, &answers, now).await
+        mark_seen(db, &row.project_id, &notes, &answers, now).await?;
+        crate::merge_checks::told(db, &self.merge_check_ids, now).await
     }
 }
 

@@ -324,6 +324,13 @@ export function wakeText(w: G.AutopilotWake): string {
       case "fresh":
         parts.push("someone asking for a fresh session");
         break;
+      case "merge_checks": {
+        const merges = w.merge_checks ?? 0;
+        parts.push(
+          merges === 1 ? "a merge's checks" : merges ? `${merges} merges' checks` : "its merges' checks",
+        );
+        break;
+      }
     }
   }
   if (!parts.length) return "its check-in";

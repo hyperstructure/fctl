@@ -230,6 +230,12 @@ pub async fn run(env: &Env, now: i64) -> AppResult<()> {
             "DELETE FROM autopilot_asks WHERE status != 'open' AND seen_at IS NOT NULL AND seen_at < ?",
             now - 90 * 86_400_000,
         ),
+        // Merges' checks on their base branch: those that ended were told
+        // by then, and those that didn't never will.
+        (
+            "DELETE FROM merge_checks WHERE merged_at < ?",
+            now - crate::merge_checks::KEEP_MS,
+        ),
         (
             "DELETE FROM claude_login_jobs WHERE updated_at < ?",
             now - LOGIN_JOB_RETENTION_MS,

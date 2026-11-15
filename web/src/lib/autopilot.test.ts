@@ -157,6 +157,12 @@ describe("what woke it", () => {
       ),
     ).toBe("an answer and session #41");
     expect(wakeText(wake({}))).toBe("its check-in");
+    // The checks on the base branch after its sessions' merges.
+    expect(wakeText(wake({ reasons: ["merge_checks"], merge_checks: 1 }))).toBe("a merge's checks");
+    expect(wokeLine(wake({ reasons: ["crew", "merge_checks"], merge_checks: 2 }))).toBe(
+      "Woke for its sessions and 2 merges' checks",
+    );
+    expect(wakeText(wake({ reasons: ["merge_checks"] }))).toBe("its merges' checks");
   });
 
   it("says a start or a resume alone as its log does", () => {

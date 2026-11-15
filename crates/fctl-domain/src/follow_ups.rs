@@ -1343,7 +1343,7 @@ fn review_lines(all: &[&FollowUpComment], review: &FollowUpComment, indent: &str
 
 /// `Rust tests`, `Rust tests and Clippy`, `Lint, Rust tests and Clippy`,
 /// and how many more failed past [`MAX_NAMES`].
-fn names(names: &[String]) -> String {
+pub(crate) fn names(names: &[String]) -> String {
     let shown: Vec<&str> = names.iter().take(MAX_NAMES).map(String::as_str).collect();
     let more = names.len().saturating_sub(MAX_NAMES);
     match (shown.as_slice(), more) {

@@ -1,0 +1,540 @@
+//! The checks on a base branch after the pull requests of autopilots'
+//! sessions merged (`fctl_domain::merge_checks`), which wake those
+//! autopilots once they end, so that none needs a script to wait for main
+//! to go green.
+//!
+//! GitHub's webhook says a pull request merged, with the commit that holds
+//! it on its base branch ([`merged`] keeps it, for each session an
+//! autopilot started that lists it), and when a check suite there
+//! completes, or a commit status there no longer waits. Then the control
+//! plane looks that commit up (`fctl_domain::webhooks::commit_query`): its
+//! checks, the commits before it and where its branch is now. Once all of
+//! its checks ended, it settles the merges it holds ([`settle`]), and the
+//! autopilots wake a minute later, gathered like other news of their
+//! sessions, to hear how they went ([`untold`]).
+
+use crate::config::Config;
+use crate::db::{int, n, opt_int, os, q, s};
+use crate::error::AppResult;
+use crate::github;
+use crate::pull_requests::{in_reach, key};
+use fctl_domain::autopilot as ap;
+use fctl_domain::merge_checks::{self as mc, Outcome};
+use fctl_domain::webhooks::{self, Commit, Hook};
+use fctl_proto::autopilot::AutopilotWakeReason;
+use fctl_proto::session::RepoRef;
+use serde::Deserialize;
+use worker::{D1Database, Env};
+
+/// How long after a merge its row stays, told or not: housekeeping deletes
+/// it then. Checks that haven't ended by then never will, and an
+/// autopilot paused for longer has older news to read.
+pub const KEEP_MS: i64 = 3 * 86_400_000;
+
+/// Most merges one delivery settles, and branches it looks up commits on.
+const MAX_WAITING: i64 = 50;
+const MAX_BRANCHES: usize = 3;
+
+/// A pull request that merged, as a `pull_request` delivery says.
+pub struct Merged<'a> {
+    pub repo: &'a RepoRef,
+    pub number: u64,
+    pub url: &'a str,
+    pub title: Option<&'a str>,
+    /// The branch it merged into, and the commit that holds it there.
+    pub base: &'a str,
+    pub sha: &'a str,
+    pub at: i64,
+}
+
+/// Keeps that a pull request merged, for each session an autopilot
+/// started that lists it, whose workspace connects the account that
+/// answered (`answered`: GitHub's ids of the account and the installation,
+/// [`in_reach`]), so that the checks on its base branch wake that
+/// autopilot as they end. Returns how many it kept.
+pub async fn merged(
+    db: &D1Database,
+    m: &Merged<'_>,
+    answered: (u64, u64),
+    now: i64,
+) -> AppResult<usize> {
+    q(
+        db,
+        &format!(
+            "INSERT OR IGNORE INTO merge_checks (repo, number, session_id, url, title, autopilot_id, base_ref, merge_sha, merged_at) \
+             SELECT l.repo, l.number, l.session_id, ?3, ?4, s.autopilot_id, ?5, ?6, ?7 FROM pull_request_sessions l \
+             JOIN sessions s ON s.id = l.session_id \
+             WHERE l.repo = ?1 AND l.number = ?2 AND s.autopilot_role = 'crew' AND s.autopilot_id IS NOT NULL AND {}",
+            in_reach(Some(("?8", "?9")))
+        ),
+        &[
+            s(&key(m.repo)),
+            n(m.number as i64),
+            s(m.url),
+            os(m.title),
+            s(m.base),
+            s(m.sha),
+            n(if m.at > 0 { m.at } else { now }),
+            n(answered.0 as i64),
+            n(answered.1 as i64),
+        ],
+    )?
+    .run()
+    .await
+}
+
+/// A merge whose checks on its base branch haven't ended yet.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Waiting {
+    #[serde(deserialize_with = "int")]
+    pub number: i64,
+    pub session_id: String,
+    pub autopilot_id: String,
+    pub base_ref: String,
+    pub merge_sha: String,
+}
+
+/// The merges into `branches` of `repo` still waiting for their checks,
+/// of sessions whose workspaces connect the account that answered.
+pub async fn waiting(
+    db: &D1Database,
+    repo: &RepoRef,
+    branches: &[String],
+    answered: (u64, u64),
+) -> AppResult<Vec<Waiting>> {
+    q(
+        db,
+        &format!(
+            "SELECT l.number AS number, l.session_id AS session_id, l.autopilot_id AS autopilot_id, \
+             l.base_ref AS base_ref, l.merge_sha AS merge_sha FROM merge_checks l \
+             WHERE l.repo = ?1 AND l.ended_at IS NULL AND l.base_ref IN (SELECT value FROM json_each(?2)) \
+             AND {} ORDER BY l.merged_at LIMIT {MAX_WAITING}",
+            in_reach(Some(("?3", "?4")))
+        ),
+        &[
+            s(&key(repo)),
+            s(&serde_json::to_string(branches)?),
+            n(answered.0 as i64),
+            n(answered.1 as i64),
+        ],
+    )?
+    .all()
+    .await
+}
+
+/// Settles the merges among `waiting` (into one branch of `repo`) that
+/// commit `c` holds, once its checks tell how they went
+/// (`fctl_domain::merge_checks::settles`). Returns the autopilots of those
+/// it settled, each once, which a delivery settling them too at the same
+/// time leaves out.
+pub async fn settle(
+    db: &D1Database,
+    repo: &RepoRef,
+    waiting: &[Waiting],
+    c: &Commit,
+    now: i64,
+) -> AppResult<Vec<String>> {
+    let merges: Vec<&str> = waiting.iter().map(|w| w.merge_sha.as_str()).collect();
+    let Some((outcome, held)) = mc::settles(c, &merges) else {
+        return Ok(Vec::new());
+    };
+    let failing = serde_json::to_string(&c.checks.failing)?;
+    let mut statements = Vec::new();
+    let mut settled = Vec::new();
+    for w in held.iter().filter_map(|&i| waiting.get(i)) {
+        statements.push(q(
+            db,
+            "UPDATE merge_checks SET sha = ?, ended_at = ?, outcome = ?, passed = ?, failed = ?, cancelled = ?, failing = ? \
+             WHERE repo = ? AND number = ? AND session_id = ? AND ended_at IS NULL",
+            &[
+                s(&c.sha),
+                n(now),
+                s(outcome.as_str()),
+                n(i64::from(c.checks.passed)),
+                n(i64::from(c.checks.failed)),
+                n(i64::from(c.checks.cancelled)),
+                s(&failing),
+                s(&key(repo)),
+                n(w.number),
+                s(&w.session_id),
+            ],
+        )?);
+        settled.push(w.autopilot_id.clone());
+    }
+    let changes = crate::db::batch_changes(db, statements).await?;
+    let mut autopilots: Vec<String> = settled
+        .into_iter()
+        .zip(changes)
+        .filter(|(_, changed)| *changed > 0)
+        .map(|(a, _)| a)
+        .collect();
+    autopilots.sort();
+    autopilots.dedup();
+    Ok(autopilots)
+}
+
+/// What a webhook delivery means for merges' checks: a pull request of an
+/// autopilot's session merged, which [`merged`] keeps; or the checks of a
+/// commit on a branch that merges wait on may have ended, which looks the
+/// commit up and settles those it holds, waking their autopilots. Returns
+/// how many autopilots it woke.
+pub async fn on_delivery(
+    env: &Env,
+    cfg: &Config,
+    db: &D1Database,
+    hook: &Hook,
+    now: i64,
+) -> AppResult<usize> {
+    // Without GitHub's word of who answered, nobody hears of anything.
+    let Some(answered) = hook.owner_id.zip(hook.installation) else {
+        return Ok(0);
+    };
+    if let Some(p) = &hook.payload
+        && p.action == "closed"
+        && let (Some(sha), Some(base)) = (&p.merge_sha, &p.base_ref)
+    {
+        merged(
+            db,
+            &Merged {
+                repo: &hook.repo,
+                number: p.seen.number,
+                url: &p.seen.url,
+                title: p.seen.title.as_deref(),
+                base,
+                sha,
+                at: p.seen.state_changed_at.unwrap_or(now),
+            },
+            answered,
+            now,
+        )
+        .await?;
+        return Ok(0);
+    }
+    let Some(sha) = hook.sha.as_deref().filter(|_| hook.ended) else {
+        return Ok(0);
+    };
+    if hook.branches.is_empty() {
+        return Ok(0);
+    }
+    let waiting = waiting(db, &hook.repo, &hook.branches, answered).await?;
+    if waiting.is_empty() {
+        return Ok(0);
+    }
+    let gh = github::from_config(cfg, now)?;
+    let mut branches: Vec<&str> = waiting.iter().map(|w| w.base_ref.as_str()).collect();
+    branches.sort_unstable();
+    branches.dedup();
+    let mut autopilots: Vec<String> = Vec::new();
+    for branch in branches.into_iter().take(MAX_BRANCHES) {
+        let answer = gh
+            .lookup(answered.1, webhooks::commit_query(&hook.repo, sha, branch))
+            .await?;
+        let Some(commit) = webhooks::looked_up_commit(&answer) else {
+            continue;
+        };
+        let on: Vec<Waiting> = waiting
+            .iter()
+            .filter(|w| w.base_ref == branch)
+            .cloned()
+            .collect();
+        autopilots.extend(settle(db, &hook.repo, &on, &commit, now).await?);
+    }
+    autopilots.sort();
+    autopilots.dedup();
+    for a in &autopilots {
+        crate::autopilots::nudge(
+            env,
+            db,
+            a,
+            AutopilotWakeReason::MergeChecks,
+            now + ap::CREW_GATHER_MS,
+        )
+        .await?;
+    }
+    Ok(autopilots.len())
+}
+
+/// A merge of an autopilot's session whose checks on its base branch
+/// ended, which the autopilot hasn't heard of yet.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Ended {
+    #[serde(deserialize_with = "int")]
+    pub id: i64,
+    pub repo: String,
+    #[serde(deserialize_with = "int")]
+    pub number: i64,
+    pub url: String,
+    pub title: Option<String>,
+    pub base_ref: String,
+    pub merge_sha: String,
+    pub sha: String,
+    pub outcome: String,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub passed: Option<i64>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub failed: Option<i64>,
+    #[serde(deserialize_with = "opt_int", default)]
+    pub cancelled: Option<i64>,
+    pub failing: Option<String>,
+    pub project_slug: String,
+    #[serde(deserialize_with = "int")]
+    pub session_number: i64,
+}
+
+impl Ended {
+    /// The names of the checks that failed.
+    pub fn failing(&self) -> Vec<String> {
+        self.failing
+            .as_deref()
+            .and_then(|f| serde_json::from_str(f).ok())
+            .unwrap_or_default()
+    }
+
+    /// What fctl tells the autopilot of it (`fctl_domain::merge_checks::line`),
+    /// with `failing` from [`Ended::failing`]. `None` for an outcome a newer
+    /// control plane wrote.
+    pub fn view<'a>(&'a self, failing: &'a [String]) -> Option<mc::View<'a>> {
+        let count = |c: Option<i64>| u32::try_from(c.unwrap_or(0)).unwrap_or(0);
+        let pull = match fctl_domain::pulls::repo_of(&self.url) {
+            Some(repo) => format!("{}#{}", repo.full_name(), self.number),
+            None => format!("{}#{}", self.repo, self.number),
+        };
+        Some(mc::View {
+            pull,
+            title: self.title.as_deref(),
+            session: format!("{}#{}", self.project_slug, self.session_number),
+            base: &self.base_ref,
+            merge_sha: &self.merge_sha,
+            sha: &self.sha,
+            outcome: Outcome::parse(&self.outcome)?,
+            passed: count(self.passed),
+            failed: count(self.failed),
+            cancelled: count(self.cancelled),
+            failing,
+        })
+    }
+}
+
+/// The merges of autopilot `autopilot_id`'s sessions whose checks on their
+/// base branch ended and that it hasn't heard of, in the order they
+/// ended. A pull request that several of its sessions list comes once, but
+/// [`told`] takes all of their ids.
+pub async fn untold(db: &D1Database, autopilot_id: &str) -> AppResult<(Vec<Ended>, Vec<i64>)> {
+    let rows: Vec<Ended> = q(
+        db,
+        "SELECT m.rowid AS id, m.repo, m.number, m.url, m.title, m.base_ref, m.merge_sha, m.sha, m.outcome, \
+         m.passed, m.failed, m.cancelled, m.failing, p.slug AS project_slug, s.number AS session_number \
+         FROM merge_checks m JOIN sessions s ON s.id = m.session_id JOIN projects p ON p.id = s.project_id \
+         WHERE m.autopilot_id = ? AND m.ended_at IS NOT NULL AND m.told_at IS NULL \
+         ORDER BY m.ended_at, m.repo, m.number, s.created_at LIMIT 50",
+        &[s(autopilot_id)],
+    )?
+    .all()
+    .await?;
+    let ids = rows.iter().map(|r| r.id).collect();
+    let mut once: Vec<Ended> = Vec::new();
+    for r in rows {
+        if !once
+            .iter()
+            .any(|o| o.repo == r.repo && o.number == r.number)
+        {
+            once.push(r);
+        }
+    }
+    Ok((once, ids))
+}
+
+/// Marks merges' checks told: a wake told the autopilot of them.
+pub async fn told(db: &D1Database, ids: &[i64], now: i64) -> AppResult<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    q(
+        db,
+        "UPDATE merge_checks SET told_at = ? WHERE told_at IS NULL AND rowid IN (SELECT value FROM json_each(?))",
+        &[n(now), s(&serde_json::to_string(ids)?)],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::error::internal;
+    use crate::testing;
+    use fctl_domain::webhooks::CommitChecks;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const NOW: i64 = 1_800_000_000_000;
+    /// GitHub's ids of the acme account and its installation of the app.
+    const ANSWERED: (u64, u64) = (314, 42);
+
+    fn repo() -> RepoRef {
+        RepoRef {
+            owner: "acme".into(),
+            name: "web".into(),
+        }
+    }
+
+    /// Acme's workspace with its web project, connected to the acme
+    /// account, and its autopilot's sessions #1 and #2, which list
+    /// acme/web#12 and #13, and a person's #3, which lists #14.
+    async fn world(db: &D1Database) -> AppResult<()> {
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_at, updated_at) VALUES ('wsp_acme', 'acme', 'Acme', 0, 0)",
+            "INSERT INTO workspace_github (workspace_id, account, installation_id, account_id, status, created_at, updated_at) \
+             VALUES ('wsp_acme', 'acme', 42, 314, 'active', 0, 0)",
+            "INSERT INTO projects (id, slug, name, repo_owner, repo_name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_web', 'web', 'Web', 'acme', 'web', 'usr_ada', 0, 0, 'wsp_acme')",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, claude_session_id, created_at, updated_at, autopilot_id, autopilot_role) \
+             VALUES ('ses_1', 'prj_web', 1, 'Add Apple Pay', 'x', 'idle', 'usr_ada', 'c1', 1, 0, 'prj_web', 'crew'), \
+                    ('ses_2', 'prj_web', 2, 'Wishlists', 'x', 'stopped', 'usr_ada', 'c2', 2, 0, 'prj_web', 'crew'), \
+                    ('ses_3', 'prj_web', 3, 'By hand', 'x', 'idle', 'usr_ada', 'c3', 3, 0, NULL, NULL)",
+            "INSERT INTO pull_request_sessions (repo, number, session_id, state) VALUES \
+             ('acme/web', 12, 'ses_1', 'merged'), ('acme/web', 13, 'ses_2', 'merged'), ('acme/web', 12, 'ses_2', 'merged'), \
+             ('acme/web', 14, 'ses_3', 'merged')",
+        ] {
+            q(db, sql, &[])?.run().await?;
+        }
+        Ok(())
+    }
+
+    async fn merge(db: &D1Database, number: u64, sha: &str) -> AppResult<usize> {
+        let r = repo();
+        let url = format!("https://github.com/acme/web/pull/{number}");
+        merged(
+            db,
+            &Merged {
+                repo: &r,
+                number,
+                url: &url,
+                title: Some("A change"),
+                base: "main",
+                sha,
+                at: NOW,
+            },
+            ANSWERED,
+            NOW,
+        )
+        .await
+    }
+
+    fn commit(sha: &str, history: &[&str], head: &str, checks: CommitChecks) -> Commit {
+        Commit {
+            sha: sha.into(),
+            history: history.iter().map(|h| (*h).to_owned()).collect(),
+            head: Some(head.into()),
+            checks,
+        }
+    }
+
+    fn checks(passed: u32, failed: u32, cancelled: u32, pending: u32) -> CommitChecks {
+        CommitChecks {
+            passed,
+            failed,
+            cancelled,
+            pending,
+            failing: if failed > 0 {
+                vec!["Rust tests".into()]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    async fn waits(db: &D1Database) -> AppResult<Vec<Waiting>> {
+        waiting(db, &repo(), &["main".to_owned()], ANSWERED).await
+    }
+
+    /// Two merges in a row: the first's run is cancelled as the second's
+    /// takes over, and the second's passes for both.
+    #[wasm_bindgen_test]
+    async fn a_newer_merges_checks_tell_for_one_whose_run_it_cancelled() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        // Of the autopilot's sessions alone: #12 is listed by both of its.
+        assert_eq!(merge(&db, 12, "aaa").await?, 2);
+        assert_eq!(merge(&db, 13, "bbb").await?, 1);
+        assert_eq!(merge(&db, 14, "ccc").await?, 0);
+        // GitHub says it merged once more: nothing new.
+        assert_eq!(merge(&db, 13, "bbb").await?, 0);
+        // Another branch's merges wait apart.
+        let w = waiting(&db, &repo(), &["release".to_owned()], ANSWERED).await?;
+        assert!(w.is_empty());
+        // Nor does another installation's word reach them.
+        let w = waiting(&db, &repo(), &["main".to_owned()], (999, 7)).await?;
+        assert!(w.is_empty());
+        let w = waits(&db).await?;
+        assert_eq!(w.len(), 3);
+        // The first's run was cancelled as main moved on: nothing yet.
+        let first = commit("aaa", &["aaa"], "bbb", checks(10, 0, 4, 0));
+        assert!(settle(&db, &repo(), &w, &first, NOW).await?.is_empty());
+        // The second's still runs.
+        let second = commit("bbb", &["bbb", "aaa"], "bbb", checks(10, 0, 0, 4));
+        assert!(settle(&db, &repo(), &w, &second, NOW).await?.is_empty());
+        let (ended, _) = untold(&db, "prj_web").await?;
+        assert!(ended.is_empty());
+        // Then it passes, for both merges.
+        let second = commit("bbb", &["bbb", "aaa"], "bbb", checks(14, 0, 0, 0));
+        assert_eq!(
+            settle(&db, &repo(), &w, &second, NOW + 1).await?,
+            vec!["prj_web".to_owned()]
+        );
+        assert!(waits(&db).await?.is_empty());
+        // A later delivery about the same commit settles nothing again.
+        assert!(settle(&db, &repo(), &w, &second, NOW + 2).await?.is_empty());
+        // The autopilot hears of each pull request once.
+        let (ended, ids) = untold(&db, "prj_web").await?;
+        assert_eq!(ids.len(), 3);
+        let lines: Vec<String> = ended
+            .iter()
+            .map(|e| {
+                let failing = e.failing();
+                e.view(&failing)
+                    .map(|v| mc::line(&v))
+                    .ok_or_else(|| internal("no view"))
+            })
+            .collect::<AppResult<_>>()?;
+        assert_eq!(
+            lines,
+            vec![
+                "acme/web#12 “A change” (web#1), into main: its 14 checks passed at bbb, a later commit that holds it.".to_owned(),
+                "acme/web#13 “A change” (web#2), into main: its 14 checks passed at bbb.".to_owned(),
+            ]
+        );
+        told(&db, &ids, NOW + 3).await?;
+        let (ended, _) = untold(&db, "prj_web").await?;
+        assert!(ended.is_empty());
+        Ok(())
+    }
+
+    /// Checks that failed settle the merge at once, and say which.
+    #[wasm_bindgen_test]
+    async fn failed_checks_tell_which() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        merge(&db, 13, "bbb").await?;
+        let w = waits(&db).await?;
+        // A commit from before the merge doesn't hold it.
+        let before = commit("aaa", &["aaa"], "bbb", checks(10, 1, 0, 0));
+        assert!(settle(&db, &repo(), &w, &before, NOW).await?.is_empty());
+        let failed = commit("bbb", &["bbb", "aaa"], "bbb", checks(13, 1, 0, 0));
+        assert_eq!(settle(&db, &repo(), &w, &failed, NOW).await?.len(), 1);
+        let (ended, _) = untold(&db, "prj_web").await?;
+        let failing = ended.first().map(Ended::failing).unwrap_or_default();
+        let line = ended
+            .first()
+            .and_then(|e| e.view(&failing))
+            .map(|v| mc::line(&v));
+        assert_eq!(
+            line.as_deref(),
+            Some(
+                "acme/web#13 “A change” (web#2), into main: 1 of 14 checks failed at bbb: Rust tests."
+            )
+        );
+        Ok(())
+    }
+}
