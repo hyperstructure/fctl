@@ -3,12 +3,14 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
+import { ApiFailure } from "@/lib/api";
 import { queryClient } from "@/lib/queries";
 import type { SentFiles } from "./attachments";
 import { Composer } from "./composer";
-import type { MovedOn } from "./moved-on";
+import { blockedOf, type MovedOn } from "./moved-on";
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
   api: new Proxy({} as Record<string, unknown>, { get: () => () => new Promise(() => {}) }),
 }));
 vi.mock("@tanstack/react-router", () => ({
@@ -34,7 +36,6 @@ function movedOn(more: Partial<MovedOn> = {}): MovedOn {
     session: { id: "ses_20", number: 20, status: "running", started_at: NOW - 2 * 3_600_000 },
     paused: false,
     word: { tone: "accent", word: "At work" },
-    canMessage: true,
     send: vi.fn(async () => {}),
     ...more,
   };
@@ -177,13 +178,41 @@ describe("a message in an earlier session of the autopilot's own", () => {
     expect(document.activeElement).toBe(c.way("Send here anyway"));
   });
 
-  it("offers only here when the reader can't message where it works now", async () => {
-    const c = composer(movedOn({ canMessage: false }));
+  it("offers only here when the message can't go where it works now, and says why", async () => {
+    const c = composer(movedOn({ blocked: "You can follow it, but not message it." }));
     c.type("Add link previews");
     await c.enter();
     expect(c.way("Send to #20")?.disabled).toBe(true);
-    expect(c.card()?.textContent).toContain("You can follow it, but not message it");
+    expect(c.card()?.textContent).toContain("You can follow it, but not message it.");
     expect(document.activeElement).toBe(c.way("Send here anyway"));
+  });
+
+  it("closes with the message: one typed afresh asks afresh, and keeps the focus till then", async () => {
+    const to = movedOn();
+    const c = composer(to);
+    c.type("Add link previews");
+    await c.enter();
+    expect(c.card()).not.toBeNull();
+    act(() => c.box().focus());
+    c.type("");
+    expect(c.card()).toBeNull();
+    c.type("A");
+    expect(c.card()).toBeNull();
+    expect(document.activeElement).toBe(c.box());
+    expect(to.send).not.toHaveBeenCalled();
+  });
+
+  it("closes with Escape in the box too, back to the message", async () => {
+    const c = composer(movedOn());
+    c.type("Add link previews");
+    await c.enter();
+    act(() => c.box().focus());
+    await act(async () => {
+      c.box().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(c.card()).toBeNull();
+    expect(document.activeElement).toBe(c.box());
+    expect(c.box().value).toBe("Add link previews");
   });
 
   it("says a paused autopilot acts once resumed", async () => {
@@ -191,6 +220,22 @@ describe("a message in an earlier session of the autopilot's own", () => {
     c.type("Add link previews");
     await c.enter();
     expect(c.card()?.textContent).toContain("acts again once someone resumes it");
+  });
+
+  it("says why a message can't go where it works now", () => {
+    const running = { status: "running" as const };
+    expect(blockedOf(running, "editor", null)).toBeUndefined();
+    // Until that session loads, the reader may try.
+    expect(blockedOf(running, undefined, null)).toBeUndefined();
+    expect(blockedOf({ status: "failed" }, "owner", null)).toBe(
+      "It failed: fctl starts the autopilot a fresh session at its next wake.",
+    );
+    expect(blockedOf(running, "viewer", null)).toMatch(/^You can follow it, but not message it/);
+    expect(blockedOf(running, undefined, new ApiFailure(404, {}))).toBe(
+      "You can't open that session, so you can't message it.",
+    );
+    // Offline, the send says so.
+    expect(blockedOf(running, undefined, new ApiFailure(0, {}))).toBeUndefined();
   });
 
   it("asks nothing in any other session", async () => {

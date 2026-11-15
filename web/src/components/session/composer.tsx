@@ -80,8 +80,12 @@ export function Composer({
   }, canSend);
   const ready = !!text.trim() || files.drafts.length > 0;
   useShortcut("reply", () => ref.current?.focus());
+  // The card closes with the message (once it's emptied, unless on its way) and with the session:
+  // a message typed afresh asks afresh. Sent here anyway, it asks no more until the reader leaves.
+  if (asking !== undefined && ((!ready && !sending) || asking !== sessionId)) setAsking(undefined);
+  if (anyway !== undefined && anyway !== sessionId) setAnyway(undefined);
   const asks = !!movedOn && anyway !== sessionId;
-  const askOpen = asks && asking === sessionId && ready;
+  const askOpen = asks && asking === sessionId;
   const keepEditing = () => {
     setAsking(undefined);
     ref.current?.focus();
@@ -125,8 +129,10 @@ export function Composer({
       e.preventDefault();
       void submit();
     } else if (e.key === "Escape") {
-      // Out of the box, the page's keys work again.
-      e.currentTarget.blur();
+      // The card it asks in goes first, back to the message; then out of the box, where the
+      // page's keys work again.
+      if (askOpen) setAsking(undefined);
+      else e.currentTarget.blur();
     }
   };
 

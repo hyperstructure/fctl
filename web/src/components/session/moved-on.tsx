@@ -9,10 +9,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUp, X } from "lucide-react";
 import { forwardRef, type KeyboardEvent, type ReactNode, useEffect, useId, useRef } from "react";
-import { TONES, useAutopilot, useNow } from "@/components/project/autopilot";
+import { useAutopilot, useNow } from "@/components/project/autopilot";
 import { AutopilotIcon, IconButton, Spinner, toast } from "@/components/ui";
 import type * as G from "@/gen";
-import { api } from "@/lib/api";
+import { ApiFailure, api } from "@/lib/api";
 import { movedOn, sessionWord } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { agoShortWords, stamp } from "@/lib/format";
@@ -27,8 +27,8 @@ export interface MovedOn {
   paused: boolean;
   /** How that session stands, beside its dot. */
   word: ReturnType<typeof sessionWord>;
-  /** The reader may message that session (until it loads, they may try). */
-  canMessage: boolean;
+  /** Why the message can't go there, when it can't; until that session loads, the reader may try. */
+  blocked?: string;
   /** Sends the message there, then goes there. */
   send: (text: string, files: SentFiles) => Promise<void>;
 }
@@ -45,14 +45,13 @@ export function useMovedOn(session: G.Session | undefined): MovedOn | undefined 
     queryFn: () => api.session(to?.id ?? ""),
     enabled: !!to,
     staleTime: 30_000,
-  }).data;
+  });
   if (!a || !to) return;
-  const role = there?.role;
   return {
     session: to,
     paused: a.state === "paused",
     word: sessionWord(a),
-    canMessage: !role || role === "editor" || role === "owner",
+    blocked: blockedOf(to, there.data?.role, there.error),
     send: async (text, files) => {
       await api.sendMessage(to.id, {
         text,
@@ -65,6 +64,27 @@ export function useMovedOn(session: G.Session | undefined): MovedOn | undefined 
     },
   };
 }
+
+/** Why a message can't go to the session the autopilot works in now, when it can't. */
+export function blockedOf(
+  to: Pick<G.AutopilotSession, "status">,
+  role: G.SessionRole | undefined,
+  error: unknown,
+): string | undefined {
+  if (to.status === "failed") return "It failed: fctl starts the autopilot a fresh session at its next wake.";
+  if (error instanceof ApiFailure && (error.status === 403 || error.status === 404))
+    return "You can't open that session, so you can't message it.";
+  if (role && role !== "editor" && role !== "owner")
+    return "You can follow it, but not message it: ask its owner for the editor role.";
+}
+
+/** The dot and word of how that session stands, in the status colors sessions have everywhere. */
+const WORD_TONES = {
+  accent: { dot: "bg-accent", word: "text-accent" },
+  pink: { dot: "bg-pink", word: "text-pink" },
+  ink: { dot: "bg-ink-4", word: "text-ink-3" },
+  danger: { dot: "bg-danger", word: "text-danger" },
+} as const;
 
 /** The line above the message box: where the autopilot works now, a link there. */
 export function MovedOnLine({ to }: { to: MovedOn }) {
@@ -135,8 +155,8 @@ export function MovedOnCard({
       next.focus();
     }
   };
-  const there = !to.canMessage
-    ? "You can follow it, but not message it: ask its owner for the editor role."
+  const there = to.blocked
+    ? to.blocked
     : to.paused
       ? "The autopilot is paused, and acts again once someone resumes it. You go with your message."
       : "The autopilot takes it up there, and you go with your message.";
@@ -173,14 +193,14 @@ export function MovedOnCard({
         <Way
           ref={first}
           primary
-          disabled={!to.canMessage || !!sending}
+          disabled={!!to.blocked || !!sending}
           busy={sending === "there"}
           onClick={onThere}
           title={`Send to ${n}`}
           meta={
             <span className="flex min-w-0 items-center gap-1.5 text-[12px] font-normal text-ink-4">
-              <span className={cn("size-1.5 shrink-0 rounded-full", TONES[to.word.tone].dot)} />
-              <span className={TONES[to.word.tone].word}>{to.word.word}</span>
+              <span className={cn("size-1.5 shrink-0 rounded-full", WORD_TONES[to.word.tone].dot)} />
+              <span className={WORD_TONES[to.word.tone].word}>{to.word.word}</span>
               <span className="truncate" title={stamp(to.session.started_at)}>
                 · started {agoShortWords(to.session.started_at, now)}
               </span>

@@ -160,6 +160,11 @@ describe("an earlier session of its own", () => {
       word: "Resting",
     });
     expect(sessionWord(autopilot({ session, state: "paused" }))).toEqual({ tone: "pink", word: "Paused" });
+    // It takes no message: fctl starts a fresh one at its next wake.
+    expect(sessionWord(autopilot({ session: { ...session, status: "failed" } }))).toEqual({
+      tone: "danger",
+      word: "Failed",
+    });
   });
 });
 

@@ -182,10 +182,12 @@ export function movedOn(
 
 /** How the session it works in now stands, in a word beside a dot: "At work", "Resting". */
 export function sessionWord(a: Pick<G.Autopilot, "state" | "session">): {
-  tone: Phase["tone"];
+  tone: "accent" | "pink" | "ink" | "danger";
   word: string;
 } {
   const s = a.session?.status;
+  // It takes no message: fctl starts a fresh one at its next wake.
+  if (s === "failed") return { tone: "danger", word: "Failed" };
   if (a.state === "paused") return { tone: "pink", word: "Paused" };
   if (s === "queued" || s === "provisioning" || s === "preparing") return { tone: "accent", word: "Waking" };
   if (s === "running" || s === "stopping") return { tone: "accent", word: "At work" };
