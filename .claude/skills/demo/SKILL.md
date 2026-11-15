@@ -61,6 +61,12 @@ work in the evening and reads the pull requests over breakfast. Jonas hands
 tickets to fctl in Linear. Review agents review every pull request in the
 shop and the platform, on Tomás's and Asha's Claude subscriptions.
 
+Last Friday evening Noor started a portal for the farms, where each farm
+posts next week's harvest and sees what Romanesco ordered and owes it, and
+put the project on autopilot ([Farm portal's autopilot](#farm-portals-autopilot)).
+It has worked through the weekend: at 09:10 it waits for Noor's answers to
+two questions, while one of its sessions works.
+
 Noor also maintains milkfloat, the open-source route planner Romanesco plans
 its vans' rounds with, keeps a few projects of her own, and helps her
 climbing club with its booking app. Those are the other three workspaces in
@@ -97,7 +103,7 @@ In the sidebar in this order, with these projects.
 
 | Workspace | Slug | Avatar | People | Settings |
 |---|---|---|---|---|
-| Romanesco | `romanesco` | Uploaded: the Romanesco logo | Noor (primary admin), Kofi (admin); Jonas, Asha, Tomás, Aiko, Lucía, Sanna; Inês invited | Base role editor; two-factor required; GitHub `romanescohq`; Linear connected |
+| Romanesco | `romanesco` | Uploaded: the Romanesco logo | Noor (primary admin), Kofi (admin); Jonas, Asha, Tomás, Aiko, Lucía, Sanna; Inês invited | Base role editor; two-factor required; GitHub `romanescohq`; Linear connected; autopilots on |
 | milkfloat | `milkfloat` | `route`, yellow | Uploaded: the milkfloat logo | Noor (primary admin), Asha (admin), Lena | Base role maintainer; two-factor required; GitHub `milkfloat` |
 | punschrulle | `punschrulle` | Uploaded: Noor's avatar | Noor | Invites skipped; GitHub `punschrulle` |
 | Crimp Collective | `crimp-collective` | None: CC on pink | Elsa (primary admin), Noor | Base role editor; GitHub `crimpcollective` |
@@ -106,7 +112,7 @@ In the sidebar in this order, with these projects.
 
 | Account | Kind | Repositories | Avatar |
 |---|---|---|---|
-| `romanescohq` | GitHub organization | `shop`, `platform`, `driver-app`, `infra`, `design-system` | Romanesco logo |
+| `romanescohq` | GitHub organization | `shop`, `platform`, `driver-app`, `infra`, `design-system`, `farm-portal` | Romanesco logo |
 | `milkfloat` | GitHub organization | `milkfloat`, `milkfloat.dev`, `bench` | milkfloat logo |
 | `punschrulle` | GitHub user: Noor | `sourdough`, `plantwatch`, `noorhaddad.se` | Noor |
 | `crimpcollective` | GitHub organization | `bookings` | Crimp Collective logo |
@@ -127,6 +133,7 @@ side look alike and none is the gray of a project without one.
 | Platform | `platform` | `server-stack`, blue | `romanescohq/platform`; `romanescohq/infra` (read) | 287, 1 active | Orders, subscriptions, farms and delivery routes behind every app. Rust (axum, sqlx) on Postgres, with milkfloat planning the vans' routes. |
 | Driver app | `driver-app` | `delivery-van`, yellow | `romanescohq/driver-app` | 77, 1 active | The app drivers deliver with: the day's route, door codes, a photo at the door when nobody answers. Expo and React Native. |
 | Infra | `infra` | `cloud`, violet `#9b7bff` | `romanescohq/infra` | 38, 1 active | Terraform for AWS and Cloudflare, and the workflows that deploy everything. Agents plan; people apply. |
+| Farm portal | `farm-portal` | `wheat`, gold `#d4a72c` | `romanescohq/farm-portal` | 8 and its autopilot's 5, 1 active | Where our farms post next week's harvest, and see our orders and what we owe them. Next.js on Cloudflare, on Platform's API. On autopilot since last Friday. |
 | milkfloat | `milkfloat` | `route`, yellow | `milkfloat/milkfloat`; `milkfloat/milkfloat.dev` (write) | 61, 1 active | A vehicle-routing solver in Rust with Python bindings: time windows, capacities, driver breaks, and re-planning while the vans are out. MIT licensed. |
 | Benchmarks | `milkfloat-bench` | `gauge`, blue | `milkfloat/bench`; `milkfloat/milkfloat` (read) | 41 | Nightly runs of the Solomon and Gehring–Homberger instances against main, published at milkfloat.dev/bench. |
 | sourdough | `sourdough` | `bread`, crust `#e0a458` | `punschrulle/sourdough` | 12 | Feeding reminders for my starter, and a bake-day plan that works back from when the bread should be ready. SvelteKit, installed on my phone. |
@@ -147,7 +154,7 @@ Romanesco names its machines after vegetables. What each is doing at 09:10:
 |---|---|---|---|---|---|---|---|---|
 | `kohlrabi` | Mac Studio, Stockholm office | macos/aarch64 | 16, 128 GB | apple | 6 | Kofi | Romanesco | Online: shop#231, shop#230, platform#445 |
 | `parsnip` | Mac mini, Stockholm office | macos/aarch64 | 14, 64 GB | apple | 4 | Kofi | Romanesco | Online: the review of shop#1291 |
-| `celeriac` | Rented server, Helsinki | linux/x86_64 | 32, 128 GB | docker | 10 | Kofi | Romanesco | Online: infra#38 |
+| `celeriac` | Rented server, Helsinki | linux/x86_64 | 32, 128 GB | docker | 10 | Kofi | Romanesco | Online: infra#38, farm-portal#13, and the autopilot's own farm-portal#12, resting |
 | `turnip` | Rented server, Falkenstein | linux/x86_64 | 16, 64 GB | docker | 6 | Kofi | Romanesco | Draining since 08:40, by Kofi: driver-app#77 left |
 | `Noors-MacBook-Pro` | Noor's laptop | macos/aarch64 | 16, 48 GB | apple | 2 | Noor | Romanesco (Noor's own), milkfloat, punschrulle | Online: milkfloat#96, the review of milkfloat#313 |
 | `fika` | Mini PC under Noor's TV | linux/x86_64 | 16, 32 GB | docker | 3 | Noor | punschrulle, milkfloat | Online, idle: the nightly benchmarks ran there from 01:00 to 02:12 |
@@ -197,6 +204,54 @@ through the same steps.
 
 Sanna, Inês and Kenji have none, so their initials, or GitHub's placeholder,
 show as they would for real people.
+
+## Farm portal's autopilot
+
+Noor made `romanescohq/farm-portal` with create-next-app last Friday at
+17:20 and put the project on autopilot at 17:40 (`[[autopilot]]` in
+`cast.toml`): on her Max plan, merging, settings, secrets and schedules
+as its powers, checking in every 2 hours, 3 sessions at once, Opus. Its
+direction asks for the farm portal: farms sign in with a link by email,
+the harvest list first (by Thursday noon), orders and payouts from
+Platform's API (ask Asha before Platform changes), Swedish first, deploys
+to Cloudflare with previews; the shop and the driver app left alone.
+Jonas, Tomás and Asha maintain the project with Noor.
+
+| When | What happened |
+|---|---|
+| Friday 17:40 | It plans the portal and starts #2 (deploys, CI and previews), #3 (sign-in by email) and #4 (two designs of the harvest list), and asks for `RESEND_API_KEY`. |
+| 18:03 | Tomás gives it the shop's Resend key. |
+| 18:22–19:43 | #2 merges (PR 1); it starts #5 (Swedish and English). #3 and #5 merge together (PRs 2 and 3), and it puts the project's rules in its instructions and where strings live in the memory. |
+| 22:00 | #4 publishes its two designs side by side, and it asks Noor which harvest list farms should get. |
+| Saturday 08:12 | Noor answers from her phone: a list per crop. A fresh session (#6) takes over and has #4 build it; #4 merges it (PR 4) at 09:10. |
+| Sunday 09:14 | A fresh session (#7) looks in, as it asked: nothing has moved. |
+| 19:02 | Jonas's note: farms count in crates, bunches and kilos. It starts #8. |
+| 20:21–20:51 | #8's screenshot shows an empty list; it sends #8 back for a week filled in, and #8 merges (PR 5). |
+| Monday 08:53 | A fresh session (#9), as it asked: it asks for `PLATFORM_API_TOKEN` and starts #10 (this week's orders) and #11 (two designs of the Wednesday reminder). |
+| 09:41 | Asha's note: payouts land in Platform this week, as `GET /v1/farms/{id}/payouts`. |
+| 11:33–13:21 | It asks Noor which Wednesday reminder farms should get, with #11's two designs; #10 merges the orders page (PR 7). |
+| Tuesday 08:21 | A fresh session (#12), as it asked, starts #13 (pickup windows). |
+| 09:10 | It rests until 10:26, two asks open (`PLATFORM_API_TOKEN`, and the reminder), and #13 works. Noor follows its sessions, so its asks lead her Needs you. |
+
+The seed plays it through the control plane, after the people's sessions:
+it puts the project on autopilot as Noor (confirming it's her with her
+authenticator code), then does the autopilot's beats in order, each once
+fake-claude's replay log has the lines the one before waits for. fctl
+wakes the autopilot and starts its sessions, which play
+`transcripts/farm-portal-<n>.toml`; its own sessions' run the sandbox's
+`fctl` for real, through the relay. A crew session's first turn waits
+for the seed's go-ahead (a file in `.fctl-demo/signals`), so that it ends,
+and wakes the autopilot a minute later, where the story has it; a beat
+merges a session's branch into main on the stand-in (the project
+`merges`, so each session starts from what merged before it), stops a
+session whose story is over, ages its own session by 13 hours so that the
+next wake goes to a fresh one, or makes the wake it asked for due now.
+The rewrite maps its sessions' turns, its log, notes and asks onto the
+story's times. The screenshots its sessions publish are drawn in
+`xtask/demo/published`; their links in the transcripts are app.fctl.sh's,
+with tokens the rewrite gives them, which `shoot.mjs` serves from the
+stack. Its next check-in is real: shoot within an hour or so of the seed,
+or it wakes and plays its transcript's spare turns.
 
 ## Making the shots
 
@@ -249,6 +304,7 @@ an answer to its agent's question (`fctl ask`: whether a webhook in the
 dead letters should page whoever is on call; Noor follows the session, so
 it leads her sidebar's Needs you), shop#224 with its review round, Platform's Reviews and Memory tabs,
 Shop's retrospectives (in Memory) and Schedules tab, and its settings' Tickets and Repositories pages,
+Farm portal's Autopilot tab, its autopilot's session this morning and #8 sent back for better screenshots,
 Romanesco's Runners and People tabs, the milkfloat workspace, Noor's
 settings, and a session and the Agent Floor at a phone's width.
 
@@ -334,6 +390,16 @@ What the feature pages need from the seed, and where it comes from:
 - **Watching.** A session's `watching` in `cast.toml` keeps those people's
   `fctl attach --read-only` open while the demo runs: shop#231's page says
   Tomás, Lucía and Noor watch it (the team page's `watching` shot).
+
+- **Autopilots.** The autopilots page shows Farm portal's autopilot
+  (`autopilots` in `pages`): its tab at 09:10 (`tab`, `phone-tab`, `log`,
+  `asks`, and the overview's tile from a narrower window, `card`), its
+  session this morning (`pilot`), #8 sent back (`crew`), Needs you on a
+  phone, Driver app's form for putting it on autopilot filled in with a
+  direction for Copenhagen (`engage`), its "Change how it works" dialog,
+  Farm portal's Sessions tab and Romanesco's switch for autopilots. The
+  asks show the two reminders at their app.fctl.sh link, which `shoot.mjs`
+  serves from the stack.
 
 The GitHub reviews, chats, tickets and terminals on the pages are HTML,
 written from the cast and from what the CLI prints (`fctl sessions`, `fctl

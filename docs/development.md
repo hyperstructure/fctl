@@ -374,7 +374,9 @@ node xtask/demo/shoot.mjs --out shots    # from where Playwright is installed: i
 its state in `.fctl-demo/` (made afresh each time), and loads the made-up
 world of [the demo skill](../.claude/skills/demo/SKILL.md) into it: the
 people, workspaces, runners, projects, schedules, memory and sessions in
-`xtask/demo/cast.toml`. Its people make it through the API, with a host for
+`xtask/demo/cast.toml`, and a project on autopilot, whose story the
+control plane plays: the seed does what people did to it (notes, answers,
+secrets) and moves it on, beat by beat. Its people make it through the API, with a host for
 each runner and a stand-in GitHub (bare repositories in `.fctl-demo/github`
 that git reaches in place of github.com, holding the files in
 `xtask/demo/repos`, where dependency manifests are kept as
