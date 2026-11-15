@@ -395,12 +395,10 @@ What the feature pages need from the seed, and where it comes from:
 
 - **Autopilots.** The autopilots page shows Farm portal's autopilot
   (`autopilots` in `pages`): its tab at 09:10 (`tab`, `phone-tab`, `log`,
-  `asks`, `secret`, and the overview's tile from a narrower window,
-  `card`), its session this morning (`pilot`), #8 sent back (`crew`), Needs
-  you on a phone (`phone-needs`), Driver app's form for putting it on
-  autopilot filled in with a direction for Copenhagen (`engage`), and Farm
-  portal's Sessions tab (`sessions`). The asks show the two reminders at
-  their app.fctl.sh link, which `shoot.mjs` serves from the stack.
+  and the overview's tile from a narrower window, `card`), its session this
+  morning (`pilot`), #8 sent back (`crew`) and Farm portal's Sessions tab
+  (`sessions`). The tab's ask shows the two reminders at their app.fctl.sh
+  link, which `shoot.mjs` serves from the stack.
 
 The GitHub reviews, chats, tickets and terminals on the pages are HTML,
 written from the cast and from what the CLI prints (`fctl sessions`, `fctl
