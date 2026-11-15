@@ -27,6 +27,7 @@ afterEach(() => {
 });
 
 const NOW = Date.now();
+const EDITOR: G.SessionRole = "editor";
 
 function movedOn(more: Partial<MovedOn> = {}): MovedOn {
   return {
@@ -53,7 +54,7 @@ function composer(to?: MovedOn, status: G.SessionStatus = "idle") {
       <QueryClientProvider client={queryClient}>
         <Composer
           status={status}
-          role="editor"
+          role={EDITOR}
           viewers={[]}
           sessionId="ses_7"
           onSend={onSend}
