@@ -612,19 +612,58 @@ pub fn at_work_then(
     }
 }
 
-/// Whether the agent most likely merged or closed its pull request itself,
-/// as `event` says: fctl's GitHub App did (`by_app`), whose token the
-/// agent's `gh` uses, while the agent was at work ([`at_work_then`]). It
-/// knows then, and a message from fctl about it would only cut into its
-/// turn, or start one with nothing to do: the transcript says it instead
-/// ([`own_doing_notice`]). A person's merge, or the app's while the agent
-/// rested, still reaches it.
-pub fn own_doing(event: &FollowUpEvent, by_app: bool, at_work: bool) -> bool {
+/// How long before a merge or a close the agent may have run the command
+/// that made it, for it to count as the agent's own ([`own_doing`]): a
+/// merge it asked GitHub to make once checks pass (`gh pr merge --auto`)
+/// comes later, while it watches them.
+pub const RAN_WITHIN_MS: i64 = 2 * 60 * 60 * 1000;
+
+/// Whether the agent merged or closed its pull request itself, as `event`
+/// says: fctl's GitHub App did (`by_app`), whose token the agent's `gh`
+/// uses, while the agent was at work ([`at_work_then`]), after it ran a
+/// command that merges or closes a pull request (`ran`:
+/// [`merges_or_closes`], within [`RAN_WITHIN_MS`] before). It knows then,
+/// and a message from fctl about it would only cut into its turn, or start
+/// one with nothing to do: the transcript says it instead
+/// ([`own_doing_notice`]). A person's merge, the app's while the agent
+/// rested, and the app's for someone else (an autopilot, another session)
+/// still reach it.
+pub fn own_doing(event: &FollowUpEvent, by_app: bool, at_work: bool, ran: bool) -> bool {
     matches!(
         event,
         FollowUpEvent::Merged { .. } | FollowUpEvent::Closed { .. }
     ) && by_app
         && at_work
+        && ran
+}
+
+/// Whether a message of Claude's, `v`, runs a command that merges or
+/// closes a pull request, in a Bash call of its own or of a subagent's:
+/// `gh pr merge`, `gh pr close`, or a merge through GitHub's API
+/// (`gh api …/pulls/12/merge`).
+pub fn merges_or_closes(v: &Value) -> bool {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+        return false;
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter(|b| b.get("name").and_then(Value::as_str) == Some("Bash"))
+        .filter_map(|b| b.pointer("/input/command").and_then(Value::as_str))
+        .any(|command| {
+            let words: Vec<&str> = command.split_whitespace().collect();
+            words
+                .windows(3)
+                .any(|w| w[0] == "gh" && w[1] == "pr" && matches!(w[2], "merge" | "close"))
+                || (words.contains(&"api")
+                    && words.iter().any(|w| {
+                        let w = w.trim_matches(|c| c == '"' || c == '\'');
+                        w.contains("pulls/") && w.ends_with("/merge")
+                    }))
+        })
 }
 
 /// What the transcript says of a merge or a close that fctl didn't pass
@@ -639,11 +678,11 @@ pub fn own_doing_notice(f: &FollowUp) -> Option<String> {
                 .map(|b| format!(" into {b}"))
                 .unwrap_or_default();
             Some(format!(
-                "{pr} was merged{into} by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+                "{pr} was merged{into} by the agent itself as it worked: fctl didn't pass it on."
             ))
         }
         FollowUpEvent::Closed { .. } => Some(format!(
-            "{pr} was closed by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+            "{pr} was closed by the agent itself as it worked: fctl didn't pass it on."
         )),
         _ => None,
     })
@@ -1922,31 +1961,77 @@ mod tests {
             by: None,
             base: Some("main".into()),
         };
-        assert!(own_doing(&merged, true, true));
-        assert!(own_doing(&FollowUpEvent::Closed { by: None }, true, true));
-        // A person's or another app's, or the app's while the agent rested.
-        assert!(!own_doing(&merged, false, true));
-        assert!(!own_doing(&merged, true, false));
+        assert!(own_doing(&merged, true, true, true));
+        assert!(own_doing(
+            &FollowUpEvent::Closed { by: None },
+            true,
+            true,
+            true
+        ));
+        // A person's or another app's, the app's while the agent rested,
+        // and the app's for someone else: an autopilot, another session.
+        assert!(!own_doing(&merged, false, true, true));
+        assert!(!own_doing(&merged, true, false, true));
+        assert!(!own_doing(&merged, true, true, false));
         // Only merges and closes.
         let conflicts = FollowUpEvent::Conflicts {
             sha: "abc".into(),
             base: None,
         };
-        assert!(!own_doing(&conflicts, true, true));
+        assert!(!own_doing(&conflicts, true, true, true));
 
         assert_eq!(
             own_doing_notice(&follow_up(vec![merged])).as_deref(),
             Some(
-                "acme/web#12 was merged into main by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+                "acme/web#12 was merged into main by the agent itself as it worked: fctl didn't pass it on."
             )
         );
         assert_eq!(
             own_doing_notice(&follow_up(vec![FollowUpEvent::Closed { by: None }])).as_deref(),
             Some(
-                "acme/web#12 was closed by fctl's app while the agent was at work, most likely by the agent itself. fctl didn't pass it on."
+                "acme/web#12 was closed by the agent itself as it worked: fctl didn't pass it on."
             )
         );
         assert_eq!(own_doing_notice(&follow_up(vec![conflicts])), None);
+    }
+
+    #[test]
+    fn the_agent_runs_merges_and_closes() {
+        let bash = |command: &str| {
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Merging."},
+                {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": command}}
+            ]}})
+        };
+        assert!(merges_or_closes(&bash(
+            "gh pr merge 12 --squash --delete-branch"
+        )));
+        assert!(merges_or_closes(&bash(
+            "cd web &&  gh  pr   merge --auto --squash"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh pr close 12 --comment 'Superseded'"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api -X PUT repos/acme/web/pulls/12/merge -f merge_method=squash"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api --method PUT \"repos/acme/web/pulls/12/merge\""
+        )));
+        // Not one that only looks.
+        assert!(!merges_or_closes(&bash("gh pr view 12 --json mergeable")));
+        assert!(!merges_or_closes(&bash("gh pr checks 12 --watch")));
+        assert!(!merges_or_closes(&bash("git merge origin/main")));
+        assert!(!merges_or_closes(&bash("echo gh pr")));
+        // Only Claude's own calls to Bash.
+        let read = serde_json::json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
+        ]}});
+        assert!(!merges_or_closes(&read));
+        let result = serde_json::json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": "gh pr merge 12"}
+        ]}});
+        assert!(!merges_or_closes(&result));
     }
 
     fn looked(state: &str, failing: &[&str]) -> Looked {

@@ -58,9 +58,8 @@ summarized?: SummarizedPullRequest,
 /**
  * What happened to a pull request that fctl didn't pass on to the
  * agent, in a `follow_up_held` notice (it heard of the same too often
- * in a row) or a `follow_up_own` one (a merge or a close by fctl's app
- * as it worked, most likely its own). Clients from before it show the
- * message.
+ * in a row) or a `follow_up_own` one (a merge or a close it made
+ * itself as it worked). Clients from before it show the message.
  */
 follow_up?: FollowUp, 
 /**

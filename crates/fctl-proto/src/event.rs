@@ -581,9 +581,8 @@ pub struct Notice {
     pub summarized: Option<crate::api::SummarizedPullRequest>,
     /// What happened to a pull request that fctl didn't pass on to the
     /// agent, in a `follow_up_held` notice (it heard of the same too often
-    /// in a row) or a `follow_up_own` one (a merge or a close by fctl's app
-    /// as it worked, most likely its own). Clients from before it show the
-    /// message.
+    /// in a row) or a `follow_up_own` one (a merge or a close it made
+    /// itself as it worked). Clients from before it show the message.
     pub follow_up: Option<FollowUp>,
     /// What the agent, or fctl for it, did in the project's ticket tracker,
     /// in a `ticket_*` notice. Clients from before it show the message.

@@ -404,8 +404,8 @@ ran on (`--follow-ups`, a list of `comments`, `checks`, `conflicts` and
 to the repository; a failed check of the newest commit, at most three
 times in a row while nobody messages the agent; conflicts with the base
 branch, which the agent resolves by merging the base branch in, as often;
-a merge or a close, unless fctl's app made it while the agent worked,
-most likely the agent itself. New projects start with all four on;
+a merge or a close, unless the agent made it itself as it worked. New
+projects start with all four on;
 `fctl projects show` says which
 ([Architecture](architecture.md#follow-ups)).
 

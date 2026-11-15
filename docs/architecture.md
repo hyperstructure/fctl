@@ -1965,10 +1965,13 @@ the pull request's newest commit's: a newer commit, the agent's or
 anyone's, or for checks a re-run that passed, makes them old news. A merge
 or a close by fctl's own app while the agent was at work (its turn ran,
 it waited for its background work, or its turn ended after it, as
-SessionObject's `turn_ended_at` says) is most likely the agent's own: the
-transcript says so (`follow_up_own`, with `Notice.follow_up`) rather than
-tell the agent, which would cut into its turn, or start one with nothing
-to do (`fctl_domain::follow_ups::own_doing`). A person's merge reaches it
+SessionObject's `turn_ended_at` says), within two hours of the agent
+running `gh pr merge`, `gh pr close` or a merge through `gh api`
+(`merge_ran_at`), is the agent's own: the transcript says so
+(`follow_up_own`, with `Notice.follow_up`) rather than tell the agent,
+which would cut into its turn, or start one with nothing to do
+(`fctl_domain::follow_ups::own_doing`). One by the app for someone else,
+such as an autopilot's other session, still reaches it. A person's merge reaches it
 at its next step, and tells it to carry on with its task. After
 three failed checks in a row (`MAX_CHECKS_IN_A_ROW`) while nobody messaged
 the agent, nor wrote to it on GitHub, the transcript says what failed

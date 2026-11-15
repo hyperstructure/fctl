@@ -176,8 +176,8 @@ function Comment({ f, w, ts }: { f: G.FollowUp; w: Wrote; ts: number }) {
 
 /**
  * What fctl didn't pass on to the agent: failed checks, or conflicts, it heard of three times in a
- * row while nobody messaged it (`follow_up_held`), or a merge or close by fctl's app as it worked,
- * most likely its own (`follow_up_own`). What happened shows muted, with why the agent didn't hear
+ * row while nobody messaged it (`follow_up_held`), or a merge or close the agent made itself as it
+ * worked (`follow_up_own`). What happened shows muted, with why the agent didn't hear
  * of it.
  */
 export const HeldFollowUp = memo(function HeldFollowUp({
@@ -209,7 +209,7 @@ export const HeldFollowUp = memo(function HeldFollowUp({
 function whyNotPassedOn(happened: Happened[], code: string | undefined): string {
   if (code === "follow_up_own") {
     const closed = happened.some((e) => e.kind === "closed");
-    return `Not passed on: ${closed ? "closed" : "merged"} by fctl's app while the agent was at work, most likely by the agent itself.`;
+    return `Not passed on: the agent ${closed ? "closed" : "merged"} it itself as it worked.`;
   }
   if (happened.length > 0 && happened.every((e) => e.kind === "conflicts"))
     return "Not passed on: the agent heard of conflicts three times in a row, with no message from a person in between. Message it to have it resolve them.";
