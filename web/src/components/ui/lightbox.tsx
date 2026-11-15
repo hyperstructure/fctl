@@ -61,7 +61,11 @@ const RESIST = 0.3;
  * and `.lightbox[data-closing]` in app.css), and a margin.
  */
 const SLIDE_MS = 400;
-/** How far down an image is pulled (a fraction of the window's height) when the page shows through fully. */
+/**
+ * How far down an image is pulled (a fraction of the window's height) when
+ * the page shows through fully. The buttons and caption over it are gone
+ * halfway there (`.lightbox-chrome` in app.css), where letting go closes it.
+ */
 const SHOWS_THROUGH = 0.5;
 /** A finger that lets go sooner than this (ms) after it touched, having hardly moved, taps. */
 const TAP_MS = 300;
