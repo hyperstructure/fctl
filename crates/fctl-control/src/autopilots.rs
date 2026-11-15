@@ -1329,6 +1329,7 @@ async fn deliver(
                 },
             },
             client_key: None,
+            by_autopilot: false,
             event: EventBody::UserMessage(UserMessage {
                 id: delivery_id,
                 author: None,
@@ -1605,6 +1606,9 @@ pub struct CrewRow {
     pub said: Option<String>,
     #[serde(default, deserialize_with = "heard_json")]
     pub heard: Vec<ap::Heard>,
+    /// Why its last turn ended without a word, where fctl knows.
+    #[serde(default, deserialize_with = "silence_json")]
+    pub silence: Option<ap::Silence>,
 }
 
 /// People's messages a session's row keeps ([`ap::heard`]), newest first.
@@ -1613,8 +1617,15 @@ fn heard_json<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ap::Heard>, 
     Ok(ap::heard(stored.as_deref()))
 }
 
+/// Why a session's last turn ended without a word, as its row keeps it
+/// ([`ap::silence`]).
+fn silence_json<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<ap::Silence>, D::Error> {
+    let stored = Option::<String>::deserialize(d)?;
+    Ok(ap::silence(stored.as_deref()))
+}
+
 pub const CREW_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_slug, s.number, s.title, s.status, \
-    s.status_reason, s.question, s.pull_requests, s.created_at, s.last_activity_at, s.said, s.heard \
+    s.status_reason, s.question, s.pull_requests, s.created_at, s.last_activity_at, s.said, s.heard, s.silence \
     FROM sessions s JOIN projects p ON p.id = s.project_id";
 
 /// The sessions people started in an autopilot's places, rather than the
@@ -1988,6 +1999,7 @@ pub fn crew_view(c: &CrewRow) -> ap::CrewView<'_> {
         question: None,
         pull_requests: c.pr_lines(),
         said: c.said.as_deref(),
+        silence: c.silence.as_ref(),
         heard: &c.heard,
     }
 }
