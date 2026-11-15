@@ -2137,7 +2137,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    (`fctl_domain::autopilot::briefing`): who it is and for whom, the
    direction, and how it works, then why it takes over from the last one
    and from what (`takes_over_from`: its plan, its log, `fctl autopilot
-   brief`), then the wake's news. Where it hands off is its
+   brief`, and to check what the last one promised people against what is
+   live, telling them of what shipped), then the wake's news. Where it hands off is its
    **handoff** (`autopilots.handoff_at`, *A fresh session takes over* in
    its settings, `fctl autopilot set --handoff-at 250k`): a context size,
    100K to 1M tokens, that D1 reads from the session's stats
@@ -2162,18 +2163,23 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the cause of a mistake sessions repeat, and having a session tidy the
    memory once it grows long; reading a session's last turn (`fctl logs
    --last-turn`) before taking its word that it's done, as sessions stop
-   short; one round of changes; reviewing screenshots with a subagent,
+   short; pushing back with one concrete thing on a pass that finds
+   nothing to fix; one round of changes; reviewing screenshots with a subagent,
    asking for shots of the case that matters rather than the default, and
    asking people to check right after a ship what no sandbox can; a person
    watching the first run of work that drives hardware; licenses that
    bind the project; people's own messages to its sessions; background
-   scripts that wait on what doesn't wake it, on plain HTTP APIs, and
-   follow the base branch's newest run when a newer merge cancels one;
+   scripts that wait on what doesn't wake it, one for each thing that
+   exits once it happened, within Bash's background time limit, on plain
+   HTTP APIs, and follow the base branch's newest run when a newer merge
+   cancels one;
    looking at what people send before publishing it or passing it on, as
-   it may show more of them than they meant to share; and holding ships
-   while people are away. Its first lines say which of its sessions count
-   toward how many work at once, and to name sessions as fctl does, never
-   with a placeholder. Its plan reads as if a stranger
+   it may show more of them than they meant to share; and holding ships,
+   and what it tells people, while they are away, for one summary as they
+   come back. Its first lines say which of its sessions count toward how
+   many work at once (not one that ended its turn to wait for its
+   background work), and to name sessions as fctl does, never with a
+   placeholder. Its plan reads as if a stranger
    took over at the next wake, holds the scripts the work relies on whole,
    and it changes the plan as fctl has it
    (`fctl autopilot plan` prints it), whole or a section at a time
@@ -2195,7 +2201,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and
    the project's memory. `fctl autopilot brief` gives it where things
    stand: the direction, people's notes (the new ones marked), its asks
-   and their answers, its sessions, people's sessions in its places that
+   and their answers (those it heard since its own session started only
+   counted, as they are in its conversation already), its sessions, people's sessions in its places that
    work or have a pull request open (point 8), its plan and log
    (`fctl_domain::autopilot::brief`), or only the parts it names
    (`--only sessions,people,asks`, `?only=`; `brief_parts`), as the whole
@@ -2270,8 +2277,10 @@ sessions to do it, and sets up what the work needs, as far as they let it
    that takes [confirming it's you](#confirming-its-you).
    At most as many of its sessions work at once as people allow (those
    queued, starting, working, paused on a usage limit or stopping, and
-   one resting that it just messaged: `autopilots::CREW_WORKING`; a
-   message or resume to one resting needs room too), and it
+   one resting that it just messaged, but not one that ended its turn to
+   wait for its background work until its own turn starts:
+   `autopilots::CREW_WORKING`; a message or resume to one resting needs
+   room too), and it
    starts at most 20 an hour. What it did goes in its log, in its own
    transcript (an `autopilot_action` notice, with the session it started or
    steered) and in the workspace's audit log, as its owner, with the
