@@ -172,26 +172,6 @@ const autopilotCard = async (page) => {
   return [Math.round(r.x - 16), Math.max(0, Math.round(r.y - 16)), 760, 420];
 };
 
-/** Puts a project on autopilot as far as the form that says how, filled in for the shot. */
-async function engage(page) {
-  await page.getByRole("button", { name: "Write your own" }).click();
-  const direction = page.getByLabel(/Where it should take/);
-  await direction.fill(
-    "Get the driver app ready for Copenhagen's first deliveries on 1 December.\n\n" +
-      "- Danish for drivers who choose it, with Copenhagen's addresses and door codes as they're written there.\n" +
-      "- The Copenhagen depot's routes, from Platform's route plans: no new endpoints without Asha.\n" +
-      "- A photo at the door works offline and uploads once the van has signal.\n\n" +
-      "Leave the shop alone, and ship nothing to the app stores: Aiko does that.",
-  );
-  await direction.blur();
-  // The form from its header down: the direction, then what it may do.
-  await page.getByRole("heading", { name: "Put Driver app on autopilot" }).evaluate((e) => {
-    const form = e.closest("form") ?? e;
-    window.scrollTo({ top: form.getBoundingClientRect().top + window.scrollY - 20, behavior: "instant" });
-  });
-  await page.waitForTimeout(400);
-}
-
 // The shots of fctl.sh's feature pages (`--features`), by page: what to
 // show and how to get there. `act` runs once the page has settled, and
 // `size` gives a shot a window of its own size. `card` is the part of a
@@ -378,20 +358,6 @@ const pages = {
       settle: 2500,
       act: (page) => scrollTo(page, "What it did, and what happened to it", 24),
     },
-    // What it asks: the two reminders to choose from, and the secret it needs.
-    // In a bigger window, of the same shape, that holds both whole.
-    {
-      name: "asks",
-      path: "/p/farm-portal?tab=autopilot",
-      size: "1760x1100",
-      settle: 2500,
-      act: async (page) => {
-        await page.getByRole("heading", { name: /It asks you/ }).evaluate((e) => {
-          window.scrollTo({ top: e.getBoundingClientRect().top + window.scrollY - 28, behavior: "instant" });
-        });
-        await page.waitForTimeout(400);
-      },
-    },
     // Its own session this morning: a fresh one takes over, and starts #13, live.
     { name: "pilot", path: session("farm-portal#12"), settle: 3000 },
     // #8, sent back for screenshots of a week filled in, and its answer.
@@ -411,15 +377,6 @@ const pages = {
         await page.waitForTimeout(500);
       },
     },
-    // The secret it needs, typed in where it asks, and the notes people steer it with.
-    {
-      name: "secret",
-      path: "/p/farm-portal?tab=autopilot",
-      settle: 2500,
-      act: (page) => scrollTo(page, "It needs a secret", 40),
-    },
-    { name: "phone-needs", path: "/", phone: true, settle: 3000, act: openMenu },
-    { name: "engage", path: "/p/driver-app?tab=autopilot", settle: 2000, act: engage },
     { name: "sessions", path: "/p/farm-portal", settle: 2500 },
   ],
   "access-tokens": [
