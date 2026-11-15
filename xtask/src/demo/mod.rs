@@ -221,8 +221,10 @@ fn check_transcripts(cast: &Cast, transcripts: &world::Transcripts) -> Result<()
 fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
     let mut wrong = Vec::new();
     let mut left: BTreeMap<&str, Files> = BTreeMap::new();
-    // What each session of such a project changed, by when it merged.
-    let mut merged: BTreeMap<&str, Vec<(i64, BTreeMap<String, String>)>> = BTreeMap::new();
+    // What each session of such a project changed, by when it merged, and
+    // the files it changed in ways the check can't follow.
+    type Merged = (i64, BTreeMap<String, String>, BTreeSet<String>);
+    let mut merged: BTreeMap<&str, Vec<Merged>> = BTreeMap::new();
     // The sessions that open pull requests before the reviews of them.
     let (reviews, others): (Vec<_>, Vec<_>) =
         cast.sessions.iter().partition(|s| s.review.is_some());
@@ -246,22 +248,24 @@ fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
             .and_then(|o| left.get(o.id.as_str()));
         // Main as it started from: what merged before, in the order it did.
         let mut main = BTreeMap::new();
+        let mut unknown = BTreeSet::new();
         if p.merges {
-            let mut before: Vec<&(i64, BTreeMap<String, String>)> = merged
+            let mut before: Vec<&Merged> = merged
                 .get(project)
                 .into_iter()
                 .flatten()
-                .filter(|(at, _)| *at <= s.start.offset())
+                .filter(|(at, _, _)| *at <= s.start.offset())
                 .collect();
-            before.sort_by_key(|(at, _)| *at);
-            for (_, files) in before {
+            before.sort_by_key(|(at, _, _)| *at);
+            for (_, files, lost) in before {
                 main.extend(files.clone());
+                unknown.extend(lost.iter().cloned());
             }
         }
         let mut files = Files {
             base: data.join("repos").join(repo),
             changed: opened.map_or(main, |o| o.changed.clone()),
-            unknown: opened.map(|o| o.unknown.clone()).unwrap_or_default(),
+            unknown: opened.map_or(unknown, |o| o.unknown.clone()),
             touched: BTreeSet::new(),
         };
         let turns = v.get("turn").and_then(toml::Value::as_array);
@@ -281,7 +285,10 @@ fn check_changes(cast: &Cast, data: &Path) -> Result<()> {
                 .iter()
                 .filter_map(|f| Some((f.clone(), files.changed.get(f)?.clone())))
                 .collect();
-            merged.entry(project).or_default().push((at.offset(), own));
+            merged
+                .entry(project)
+                .or_default()
+                .push((at.offset(), own, files.unknown.clone()));
         }
         left.insert(s.id.as_str(), files);
     }

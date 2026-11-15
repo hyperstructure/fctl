@@ -1,0 +1,399 @@
+# farm-portal#4 · Noor's autopilot, last Friday 17:44 · Two designs for the harvest list; Saturday, the list per crop
+# that Noor chose (merged)
+match = "Draw two designs for the farm portal's harvest list"
+
+[[turn]]
+duration = "4h15m"
+result = "Both designs are pages of the app, in Swedish at 390 px, and their screenshot is published side by side. romanescohq/farm-portal#4 is a draft with both; I build the one Noor chooses."
+
+[[turn.step]]
+silently = '''f="$DEMO_SIGNALS/farm-portal-4-1"; t=0; until [ -e "$f" ] || [ $t -ge 9000 ]; do sleep 0.1; t=$((t+1)); done'''
+
+[[turn.step]]
+run = "fctl edit --description 'Two designs of the harvest list, where a farm says what it can deliver next week: a list per crop, and a grid of the week, for Noor to choose from.'"
+description = "Say what the session does"
+
+[[turn.step]]
+todo = [["A week of crops to show", "in_progress"], ["A: a list per crop", "pending"], ["B: a grid of the week", "pending"], ["Screenshot both at 390 px", "pending"], ["Publish them side by side", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "app/layout.tsx" },
+  { read = "app/globals.css" },
+]
+
+[[turn.step]]
+write = "app/harvest/crops.ts"
+content = """/** A week of Ängsbacka gård's crops, to draw the designs with until the list is saved. */
+export const WEEK = "Vecka 47 · 17–21 november";
+
+export const CROPS = [
+  { name: "Morötter", kg: 120, last: 110, days: [40, 0, 40, 0, 40] },
+  { name: "Rödbetor", kg: 80, last: 80, days: [30, 0, 30, 0, 20] },
+  { name: "Grönkål", kg: 15, last: 14, days: [5, 0, 5, 0, 5] },
+  { name: "Potatis", kg: 150, last: 150, days: [50, 25, 25, 25, 25] },
+  { name: "Purjolök", kg: 25, last: 22, days: [0, 10, 0, 15, 0] },
+];
+
+export const DAYS = ["Mån", "Tis", "Ons", "Tor", "Fre"];
+"""
+
+[[turn.step]]
+write = "app/harvest/list/page.tsx"
+content = """import { CROPS, WEEK } from "../crops";
+
+/** Design A: a row per crop, the amount beside it and last week's under it. */
+export default function HarvestList() {
+  return (
+    <main className="mx-auto max-w-md pb-24">
+      <header className="border-b border-stone-200 px-5 pt-4 pb-3">
+        <h1 className="text-2xl font-bold">Nästa veckas skörd</h1>
+        <p className="text-sm text-stone-500">{WEEK}</p>
+        <p className="mt-2 inline-block rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-800">Senast torsdag kl. 12</p>
+      </header>
+      <ul>
+        {CROPS.map((c) => (
+          <li key={c.name} className="flex items-center gap-3 border-b border-stone-100 px-5 py-3">
+            <span className="flex-1 font-semibold">
+              {c.name}
+              <small className="block font-normal text-stone-500">Förra veckan {c.last} kg</small>
+            </span>
+            <input inputMode="numeric" defaultValue={c.kg} aria-label={`${c.name}, kilo`} className="h-10 w-20 rounded-lg border border-stone-300 text-right text-lg font-semibold" />
+            <span className="w-6 text-sm text-stone-500">kg</span>
+          </li>
+        ))}
+      </ul>
+      <button className="fixed inset-x-4 bottom-4 h-12 rounded-xl bg-[var(--green)] font-semibold text-white">Skicka skörden</button>
+    </main>
+  );
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/grid/page.tsx"
+content = """import { CROPS, DAYS } from "../crops";
+
+/** Design B: crops down, delivery days across, kilos in each cell. */
+export default function HarvestGrid() {
+  return (
+    <main className="mx-auto max-w-md pb-24">
+      <header className="border-b border-stone-200 px-5 pt-4 pb-3">
+        <h1 className="text-2xl font-bold">Nästa veckas skörd</h1>
+        <p className="text-sm text-stone-500">Vecka 47 · kilo per leveransdag</p>
+      </header>
+      <table className="m-3 w-[calc(100%-1.5rem)] border-collapse text-center text-sm">
+        <thead>
+          <tr>
+            <th className="text-left">Gröda</th>
+            {DAYS.map((d) => (
+              <th key={d}>{d}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {CROPS.map((c) => (
+            <tr key={c.name}>
+              <td className="text-left font-semibold">{c.name}</td>
+              {c.days.map((kg, i) => (
+                <td key={DAYS[i]}>{kg || "–"}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <button className="fixed inset-x-4 bottom-4 h-12 rounded-xl bg-[var(--green)] font-semibold text-white">Skicka skörden</button>
+    </main>
+  );
+}
+"""
+
+[[turn.step]]
+write = "scripts/screenshots.mjs"
+content = """// node scripts/screenshots.mjs URL… : each page at a phone's width, in shots/, against `npm run dev`.
+import { chromium } from "@playwright/test";
+
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 390, height: 760 }, deviceScaleFactor: 2, locale: "sv-SE" });
+for (const path of process.argv.slice(2)) {
+  await page.goto(`http://localhost:3000${path}`);
+  await page.screenshot({ path: `shots/${path.replaceAll("/", "-").slice(1)}.png` });
+}
+await browser.close();
+"""
+
+[[turn.step]]
+todo = [["A week of crops to show", "completed"], ["A: a list per crop", "completed"], ["B: a grid of the week", "completed"], ["Screenshot both at 390 px", "in_progress"], ["Publish them side by side", "pending"]]
+
+[[turn.step]]
+bash = "mkdir -p shots && node scripts/screenshots.mjs /harvest/list /harvest/grid && magick shots/harvest-list.png shots/harvest-grid.png +append shots/harvest-lists.webp"
+description = "Screenshot both designs, side by side"
+seconds = 11
+output = ""
+
+[[turn.step]]
+silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/harvest-lists.webp" shots/ && fctl publish shots/harvest-lists.webp'''
+
+[[turn.step]]
+bash = "fctl publish shots/harvest-lists.webp"
+description = "Publish the screenshot"
+output = """✓ Published harvest-lists.webp (1464×1404, 76 KB) for 60 days
+  ![harvest-lists.webp](https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp)"""
+
+[[turn.step]]
+commit = "Draw two designs of the harvest list: a list per crop, and a grid of the week"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Two designs for the harvest list"
+number = 4
+body = """Two designs of the page where a farm says what it can deliver next week, in Swedish at a phone's width, for Noor to choose from: `/harvest/list`, a row per crop with last week's amount under it, and `/harvest/grid`, crops down and delivery days across.
+
+![The two designs side by side](https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp)
+
+A draft until she has chosen: the one she picks stays, and saving comes with it."""
+
+[[turn.step]]
+say = """Both designs are pages of the app, in Swedish at 390 px, with a week of Ängsbacka gård's crops: `app/harvest/list` (A, a row per crop) and `app/harvest/grid` (B, crops down and days across). Side by side:
+
+![harvest-lists.webp](https://app.fctl.sh/api/v1/published/tgfc3eT0weJ7eAJ6LuVOoo6z0Qgj7jhPDu2Ofv124wu/harvest-lists.webp)
+
+romanescohq/farm-portal#4 is a draft with both. I'll build the one Noor chooses and drop the other."""
+
+[[turn]]
+match = "Noor chose a list per crop"
+duration = "58m"
+result = "Merged romanescohq/farm-portal#4: the harvest list per crop, at /harvest, saved as the farm types and sent before Thursday noon. The grid is gone."
+
+[[turn.step]]
+todo = [["Move the list to /harvest, drop the grid", "in_progress"], ["Save as the farm types, send before Thursday noon", "pending"], ["Strings into the message files", "pending"], ["Playwright: a week filled in and sent; a farm sees only its own", "pending"], ["Merge once checks pass", "pending"]]
+
+[[turn.step]]
+run = "git fetch -q origin && git merge -q --no-edit origin/main && git diff --stat ORIG_HEAD -- lib/session.ts lib/i18n.ts messages/sv.json messages/en.json"
+show = "git merge origin/main && git diff --stat ORIG_HEAD -- lib/session.ts lib/i18n.ts messages/"
+description = "Bring in main: sign-in and the message files"
+
+[[turn.step]]
+write = "app/harvest/page.tsx"
+content = """import { t } from "@/lib/i18n";
+import { HarvestForm } from "./form";
+import { lastWeek } from "./crops";
+
+/** Next week's harvest: a row per crop, the amount beside it and last week's under it. */
+export default async function Harvest() {
+  const crops = await lastWeek();
+  return (
+    <main className="mx-auto max-w-md pb-24">
+      <header className="border-b border-stone-200 px-5 pt-4 pb-3">
+        <h1 className="text-2xl font-bold">{await t("harvest.title")}</h1>
+        <p className="mt-2 inline-block rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
+          {await t("harvest.due")}
+        </p>
+      </header>
+      <HarvestForm crops={crops} send={await t("harvest.send")} sent={await t("harvest.sent")} />
+    </main>
+  );
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/crops.ts"
+content = """import { farmEmail } from "@/lib/session";
+
+export type Crop = { crop: string; kg: number; last: number };
+
+/** A week to start from until a farm has sent one. */
+const SAMPLE: Crop[] = [
+  { crop: "Morötter", kg: 120, last: 110 },
+  { crop: "Rödbetor", kg: 80, last: 80 },
+  { crop: "Grönkål", kg: 15, last: 14 },
+  { crop: "Potatis", kg: 150, last: 150 },
+  { crop: "Purjolök", kg: 25, last: 22 },
+];
+
+/** Next week's list as a farm starts it: what it sent last week, from Platform. */
+export async function lastWeek(): Promise<Crop[]> {
+  const email = await farmEmail();
+  if (!email || !process.env.PLATFORM_API_TOKEN) return SAMPLE;
+  const res = await fetch(`${process.env.PLATFORM_URL}/v1/farms/by-email/${encodeURIComponent(email)}/harvest?week=last`, {
+    headers: { Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}` },
+  });
+  return res.ok ? ((await res.json()).lines as Crop[]) : SAMPLE;
+}
+"""
+
+[[turn.step]]
+run = "git rm -rq app/harvest/list app/harvest/grid"
+show = "git rm -r app/harvest/list app/harvest/grid"
+description = "Drop the two designs' pages"
+
+[[turn.step]]
+edit = "messages/sv.json"
+old = """  "meta.description": "Där Romanescos gårdar skickar nästa veckas skörd"
+}"""
+new = """  "meta.description": "Där Romanescos gårdar skickar nästa veckas skörd",
+  "harvest.title": "Nästa veckas skörd",
+  "harvest.due": "Senast torsdag kl. 12",
+  "harvest.send": "Skicka skörden",
+  "harvest.sent": "Skickat"
+}"""
+
+[[turn.step]]
+edit = "messages/en.json"
+old = """  "meta.description": "Where Romanesco's farms post next week's harvest"
+}"""
+new = """  "meta.description": "Where Romanesco's farms post next week's harvest",
+  "harvest.title": "Next week's harvest",
+  "harvest.due": "By Thursday noon",
+  "harvest.send": "Send the harvest",
+  "harvest.sent": "Sent"
+}"""
+
+[[turn.step]]
+write = "app/harvest/form.tsx"
+content = """"use client";
+
+import { useState, useTransition } from "react";
+import { saveHarvest, type Line } from "./actions";
+
+export function HarvestForm({ crops, send, sent }: { crops: (Line & { last: number })[]; send: string; sent: string }) {
+  const [lines, setLines] = useState(crops);
+  const [done, setDone] = useState(false);
+  const [, start] = useTransition();
+  const set = (crop: string, kg: number) => {
+    const next = lines.map((l) => (l.crop === crop ? { ...l, kg } : l));
+    setLines(next);
+    start(() => saveHarvest(next, false));
+  };
+  return (
+    <>
+      <ul>
+        {lines.map((l) => (
+          <li key={l.crop} className="flex items-center gap-3 border-b border-stone-100 px-5 py-3">
+            <span className="flex-1 font-semibold">
+              {l.crop}
+              <small className="block font-normal text-stone-500">{l.last} kg</small>
+            </span>
+            <input inputMode="numeric" value={l.kg} onChange={(e) => set(l.crop, Number(e.target.value) || 0)} aria-label={`${l.crop}, kilo`} className="h-10 w-20 rounded-lg border border-stone-300 text-right text-lg font-semibold" />
+            <span className="w-6 text-sm text-stone-500">kg</span>
+          </li>
+        ))}
+      </ul>
+      <button onClick={() => start(async () => (await saveHarvest(lines, true), setDone(true)))} className="fixed inset-x-4 bottom-4 h-12 rounded-xl bg-[var(--green)] font-semibold text-white">
+        {done ? sent : send}
+      </button>
+    </>
+  );
+}
+"""
+
+[[turn.step]]
+write = "app/harvest/actions.ts"
+content = """"use server";
+
+import { farmEmail } from "@/lib/session";
+
+export type Line = { crop: string; kg: number };
+
+/** Saves a farm's list for next week as it types; `sent` once it presses the button. */
+export async function saveHarvest(lines: Line[], sent: boolean) {
+  const email = await farmEmail();
+  if (!email) throw new Error("Not signed in");
+  const res = await fetch(`${process.env.PLATFORM_URL}/v1/farms/by-email/${encodeURIComponent(email)}/harvest`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${process.env.PLATFORM_API_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ week: "next", lines, sent }),
+  });
+  if (!res.ok) throw new Error(`Platform answered ${res.status}`);
+}
+"""
+
+[[turn.step]]
+write = "e2e/helpers.ts"
+content = """import type { Page } from "@playwright/test";
+
+/** Signs `page` in as the farm at `email`, through the link sign-in logs in development. */
+export async function signInAs(page: Page, email: string) {
+  const logged = new Promise<string>((resolve) =>
+    page.on("console", (m) => m.text().includes("Inloggningslänk") && resolve(m.text().split(": ").pop() ?? "")),
+  );
+  await page.goto("/sign-in");
+  await page.getByLabel("Gårdens e-postadress").fill(email);
+  await page.getByRole("button", { name: "Skicka en länk" }).click();
+  await page.goto(await logged);
+}
+"""
+
+[[turn.step]]
+write = "e2e/harvest.spec.ts"
+content = """import { expect, test } from "@playwright/test";
+import { signInAs } from "./helpers";
+
+test.use({ viewport: { width: 390, height: 844 } });
+
+test("a farm fills in next week and sends it", async ({ page }) => {
+  await signInAs(page, "angsbacka@example.se");
+  await page.goto("/harvest");
+  await page.getByLabel("Morötter, kilo").fill("120");
+  await page.getByRole("button", { name: "Skicka skörden" }).click();
+  await expect(page.getByText("Skickat")).toBeVisible();
+});
+
+test("a farm only ever loads its own list", async ({ page, request }) => {
+  await signInAs(page, "angsbacka@example.se");
+  const other = await request.get("/api/harvest?farm=solgarden@example.se");
+  expect(other.status()).toBe(404);
+});
+"""
+
+[[turn.step]]
+bash = "npm run lint && npx tsc --noEmit && FARMS=angsbacka@example.se,solgarden@example.se npm run test:e2e"
+description = "Lint, type-check and run the tests"
+seconds = 44
+output = """> farm-portal@0.1.0 lint
+> eslint
+
+Running 7 tests using 4 workers
+
+  ✓  1 e2e/home.spec.ts:5:5 › the home page in Swedish (1.2s)
+  ✓  2 e2e/home.spec.ts:11:5 › the home page in English (1.1s)
+  ✓  3 e2e/sign-in.spec.ts:16:5 › a farm signs in with the link it gets (2.3s)
+  ✓  4 e2e/sign-in.spec.ts:22:5 › a link works once (2.8s)
+  ✓  5 e2e/sign-in.spec.ts:30:5 › an address that isn't a farm's gets the same answer, and no link (1.0s)
+  ✓  6 e2e/harvest.spec.ts:6:5 › a farm fills in next week and sends it (2.6s)
+  ✓  7 e2e/harvest.spec.ts:14:5 › a farm only ever loads its own list (1.9s)
+
+  7 passed (9.4s)"""
+
+[[turn.step]]
+commit = "Keep the harvest list per crop, as Noor chose, and drop the grid"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+bash = "gh pr ready 4 && gh pr edit 4 --title 'Add the harvest list, a row per crop' && gh pr checks 4 --watch"
+description = "Mark it ready and wait for the checks"
+seconds = 120
+output = """✓ Pull request romanescohq/farm-portal#4 is marked as "ready for review"
+https://github.com/romanescohq/farm-portal/pull/4
+All checks were successful
+0 cancelled, 0 failing, 3 successful, 0 skipped, and 0 pending checks
+
+   NAME                 DESCRIPTION  ELAPSED  URL
+✓  CI/check (pull_request)            2m21s    https://github.com/romanescohq/farm-portal/actions/runs/19372230817/job/55411093410
+✓  Preview/preview (pull_request)     1m19s    https://github.com/romanescohq/farm-portal/actions/runs/19372230826/job/55411093422
+✓  Cloudflare Workers                  30s      https://dash.cloudflare.com/"""
+
+[[turn.step]]
+bash = "gh pr merge 4 --squash --delete-branch"
+description = "Merge the pull request"
+output = "✓ Squashed and merged pull request romanescohq/farm-portal#4 (Add the harvest list, a row per crop)"
+
+[[turn.step]]
+run = "fctl retro --outcome completed --worked-on 'The farm portal’s harvest list: two designs for Noor to choose from, then the list per crop she chose, saved as the farm types (farm-portal#4).' --approach 'Both designs as real pages rather than pictures, so the chosen one was half built; screenshots at 390 px published side by side for the ask.' --insights 'scripts/screenshots.mjs takes any page at a phone’s width against npm run dev.'"
+description = "Record a retrospective"
+
+[[turn.step]]
+say = "Merged romanescohq/farm-portal#4. The harvest list is at `/harvest`: a row per crop with last week's amount under it, saved as the farm types and sent with one button before Thursday noon. The grid is gone. Its strings are in the message files, a Playwright test fills in and sends a week, and another checks that a farm only ever loads its own list."

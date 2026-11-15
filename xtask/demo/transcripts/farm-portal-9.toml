@@ -1,0 +1,295 @@
+# farm-portal#9 · Noor's autopilot, Monday 08:53 · Farm portal autopilot: a fresh session at Monday's check-in starts the
+# orders page and two designs of the Wednesday reminder, takes Asha's note on payouts, and asks Noor which reminder
+match = "You take over from your last session, farm-portal#7,"
+
+[[turn]]
+duration = "6m"
+result = "Started #10 on this week's orders, from Platform's API, and #11 on two designs of the Wednesday reminder. Asked for PLATFORM_API_TOKEN, a read-only token for Platform's API: until it's set, previews show recorded orders."
+
+[[turn.step]]
+bash = "fctl autopilot brief --only notes,asks,sessions,plan"
+description = "Read where things stand"
+output = """# Autopilot of Farm portal
+
+It's {{clock}}. You run the project Farm portal (farm-portal) for Noor Haddad. At most 3 of your sessions work at once; fctl wakes you at least every 2 hours, next in 2 hours.
+
+## Notes
+
+- Jonas Weber, yesterday 19:02: Farms count in crates, bunches and kilos, and it differs by crop: a crate of carrots is about 10 kg. Let each farm choose the unit for each crop.
+
+## What you asked
+
+Nothing open.
+
+## Your sessions
+
+The latest first, with what people wrote to each and the start of what each said as its turn ended (`fctl logs <ref> --last-turn` prints a session's last turn whole):
+
+- farm-portal#8 Let farms choose the unit for each crop · stopped · PR 5 merged
+- farm-portal#5 Swedish and English on every page · stopped · PR 3 merged
+- farm-portal#4 Two designs for the harvest list · stopped · PR 4 merged
+- farm-portal#3 Sign farms in with a link by email · stopped · PR 2 merged
+- farm-portal#2 Set up deploys to Cloudflare, with CI and previews · stopped · PR 1 merged
+
+## Your plan
+
+## Next
+
+- [ ] This week's orders, from Platform's API (read-only): Monday
+- [ ] Payouts, from Platform's API: ask Asha what's there
+- [ ] A Wednesday reminder for farms that haven't sent next week's list
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+- [x] A unit for each crop: crates, bunches or kilos (#8, PR 5)
+
+(Written 12 hours ago)"""
+
+[[turn.step]]
+tools = [
+  { bash = "gh api repos/romanescohq/platform/contents/docs/api.md --jq .content | base64 -d | grep -n 'farms/{id}'", description = "Find the farms' endpoints in Platform's API", output = """41:GET /v1/farms/{id}/orders?week=2026-W47
+52:GET /v1/farms/{id}/pickup-windows
+63:GET /v1/farms/{id}/harvest  (read and write, by the farm portal's token)""" },
+]
+
+[[turn.step]]
+think = "Platform has a farm's orders and its pickup windows, read-only, behind a bearer token, and no payouts yet. The orders page can start now against recorded orders and switch to the real API once someone gives a token: that's a secret to ask for, not something to wait on. The Wednesday reminder needs a choice from Noor between two designs, so it starts as designs. Payouts I'll ask Asha about once I know what the orders page needs: the direction says Platform is hers."
+
+[[turn.step]]
+run = "fctl autopilot ask --secret PLATFORM_API_TOKEN 'A read-only token for Platform’s API, for the orders page and its previews: until it’s set, they show recorded orders and say so.'"
+description = "Ask for a Platform token"
+
+[[turn.step]]
+write = "tasks/orders.md"
+content = """Show each farm this week's orders on the farm portal: what we ordered from it for each delivery day, and what it comes to.
+
+- From Platform's API, read-only: GET /v1/farms/{id}/orders?week=2026-W47, with the bearer token in PLATFORM_API_TOKEN. I've asked for it: until your session has it, show recorded orders from a fixture, and say so on the page.
+- No farm sees another farm's orders: a test that tries.
+- At 390 px, in Swedish, each crop in the farm's own unit.
+
+Merge it yourself once checks pass.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Show each farm this week’s orders' -f tasks/orders.md"
+description = "Start the orders session"
+
+[[turn.step]]
+write = "tasks/reminder.md"
+content = """Draw two designs for the email that reminds farms, on Wednesday mornings, to send next week's harvest list: for Noor to choose from.
+
+- A: short, a sentence and a button that signs the farm in to its list.
+- B: with last week's list, and a button that sends the same again.
+- In Swedish, from Romanesco <gardar@romanesco.farm>, as React Email templates in emails/.
+- Publish the two side by side (`fctl publish`) and end your turn with the link: I'll ask Noor. Don't merge yet.
+"""
+
+[[turn.step]]
+run = "fctl run -p farm-portal --title 'Two designs for the Wednesday reminder' -f tasks/reminder.md"
+description = "Start the reminder session"
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #10 This week's orders, from Platform's API: recorded orders until PLATFORM_API_TOKEN is set (asked)
+- #11 Two designs of the Wednesday reminder, for Noor to choose from
+
+## Next
+
+- [ ] The Wednesday reminder, as Noor chooses it, and its schedule
+- [ ] Payouts, from Platform's API: ask Asha what's there
+- [ ] Each farm's pickup windows, from Platform's API
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+- [x] A unit for each crop: crates, bunches or kilos (#8, PR 5)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish, filled in as a farm would.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log 'Started #10 on this week’s orders, from Platform’s API, and #11 on two designs of the Wednesday reminder. Asked for PLATFORM_API_TOKEN: until it’s set, #10 builds against recorded orders.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Started #10 on this week's orders, from Platform's API, and #11 on two designs of the Wednesday reminder email. I asked for `PLATFORM_API_TOKEN`, a read-only token for Platform's API; until someone sets it, #10 builds against recorded orders and its previews say so."
+
+[[turn]]
+duration = "1m"
+result = "Asha says payouts land in Platform this week, as GET /v1/farms/{id}/payouts. Payouts wait for that endpoint rather than the CSV."
+
+[[turn.step]]
+think = "Asha answered the question I was about to ask: payouts come from Platform's own endpoint this week, not from the monthly CSV. So nothing for payouts starts now; the plan says what it waits for."
+
+[[turn.step]]
+write = "plan.md"
+content = """## In flight
+
+- #10 This week's orders, from Platform's API: recorded orders until PLATFORM_API_TOKEN is set (asked)
+- #11 Two designs of the Wednesday reminder, for Noor to choose from
+
+## Waiting
+
+- Payouts: Platform's GET /v1/farms/{id}/payouts lands this week (Asha). Not the CSV.
+
+## Next
+
+- [ ] The Wednesday reminder, as Noor chooses it, and its schedule
+- [ ] Payouts, once Platform has them
+- [ ] Each farm's pickup windows, from Platform's API
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+- [x] A unit for each crop: crates, bunches or kilos (#8, PR 5)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish, filled in as a farm would.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log 'Asha’s note: payouts land in Platform this week, as GET /v1/farms/{id}/payouts. Payouts wait for it rather than build on the monthly CSV.'"
+description = "Write down the note"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "Asha says payouts land in Platform this week, as their own endpoint: payouts wait for that rather than build on the monthly CSV."
+
+[[turn]]
+duration = "4m"
+result = "Asked Noor which Wednesday reminder farms should get, with #11's two designs side by side. #10 is still building the orders page."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#11 --last-turn"
+description = "Read how #11 ended"
+output = """farm-portal#11 · Two designs for the Wednesday reminder · idle
+
+⏺ Two React Email templates in emails/, in Swedish: reminder-short.tsx (A) and reminder-last-week.tsx (B), each with a link that signs the farm in. Side by side:
+
+![reminders.webp](https://app.fctl.sh/api/v1/published/zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl/reminders.webp)
+
+romanescohq/farm-portal#6 is a draft with both. I'll keep the one Noor chooses."""
+
+[[turn.step]]
+write = "ask.md"
+content = """#11 drew both as email templates, in Swedish:
+
+![The two reminders side by side](https://app.fctl.sh/api/v1/published/zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl/reminders.webp)
+
+- **The short one** (left): a sentence, and a button that signs the farm in to next week's list.
+- **The one with last week's list** (right): last week's crops and amounts, and a button that sends the same again, one tap for a farm whose week looks like the last.
+
+Either goes out on Wednesdays at 07:00 to the farms that haven't sent their list yet, from a schedule I set up once you've chosen.
+"""
+
+[[turn.step]]
+run = "fctl autopilot ask 'Which Wednesday reminder should farms get?' -o 'The short one' -o 'The one with last week’s list' --detail-file ask.md --session farm-portal#11"
+description = "Ask Noor which reminder to send"
+
+[[turn.step]]
+run = "fctl autopilot log 'Asked Noor which Wednesday reminder farms should get, with #11’s two designs side by side: the short one, or one with last week’s list and a button that sends the same again.'"
+description = "Write down what I asked"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 2h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#11 drew both reminders, and I asked Noor which one farms should get, with the two side by side. Whichever she picks goes out on Wednesdays at 07:00 from a schedule. #10 is still building the orders page."
+
+[[turn]]
+duration = "2m"
+result = "#10 merged the orders page (PR 7): each farm sees this week's orders by delivery day, in its own units, from recorded orders until PLATFORM_API_TOKEN is set. Tomorrow: pickup windows."
+
+[[turn.step]]
+bash = "fctl logs farm-portal#10 --last-turn"
+description = "Read how #10 ended"
+output = """farm-portal#10 · Show each farm this week's orders · idle
+
+⏺ Merged romanescohq/farm-portal#7. /orders shows a farm what we ordered from it this week, by delivery day, in its own units, with what it comes to. lib/platform.ts reads GET /v1/farms/{id}/orders with PLATFORM_API_TOKEN; without it, the page shows recorded orders and says so. A Playwright test signs in as one farm and asks for another's orders: it gets a 404."""
+
+[[turn.step]]
+write = "plan.md"
+content = """## Waiting for people
+
+- PLATFORM_API_TOKEN (asked): until it's set, the orders page's previews show recorded orders.
+- Which Wednesday reminder (asked Noor, #11's two designs): #11 keeps the one she picks.
+
+## Waiting
+
+- Payouts: Platform's GET /v1/farms/{id}/payouts lands this week (Asha). Not the CSV.
+
+## Next
+
+- [ ] Each farm's pickup windows, from Platform's API: tomorrow
+- [ ] The Wednesday reminder, as Noor chooses it, and its schedule
+- [ ] Payouts, once Platform has them
+- [ ] Move #3's sign-in pages to the message files
+
+## Done
+
+- [x] Deploys to Cloudflare, CI and a preview of every pull request (#2, PR 1)
+- [x] Sign-in with a link by email (#3, PR 2)
+- [x] Swedish and English (#5, PR 3)
+- [x] The harvest list: a list per crop, as Noor chose (#4, PR 4)
+- [x] A unit for each crop: crates, bunches or kilos (#8, PR 5)
+- [x] This week's orders, from Platform's API (#10, PR 7)
+
+## How we work
+
+- Phone first: every pull request shows its pages at 390 px, in Swedish, filled in as a farm would.
+- Platform is Asha's: ask before anything there changes.
+- The project's instructions say this to every session too.
+"""
+
+[[turn.step]]
+run = "fctl autopilot plan --file plan.md"
+description = "Update the plan"
+
+[[turn.step]]
+run = "fctl autopilot log '#10 merged the orders page (PR 7): this week’s orders by delivery day, in each farm’s units, from recorded orders until PLATFORM_API_TOKEN is set. Pickup windows tomorrow morning.'"
+description = "Write down what I did"
+
+[[turn.step]]
+run = "fctl autopilot wake --in 19h"
+description = "Say when to wake"
+
+[[turn.step]]
+say = "#10 merged the orders page: each farm sees this week's orders by delivery day, in its own units. Until `PLATFORM_API_TOKEN` is set, it shows recorded orders and says so. Pickup windows come next, tomorrow morning."

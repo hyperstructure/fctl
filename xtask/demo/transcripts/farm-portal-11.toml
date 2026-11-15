@@ -1,0 +1,142 @@
+# farm-portal#11 · Noor's autopilot, yesterday 08:58 · Two designs for the Wednesday reminder, for Noor to choose from
+# (stopped after being idle: it builds the one she picks once she has)
+match = "Draw two designs for the email that reminds farms, on Wednesday mornings"
+
+[[turn]]
+duration = "2h34m"
+result = "Two designs of the Wednesday reminder are React Email templates in emails/, in Swedish, and their screenshot is published side by side. romanescohq/farm-portal#6 is a draft with both; I keep the one Noor chooses."
+
+[[turn.step]]
+silently = '''f="$DEMO_SIGNALS/farm-portal-11-1"; t=0; until [ -e "$f" ] || [ $t -ge 9000 ]; do sleep 0.1; t=$((t+1)); done'''
+
+[[turn.step]]
+run = "fctl edit --description 'Two designs of the email that reminds farms on Wednesday mornings to send next week’s harvest list, for Noor to choose from.'"
+description = "Say what the session does"
+
+[[turn.step]]
+todo = [["React Email in the project", "in_progress"], ["A: the short one", "pending"], ["B: with last week's list", "pending"], ["Screenshot both", "pending"], ["Publish them side by side", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "lib/email.ts" },
+  { read = "app/harvest/crops.ts" },
+]
+
+[[turn.step]]
+write = "emails/reminder-short.tsx"
+content = """import { Body, Button, Container, Heading, Html, Preview, Text } from "@react-email/components";
+
+/** A: a sentence and a button that signs the farm in to next week's list. */
+export default function ReminderShort({ farm = "Ängsbacka gård", link = "https://farm.romanesco.farm/harvest" }) {
+  return (
+    <Html lang="sv">
+      <Preview>Dags för nästa veckas skörd</Preview>
+      <Body style={{ fontFamily: "Inter, sans-serif", background: "#ffffff" }}>
+        <Container style={{ padding: "24px 26px" }}>
+          <Heading as="h1">Hej {farm}!</Heading>
+          <Text>
+            Skicka in vad ni skördar nästa vecka senast <b>torsdag kl. 12</b>, så hinner vi planera lådorna.
+          </Text>
+          <Button href={link} style={{ background: "#2f6b3a", color: "#ffffff", padding: "11px 18px", borderRadius: 10 }}>
+            Fyll i skörden
+          </Button>
+        </Container>
+      </Body>
+    </Html>
+  );
+}
+"""
+
+[[turn.step]]
+write = "emails/reminder-last-week.tsx"
+content = """import { Body, Button, Container, Heading, Html, Preview, Section, Text } from "@react-email/components";
+
+type Line = { crop: string; amount: number; unit: string };
+
+/** B: last week's list, and a button that sends the same again. */
+export default function ReminderLastWeek({
+  farm = "Ängsbacka gård",
+  lines = [
+    { crop: "Morötter", amount: 12, unit: "lådor" },
+    { crop: "Rödbetor", amount: 8, unit: "lådor" },
+    { crop: "Grönkål", amount: 40, unit: "knippen" },
+    { crop: "Potatis", amount: 150, unit: "kg" },
+  ] as Line[],
+  same = "https://farm.romanesco.farm/harvest/same",
+  change = "https://farm.romanesco.farm/harvest",
+}) {
+  return (
+    <Html lang="sv">
+      <Preview>Samma som förra veckan?</Preview>
+      <Body style={{ fontFamily: "Inter, sans-serif", background: "#ffffff" }}>
+        <Container style={{ padding: "24px 26px" }}>
+          <Heading as="h1">Hej {farm}!</Heading>
+          <Text>Förra veckan skickade ni:</Text>
+          <Section>
+            {lines.map((l) => (
+              <Text key={l.crop} style={{ margin: 0, padding: "7px 0", borderBottom: "1px solid #efece3" }}>
+                {l.crop} <span style={{ float: "right" }}>{l.amount} {l.unit}</span>
+              </Text>
+            ))}
+          </Section>
+          <Button href={same} style={{ background: "#2f6b3a", color: "#ffffff", padding: "11px 18px", borderRadius: 10 }}>
+            Skicka samma
+          </Button>{" "}
+          <Button href={change} style={{ color: "#2f6b3a", border: "1px solid #c9d3c4", padding: "10px 16px", borderRadius: 10 }}>
+            Ändra
+          </Button>
+        </Container>
+      </Body>
+    </Html>
+  );
+}
+"""
+
+[[turn.step]]
+bash = "npm install @react-email/components@^0.5 && npx email export --dir emails --outDir shots/emails"
+description = "Add React Email and render both"
+seconds = 24
+output = """added 37 packages, and audited 721 packages in 9s
+
+found 0 vulnerabilities
+✔ Rendered 2 emails to shots/emails"""
+
+[[turn.step]]
+todo = [["React Email in the project", "completed"], ["A: the short one", "completed"], ["B: with last week's list", "completed"], ["Screenshot both", "in_progress"], ["Publish them side by side", "pending"]]
+
+[[turn.step]]
+bash = "node scripts/screenshots.mjs /emails/reminder-short /emails/reminder-last-week && magick shots/emails-reminder-short.png shots/emails-reminder-last-week.png +append shots/reminders.webp"
+description = "Screenshot both, side by side"
+seconds = 9
+output = ""
+
+[[turn.step]]
+silently = '''mkdir -p shots && cp "$DEMO_PUBLISHED/reminders.webp" shots/ && fctl publish shots/reminders.webp'''
+
+[[turn.step]]
+bash = "fctl publish shots/reminders.webp"
+description = "Publish the screenshot"
+output = """✓ Published reminders.webp (1864×1180, 69 KB) for 60 days
+  ![reminders.webp](https://app.fctl.sh/api/v1/published/zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl/reminders.webp)"""
+
+[[turn.step]]
+commit = "Draw two designs of the Wednesday reminder email"
+
+[[turn.step]]
+push = true
+
+[[turn.step]]
+pr = "Two designs for the Wednesday reminder"
+number = 6
+body = """Two designs of the email that reminds farms on Wednesday mornings to send next week's harvest list, as React Email templates in Swedish, for Noor to choose from: `emails/reminder-short.tsx`, a sentence and a button that signs the farm in, and `emails/reminder-last-week.tsx`, with last week's list and a button that sends the same again.
+
+![The two reminders side by side](https://app.fctl.sh/api/v1/published/zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl/reminders.webp)
+
+A draft until she has chosen: the other goes, and sending comes with the one that stays."""
+
+[[turn.step]]
+say = """Two React Email templates in `emails/`, in Swedish: `reminder-short.tsx` (A) and `reminder-last-week.tsx` (B), each with a link that signs the farm in. Side by side:
+
+![reminders.webp](https://app.fctl.sh/api/v1/published/zVdZpoxgCnli1HgCBSYcTCQ665TGRktKFpbfVktdmKl/reminders.webp)
+
+romanescohq/farm-portal#6 is a draft with both. I'll keep the one Noor chooses."""

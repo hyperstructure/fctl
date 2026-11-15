@@ -1,0 +1,74 @@
+# farm-portal#13 · Noor's autopilot, today 08:24 · Show each farm its pickup windows (at work: its tests run)
+match = "Show each farm its pickup windows on the farm portal"
+
+[[turn]]
+
+[[turn.step]]
+silently = '''f="$DEMO_SIGNALS/farm-portal-13-1"; t=0; until [ -e "$f" ] || [ $t -ge 9000 ]; do sleep 0.1; t=$((t+1)); done'''
+
+[[turn.step]]
+run = "fctl edit --description 'Shows each farm when Romanesco’s vans come for its crates, on the orders page and the home page, from Platform’s API.'"
+description = "Say what the session does"
+
+[[turn.step]]
+todo = [["Pickup windows from Platform", "in_progress"], ["Above each day on the orders page", "pending"], ["The next pickup on the home page", "pending"], ["Say when a window moved", "pending"], ["Playwright, and screenshots at 390 px", "pending"]]
+
+[[turn.step]]
+tools = [
+  { read = "lib/platform.ts" },
+  { read = "app/orders/page.tsx" },
+  { read = "app/page.tsx" },
+  { tool = "WebFetch", input = { url = "https://github.com/romanescohq/platform/blob/main/docs/api.md#farms", prompt = "What does GET /v1/farms/{id}/pickup-windows answer?" }, output = """GET /v1/farms/{id}/pickup-windows?week=YYYY-Www: [{ date, from, to, depot, moved_from? }], times in Europe/Stockholm. moved_from is the window it had last week, when it changed. Same authorization as orders: farms:read.""" },
+]
+
+[[turn.step]]
+think = "The same client, the same token and the same fallback as the orders: a second function in lib/platform.ts and a recorded week of windows beside the recorded orders. A window that moved has moved_from, which the page turns into a line saying from when."
+
+[[turn.step]]
+edit = "lib/platform.ts"
+old = """export type Orders = { week: string; days: OrderDay[]; recorded: boolean };"""
+new = """export type Orders = { week: string; days: OrderDay[]; recorded: boolean };
+export type PickupWindow = { date: string; from: string; to: string; depot: string; moved_from?: { from: string; to: string } };"""
+
+[[turn.step]]
+edit = "lib/platform.ts"
+old = """  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Platform answered ${res.status}`);
+  return { ...(await res.json()), recorded: false };
+}"""
+new = """  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Platform answered ${res.status}`);
+  return { ...(await res.json()), recorded: false };
+}
+
+/** When our vans come for a farm's crates in an ISO week; recorded windows until PLATFORM_API_TOKEN is set. */
+export async function pickupWindows(farm: string, week: string): Promise<PickupWindow[] | null> {
+  const token = process.env.PLATFORM_API_TOKEN;
+  if (!token) return (await import("./platform.windows.json")).default as PickupWindow[];
+  const res = await fetch(`${process.env.PLATFORM_URL}/v1/farms/${encodeURIComponent(farm)}/pickup-windows?week=${week}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    next: { revalidate: 300 },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Platform answered ${res.status}`);
+  return res.json();
+}"""
+
+[[turn.step]]
+write = "lib/platform.windows.json"
+content = """[
+  { "date": "2026-11-17", "from": "06:30", "to": "07:30", "depot": "Årsta" },
+  { "date": "2026-11-19", "from": "07:00", "to": "08:00", "depot": "Årsta", "moved_from": { "from": "06:30", "to": "07:30" } },
+  { "date": "2026-11-21", "from": "06:30", "to": "07:30", "depot": "Årsta" }
+]
+"""
+
+[[turn.step]]
+bash = "npm run test:e2e -- e2e/orders.spec.ts e2e/pickup.spec.ts"
+description = "Run the orders and pickup tests"
+seconds = 40
+hold = true
+output = """Running 4 tests using 2 workers
+
+  ✓  1 e2e/orders.spec.ts:6:5 › a farm sees this week's orders by delivery day (2.5s)
+  ✓  2 e2e/orders.spec.ts:13:5 › a farm can't load another farm's orders (1.8s)"""

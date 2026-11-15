@@ -44,6 +44,8 @@ impl World<'_> {
         let pid = self.projects[&p.slug].clone();
         let wid = self.workspaces[&p.workspace].clone();
         std::fs::create_dir_all(self.state.join(SIGNALS))?;
+        // Putting a project on autopilot is a sensitive action.
+        self.confirm(&a.by)?;
         // Its workspace's admins let its projects have autopilots.
         self.api(
             &a.by,
@@ -62,8 +64,6 @@ impl World<'_> {
             "model": a.model.as_deref().unwrap_or("default"),
             "effort": a.effort.as_deref().unwrap_or("default"),
         });
-        // Putting a project on autopilot is a sensitive action.
-        self.confirm(&a.by)?;
         let put = format!("/projects/{pid}/autopilot");
         self.api(&a.by, "PUT", &put, Some(body))?;
         self.beat_times.push((now_ms(), a.at.clone()));
