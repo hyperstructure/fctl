@@ -122,20 +122,31 @@ async fn get(server: Option<&str>, args: GetArgs, json: bool) -> Result<()> {
     if !wanted.is_empty() {
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let mut written = Vec::with_capacity(wanted.len());
-    for f in wanted {
+    // Each downloads beside where it goes, under a hidden name, and they
+    // all go in place once every one came: one that fails leaves nothing
+    // behind, so the same command can run again.
+    let mut parts = Parts(Vec::with_capacity(wanted.len()));
+    for f in &wanted {
         let bytes = api
             .attachment(s.id.as_str(), f.file.id.as_str())
             .await
             .with_context(|| format!("downloading {}", f.file.name))?;
+        let part = dir.join(format!(".fctl-{}.part", f.file.id.as_str()));
+        parts.0.push(part.clone());
+        std::fs::write(&part, &bytes).with_context(|| format!("writing {}", part.display()))?;
+    }
+    let mut written = Vec::with_capacity(wanted.len());
+    let downloaded = parts.0.clone();
+    for (f, part) in wanted.into_iter().zip(downloaded) {
         let path = dir.join(file_name(&f.file.name));
-        write(&path, &bytes, args.force).with_context(|| format!("writing {}", path.display()))?;
+        place(&part, &path, args.force).with_context(|| format!("writing {}", path.display()))?;
+        parts.0.retain(|p| p != &part);
         if !json {
             println!(
                 "{} {} {}",
                 style::accent("✓"),
                 path.display(),
-                style::dim(&files::human_size(bytes.len() as u64))
+                style::dim(&files::human_size(f.file.size))
             );
         }
         written.push(Written {
@@ -180,17 +191,31 @@ fn newest_of_each(sent: &[SessionFile]) -> Vec<&SessionFile> {
         .collect()
 }
 
-/// Writes `bytes` to a new file at `path`, or over one there with `force`.
-fn write(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
-    use std::io::Write;
-    if force {
-        return std::fs::write(path, bytes);
+/// Downloads not yet in place, which go when it does.
+struct Parts(Vec<PathBuf>);
+
+impl Drop for Parts {
+    fn drop(&mut self) {
+        for part in &self.0 {
+            let _ = std::fs::remove_file(part);
+        }
     }
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?
-        .write_all(bytes)
+}
+
+/// Puts the download at `part` in place at `path`: as a new file, or over
+/// one there with `force`.
+fn place(part: &Path, path: &Path, force: bool) -> std::io::Result<()> {
+    if force {
+        return std::fs::rename(part, path);
+    }
+    // A link fails where a file is already, which a rename would replace.
+    match std::fs::hard_link(part, path) {
+        Ok(()) => std::fs::remove_file(part),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        // A file system without links: no file was there a moment ago.
+        Err(_) if path.symlink_metadata().is_err() => std::fs::rename(part, path),
+        Err(e) => Err(e),
+    }
 }
 
 /// The name two of `files` would both be written as, if any.
@@ -279,15 +304,28 @@ mod tests {
         );
         // A file there stays, unless asked.
         let dir = tempfile::tempdir()?;
+        let part = |n: &str| -> std::io::Result<PathBuf> {
+            let p = dir.path().join(format!(".fctl-{n}.part"));
+            std::fs::write(&p, "theirs")?;
+            Ok(p)
+        };
         let path = dir.path().join("AGENTS.md");
         std::fs::write(&path, "mine")?;
-        assert!(write(&path, b"theirs", false).is_err());
+        let p = part("att_1")?;
+        assert!(place(&p, &path, false).is_err());
         assert_eq!(std::fs::read_to_string(&path)?, "mine");
-        write(&path, b"theirs", true)?;
+        place(&p, &path, true)?;
         assert_eq!(std::fs::read_to_string(&path)?, "theirs");
+        assert!(!p.exists());
         let new = dir.path().join("model.3mf");
-        write(&new, b"abc", false)?;
-        assert_eq!(std::fs::read(&new)?, b"abc");
+        let p = part("att_2")?;
+        place(&p, &new, false)?;
+        assert_eq!(std::fs::read_to_string(&new)?, "theirs");
+        assert!(!p.exists());
+        // Downloads that never went in place leave nothing behind.
+        let left = [part("att_3")?, part("att_4")?];
+        drop(Parts(left.to_vec()));
+        assert!(left.iter().all(|p| !p.exists()));
         Ok(())
     }
 
