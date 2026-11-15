@@ -1156,6 +1156,53 @@ impl Api {
         .await
     }
 
+    /// The files it keeps across its sessions, by name, without what they
+    /// hold.
+    pub async fn autopilot_files(&self, project: &str) -> Result<AutopilotFiles> {
+        self.get(&format!("/projects/{}/autopilot/files", enc(project)))
+            .await
+    }
+
+    /// One of its files, with what it holds.
+    pub async fn autopilot_file(&self, project: &str, name: &str) -> Result<AutopilotFile> {
+        self.get(&format!(
+            "/projects/{}/autopilot/files/{}",
+            enc(project),
+            enc(name)
+        ))
+        .await
+    }
+
+    /// Writes one of its files whole: the autopilot, from its own session.
+    pub async fn put_autopilot_file(
+        &self,
+        project: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<AutopilotFile> {
+        self.put(
+            &format!("/projects/{}/autopilot/files/{}", enc(project), enc(name)),
+            &PutAutopilotFileRequest {
+                content: content.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Removes one of its files: the autopilot, from its own session.
+    pub async fn remove_autopilot_file(
+        &self,
+        project: &str,
+        name: &str,
+    ) -> Result<serde_json::Value> {
+        self.delete(&format!(
+            "/projects/{}/autopilot/files/{}",
+            enc(project),
+            enc(name)
+        ))
+        .await
+    }
+
     /// Steers it with a note.
     pub async fn add_autopilot_note(&self, project: &str, text: &str) -> Result<Autopilot> {
         self.post(
