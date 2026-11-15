@@ -87,6 +87,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     let user = ctx.user()?.clone();
     let files = validate::attachment_ids(&body.attachments)?;
     let prompt = validate::message_with_files("prompt", &body.prompt, files.len())?;
+    // A task of files alone is named after them, before an autopilot's note.
+    let files_only = prompt.is_empty();
     // What its agent is told of the autopilot that starts it, after the task.
     let prompt = match &autopilot {
         Some(a) => {
@@ -142,7 +144,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     // The task's files belong to the new session from here on.
     let attachments = internal::claim_files(&ctx.env, &p.row.id, &id, &user.id, &files).await?;
     let title = title.unwrap_or_else(|| {
-        if prompt.is_empty() {
+        if files_only {
             let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
             naming::title_from_files(&names)
         } else {

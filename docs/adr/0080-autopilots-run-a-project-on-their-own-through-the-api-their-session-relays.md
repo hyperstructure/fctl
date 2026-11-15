@@ -70,6 +70,18 @@ agent that manages a project needs most of the API besides.
   credential where anything the agent runs reads it; this way access
   ends with the session, the runner and the autopilot's state, which the
   control plane checks at every request.
+- **Attachments go through the relay as they are** (added later,
+  fctl#517). An autopilot attaches files to the sessions it starts and
+  those it started, and reads the files sent in the sessions it reads, to
+  pass them on (unlike its own files above, which only its next sessions
+  get back): an autopilot working on 3D printing had to ask people to
+  attach the same model to each session that needed it. Its `fctl`
+  sends a file to fctl-agent in base64 (`AgentCall::ApiBytes`), and the
+  host posts the bytes to a relay endpoint of their own rather than in
+  the JSON of `AgentCall::Api`, so that the Worker streams them through
+  without holding a 20 MB file, three times over, in its memory. Its
+  sessions still send it no files: what one makes for another goes on
+  its branch.
 - **It looks after people's sessions too** (added later). Those people
   start in its places stay theirs: it never messages or stops them. But a
   pull request left open falls behind what its sessions merge, so its

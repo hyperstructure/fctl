@@ -28,7 +28,9 @@ use crate::error::{AppError, AppResult, forbidden, not_found};
 use crate::model::{CredentialRow, PROJECT_SELECT, ProjectRow, UserRow, user_columns};
 use fctl_domain::autopilot::{self as ap, Gate};
 use fctl_domain::limits::{Limits, Places};
-use fctl_proto::api::{AgentAnswer, SendMessageResponse, TokenAccess, TokenKind};
+use fctl_proto::api::{
+    AgentAnswer, RELAYED_STATUS_HEADER, SendMessageResponse, TokenAccess, TokenKind,
+};
 use fctl_proto::autopilot::{
     AutopilotEntryKind, AutopilotFile, AutopilotPower, AutopilotRole, AutopilotScope,
     AutopilotSpec, AutopilotState, AutopilotWake, AutopilotWakeReason, HeldMessage,
@@ -2398,6 +2400,9 @@ pub async fn hold(
         return Ok(None);
     }
     if queue.len() >= ap::MAX_HELD {
+        // Its files were claimed for the session: they wait for another
+        // message, or go a day later.
+        unsend_files(&ctx.env, db, session_id, attachments).await;
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::Conflict,
             format!(
@@ -2739,8 +2744,91 @@ async fn drop_held(
         .run()
         .await?;
     let gone = h.status.is_none();
+    if !gone {
+        unsend_files(env, db, &h.session_id, &h.attachments()).await;
+    }
     let session = (!gone).then_some(h.session_id.as_str());
     held_logged(env, db, row, h, ap::held_dropped_line(gone), session, now).await;
+    Ok(())
+}
+
+/// Hands the files of a held message that won't go back as unsent
+/// uploads, which are deleted a day later: they were claimed for its
+/// session as it was held, and would otherwise stay listed among the
+/// session's files though its agent never got them. A failure is logged.
+async fn unsend_files(env: &Env, db: &D1Database, session_id: &str, files: &[Attachment]) {
+    if files.is_empty() {
+        return;
+    }
+    #[derive(Deserialize)]
+    struct Found {
+        project_id: String,
+    }
+    let found: AppResult<Option<Found>> = async {
+        q(
+            db,
+            "SELECT project_id FROM sessions WHERE id = ?",
+            &[s(session_id)],
+        )?
+        .first()
+        .await
+    }
+    .await;
+    let ids: Vec<fctl_proto::AttachmentId> = files.iter().map(|f| f.id.clone()).collect();
+    let done = match found {
+        // A session that is gone took its files with it.
+        Ok(None) => Ok(()),
+        Ok(Some(f)) => {
+            crate::internal::unclaim_files(env, &f.project_id, &SessionId(session_id.into()), &ids)
+                .await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = done {
+        worker::console_error!(
+            "handing back the files of a message held for {session_id}: {}",
+            e.0.message
+        );
+    }
+}
+
+/// The files of the messages fctl holds for session `session_id` now: its
+/// agent hasn't got them yet.
+pub async fn held_files(db: &D1Database, session_id: &str) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Held {
+        attachments: Option<String>,
+    }
+    let rows: Vec<Held> = q(
+        db,
+        "SELECT attachments FROM autopilot_held WHERE session_id = ? AND attachments IS NOT NULL",
+        &[s(session_id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.attachments.as_deref())
+        .filter_map(|a| serde_json::from_str::<Vec<Attachment>>(a).ok())
+        .flatten()
+        .map(|a| a.id.0)
+        .collect())
+}
+
+/// Drops every message fctl holds for the autopilot of `project_id`, as it
+/// goes off, handing their files back.
+pub async fn drop_all_held(env: &Env, db: &D1Database, project_id: &str) -> AppResult<()> {
+    let dropped = held(db, project_id).await?;
+    q(
+        db,
+        "DELETE FROM autopilot_held WHERE project_id = ?",
+        &[s(project_id)],
+    )?
+    .run()
+    .await?;
+    for h in &dropped {
+        unsend_files(env, db, &h.session_id, &h.attachments()).await;
+    }
     Ok(())
 }
 
@@ -2793,6 +2881,7 @@ pub async fn take_back(
     if unheld != Unheld::Taken {
         return Ok(unheld);
     }
+    unsend_files(env, db, &h.session_id, &h.attachments()).await;
     let session = h.status.is_some().then_some(h.session_id.as_str());
     match by {
         Some(person) => {
@@ -2863,16 +2952,25 @@ pub async fn by_pilot(db: &D1Database, session_id: &str) -> AppResult<Option<Aut
     .await
 }
 
-/// `AgentCall::Api`: a request to the API from an autopilot's own session,
-/// answered as its owner within what the autopilot may do, and logged when
-/// it changed something.
-pub async fn relay(
-    ctx: &mut Ctx,
-    session_id: &str,
-    method: &str,
-    path: &str,
-    body: Option<Value>,
-) -> AppResult<AgentAnswer> {
+/// An autopilot's request from its own session, checked, and who it acts
+/// as for it.
+struct Relayed {
+    row: AutopilotRow,
+    /// Upper case.
+    method: String,
+    worker_method: worker::Method,
+    /// Its owner, held to what the autopilot may do.
+    authed: Authed,
+    /// The path without its query.
+    route_path: String,
+    /// What follows `/api/v1/` in it.
+    segs: Vec<String>,
+}
+
+/// Checks a request from the autopilot whose own session `session_id` is
+/// now: it is on, the method and path are the API's, and its owner may
+/// still run it.
+async fn relayed(ctx: &Ctx, session_id: &str, method: &str, path: &str) -> AppResult<Relayed> {
     let refuse = |m: &str| Err(forbidden(m));
     let Some(row) = by_pilot(&ctx.db, session_id).await? else {
         return refuse(
@@ -2900,11 +2998,7 @@ pub async fn relay(
             )));
         }
     };
-    if !path.starts_with("/api/v1/")
-        || path.len() > 2_000
-        || path.contains("..")
-        || path.contains("//")
-    {
+    if !ap::relayable_path(path) {
         return Err(AppError(ApiError::bad_request(
             "The path is one of the API's, like /api/v1/projects/my-app",
         )));
@@ -2954,7 +3048,46 @@ pub async fn relay(
         autopilot: Some(caller),
     };
     let (route_path, _) = path.split_once('?').unwrap_or((path, ""));
-    let route_path = route_path.to_owned();
+    let segs = route_path
+        .trim_end_matches('/')
+        .split('/')
+        .skip(3)
+        .map(str::to_owned)
+        .collect();
+    Ok(Relayed {
+        row,
+        method,
+        worker_method,
+        authed,
+        route_path: route_path.to_owned(),
+        segs,
+    })
+}
+
+/// `AgentCall::Api`: a request to the API from an autopilot's own session,
+/// answered as its owner within what the autopilot may do, and logged when
+/// it changed something.
+pub async fn relay(
+    ctx: &mut Ctx,
+    session_id: &str,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> AppResult<AgentAnswer> {
+    let Relayed {
+        row,
+        method,
+        worker_method,
+        authed,
+        route_path,
+        segs,
+    } = relayed(ctx, session_id, method, path).await?;
+    let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+    if ap::carries_files(&method, &segs) {
+        return Err(AppError(ApiError::bad_request(
+            "Files go through the relay as they are (`AgentCall::ApiBytes`), not in JSON.",
+        )));
+    }
     // A project it creates without naming a workspace goes into its own,
     // rather than the owner's only one.
     let mut body = body;
@@ -2996,11 +3129,6 @@ pub async fn relay(
             serde_json::to_value(&e.0).unwrap_or(Value::Null),
         ),
     };
-    let segs: Vec<&str> = route_path
-        .trim_end_matches('/')
-        .split('/')
-        .skip(3)
-        .collect();
     let empty = Value::Null;
     let sent = body.as_ref().unwrap_or(&empty);
     // Only what changed something gets a line, and the lookups for it.
@@ -3044,6 +3172,75 @@ pub async fn relay(
         status,
         body: answer,
     })
+}
+
+/// `AgentCall::ApiBytes`, from the host of an autopilot's own session
+/// (`POST /api/v1/runner/sessions/{id}/relay`): a request whose body or
+/// answer is a file ([`ap::carries_files`]), answered as its owner as
+/// [`relay`] answers, with `outer`'s body as the request's. The file
+/// passes through as a stream, never into the Worker's memory, and the
+/// answer is the request's, its status in [`RELAYED_STATUS_HEADER`].
+/// Uploads and downloads change nothing worth a line in its log: the
+/// message or session that sends a file gets one.
+pub async fn relay_file(
+    ctx: &mut Ctx,
+    session_id: &str,
+    method: &str,
+    path: &str,
+    outer: &worker::Request,
+) -> AppResult<worker::Response> {
+    let Relayed {
+        method,
+        worker_method,
+        authed,
+        route_path,
+        segs,
+        ..
+    } = relayed(ctx, session_id, method, path).await?;
+    let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+    if !ap::carries_files(&method, &segs) {
+        return Err(AppError(ApiError::bad_request(
+            "Only files go through the relay as they are: other requests go in JSON (`AgentCall::Api`).",
+        )));
+    }
+    let headers = worker::Headers::new();
+    headers.set("Accept", "*/*")?;
+    let mut init = worker::RequestInit::new();
+    if method == "POST" {
+        let content_type = crate::http::header(outer, "Content-Type")
+            .unwrap_or_else(|| "application/octet-stream".to_owned());
+        headers.set("Content-Type", &content_type)?;
+        // The upload refuses a file too large by its length, before it reads.
+        if let Some(length) = crate::http::header(outer, "Content-Length") {
+            let _ = headers.set("Content-Length", &length);
+        }
+        if let Some(body) = outer.inner().body() {
+            init.with_body(Some(body.into()));
+        }
+    }
+    init.with_method(worker_method).with_headers(headers);
+    let mut req = worker::Request::new_with_init(&ctx.cfg.url(path), &init)?;
+    let saved = ctx.auth.replace(authed);
+    // On the heap: `dispatch`'s future is large, and the Worker's stack small.
+    let answered = Box::pin(crate::route_autopilot(ctx, &mut req, &route_path, None)).await;
+    ctx.auth = saved;
+    let response = match answered {
+        Ok(r) => r,
+        Err(e) => crate::http::error_response(&e.0),
+    };
+    let status = response.status_code();
+    let content_type = response.headers().get("Content-Type")?;
+    let h = worker::Headers::new();
+    h.set(RELAYED_STATUS_HEADER, &status.to_string())?;
+    if let Some(t) = content_type {
+        h.set("Content-Type", &t)?;
+    }
+    h.set("Cache-Control", "no-store")?;
+    let (_, body) = response.into_parts();
+    Ok(worker::ResponseBuilder::new()
+        .with_status(200)
+        .with_headers(h)
+        .body(body))
 }
 
 /// Adds what the autopilot did to its own session's transcript, as an

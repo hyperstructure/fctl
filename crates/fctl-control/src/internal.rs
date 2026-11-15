@@ -464,6 +464,13 @@ pub struct ClaimFiles {
     pub ids: Vec<AttachmentId>,
 }
 
+/// Files claimed for a session to hand back as unsent uploads.
+#[derive(Serialize, Deserialize)]
+pub struct UnclaimFiles {
+    pub session_id: SessionId,
+    pub ids: Vec<AttachmentId>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ClaimedFiles {
     /// In the order of the ids.
@@ -604,6 +611,30 @@ pub async fn claim_files(
     )
     .await?;
     Ok(out.attachments)
+}
+
+/// Hands files claimed for `session_id` in `project_id` back as unsent
+/// uploads, which the FilesObject deletes a day later.
+pub async fn unclaim_files(
+    env: &Env,
+    project_id: &str,
+    session_id: &SessionId,
+    ids: &[AttachmentId],
+) -> AppResult<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let stub = files_stub(env, project_id)?;
+    let _: serde_json::Value = post(
+        &stub,
+        "/unclaim",
+        &UnclaimFiles {
+            session_id: session_id.clone(),
+            ids: ids.to_vec(),
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// The NotifyObject of a person.

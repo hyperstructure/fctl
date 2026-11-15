@@ -958,7 +958,7 @@ impl Supervisor {
             }
             // Only an autopilot's own session reaches the API from its
             // sandbox; the control plane checks it again.
-            AgentCall::Api { .. } if spec.autopilot.is_none() => {
+            AgentCall::Api { .. } | AgentCall::ApiBytes { .. } if spec.autopilot.is_none() => {
                 return Err(ApiError::forbidden(
                     "Only an autopilot's own session reaches fctl's API from its sandbox. Elsewhere, sign in with `fctl login`.",
                 ));
@@ -1651,6 +1651,8 @@ impl Supervisor {
                 update_retrospectives,
                 review_threads,
                 autopilot: spec.autopilot.is_some(),
+                // Through this agent and its host, which carry files.
+                autopilot_files: spec.autopilot.is_some() && fctl_can(&paths, "files").await,
             };
             if let Err(e) = claude::write_instructions(&paths.home, &prompt::agents_md(&extras)) {
                 tracing::warn!("writing ~/AGENTS.md failed: {e:#}");
@@ -3136,7 +3138,9 @@ fn kept_notices(answer: &AgentAnswer) -> Vec<Notice> {
         }],
         // The control plane adds what fctl did in the tracker itself, and
         // what an autopilot did.
-        AgentAnswer::Ticket { .. } | AgentAnswer::Api { .. } => vec![],
+        AgentAnswer::Ticket { .. } | AgentAnswer::Api { .. } | AgentAnswer::ApiBytes { .. } => {
+            vec![]
+        }
         // What the agent asked people stays in the transcript, after the
         // question itself is answered.
         AgentAnswer::Asked { question: Some(q) } => vec![Notice {
@@ -3855,6 +3859,62 @@ mod tests {
                 _ => None,
             })
             .collect())
+    }
+
+    #[tokio::test]
+    async fn passes_an_autopilots_files_on_to_the_host() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut sup, mut host_rx) = keeping(dir.path(), false, false)?;
+        let upload = || {
+            calling(AgentCall::ApiBytes {
+                method: "POST".into(),
+                path: "/api/v1/sessions/ses_9/attachments?name=model.3mf".into(),
+                body: Some("AAEC".into()),
+                content_type: Some("application/octet-stream".into()),
+            })
+        };
+        // Another session's sandbox reaches no API.
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: upload(),
+            reply: tx,
+        });
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Error { ref error }) if error.message.starts_with("Only an autopilot's own session"))
+        );
+        assert!(host_rx.try_recv().is_err());
+        // An autopilot's own passes the file on as it came.
+        if let Some(c) = sup.config.as_mut() {
+            c.spec.autopilot = Some(fctl_proto::autopilot::AutopilotSpec {
+                project_id: fctl_proto::ProjectId("prj_1".into()),
+                project_slug: "shop".into(),
+                scope: fctl_proto::autopilot::AutopilotScope::Project,
+            });
+        }
+        let (tx, mut rx) = oneshot::channel();
+        sup.on_session_call(local::Call {
+            request: upload(),
+            reply: tx,
+        });
+        let AgentToHost::Call { request_id, call } = serde_json::from_str(&host_rx.try_recv()?)?
+        else {
+            panic!("expected a call frame");
+        };
+        assert!(
+            matches!(call, AgentCall::ApiBytes { ref body, .. } if body.as_deref() == Some("AAEC"))
+        );
+        let answer = AgentAnswer::ApiBytes {
+            status: 201,
+            content_type: Some("application/json".into()),
+            body: "e30=".into(),
+        };
+        sup.on_answer(&request_id, Some(answer.clone()), None);
+        assert!(
+            matches!(rx.try_recv(), Ok(SessionReply::Answer { answer: ref a }) if *a == answer)
+        );
+        // It keeps nothing in the transcript.
+        assert!(host_rx.try_recv().is_err());
+        Ok(())
     }
 
     #[tokio::test]

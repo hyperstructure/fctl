@@ -108,6 +108,9 @@ fctl attach my-app#12            # stream it and type messages (Ctrl-C detaches)
 fctl attach --read-only my-app#12
 fctl send my-app#12 "Use the existing Button component"   # a stopped session resumes for it, and it answers what its agent asks (fctl show prints the question)
 fctl send my-app#12 -a ci.log "This is what CI printed"
+fctl files list my-app#12        # the files sent in it (with messages or its task), oldest first
+fctl files get my-app#12 model.3mf      # writes ./model.3mf (the newest of that name, or by id: att_…); --force to write over one there
+fctl files get my-app#12 --all --dir in/   # every file, the newest of each name
 fctl interrupt my-app#12         # stop the current turn
 fctl stop my-app#12              # end the session (its sandbox is kept for resuming)
 fctl resume my-app#12 "Now add tests"   # also a failed one, on your Claude subscription
@@ -203,6 +206,9 @@ understand the task, and again when the work turns to something else.
 `resume`): up to 10, of at most 20 MB each. The agent finds them in
 `~/attachments/` in its sandbox, and sees images that Claude accepts as
 they are (PNG, JPEG, GIF, WebP up to 2000 px a side) in the message itself.
+`fctl files` lists and downloads the files sent in a session, for anyone
+who sees it. It writes no file over one already there unless you pass
+`--force`: their names are those of whoever sent them.
 
 ### Screenshots in pull requests
 
@@ -753,9 +759,12 @@ Claude plan, as you.
 In its own session's sandbox, the autopilot's `fctl` reaches the API as
 the person it acts for, without signing in (`FCTL_AUTOPILOT` names its
 project, the default for `-p`): `fctl run`, `fctl sessions`, `fctl show`,
-`fctl logs`, `fctl send`, `fctl stop`, `fctl projects set`, `fctl
-projects secrets`, `fctl projects repos`, `fctl schedules` and `fctl
-projects create`, as far as its powers go. `fctl run` returns at once
+`fctl logs`, `fctl send`, `fctl files`, `fctl stop`, `fctl projects set`,
+`fctl projects secrets`, `fctl projects repos`, `fctl schedules` and `fctl
+projects create`, as far as its powers go. It attaches files to the
+sessions it starts and those it started (`fctl run --attach`, `fctl send
+--attach`): one people sent it, one it made, or one sent in another of its
+sessions, which `fctl files get` downloads. `fctl run` returns at once
 there; fctl wakes it when its sessions move on (a turn that ends, a
 question, a failure, or a pull request of one that rests merging or
 closing), with the start of what
