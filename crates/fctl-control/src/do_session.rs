@@ -235,6 +235,15 @@ const CHECKS_IN_A_ROW: &str = "checks_in_a_row";
 /// its background work, which didn't wake the autopilot, and no wake went
 /// out since (`fctl_domain::autopilot::owes`).
 const AUTOPILOT_OWED: &str = "autopilot_owed";
+/// The meta key that keeps when the agent's last turn ended, as the session
+/// heard: a merge before then happened as it worked
+/// (`fctl_domain::follow_ups::at_work_then`).
+const TURN_ENDED_AT: &str = "turn_ended_at";
+/// The meta key that keeps when the agent last ran a command that merges or
+/// closes a pull request, as the session heard
+/// (`fctl_domain::follow_ups::merges_or_closes`): a merge by fctl's app
+/// after it is most likely its own.
+const MERGE_RAN_AT: &str = "merge_ran_at";
 /// The meta key that counts the conflicts the agent heard of in a row, as
 /// [`CHECKS_IN_A_ROW`] does failed checks
 /// (`fctl_domain::follow_ups::MAX_CONFLICTS_IN_A_ROW`).
@@ -1395,7 +1404,8 @@ impl SessionObject {
     /// passed after a re-run, or a newer commit came. After
     /// [`follow_ups::MAX_CHECKS_IN_A_ROW`] failed checks in a row while no
     /// person messaged the agent, nor wrote to it on GitHub, the transcript
-    /// says what failed instead, and likewise for conflicts.
+    /// says what failed instead, and likewise for conflicts. So it does of
+    /// a merge or a close the agent made itself ([`Self::note_own_doing`]).
     async fn flush_follow_ups(&self, now: i64) {
         #[derive(Deserialize)]
         struct Waiting {
@@ -1480,8 +1490,53 @@ impl SessionObject {
             done(&w.key);
             send.push(item);
         }
+        // A merge or a close the agent most likely did itself goes in the
+        // transcript, not to the agent: it knows.
+        let ended = self.meta(TURN_ENDED_AT).and_then(|v| v.parse::<i64>().ok());
+        let ran_at = self.meta(MERGE_RAN_AT).and_then(|v| v.parse::<i64>().ok());
+        let (own, send): (Vec<_>, Vec<_>) = send.into_iter().partition(|item| {
+            let at_work =
+                follow_ups::at_work_then(s.status, s.status_reason.as_deref(), ended, item.at);
+            let ran =
+                ran_at.is_some_and(|ran| ran >= item.at.unwrap_or(now) - follow_ups::RAN_WITHIN_MS);
+            follow_ups::own_doing(&item.event, item.by_app, at_work, ran)
+        });
+        for (f, keys) in follow_ups::group(&own) {
+            self.note_own_doing(f, &keys, now);
+        }
         for (f, keys) in follow_ups::group(&send) {
             self.pass_on(f, keys, now).await;
+        }
+    }
+
+    /// Says in the transcript that the agent merged or closed its pull
+    /// request itself as it worked (`fctl_domain::follow_ups::own_doing`),
+    /// rather than tell the agent: a message would cut into its turn, or
+    /// start one with nothing to do.
+    fn note_own_doing(&self, f: FollowUp, keys: &[String], now: i64) {
+        for key in keys {
+            self.key(key, "", now);
+        }
+        let Some(message) = follow_ups::own_doing_notice(&f) else {
+            return;
+        };
+        let notice = fctl_proto::event::Notice {
+            ticket: None,
+            level: fctl_proto::event::NoticeLevel::Info,
+            code: "follow_up_own".into(),
+            message,
+            until: None,
+            published: None,
+            memory: None,
+            retrospective: None,
+            review: None,
+            summarized: None,
+            follow_up: Some(f),
+            question: None,
+            autopilot: None,
+        };
+        if let Some(json) = self.append(now, &EventBody::Notice(notice), None) {
+            self.broadcast_events(&[json]);
         }
     }
 
@@ -2664,6 +2719,7 @@ impl SessionObject {
                 // Pull requests the session lists from now on.
                 let mut found = Vec::new();
                 let mut turn_ended = false;
+                let mut ran_merge = false;
                 let mut usage = Vec::new();
                 // The windows the latest report that lists them listed.
                 let mut listed = None;
@@ -2722,6 +2778,7 @@ impl SessionObject {
                     if let (EventBody::Claude(v), Some(s)) = (&mut body, summary.as_mut()) {
                         summary_changed |= Self::apply_claude(s, &mut counted, v, e.ts, &self.mem);
                         turn_ended |= self.remember_reply(v, e.agent_seq, crew(s));
+                        ran_merge |= follow_ups::merges_or_closes(v);
                         self.mirror_to_linear(s, v, now);
                         plan::merge(&mut usage, plan::readings(v, now));
                         listed = plan::listed(v).or(listed);
@@ -2787,6 +2844,12 @@ impl SessionObject {
                     self.delete_meta("waiting_since");
                 }
                 self.set_meta("acked_agent_seq", &acked.to_string());
+                if turn_ended {
+                    self.set_meta(TURN_ENDED_AT, &now.to_string());
+                }
+                if ran_merge {
+                    self.set_meta(MERGE_RAN_AT, &now.to_string());
+                }
                 if counted != counted_before {
                     self.save_counted(counted);
                 }

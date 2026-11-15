@@ -576,7 +576,8 @@ export const ItemView = memo(function ItemView({
         );
       if (item.notice.review) return <ReviewPostedNotice posted={item.notice.review} />;
       if (item.notice.summarized) return <PullRequestSummarizedNotice summarized={item.notice.summarized} />;
-      if (item.notice.follow_up) return <HeldFollowUp followUp={item.notice.follow_up} ts={item.ts} />;
+      if (item.notice.follow_up)
+        return <HeldFollowUp followUp={item.notice.follow_up} code={item.notice.code} ts={item.ts} />;
       if (item.notice.ticket) return <TicketNoticeView notice={item.notice.ticket} code={item.notice.code} />;
       if (item.notice.question) return <QuestionNotice question={item.notice.question} findKey={item.key} />;
       if (item.notice.autopilot) return <AutopilotAction notice={item.notice} />;

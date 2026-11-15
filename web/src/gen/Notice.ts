@@ -18,9 +18,9 @@ export type Notice = { level: NoticeLevel,
  * `sandbox_paused`, `sandbox_resumed`, `agent_restarted`,
  * `screenshot_published`, `memory_added`, `memory_stale`,
  * `retrospective`, `review_posted`, `review_held`, `review_passed_on`,
- * `pull_request_summarized`, `follow_up_held`, `ticket_created`,
- * `ticket_commented`, `ticket_updated`, `ticket_replied`,
- * `ticket_moved`, `ticket_failed`, `question_asked`,
+ * `pull_request_summarized`, `follow_up_held`, `follow_up_own`,
+ * `ticket_created`, `ticket_commented`, `ticket_updated`,
+ * `ticket_replied`, `ticket_moved`, `ticket_failed`, `question_asked`,
  * `question_withdrawn`, `autopilot_action`, `memory_nearly_out`,
  * `memory_killed`.
  */
@@ -57,8 +57,9 @@ review?: PostedReview,
 summarized?: SummarizedPullRequest, 
 /**
  * What happened to a pull request that fctl didn't pass on to the
- * agent, in a `follow_up_held` notice. Clients from before it show the
- * message.
+ * agent, in a `follow_up_held` notice (it heard of the same too often
+ * in a row) or a `follow_up_own` one (a merge or a close it made
+ * itself as it worked). Clients from before it show the message.
  */
 follow_up?: FollowUp, 
 /**

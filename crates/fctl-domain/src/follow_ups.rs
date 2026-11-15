@@ -16,7 +16,7 @@ use crate::reviews::{by_app, short};
 use crate::webhooks::{Looked, Mergeable, Payload};
 use fctl_proto::Millis;
 use fctl_proto::event::{FollowUp, FollowUpComment, FollowUpEvent};
-use fctl_proto::session::{PullRequestRef, RepoRef};
+use fctl_proto::session::{PullRequestRef, RepoRef, SessionStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -570,6 +570,14 @@ pub struct Item {
     /// lookup the session heard of since is newer ([`conflicts_still`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<Millis>,
+    /// When it happened, as GitHub says: when a merge or a close did
+    /// ([`at_work_then`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Millis>,
+    /// fctl's GitHub App merged or closed it, whose token agents use
+    /// ([`own_doing`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_app: bool,
 }
 
 impl Item {
@@ -579,8 +587,376 @@ impl Item {
             pull,
             event,
             seen: None,
+            at,
+            by_app: false,
         }
     }
+}
+
+/// Whether the agent was at work when its pull request merged or closed,
+/// at `at` (GitHub's time): its turn runs now (`status`), or it ended its
+/// turn only to wait for work it started in the background, which brings
+/// it back, or its last turn ended at or after then (`turn_ended_at`, as
+/// the session heard), so that it saw the pull request merge, or merged
+/// it, as it worked.
+pub fn at_work_then(
+    status: SessionStatus,
+    reason: Option<&str>,
+    turn_ended_at: Option<Millis>,
+    at: Option<Millis>,
+) -> bool {
+    match status {
+        SessionStatus::Running => true,
+        SessionStatus::Idle if crate::autopilot::waits_for_background(reason) => true,
+        _ => matches!((turn_ended_at, at), (Some(ended), Some(at)) if ended >= at),
+    }
+}
+
+/// How long before a merge or a close the agent may have run the command
+/// that made it, for it to count as the agent's own ([`own_doing`]): a
+/// merge it asked GitHub to make once checks pass (`gh pr merge --auto`)
+/// comes later, while it watches them.
+pub const RAN_WITHIN_MS: i64 = 2 * 60 * 60 * 1000;
+
+/// Whether the agent merged or closed its pull request itself, as `event`
+/// says: fctl's GitHub App did (`by_app`), whose token the agent's `gh`
+/// uses, while the agent was at work ([`at_work_then`]), after it ran a
+/// command that merges or closes a pull request (`ran`:
+/// [`merges_or_closes`], within [`RAN_WITHIN_MS`] before). It knows then,
+/// and a message from fctl about it would only cut into its turn, or start
+/// one with nothing to do: the transcript says it instead
+/// ([`own_doing_notice`]). A person's merge, the app's while the agent
+/// rested, and the app's for someone else (an autopilot, another session)
+/// still reach it.
+pub fn own_doing(event: &FollowUpEvent, by_app: bool, at_work: bool, ran: bool) -> bool {
+    matches!(
+        event,
+        FollowUpEvent::Merged { .. } | FollowUpEvent::Closed { .. }
+    ) && by_app
+        && at_work
+        && ran
+}
+
+/// Whether a message of Claude's, `v`, runs a command that merges or
+/// closes a pull request, in a Bash call of its own or of a subagent's:
+/// `gh pr merge`, `gh pr close`, or a merge through GitHub's API
+/// (`gh api -X PUT …/pulls/12/merge`), wherever it stands in the command line
+/// (after `;` or `&&`, in quotes for `bash -c`) and with gh's flags
+/// before its subcommands (`gh -R acme/web pr merge`).
+pub fn merges_or_closes(v: &Value) -> bool {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else {
+        return false;
+    };
+    blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter(|b| b.get("name").and_then(Value::as_str) == Some("Bash"))
+        .filter_map(|b| b.pointer("/input/command").and_then(Value::as_str))
+        .any(runs_merge)
+}
+
+/// Whether a command line runs `gh pr merge`, `gh pr close` or a merge
+/// through `gh api` ([`merges_or_closes`]), in any of its commands
+/// ([`commands`]), in what they substitute (`"$(…)"`), or in a command line
+/// it hands a shell (`bash -c '…'`).
+fn runs_merge(line: &str) -> bool {
+    fn within(line: &str, depth: u8) -> bool {
+        let (commands, substituted) = commands(line);
+        let deeper = |l: &String| depth < 3 && within(l, depth + 1);
+        commands.iter().any(|words| {
+            let at = command_at(words);
+            words
+                .get(at)
+                .is_some_and(|w| w == "gh" || w.ends_with("/gh"))
+                && gh_merges(&words[at + 1..])
+                || words
+                    .iter()
+                    .enumerate()
+                    .any(|(i, w)| runs_in_shell(words, i) && deeper(w))
+        }) || substituted.iter().any(deeper)
+    }
+    within(line, 0)
+}
+
+/// Where a command's command word is: past the shell's keywords (`if`,
+/// `do`, `!`, `{`), the variables it sets (`GH_TOKEN=… gh …`) and what runs
+/// it (`sudo -u bob`, `env`, `xargs -n 1`, `timeout 60`).
+fn command_at(words: &[String]) -> usize {
+    let mut i = 0;
+    // What runs the command after it, whose flags may take a value.
+    let mut runner: Option<&str> = None;
+    // `timeout`'s time comes before the command.
+    let mut time = false;
+    while let Some(w) = words.get(i).map(String::as_str) {
+        let assigns = w
+            .split_once('=')
+            .is_some_and(|(name, _)| !name.is_empty() && !name.starts_with('-'));
+        if w.starts_with('-') {
+            i += if runner.is_some_and(|r| takes_value(r, w)) {
+                2
+            } else {
+                1
+            };
+        } else if time {
+            time = false;
+            i += 1;
+        } else if assigns
+            || matches!(
+                w,
+                "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!" | "{" | "time"
+            )
+        {
+            i += 1;
+        } else if matches!(
+            w,
+            "sudo" | "env" | "command" | "exec" | "nohup" | "nice" | "xargs" | "stdbuf" | "timeout"
+        ) {
+            runner = Some(w);
+            time = w == "timeout";
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i
+}
+
+/// Whether `flag` of what runs a command (`runner`: `sudo`, `xargs`…)
+/// takes the word after it: `sudo -u bob`, `xargs -n 1`.
+fn takes_value(runner: &str, flag: &str) -> bool {
+    match runner {
+        "sudo" => matches!(
+            flag,
+            "-u" | "-g" | "-U" | "-C" | "-h" | "-p" | "-r" | "-t" | "-D" | "-R"
+        ),
+        "xargs" => matches!(flag, "-n" | "-L" | "-P" | "-I" | "-d" | "-E" | "-s" | "-a"),
+        "env" => matches!(flag, "-u" | "-C" | "-S"),
+        "timeout" => matches!(flag, "-s" | "-k" | "--signal" | "--kill-after"),
+        "nice" => flag == "-n",
+        "stdbuf" => matches!(flag, "-i" | "-o" | "-e"),
+        _ => false,
+    }
+}
+
+/// Whether a command word is a shell's: `bash`, `/bin/sh`.
+fn is_shell(word: &str) -> bool {
+    word.rsplit('/')
+        .next()
+        .is_some_and(|w| matches!(w, "sh" | "bash" | "zsh" | "dash" | "ksh"))
+}
+
+/// Whether word `i` of a command is the command line a shell runs: the
+/// argument of its `-c` (`bash -c '…'`, `sh -lc '…'`, `/bin/bash -e -c '…'`).
+fn runs_in_shell(words: &[String], i: usize) -> bool {
+    let Some(flag) = i.checked_sub(1).and_then(|f| words.get(f)) else {
+        return false;
+    };
+    if !(flag.starts_with('-') && !flag.starts_with("--") && flag.ends_with('c')) {
+        return false;
+    }
+    words[..i - 1]
+        .iter()
+        .rev()
+        .find(|w| !w.starts_with('-'))
+        .is_some_and(|w| is_shell(w))
+}
+
+/// The commands of a command line, each as its words, as a shell splits
+/// them: at `;`, `&`, `|`, new lines, parentheses and backticks outside
+/// quotes, and words at whitespace outside quotes, which they lose. A
+/// backslash before a new line continues the line, and a heredoc's lines
+/// (`<<'EOF'` up to `EOF`) are its text, not commands. With them, the
+/// command lines that double quotes substitute (`"$(…)"`, `` "`…`" ``),
+/// which a word keeps as they are.
+fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut substituted: Vec<String> = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    // The word has quotes in it, so that `""` is a word.
+    let mut quoted = false;
+    let mut quote: Option<char> = None;
+    // The delimiters of heredocs whose text starts at the next new line,
+    // and whether a shell runs that text (`bash <<'EOF'`).
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let end_word = |words: &mut Vec<String>, word: &mut String, quoted: &mut bool| {
+        if !word.is_empty() || *quoted {
+            words.push(std::mem::take(word));
+        }
+        *quoted = false;
+    };
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            // What double quotes substitute: up to the parenthesis that
+            // closes it, or the next backtick.
+            (Some('"'), '$') if chars.peek() == Some(&'(') => {
+                chars.next();
+                let mut depth = 1;
+                let mut inner = String::new();
+                for n in chars.by_ref() {
+                    depth += match n {
+                        '(' => 1,
+                        ')' => -1,
+                        _ => 0,
+                    };
+                    if depth == 0 {
+                        break;
+                    }
+                    inner.push(n);
+                }
+                word.push_str(&inner);
+                substituted.push(inner);
+            }
+            (Some('"'), '`') => {
+                let inner: String = chars.by_ref().take_while(|&n| n != '`').collect();
+                word.push_str(&inner);
+                substituted.push(inner);
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                quoted = true;
+            }
+            (None, '\\') => match chars.next() {
+                Some('\n') | None => {}
+                Some(n) => word.push(n),
+            },
+            // A heredoc (`<<EOF`, `<<-'EOF'`), not a here-string (`<<<`).
+            (None, '<') if chars.peek() == Some(&'<') => {
+                chars.next();
+                end_word(&mut words, &mut word, &mut quoted);
+                if chars.peek() == Some(&'<') {
+                    chars.next();
+                    continue;
+                }
+                if chars.peek() == Some(&'-') {
+                    chars.next();
+                }
+                while chars.peek().is_some_and(|n| *n == ' ' || *n == '\t') {
+                    chars.next();
+                }
+                let mut delimiter = String::new();
+                while let Some(&n) = chars.peek() {
+                    if n.is_whitespace() || ";&|()<>".contains(n) {
+                        break;
+                    }
+                    chars.next();
+                    if !matches!(n, '\'' | '"' | '\\') {
+                        delimiter.push(n);
+                    }
+                }
+                if !delimiter.is_empty() {
+                    let script = words.get(command_at(&words)).is_some_and(|w| is_shell(w))
+                        && !words.iter().any(|w| w == "-c");
+                    heredocs.push((delimiter, script));
+                }
+            }
+            (None, ';' | '&' | '|' | '\n' | '(' | ')' | '`') => {
+                end_word(&mut words, &mut word, &mut quoted);
+                if !words.is_empty() {
+                    out.push(std::mem::take(&mut words));
+                }
+                // The heredocs' text, line by line, up to each one's
+                // delimiter: a shell's script, or text.
+                if c == '\n' {
+                    for (delimiter, script) in std::mem::take(&mut heredocs) {
+                        let mut lines = Vec::new();
+                        loop {
+                            let text: String = chars.by_ref().take_while(|&n| n != '\n').collect();
+                            if text.trim() == delimiter {
+                                break;
+                            }
+                            lines.push(text);
+                            if chars.peek().is_none() {
+                                break;
+                            }
+                        }
+                        if script {
+                            substituted.push(lines.join("\n"));
+                        }
+                    }
+                }
+            }
+            (None, c) if c.is_whitespace() => end_word(&mut words, &mut word, &mut quoted),
+            (None, c) => word.push(c),
+        }
+    }
+    end_word(&mut words, &mut word, &mut quoted);
+    if !words.is_empty() {
+        out.push(words);
+    }
+    (out, substituted)
+}
+
+/// Whether gh, given `args`, merges or closes a pull request: `pr merge`,
+/// `pr close`, or `api` with a PUT to `…/pulls/12/merge` (a GET only asks
+/// whether it merged). gh's flags may come before its subcommands:
+/// `-R acme/web` and `--repo acme/web` take the word after them.
+fn gh_merges(args: &[String]) -> bool {
+    let past_flags = |mut i: usize| {
+        while let Some(w) = args.get(i).filter(|w| w.starts_with('-')) {
+            i += if matches!(w.as_str(), "-R" | "--repo") {
+                2
+            } else {
+                1
+            };
+        }
+        i
+    };
+    let i = past_flags(0);
+    match args.get(i).map(String::as_str) {
+        Some("pr") => matches!(
+            args.get(past_flags(i + 1)).map(String::as_str),
+            Some("merge" | "close")
+        ),
+        Some("api") => {
+            let rest = &args[i + 1..];
+            let put = |m: &str| m.eq_ignore_ascii_case("put");
+            rest.iter()
+                .any(|w| w.contains("pulls/") && w.ends_with("/merge"))
+                && (rest
+                    .windows(2)
+                    .any(|w| matches!(w[0].as_str(), "-X" | "--method") && put(&w[1]))
+                    || rest.iter().any(|w| {
+                        w.strip_prefix("-X")
+                            .or_else(|| w.strip_prefix("--method="))
+                            .is_some_and(put)
+                    }))
+        }
+        _ => false,
+    }
+}
+
+/// What the transcript says of a merge or a close that fctl didn't pass
+/// on, as the agent did it itself ([`own_doing`]).
+pub fn own_doing_notice(f: &FollowUp) -> Option<String> {
+    let pr = format!("{}#{}", f.repo.full_name(), f.number);
+    f.events.iter().find_map(|e| match e {
+        FollowUpEvent::Merged { base, .. } => {
+            let into = base
+                .as_deref()
+                .or(f.base.as_deref())
+                .map(|b| format!(" into {b}"))
+                .unwrap_or_default();
+            Some(format!(
+                "{pr} was merged{into} by the agent itself as it worked: fctl didn't pass it on."
+            ))
+        }
+        FollowUpEvent::Closed { .. } => Some(format!(
+            "{pr} was closed by the agent itself as it worked: fctl didn't pass it on."
+        )),
+        _ => None,
+    })
 }
 
 /// Whether conflicts at commit `sha`, which a lookup at `seen` found, are
@@ -1018,13 +1394,15 @@ fn checks_part(f: &FollowUp, sha: &str, failed: &[String], passed: u32, pending:
     s
 }
 
-/// That it merged: what may be left to do.
+/// That it merged: what may be left to do. A person may merge it as the
+/// agent works, which reaches it at its next step: that doesn't end its
+/// task.
 fn merged_part(f: &FollowUp, by: Option<&str>, base: Option<&str>) -> String {
     let base = base.or(f.base.as_deref());
     let into = base.map(|b| format!(" into {b}")).unwrap_or_default();
     let by = by.map(|b| format!(" by @{b}")).unwrap_or_default();
     format!(
-        "On GitHub, {} was merged{into}{by}.\n\nDo what is left to do now that it merged, if anything is: what your instructions say to do after a merge, such as noting it in the issue it fixes. Don't push to its branch again: more changes go in a new pull request from {}. If nothing is left, say so in a sentence.",
+        "On GitHub, {} was merged{into}{by}.\n\nIf you are in the middle of your task, this doesn't end it: carry on with it. Don't push to its branch again: more changes go in a new pull request from {}. Then do what is left to do now that it merged, if anything is: what your instructions say to do after a merge, such as noting it in the issue it fixes. If nothing is left, say so in a sentence.",
         your_pull_request_then(f),
         updated(base)
     )
@@ -1802,7 +2180,8 @@ mod tests {
             by: Some("ada".into()),
             base: Some("main".into()),
         }]));
-        assert!(m.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, was merged into main by @ada.\n\nDo what is left to do now that it merged"), "{m}");
+        assert!(m.starts_with("On GitHub, your pull request acme/web#12, “Fix the login redirect”, was merged into main by @ada.\n\nIf you are in the middle of your task, this doesn't end it: carry on with it."), "{m}");
+        assert!(m.contains("Then do what is left to do now that it merged"));
         assert!(m.contains("more changes go in a new pull request from the updated main."));
         let m = message(&follow_up(vec![FollowUpEvent::Closed {
             by: Some("bob".into()),
@@ -1824,6 +2203,209 @@ mod tests {
             m.contains("a new pull request from its base branch, updated."),
             "{m}"
         );
+    }
+
+    #[test]
+    fn the_agent_was_at_work_as_it_merged() {
+        let at = Some(1_000);
+        // Its turn runs, or it waits for its background work.
+        assert!(at_work_then(SessionStatus::Running, None, None, at));
+        assert!(at_work_then(
+            SessionStatus::Idle,
+            Some("Waiting for 2 background tasks"),
+            Some(500),
+            at
+        ));
+        // Its turn ended after the merge, as it does once it merged.
+        assert!(at_work_then(SessionStatus::Idle, None, Some(1_000), at));
+        assert!(at_work_then(SessionStatus::Stopped, None, Some(4_000), at));
+        // Before it, or nobody said when either was.
+        assert!(!at_work_then(SessionStatus::Idle, None, Some(999), at));
+        assert!(!at_work_then(SessionStatus::Idle, None, None, at));
+        assert!(!at_work_then(SessionStatus::Idle, None, Some(4_000), None));
+        assert!(!at_work_then(SessionStatus::Queued, None, None, at));
+    }
+
+    #[test]
+    fn what_the_agent_merged_itself_is_its_own_doing() {
+        let merged = FollowUpEvent::Merged {
+            by: None,
+            base: Some("main".into()),
+        };
+        assert!(own_doing(&merged, true, true, true));
+        assert!(own_doing(
+            &FollowUpEvent::Closed { by: None },
+            true,
+            true,
+            true
+        ));
+        // A person's or another app's, the app's while the agent rested,
+        // and the app's for someone else: an autopilot, another session.
+        assert!(!own_doing(&merged, false, true, true));
+        assert!(!own_doing(&merged, true, false, true));
+        assert!(!own_doing(&merged, true, true, false));
+        // Only merges and closes.
+        let conflicts = FollowUpEvent::Conflicts {
+            sha: "abc".into(),
+            base: None,
+        };
+        assert!(!own_doing(&conflicts, true, true, true));
+
+        assert_eq!(
+            own_doing_notice(&follow_up(vec![merged])).as_deref(),
+            Some(
+                "acme/web#12 was merged into main by the agent itself as it worked: fctl didn't pass it on."
+            )
+        );
+        assert_eq!(
+            own_doing_notice(&follow_up(vec![FollowUpEvent::Closed { by: None }])).as_deref(),
+            Some(
+                "acme/web#12 was closed by the agent itself as it worked: fctl didn't pass it on."
+            )
+        );
+        assert_eq!(own_doing_notice(&follow_up(vec![conflicts])), None);
+    }
+
+    #[test]
+    fn the_agent_runs_merges_and_closes() {
+        let bash = |command: &str| {
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Merging."},
+                {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": command}}
+            ]}})
+        };
+        assert!(merges_or_closes(&bash(
+            "gh pr merge 12 --squash --delete-branch"
+        )));
+        assert!(merges_or_closes(&bash(
+            "cd web &&  gh  pr   merge --auto --squash"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh pr close 12 --comment 'Superseded'"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api -X PUT repos/acme/web/pulls/12/merge -f merge_method=squash"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api --method PUT \"repos/acme/web/pulls/12/merge\""
+        )));
+        // Wherever it stands, with gh's flags first.
+        assert!(merges_or_closes(&bash(
+            "gh -R acme/web pr merge 12 --squash"
+        )));
+        assert!(merges_or_closes(&bash("gh --repo acme/web pr close 12")));
+        assert!(merges_or_closes(&bash("cd web;gh pr merge")));
+        assert!(merges_or_closes(&bash("cd web&&gh pr merge --auto")));
+        assert!(merges_or_closes(&bash("bash -c 'gh pr merge 12'")));
+        assert!(merges_or_closes(&bash(
+            "sleep 60 && /usr/bin/gh pr merge 12"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge -X PUT"
+        )));
+        // Not one that only looks.
+        assert!(!merges_or_closes(&bash("gh pr view 12 --json mergeable")));
+        assert!(!merges_or_closes(&bash("gh pr checks 12 --watch")));
+        assert!(!merges_or_closes(&bash("git merge origin/main")));
+        assert!(!merges_or_closes(&bash("echo gh pr")));
+        assert!(!merges_or_closes(&bash("gh pr list --search merge")));
+        // A GET of …/merge only asks whether it merged, whatever comes
+        // after it in other commands.
+        assert!(!merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge"
+        )));
+        assert!(!merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge; curl -X PUT http://x"
+        )));
+        assert!(!merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge > OUTPUT"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api -XPUT repos/acme/web/pulls/12/merge"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api --method=put repos/acme/web/pulls/12/merge | jq .merged"
+        )));
+        // `merge` in another command than gh's own.
+        assert!(!merges_or_closes(&bash("gh pr view 12; echo merge")));
+        // Continued over lines, with quoted separators, in a command line
+        // handed on in quotes.
+        assert!(merges_or_closes(&bash(
+            "gh api -X PUT \\\n  repos/acme/web/pulls/12/merge \\\n  -f merge_method=squash"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge -f commit_message=\"a & b; c\" -X PUT"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh pr merge 12 --squash \\\n  --subject 'Fix the login | redirect'"
+        )));
+        assert!(merges_or_closes(&bash(
+            "bash -c 'cd web && gh pr merge 12'"
+        )));
+        assert!(merges_or_closes(&bash("out=$(gh pr merge 12 --squash)")));
+        assert!(!merges_or_closes(&bash(
+            "bash -c 'gh api repos/acme/web/pulls/12/merge; curl -X PUT http://x'"
+        )));
+        assert!(!merges_or_closes(&bash(
+            "git commit -m 'gh pr merge 12 later'"
+        )));
+        // What double quotes substitute runs; only a shell's -c runs its
+        // argument.
+        assert!(merges_or_closes(&bash("r=\"$(gh pr merge 12 --squash)\"")));
+        assert!(merges_or_closes(&bash("echo \"`gh pr merge 12`\"")));
+        assert!(merges_or_closes(&bash(
+            "echo \"merged: $(cd web && gh pr merge 12)\""
+        )));
+        assert!(merges_or_closes(&bash("/bin/bash -e -c 'gh pr merge 12'")));
+        assert!(merges_or_closes(&bash("sudo sh -lc \"gh pr close 12\"")));
+        assert!(!merges_or_closes(&bash("grep -c 'gh pr merge' log.txt")));
+        assert!(!merges_or_closes(&bash("git log -c \"gh pr close\"")));
+        assert!(!merges_or_closes(&bash("echo 'r=$(gh pr merge 12)'")));
+        // gh as the command, past what it sets and what runs it; a
+        // heredoc's text is no command.
+        assert!(merges_or_closes(&bash("GH_TOKEN=x sudo -E gh pr merge 12")));
+        assert!(merges_or_closes(&bash("timeout -s KILL 60 gh pr merge 12")));
+        assert!(!merges_or_closes(&bash("echo gh pr merge 12")));
+        assert!(!merges_or_closes(&bash(
+            "git commit -m \"$(cat <<'EOF'\nfix: stop using\ngh pr merge here\nEOF\n)\""
+        )));
+        assert!(!merges_or_closes(&bash(
+            "gh pr create --body-file - <<-EOF\n\tgh pr merge 12 once it passes\n\tEOF\ngh pr view"
+        )));
+        assert!(merges_or_closes(&bash(
+            "cat > notes.md <<EOF\nnotes\nEOF\ngh pr merge 12"
+        )));
+        assert!(!merges_or_closes(&bash("cat <<< 'gh pr merge 12'")));
+        // Past the shell's keywords and what runs gh, and in a script a
+        // shell reads from a heredoc.
+        assert!(merges_or_closes(&bash(
+            "if gh pr merge 12 --squash; then echo ok; fi"
+        )));
+        assert!(merges_or_closes(&bash(
+            "for n in 12 13; do gh pr merge $n; done"
+        )));
+        assert!(merges_or_closes(&bash("! gh pr merge 12")));
+        assert!(merges_or_closes(&bash("{ gh pr merge 12; }")));
+        assert!(merges_or_closes(&bash(
+            "while ! gh pr merge 12; do sleep 30; done"
+        )));
+        assert!(merges_or_closes(&bash("sudo -u bob gh pr merge 12")));
+        assert!(merges_or_closes(&bash("echo 12 | xargs -n 1 gh pr merge")));
+        assert!(merges_or_closes(&bash(
+            "bash <<'EOF'\ncd web\ngh pr merge 12\nEOF"
+        )));
+        assert!(!merges_or_closes(&bash(
+            "cat <<'EOF'\ncd web\ngh pr merge 12\nEOF"
+        )));
+        // Only Claude's own calls to Bash.
+        let read = serde_json::json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
+        ]}});
+        assert!(!merges_or_closes(&read));
+        let result = serde_json::json!({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": "gh pr merge 12"}
+        ]}});
+        assert!(!merges_or_closes(&result));
     }
 
     fn looked(state: &str, failing: &[&str]) -> Looked {

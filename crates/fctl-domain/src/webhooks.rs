@@ -89,6 +89,10 @@ pub struct Payload {
     /// GitHub logins. An app's bot (a merge queue's) counts as nobody.
     pub merged_by: Option<String>,
     pub sender: Option<String>,
+    /// The app's bot that merged it, or whose action the event is, when one
+    /// did (`fctl[bot]`, `github-merge-queue[bot]`): fctl's own app's is
+    /// most likely an agent's doing, as agents use its token.
+    pub bot: Option<String>,
 }
 
 impl Payload {
@@ -137,6 +141,12 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
         v.filter(|u| crate::follow_ups::is_person(u))
             .and_then(|u| at(u, "/login"))
     };
+    // An app's bot's login.
+    let bot = |v: Option<&Value>| {
+        v.filter(|u| !crate::follow_ups::is_person(u))
+            .and_then(|u| at(u, "/login"))
+            .filter(|l| l.ends_with("[bot]"))
+    };
     match event {
         "ping" => Delivery::Ping,
         "pull_request" => {
@@ -159,6 +169,11 @@ pub fn delivery(event: &str, payload: &Value) -> Delivery {
                 base_ref: at(pr, "/base/ref"),
                 merged_by: person(pr.get("merged_by")),
                 sender: person(payload.get("sender")),
+                // Who merged it, rather than who sent the event, for a merge.
+                bot: match pr.get("merged_by").filter(|u| !u.is_null()) {
+                    Some(merger) => bot(Some(merger)),
+                    None => bot(payload.get("sender")),
+                },
             };
             hook(repo, numbers, head, Some(payload))
         }
@@ -1314,6 +1329,21 @@ mod tests {
             .payload
             .unwrap_or_else(|| panic!("no payload"));
         assert_eq!(p.sender, None);
+        // A person merged it, whoever sent the event.
+        assert_eq!(p.bot, None);
+        // fctl's app merged it, as an agent does with its token.
+        event["pull_request"]["merged_by"] = json!({ "login": "fctl[bot]", "type": "Bot" });
+        event["sender"] = json!({ "login": "fctl[bot]", "type": "Bot" });
+        let p = hook(delivery("pull_request", &event))
+            .payload
+            .unwrap_or_else(|| panic!("no payload"));
+        assert_eq!((p.merged_by, p.bot.as_deref()), (None, Some("fctl[bot]")));
+        // Closed without a merge: whose action it was.
+        event["pull_request"]["merged_by"] = Value::Null;
+        let p = hook(delivery("pull_request", &event))
+            .payload
+            .unwrap_or_else(|| panic!("no payload"));
+        assert_eq!(p.bot.as_deref(), Some("fctl[bot]"));
         let status = json!({ "sha": "abc123", "state": "failure", "repository": { "full_name": "acme/app" } });
         assert!(hook(delivery("status", &status)).checks);
         let suite = json!({ "check_suite": { "head_sha": "abc" }, "repository": { "full_name": "acme/app" } });

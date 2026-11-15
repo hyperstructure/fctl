@@ -176,17 +176,21 @@ function Comment({ f, w, ts }: { f: G.FollowUp; w: Wrote; ts: number }) {
 
 /**
  * What fctl didn't pass on to the agent: failed checks, or conflicts, it heard of three times in a
- * row while nobody messaged it. What happened shows muted, with why the agent didn't hear of it.
+ * row while nobody messaged it (`follow_up_held`), or a merge or close the agent made itself as it
+ * worked (`follow_up_own`). What happened shows muted, with why the agent didn't hear
+ * of it.
  */
 export const HeldFollowUp = memo(function HeldFollowUp({
   followUp,
+  code,
   ts,
 }: {
   followUp: G.FollowUp;
+  /** The notice's code. */
+  code?: string;
   ts: number;
 }) {
   const { happened } = parts(followUp);
-  const conflicts = happened.length > 0 && happened.every((e) => e.kind === "conflicts");
   return (
     <div className="group/msg animate-rise py-3">
       <div className="flex flex-col gap-3">
@@ -195,13 +199,22 @@ export const HeldFollowUp = memo(function HeldFollowUp({
         ))}
       </div>
       <p className="mt-1 ml-[34px] text-[12.5px] leading-relaxed text-ink-4">
-        {conflicts
-          ? "Not passed on: the agent heard of conflicts three times in a row, with no message from a person in between. Message it to have it resolve them."
-          : "Not passed on: the agent heard of failed checks three times in a row, with no message from a person in between. Message it to have it look."}
+        {whyNotPassedOn(happened, code)}
       </p>
     </div>
   );
 });
+
+/** Why the agent didn't hear of what happened, as a notice of `code` says. */
+function whyNotPassedOn(happened: Happened[], code: string | undefined): string {
+  if (code === "follow_up_own") {
+    const closed = happened.some((e) => e.kind === "closed");
+    return `Not passed on: the agent ${closed ? "closed" : "merged"} it itself as it worked.`;
+  }
+  if (happened.length > 0 && happened.every((e) => e.kind === "conflicts"))
+    return "Not passed on: the agent heard of conflicts three times in a row, with no message from a person in between. Message it to have it resolve them.";
+  return "Not passed on: the agent heard of failed checks three times in a row, with no message from a person in between. Message it to have it look.";
+}
 
 const PR_COLORS = { merged: "text-pr-merged", closed: "text-pr-closed" } as const;
 

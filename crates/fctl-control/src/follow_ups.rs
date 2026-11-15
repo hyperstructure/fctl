@@ -325,6 +325,9 @@ pub struct News {
     pub author: Option<String>,
     pub head_ref: Option<String>,
     pub events: Vec<(FollowUpEvent, Option<Millis>)>,
+    /// The app's bot that merged or closed it, when one did
+    /// (`fctl_domain::webhooks::Payload::bot`).
+    pub bot: Option<String>,
     /// GitHub didn't know yet whether it conflicts with its base branch
     /// (`fctl_domain::follow_ups::unsure`), asked this many times now.
     pub unsure: Option<u32>,
@@ -383,6 +386,7 @@ pub async fn route(
             .filter(|(e, _)| takes(&opener.follow_ups, e))
             .map(|(e, at)| Item {
                 seen: Some(n.seen),
+                by_app: rv::by_app(n.bot.as_deref(), app.as_deref()),
                 ..Item::new(n.pull.clone(), e.clone(), *at)
             })
             .collect();
