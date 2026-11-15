@@ -415,6 +415,16 @@ async fn dispatch(
             api::autopilots::write_log(ctx, req, id).await
         }
         (Put, ["projects", id, "autopilot", "plan"]) => api::autopilots::plan(ctx, req, id).await,
+        (Get, ["projects", id, "autopilot", "files"]) => api::autopilots::files(ctx, id).await,
+        (Get, ["projects", id, "autopilot", "files", name]) => {
+            api::autopilots::file(ctx, id, name).await
+        }
+        (Put, ["projects", id, "autopilot", "files", name]) => {
+            api::autopilots::put_file(ctx, req, id, name).await
+        }
+        (Delete, ["projects", id, "autopilot", "files", name]) => {
+            api::autopilots::remove_file(ctx, id, name).await
+        }
         (Post, ["projects", id, "autopilot", "notes"]) => {
             api::autopilots::add_note(ctx, req, id).await
         }

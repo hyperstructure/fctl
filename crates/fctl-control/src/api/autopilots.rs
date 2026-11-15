@@ -123,8 +123,8 @@ fn require_pilot(ctx: &Ctx, l: &Loaded) -> AppResult<()> {
 /// `GET /api/v1/projects/{id}/autopilot`.
 pub async fn get(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let l = load(ctx, id).await?;
-    // One that is off too: it keeps its direction, notes, plan, log and
-    // asks for when the project is put on autopilot again.
+    // One that is off too: it keeps its direction, notes, plan, files, log
+    // and asks for when the project is put on autopilot again.
     let row = l.row.clone().ok_or_else(|| not_found("Autopilot"))?;
     http::ok(&view(ctx, &l.p, &row, l.can).await?)
 }
@@ -514,7 +514,7 @@ async fn brief_of(
         "SELECT e.at, e.text, u.name AS user_name, sp.slug AS session_slug, es.number AS session_number, \
          es.title AS session_title FROM autopilot_log e LEFT JOIN users u ON u.id = e.user_id \
          LEFT JOIN sessions es ON es.id = e.session_id LEFT JOIN projects sp ON sp.id = es.project_id \
-         WHERE e.project_id = ? AND e.kind NOT IN ('woke', 'plan') ORDER BY e.at DESC, e.id DESC LIMIT 12",
+         WHERE e.project_id = ? AND e.kind NOT IN ('woke', 'plan', 'file') ORDER BY e.at DESC, e.id DESC LIMIT 12",
         &[s(&row.project_id)],
     )?
     .all()
@@ -602,9 +602,22 @@ async fn brief_of(
             },
         })
         .collect();
+    let shows = |part: ap::BriefPart| parts.contains(&part);
+    let files = if shows(ap::BriefPart::Files) {
+        engine::files(db, &row.project_id).await?
+    } else {
+        Vec::new()
+    };
+    let file_views: Vec<ap::FileView> = files
+        .iter()
+        .map(|f| ap::FileView {
+            name: &f.name,
+            size: u64::try_from(f.size).unwrap_or(0),
+            at: f.updated_at,
+        })
+        .collect();
     let powers = row.powers();
     let direction_by = row.direction_by_name.clone();
-    let shows = |part: ap::BriefPart| parts.contains(&part);
     let shown = Shown {
         notes: notes
             .iter()
@@ -640,6 +653,7 @@ async fn brief_of(
         asks: &ask_views,
         crew: &crew_views,
         others: &other_views,
+        files: &file_views,
         log: &log_views,
         projects: &projects,
         wake_at: row.wake_at,
@@ -1154,8 +1168,8 @@ fn join(items: &[&str]) -> String {
 }
 
 /// `POST …/autopilot/off`: takes the project off autopilot. It keeps its
-/// direction, notes, plan, log and asks; its own session stops, and with
-/// `stop_sessions` those it started that still work.
+/// direction, notes, plan, files, log and asks; its own session stops, and
+/// with `stop_sessions` those it started that still work.
 pub async fn off(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Response> {
     let body: AutopilotOffRequest = if http::header(req, "Content-Type").is_some() {
         http::body(req).await?
@@ -1512,6 +1526,107 @@ pub async fn plan(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respo
     );
     entry.from = from.as_deref();
     engine::log(&ctx.db, &l.p.row.id, entry, ctx.now).await;
+    http::ok(&serde_json::json!({ "ok": true }))
+}
+
+// ───────────────────────────── its files ─────────────────────────────
+
+/// `GET …/autopilot/files`: the files it keeps across its sessions, by
+/// name, without what they hold. Its own session reads them, as do those
+/// who see what it does; one that is off keeps them too.
+pub async fn files(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
+    let l = load(ctx, id).await?;
+    require_read(&l)?;
+    let row = l.row.ok_or_else(|| not_found("Autopilot"))?;
+    let files: Vec<AutopilotFile> = engine::files(&ctx.db, &row.project_id)
+        .await?
+        .into_iter()
+        .map(engine::FileRow::file)
+        .collect();
+    http::ok(&AutopilotFiles {
+        bytes: files.iter().map(|f| f.size).sum(),
+        files,
+        max_bytes: ap::MAX_FILES_BYTES,
+        max_file_bytes: ap::MAX_FILE_BYTES,
+        max_files: ap::MAX_FILES,
+    })
+}
+
+/// `GET …/autopilot/files/{name}`: one of its files, with what it holds.
+pub async fn file(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Response> {
+    let l = load(ctx, id).await?;
+    require_read(&l)?;
+    let row = l.row.ok_or_else(|| not_found("Autopilot"))?;
+    let file = engine::file(&ctx.db, &row.project_id, &http::decode(name))
+        .await?
+        .ok_or_else(|| not_found("File"))?;
+    http::ok(&file.file())
+}
+
+/// `PUT …/autopilot/files/{name}`: its own session writes one of its files
+/// whole, a new one or in place of the one of that name.
+pub async fn put_file(
+    ctx: &mut Ctx,
+    req: &mut Request,
+    id: &str,
+    name: &str,
+) -> AppResult<Response> {
+    let body: PutAutopilotFileRequest = http::body(req).await?;
+    let l = load(ctx, id).await?;
+    require_pilot(ctx, &l)?;
+    let row = require(l.row.clone())?;
+    let name = ap::file_name(&http::decode(name)).map_err(AppError)?;
+    ap::file_content(&body.content).map_err(AppError)?;
+    let from = ctx.autopilot().map(|a| a.session_id.clone());
+    let put = engine::put_file(
+        &ctx.db,
+        &row.project_id,
+        &name,
+        &body.content,
+        from.as_deref(),
+        ctx.now,
+    )
+    .await?;
+    // A new file gets a line in its log; rewriting one, which a script may
+    // do often, shows on the tab as when it was written.
+    if put == engine::Put::New {
+        let mut entry = Entry::new(
+            AutopilotEntryKind::File,
+            format!("Added `{name}` to its files"),
+        );
+        entry.from = from.as_deref();
+        engine::log(&ctx.db, &row.project_id, entry, ctx.now).await;
+    }
+    let file = engine::file(&ctx.db, &row.project_id, &name)
+        .await?
+        .ok_or_else(|| not_found("File"))?;
+    let file = AutopilotFile {
+        content: None,
+        ..file.file()
+    };
+    match put {
+        engine::Put::New => http::created(&file),
+        engine::Put::Replaced => http::ok(&file),
+    }
+}
+
+/// `DELETE …/autopilot/files/{name}`: its own session removes one of its
+/// files.
+pub async fn remove_file(ctx: &mut Ctx, id: &str, name: &str) -> AppResult<Response> {
+    let l = load(ctx, id).await?;
+    require_pilot(ctx, &l)?;
+    let row = require(l.row.clone())?;
+    let name = http::decode(name);
+    if !engine::remove_file(&ctx.db, &row.project_id, &name).await? {
+        return Err(not_found("File"));
+    }
+    let from = ctx.autopilot().map(|a| a.session_id.clone());
+    let mut entry = Entry::new(
+        AutopilotEntryKind::File,
+        format!("Removed `{name}` from its files"),
+    );
+    entry.from = from.as_deref();
+    engine::log(&ctx.db, &row.project_id, entry, ctx.now).await;
     http::ok(&serde_json::json!({ "ok": true }))
 }
 

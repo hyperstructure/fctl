@@ -287,9 +287,11 @@ session calls the endpoints marked *autopilot*, through its sandbox's
 | `POST …/autopilot/asks/{ask}/answer` | `{"answer", "attachments"}`, or `{"secret"}` for a secret it asked for, which goes into the project's secrets. `attachments`, uploaded to the session a question is about (`about`), go to it in a message from the caller with the answer as its text; the answer may then be empty |
 | `POST …/autopilot/asks/{ask}/decline` | `{"reason"}` |
 | `GET …/autopilot/log` | `{"entries": […], "has_more"}`, newest first (`?before=` an entry's id, `?limit=` up to 200) |
-| `GET …/autopilot/brief` | `{"brief"}`: where things stand, as Markdown for its session; `?only=sessions,asks` gives only the parts named (`direction`, `notes`, `asks`, `sessions`, its own, `people`, people's sessions, `plan`, `log`), after its lines on where it runs. The autopilot has then heard of the notes and answers among them |
+| `GET …/autopilot/brief` | `{"brief"}`: where things stand, as Markdown for its session; `?only=sessions,asks` gives only the parts named (`direction`, `notes`, `asks`, `sessions`, its own, `people`, people's sessions, `plan`, `files`, its files by name, `log`), after its lines on where it runs. The autopilot has then heard of the notes and answers among them |
 | `POST …/autopilot/log` | *autopilot*: `{"text"}`, what it did, decided or plans |
 | `PUT …/autopilot/plan` | *autopilot*: `{"plan"}`, whole (Markdown) |
+| `GET …/autopilot/files`, `GET …/autopilot/files/{name}` | `{"files": [{"name", "size", "created_at", "updated_at"}…], "bytes", "max_bytes", "max_file_bytes", "max_files"}`: the files it keeps across its sessions, by name; one of them with its `content` too |
+| `PUT …/autopilot/files/{name}`, `DELETE …/autopilot/files/{name}` | *autopilot*: `{"content"}`, a file whole (text, at most 256 KB, and its files 4 MB and 100 in all; `201` for a new one), or removes it. A name has letters, digits, dots, dashes and underscores, and starts with a letter or a digit |
 | `POST …/autopilot/asks`, `DELETE …/autopilot/asks/{ask}` | *autopilot*: `{"text", "options", "detail", "secret": "NAME", "project", "about": "ses_…"}` (`about`: a session in its places that the question is about), takes it back |
 | `GET /api/v1/autopilots/asks` | `{"asks": […]}`: what autopilots ask that the caller may answer, across their workspaces |
 

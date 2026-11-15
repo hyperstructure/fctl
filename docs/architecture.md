@@ -2131,8 +2131,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    projects whose people the owner all trusts, and a new owner starts
    without it. D1 keeps it (`autopilots`, one
    per project, its home) with the notes people steer it with
-   (`autopilot_notes`), what it asks them (`autopilot_asks`) and its log
-   (`autopilot_log`, its newest 1,000 entries).
+   (`autopilot_notes`), what it asks them (`autopilot_asks`), its log
+   (`autopilot_log`, its newest 1,000 entries) and its files
+   (`autopilot_files`, point 2).
 2. **Its own sessions** (`sessions.autopilot_role = 'pilot'`, in its home
    project, off session lists unless asked with `?hidden=1`). A workspace's
    autopilot's, which show what it does across the workspace, are its
@@ -2147,8 +2148,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    starts a fresh one, whose first message is its briefing
    (`fctl_domain::autopilot::briefing`): who it is and for whom, the
    direction, and how it works, then why it takes over from the last one
-   and from what (`takes_over_from`: its plan, its log, `fctl autopilot
-   brief`, and to check what the last one promised people against what is
+   and from what (`takes_over_from`: its plan, its log, its files,
+   `fctl autopilot brief`, and to check what the last one promised people against what is
    live, telling them of what shipped), then the wake's news. Where it hands off is its
    **handoff** (`autopilots.handoff_at`, *A fresh session takes over* in
    its settings, `fctl autopilot set --handoff-at 250k`): a context size,
@@ -2191,8 +2192,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    many work at once (not one that ended its turn to wait for its
    background work), and to name sessions as fctl does, never with a
    placeholder. Its plan reads as if a stranger
-   took over at the next wake, holds the scripts the work relies on whole,
-   and it changes the plan as fctl has it
+   took over at the next wake, names the files each part of the work
+   relies on rather than copy them into it, and it changes the plan as fctl
+   has it
    (`fctl autopilot plan` prints it), whole or a section at a time
    (`fctl autopilot plan --section`, which fails when the plan lacks the
    section rather than write one without it). Each wake
@@ -2209,13 +2211,24 @@ sessions to do it, and sets up what the work needs, as far as they let it
    the fresh session rather than the one leaving (`Autopilot.fresh_asked`
    says one is due). So no conversation grows for ever, and
    what must outlast one is where people see it too: its plan (Markdown it
-   writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`) and
-   the project's memory. `fctl autopilot brief` gives it where things
+   writes whole, `fctl autopilot plan`), its log (`fctl autopilot log`),
+   the project's memory, and its files (`fctl autopilot files`,
+   `autopilot_files`): text such as the scripts it relies on (watchers,
+   retries) and drafts of what it will send, at most 100, of 256 KB each
+   and 4 MB in all (`fctl_domain::autopilot::MAX_FILES_BYTES`, checked in
+   the statement that writes one, so that two writes at once can't both
+   take the last room), which its own session writes whole and removes,
+   its next one gets back in its new sandbox (`fctl autopilot files get
+   --all`, which makes those that start with `#!` executable), and people
+   read on its tab. A new file and a removed one get a line in its log; a
+   rewrite, which a script may make often, shows only as when it was
+   written. They stay while it is off, and go with the project.
+   `fctl autopilot brief` gives it where things
    stand: the direction, people's notes (the new ones marked), its asks
    and their answers (those it heard since its own session started only
    counted, as they are in its conversation already), its sessions, people's sessions in its places that
-   work or have a pull request open (point 8), its plan and log
-   (`fctl_domain::autopilot::brief`), or only the parts it names
+   work or have a pull request open (point 8), its plan, its files by name
+   and its log (`fctl_domain::autopilot::brief`), or only the parts it names
    (`--only sessions,people,asks`, `?only=`; `brief_parts`), as the whole
    runs to tens of kilobytes that each wake would read again, and it has
    heard of the notes and answers of the parts it read. Its owner follows its own session, which
@@ -2390,10 +2403,11 @@ sessions to do it, and sets up what the work needs, as far as they let it
 
 The tab shows where it stands (at work, waking, waiting for people, on
 and when it next checks in, paused and why), what it asks, the notes, its
-direction, plan and sessions (live), how it works, and its log by day, with
-its wakes between what it did. Everyone who sees the project sees it,
+direction, plan, files (once it keeps any, each opened to read) and
+sessions (live), how it works, and its log by day, with its wakes between
+what it did. Everyone who sees the project sees it,
 except that what a workspace's autopilot does reaches projects some of
-them don't see: its plan, notes, asks, sessions, log, brief and own
+them don't see: its plan, notes, asks, sessions, files, log, brief and own
 session are its admins' (`AutopilotCan::read`), and others see only that
 it runs, and how. Those who may steer it (the project's maintainers and
 owners, and for a workspace's autopilot the workspace's admins) steer it.
