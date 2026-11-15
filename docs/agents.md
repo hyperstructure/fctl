@@ -674,7 +674,14 @@ requests with their checks, the start of what it said as its turn ended
 who else wrote to it and what, so that it doesn't contradict them. People
 writing to one of its sessions don't wake it: it hears of them at its next
 wake. A pull request of one that rests merging or closing does, whoever
-merged it, so that it needs no script to wait for a merge.
+merged it, so that it needs no script to wait for a merge. Once one
+merged, the checks on its base branch wake it again as they end, passed,
+failed or cancelled, on the first commit there that holds the merge: its
+merge commit, or a newer merge's whose run took over from its own. The
+wake says how many checks passed and which failed, so that it needs no
+script to wait for the base branch to go green either before it deploys
+or tells people what shipped. A push straight to the base branch, or a
+pull request none of its sessions opened, doesn't wake it so.
 
 It looks after the sessions people start themselves too: its brief lists
 those at work and those whose pull requests are still open, with their
