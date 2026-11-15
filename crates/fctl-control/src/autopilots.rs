@@ -1815,6 +1815,7 @@ pub fn ask_view<'a>(a: &'a AskRow, options: &'a [String]) -> ap::AskView<'a> {
         by: a.answered_by_name.as_deref(),
         at: a.answered_at.unwrap_or(a.created_at),
         new: a.seen_at.is_none(),
+        heard: false,
         about: a
             .about()
             .map(|x| format!("{}#{}", x.project_slug, x.number)),
@@ -2032,7 +2033,7 @@ async fn crew_room_for(
         return Err(AppError(ApiError::new(
             fctl_proto::ErrorCode::Conflict,
             format!(
-                "{} of this autopilot's sessions work already, as many as its people allow at once (those queued, starting, working, paused on a usage limit or still stopping count, as does one just messaged): fctl wakes you when one ends its turn, so start this one then, or stop one (fctl stop) to make room.",
+                "{} of this autopilot's sessions work already, as many as its people allow at once (those queued, starting, working, paused on a usage limit or still stopping count, as does one just messaged; one waiting for its background work doesn't until its own turn starts): fctl wakes you when one ends its turn, so start this one then, or stop one (fctl stop) to make room.",
                 counts.working
             ),
         )));
