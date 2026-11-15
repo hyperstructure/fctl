@@ -659,37 +659,97 @@ pub fn merges_or_closes(v: &Value) -> bool {
 }
 
 /// Whether a command line runs `gh pr merge`, `gh pr close` or a merge
-/// through `gh api` ([`merges_or_closes`]).
-fn runs_merge(command: &str) -> bool {
-    // Each command of the line on its own: what follows `;`, `&&` or `|`
-    // is another's.
-    command.split([';', '&', '|', '\n']).any(|part| {
-        let words: Vec<&str> = part
-            .split(|c: char| c.is_whitespace() || "()'\"`".contains(c))
-            .filter(|w| !w.is_empty())
-            .collect();
-        words
-            .iter()
-            .enumerate()
-            .any(|(i, w)| (*w == "gh" || w.ends_with("/gh")) && gh_merges(&words[i + 1..]))
-    })
+/// through `gh api` ([`merges_or_closes`]), in any of its commands
+/// ([`commands`]), or in a command line it hands a shell (`bash -c '…'`).
+fn runs_merge(line: &str) -> bool {
+    fn within(line: &str, depth: u8) -> bool {
+        commands(line).iter().any(|words| {
+            words.iter().enumerate().any(|(i, w)| {
+                ((w == "gh" || w.ends_with("/gh")) && gh_merges(&words[i + 1..]))
+                    // What a shell runs: `bash -c '…'`, `sh -lc '…'`.
+                    || (depth < 2
+                        && i > 0
+                        && words[i - 1].starts_with('-')
+                        && !words[i - 1].starts_with("--")
+                        && words[i - 1].ends_with('c')
+                        && within(w, depth + 1))
+            })
+        })
+    }
+    within(line, 0)
+}
+
+/// The commands of a command line, each as its words, as a shell splits
+/// them: at `;`, `&`, `|`, new lines, parentheses and backticks outside
+/// quotes, and words at whitespace outside quotes, which they lose. A
+/// backslash before a new line continues the line.
+fn commands(line: &str) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    // The word has quotes in it, so that `""` is a word.
+    let mut quoted = false;
+    let mut quote: Option<char> = None;
+    let end_word = |words: &mut Vec<String>, word: &mut String, quoted: &mut bool| {
+        if !word.is_empty() || *quoted {
+            words.push(std::mem::take(word));
+        }
+        *quoted = false;
+    };
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some('"'), '\\') => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                quoted = true;
+            }
+            (None, '\\') => match chars.next() {
+                Some('\n') | None => {}
+                Some(n) => word.push(n),
+            },
+            (None, ';' | '&' | '|' | '\n' | '(' | ')' | '`') => {
+                end_word(&mut words, &mut word, &mut quoted);
+                if !words.is_empty() {
+                    out.push(std::mem::take(&mut words));
+                }
+            }
+            (None, c) if c.is_whitespace() => end_word(&mut words, &mut word, &mut quoted),
+            (None, c) => word.push(c),
+        }
+    }
+    end_word(&mut words, &mut word, &mut quoted);
+    if !words.is_empty() {
+        out.push(words);
+    }
+    out
 }
 
 /// Whether gh, given `args`, merges or closes a pull request: `pr merge`,
 /// `pr close`, or `api` with a PUT to `…/pulls/12/merge` (a GET only asks
 /// whether it merged). gh's flags may come before its subcommands:
 /// `-R acme/web` and `--repo acme/web` take the word after them.
-fn gh_merges(args: &[&str]) -> bool {
+fn gh_merges(args: &[String]) -> bool {
     let past_flags = |mut i: usize| {
         while let Some(w) = args.get(i).filter(|w| w.starts_with('-')) {
-            i += if matches!(*w, "-R" | "--repo") { 2 } else { 1 };
+            i += if matches!(w.as_str(), "-R" | "--repo") {
+                2
+            } else {
+                1
+            };
         }
         i
     };
     let i = past_flags(0);
-    match args.get(i).copied() {
+    match args.get(i).map(String::as_str) {
         Some("pr") => matches!(
-            args.get(past_flags(i + 1)).copied(),
+            args.get(past_flags(i + 1)).map(String::as_str),
             Some("merge" | "close")
         ),
         Some("api") => {
@@ -699,7 +759,7 @@ fn gh_merges(args: &[&str]) -> bool {
                 .any(|w| w.contains("pulls/") && w.ends_with("/merge"))
                 && (rest
                     .windows(2)
-                    .any(|w| matches!(w[0], "-X" | "--method") && put(w[1]))
+                    .any(|w| matches!(w[0].as_str(), "-X" | "--method") && put(&w[1]))
                     || rest.iter().any(|w| {
                         w.strip_prefix("-X")
                             .or_else(|| w.strip_prefix("--method="))
@@ -2101,6 +2161,27 @@ mod tests {
         )));
         // `merge` in another command than gh's own.
         assert!(!merges_or_closes(&bash("gh pr view 12; echo merge")));
+        // Continued over lines, with quoted separators, in a command line
+        // handed on in quotes.
+        assert!(merges_or_closes(&bash(
+            "gh api -X PUT \\\n  repos/acme/web/pulls/12/merge \\\n  -f merge_method=squash"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh api repos/acme/web/pulls/12/merge -f commit_message=\"a & b; c\" -X PUT"
+        )));
+        assert!(merges_or_closes(&bash(
+            "gh pr merge 12 --squash \\\n  --subject 'Fix the login | redirect'"
+        )));
+        assert!(merges_or_closes(&bash(
+            "bash -c 'cd web && gh pr merge 12'"
+        )));
+        assert!(merges_or_closes(&bash("out=$(gh pr merge 12 --squash)")));
+        assert!(!merges_or_closes(&bash(
+            "bash -c 'gh api repos/acme/web/pulls/12/merge; curl -X PUT http://x'"
+        )));
+        assert!(!merges_or_closes(&bash(
+            "git commit -m 'gh pr merge 12 later'"
+        )));
         // Only Claude's own calls to Bash.
         let read = serde_json::json!({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
