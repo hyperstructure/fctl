@@ -461,7 +461,8 @@ pub async fn sweep(env: &Env, db: &D1Database, now: i64) -> AppResult<usize> {
 /// them all, then each other merge's in that order, until none waits, with
 /// at most
 /// [`SWEEP_LOOKUPS`] lookups counted in `lookups`. Adds to `reached` the
-/// merges that a commit it looked up holds.
+/// merges GitHub answered for: those whose commit it looked up, found or
+/// not, and those that a commit on the branch it looked up holds.
 #[allow(clippy::too_many_arguments)]
 async fn sweep_branch(
     gh: &github::Github<'_>,
@@ -497,18 +498,17 @@ async fn sweep_branch(
         let answer = gh
             .lookup(installation, webhooks::commit_query(repo, &sha, branch))
             .await?;
-        let Some(commit) = webhooks::looked_up_commit(&answer) else {
+        let commit = webhooks::looked_up_commit(&answer);
+        for number in answered_for(&waiting, &sha, commit.as_ref()) {
+            if !reached.contains(&number) {
+                reached.push(number);
+            }
+        }
+        let Some(commit) = commit else {
             continue;
         };
         if head.is_none() {
             head = commit.head.clone();
-        }
-        if commit.on_branch {
-            for w in waiting.iter().filter(|w| commit.holds(&w.merge_sha)) {
-                if !reached.contains(&w.number) {
-                    reached.push(w.number);
-                }
-            }
         }
         let merges: Vec<&str> = waiting.iter().map(|w| w.merge_sha.as_str()).collect();
         let Some((_, held)) = mc::settles(&commit, &merges) else {
@@ -523,6 +523,20 @@ async fn sweep_branch(
             .collect();
     }
     Ok(())
+}
+
+/// The merges among `waiting` that GitHub's answer to a lookup of commit
+/// `sha` (`commit`, `None` when it has none) answered for: those of that
+/// commit, found or not, and those that a commit on the branch holds.
+fn answered_for(waiting: &[Waiting], sha: &str, commit: Option<&Commit>) -> Vec<i64> {
+    waiting
+        .iter()
+        .filter(|w| {
+            w.merge_sha.eq_ignore_ascii_case(sha)
+                || commit.is_some_and(|c| c.on_branch && c.holds(&w.merge_sha))
+        })
+        .map(|w| w.number)
+        .collect()
 }
 
 /// A merge of an autopilot's session whose checks on its base branch
@@ -872,6 +886,37 @@ mod tests {
             .run()
             .await?;
         assert!(stale(&db, at + SWEEP_AGAIN_MS + 1).await?.is_empty());
+        Ok(())
+    }
+
+    /// A merge counts as looked at once GitHub answered for it: its own
+    /// commit looked up, found or not, or one on the branch that holds it.
+    #[wasm_bindgen_test]
+    async fn a_merge_counts_as_looked_at_once_github_answered_for_it() -> AppResult<()> {
+        let merge = |number: i64, sha: &str| Waiting {
+            number,
+            session_id: format!("ses_{number}"),
+            autopilot_id: "prj_web".into(),
+            base_ref: "main".into(),
+            merge_sha: sha.into(),
+        };
+        let waiting = [merge(12, "aaa"), merge(13, "bbb"), merge(14, "ccc")];
+        // The head, which holds the two before it.
+        let head = commit("ccc", &["ccc", "bbb"], "ccc", checks(1, 0, 0, 3));
+        assert_eq!(answered_for(&waiting, "ccc", Some(&head)), vec![13, 14]);
+        // #12's own commit, which GitHub no longer has.
+        assert_eq!(answered_for(&waiting, "AAA", None), vec![12]);
+        // A fork's commit of main's name holds nothing on main.
+        let fork = Commit {
+            on_branch: false,
+            ..commit(
+                "fff",
+                &["fff", "ccc", "bbb", "aaa"],
+                "ccc",
+                checks(4, 0, 0, 0),
+            )
+        };
+        assert!(answered_for(&waiting, "fff", Some(&fork)).is_empty());
         Ok(())
     }
 
