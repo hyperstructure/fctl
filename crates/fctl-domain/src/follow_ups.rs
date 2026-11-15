@@ -681,36 +681,71 @@ fn runs_merge(line: &str) -> bool {
     within(line, 0)
 }
 
-/// Where a command's command word is: past the variables it sets
-/// (`GH_TOKEN=… gh …`) and what runs it (`sudo -E`, `env`, `timeout 60`).
+/// Where a command's command word is: past the shell's keywords (`if`,
+/// `do`, `!`, `{`), the variables it sets (`GH_TOKEN=… gh …`) and what runs
+/// it (`sudo -u bob`, `env`, `xargs -n 1`, `timeout 60`).
 fn command_at(words: &[String]) -> usize {
     let mut i = 0;
-    while let Some(w) = words.get(i) {
+    // What runs the command after it, whose flags may take a value.
+    let mut runner: Option<&str> = None;
+    // `timeout`'s time comes before the command.
+    let mut time = false;
+    while let Some(w) = words.get(i).map(String::as_str) {
         let assigns = w
             .split_once('=')
             .is_some_and(|(name, _)| !name.is_empty() && !name.starts_with('-'));
-        let runs = matches!(
-            w.as_str(),
-            "sudo" | "env" | "time" | "command" | "exec" | "nohup" | "nice"
-        );
-        if assigns || runs || w.starts_with('-') {
+        if w.starts_with('-') {
+            i += if runner.is_some_and(|r| takes_value(r, w)) {
+                2
+            } else {
+                1
+            };
+        } else if time {
+            time = false;
             i += 1;
-        } else if w == "timeout" {
-            // Its flags (a signal, a time to kill after), then how long.
+        } else if assigns
+            || matches!(
+                w,
+                "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!" | "{" | "time"
+            )
+        {
             i += 1;
-            while let Some(flag) = words.get(i).filter(|w| w.starts_with('-')) {
-                i += if matches!(flag.as_str(), "-s" | "--signal" | "-k" | "--kill-after") {
-                    2
-                } else {
-                    1
-                };
-            }
+        } else if matches!(
+            w,
+            "sudo" | "env" | "command" | "exec" | "nohup" | "nice" | "xargs" | "stdbuf" | "timeout"
+        ) {
+            runner = Some(w);
+            time = w == "timeout";
             i += 1;
         } else {
             break;
         }
     }
     i
+}
+
+/// Whether `flag` of what runs a command (`runner`: `sudo`, `xargs`…)
+/// takes the word after it: `sudo -u bob`, `xargs -n 1`.
+fn takes_value(runner: &str, flag: &str) -> bool {
+    match runner {
+        "sudo" => matches!(
+            flag,
+            "-u" | "-g" | "-U" | "-C" | "-h" | "-p" | "-r" | "-t" | "-D" | "-R"
+        ),
+        "xargs" => matches!(flag, "-n" | "-L" | "-P" | "-I" | "-d" | "-E" | "-s" | "-a"),
+        "env" => matches!(flag, "-u" | "-C" | "-S"),
+        "timeout" => matches!(flag, "-s" | "-k" | "--signal" | "--kill-after"),
+        "nice" => flag == "-n",
+        "stdbuf" => matches!(flag, "-i" | "-o" | "-e"),
+        _ => false,
+    }
+}
+
+/// Whether a command word is a shell's: `bash`, `/bin/sh`.
+fn is_shell(word: &str) -> bool {
+    word.rsplit('/')
+        .next()
+        .is_some_and(|w| matches!(w, "sh" | "bash" | "zsh" | "dash" | "ksh"))
 }
 
 /// Whether word `i` of a command is the command line a shell runs: the
@@ -726,8 +761,7 @@ fn runs_in_shell(words: &[String], i: usize) -> bool {
         .iter()
         .rev()
         .find(|w| !w.starts_with('-'))
-        .and_then(|w| w.rsplit('/').next())
-        .is_some_and(|shell| matches!(shell, "sh" | "bash" | "zsh" | "dash" | "ksh"))
+        .is_some_and(|w| is_shell(w))
 }
 
 /// The commands of a command line, each as its words, as a shell splits
@@ -745,8 +779,9 @@ fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
     // The word has quotes in it, so that `""` is a word.
     let mut quoted = false;
     let mut quote: Option<char> = None;
-    // The delimiters of heredocs whose text starts at the next new line.
-    let mut heredocs: Vec<String> = Vec::new();
+    // The delimiters of heredocs whose text starts at the next new line,
+    // and whether a shell runs that text (`bash <<'EOF'`).
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
     let end_word = |words: &mut Vec<String>, word: &mut String, quoted: &mut bool| {
         if !word.is_empty() || *quoted {
             words.push(std::mem::take(word));
@@ -799,6 +834,7 @@ fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
             // A heredoc (`<<EOF`, `<<-'EOF'`), not a here-string (`<<<`).
             (None, '<') if chars.peek() == Some(&'<') => {
                 chars.next();
+                end_word(&mut words, &mut word, &mut quoted);
                 if chars.peek() == Some(&'<') {
                     chars.next();
                     continue;
@@ -820,7 +856,9 @@ fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
                     }
                 }
                 if !delimiter.is_empty() {
-                    heredocs.push(delimiter);
+                    let script = words.get(command_at(&words)).is_some_and(|w| is_shell(w))
+                        && !words.iter().any(|w| w == "-c");
+                    heredocs.push((delimiter, script));
                 }
             }
             (None, ';' | '&' | '|' | '\n' | '(' | ')' | '`') => {
@@ -829,14 +867,22 @@ fn commands(line: &str) -> (Vec<Vec<String>>, Vec<String>) {
                     out.push(std::mem::take(&mut words));
                 }
                 // The heredocs' text, line by line, up to each one's
-                // delimiter.
+                // delimiter: a shell's script, or text.
                 if c == '\n' {
-                    for delimiter in std::mem::take(&mut heredocs) {
+                    for (delimiter, script) in std::mem::take(&mut heredocs) {
+                        let mut lines = Vec::new();
                         loop {
                             let text: String = chars.by_ref().take_while(|&n| n != '\n').collect();
-                            if text.trim() == delimiter || chars.peek().is_none() {
+                            if text.trim() == delimiter {
                                 break;
                             }
+                            lines.push(text);
+                            if chars.peek().is_none() {
+                                break;
+                            }
+                        }
+                        if script {
+                            substituted.push(lines.join("\n"));
                         }
                     }
                 }
@@ -2330,6 +2376,27 @@ mod tests {
             "cat > notes.md <<EOF\nnotes\nEOF\ngh pr merge 12"
         )));
         assert!(!merges_or_closes(&bash("cat <<< 'gh pr merge 12'")));
+        // Past the shell's keywords and what runs gh, and in a script a
+        // shell reads from a heredoc.
+        assert!(merges_or_closes(&bash(
+            "if gh pr merge 12 --squash; then echo ok; fi"
+        )));
+        assert!(merges_or_closes(&bash(
+            "for n in 12 13; do gh pr merge $n; done"
+        )));
+        assert!(merges_or_closes(&bash("! gh pr merge 12")));
+        assert!(merges_or_closes(&bash("{ gh pr merge 12; }")));
+        assert!(merges_or_closes(&bash(
+            "while ! gh pr merge 12; do sleep 30; done"
+        )));
+        assert!(merges_or_closes(&bash("sudo -u bob gh pr merge 12")));
+        assert!(merges_or_closes(&bash("echo 12 | xargs -n 1 gh pr merge")));
+        assert!(merges_or_closes(&bash(
+            "bash <<'EOF'\ncd web\ngh pr merge 12\nEOF"
+        )));
+        assert!(!merges_or_closes(&bash(
+            "cat <<'EOF'\ncd web\ngh pr merge 12\nEOF"
+        )));
         // Only Claude's own calls to Bash.
         let read = serde_json::json!({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "t", "name": "Read", "input": {"file_path": "gh pr merge"}}
