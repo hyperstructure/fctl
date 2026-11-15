@@ -341,6 +341,12 @@ export const api = {
   wakeAutopilot: (project: string, body: G.WakeAutopilotRequest = {}) =>
     request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/wake`, body),
   /** Its log, newest first, a page at a time. */
+  /** The files it keeps across its sessions, by name, without what they hold. */
+  autopilotFiles: (project: string) =>
+    request<G.AutopilotFiles>("GET", `/projects/${enc(project)}/autopilot/files`),
+  /** One of its files, with what it holds. */
+  autopilotFile: (project: string, name: string) =>
+    request<G.AutopilotFile>("GET", `/projects/${enc(project)}/autopilot/files/${enc(name)}`),
   autopilotLog: (project: string, before?: string, limit = 50) => {
     const p = new URLSearchParams({ limit: String(limit) });
     if (before) p.set("before", before);

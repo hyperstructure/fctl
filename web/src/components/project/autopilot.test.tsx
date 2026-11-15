@@ -6,20 +6,25 @@ import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { AutopilotTab } from "./autopilot";
 
-const { answer, autopilot, autopilotLog, put, resume, toast, upload, wake } = vi.hoisted(() => ({
-  answer: vi.fn(),
-  autopilot: vi.fn(),
-  autopilotLog: vi.fn(),
-  put: vi.fn(),
-  resume: vi.fn(),
-  toast: vi.fn(),
-  upload: vi.fn(),
-  wake: vi.fn(),
-}));
-// The autopilot, its log, answering, uploading, changing, resuming and waking it are answered; other
-// requests wait.
+const { answer, autopilot, autopilotFile, autopilotFiles, autopilotLog, put, resume, toast, upload, wake } =
+  vi.hoisted(() => ({
+    answer: vi.fn(),
+    autopilot: vi.fn(),
+    autopilotFile: vi.fn(),
+    autopilotFiles: vi.fn(),
+    autopilotLog: vi.fn(),
+    put: vi.fn(),
+    resume: vi.fn(),
+    toast: vi.fn(),
+    upload: vi.fn(),
+    wake: vi.fn(),
+  }));
+// The autopilot, its log and files, answering, uploading, changing, resuming and waking it are
+// answered; other requests wait.
 const answered: Record<string, unknown> = {
   autopilot,
+  autopilotFile,
+  autopilotFiles,
   autopilotLog,
   answerAutopilot: answer,
   uploadAttachment: upload,
@@ -51,9 +56,11 @@ vi.mock("@/components/ui", async (actual) => ({
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// Its log waits, unless a test answers it.
+// Its log and files wait, unless a test answers them.
 beforeEach(() => {
   autopilotLog.mockImplementation(() => new Promise(() => {}));
+  autopilotFiles.mockImplementation(() => new Promise(() => {}));
+  autopilotFile.mockImplementation(() => new Promise(() => {}));
 });
 const roots: (() => void)[] = [];
 afterEach(() => {
@@ -581,6 +588,44 @@ describe("a project's Autopilot tab", () => {
     expect(page.textContent).toContain("Ada paused it");
     expect(page.textContent).toContain("1 of 3");
     expect([...page.querySelectorAll("button")].some((b) => b.textContent === "Resume")).toBe(true);
+  });
+
+  it("shows the files it keeps once it keeps any, and opens one to read", async () => {
+    autopilot.mockResolvedValue(on());
+    queryClient.setQueryData(keys.autopilot("prj_1"), on());
+    const files = (list: G.AutopilotFile[]): G.AutopilotFiles => ({
+      files: list,
+      bytes: list.reduce((n, f) => n + f.size, 0),
+      max_bytes: 4_000_000,
+      max_file_bytes: 256_000,
+      max_files: 100,
+    });
+    autopilotFiles.mockResolvedValue(files([]));
+    const page = render(<AutopilotTab project={project()} />);
+    await settle();
+    // None yet: no card.
+    expect(page.textContent).not.toContain("Its files");
+    const watch = { name: "watch-deploy.sh", size: 2_140, created_at: 0, updated_at: Date.now() - 120_000 };
+    const draft = { name: "summary.md", size: 48_600, created_at: 0, updated_at: Date.now() - 60_000 };
+    autopilotFiles.mockResolvedValue(files([draft, watch]));
+    await act(() => queryClient.invalidateQueries({ queryKey: keys.autopilotFiles("prj_1") }));
+    await settle();
+    const card = [...page.querySelectorAll("section")].find((s) => s.textContent?.startsWith("Its files"));
+    expect(card?.textContent).toContain("51 KB");
+    expect(card?.textContent).toContain("Kept for its next sessions, which start in a new sandbox");
+    expect([...(card?.querySelectorAll("li") ?? [])].map((li) => li.textContent)).toEqual([
+      "summary.md1m",
+      "watch-deploy.sh2m",
+    ]);
+    autopilotFile.mockResolvedValue({ ...watch, content: "#!/bin/sh\ngh run watch\n" });
+    const open = card?.querySelector<HTMLButtonElement>("button[title='Open watch-deploy.sh']");
+    await act(async () => open?.click());
+    await settle();
+    expect(autopilotFile).toHaveBeenCalledWith("prj_1", "watch-deploy.sh");
+    const dialog = [...document.body.querySelectorAll("dialog")].find((d) => d.querySelector("pre"));
+    expect(dialog?.querySelector("pre")?.textContent).toBe("#!/bin/sh\ngh run watch\n");
+    expect(dialog?.textContent).toContain("2 KB, written 2m ago");
+    expect(dialog?.textContent).toContain("Copy");
   });
 
   it("logs a schedule it ran with the session it started, and the schedule's name a link", async () => {
