@@ -640,6 +640,125 @@ pub fn pull_wakes(
         })
 }
 
+// ───────────────────────────── its held messages ─────────────────────────────
+
+/// The most messages fctl holds for an autopilot's sessions at once
+/// ([`fctl_proto::autopilot::HeldMessage`]): past them, its messages to
+/// sessions that rest are refused as they were before fctl held any.
+pub const MAX_HELD: usize = 30;
+
+/// Whether fctl holds an autopilot's message to one of its sessions, rather
+/// than send it now: one that rests (`working` false: it ended its turn,
+/// stopped, or waits for its background work) while as many of its
+/// sessions work as its people allow (`room` false), or while messages it
+/// sent earlier wait, which go first (`held`); and any to a session that
+/// messages held for it wait for (`held_for_it`), behind them. One that
+/// works takes messages without making room.
+pub fn waits_for_room(working: bool, room: bool, held: bool, held_for_it: bool) -> bool {
+    held_for_it || (!working && (held || !room))
+}
+
+/// A message held for one of an autopilot's sessions, as [`releases`]
+/// weighs it: the session's id, and its status (`None`: it is gone) and
+/// whether it works ([`waits_for_room`]), as D1 has them.
+#[derive(Clone, Copy, Debug)]
+pub struct HeldFor<'a> {
+    pub session: &'a str,
+    pub status: Option<SessionStatus>,
+    pub working: bool,
+}
+
+/// What becomes of a held message now ([`releases`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Release {
+    /// It goes out now.
+    Send,
+    /// It waits for room.
+    Wait,
+    /// It never can go: its session is gone, or failed (a resume, not a
+    /// message, starts one that failed again).
+    Drop,
+}
+
+/// What becomes of each of the messages held for an autopilot's sessions
+/// (`held`, in the order it sent them) with `room` more of its sessions
+/// free to work now: those to a session that works go out, and in turn
+/// those to one that rests while there is room, each such session taking
+/// room once, with any later message to it. One that can't go makes way.
+pub fn releases(held: &[HeldFor<'_>], room: u32) -> Vec<Release> {
+    let mut room = room;
+    let mut going: Vec<&str> = Vec::new();
+    held.iter()
+        .map(|h| match h.status {
+            None | Some(SessionStatus::Failed) => Release::Drop,
+            Some(_) if h.working || going.contains(&h.session) => Release::Send,
+            Some(_) if room > 0 => {
+                room -= 1;
+                going.push(h.session);
+                Release::Send
+            }
+            Some(_) => Release::Wait,
+        })
+        .collect()
+}
+
+/// A message held for one of its sessions, for what fctl tells it.
+#[derive(Clone, Debug)]
+pub struct HeldView<'a> {
+    pub id: &'a str,
+    /// The session it goes to: `shop#41`.
+    pub reference: String,
+    pub text: &'a str,
+    pub files: usize,
+    pub at: Millis,
+}
+
+/// A held message as its brief lists it: its id, the session it goes to,
+/// when it sent it and the start of it ([`HEARD_CHARS`]).
+fn held_line(h: &HeldView<'_>, now: Millis) -> String {
+    let mut what = crate::notify::excerpt(h.text, HEARD_CHARS)
+        .map(|t| format!("“{t}”"))
+        .unwrap_or_default();
+    let files = match h.files {
+        0 => String::new(),
+        1 => "1 file".to_owned(),
+        n => format!("{n} files"),
+    };
+    if !files.is_empty() {
+        what = if what.is_empty() {
+            files
+        } else {
+            format!("{what}, with {files}")
+        };
+    }
+    format!(
+        "{} to {}, sent {}: {what}",
+        h.id,
+        h.reference,
+        ago(now, h.at)
+    )
+}
+
+/// What its log says of a message fctl holds for room, before the session
+/// it goes to (`Held a message for shop#41 “Add Apple Pay”`).
+pub const HELD_LINE: &str = "Held a message for";
+
+/// What its log says as a held message goes out.
+pub const HELD_SENT_LINE: &str = "Sent its held message to";
+
+/// What its log says of a held message that can't go out: before the
+/// session it was for, which failed, or alone, as it is gone.
+pub fn held_dropped_line(gone: bool) -> &'static str {
+    if gone {
+        "Dropped a held message: the session it was for is gone"
+    } else {
+        "Dropped its held message, as the session failed, to"
+    }
+}
+
+/// What its log says of a held message taken back.
+pub const HELD_TAKEN_BACK_LINE: &str = "Took back its held message to";
+
 // ───────────────────────────── whose it is ─────────────────────────────
 
 /// What someone who steers an autopilot does that bears on whose
@@ -746,6 +865,8 @@ pub fn allows(caller: Caller<'_>, method: &str, segs: &[&str]) -> Result<Gate> {
         | ("DELETE", ["projects", _, "autopilot", "asks", _]) => Ok(Gate::Home),
         // Starting sessions, and steering those it started.
         ("POST", ["projects", _, "sessions"]) => Ok(Gate::Open),
+        // Taking back a message fctl holds for room.
+        ("DELETE", ["projects", _, "autopilot", "held", _]) => Ok(Gate::Home),
         ("POST", ["sessions", id, "messages" | "interrupt" | "stop" | "resume"])
         | ("PATCH", ["sessions", id]) => Ok(Gate::Crew((*id).to_owned())),
         // The project's memory, as its agents keep it.
@@ -816,6 +937,13 @@ pub fn describe(
     use AutopilotEntryKind as K;
     Some(match (method, segs) {
         ("POST", ["projects", _, "sessions"]) => (K::Session, "Started a session".to_owned()),
+        // One that waits for room under its limit says so
+        // (`SendMessageResponse.held`), and again as it goes out.
+        ("POST", ["sessions", _, "messages"])
+            if answer.get("held").is_some_and(|h| !h.is_null()) =>
+        {
+            (K::Steered, HELD_LINE.to_owned())
+        }
         ("POST", ["sessions", _, "messages"]) => (K::Steered, "Sent a message to".to_owned()),
         ("POST", ["sessions", _, "interrupt"]) => (K::Steered, "Interrupted".to_owned()),
         ("POST", ["sessions", _, "stop"]) => (K::Steered, "Stopped".to_owned()),
@@ -985,7 +1113,7 @@ pub fn briefing(place: Place<'_>, rules: Rules<'_>, direction: &str) -> String {
     s.push_str(direction.trim());
     s.push_str("\n\n## How you work\n\n");
     s.push_str(&format!(
-        "- Work through sessions of your own: start one for each piece of work with `fctl run -p <project> \"<task>\"`, at most {n} at once, with a complete task (below). Each works on its own branch and opens a pull request; fctl wakes you when one ends its turn, asks something or fails. Those queued, starting, working, paused on a usage limit or still stopping count toward the {n}, as does one you just messaged; one that ended its turn, stopped or failed doesn't, nor does one that ended its turn to wait for its background work, until that work ends and its own turn starts. With {n} at work, `fctl run` fails: keep the next pieces of work in your plan, and start one as fctl wakes you for a session that ended its turn.\n",
+        "- Work through sessions of your own: start one for each piece of work with `fctl run -p <project> \"<task>\"`, at most {n} at once, with a complete task (below). Each works on its own branch and opens a pull request; fctl wakes you when one ends its turn, asks something or fails. Those queued, starting, working, paused on a usage limit or still stopping count toward the {n}, as does one you just messaged; one that ended its turn, stopped or failed doesn't, nor does one that ended its turn to wait for its background work, until that work ends and its own turn starts. With {n} at work, `fctl run` fails: keep the next pieces of work in your plan, and start one as fctl wakes you for a session that ended its turn. A message to one that rests (`fctl send`) waits its turn instead: fctl holds it and sends it as soon as one of your sessions ends its turn, stops or fails, those held in the order you sent them, so don't send it again; `fctl autopilot held` lists them, and takes one back with `--take-back <id>`.\n",
         n = rules.crew_max
     ));
     s.push_str(&format!(
@@ -1509,6 +1637,9 @@ pub struct Brief<'a> {
     pub notes: &'a [NoteView<'a>],
     pub asks: &'a [AskView<'a>],
     pub crew: &'a [CrewView<'a>],
+    /// The messages it sent its sessions that wait for room, in the order
+    /// they go out.
+    pub held: &'a [HeldView<'a>],
     /// The sessions people started in its projects, at work or with a pull
     /// request open, the latest first.
     pub others: &'a [OtherView<'a>],
@@ -1687,6 +1818,12 @@ fn brief_crew(s: &mut String, b: &Brief<'_>) {
         s.push_str("The latest first, with what people wrote to each and the start of what each said as its turn ended (`fctl logs <ref> --last-turn` prints a session's last turn whole):\n\n");
         for c in b.crew {
             s.push_str(&format!("- {}\n", crew_line(c, now)));
+        }
+    }
+    if !b.held.is_empty() {
+        s.push_str("\nYour messages held for room, sent to sessions that rest while as many of yours worked as you may run: they go out in this order as your sessions end their turns, stop or fail (take one back with `fctl autopilot held --take-back <id>`):\n\n");
+        for h in b.held {
+            s.push_str(&format!("- {}\n", held_line(h, now)));
         }
     }
 }
@@ -2186,6 +2323,10 @@ mod tests {
                 "DELETE",
                 vec!["projects", "shop", "autopilot", "asks", "apa_1"],
             ),
+            (
+                "DELETE",
+                vec!["projects", "shop", "autopilot", "held", "aph_1"],
+            ),
             ("PUT", vec!["projects", "shop", "autopilot", "plan"]),
             ("POST", vec!["projects", "shop", "autopilot", "wake"]),
             ("POST", vec!["projects", "shop", "autopilot", "pause"]),
@@ -2388,6 +2529,56 @@ mod tests {
         assert!(note("a\u{0}b").is_err());
         assert_eq!(plan("").ok(), Some(None));
         assert_eq!(reason(Some("  ")).ok(), Some(None));
+    }
+
+    #[test]
+    fn a_message_to_a_session_that_rests_waits_for_room() {
+        // One that works takes it now, room or not; one that rests, only
+        // with room and nothing held before it.
+        assert!(!waits_for_room(true, false, false, false));
+        assert!(!waits_for_room(true, false, true, false));
+        assert!(!waits_for_room(false, true, false, false));
+        assert!(waits_for_room(false, false, false, false));
+        // Messages held earlier go first, to whichever session.
+        assert!(waits_for_room(false, true, true, false));
+        // One held for it goes first, though it works now.
+        assert!(waits_for_room(true, true, true, true));
+    }
+
+    #[test]
+    fn held_messages_go_out_in_turn_as_room_frees_up() {
+        use SessionStatus::{Failed, Idle, Running, Stopped};
+        let held = |session, status, working| HeldFor {
+            session,
+            status,
+            working,
+        };
+        let queue = [
+            held("a", Some(Idle), false),
+            held("b", Some(Stopped), false),
+            held("c", Some(Running), true),
+            held("a", Some(Idle), false),
+            held("d", Some(Failed), false),
+            held("e", None, false),
+            held("b", Some(Stopped), false),
+        ];
+        use Release::{Drop, Send, Wait};
+        // No room: only the one at work takes its message; those that can
+        // never go make way.
+        assert_eq!(
+            releases(&queue, 0),
+            [Wait, Wait, Send, Wait, Drop, Drop, Wait]
+        );
+        // Room for one: the oldest, with its later message; the next waits.
+        assert_eq!(
+            releases(&queue, 1),
+            [Send, Wait, Send, Send, Drop, Drop, Wait]
+        );
+        assert_eq!(
+            releases(&queue, 3),
+            [Send, Send, Send, Send, Drop, Drop, Send]
+        );
+        assert!(releases(&[], 2).is_empty());
     }
 
     #[test]
@@ -2617,6 +2808,25 @@ mod tests {
         assert_eq!(
             started,
             Some((AutopilotEntryKind::Session, "Started a session".into()))
+        );
+        // A message held for room says so.
+        let sent = |answer: Value| {
+            describe(
+                "POST",
+                &["sessions", "ses_1", "messages"],
+                &serde_json::json!({"text": "Go on"}),
+                &answer,
+                None,
+                None,
+            )
+        };
+        assert_eq!(
+            sent(serde_json::json!({"delivery_id": "dlv_1"})),
+            Some((AutopilotEntryKind::Steered, "Sent a message to".into()))
+        );
+        assert_eq!(
+            sent(serde_json::json!({"delivery_id": "dlv_1", "held": {"id": "aph_1"}})),
+            Some((AutopilotEntryKind::Steered, HELD_LINE.into()))
         );
         let settings = describe(
             "PATCH",
@@ -3104,6 +3314,22 @@ mod tests {
                 heard: &[],
             },
         ];
+        let held_views = [
+            HeldView {
+                id: "aph_1",
+                reference: "shop#42".into(),
+                text: "Approved:\nmerge on green.",
+                files: 0,
+                at: now - 3 * MINUTE_MS,
+            },
+            HeldView {
+                id: "aph_2",
+                reference: "shop#41".into(),
+                text: "",
+                files: 2,
+                at: now - MINUTE_MS,
+            },
+        ];
         let others = [
             OtherView {
                 reference: "shop#38".into(),
@@ -3140,6 +3366,7 @@ mod tests {
             notes: &notes,
             asks: &asks,
             crew: &crew,
+            held: &held_views,
             others: &others,
             log: &[],
             projects: &[],
@@ -3191,6 +3418,7 @@ mod tests {
             notes: &[],
             asks: &asks[5..],
             crew: &[],
+            held: &[],
             others: &[],
             log: &[],
             projects: &[],
@@ -3209,6 +3437,10 @@ mod tests {
         // nothing of its last.
         assert!(text.contains(
             "\n- shop#42 “Fix the footer”: ended its turn, waiting for a message\n  It ended its turn without a word: `fctl logs shop#42 --last-turn` shows how far it got.\n- shop#43 “Gift cards”: working\n"
+        ), "{text}");
+        // Its messages held for room, in the order they go out.
+        assert!(text.contains(
+            "- shop#43 “Gift cards”: working\n\nYour messages held for room, sent to sessions that rest while as many of yours worked as you may run: they go out in this order as your sessions end their turns, stop or fail (take one back with `fctl autopilot held --take-back <id>`):\n\n- aph_1 to shop#42, sent 3 minutes ago: “Approved: merge on green.”\n- aph_2 to shop#41, sent 1 minute ago: 2 files\n"
         ), "{text}");
         assert!(text.contains(
             "## People's sessions\n\nSessions people started in the project that work now or have a pull request open"
@@ -3238,6 +3470,7 @@ mod tests {
             notes: &notes,
             asks: &asks,
             crew: &crew,
+            held: &[],
             others: &others,
             log: &[],
             projects: &[],

@@ -143,6 +143,7 @@ export type { GithubRepo } from "./GithubRepo";
 export type { GithubRepoList } from "./GithubRepoList";
 export type { GithubWorkspaceConnection } from "./GithubWorkspaceConnection";
 export type { Handover } from "./Handover";
+export type { HeldMessage } from "./HeldMessage";
 export type { IconStyle } from "./IconStyle";
 export type { Identity } from "./Identity";
 export type { IdentityId } from "./IdentityId";

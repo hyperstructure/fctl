@@ -424,6 +424,9 @@ async fn dispatch(
         (Delete, ["projects", id, "autopilot", "asks", ask]) => {
             api::autopilots::withdraw(ctx, id, ask).await
         }
+        (Delete, ["projects", id, "autopilot", "held", held]) => {
+            api::autopilots::take_back(ctx, id, held).await
+        }
         (Post, ["projects", id, "autopilot", "asks", ask, "answer"]) => {
             api::autopilots::answer(ctx, req, id, ask).await
         }

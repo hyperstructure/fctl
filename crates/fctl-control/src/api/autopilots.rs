@@ -164,6 +164,12 @@ async fn view(
     .first()
     .await?;
     let problem = engine::problem(db, &p.row, row, ctx.now).await?;
+    let held: Vec<HeldMessage> = engine::held(db, &row.project_id)
+        .await?
+        .iter()
+        .enumerate()
+        .map(|(ahead, h)| h.view(ahead))
+        .collect();
     let a = Autopilot {
         project_id: ProjectId(row.project_id.clone()),
         project_slug: p.row.slug.clone(),
@@ -199,6 +205,7 @@ async fn view(
         asks,
         crew: crew.iter().map(crew_of).collect(),
         crew_total: total.map_or(0, |t| u32::try_from(t.n).unwrap_or(0)),
+        held,
         can,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -219,6 +226,7 @@ async fn view(
         asks: Vec::new(),
         crew: Vec::new(),
         crew_total: 0,
+        held: Vec::new(),
         ..a
     })
 }
@@ -498,6 +506,7 @@ async fn brief_of(
     .all()
     .await?;
     let others = engine::others(db, row).await?;
+    let held = engine::held(db, &row.project_id).await?;
     #[derive(Deserialize)]
     struct LogRow {
         #[serde(deserialize_with = "int")]
@@ -570,6 +579,16 @@ async fn brief_of(
             v
         })
         .collect();
+    let held_views: Vec<ap::HeldView> = held
+        .iter()
+        .map(|h| ap::HeldView {
+            id: &h.id,
+            reference: h.reference(),
+            text: &h.text,
+            files: h.attachments().len(),
+            at: h.created_at,
+        })
+        .collect();
     let other_questions: Vec<Option<String>> =
         others.iter().map(engine::CrewRow::question_text).collect();
     let other_views: Vec<ap::OtherView> = others
@@ -639,6 +658,7 @@ async fn brief_of(
         notes: &note_views,
         asks: &ask_views,
         crew: &crew_views,
+        held: &held_views,
         others: &other_views,
         log: &log_views,
         projects: &projects,
@@ -988,6 +1008,17 @@ pub async fn put(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             if written == 0 {
                 return Err(conflict(MOVED_ON));
             }
+            // Room for more of its sessions at once: the messages it holds
+            // for room may go now.
+            if crew.is_some_and(|c| c > row.crew_max())
+                && let Err(e) = engine::release(&ctx.env, &ctx.db, &row.project_id, ctx.now).await
+            {
+                worker::console_error!(
+                    "autopilot {}: sending its held messages: {}",
+                    row.project_id,
+                    e.0.message
+                );
+            }
             // Its sessions run on the old owner's subscription: it wakes
             // now to move them to the new owner's, rather than wait there,
             // perhaps for a limit to reset.
@@ -1171,6 +1202,15 @@ pub async fn off(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
         "UPDATE autopilots SET state = 'off', paused_reason = NULL, paused_by = ?, paused_at = ?, wake_at = NULL, \
          wake_reasons = '', asked_wake_at = NULL, updated_at = ? WHERE project_id = ?",
         &[s(&me.id), n(ctx.now), n(ctx.now), s(&row.project_id)],
+    )?
+    .run()
+    .await?;
+    // What it held for room would go out once it's put on again, long
+    // after it meant it.
+    q(
+        &ctx.db,
+        "DELETE FROM autopilot_held WHERE project_id = ?",
+        &[s(&row.project_id)],
     )?
     .run()
     .await?;
@@ -1653,6 +1693,25 @@ pub async fn withdraw(ctx: &mut Ctx, id: &str, ask: &str) -> AppResult<Response>
     entry.from = from.as_deref();
     engine::log(&ctx.db, &l.p.row.id, entry, ctx.now).await;
     http::ok(&serde_json::json!({ "ok": true }))
+}
+
+/// `DELETE …/autopilot/held/{held}`: takes back a message fctl holds for
+/// room under its limit, before it goes: the autopilot, or those who steer
+/// it.
+pub async fn take_back(ctx: &mut Ctx, id: &str, held: &str) -> AppResult<Response> {
+    let l = load(ctx, id).await?;
+    let row = require(l.row.clone())?;
+    let by = if ctx.autopilot().is_some() {
+        require_pilot(ctx, &l)?;
+        None
+    } else {
+        require_steer(&l)?;
+        Some(ctx.user()?.id.clone())
+    };
+    if !engine::take_back(&ctx.env, &ctx.db, &row, held, by.as_deref(), ctx.now).await? {
+        return Err(not_found("Held message"));
+    }
+    get(ctx, id).await
 }
 
 // ───────────────────────────── what people say ─────────────────────────────

@@ -259,6 +259,17 @@ pub enum AutopilotCmd {
         /// What it asked (its id, apa_…).
         ask: String,
     },
+    /// Its messages that wait for room: those it sent its sessions that
+    /// rest while as many of them worked as its people allow, which fctl
+    /// sends, in this order, as its sessions end their turns, stop or fail.
+    #[command(after_help = "Examples:
+  fctl autopilot held -p crm
+  fctl autopilot held --take-back aph_…   # before it goes")]
+    Held {
+        /// Take back this one (its id, aph_…) before it goes.
+        #[arg(long, value_name = "HELD")]
+        take_back: Option<String>,
+    },
     /// Where things stand, as Markdown: what the autopilot reads as it
     /// wakes.
     Brief {
@@ -716,6 +727,28 @@ pub async fn run(server: Option<&str>, args: AutopilotArgs, json: bool) -> Resul
             }
             println!("{} Took it back", style::accent("✓"));
         }
+        AutopilotCmd::Held { take_back } => {
+            let a = match &take_back {
+                Some(id) => api.take_back_held(p, id).await?,
+                None => api.autopilot(p).await?,
+            };
+            if json {
+                return style::print_json(&a.held);
+            }
+            if take_back.is_some() {
+                println!("{} Took it back: it won't go", style::accent("✓"));
+                if a.held.is_empty() {
+                    return Ok(());
+                }
+                println!();
+            }
+            if a.held.is_empty() {
+                println!("No message waits for room.");
+            }
+            for h in &a.held {
+                print_held(h);
+            }
+        }
         AutopilotCmd::Brief { only } => {
             let only: Vec<&str> = only.iter().map(|part| part.as_str()).collect();
             let b = api.autopilot_brief(p, &only).await?;
@@ -1075,6 +1108,17 @@ fn print_status(a: &Autopilot) {
             );
         }
     }
+    if !a.held.is_empty() {
+        println!();
+        println!(
+            "{} {}",
+            style::bold("Messages that wait for room"),
+            style::dim("(they go in this order as its sessions end their turns)")
+        );
+        for h in &a.held {
+            print_held(h);
+        }
+    }
     if let Some(plan) = &a.plan {
         println!();
         let at = a.plan_at.map(style::ago).unwrap_or_default();
@@ -1086,6 +1130,23 @@ fn print_status(a: &Autopilot) {
         for line in plan.lines() {
             println!("  {}", style::plain(line));
         }
+    }
+}
+
+fn print_held(h: &HeldMessage) {
+    let files = match h.files.len() {
+        0 => String::new(),
+        1 => " · 1 file".to_owned(),
+        n => format!(" · {n} files"),
+    };
+    println!(
+        "  {} to {} {}",
+        style::dim(&h.id),
+        style::bold(&format!("{}#{}", h.project_slug, h.session.number)),
+        style::dim(&format!("{}{files}", style::ago(h.created_at)))
+    );
+    for line in h.text.lines() {
+        println!("    {}", style::plain(line));
     }
 }
 
