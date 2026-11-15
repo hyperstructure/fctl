@@ -6,7 +6,8 @@ import type { AttachmentId } from "./AttachmentId";
  */
 export type SessionFile = { 
 /**
- * When the message that sent it went.
+ * When the message that sent it went (one fctl held for an autopilot:
+ * when it was held).
  */
 sent_at: number, id: AttachmentId, 
 /**

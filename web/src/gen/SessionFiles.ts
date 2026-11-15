@@ -3,6 +3,7 @@ import type { SessionFile } from "./SessionFile";
 
 /**
  * `GET /api/v1/sessions/{id}/attachments`: the files sent in a session,
- * oldest first. `GET /api/v1/sessions/{id}/attachments/{file}` reads one.
+ * oldest first, without those of an autopilot's messages fctl still holds
+ * for room. `GET /api/v1/sessions/{id}/attachments/{file}` reads one.
  */
 export type SessionFiles = { files: Array<SessionFile>, };
