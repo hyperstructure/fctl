@@ -869,16 +869,19 @@ async fn files(api: &fctl_client::Api, p: &str, cmd: FilesCmd, json: bool) -> Re
             ..
         } => {
             let f = api.autopilot_file(p, &name).await?;
-            if json {
-                return style::print_json(&f);
-            }
-            let content = f.content.unwrap_or_default();
             match output {
+                // Written whatever the output, as --all writes them; the
+                // JSON then says what it wrote, as --all's does.
                 Some(to) => {
-                    write_file(&to, &content)?;
+                    write_file(&to, f.content.as_deref().unwrap_or_default())?;
+                    if json {
+                        return style::print_json(&AutopilotFile { content: None, ..f });
+                    }
                     println!("{} Wrote {}", style::accent("✓"), to.display());
                 }
+                None if json => return style::print_json(&f),
                 None => {
+                    let content = f.content.unwrap_or_default();
                     use std::io::Write;
                     let mut out = std::io::stdout().lock();
                     out.write_all(content.as_bytes())?;
