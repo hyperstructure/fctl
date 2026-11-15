@@ -131,7 +131,7 @@ It answers with the session, `queued`. A session is:
 
 | Request | Body | What it does |
 |---|---|---|
-| `POST /api/v1/sessions/{id}/messages` | `{"text": "…", "client_id": "…", "attachments": [...]}` | reaches the agent at its next step; resumes a stopped session on the subscription it ran on; `409` for a failed one. Answers `{"delivery_id": "dlv_…"}` |
+| `POST /api/v1/sessions/{id}/messages` | `{"text": "…", "client_id": "…", "attachments": [...]}` | reaches the agent at its next step; resumes a stopped session on the subscription it ran on; `409` for a failed one. Answers `{"delivery_id": "dlv_…"}`, with `"held": {"id": "aph_…", "ahead"…}` for an autopilot's message to one of its sessions that rests while as many of them work as its people allow: it goes out as that delivery once one of them makes room |
 | `POST /api/v1/sessions/{id}/interrupt` | | stops the current turn |
 | `POST /api/v1/sessions/{id}/reviews/{review}/pass-on` | | passes on the findings of review `{review}` (its `session_id`) that fctl held back from the agent (`held_after`), or that went to no session (`unsent`) where the session lists the review's pull request: the agent gets them as it would have, a stopped session resumes on the subscription it ran on, and it gets those of up to five reviews in a row again, these included; `409` when fctl holds none of that review's back (the agent got them, someone wrote to it since, or a newer review of its pull request came), the session doesn't list the pull request of findings that went to no session, the pull request is merged or closed, a newer review of it posted, its agent only reads on GitHub, or the session failed. Answers `{"delivery_id": "dlv_…"}` |
 | `POST /api/v1/sessions/{id}/stop` | | ends the session; its sandbox stays for a resume |
@@ -278,7 +278,7 @@ session calls the endpoints marked *autopilot*, through its sandbox's
 
 | Request | What it does |
 |---|---|
-| `GET /api/v1/projects/{project}/autopilot` | `{"state": "on" \| "paused" \| "off", "scope", "direction", "plan", "powers", "check_in_minutes", "crew_max", "owner", "keep_owner", "session", "fresh_asked", "wake_at", "wake_reason", "problem", "notes", "asks", "crew", "can"…}`; 404 for a project that never had one |
+| `GET /api/v1/projects/{project}/autopilot` | `{"state": "on" \| "paused" \| "off", "scope", "direction", "plan", "powers", "check_in_minutes", "crew_max", "owner", "keep_owner", "session", "fresh_asked", "wake_at", "wake_reason", "problem", "notes", "asks", "crew", "held", "can"…}`; 404 for a project that never had one. `held`: the messages it sent its sessions that wait for room, in the order they go out |
 | `PUT /api/v1/projects/{project}/autopilot` | `{"direction", "scope": "project" \| "workspace", "powers": ["merge", "settings", "secrets", "repos", "schedules", "projects"], "check_in_minutes", "crew_max", "model", "effort", "handoff_at", "take_over": true, "keep_owner": true}`: puts it on (a [sensitive action](architecture.md#confirming-its-you); `direction` needed the first time), or changes it (absent fields stay; `handoff_at`, the context size from 100,000 to 1,000,000 tokens at which a fresh session of its own takes over, `0` for only after 12 hours). Someone else who changes how much it works runs it on their subscription from then on, unless its owner keeps it (`keep_owner`, which only its owner, or who puts it on or takes it over, sets; turning it on is a sensitive action too); `take_over` always does |
 | `POST …/autopilot/off` | `{"stop_sessions": true}`: takes it off, and with that stops the sessions it started that still work |
 | `POST …/autopilot/pause`, `…/resume` | `{"reason"}`: pauses it (*autopilot* too: it pauses itself); resuming wakes it at once, on the resumer's subscription unless its owner keeps it and can still run it |
@@ -293,6 +293,7 @@ session calls the endpoints marked *autopilot*, through its sandbox's
 | `GET …/autopilot/files`, `GET …/autopilot/files/{name}` | `{"files": [{"name", "size", "created_at", "updated_at"}…], "bytes", "max_bytes", "max_file_bytes", "max_files"}`: the files it keeps across its sessions, by name; one of them with its `content` too |
 | `PUT …/autopilot/files/{name}`, `DELETE …/autopilot/files/{name}` | *autopilot*: `{"content"}`, a file whole (text, at most 256 KB, and its files 4 MB and 100 in all; `201` for a new one), or removes it. A name has letters, digits, dots, dashes and underscores, and starts with a letter or a digit |
 | `POST …/autopilot/asks`, `DELETE …/autopilot/asks/{ask}` | *autopilot*: `{"text", "options", "detail", "secret": "NAME", "project", "about": "ses_…"}` (`about`: a session in its places that the question is about), takes it back |
+| `DELETE …/autopilot/held/{held}` | takes back a message it sent one of its sessions that waits for room (*autopilot* too); `409` once it is going out |
 | `GET /api/v1/autopilots/asks` | `{"asks": […]}`: what autopilots ask that the caller may answer, across their workspaces |
 
 Sessions say what they are to an autopilot (`"autopilot": {"role": "pilot"

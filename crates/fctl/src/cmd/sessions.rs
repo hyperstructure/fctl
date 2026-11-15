@@ -1078,6 +1078,22 @@ pub async fn send(
     if json {
         return style::print_json(&r);
     }
+    // An autopilot's, to one of its sessions that rests at its limit.
+    if let Some(held) = &r.held {
+        let after = match held.ahead {
+            0 => String::new(),
+            1 => ", after the message held before it".to_owned(),
+            n => format!(", after the {n} messages held before it"),
+        };
+        println!(
+            "{} Held: it goes to {}#{} once one of your sessions ends its turn, stops or fails{after}. Don't send it again: take it back with fctl autopilot held --take-back {} should you change your mind.",
+            style::accent("✓"),
+            s.project_slug,
+            s.number,
+            held.id
+        );
+        return Ok(());
+    }
     let resumes = if s.status.resumes_for_messages() {
         "; the session resumes for it"
     } else {

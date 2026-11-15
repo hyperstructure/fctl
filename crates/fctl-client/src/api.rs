@@ -1192,6 +1192,17 @@ impl Api {
             .await
     }
 
+    /// Takes back a message fctl holds for room under the autopilot's
+    /// limit (`HeldMessage`), before it goes.
+    pub async fn take_back_held(&self, project: &str, held: &str) -> Result<Autopilot> {
+        self.delete(&format!(
+            "/projects/{}/autopilot/held/{}",
+            enc(project),
+            enc(held)
+        ))
+        .await
+    }
+
     /// The autopilot takes back what it asked.
     pub async fn withdraw_ask(&self, project: &str, ask: &str) -> Result<serde_json::Value> {
         self.delete(&format!(

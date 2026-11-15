@@ -232,6 +232,12 @@ pub struct Autopilot {
     pub crew: Vec<AutopilotCrew>,
     /// How many sessions it started in all.
     pub crew_total: u32,
+    /// The messages it sent its sessions that wait for room under its
+    /// limit, in the order they go out. Control planes before it leave it
+    /// out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<HeldMessage>>", optional))]
+    pub held: Vec<HeldMessage>,
     /// What the caller may do with it.
     pub can: AutopilotCan,
     pub created_at: Millis,
@@ -508,6 +514,30 @@ pub struct AutopilotCrew {
     pub pull_requests: Vec<crate::session::PullRequestRef>,
     pub created_at: Millis,
     pub last_activity_at: Option<Millis>,
+}
+
+/// A message an autopilot sent one of its sessions that rests while as
+/// many of its sessions worked as its people allow: fctl holds it, rather
+/// than refuse it, and sends it as soon as one of them ends its turn,
+/// stops or fails, those held in the order it sent them. It goes out only
+/// while the autopilot is on; taking the project off autopilot drops it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct HeldMessage {
+    /// Its id (`aph_…`), to take it back with (`DELETE
+    /// /api/v1/projects/{id}/autopilot/held/{held}`).
+    pub id: String,
+    /// The session it goes to.
+    pub session: SessionRef,
+    pub project_slug: String,
+    pub text: String,
+    /// The names of the files it sends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub files: Vec<String>,
+    /// How many held messages go out before it, at most.
+    pub ahead: u32,
+    pub created_at: Millis,
 }
 
 /// What an entry in an autopilot's log is about.
