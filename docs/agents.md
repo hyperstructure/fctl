@@ -664,7 +664,9 @@ the workspace's settings, deletes projects, or replaces the secrets people
 set, and steers only the sessions it started. At most as many of those work
 at once as people allow: those queued, starting, working, paused on a
 usage limit or still stopping count, as does one it just messaged, and
-those that ended their turn, stopped or failed don't.
+those that ended their turn, stopped or failed don't, nor does one that
+ended its turn to wait for its background work, until its own turn starts
+as that work ends.
 
 Its wakes and brief say how each of its sessions stands: its pull
 requests with their checks, the start of what it said as its turn ended
@@ -685,7 +687,8 @@ A fresh session takes its place after 12 hours, or once its context holds
 as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
 at the first wake between its turns: it starts from the plan and log, so
 the session keeps them current, and as its context nears that size each
-wake message says so. People who steer it also start one when they
+wake message says so. The fresh session checks what the last one promised
+people against what is live, and tells them of what shipped. People who steer it also start one when they
 choose (`fctl autopilot wake --fresh`), say to pick up what's new in
 fctl after a release: at once between its turns, else once its turn
 ends.
