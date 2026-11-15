@@ -2,6 +2,23 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.35.0 (2026-11-15)
+
+### Features
+
+- **web:** Close the lightbox by pulling an image down ([#549](https://github.com/hyperstructure/fctl/pull/549))
+- **autopilot:** Pass on an autopilot's third round of lessons ([#548](https://github.com/hyperstructure/fctl/pull/548))
+- **autopilot:** Say why a session ended its turn without a word ([#554](https://github.com/hyperstructure/fctl/pull/554))
+- **autopilot:** Keep files across an autopilot's sessions ([#555](https://github.com/hyperstructure/fctl/pull/555))
+- **autopilot:** Hold its messages until its session limit has room ([#556](https://github.com/hyperstructure/fctl/pull/556))
+- **xtask:** Put the demo's farm portal on autopilot ([#560](https://github.com/hyperstructure/fctl/pull/560))
+- **autopilot:** Pass files to and from the sessions an autopilot starts ([#558](https://github.com/hyperstructure/fctl/pull/558))
+- **autopilot:** Wake autopilots as the checks after their merges end ([#557](https://github.com/hyperstructure/fctl/pull/557))
+
+### Fixes
+
+- **control:** Don't interrupt an agent with a merge it made itself ([#547](https://github.com/hyperstructure/fctl/pull/547))
+
 ## 0.34.3 (2026-11-14)
 
 ### Features
