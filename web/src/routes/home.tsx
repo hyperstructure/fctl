@@ -453,29 +453,60 @@ export function Home() {
         <Threads active={activeAll} handle={scene} />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-canvas" />
         <div className="relative z-[1] mx-auto flex h-full max-w-[920px] flex-col justify-end px-6 pb-10">
-          <h1 className="animate-rise font-display text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink">
+          {/* The words lie on the scene's threads and, lower down, its planet: a pool of the page's
+              color behind them, and a halo of it around each letter, keep them legible on both
+              without dimming the rest of the scene. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-0 left-0 h-[78%] w-[min(100%,46rem)] bg-[radial-gradient(ellipse_closest-side_at_42%_60%,var(--c-canvas)_20%,transparent)] opacity-75"
+          />
+          <h1 className="relative animate-rise font-display text-[40px] leading-[1.08] font-medium tracking-[-0.022em] text-ink text-halo-lg max-sm:text-[34px]">
             {me ? greeting(me.user) : " "}
           </h1>
-          <p className="mt-3 animate-rise text-[15px] text-ink-2 [animation-delay:80ms]">
+          <p className="relative mt-3 animate-rise text-[15px] text-ink-2 text-halo [animation-delay:80ms]">
+            {/* Each count keeps its words on its line: "6 / runners online" read as two things. */}
             {working > 0 ? (
               <>
-                <span className="text-accent">
+                <span className="whitespace-nowrap text-accent">
                   {working} {working === 1 ? "agent is" : "agents are"} working
                 </span>
-                {waiting > 0 && <> · {waiting} waiting for you</>}
+                {waiting > 0 && (
+                  <>
+                    {" · "}
+                    <span className="whitespace-nowrap">{waiting} waiting for you</span>
+                  </>
+                )}
               </>
             ) : waiting > 0 ? (
-              <>
+              <span className="whitespace-nowrap">
                 {waiting} {waiting === 1 ? "session is" : "sessions are"} waiting for you
-              </>
+              </span>
             ) : (
               "All quiet. Start something."
             )}
-            <span className="text-ink-4">
-              {several && ` · in ${mine.length} workspaces`} · {online} {online === 1 ? "runner" : "runners"}{" "}
-              online
-              {draining > 0 && `, ${draining} draining`}
-              {lowDisk > 0 && `, ${lowDisk} low on disk`}
+            {/* The machines, after what the agents do: on a phone, on a line of their own, and
+                without the workspaces they count, which only add detail there. */}
+            <span className="text-ink-3 max-sm:block">
+              {several && (
+                <span className="max-sm:hidden">
+                  {" · "}
+                  <span className="whitespace-nowrap">in {mine.length} workspaces</span>
+                </span>
+              )}
+              <span className="max-sm:hidden">{" · "}</span>
+              <span className="whitespace-nowrap">
+                {online} {online === 1 ? "runner" : "runners"} online
+              </span>
+              {draining > 0 && (
+                <>
+                  , <span className="whitespace-nowrap">{draining} draining</span>
+                </>
+              )}
+              {lowDisk > 0 && (
+                <>
+                  , <span className="whitespace-nowrap">{lowDisk} low on disk</span>
+                </>
+              )}
             </span>
           </p>
         </div>
