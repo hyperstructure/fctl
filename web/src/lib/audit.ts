@@ -50,14 +50,16 @@ function refFrom(d: Data | undefined): string | undefined {
 }
 
 /**
- * Who did what an entry records, when it names nobody: a session's agent, fctl's review agent, a
- * runner's host (`by: "host"`, or enrolling itself with a token), or fctl itself.
+ * Who did what an entry records, when it names nobody: a session's agent, fctl's review agent (its
+ * review's findings and summary), a runner's host (`by: "host"`, or enrolling itself with a token),
+ * or fctl itself, which starts reviews.
  */
 export function auditActor(e: G.AuditEntry): string {
   if (e.actor) return e.actor.name;
   const d = (e.data ?? {}) as Data;
   if (e.action.startsWith("screenshot.")) return "An agent";
-  if (e.action.startsWith("review.")) return "fctl's review agent";
+  // The review agent posts and sums up its review; fctl starts it, and passes its findings on.
+  if (e.action === "review.posted" || e.action === "review.summarized") return "fctl's review agent";
   if (byHost(e)) return str(d.name) ? `The runner ${d.name}` : "A runner";
   return "fctl";
 }

@@ -169,6 +169,11 @@ describe("an audit log entry in words", () => {
   it("credits review agents and runners with what they did themselves", () => {
     const posted = entry("review.posted", "ses_3", { pull_request: "acme/web#12", findings: 0 });
     expect(auditActor(posted)).toBe("fctl's review agent");
+    // fctl starts a review as a pull request moves on, before any review agent runs.
+    const started = entry("review.started", "ses_3", { pull_request: "acme/web#12" });
+    expect(`${auditActor(started)} ${said(describeAudit(started))}`).toBe(
+      "fctl started a review of acme/web#12",
+    );
     const enrolled = entry("workspace.runner_enrolled", "rnr_1", {
       name: "kohlrabi",
       enrollment_token_name: "Office",
