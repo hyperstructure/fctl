@@ -155,9 +155,9 @@ command again with `--key <that key>`, and the session gets the message
 only if it didn't yet. A script that may send the same message twice can
 give its own key from the start (`fctl send my-app#12 --key deploy-1234
 "…"`): for a day, a message sent again with the same key reaches the
-session at most once. The key goes with the message's text and the names
-of its files, so another message with the same key is a message of its
-own.
+session at most once. The key goes with the message's text and its files,
+so another message with the same key, or the same one with a file that
+changed, is a message of its own.
 
 `fctl search` looks in the titles and descriptions of the sessions you can
 see, in every workspace unless `-w` or `-p` says which, and in what people

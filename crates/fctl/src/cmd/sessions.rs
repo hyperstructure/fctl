@@ -249,6 +249,16 @@ pub enum UploadTo<'a> {
 
 /// Uploads files to send with a message; returns their ids.
 pub async fn upload(api: &Api, to: UploadTo<'_>, paths: &[PathBuf]) -> Result<Vec<AttachmentId>> {
+    upload_seen(api, to, paths, |_, _| {}).await
+}
+
+/// [`upload`], showing `seen` each file's name and bytes as it goes.
+async fn upload_seen(
+    api: &Api,
+    to: UploadTo<'_>,
+    paths: &[PathBuf],
+    mut seen: impl FnMut(&str, &[u8]),
+) -> Result<Vec<AttachmentId>> {
     if paths.len() > files::MAX_FILES_PER_MESSAGE {
         bail!(
             "Attach at most {} files to one message",
@@ -273,6 +283,7 @@ pub async fn upload(api: &Api, to: UploadTo<'_>, paths: &[PathBuf]) -> Result<Ve
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
+        seen(&name, &bytes);
         let media_type = Some(files::guess_media_type(&name));
         let att = match to {
             UploadTo::Project(p) => api.upload_attachment(p, &name, media_type, bytes).await,
@@ -1133,16 +1144,15 @@ pub async fn send(
     } else {
         message.to_owned()
     };
-    let attachments = upload(&api, UploadTo::Session(&s.id.0), attach).await?;
+    let mut fingerprint = Fingerprint::new(&text);
+    let attachments = upload_seen(&api, UploadTo::Session(&s.id.0), attach, |name, bytes| {
+        fingerprint.file(name, bytes)
+    })
+    .await?;
     let key = given
         .clone()
         .unwrap_or_else(|| fctl_domain::ids::new_id("cli", style::now_ms()));
-    let names: Vec<String> = attach
-        .iter()
-        .map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .map(Option::unwrap_or_default)
-        .collect();
-    let client_id = message_key(&key, &text, &names);
+    let client_id = fingerprint.key(&key);
     let r = deliver(&api, &s.id.0, &text, attachments, client_id, |e, wait| {
         trying_again("Sending", e, wait)
     })
@@ -1236,21 +1246,41 @@ fn not_sent(n: &NotSent, session: &str, key: &str, given: bool) -> String {
     }
 }
 
-/// The `client_id` of a message sent with `key` (`fctl send --key`, or one
-/// of its own): the key with a fingerprint of the message, its `text` and
-/// the names of its `files`. The same command run again goes with the same
-/// one, so the session gets the message at most once; another message with
-/// the same key is a message of its own, rather than one the session takes
-/// for the first and drops.
-fn message_key(key: &str, text: &str, files: &[String]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(text.as_bytes());
-    for name in files {
-        h.update([0]);
-        h.update(name.as_bytes());
+/// What a message says, its text and its files (each one's name and
+/// bytes), for its `client_id` ([`Fingerprint::key`]).
+struct Fingerprint(sha2::Sha256);
+
+impl Fingerprint {
+    fn new(text: &str) -> Self {
+        use sha2::Digest;
+        let mut f = Self(sha2::Sha256::new());
+        f.part(text.as_bytes());
+        f
     }
-    format!("{key}:{}", hex::encode(&h.finalize()[..8]))
+
+    fn file(&mut self, name: &str, bytes: &[u8]) {
+        self.part(name.as_bytes());
+        self.part(bytes);
+    }
+
+    /// Each part with its length first, so that no two messages run
+    /// together into the same bytes.
+    fn part(&mut self, bytes: &[u8]) {
+        use sha2::Digest;
+        self.0.update((bytes.len() as u64).to_le_bytes());
+        self.0.update(bytes);
+    }
+
+    /// The `client_id` of the message sent with `key` (`fctl send --key`,
+    /// or one of its own): the key with the fingerprint. The same command
+    /// run again goes with the same one while its files are the same, so
+    /// the session gets the message at most once; another message with the
+    /// same key, or a changed file, is a message of its own, rather than
+    /// one the session takes for the first and drops.
+    fn key(self, key: &str) -> String {
+        use sha2::Digest;
+        format!("{key}:{}", hex::encode(&self.0.finalize()[..8]))
+    }
 }
 
 /// Whether the control plane refused a request, which then changed
@@ -1700,20 +1730,33 @@ mod tests {
 
     #[test]
     fn a_message_key_is_its_key_and_what_it_says() {
-        let files = ["ci.log".to_owned()];
-        let key = message_key("deploy-1", "It's live", &files);
-        assert!(key.starts_with("deploy-1:"), "{key}");
-        assert_eq!(key.len(), "deploy-1:".len() + 16);
-        // The same command again: the same.
-        assert_eq!(key, message_key("deploy-1", "It's live", &files));
-        // Another message, other files or another key: its own.
-        assert_ne!(key, message_key("deploy-1", "It's live!", &files));
-        assert_ne!(key, message_key("deploy-1", "It's live", &[]));
+        let key = |key: &str, text: &str, files: &[(&str, &str)]| {
+            let mut f = Fingerprint::new(text);
+            for (name, bytes) in files {
+                f.file(name, bytes.as_bytes());
+            }
+            f.key(key)
+        };
+        let log = [("ci.log", "failed")];
+        let first = key("deploy-1", "It's live", &log);
+        assert!(first.starts_with("deploy-1:"), "{first}");
+        assert_eq!(first.len(), "deploy-1:".len() + 16);
+        // The same command again, with the same file: the same.
+        assert_eq!(first, key("deploy-1", "It's live", &log));
+        // Another message, another file, the file changed, or another key:
+        // its own.
+        assert_ne!(first, key("deploy-1", "It's live!", &log));
+        assert_ne!(first, key("deploy-1", "It's live", &[]));
+        assert_ne!(first, key("deploy-1", "It's live", &[("ci.log", "passed")]));
+        assert_ne!(first, key("deploy-1", "It's live", &[("cd.log", "failed")]));
         assert_ne!(
-            key,
-            message_key("deploy-1", "It's live", &["ci.log".into(), "b".into()])
+            first,
+            key("deploy-1", "It's live", &[("ci.log", "failed"), ("b", "")])
         );
-        assert_ne!(key, message_key("deploy-2", "It's live", &files));
+        assert_ne!(first, key("deploy-2", "It's live", &log));
+        // Parts don't run together: text that holds what a file would.
+        assert_ne!(key("k", "x", &[("y", "")]), key("k", "x\0y", &[]));
+        assert_ne!(key("k", "x", &[("y", "z")]), key("k", "x", &[("yz", "")]));
     }
 
     #[tokio::test(start_paused = true)]
