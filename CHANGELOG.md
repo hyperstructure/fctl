@@ -2,6 +2,27 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.35.1 (2026-11-16)
+
+### Features
+
+- **web:** Ask before a message goes to an autopilot's earlier session ([#562](https://github.com/hyperstructure/fctl/pull/562))
+- **web:** Show a project's older sessions ([#565](https://github.com/hyperstructure/fctl/pull/565))
+- **web:** The audit log reads in sentences ([#567](https://github.com/hyperstructure/fctl/pull/567))
+- **web:** Tab strips fade where more tabs lie past the edge ([#569](https://github.com/hyperstructure/fctl/pull/569))
+- **web:** Missing pages say what happened and lead back ([#566](https://github.com/hyperstructure/fctl/pull/566))
+
+### Fixes
+
+- **web:** Disabled primary buttons look neutral, not olive ([#563](https://github.com/hyperstructure/fctl/pull/563))
+- **web:** The Agent Floor's greeting reads over its scene ([#564](https://github.com/hyperstructure/fctl/pull/564))
+- **web:** Keyboard hints name the keys there are ([#568](https://github.com/hyperstructure/fctl/pull/568))
+- **web:** A session's header doesn't say its status twice ([#570](https://github.com/hyperstructure/fctl/pull/570))
+
+### Other changes
+
+- **xtask:** Shoot only what fctl.sh's Autopilots page shows ([#561](https://github.com/hyperstructure/fctl/pull/561))
+
 ## 0.35.0 (2026-11-15)
 
 ### Features
