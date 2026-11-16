@@ -300,6 +300,7 @@ describe("the session page", () => {
       ...session("running"),
       title: "Autopilot of web",
       autopilot: { role: "pilot", project_id: "prj_1", project_slug: "web" },
+      stats: { ...session().stats, context_tokens: 263_000, context_window: 600_000, compact_at: 567_000 },
     };
     const autopilot: G.Autopilot = {
       project_id: "prj_1",
@@ -316,6 +317,7 @@ describe("the session page", () => {
       powers: ["merge"],
       check_in_minutes: 60,
       crew_max: 3,
+      handoff_at: 400_000,
       session: { id: "ses_a", number: 12, status: "running", started_at: 0 },
       check_ins: 4,
       notes: [],
@@ -352,6 +354,9 @@ describe("the session page", () => {
     expect(rail()).not.toContain("Changes");
     expect(rail()).not.toContain("Retrospective");
     expect(rail()).not.toContain("Memory");
+    // Its context meter counts down to where a fresh session takes over, before Claude compacts.
+    expect(rail()).toContain("137K left until a fresh session takes over at 400K");
+    expect(rail()).toContain("Compacts at 567K");
 
     // Once it made changes, they show.
     p.snapshot(
@@ -376,6 +381,9 @@ describe("the session page", () => {
     p.snapshot([], pilot);
     expect(rail()).toContain("It works in its session #20 now.");
     expect(rail()).toContain("This is an earlier session of its own: fctl wakes it in #20 now.");
+    // A fresh session took over from it already: its meter says nothing of a handoff.
+    expect(rail()).not.toContain("a fresh session takes over");
+    expect(rail()).toContain("Compacts at 567K");
     // Above the message box too, where a message would otherwise go to it unawares.
     expect(document.body.textContent).toContain("The autopilot works in#20now, not in this earlier session");
 

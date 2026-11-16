@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
-import { agentTime, contextNote, contextUse, turnsTaken } from "./work";
+import { agentTime, contextNote, contextUse, handoffNote, turnsTaken } from "./work";
 
 const stats = (s: Partial<G.SessionStats>): G.SessionStats => ({
   turns: 0,
@@ -93,5 +93,50 @@ describe("work", () => {
     expect(note({ compact_at: 167_000, compactions: 1 })).toBe("Compacts at 167K · compacted once");
     expect(note({ compactions: 2 })).toBe("Compacted twice");
     expect(note({ compact_at: 167_000, compactions: 3 })).toBe("Compacts at 167K · compacted 3 times");
+  });
+
+  it("splits the window where an autopilot's fresh session takes over, before Claude compacts", () => {
+    const st = stats({ context_tokens: 263_000, context_window: 600_000, compact_at: 567_000 });
+    const use = contextUse(st, 400_000);
+    expect(use).toMatchObject({ handoffAt: 400_000, compactAt: 567_000, close: false });
+    expect(use?.parts.map((p) => p.span)).toEqual([400_000, 167_000, 33_000]);
+    expect(use?.parts[0]?.used).toBeCloseTo(0.6575);
+    expect(use?.parts.slice(1).map((p) => p.used)).toEqual([0, 0]);
+    // A handoff at or past where Claude compacts never comes: the compaction leaves less.
+    expect(contextUse(st, 567_000)?.handoffAt).toBeUndefined();
+    expect(contextUse(st, 567_000)?.parts).toHaveLength(2);
+    // Without a threshold, before the end of the window.
+    const whole = stats({ context_tokens: 263_000, context_window: 1_000_000 });
+    expect(contextUse(whole, 400_000)?.parts.map((p) => p.span)).toEqual([400_000, 600_000]);
+    expect(contextUse(whole, 1_000_000)?.handoffAt).toBeUndefined();
+    // Without the window, from older agents: no meter, but the handoff still counts.
+    expect(contextUse(stats({ context_tokens: 263_000 }), 400_000)).toMatchObject({
+      handoffAt: 400_000,
+      parts: [],
+    });
+  });
+
+  it("is close nine tenths of the way to the handoff, and its note only near the compaction", () => {
+    const at = (tokens: number) =>
+      contextUse(stats({ context_tokens: tokens, context_window: 600_000, compact_at: 567_000 }), 400_000);
+    expect(at(359_999)).toMatchObject({ close: false, closeToCompact: false });
+    expect(at(360_000)).toMatchObject({ close: true, closeToCompact: false });
+    expect(at(510_300)).toMatchObject({ close: true, closeToCompact: true });
+  });
+
+  it("says how much is left until a fresh session takes over", () => {
+    const note = (tokens: number, handoff?: number) => {
+      const use = contextUse(
+        stats({ context_tokens: tokens, context_window: 600_000, compact_at: 567_000 }),
+        handoff,
+      );
+      return use && handoffNote(use);
+    };
+    expect(note(263_000)).toBeUndefined();
+    expect(note(263_000, 400_000)).toBe("137K left until a fresh session takes over at 400K");
+    expect(note(400_000, 400_000)).toBe(
+      "Past 400K: a fresh session takes over at the next wake between turns",
+    );
+    expect(note(263_000, 600_000)).toBeUndefined();
   });
 });
