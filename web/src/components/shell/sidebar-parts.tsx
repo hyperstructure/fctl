@@ -66,7 +66,11 @@ export function SearchButton({ onPalette }: { onPalette: () => void }) {
     >
       <Search className="size-3.5" />
       <span className="flex-1 text-left">Search or jump to…</span>
-      <Kbd>{shortcutText("palette")}</Kbd>
+      {/* Not on a touch screen, which has no keys to press, as the person's menu leaves out its
+          shortcuts there. */}
+      <span className="flex [@media(hover:none)]:hidden">
+        <Kbd>{shortcutText("palette")}</Kbd>
+      </span>
     </button>
   );
 }

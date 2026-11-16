@@ -28,7 +28,7 @@ import {
   Users as UsersIcon,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
@@ -58,6 +58,7 @@ import { AdminsOnly } from "@/components/unavailable";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
+import type { AuditNames } from "@/lib/audit";
 import { cn } from "@/lib/cn";
 import { exportEvery } from "@/lib/data-export";
 import { invitationMail, ordered, requestState } from "@/lib/early-access";
@@ -2150,5 +2151,11 @@ function SensitiveActions({
 }
 
 function Audit() {
-  return <AuditLog queryKey={keys.audit} load={(before) => api.audit(before)} ip />;
+  // The people the entries' ids point at, as the People tab lists them.
+  const users = useQuery({ queryKey: keys.users, queryFn: api.users });
+  const names = useMemo((): AuditNames => {
+    const people = new Map((users.data?.users ?? []).map((u) => [u.id, u]));
+    return { user: (id) => people.get(id)?.name, person: (id) => people.get(id) };
+  }, [users.data]);
+  return <AuditLog queryKey={keys.audit} load={(before) => api.audit(before)} ip names={names} />;
 }

@@ -31,6 +31,19 @@ export function statusReason(s: Status): string | undefined {
   return s.status_reason;
 }
 
+/**
+ * A note as it reads beside a status pill that already says its first word: "Stopped after being
+ * idle" beside "Stopped" is "after being idle", and "Stopping: studio is draining" beside "Stopping"
+ * is "studio is draining". Without it the header read "Stopped · Stopped after being idle". A note
+ * that doesn't start with the pill's word is as it is.
+ */
+export function besidePill(text: string, pill: string): string {
+  if (!pill || text.slice(0, pill.length).toLowerCase() !== pill.toLowerCase()) return text;
+  const rest = text.slice(pill.length);
+  const gap = /^(?::\s+|\s+)/.exec(rest)?.[0];
+  return gap && rest.length > gap.length ? rest.slice(gap.length) : text;
+}
+
 /** A few words beside a session's status pill; a warning shows in amber, danger in red. */
 export interface StatusNote {
   text: string;

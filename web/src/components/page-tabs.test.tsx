@@ -1,7 +1,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PageTabs, TabCount } from "./page-tabs";
+import { edgeFade, overflowing, PageTabs, TabCount } from "./page-tabs";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
@@ -73,5 +73,30 @@ describe("PageTabs", () => {
     expect(access?.getAttribute("aria-current")).toBe("page");
     expect(access?.querySelector("svg")?.getAttribute("class")).toContain("text-accent");
     expect(people?.querySelector("svg")?.getAttribute("class")).toContain("text-ink-4");
+  });
+});
+
+describe("a strip of tabs too wide for the screen", () => {
+  const strip = (scrollLeft: number) => ({ scrollLeft, scrollWidth: 700, clientWidth: 390 });
+
+  it("knows which of its edges have more tabs past them", () => {
+    expect(overflowing(strip(0))).toEqual({ left: false, right: true });
+    expect(overflowing(strip(150))).toEqual({ left: true, right: true });
+    expect(overflowing(strip(310))).toEqual({ left: true, right: false });
+    // A zoomed page scrolls by fractions of a pixel.
+    expect(overflowing(strip(309.5))).toEqual({ left: true, right: false });
+    expect(overflowing({ scrollLeft: 0, scrollWidth: 390, clientWidth: 390 })).toEqual({
+      left: false,
+      right: false,
+    });
+  });
+
+  it("fades only the edges with more past them", () => {
+    expect(edgeFade({ left: false, right: false })).toBeUndefined();
+    const right = edgeFade({ left: false, right: true })?.maskImage;
+    expect(right).toBe("linear-gradient(to right, #000 0, #000 calc(100% - 40px), transparent)");
+    expect(edgeFade({ left: true, right: false })?.maskImage).toBe(
+      "linear-gradient(to right, transparent, #000 40px, #000 100%)",
+    );
   });
 });

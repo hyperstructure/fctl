@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { type InfiniteData, QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import { ApiFailure } from "./api";
@@ -78,6 +78,25 @@ describe("a session's summary from the feed", () => {
       expect(s?.question).toEqual(question);
       expect(s?.last_activity_at).toBe(600);
     }
+  });
+
+  it("reaches a session on any page of a list that pages, and leaves the others as they were", () => {
+    const qc = new QueryClient();
+    const key = [...keys.sessions({ project: "prj_web", status: "ended", limit: 2 }), "pages"];
+    const newer = { sessions: [session("prj_web", { id: "ses_3" }), session("prj_web", { id: "ses_2" })] };
+    const older = { sessions: [session("prj_web", { id: "ses_1", title: "Before" })] };
+    qc.setQueryData<InfiniteData<G.SessionList, number | undefined>>(key, {
+      pages: [{ ...newer, next_before: 50 }, older],
+      pageParams: [undefined, 50],
+    });
+    patchSession(qc, session("prj_web", { id: "ses_1", title: "After" }));
+    const pages = qc.getQueryData<InfiniteData<G.SessionList, number | undefined>>(key)?.pages;
+    expect(pages?.[1]?.sessions[0]?.title).toBe("After");
+    expect(pages?.[0]?.sessions).toBe(newer.sessions);
+    // A session no page holds changes nothing.
+    const before = qc.getQueryData(key);
+    patchSession(qc, session("prj_web", { id: "ses_9" }));
+    expect(qc.getQueryData(key)).toBe(before);
   });
 });
 

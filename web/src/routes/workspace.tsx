@@ -23,7 +23,7 @@ import {
   Trash2,
   Users,
 } from "lucide-react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { AuditLog } from "@/components/audit-log";
 import { SET_TOKEN, SETUP_TOKEN } from "@/components/claude/on-runners";
 import { GithubAvatar } from "@/components/github-avatar";
@@ -63,6 +63,7 @@ import { ReviewAppReturned, ReviewAppSection } from "@/components/workspace/revi
 import { EnrollmentTokens, ManageRunner, WaitingRunners } from "@/components/workspace/runners";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "@/lib/api";
+import type { AuditNames } from "@/lib/audit";
 import { avatarImage } from "@/lib/avatar-image";
 import { tokenOnRunnersIn } from "@/lib/claude";
 import { cn } from "@/lib/cn";
@@ -2406,13 +2407,36 @@ function Primary({ w }: { w: G.Workspace }) {
 // ───────────────────────────── audit ─────────────────────────────
 
 function Audit({ w }: { w: G.Workspace }) {
+  // Who and what the entries' ids are: its people, as the People tab lists them, and its projects.
+  const members = useQuery({
+    queryKey: keys.workspaceMembers(w.id),
+    queryFn: () => workspaces.members(w.id),
+  });
+  const projects = useProjects();
+  const names = useMemo((): AuditNames => {
+    const people = new Map((members.data?.members ?? []).map((m) => [m.user.id, m.user]));
+    const byKey = new Map<string, { name: string; slug: string }>();
+    for (const p of projects.data?.projects ?? []) {
+      byKey.set(p.id, p);
+      byKey.set(p.slug, p);
+    }
+    return {
+      user: (id) => people.get(id)?.name,
+      person: (id) => people.get(id),
+      project: (key) => byKey.get(key),
+    };
+  }, [members.data, projects.data]);
   return (
     <div>
       <p className="mb-6 max-w-2xl text-[14px] leading-relaxed text-ink-3">
         What happened in {w.name}: people joining and leaving, roles, runners, GitHub accounts, projects and
         sessions. Kept for a year.
       </p>
-      <AuditLog queryKey={keys.workspaceAudit(w.id)} load={(before) => workspaces.audit(w.id, before)} />
+      <AuditLog
+        queryKey={keys.workspaceAudit(w.id)}
+        load={(before) => workspaces.audit(w.id, before)}
+        names={names}
+      />
     </div>
   );
 }

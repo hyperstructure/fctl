@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Stall } from "./stall";
 import { stallLabel } from "./stall";
-import { statusNotes, statusReason, waitsForYou } from "./status";
+import { besidePill, statusNotes, statusReason, waitsForYou } from "./status";
 
 describe("status", () => {
   const background = { status: "idle", status_reason: "Waiting for 2 background tasks" } as const;
@@ -69,5 +69,16 @@ describe("status", () => {
     expect(
       statusNotes({ status: "provisioning", status_reason: "Creating the sandbox" }, quiet, now),
     ).toEqual([{ text: "Creating the sandbox" }]);
+  });
+
+  it("leaves out the word the status pill says already", () => {
+    expect(besidePill("Stopped after being idle", "Stopped")).toBe("after being idle");
+    expect(besidePill("Stopping: studio is draining", "Stopping")).toBe("studio is draining");
+    expect(besidePill("Waiting for 2 background tasks", "Waiting")).toBe("for 2 background tasks");
+    // Others are as they are: another word, a word the pill's starts, or the pill's word alone.
+    expect(besidePill("Waiting for a runner", "Queued")).toBe("Waiting for a runner");
+    expect(besidePill("Stoppedness", "Stopped")).toBe("Stoppedness");
+    expect(besidePill("Stopped", "Stopped")).toBe("Stopped");
+    expect(besidePill("resumes in 4m", "Paused")).toBe("resumes in 4m");
   });
 });
