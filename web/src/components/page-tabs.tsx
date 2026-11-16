@@ -1,10 +1,26 @@
 // The tabs of a project's, a workspace's and the admin page: links, each with its icon, the open one
-// underlined in the accent. Where they don't fit (phones) they scroll sideways, and the open one
-// scrolls into view.
+// underlined in the accent. Where they don't fit (phones) they scroll sideways, the open one scrolls
+// into view, and the edge that has more tabs past it fades out.
 
 import { Link, type LinkProps } from "@tanstack/react-router";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
+
+/** Which of a strip's edges have more of it past them. */
+export function overflowing(el: Pick<HTMLElement, "scrollLeft" | "scrollWidth" | "clientWidth">) {
+  // A pixel's leeway: zoomed pages scroll by fractions.
+  return { left: el.scrollLeft > 1, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1 };
+}
+
+/**
+ * A strip's mask that fades its edges with more past them, over the 24 px the strip runs out to the
+ * screen's edge with: the tabs cut off there said nothing of the ones beyond.
+ */
+export function edgeFade({ left, right }: { left: boolean; right: boolean }): CSSProperties | undefined {
+  if (!left && !right) return undefined;
+  const mask = `linear-gradient(to right, ${left ? "transparent, #000 40px" : "#000 0"}, ${right ? "#000 calc(100% - 40px), transparent" : "#000 100%"})`;
+  return { maskImage: mask, WebkitMaskImage: mask };
+}
 
 export interface PageTab<T extends string> {
   id: T;
@@ -39,6 +55,22 @@ export function PageTabs<T extends string>({
 }) {
   const strip = useRef<HTMLElement>(null);
   const shown = tabs.map((t) => t.id).join();
+  const [more, setMore] = useState({ left: false, right: false });
+  const measure = useCallback(() => {
+    const nav = strip.current;
+    if (!nav) return;
+    const now = overflowing(nav);
+    setMore((was) => (was.left === now.left && was.right === now.right ? was : now));
+  }, []);
+  // As the window or the tabs' widths change (a count appears, the font loads).
+  useLayoutEffect(() => {
+    const nav = strip.current;
+    if (!nav) return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(nav);
+    if (nav.firstElementChild) observer.observe(nav.firstElementChild);
+    return () => observer.disconnect();
+  }, [measure]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: again as another tab opens, or the tabs change
   useLayoutEffect(() => {
     const nav = strip.current;
@@ -51,7 +83,13 @@ export function PageTabs<T extends string>({
     nav.scrollLeft += a.left + a.width / 2 - (v.left + v.width / 2);
   }, [open, shown]);
   return (
-    <nav ref={strip} aria-label={label} className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]">
+    <nav
+      ref={strip}
+      aria-label={label}
+      onScroll={measure}
+      style={edgeFade(more)}
+      className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]"
+    >
       <div className="flex w-max min-w-full gap-1 border-b border-line">
         {tabs.map((t) => {
           const here = open === t.id;
