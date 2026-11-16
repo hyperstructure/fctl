@@ -708,7 +708,8 @@ A fresh session takes its place after 12 hours, or once its context holds
 as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
 at the first wake between its turns: it starts from the plan and log, so
 the session keeps them current, and as its context nears that size each
-wake message says so. The fresh session checks what the last one promised
+wake message says so. The session's details show how much is left, under
+its context. The fresh session checks what the last one promised
 people against what is live, and tells them of what shipped, and starts
 again the background scripts its plan names, which stopped with the last
 one's sandbox. People who steer it also start one when they

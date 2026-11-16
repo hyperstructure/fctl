@@ -7,6 +7,7 @@ import {
   defaultPowers,
   glance,
   handoffChoice,
+  handoffHere,
   handoffWords,
   hasPlaceholders,
   movedOn,
@@ -148,6 +149,21 @@ describe("an earlier session of its own", () => {
     expect(movedOn(autopilot({ session, state: "off" }), "ses_1")).toBeUndefined();
     expect(movedOn(autopilot(), "ses_1")).toBeUndefined();
     expect(movedOn(undefined, "ses_1")).toBeUndefined();
+  });
+
+  it("knows where a fresh session takes over from the session it works in now", () => {
+    const sized = autopilot({ session, handoff_at: 400_000 });
+    expect(handoffHere(sized, "ses_2")).toBe(400_000);
+    // Paused, it still hands off at its next wake once resumed.
+    expect(handoffHere({ ...sized, state: "paused" }, "ses_2")).toBe(400_000);
+  });
+
+  it("knows none for an earlier session, while off, or after 12 hours alone", () => {
+    const sized = autopilot({ session, handoff_at: 400_000 });
+    expect(handoffHere(sized, "ses_1")).toBeUndefined();
+    expect(handoffHere({ ...sized, state: "off" }, "ses_2")).toBeUndefined();
+    expect(handoffHere(autopilot({ session }), "ses_2")).toBeUndefined();
+    expect(handoffHere(undefined, "ses_2")).toBeUndefined();
   });
 
   it("says how that session stands, in a word", () => {

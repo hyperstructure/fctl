@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { GithubAccessChip, GithubAccessLabel } from "@/components/github-access";
+import { useAutopilot } from "@/components/project/autopilot";
 import { ReviewFacts, ReviewFooter, useSessionReview } from "@/components/review";
 import { AutopilotLink, AutopilotStarter } from "@/components/session/autopilot";
 import { Changes } from "@/components/session/changes";
@@ -94,6 +95,7 @@ import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
 import { setPageTitle } from "@/lib/attention";
+import { handoffHere } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { followUpHint } from "@/lib/follow-ups";
 import { ago, duration, num, stamp, when } from "@/lib/format";
@@ -124,7 +126,7 @@ import { takeOverOf } from "@/lib/subscription";
 import type { Item } from "@/lib/transcript";
 import { factsOf, type Turn, type TurnFacts, turnOfSeq, turnSeq, turnsOf, turnTitle } from "@/lib/turns";
 import { cameAfter, newestSeq } from "@/lib/unseen";
-import { agentTime, type ContextUse, contextNote, contextUse, turnsTaken } from "@/lib/work";
+import { agentTime, type ContextUse, contextNote, contextUse, handoffNote, turnsTaken } from "@/lib/work";
 import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
 
 /**
@@ -1335,17 +1337,21 @@ function AgentTime({ stats, until }: { stats: G.SessionStats; until?: number }) 
 }
 
 /**
- * How full Claude's context is: the tokens in it and the window, a meter
- * split where Claude compacts the conversation, amber nine tenths of the way
- * there, and how often it compacted. The text says what the meter shows for
- * screen readers.
+ * How full Claude's context is: the tokens in it and the window, a meter split where Claude
+ * compacts the conversation, amber nine tenths of the way there, and how often it compacted. In
+ * the session an autopilot works in now, also where a fresh session takes over, when that comes
+ * first: the meter splits there too, turns amber nine tenths of the way to it, and a line says how
+ * much is left. The text says what the meter shows for screen readers.
  */
-function ContextMeter({ stats }: { stats: G.SessionStats }) {
-  const use = contextUse(stats);
+function ContextMeter({ session }: { session: G.Session }) {
+  const pilot = session.autopilot?.role === "pilot";
+  // The page has it already for an autopilot's own session (its details and message box).
+  const autopilot = useAutopilot(session.autopilot?.project_slug ?? "", pilot).data;
+  const use = contextUse(session.stats, pilot ? handoffHere(autopilot, session.id) : undefined);
   if (!use) return null;
   const note = contextNote(use);
+  const handoff = handoffNote(use);
   const exact = (n: number) => n.toLocaleString();
-  const [before, after] = use.parts;
   return (
     <>
       <Row
@@ -1359,15 +1365,29 @@ function ContextMeter({ stats }: { stats: G.SessionStats }) {
           </span>
         }
       />
-      {before && (
+      {use.parts.length > 0 && (
         <div aria-hidden className="mt-1.5 flex h-1 gap-0.5">
-          <ContextPart {...before} close={use.close} />
-          {after && <ContextPart {...after} close={use.close} />}
+          {/* In order, from empty to the window: their places are their identity. */}
+          {use.parts.map((p, i) => (
+            <ContextPart key={i} {...p} close={use.close} />
+          ))}
         </div>
+      )}
+      {handoff && use.handoffAt != null && (
+        <p
+          className={cn("mt-1.5 text-[11.5px]", use.close ? "text-amber" : "text-ink-4")}
+          title={`fctl starts a fresh session of the autopilot's own at its first wake between turns that finds ${exact(use.handoffAt)} tokens or more in this one's context, or 12 hours after this one started, whichever comes first. The fresh session starts from the autopilot's plan and log.`}
+        >
+          {handoff}
+        </p>
       )}
       {note && (
         <p
-          className={cn("mt-1.5 text-[11.5px]", use.close ? "text-amber" : "text-ink-4")}
+          className={cn(
+            handoff ? "mt-0.5" : "mt-1.5",
+            "text-[11.5px]",
+            use.closeToCompact ? "text-amber" : "text-ink-4",
+          )}
           title={
             use.compactAt != null
               ? `Claude summarizes the conversation to make room once its context holds ${exact(use.compactAt)} tokens`
@@ -1682,7 +1702,7 @@ function Details({
         <Row k="Agent time" v={<AgentTime stats={st} until={stall?.since} />} />
         <Row k="Tokens in / out" v={`${num(st.input_tokens)} / ${num(st.output_tokens)}`} />
         <Row k="Cache reads" v={num(st.cache_read_tokens)} />
-        <ContextMeter stats={st} />
+        <ContextMeter session={session} />
       </RailSection>
       <RailSection title="Session">
         <Row
