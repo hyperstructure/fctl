@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { Retrospectives } from "@/components/project/retrospectives";
 import { TurnOn } from "@/components/project/turn-on";
+import { startKeys } from "@/components/session/task-box";
 import {
   Avatar,
   Banner,
@@ -328,7 +329,8 @@ function AddNote({ project }: { project: G.Project }) {
             {left < 200 ? `${left} characters left` : "Markdown · one fact per note"}
           </span>
           <span className="flex-1" />
-          <span className="text-[11.5px] text-ink-4 max-sm:hidden">⌘+Enter</span>
+          {/* ⌘+Enter on Apple's systems, Ctrl+Enter elsewhere, as the task boxes say it. */}
+          <span className="text-[11.5px] text-ink-4 max-sm:hidden">{startKeys()}</span>
           <Button
             type="submit"
             size="sm"
