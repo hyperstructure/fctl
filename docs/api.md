@@ -267,9 +267,13 @@ closes it with 4403 once the caller may no longer see the session.
 
 A run is `{"id": "srn_…", "outcome": "started" | "skipped" | "failed",
 "reason", "trigger": "time" | "person" | "token", "by", "session": {"id",
-"number", "title"}, "status"}`. Runs that a token asks for give the agent
-the context after the task, marked as information from outside fctl, not
-instructions: send what another tool knows there, never in a task.
+"number", "title"}, "status", "autopilot": {"project_id",
+"project_slug"}}`, with `autopilot` only for a run an autopilot asked for
+with its owner's token (`by`), whose session is one of its own. Runs that
+a token asks for give the agent the context after the task, marked as
+information from outside fctl, not instructions: send what another tool
+knows there, never in a task. An autopilot's context reaches the agent as
+what the autopilot added for the run.
 People and tools run one schedule at most 20 times an hour, and a paused
 schedule runs not even then. [Automation](automation.md#start-agents-from-other-tools)
 shows a tool's request.
