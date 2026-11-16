@@ -15,14 +15,20 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   trailing?: ReactNode;
 }
 
+// Disabled, a button doesn't respond to hover, and looks it, except while it's loading
+// (`data-loading`): then it keeps its look beside the spinner, as the action it started goes on.
+// The primary gives up its fill rather than fade, as the composers' Start does: faded yellow is a
+// muddy olive on the dark page, a color the palette doesn't have.
 const variants: Record<Variant, string> = {
   primary:
-    "bg-highlight text-highlight-ink hover:brightness-[1.06] active:brightness-95 shadow-[inset_0_0_0_1px_rgb(23_23_23/0.1),0_1px_2px_rgb(0_0_0/0.3)] disabled:opacity-45 disabled:hover:brightness-100",
+    "bg-highlight text-highlight-ink not-disabled:hover:brightness-[1.06] active:brightness-95 shadow-[inset_0_0_0_1px_rgb(23_23_23/0.1),0_1px_2px_rgb(0_0_0/0.3)] disabled:not-data-loading:bg-raised disabled:not-data-loading:text-ink-4 disabled:not-data-loading:shadow-[inset_0_0_0_1px_var(--c-line-strong)]",
   secondary:
-    "bg-raised text-ink border border-line-strong hover:border-ink-4 hover:bg-raised/80 disabled:text-ink-4",
-  ghost: "text-ink-2 hover:text-ink hover:bg-hover/70 disabled:text-ink-4",
-  danger: "bg-danger-soft text-danger border border-danger/25 hover:bg-danger/15 disabled:opacity-50",
-  quiet: "text-ink-3 hover:text-ink disabled:text-ink-4",
+    "bg-raised text-ink border border-line-strong not-disabled:hover:border-ink-4 not-disabled:hover:bg-raised/80 disabled:not-data-loading:text-ink-4",
+  ghost:
+    "text-ink-2 not-disabled:hover:text-ink not-disabled:hover:bg-hover/70 disabled:not-data-loading:text-ink-4",
+  danger:
+    "bg-danger-soft text-danger border border-danger/25 not-disabled:hover:bg-danger/15 disabled:not-data-loading:opacity-50",
+  quiet: "text-ink-3 not-disabled:hover:text-ink disabled:not-data-loading:text-ink-4",
 };
 
 const sizes: Record<Size, string> = {
@@ -59,7 +65,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       disabled={disabled || loading}
-      className={buttonClass({ variant, size, className })}
+      data-loading={loading || undefined}
+      className={buttonClass({ variant, size, className: cn("data-loading:cursor-progress", className) })}
       {...rest}
     >
       {loading ? <Spinner className="size-3.5" /> : icon}
