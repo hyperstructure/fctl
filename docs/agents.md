@@ -705,7 +705,9 @@ as many tokens as people chose (`fctl autopilot set --handoff-at 250k`),
 at the first wake between its turns: it starts from the plan and log, so
 the session keeps them current, and as its context nears that size each
 wake message says so. The fresh session checks what the last one promised
-people against what is live, and tells them of what shipped. People who steer it also start one when they
+people against what is live, and tells them of what shipped, and starts
+again the background scripts its plan names, which stopped with the last
+one's sandbox. People who steer it also start one when they
 choose (`fctl autopilot wake --fresh`), say to pick up what's new in
 fctl after a release: at once between its turns, else once its turn
 ends.
