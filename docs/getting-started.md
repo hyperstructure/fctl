@@ -469,7 +469,9 @@ started.
   swipe on a phone, step through the session's others, and on a phone a
   pinch or a double tap zooms in on it and a swipe down closes it. The
   details beside the transcript show how full Claude's context is, with
-  where Claude compacts the conversation to make room. On every page, the sidebar lists each
+  where Claude compacts the conversation to make room, and in the session
+  an autopilot works in, how much is left until a fresh session takes over
+  from it. On every page, the sidebar lists each
   project's sessions under it, in all your workspaces: those that haven't
   ended (starting, at work, waiting or paused), and for an hour those that
   stopped or failed, dimmer, the one you are on marked, so a click switches

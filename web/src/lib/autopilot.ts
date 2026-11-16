@@ -180,6 +180,18 @@ export function movedOn(
   return a.session;
 }
 
+/**
+ * Where a fresh session takes over from `here`, in tokens of its context: when it is the session
+ * the autopilot works in now, and a size, not only 12 hours, ends its shift.
+ */
+export function handoffHere(
+  a: Pick<G.Autopilot, "state" | "session" | "handoff_at"> | null | undefined,
+  here: G.SessionId,
+): number | undefined {
+  if (!a || a.state === "off" || a.session?.id !== here) return;
+  return a.handoff_at ?? undefined;
+}
+
 /** How the session it works in now stands, in a word beside a dot: "At work", "Resting". */
 export function sessionWord(a: Pick<G.Autopilot, "state" | "session">): {
   tone: "accent" | "pink" | "ink" | "danger";
