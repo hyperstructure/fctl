@@ -111,10 +111,10 @@ export function AuthFrame({
             wide ? "max-w-[720px]" : "max-w-[400px]",
           )}
         >
-          <h1 className="font-display text-[34px] leading-[1.1] font-medium tracking-[-0.02em] text-ink">
+          <h1 className="font-display text-[34px] leading-[1.1] font-medium tracking-[-0.02em] text-ink text-halo-lg">
             {title}
           </h1>
-          {subtitle && <p className="mt-3 text-[15px] leading-relaxed text-ink-2">{subtitle}</p>}
+          {subtitle && <p className="mt-3 text-[15px] leading-relaxed text-ink-2 text-halo">{subtitle}</p>}
           <div className="mt-8 rounded-xl border border-line-strong bg-surface/90 p-6 shadow-[0_24px_80px_rgb(0_0_0/0.35)] backdrop-blur-2xl">
             {children}
           </div>
@@ -305,7 +305,11 @@ export function LoginPage() {
         instance?.features.early_access ? (
           <EarlyAccessLink />
         ) : instance && !instance.features.email ? (
-          "Need an account or a new password? Ask an admin of this instance."
+          // On the page's color frosted, as the early access page's notes are: it lies on the scene's
+          // planet, whose pixels a halo alone doesn't quiet at this size.
+          <span className="inline-block rounded-xl bg-canvas/60 px-3 py-1.5 backdrop-blur-md">
+            Need an account or a new password? Ask an admin of this instance.
+          </span>
         ) : undefined
       }
     >

@@ -49,6 +49,21 @@
   }
 }
 
+/* Words laid on a scene (the Agent Floor's greeting, the sign-in pages): a halo of the page's
+   color around each letter lifts them off the scene's threads and planet, in both themes,
+   without a box around them. text-halo-lg is for display text. */
+@utility text-halo {
+  text-shadow:
+    0 0 12px var(--c-canvas),
+    0 0 4px var(--c-canvas),
+    0 0 1px var(--c-canvas);
+}
+@utility text-halo-lg {
+  text-shadow:
+    0 0 24px var(--c-canvas),
+    0 0 8px var(--c-canvas);
+}
+
 /* Editorial prose: agent answers, project descriptions. */
 .prose-fctl {
   font-family: var(--font-sans);
