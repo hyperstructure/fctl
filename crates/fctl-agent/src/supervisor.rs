@@ -1945,7 +1945,7 @@ impl Supervisor {
         delivery: Option<&DeliveryId>,
         files: &[Attachment],
     ) {
-        let starter = self.config.as_ref().map(|c| &c.spec.author);
+        let starter = self.config.as_ref().and_then(|c| prompt::unnamed(&c.spec));
         let files = self.prepare_files(files);
         let text = prompt::user_turn(&prompt::with_files(text, &files.note), author, starter);
         self.send_content(&text, files.images, delivery).await;
@@ -2020,6 +2020,7 @@ impl Supervisor {
                 author,
                 author_called,
                 attachments,
+                autopilot,
             } => {
                 if self.stopping.is_some() {
                     // Leave it unconfirmed: the control plane keeps it for the next run.
@@ -2037,6 +2038,7 @@ impl Supervisor {
                 let author = author.as_ref().map(|user| prompt::Author {
                     user,
                     called: author_called.as_deref(),
+                    autopilot: autopilot.is_some(),
                 });
                 self.send_turn(text, author, Some(&d.id), attachments).await;
             }
@@ -5342,6 +5344,7 @@ done
         let by = prompt::Author {
             user: &bob,
             called: None,
+            autopilot: false,
         };
         next.send_turn("Please continue", Some(by), None, &[]).await;
         next.send_turn("And then this", None, None, &[]).await;

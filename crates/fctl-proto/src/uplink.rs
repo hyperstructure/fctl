@@ -67,6 +67,13 @@ pub enum DeliveryKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[cfg_attr(feature = "ts", ts(as = "Option<Vec<Attachment>>", optional))]
         attachments: Vec<Attachment>,
+        /// The autopilot that sent it to one of its sessions, as `author`,
+        /// its owner: the agent says the autopilot wrote it. Absent for
+        /// other messages and from older control planes; older hosts drop
+        /// it, and their agents take it for `author`'s.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        autopilot: Option<crate::autopilot::AutopilotAuthor>,
     },
     /// Abort the current turn.
     Interrupt {
@@ -386,11 +393,14 @@ mod tests {
                 author: None,
                 author_called: Some("Carl Oscar".into()),
                 attachments: Vec::new(),
+                autopilot: None,
             },
             ..old
         };
         let json = serde_json::to_value(&called)?;
         assert_eq!(json["author_called"], "Carl Oscar");
+        // Nor an autopilot for a person's message.
+        assert!(json.get("autopilot").is_none());
         assert_eq!(serde_json::from_value::<Delivery>(json)?, called);
         Ok(())
     }

@@ -1429,7 +1429,7 @@ pub fn crew_note(project: &str, scope: AutopilotScope, owner: &str, merges: bool
         "Leave merging your pull request to people: once its checks pass and the work is done, end your turn saying so."
     };
     format!(
-        "\n\n---\nThe autopilot of {project} started this session: an agent that runs {what} on its own (an experimental feature of fctl), for {owner}, as whom it acts, so its messages come to you as {owner}'s. It follows this session and hears when your turn ends. {merge} Do the whole task, every part of it, before you end your turn. When you're done, or need a decision to go on, end your turn saying so plainly, with what is left if anything is; ask what you need answered with `fctl ask`, and the autopilot answers, or asks people."
+        "\n\n---\nThe autopilot of {project} started this session: an agent that runs {what} on its own (an experimental feature of fctl), for {owner}, as whom it acts. It wrote this task, not {owner}, and follows this session: it reads what you say as your turn ends, so write that for it. {merge} Do the whole task, every part of it, before you end your turn. When you're done, or need a decision to go on, end your turn saying so plainly, with what is left if anything is; ask what you need answered with `fctl ask`, and the autopilot answers, or asks people."
     )
 }
 
@@ -3408,7 +3408,11 @@ mod tests {
     #[test]
     fn tells_its_sessions_whether_to_merge() {
         let note = crew_note("Shop", AutopilotScope::Project, "Ada", true);
-        assert!(note.starts_with("\n\n---\nThe autopilot of Shop started this session"));
+        // The apps set it apart from the task by its start.
+        assert!(note.starts_with("\n\n---\nThe autopilot of Shop started this session: "));
+        // The task and its messages are the autopilot's, not its owner's.
+        assert!(note.contains("for Ada, as whom it acts"));
+        assert!(note.contains("It wrote this task, not Ada"));
         assert!(note.contains("merge your pull request yourself (`gh pr merge`)"));
         // Sessions stop short: it asks for the whole task, or what is left.
         assert!(note.contains("Do the whole task, every part of it, before you end your turn."));
@@ -4385,6 +4389,7 @@ mod tests {
             author: author.cloned(),
             author_called: None,
             attachments: Vec::new(),
+            autopilot: None,
         };
         let interrupt = DeliveryKind::Interrupt {
             by: Some(ada.clone()),

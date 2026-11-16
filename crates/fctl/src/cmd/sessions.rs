@@ -14,6 +14,7 @@ use fctl_proto::agent::{SESSION_SOCKET_ENV, SessionReply, SessionRequest};
 use fctl_proto::api::{
     CreateSessionRequest, CreateShareRequest, ReviewState, SessionShare, UpdateSessionRequest,
 };
+use fctl_proto::autopilot::AutopilotRole;
 use fctl_proto::event::{EventBody, SessionEvent};
 use fctl_proto::session::{
     GithubAccess, PullRequestRef, Session, SessionRole, SessionStats, SessionStatus,
@@ -600,15 +601,9 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
                 .unwrap_or_default()
         );
     }
-    println!(
-        "{}{}",
-        if s.review.is_some() {
-            "runs on:  "
-        } else {
-            "by:       "
-        },
-        style::plain(&s.created_by.name)
-    );
+    for line in started_lines(&s) {
+        println!("{line}");
+    }
     if let Some(b) = &s.branch {
         println!(
             "branch:   {}{}",
@@ -672,6 +667,37 @@ pub async fn show(server: Option<&str>, reference: &str, json: bool) -> Result<(
     }
     println!("{}", style::dim(&format!("{}/s/{}", api.base(), s.id)));
     Ok(())
+}
+
+/// `fctl show`'s lines for who started a session, and for whom: a review
+/// agent runs on its person's subscription, an autopilot's sessions say the
+/// autopilot started them, for the person it acts as, and a schedule's
+/// sessions name it.
+fn started_lines(s: &Session) -> Vec<String> {
+    let name = style::plain(&s.created_by.name);
+    let by = match &s.autopilot {
+        _ if s.review.is_some() => format!("runs on:  {name}"),
+        Some(a) if a.role == AutopilotRole::Crew => format!(
+            "by:       {}'s autopilot, for {name}",
+            style::plain(&a.project_slug)
+        ),
+        Some(a) if a.role == AutopilotRole::Pilot => format!(
+            "by:       fctl, as {}'s autopilot, for {name}",
+            style::plain(&a.project_slug)
+        ),
+        _ => format!("by:       {name}"),
+    };
+    let mut lines = vec![by];
+    if let Some(schedule) = &s.schedule {
+        lines.push(format!(
+            "schedule: {}",
+            schedule
+                .name
+                .as_deref()
+                .map_or_else(|| "one deleted since".to_owned(), style::plain)
+        ));
+    }
+    lines
 }
 
 /// How full Claude's context is, for `fctl show`: `412.3k of 1M tokens
@@ -2153,6 +2179,52 @@ mod tests {
                 at("open, checks passed, fctl's review agent found 2 issues"),
                 at("draft, fctl's review agent is reviewing it"),
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn show_says_an_autopilot_started_its_sessions() -> Result<()> {
+        let session = |extra: serde_json::Value| -> Result<Session> {
+            let mut v = serde_json::json!({
+                "id": "ses_1", "project_id": "prj_1", "project_slug": "app", "number": 1,
+                "title": "Fix it", "status": "stopped",
+                "created_by": { "id": "usr_1", "name": "Carl Oscar Aaro" },
+                "created_at": 1, "updated_at": 1, "stats": {}, "archived": false
+            });
+            if let (Some(v), Some(extra)) = (v.as_object_mut(), extra.as_object()) {
+                v.extend(extra.clone());
+            }
+            Ok(serde_json::from_value(v)?)
+        };
+        assert_eq!(
+            started_lines(&session(serde_json::json!({}))?),
+            ["by:       Carl Oscar Aaro"]
+        );
+        let autopilot = |role: &str| {
+            serde_json::json!({
+                "autopilot": { "role": role, "project_id": "prj_1", "project_slug": "spaghetti" }
+            })
+        };
+        assert_eq!(
+            started_lines(&session(autopilot("crew"))?),
+            ["by:       spaghetti's autopilot, for Carl Oscar Aaro"]
+        );
+        assert_eq!(
+            started_lines(&session(autopilot("pilot"))?),
+            ["by:       fctl, as spaghetti's autopilot, for Carl Oscar Aaro"]
+        );
+        assert_eq!(
+            started_lines(&session(serde_json::json!({
+                "schedule": { "id": "sch_1", "name": "Ship main" }
+            }))?),
+            ["by:       Carl Oscar Aaro", "schedule: Ship main"]
+        );
+        assert_eq!(
+            started_lines(&session(
+                serde_json::json!({ "schedule": { "id": "sch_1" } })
+            )?),
+            ["by:       Carl Oscar Aaro", "schedule: one deleted since"]
         );
         Ok(())
     }

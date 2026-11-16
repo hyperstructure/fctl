@@ -629,27 +629,56 @@ fn session_number(spec: &SessionSpec) -> String {
 const RERUN_CHECKS: &str = "- Your GitHub token can't re-run or cancel workflow runs (`gh run rerun` answers \"Resource not accessible by integration\"). To run a pull request's checks again after a failure your change didn't cause, such as a flaky test or a runner that never came, push an empty commit (`git commit --allow-empty -m \"Run the checks again\"`).\n";
 
 /// Who started the session and what to call them, as far as fctl knows, and
-/// how messages from other people show who wrote them ([`user_turn`]).
+/// how messages show who wrote them ([`user_turn`]): in an autopilot's
+/// sessions, its own and those it started, the autopilot or fctl started
+/// it, for the person it acts as, and every person's message is named.
 fn people(spec: &SessionSpec) -> String {
-    let Some(called) = spec
+    let name = &spec.author.name;
+    let called = spec
         .author_called
         .as_deref()
         .map(str::trim)
-        .filter(|c| !c.is_empty())
-    else {
+        .filter(|c| !c.is_empty());
+    // Agents take the first of several first names for the whole.
+    let call = called.map(|called| {
+        let whole = if called.contains(char::is_whitespace) {
+            ", the whole name rather than a part of it,"
+        } else {
+            ""
+        };
+        format!(" Call them {called}{whole} when you write to them or about them.")
+    });
+    let names = if called.is_some() {
+        "their name and what to call them"
+    } else {
+        "their name"
+    };
+    let call = call.unwrap_or_default();
+    if let Some(a) = &spec.crew_of {
+        return format!(
+            "- The autopilot of {} started this session, for {name}, as whom it acts.{call} The autopilot's messages begin with \"The autopilot wrote:\", and people's, {name}'s too, with {names}.\n",
+            a.project_slug
+        );
+    }
+    if spec.autopilot.is_some() {
+        return format!(
+            "- fctl started this session for {name}, as whom you act.{call} People's messages, {name}'s too, begin with {names}; fctl's, such as your wakes, don't.\n"
+        );
+    }
+    if called.is_none() {
         return "- Messages from people other than the session's starter begin with their name.\n"
             .to_owned();
-    };
-    // Agents take the first of several first names for the whole.
-    let whole = if called.contains(char::is_whitespace) {
-        ", the whole name rather than a part of it,"
-    } else {
-        ""
-    };
+    }
     format!(
-        "- {} started this session. Call them {called}{whole} when you write to them or about them. Messages from other people begin with their name and what to call them.\n",
-        spec.author.name
+        "- {name} started this session.{call} Messages from other people begin with their name and what to call them.\n"
     )
+}
+
+/// The person whose messages Claude gets without their name: the
+/// session's starter, but nobody in an autopilot's sessions, where the
+/// autopilot writes as its owner and fctl wakes it ([`people`]).
+pub fn unnamed(spec: &SessionSpec) -> Option<&UserRef> {
+    (spec.autopilot.is_none() && spec.crew_of.is_none()).then_some(&spec.author)
 }
 
 /// How an agent that may push describes the pull requests it opens: as much
@@ -1071,12 +1100,17 @@ pub fn with_files(text: &str, note: &str) -> String {
 pub struct Author<'a> {
     pub user: &'a UserRef,
     pub called: Option<&'a str>,
+    /// The session's autopilot wrote it, as `user`, its owner
+    /// (`DeliveryKind::Message::autopilot`).
+    pub autopilot: bool,
 }
 
-/// A user turn as Claude sees it: messages from people other than the
-/// session's starter carry their name, and what to call them.
+/// A user turn as Claude sees it: messages from people other than
+/// `starter` ([`unnamed`]) carry their name, and what to call them, and the
+/// autopilot's say it wrote them.
 pub fn user_turn(text: &str, author: Option<Author<'_>>, starter: Option<&UserRef>) -> String {
     match author {
+        Some(a) if a.autopilot => format!("The autopilot wrote:\n\n{text}"),
         Some(a) if starter.is_none_or(|s| s.id != a.user.id) => {
             let name = &a.user.name;
             match a.called.map(str::trim).filter(|c| !c.is_empty()) {
@@ -1170,6 +1204,7 @@ mod tests {
             review: None,
             tickets: None,
             autopilot: None,
+            crew_of: None,
         }
     }
 
@@ -2198,7 +2233,13 @@ mod tests {
             avatar_url: None,
         };
         let (ada, bob) = (person("usr_1", "Ada"), person("usr_2", "Bob"));
-        let by = |user, called| Some(Author { user, called });
+        let by = |user, called| {
+            Some(Author {
+                user,
+                called,
+                autopilot: false,
+            })
+        };
         assert_eq!(user_turn("hi", by(&ada, None), Some(&ada)), "hi");
         assert_eq!(
             user_turn("hi", by(&bob, None), Some(&ada)),
@@ -2241,6 +2282,76 @@ mod tests {
         assert!(text.contains(
             "- Carl Oscar Aaro started this session. Call them Bob when you write to them or about them."
         ));
+    }
+
+    #[test]
+    fn an_autopilots_sessions_say_who_started_them_and_name_everyone() {
+        let carl = UserRef {
+            id: UserId("usr_3".into()),
+            name: "Carl Oscar Aaro".into(),
+            avatar_url: None,
+        };
+        let autopilot = fctl_proto::autopilot::AutopilotAuthor {
+            project_id: ProjectId("prj_1".into()),
+            project_slug: "spaghetti".into(),
+        };
+        let mut crew = spec();
+        crew.author = carl.clone();
+        crew.author_called = Some("Carl Oscar".into());
+        crew.crew_of = Some(autopilot);
+        let text = system_prompt(&crew, "/work", &paths(), None, None, false, false, false);
+        assert!(text.contains(
+            "- The autopilot of spaghetti started this session, for Carl Oscar Aaro, as whom it acts. Call them Carl Oscar, the whole name rather than a part of it, when you write to them or about them. The autopilot's messages begin with \"The autopilot wrote:\", and people's, Carl Oscar Aaro's too, with their name and what to call them.\n"
+        ));
+        assert!(!text.contains("Carl Oscar Aaro started this session"));
+        // Its owner's messages are named, the autopilot's say it wrote them.
+        assert_eq!(unnamed(&crew), None);
+        let by = |autopilot| {
+            Some(Author {
+                user: &carl,
+                called: Some("Carl Oscar"),
+                autopilot,
+            })
+        };
+        assert_eq!(
+            user_turn("Use the new styles", by(true), unnamed(&crew)),
+            "The autopilot wrote:\n\nUse the new styles"
+        );
+        assert_eq!(
+            user_turn("Keep the old icons", by(false), unnamed(&crew)),
+            "Carl Oscar Aaro (call them Carl Oscar) wrote:\n\nKeep the old icons"
+        );
+        // Without what to call them.
+        crew.author_called = None;
+        let text = system_prompt(&crew, "/work", &paths(), None, None, false, false, false);
+        assert!(text.contains(
+            "- The autopilot of spaghetti started this session, for Carl Oscar Aaro, as whom it acts. The autopilot's messages begin with \"The autopilot wrote:\", and people's, Carl Oscar Aaro's too, with their name.\n"
+        ));
+
+        // The autopilot's own session: fctl starts it, for its owner.
+        let mut own = spec();
+        own.author = carl.clone();
+        own.author_called = Some("Carl Oscar".into());
+        own.autopilot = Some(fctl_proto::autopilot::AutopilotSpec {
+            project_id: ProjectId("prj_1".into()),
+            project_slug: "spaghetti".into(),
+            scope: fctl_proto::autopilot::AutopilotScope::Project,
+        });
+        let text = system_prompt(&own, "/work", &paths(), None, None, false, false, false);
+        assert!(text.contains(
+            "- fctl started this session for Carl Oscar Aaro, as whom you act. Call them Carl Oscar, the whole name rather than a part of it, when you write to them or about them. People's messages, Carl Oscar Aaro's too, begin with their name and what to call them; fctl's, such as your wakes, don't.\n"
+        ));
+        assert_eq!(unnamed(&own), None);
+        assert_eq!(
+            user_turn("Ship it today", by(false), unnamed(&own)),
+            "Carl Oscar Aaro (call them Carl Oscar) wrote:\n\nShip it today"
+        );
+        assert_eq!(
+            user_turn("fctl woke you", None, unnamed(&own)),
+            "fctl woke you"
+        );
+        // Other sessions leave their starter's messages unnamed.
+        assert_eq!(unnamed(&spec()).map(|u| u.name.as_str()), Some("Ada"));
     }
 
     #[test]

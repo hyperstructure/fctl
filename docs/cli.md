@@ -90,7 +90,7 @@ fctl sessions --since 1h         # at work in the last hour: those that haven't 
 fctl pulls                       # the open pull requests agents opened (drafts and merge queues too), each with its sessions: "(asks you)" where its agent waits for an answer, "(archived)" where someone archived it
 fctl pulls -p my-app --state merged --mine --json
 fctl sessions -w acme --limit 100   # a workspace's (30 unless --limit says)
-fctl show my-app#12              # status, branch, pull requests with their checks and review, model and effort, usage
+fctl show my-app#12              # status, who started it (an autopilot, for whom) and from which schedule, branch, pull requests with their checks and review, model and effort, usage
 fctl edit my-app#12 --title "Fix the flaky login test"
 fctl edit my-app#12 --description "Retries the redirect and tests it."   # "" clears it
 fctl edit my-app#12 --effort medium     # its agent works at medium effort from its next step

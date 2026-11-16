@@ -11,6 +11,7 @@ use crate::model::{
 };
 use fctl_domain::image::ImageWant;
 use fctl_domain::size::Want;
+use fctl_proto::autopilot::{AutopilotAuthor, AutopilotRole};
 use fctl_proto::runner::{
     ClaudeCredential, ClaudeCredentialKind, GitIdentity, ProjectSpec, SessionCredentials,
     SessionRepo, SessionSpec,
@@ -485,6 +486,15 @@ pub async fn build(
             Some(autopilot) => crate::autopilots::spec(db, autopilot).await?,
             None => None,
         },
+        // A session an autopilot started: its agent says so, and which
+        // messages are the autopilot's.
+        crew_of: row
+            .autopilot()
+            .filter(|a| a.role == AutopilotRole::Crew)
+            .map(|a| AutopilotAuthor {
+                project_id: a.project_id,
+                project_slug: a.project_slug,
+            }),
     })
 }
 
@@ -678,6 +688,7 @@ async fn review_spec(
         review: spec_review,
         tickets: None,
         autopilot: None,
+        crew_of: None,
     })
 }
 
