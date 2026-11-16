@@ -1376,7 +1376,7 @@ function ContextMeter({ session }: { session: G.Session }) {
       {handoff && use.handoffAt != null && (
         <p
           className={cn("mt-1.5 text-[11.5px]", use.close ? "text-amber" : "text-ink-4")}
-          title={`fctl starts a fresh session of the autopilot's own at its first wake between turns that finds ${exact(use.handoffAt)} tokens or more in this one's context. The fresh session starts from the autopilot's plan and log.`}
+          title={`fctl starts a fresh session of the autopilot's own at its first wake between turns that finds ${exact(use.handoffAt)} tokens or more in this one's context, or 12 hours after this one started, whichever comes first. The fresh session starts from the autopilot's plan and log.`}
         >
           {handoff}
         </p>
