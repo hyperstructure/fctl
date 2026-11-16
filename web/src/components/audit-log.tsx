@@ -70,22 +70,34 @@ function Entry({ e, names, ip }: { e: G.AuditEntry; names: AuditNames; ip: boole
       <span className="flex h-5 shrink-0 items-center">
         {actor ? <Avatar user={actor} size={20} /> : <Logo withWord={false} className="[&_svg]:size-5" />}
       </span>
-      <p
-        className="min-w-0 flex-1 text-ink-3 [overflow-wrap:anywhere]"
-        title={`${e.action}${e.target ? ` · ${e.target}` : ""}`}
-      >
-        <span className="font-medium text-ink">{auditActor(e)}</span>
-        {owns ? "" : " "}
-        {parts.map((part, i) => (
-          // The parts of one sentence, which never reorder.
-          <Part key={i} part={part} />
-        ))}
-      </p>
-      <span className="flex shrink-0 flex-col items-end gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
+      <div className="min-w-0 flex-1">
+        <p
+          className="text-ink-3 [overflow-wrap:anywhere]"
+          title={`${e.action}${e.target ? ` · ${e.target}` : ""}`}
+        >
+          <span className="font-medium text-ink">{auditActor(e)}</span>
+          {owns ? "" : " "}
+          {parts.map((part, i) => (
+            // The parts of one sentence, which never reorder.
+            <Part key={i} part={part} />
+          ))}
+        </p>
+        {/* Where it came from, under the sentence on a phone, where an IPv6 address beside it
+            would leave the sentence no room. */}
+        {ip && e.ip && <p className="mt-0.5 truncate font-mono text-[11.5px] text-ink-4 sm:hidden">{e.ip}</p>}
+      </div>
+      <span className="flex shrink-0 items-baseline gap-3">
         <span className="text-[12px] text-ink-4 tabular-nums" title={stamp(e.ts)}>
           {ago(e.ts)}
         </span>
-        {ip && e.ip && <span className="font-mono text-[11.5px] text-ink-4">{e.ip}</span>}
+        {ip && e.ip && (
+          <span
+            className="max-w-[18ch] truncate font-mono text-[11.5px] text-ink-4 max-sm:hidden"
+            title={e.ip}
+          >
+            {e.ip}
+          </span>
+        )}
       </span>
     </li>
   );

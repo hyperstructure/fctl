@@ -49,11 +49,31 @@ function refFrom(d: Data | undefined): string | undefined {
   return project && typeof d?.number === "number" ? `${project}#${d.number}` : undefined;
 }
 
-/** Who did what an entry records, when it names nobody: a session's agent, or fctl itself. */
+/**
+ * Who did what an entry records, when it names nobody: a session's agent, fctl's review agent, a
+ * runner's host (`by: "host"`, or enrolling itself with a token), or fctl itself.
+ */
 export function auditActor(e: G.AuditEntry): string {
   if (e.actor) return e.actor.name;
-  return e.action.startsWith("screenshot.") ? "An agent" : "fctl";
+  const d = (e.data ?? {}) as Data;
+  if (e.action.startsWith("screenshot.")) return "An agent";
+  if (e.action.startsWith("review.")) return "fctl's review agent";
+  if (byHost(e)) return str(d.name) ? `The runner ${d.name}` : "A runner";
+  return "fctl";
 }
+
+/** Whether a runner did it itself, through its host: draining, leaving a workspace, enrolling. */
+const byHost = (e: G.AuditEntry) =>
+  !e.actor && ((e.data as Data | undefined)?.by === "host" || e.action === "workspace.runner_enrolled");
+
+/** Why GitHub refused to connect an account (`fctl_domain::github::Refusal`), after a colon. */
+const REFUSALS: Record<string, string> = {
+  no_installation: ": fctl's GitHub App isn't installed there",
+  no_repos: ": the app reaches none of its repositories they can see",
+  no_admin: ": they aren't an admin of any repository the app reaches there",
+  not_admin: ": they aren't an admin of some of the repositories they named",
+  unreachable: ": the app doesn't reach some of the repositories they named",
+};
 
 /** What an entry's actor did, in words and the things it names. */
 export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPart[] {
@@ -72,7 +92,8 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
   const project = (key = t, slug = str(d.project) ?? str(d.slug)): AuditPart => {
     const p = (key && names.project?.(key)) || (slug && names.project?.(slug));
     if (p) return { text: p.name, to: { project: p.slug } };
-    return slug ? { text: slug, to: { project: slug } } : "a project";
+    // One the page doesn't list (archived, hidden, deleted) by its name alone: a link could lead nowhere.
+    return slug ? { text: slug } : "a project";
   };
   /** The project's own something: "Farm portal's autopilot". */
   const projects = (what: string, key = t): AuditPart[] => {
@@ -92,6 +113,8 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "session.created":
       // An autopilot starts its sessions as its owner, who is the entry's actor.
       if (e.actor && str(d.autopilot)) return ["'s autopilot started ", session()];
+      // Someone who presses a schedule's Run now starts its session; its time coming, fctl does.
+      if (e.actor && str(d.schedule)) return ["ran a schedule now, which started ", session()];
       return [
         "started ",
         session(),
@@ -173,16 +196,19 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
       return ["paused the schedule ", named(d.name, "")];
     case "schedule.resumed":
       return ["resumed the schedule ", named(d.name, "")];
+    // An autopilot lives on a project, a workspace's on its home project, the entry's target.
     case "autopilot.on":
-      return ["put ", t?.startsWith("wsp_") ? "the workspace" : project(), " on autopilot"];
+      return d.scope === "workspace"
+        ? ["put the workspace on autopilot, from ", project()]
+        : ["put ", project(), " on autopilot"];
     case "autopilot.off":
-      return ["took ", t?.startsWith("wsp_") ? "the workspace" : project(), " off autopilot"];
+      return ["took ", project(), " off autopilot"];
     case "autopilot.paused":
-      return ["paused ", ...(t?.startsWith("wsp_") ? ["the workspace's autopilot"] : projects("autopilot"))];
+      return ["paused ", ...projects("autopilot")];
     case "autopilot.resumed":
-      return ["resumed ", ...(t?.startsWith("wsp_") ? ["the workspace's autopilot"] : projects("autopilot"))];
+      return ["resumed ", ...projects("autopilot")];
     case "autopilot.changed":
-      return ["changed ", ...(t?.startsWith("wsp_") ? ["the workspace's autopilot"] : projects("autopilot"))];
+      return ["changed ", ...projects("autopilot")];
     case "reviews.enabled":
       return ["turned review agents on in ", project()];
     case "reviews.disabled":
@@ -230,16 +256,26 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "workspace.joined":
       return ["joined", role(d.role)];
     case "workspace.left":
-      return ["left the workspace"];
+      return d.disallowed
+        ? [
+            "removed ",
+            user(t, str(d.email) ?? "someone"),
+            " from the workspace, as their address isn't allowed any more",
+          ]
+        : ["left the workspace"];
     case "workspace.member_removed":
       return ["removed ", user(t, str(d.email) ?? "someone"), " from the workspace"];
     case "workspace.member_role":
       return str(d.to)
         ? ["made ", user(t), ` ${withArticle(String(d.to))}`]
         : ["changed the role of ", user(t)];
-    case "workspace.primary_assigned":
     case "workspace.transferred":
       return ["made ", user(t), " the primary admin"];
+    // In the instance's log, about the workspace: who is primary admin now is in the workspace's.
+    case "workspace.primary_assigned":
+      return str(d.from)
+        ? ["chose a new primary admin for a workspace, in place of ", user(d.from)]
+        : ["chose a new primary admin for a workspace"];
     case "workspace.own_runners":
       return [
         d.own_runners
@@ -249,7 +285,8 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "workspace.runner_added":
       return ["added the runner ", runner, d.personal ? " for their own sessions" : ""];
     case "workspace.runner_removed":
-      return ["removed the runner ", runner];
+      if (byHost(e)) return ["left the workspace"];
+      return ["removed the runner ", runner, d.offline ? ", offline too long" : ""];
     case "workspace.runner_approved":
       return ["approved the runner ", runner];
     case "workspace.runner_rejected":
@@ -258,8 +295,7 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
       return ["removed the runner ", runner, ", which nobody approved in time"];
     case "workspace.runner_enrolled":
       return [
-        "enrolled the runner ",
-        runner,
+        "enrolled",
         str(d.enrollment_token_name) ? ` with the token ${d.enrollment_token_name}` : "",
         d.pending ? ", to wait for approval" : "",
       ];
@@ -280,7 +316,7 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "workspace.github_disconnected":
       return ["disconnected a GitHub account"];
     case "workspace.github_refused":
-      return ["couldn't connect a GitHub account", str(d.reason) ? `: ${d.reason}` : ""];
+      return ["couldn't connect a GitHub account", REFUSALS[String(d.reason)] ?? ""];
     case "workspace.linear_connected":
       return ["connected the Linear workspace ", named(d.name, "")];
     case "workspace.linear_disconnected":
@@ -309,7 +345,15 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "user.email_connected":
       return ["added the address ", named(d.email, "")];
     case "user.email_disconnected":
-      return ["removed the address ", named(d.email, "")];
+      return d.disallowed
+        ? [
+            "took the address ",
+            named(d.email, "an address"),
+            " from ",
+            user(t),
+            ", as it isn't allowed any more",
+          ]
+        : ["removed the address ", named(d.email, "")];
     case "user.primary_email":
       return ["made ", named(d.to, "another address"), " their primary address"];
     case "user.linear_linked":
@@ -369,21 +413,25 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
     case "instance.settings_updated":
       return ["changed this instance's settings"];
     case "instance.transferred":
-      return ["became this instance's owner"];
+      return ["made ", user(t), " this instance's primary owner"];
     case "claude.token_added":
       return ["connected a Claude subscription"];
     case "claude.removed":
       return ["removed a Claude connection"];
     case "claude.on_runners_added":
       return ["kept their Claude token on their runners"];
+    case "claude.stand_in_on":
+      return ["kept their Claude token out of sandboxes"];
+    case "claude.stand_in_off":
+      return ["let their Claude token into sandboxes again"];
     case "runner.created":
       return ["registered the runner ", runner];
     case "runner.deleted":
       return ["removed a runner"];
     case "runner.drained":
-      return ["drained a runner"];
+      return [byHost(e) ? "drained itself" : "drained a runner"];
     case "runner.undrained":
-      return ["stopped draining a runner"];
+      return [byHost(e) ? "stopped draining itself" : "stopped draining a runner"];
     case "runner.token_rotated":
       return ["made a new token for a runner"];
     case "runner.updated":

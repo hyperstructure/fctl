@@ -89,8 +89,9 @@ describe("an audit log entry in words", () => {
   });
 
   it("falls back to what the entry holds when the page doesn't know an id", () => {
+    // A project the page doesn't list may be archived or gone: named, not linked.
     expect(said(describeAudit(entry("project.created", "prj_new", { slug: "bookings" })))).toBe(
-      "created the project [bookings](project)",
+      "created the project bookings",
     );
     expect(said(describeAudit(entry("workspace.member_role", "usr_gone", { to: "member" })))).toBe(
       "made someone a member",
@@ -125,5 +126,83 @@ describe("an audit log entry in words", () => {
     expect(withArticle("admin")).toBe("an admin");
     expect(withArticle("editor")).toBe("an editor");
     expect(withArticle("member")).toBe("a member");
+  });
+
+  it("tells a schedule's Run now from its time coming", () => {
+    const now = entry("session.created", "ses_5", { project: "shop", number: 5, schedule: "sch_1" }, "Noor");
+    expect(said(describeAudit(now))).toBe("ran a schedule now, which started [shop#5](session)");
+  });
+
+  it("says who was moved when an address isn't allowed any more, rather than blaming the admin", () => {
+    const left = entry("workspace.left", "usr_kofi", { email: "kofi@example.com", disallowed: true }, "Ada");
+    expect(said(describeAudit(left, names))).toBe(
+      "removed Kofi Mensah from the workspace, as their address isn't allowed any more",
+    );
+    expect(
+      said(describeAudit(entry("workspace.left", "usr_kofi", { disconnected: true }, "Kofi"), names)),
+    ).toBe("left the workspace");
+    const taken = entry(
+      "user.email_disconnected",
+      "usr_kofi",
+      { email: "kofi@example.com", disallowed: true },
+      "Ada",
+    );
+    expect(said(describeAudit(taken, names))).toBe(
+      "took the address kofi@example.com from Kofi Mensah, as it isn't allowed any more",
+    );
+  });
+
+  it("names who takes over an instance or a workspace, not who hands it on", () => {
+    expect(
+      said(describeAudit(entry("instance.transferred", "usr_kofi", { from: "usr_asha" }, "Asha"), names)),
+    ).toBe("made Kofi Mensah this instance's primary owner");
+    expect(
+      said(describeAudit(entry("workspace.transferred", "usr_kofi", { from: "usr_asha" }, "Ada"), names)),
+    ).toBe("made Kofi Mensah the primary admin");
+    // The instance's log knows the workspace and who was primary admin, not who is now.
+    const assigned = entry("workspace.primary_assigned", "wsp_1", { from: "usr_asha", by: "usr_ada" }, "Ada");
+    expect(said(describeAudit(assigned, names))).toBe(
+      "chose a new primary admin for a workspace, in place of Asha Patel",
+    );
+  });
+
+  it("credits review agents and runners with what they did themselves", () => {
+    const posted = entry("review.posted", "ses_3", { pull_request: "acme/web#12", findings: 0 });
+    expect(auditActor(posted)).toBe("fctl's review agent");
+    const enrolled = entry("workspace.runner_enrolled", "rnr_1", {
+      name: "kohlrabi",
+      enrollment_token_name: "Office",
+      pending: true,
+    });
+    expect(auditActor(enrolled)).toBe("The runner kohlrabi");
+    expect(said(describeAudit(enrolled))).toBe("enrolled with the token Office, to wait for approval");
+    const left = entry("workspace.runner_removed", "rnr_1", { name: "turnip", by: "host" });
+    expect(`${auditActor(left)} ${said(describeAudit(left))}`).toBe("The runner turnip left the workspace");
+    const swept = entry("workspace.runner_removed", "rnr_1", { name: "turnip", by: "fctl", offline: true });
+    expect(`${auditActor(swept)} ${said(describeAudit(swept))}`).toBe(
+      "fctl removed the runner turnip, offline too long",
+    );
+    const drained = entry("runner.drained", "rnr_1", { by: "host" });
+    expect(`${auditActor(drained)} ${said(describeAudit(drained))}`).toBe("A runner drained itself");
+  });
+
+  it("names a workspace's autopilot from its scope, as it lives on its home project", () => {
+    const on = entry("autopilot.on", "prj_farm", { scope: "workspace" }, "Noor");
+    expect(said(describeAudit(on, names))).toBe(
+      "put the workspace on autopilot, from [Farm portal](project)",
+    );
+  });
+
+  it("says why GitHub refused, in words", () => {
+    const refused = entry("workspace.github_refused", "wsp_1", { reason: "no_installation" }, "Noor");
+    expect(said(describeAudit(refused))).toBe(
+      "couldn't connect a GitHub account: fctl's GitHub App isn't installed there",
+    );
+  });
+
+  it("words the Claude token kept out of sandboxes", () => {
+    expect(said(describeAudit(entry("claude.stand_in_on", "usr_1", undefined, "Noor")))).toBe(
+      "kept their Claude token out of sandboxes",
+    );
   });
 });
