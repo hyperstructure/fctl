@@ -35,12 +35,11 @@ import {
 import { ImageSizes } from "@/components/markdown";
 import { Avatar, Gallery, Logo, Menu, MenuItem, toast } from "@/components/ui";
 import type * as G from "@/gen";
-import { splitCrewNote } from "@/lib/autopilot";
+import { splitTask } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { duration, stamp, when } from "@/lib/format";
 import { useKeepPlace } from "@/lib/keep-place";
 import type { Part } from "@/lib/runs";
-import { splitRunNote } from "@/lib/schedules";
 import type { DiskShort, Stall } from "@/lib/stall";
 import { type BackgroundTask, findingsBefore, type Item, type LiveTurn } from "@/lib/transcript";
 import {
@@ -430,8 +429,8 @@ export function AskCard({ item, sessionId }: { item: Ask; sessionId: string }) {
   const author = item.author;
   const files = item.attachments ?? [];
   // An autopilot's task for one of its sessions ends with fctl's note of who started it, as a
-  // schedule's run does with the run's.
-  const { task, note } = item.autopilot ? splitCrewNote(item.text) : splitRunNote(item.text);
+  // schedule's run does with the run's, one an autopilot started too.
+  const { task, note } = splitTask(item.text, !!item.autopilot);
   return (
     <article
       className={cn(

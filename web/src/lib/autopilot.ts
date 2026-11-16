@@ -4,6 +4,7 @@
 
 import type * as G from "@/gen";
 import { ago, clock, day, num } from "./format";
+import { splitRunNote } from "./schedules";
 
 /** How long it goes without waking, at most, as people choose it (the control plane's CHECK_INS). */
 export const CHECK_INS: { minutes: number; label: string }[] = [
@@ -448,6 +449,16 @@ export function splitCrewNote(text: string): { task: string; note?: string } {
   const m = /\n\n---\n(?=The autopilot of [^\n]* started this session: )/.exec(text);
   if (!m) return { task: text };
   return { task: text.slice(0, m.index), note: text.slice(m.index + m[0].length) };
+}
+
+/**
+ * A first message as its task and fctl's note after it: an autopilot's (`fromAutopilot`) ends with
+ * fctl's note of who started it, or, for a schedule's run it started, with the run's
+ * (`fctl_domain::schedules::prompt`), as anyone's run does.
+ */
+export function splitTask(text: string, fromAutopilot: boolean): { task: string; note?: string } {
+  const crew = fromAutopilot ? splitCrewNote(text) : undefined;
+  return crew?.note ? crew : splitRunNote(text);
 }
 
 /**

@@ -538,10 +538,14 @@ export function runOutcome(r: G.ScheduleRun): string {
   }
 }
 
-/** Who started a run: "On time", "Ada Lovelace", "A tool, with Ada's token". */
+/**
+ * Who started a run: "On time", "Ada Lovelace", "spaghetti's autopilot, for Ada", "A tool, with
+ * Ada's token".
+ */
 export function runTrigger(r: G.ScheduleRun): string {
   if (r.trigger === "time") return "On time";
   const name = r.by?.name ?? "Someone";
+  if (r.autopilot) return `${r.autopilot.project_slug}'s autopilot, for ${name}`;
   return r.trigger === "token" ? `A tool, with ${name}'s token` : name;
 }
 

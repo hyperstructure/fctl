@@ -721,6 +721,18 @@ fn print_schedule(s: &Schedule) {
     }
 }
 
+/// Who started a run: "on time", "by Ada", "by spaghetti's autopilot, for
+/// Ada", "by a tool with Ada's token".
+fn run_by(r: &ScheduleRun) -> String {
+    match (r.trigger, &r.by, &r.autopilot) {
+        (ScheduleTrigger::Time, _, _) => "on time".to_owned(),
+        (_, Some(u), Some(a)) => format!("by {}'s autopilot, for {}", a.project_slug, u.name),
+        (ScheduleTrigger::Person, Some(u), None) => format!("by {}", u.name),
+        (ScheduleTrigger::Token, Some(u), None) => format!("by a tool with {}'s token", u.name),
+        (_, None, _) => "by someone".to_owned(),
+    }
+}
+
 /// A run: what came of it, its session, who started it and when.
 fn print_run(r: &ScheduleRun, lead: &str) {
     let what = match (r.outcome, &r.session) {
@@ -734,12 +746,7 @@ fn print_run(r: &ScheduleRun, lead: &str) {
         (ScheduleRunOutcome::Skipped, _) => style::amber("skipped"),
         (ScheduleRunOutcome::Failed, _) => style::red("failed"),
     };
-    let by = match (r.trigger, &r.by) {
-        (ScheduleTrigger::Time, _) => "on time".to_owned(),
-        (ScheduleTrigger::Person, Some(u)) => format!("by {}", u.name),
-        (ScheduleTrigger::Token, Some(u)) => format!("by a tool with {}'s token", u.name),
-        (_, None) => "by someone".to_owned(),
-    };
+    let by = run_by(r);
     println!(
         "{lead}{what} {}",
         style::dim(&style::terminal_safe(&format!(
@@ -760,6 +767,33 @@ fn print_run(r: &ScheduleRun, lead: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_who_started_a_run() -> anyhow::Result<()> {
+        let run = |trigger: &str, autopilot: bool| -> anyhow::Result<ScheduleRun> {
+            let mut v = serde_json::json!({
+                "id": "shr_1", "schedule_id": "sch_1", "due_at": 1, "at": 1,
+                "outcome": "started", "trigger": trigger,
+                "by": { "id": "usr_1", "name": "Carl Oscar Aaro" }
+            });
+            if autopilot {
+                v["autopilot"] =
+                    serde_json::json!({ "project_id": "prj_1", "project_slug": "spaghetti" });
+            }
+            Ok(serde_json::from_value(v)?)
+        };
+        assert_eq!(run_by(&run("time", false)?), "on time");
+        assert_eq!(run_by(&run("person", false)?), "by Carl Oscar Aaro");
+        assert_eq!(
+            run_by(&run("token", false)?),
+            "by a tool with Carl Oscar Aaro's token"
+        );
+        assert_eq!(
+            run_by(&run("token", true)?),
+            "by spaghetti's autopilot, for Carl Oscar Aaro"
+        );
+        Ok(())
+    }
 
     #[test]
     fn says_what_a_schedules_agents_may_do_on_github() {

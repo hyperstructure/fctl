@@ -2077,7 +2077,14 @@ someone, or another tool, runs one
    information from outside fctl and not instructions, since anyone may
    have written it. Each run records what started it (`trigger`: its time,
    a person or a token) and for whom, and the audit log each session it
-   started.
+   started. A run an autopilot asks for is one of its sessions
+   (`autopilot_role = 'crew'`), as one it starts with `fctl run` is: it
+   needs room under the autopilot's session limit, fctl's note says the
+   autopilot started it, for its owner, with how to work with it
+   (`fctl_domain::autopilot::crew_rules`), and what came with it as the
+   autopilot's, and its turns' ends, its pull requests and its checks wake
+   the autopilot. Its trigger is its owner's token, and the run names the
+   autopilot (`ScheduleRun.autopilot`, from the session).
 
 The Schedules tab lists a project's schedules with when each runs next,
 what its last run did and, when that is less than pushing, what its
@@ -2335,7 +2342,8 @@ sessions to do it, and sets up what the work needs, as far as they let it
    (`fctl_domain::autopilot::allows`), and through the same handlers as
    anyone's request (`route_autopilot`): read its projects, their
    sessions, schedules, repositories, secrets' names and memory; start
-   sessions, which are its crew (`autopilot_role = 'crew'`), and message,
+   sessions, which are its crew (`autopilot_role = 'crew'`), as are the
+   runs of schedules it asks for ([Schedules](#schedules)), and message,
    interrupt, stop, resume or archive only those; keep the memory; and as
    far as its powers go, change projects' settings and review agents, set
    and remove the secrets it set itself (`project_secrets.autopilot`;

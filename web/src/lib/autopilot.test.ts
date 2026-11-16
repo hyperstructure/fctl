@@ -16,6 +16,7 @@ import {
   sessionWord,
   splitBriefing,
   splitCrewNote,
+  splitTask,
   wakeLead,
   wakeText,
   wokeLine,
@@ -278,6 +279,19 @@ describe("an autopilot's messages", () => {
     expect(splitCrewNote("Build it.\n\n---\nSomething else")).toEqual({
       task: "Build it.\n\n---\nSomething else",
     });
+  });
+
+  it("keeps the note of a schedule's run it started apart too", () => {
+    const run =
+      'Ship main.\n\n---\nThe autopilot of Shop started this session on Monday 16 November 2026 at 22:00 (UTC) from the project\'s schedule "Ship main", which runs when someone runs it: an agent that…';
+    expect(splitTask(run, true)).toEqual({
+      task: "Ship main.",
+      note: 'The autopilot of Shop started this session on Monday 16 November 2026 at 22:00 (UTC) from the project\'s schedule "Ship main", which runs when someone runs it: an agent that…',
+    });
+    const crew = "Build the board.\n\n---\nThe autopilot of Shop started this session: an agent that…";
+    expect(splitTask(crew, true).task).toBe("Build the board.");
+    // A person's message that only looks like fctl's note stays whole.
+    expect(splitTask(crew, false)).toEqual({ task: crew });
   });
 });
 
