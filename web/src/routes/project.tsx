@@ -43,6 +43,7 @@ import {
   AgentFloorIcon,
   AutopilotIcon,
   Banner,
+  Button,
   Empty,
   GithubIcon,
   Skeleton,
@@ -58,7 +59,7 @@ import { draftId, forgetDraft, loadText } from "@/lib/draft";
 import { asked } from "@/lib/models";
 import { projectPlaceholder } from "@/lib/placeholders";
 import { manages, PROJECT_TABS, type ProjectTab, shownView, tabOf } from "@/lib/project-page";
-import { useMe, useProject, useSessions } from "@/lib/queries";
+import { useMe, useProject, useSessionPages, useSessions } from "@/lib/queries";
 import { repoLabel, repoSummary } from "@/lib/repos";
 import { sections } from "@/lib/sessions";
 import { usePageTaskBox } from "@/lib/task-box";
@@ -266,16 +267,25 @@ function Tabs({
   );
 }
 
-function Sessions({ project }: { project: G.Project }) {
+/** How many ended sessions a project's list shows at first, and how many more each time. */
+const ENDED_PAGE = 100;
+
+export function Sessions({ project }: { project: G.Project }) {
   const [filter, setFilter] = useState<"active" | "all" | "mine">("all");
   const mine = filter === "mine" || undefined;
   // Every session at work, however long ago it started. By the project's id, as the sidebar asks for
   // them under it: without `mine`, one request serves both.
   const active = useSessions({ project: project.id, status: "active", limit: 50, mine });
   const history = filter !== "active";
-  const ended = useSessions({ project: project.id, status: "ended", limit: 100, mine }, { enabled: history });
+  // The newest hundred that ended, then a hundred more each time the person asks for older ones.
+  const ended = useSessionPages(
+    { project: project.id, status: "ended", limit: ENDED_PAGE, mine },
+    { enabled: history },
+  );
   const { working, recent, older } = sections(
-    history ? [active.data?.sessions, ended.data?.sessions] : [active.data?.sessions],
+    history
+      ? [active.data?.sessions, ...(ended.data?.pages.map((p) => p.sessions) ?? [])]
+      : [active.data?.sessions],
     Date.now(),
   );
   const canStart = project.role !== "viewer";
@@ -334,6 +344,22 @@ function Sessions({ project }: { project: G.Project }) {
             {history && older.length > 0 && (
               <SessionSection title="Older">
                 <SessionList sessions={older} />
+                {/* The list ended at the newest hundred, with no word that a project's earlier
+                    sessions were there to find. */}
+                {ended.hasNextPage && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="mt-3 -ml-2.5"
+                    loading={ended.isFetchingNextPage}
+                    onClick={() => void ended.fetchNextPage()}
+                  >
+                    Show older sessions
+                  </Button>
+                )}
+                {ended.isFetchNextPageError && (
+                  <p className="mt-2 text-[12.5px] text-danger">{ended.error?.message}</p>
+                )}
               </SessionSection>
             )}
           </div>

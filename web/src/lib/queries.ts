@@ -1,5 +1,12 @@
 // React Query hooks. Keys are stable arrays so live updates can patch caches.
-import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  QueryClient,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type * as G from "@/gen";
 import { ApiFailure, api, workspaces } from "./api";
 import { logFor } from "./app-log";
@@ -178,6 +185,27 @@ export const useSessions = (
   },
   { enabled = true }: { enabled?: boolean } = {},
 ) => useQuery({ queryKey: keys.sessions(q), queryFn: () => api.sessions(q), enabled });
+/**
+ * Sessions as `useSessions` lists them, that go on to older ones a page of `limit` at a time
+ * (`fetchNextPage`), by the cursor each page ends with. Under the same key as theirs, with
+ * "pages" after it, so that what refreshes or patches the lists does this one too.
+ */
+export const useSessionPages = (
+  q: { project?: string; workspace?: string; status?: string; limit?: number; mine?: boolean },
+  { enabled = true }: { enabled?: boolean } = {},
+) =>
+  useInfiniteQuery({
+    queryKey: [...keys.sessions(q), "pages"],
+    queryFn: ({ pageParam }) => api.sessions({ ...q, before: pageParam }),
+    initialPageParam: undefined as number | undefined,
+    getNextPageParam: (last) => last.next_before ?? undefined,
+    enabled,
+  });
+/** A cached list of sessions: one page of them, or the pages `useSessionPages` loaded. */
+type CachedSessions = G.SessionList | InfiniteData<G.SessionList, number | undefined>;
+/** The pages a cached list of sessions holds. */
+const pagesOf = (data: CachedSessions | undefined): G.SessionList[] =>
+  !data ? [] : "pages" in data ? data.pages : [data];
 /** How long the sidebar goes on listing a session after it ends. */
 export const RECENT_MS = 60 * 60_000;
 // The sidebar's sessions, under one key whatever the time it asks from.
@@ -290,8 +318,8 @@ const ended = (s: G.Session) => s.status === "stopped" || s.status === "failed";
 /** The sessions the lists in the cache hold, each once, newest first. */
 function cachedSessions(qc: QueryClient): G.Session[] {
   const byId = new Map<string, G.Session>();
-  for (const [, list] of qc.getQueriesData<G.SessionList>({ queryKey: ["sessions"] }))
-    for (const s of list?.sessions ?? []) if (!byId.has(s.id)) byId.set(s.id, s);
+  for (const [, data] of qc.getQueriesData<CachedSessions>({ queryKey: ["sessions"] }))
+    for (const list of pagesOf(data)) for (const s of list.sessions) if (!byId.has(s.id)) byId.set(s.id, s);
   return [...byId.values()].sort((a, b) => b.created_at - a.created_at);
 }
 
@@ -310,14 +338,18 @@ function merged(old: G.Session, s: G.Session): G.Session {
 /** After a session summary changes, patch every cached list that holds it. */
 export function patchSession(qc: QueryClient, s: G.Session) {
   qc.setQueryData<G.Session>(keys.session(s.id), (old) => (old ? merged(old, s) : old));
-  qc.setQueriesData<G.SessionList>({ queryKey: ["sessions"] }, (old) => {
-    if (!old) return old;
-    const i = old.sessions.findIndex((x) => x.id === s.id);
-    const was = old.sessions[i];
-    if (!was) return old;
-    const sessions = old.sessions.slice();
+  const patch = (list: G.SessionList): G.SessionList => {
+    const i = list.sessions.findIndex((x) => x.id === s.id);
+    const was = list.sessions[i];
+    if (!was) return list;
+    const sessions = list.sessions.slice();
     sessions[i] = merged(was, s);
-    return { ...old, sessions };
+    return { ...list, sessions };
+  };
+  qc.setQueriesData<CachedSessions>({ queryKey: ["sessions"] }, (old) => {
+    if (!old || !("pages" in old)) return old && patch(old);
+    const pages = old.pages.map(patch);
+    return pages.some((p, i) => p !== old.pages[i]) ? { ...old, pages } : old;
   });
 }
 
