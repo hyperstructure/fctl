@@ -3497,6 +3497,10 @@ pub struct ScheduleRun {
     pub session: Option<SessionRef>,
     /// That session's status now.
     pub status: Option<SessionStatus>,
+    /// The autopilot that ran it, with the access token of `by`, its
+    /// owner, as whom it acts: the session is one of its own. Absent for
+    /// other runs, and from control planes before it.
+    pub autopilot: Option<crate::autopilot::AutopilotAuthor>,
 }
 
 /// What came of a schedule's run.

@@ -1397,7 +1397,7 @@ fn powers_line(powers: &[AutopilotPower], scope: AutopilotScope) -> String {
                 "add and remove {projects} repositories (`fctl projects repos add`)"
             ),
             AutopilotPower::Schedules => format!(
-                "set up {projects} schedules for work that recurs (`fctl schedules add`)"
+                "set up {projects} schedules for work that recurs (`fctl schedules add`; a run you start with `fctl schedules run` is one of your sessions)"
             ),
             AutopilotPower::Projects => {
                 "create projects in the workspace (`fctl projects create`)".to_owned()
@@ -1419,17 +1419,35 @@ fn powers_line(powers: &[AutopilotPower], scope: AutopilotScope) -> String {
 /// (`merges`: the autopilot has [`AutopilotPower::Merge`]). The apps set it
 /// apart from the task where it starts, at "\n\n---\nThe autopilot of ".
 pub fn crew_note(project: &str, scope: AutopilotScope, owner: &str, merges: bool) -> String {
+    format!(
+        "\n\n---\nThe autopilot of {project} started this session: {}, for {owner}, as whom it acts. It wrote this task, not {owner}, and {}",
+        what_it_is(scope),
+        crew_rules(merges)
+    )
+}
+
+/// What an autopilot is, for the sessions it starts: "an agent that runs
+/// the project on its own (an experimental feature of fctl)".
+pub fn what_it_is(scope: AutopilotScope) -> String {
     let what = match scope {
         AutopilotScope::Project => "the project",
         AutopilotScope::Workspace => "its workspace's projects",
     };
+    format!("an agent that runs {what} on its own (an experimental feature of fctl)")
+}
+
+/// How a session an autopilot started works with it, after who started
+/// it ([`crew_note`], or a schedule's run it started:
+/// `crate::schedules::prompt`): it follows the session, whether the
+/// session merges its pull request, and how to reach it.
+pub fn crew_rules(merges: bool) -> String {
     let merge = if merges {
         "It asks you to merge your pull request yourself (`gh pr merge`) once its checks pass, review findings are answered and the work is done, so that its next piece of work builds on it; where the repository's own instructions or rules don't let you, say so when you end your turn."
     } else {
         "Leave merging your pull request to people: once its checks pass and the work is done, end your turn saying so."
     };
     format!(
-        "\n\n---\nThe autopilot of {project} started this session: an agent that runs {what} on its own (an experimental feature of fctl), for {owner}, as whom it acts. It wrote this task, not {owner}, and follows this session: it reads what you say as your turn ends, so write that for it. {merge} Do the whole task, every part of it, before you end your turn. When you're done, or need a decision to go on, end your turn saying so plainly, with what is left if anything is; ask what you need answered with `fctl ask`, and the autopilot answers, or asks people."
+        "follows this session: it reads what you say as your turn ends, so write that for it. {merge} Do the whole task, every part of it, before you end your turn. When you're done, or need a decision to go on, end your turn saying so plainly, with what is left if anything is; ask what you need answered with `fctl ask`, and the autopilot answers, or asks people."
     )
 }
 

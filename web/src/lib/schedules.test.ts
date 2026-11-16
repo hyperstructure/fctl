@@ -258,6 +258,8 @@ describe("schedules", () => {
     expect(runTrigger(run({}))).toBe("On time");
     expect(runTrigger(run({ trigger: "person", by: ada }))).toBe("Ada");
     expect(runTrigger(run({ trigger: "token", by: ada }))).toBe("A tool, with Ada's token");
+    const autopilot = { project_id: "prj_1" as G.ProjectId, project_slug: "spaghetti" };
+    expect(runTrigger(run({ trigger: "token", by: ada, autopilot }))).toBe("spaghetti's autopilot, for Ada");
   });
 });
 

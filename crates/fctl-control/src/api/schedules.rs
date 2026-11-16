@@ -15,6 +15,7 @@ use fctl_proto::api::{
     CreateScheduleRequest, RunScheduleRequest, ScheduleList, ScheduleRunList, ScheduleTrigger,
     TokenKind, UpdateScheduleRequest,
 };
+use fctl_proto::autopilot::{AutopilotPower, AutopilotRole};
 use fctl_proto::session::GithubAccess;
 use fctl_proto::{ApiError, ErrorCode, ScheduleId};
 use serde_json::json;
@@ -442,12 +443,33 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
         ));
     }
     let user = ctx.user()?.clone();
+    // An autopilot's run is one of its sessions, as one it starts with
+    // `fctl run` is (`api::sessions::create`): it counts toward its limit,
+    // and it follows it.
+    let autopilot = ctx.autopilot().cloned();
+    let autopilot_name = match &autopilot {
+        Some(a) => {
+            crate::autopilots::crew_room(&ctx.db, a, ctx.now).await?;
+            Some(crate::autopilots::home_name(&ctx.db, a).await?)
+        }
+        None => None,
+    };
     let credential = crate::api::sessions::default_credential(ctx, &user, p.workspace_id()).await?;
     let token = ctx.auth.as_ref().is_some_and(|a| a.kind == TokenKind::Pat);
-    let (trigger, by) = if token {
-        (ScheduleTrigger::Token, StartedBy::Token(&user.name))
-    } else {
-        (ScheduleTrigger::Person, StartedBy::Person(&user.name))
+    // An autopilot's request comes with its owner's access token, as runs
+    // record it (`ScheduleRun::autopilot` names it).
+    let (trigger, by) = match (&autopilot, &autopilot_name) {
+        (Some(a), Some(name)) => (
+            ScheduleTrigger::Token,
+            StartedBy::Autopilot {
+                autopilot: name,
+                scope: a.scope,
+                who: &user.name,
+                merges: a.powers.contains(&AutopilotPower::Merge),
+            },
+        ),
+        _ if token => (ScheduleTrigger::Token, StartedBy::Token(&user.name)),
+        _ => (ScheduleTrigger::Person, StartedBy::Person(&user.name)),
     };
     let github_access =
         fctl_domain::limits::effective(row.github(), p.row.settings().github_access)
@@ -490,6 +512,12 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             // Sessions a limited token starts notify nobody unless someone
             // follows them, as `api::sessions::create`'s.
             follow: ctx.limits().is_none(),
+            autopilot: autopilot.as_ref().map(|a| crate::starts::AutopilotStart {
+                project_id: &a.project_id,
+                role: AutopilotRole::Crew,
+                wake: None,
+                author: Some(a.author()),
+            }),
             now: ctx.now,
         },
     )
@@ -506,7 +534,8 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             "number": number,
             "github_access": github_access,
             "schedule": row.id,
-            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat).map(|a| &a.token_id),
+            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat && a.autopilot.is_none()).map(|a| &a.token_id),
+            "autopilot": autopilot.as_ref().map(|a| &a.project_id),
         })),
     );
     let run = schedules::run_row(&ctx.db, &run_id)

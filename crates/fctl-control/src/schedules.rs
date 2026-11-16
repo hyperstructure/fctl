@@ -20,6 +20,7 @@ use crate::model::{
 use fctl_domain::cron::{self, Zone};
 use fctl_domain::schedules::{self as sch, RunNote, StartedBy, When};
 use fctl_proto::api::{PlanLimit, Schedule, ScheduleRun, ScheduleRunOutcome, ScheduleTrigger};
+use fctl_proto::autopilot::AutopilotAuthor;
 use fctl_proto::event::MessageSource;
 use fctl_proto::session::{GithubAccess, SessionRef, SessionStatus, UserRef};
 use fctl_proto::{ApiError, ProjectId, ScheduleId, ScheduleRunId, SessionId, UserId};
@@ -267,12 +268,17 @@ pub struct RunRow {
     pub session_number: Option<i64>,
     pub session_title: Option<String>,
     pub session_status: Option<String>,
+    /// The autopilot whose session the run started, when it ran it.
+    pub autopilot_id: Option<String>,
+    pub autopilot_slug: Option<String>,
 }
 
 /// SELECT for [`RunRow`]; `WHERE` and `ORDER BY` follow.
 const RUN_SELECT: &str = "SELECT r.id, r.schedule_id, r.due_at, r.at, r.outcome, r.reason, r.trigger, r.user_id, \
     u.name AS user_name, u.avatar_url AS user_avatar, r.session_id, s.number AS session_number, \
-    s.title AS session_title, s.status AS session_status \
+    s.title AS session_title, s.status AS session_status, \
+    CASE WHEN s.autopilot_role = 'crew' THEN s.autopilot_id END AS autopilot_id, \
+    CASE WHEN s.autopilot_role = 'crew' THEN (SELECT ap.slug FROM projects ap WHERE ap.id = s.autopilot_id) END AS autopilot_slug \
     FROM schedule_runs r LEFT JOIN users u ON u.id = r.user_id LEFT JOIN sessions s ON s.id = r.session_id";
 
 impl RunRow {
@@ -299,6 +305,10 @@ impl RunRow {
                 .and(self.session_status.as_deref())
                 .and_then(SessionStatus::parse),
             session,
+            autopilot: self.autopilot_id.as_ref().map(|id| AutopilotAuthor {
+                project_id: ProjectId(id.clone()),
+                project_slug: self.autopilot_slug.clone().unwrap_or_default(),
+            }),
         }
     }
 }
@@ -790,6 +800,7 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
                 author: None,
                 source: MessageSource::System,
                 follow: true,
+                autopilot: None,
                 now,
             },
         )
@@ -935,6 +946,8 @@ pub struct Start<'a> {
     pub source: MessageSource,
     /// Its person follows it, as starting a session does.
     pub follow: bool,
+    /// The autopilot that ran it, whose session it is (`crew`).
+    pub autopilot: Option<crate::starts::AutopilotStart<'a>>,
     pub now: i64,
 }
 
@@ -972,10 +985,69 @@ pub async fn start_session(
             ticket_message: None,
             schedule_id: Some(&st.schedule.id),
             ticket: None,
-            autopilot: None,
+            autopilot: st.autopilot,
             follow: st.follow,
             now: st.now,
         },
     )
     .await
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// A run of web's schedule by a person, and one by web's autopilot,
+    /// whose session is its crew: the runs name the autopilot of the one
+    /// alone.
+    #[wasm_bindgen_test]
+    async fn runs_name_the_autopilot_that_ran_them() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at) \
+             VALUES ('prj_web', 'web', 'Web', 'usr_ada', 0, 0)",
+            "INSERT INTO claude_credentials (id, user_id, kind, secret_enc, created_at, updated_at) \
+             VALUES ('crd_ada', 'usr_ada', 'oauth', 'sealed', 0, 0)",
+            "INSERT INTO schedules (id, project_id, name, prompt, owner_id, created_at, updated_at) \
+             VALUES ('sch_ship', 'prj_web', 'Ship main', 'Ship main.', 'usr_ada', 0, 0)",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, \
+             claude_session_id, created_at, updated_at, schedule_id) \
+             VALUES ('ses_1', 'prj_web', 1, 'Ship main', 'Ship main.', 'stopped', 'usr_ada', 'crd_ada', 'ses_1', 1, 1, 'sch_ship')",
+            "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, \
+             claude_session_id, created_at, updated_at, schedule_id, autopilot_id, autopilot_role) \
+             VALUES ('ses_2', 'prj_web', 2, 'Ship main', 'Ship main.', 'running', 'usr_ada', 'crd_ada', 'ses_2', 2, 2, \
+             'sch_ship', 'prj_web', 'crew')",
+            "INSERT INTO schedule_runs (id, schedule_id, due_at, at, outcome, trigger, user_id, session_id) \
+             VALUES ('shr_1', 'sch_ship', 1, 1, 'started', 'person', 'usr_ada', 'ses_1')",
+            "INSERT INTO schedule_runs (id, schedule_id, due_at, at, outcome, trigger, user_id, session_id) \
+             VALUES ('shr_2', 'sch_ship', 2, 2, 'started', 'token', 'usr_ada', 'ses_2')",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        let found: Vec<ScheduleRun> = runs(&db, "sch_ship", None, 10)
+            .await?
+            .iter()
+            .map(RunRow::to_api)
+            .collect();
+        let named: Vec<(String, Option<String>)> = found
+            .iter()
+            .map(|r| {
+                (
+                    r.id.0.clone(),
+                    r.autopilot.as_ref().map(|a| a.project_slug.clone()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("shr_2".to_owned(), Some("web".to_owned())),
+                ("shr_1".to_owned(), None)
+            ]
+        );
+        Ok(())
+    }
 }

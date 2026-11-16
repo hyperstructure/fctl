@@ -2290,14 +2290,7 @@ pub async fn crew_prompt(
     task: &str,
     owner_called: &str,
 ) -> AppResult<String> {
-    let name: Option<NameRow> = q(
-        db,
-        "SELECT name FROM projects WHERE id = ?",
-        &[s(&caller.project_id)],
-    )?
-    .first()
-    .await?;
-    let project = name.map_or_else(|| caller.project_slug.clone(), |n| n.name);
+    let project = home_name(db, caller).await?;
     Ok(format!(
         "{}{}",
         task.trim_end(),
@@ -2308,6 +2301,19 @@ pub async fn crew_prompt(
             caller.powers.contains(&AutopilotPower::Merge),
         )
     ))
+}
+
+/// The name of the autopilot's home project, as its sessions are told who
+/// started them ("The autopilot of Spaghetti"): its slug once it is gone.
+pub async fn home_name(db: &D1Database, caller: &AutopilotCaller) -> AppResult<String> {
+    let name: Option<NameRow> = q(
+        db,
+        "SELECT name FROM projects WHERE id = ?",
+        &[s(&caller.project_id)],
+    )?
+    .first()
+    .await?;
+    Ok(name.map_or_else(|| caller.project_slug.clone(), |n| n.name))
 }
 
 #[derive(Deserialize)]
