@@ -54,6 +54,7 @@ import {
   Switch,
   toast,
 } from "@/components/ui";
+import { AdminsOnly } from "@/components/unavailable";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -117,12 +118,7 @@ export function Admin() {
   // People who wait for an invitation, on the Early access tab.
   const asking = requests.data?.waiting ?? 0;
   const { data: me } = useMe();
-  if (me && me.user.role === "member")
-    return (
-      <div className="mx-auto max-w-xl px-6 py-24">
-        <Banner tone="error">Only admins can see this page.</Banner>
-      </div>
-    );
+  if (me && me.user.role === "member") return <AdminsOnly />;
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">Admin</h1>
