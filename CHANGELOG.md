@@ -2,6 +2,14 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.35.3 (2026-11-16)
+
+### Features
+
+- **web:** Count down to an autopilot's handoff on its context meter ([#575](https://github.com/hyperstructure/fctl/pull/575))
+- **autopilot:** Tell sessions it started them and wrote its messages ([#576](https://github.com/hyperstructure/fctl/pull/576))
+- **autopilot:** Make the schedule runs it starts its sessions ([#577](https://github.com/hyperstructure/fctl/pull/577))
+
 ## 0.35.2 (2026-11-16)
 
 ### Features
