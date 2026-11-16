@@ -459,6 +459,14 @@ pub struct SessionSpec {
     /// the agent's configuration, and their agents' `fctl` can't reach the
     /// API.
     pub autopilot: Option<crate::autopilot::AutopilotSpec>,
+    /// For a session an autopilot started (its crew): the autopilot, which
+    /// started it for `author`, its owner, as whom it acts. Its agent tells
+    /// Claude so, and marks the autopilot's messages
+    /// (`DeliveryKind::Message::autopilot`) apart from people's. Absent for
+    /// other sessions and from older control planes; older hosts leave it
+    /// out of the agent's configuration, and their agents say `author`
+    /// started it.
+    pub crew_of: Option<crate::autopilot::AutopilotAuthor>,
 }
 
 /// What hosts whose agents run review sessions announce in their hello

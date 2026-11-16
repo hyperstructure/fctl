@@ -1362,6 +1362,7 @@ async fn deliver(
                     author: None,
                     author_called: None,
                     attachments: Vec::new(),
+                    autopilot: None,
                 },
             },
             client_key: None,

@@ -2390,8 +2390,15 @@ sessions to do it, and sets up what the work needs, as far as they let it
 5. **Its sessions.** A session it starts gets the task, then fctl's note
    of who started it and how to reach it (`fctl ask` in that session wakes
    the autopilot). Its messages to them carry it as their author's
-   autopilot (`UserMessage.autopilot`), which the apps show; their agents
-   see them as their starter's, its owner's. Nobody follows them, so they
+   autopilot (`UserMessage.autopilot`), which the apps show, and so does
+   their delivery (`DeliveryKind::Message.autopilot`), which their agents
+   get as `The autopilot wrote:`. Their spec names the autopilot
+   (`SessionSpec.crew_of`), and fctl-agent's system prompt says it started
+   them for its owner and names its owner's own messages as it does other
+   people's; its own session's says fctl started it for its owner, and
+   names every person's messages too, its owner's included. Older control
+   planes and hosts send neither, and their agents see the autopilot's
+   messages as their starter's, its owner's. Nobody follows them, so they
    notify nobody, and while it is on they notify those who follow one only
    when it asks something ([Notifications](#notifications)). Their
    SessionObject keeps for the autopilot the start of what the agent said
@@ -2819,7 +2826,10 @@ and what to call them, the whole name when it has several words. A
 message from anyone else carries theirs in its delivery (`author_called`,
 from their account as the Worker delivers it, or as SessionDO last checked
 the viewer socket it came over), and fctl-agent puts it after their name:
-`Carl Oscar Aaro (call them Carl Oscar) wrote:`. fctl's own words to
+`Carl Oscar Aaro (call them Carl Oscar) wrote:`. In an autopilot's
+sessions, which act for its owner, the owner's messages carry their name
+too, and the autopilot's say it wrote them
+([Autopilots](#autopilots)). fctl's own words to
 people in Linear use it too, and the Agent Floor greets people with it.
 Older control planes and hosts send neither, and their agents see full
 names alone

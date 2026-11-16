@@ -691,6 +691,7 @@ pub async fn deliver_as(
                     author: Some(author.clone()),
                     author_called: user.called(),
                     attachments: attachments.clone(),
+                    autopilot: autopilot.clone(),
                 },
             },
             client_key,

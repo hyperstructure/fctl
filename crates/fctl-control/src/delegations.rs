@@ -1209,6 +1209,7 @@ async fn deliver(
                     author: Some(author.clone()),
                     author_called: user.called(),
                     attachments: Vec::new(),
+                    autopilot: None,
                 },
             },
             client_key,
