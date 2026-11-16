@@ -89,6 +89,7 @@ import {
   statusLabel,
   toast,
 } from "@/components/ui";
+import { Unavailable } from "@/components/unavailable";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
@@ -353,9 +354,12 @@ export function SessionPage() {
 
   if (initial.isError && !session) {
     return (
-      <div className="mx-auto max-w-xl px-6 py-24">
-        <Banner tone="error">This session does not exist, or you cannot see it.</Banner>
-      </div>
+      <Unavailable
+        what="session"
+        error={initial.error}
+        onRetry={() => void initial.refetch()}
+        retrying={initial.isFetching}
+      />
     );
   }
 

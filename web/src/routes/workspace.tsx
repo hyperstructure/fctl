@@ -55,6 +55,7 @@ import {
   toast,
 } from "@/components/ui";
 import { ROW, ROW_COVER } from "@/components/ui/list-row";
+import { Unavailable } from "@/components/unavailable";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { WorkspaceColorField } from "@/components/workspace/color-field";
 import { LinearTab } from "@/components/workspace/linear";
@@ -134,9 +135,12 @@ export function WorkspacePage() {
   const tab = !w || TABS.some((t) => t.tab === asked && has(t)) ? asked : "projects";
   if (ws.isError)
     return (
-      <div className="mx-auto max-w-xl px-6 py-24">
-        <Banner tone="error">This workspace does not exist, or you aren't a member of it.</Banner>
-      </div>
+      <Unavailable
+        what="workspace"
+        error={ws.error}
+        onRetry={() => void ws.refetch()}
+        retrying={ws.isFetching}
+      />
     );
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">

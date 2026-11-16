@@ -42,7 +42,6 @@ import { startKeys } from "@/components/session/task-box";
 import {
   AgentFloorIcon,
   AutopilotIcon,
-  Banner,
   Button,
   Empty,
   GithubIcon,
@@ -50,6 +49,7 @@ import {
   Textarea,
   TextareaControls,
 } from "@/components/ui";
+import { Unavailable } from "@/components/unavailable";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
 import { NoRunnerNote } from "@/components/workspace/no-runners";
 import type * as G from "@/gen";
@@ -131,9 +131,12 @@ export function ProjectPage() {
   const workspace = freshest(useWorkspaceIndex(), p?.workspace);
   if (project.isError)
     return (
-      <div className="mx-auto max-w-xl px-6 py-24">
-        <Banner tone="error">This project does not exist, or you cannot see it.</Banner>
-      </div>
+      <Unavailable
+        what="project"
+        error={project.error}
+        onRetry={() => void project.refetch()}
+        retrying={project.isFetching}
+      />
     );
   return (
     <div className="mx-auto max-w-[920px] px-6 pt-12 pb-24">
