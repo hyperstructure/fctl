@@ -1120,8 +1120,10 @@ pub async fn send(
     reference: &str,
     message: &str,
     attach: &[PathBuf],
+    key: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    let key = key.map(send_key).transpose()?;
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let text = if message.trim().is_empty() && !std::io::stdin().is_terminal() {
@@ -1132,18 +1134,16 @@ pub async fn send(
         message.to_owned()
     };
     let attachments = upload(&api, UploadTo::Session(&s.id.0), attach).await?;
-    let r = deliver(&api, &s.id.0, &text, attachments, |e, wait| {
+    let r = deliver(&api, &s.id.0, &text, attachments, key, |e, wait| {
         trying_again("Sending", e, wait)
     })
     .await
     .map_err(|n| {
-        if !n.maybe_kept {
-            return anyhow::Error::from(n.error);
-        }
         let session = format!("{}#{}", s.project_slug, s.number);
         anyhow::anyhow!(
-            "{}\n  The message may have reached {session} all the same: read its transcript (`fctl logs {session}`) before you send it again.",
-            style::terminal_safe(&why(&n.error))
+            "{}\n  {}",
+            style::terminal_safe(&why(&n.error)),
+            not_sent(&n, &session)
         )
     })?;
     if json {
@@ -1204,22 +1204,72 @@ struct NotSent {
     /// answer was lost, or that failed after SessionDO kept the message,
     /// as its resume failed. A later try may then be refused for another
     /// reason (the session failed meanwhile) though the agent gets it.
+    /// Only a refusal of the first try, from the control plane, is sure
+    /// to have kept nothing ([`refused`]).
     maybe_kept: bool,
+    /// The `client_id` its tries went with, which a try of the same
+    /// message later goes with too (`fctl send --key`), so that it goes
+    /// at most once.
+    key: String,
 }
 
+/// What a send that gave up says, after why: that the message wasn't
+/// sent, or that it may have been, and how to send it again so that it
+/// goes at most once.
+fn not_sent(n: &NotSent, session: &str) -> String {
+    if !n.maybe_kept {
+        return format!("The message wasn't sent to {session}.");
+    }
+    format!(
+        "The message may have reached {session} all the same. Run the same command again with --key {}, and it goes only if it didn't; or read the transcript first (`fctl logs {session}`).",
+        n.key
+    )
+}
+
+/// Whether the control plane refused a request, which then changed
+/// nothing: it answered with an error that doesn't pass by trying again
+/// (`fctl_client::Error::is_transient`). Any other error may have come
+/// after the request did its work: a lost answer, a relay that broke off,
+/// an answer that couldn't be read.
+fn refused(e: &fctl_client::Error) -> bool {
+    match e {
+        fctl_client::Error::Api(_) => !e.is_transient(),
+        fctl_client::Error::Status { status, .. } => *status < 500 && *status != 429,
+        _ => false,
+    }
+}
+
+/// The key `fctl send --key` was given, as the message's `client_id`: what
+/// a person or script can type, and short enough to keep.
+fn send_key(key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.is_empty() || key.chars().count() > SEND_KEY_CHARS {
+        anyhow::bail!("Give --key from 1 to {SEND_KEY_CHARS} characters");
+    }
+    if key.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        anyhow::bail!("Give --key without spaces or control characters");
+    }
+    Ok(key.to_owned())
+}
+
+/// The longest `fctl send --key`.
+const SEND_KEY_CHARS: usize = 100;
+
 /// Sends a message, trying again while the error may pass
-/// (`fctl_client::http::retrying`): with a `client_id` of its own, which
-/// the session's SessionDO answers again with the first delivery, so that
-/// a try whose answer was lost, or that failed after the message was kept,
-/// doesn't deliver it twice. `retried` hears of each error tried again.
+/// (`fctl_client::http::retrying`): with a `client_id`, `key` or one of its
+/// own, which the session's SessionDO (or the autopilot's held messages)
+/// answers again with the first delivery for a day, so that a try whose
+/// answer was lost, or that failed after the message was kept, doesn't
+/// deliver it twice. `retried` hears of each error tried again.
 async fn deliver(
     api: &Api,
     session: &str,
     text: &str,
     attachments: Vec<AttachmentId>,
+    key: Option<String>,
     mut retried: impl FnMut(&fctl_client::Error, Duration),
 ) -> std::result::Result<fctl_proto::api::SendMessageResponse, NotSent> {
-    let client_id = fctl_domain::ids::new_id("cli", style::now_ms());
+    let client_id = key.unwrap_or_else(|| fctl_domain::ids::new_id("cli", style::now_ms()));
     let mut maybe_kept = false;
     fctl_client::http::retrying(
         || api.send_message(session, text, Some(client_id.clone()), attachments.clone()),
@@ -1230,8 +1280,9 @@ async fn deliver(
     )
     .await
     .map_err(|error| NotSent {
-        maybe_kept: maybe_kept || error.is_transient(),
+        maybe_kept: maybe_kept || !refused(&error),
         error,
+        key: client_id,
     })
 }
 
@@ -1603,6 +1654,7 @@ mod tests {
             "ses_01ABC",
             "Also add a test",
             Vec::new(),
+            None,
             |e, wait| {
                 retried.push((e.api().map(|e| e.code), wait));
             },
@@ -1625,11 +1677,27 @@ mod tests {
             && b["client_id"] == id.as_str()
             && b["text"] == "Also add a test"));
         // Another message gets another.
-        let again = deliver(&api, "ses_01ABC", "And docs", Vec::new(), |_, _| {}).await;
+        let again = deliver(&api, "ses_01ABC", "And docs", Vec::new(), None, |_, _| {}).await;
         assert!(again.is_ok());
         let all = got(&sent);
         assert_eq!(all.len(), 4);
         assert_ne!(all[3].2["client_id"], id.as_str());
+        // Unless it's given one (`--key`): the same each time it's sent.
+        for _ in 0..2 {
+            let keyed = deliver(
+                &api,
+                "ses_01ABC",
+                "And docs",
+                Vec::new(),
+                Some("docs-1".into()),
+                |_, _| {},
+            )
+            .await;
+            assert!(keyed.is_ok());
+        }
+        let all = got(&sent);
+        assert_eq!(all.len(), 6);
+        assert!(all[4..].iter().all(|(_, _, b)| b["client_id"] == "docs-1"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1637,7 +1705,15 @@ mod tests {
         use fctl_proto::ErrorCode::{Conflict, Internal, Unavailable};
         let not_sent = |answers| async move {
             let (api, sent) = relayed(answers);
-            let r = deliver(&api, "ses_01ABC", "Also add a test", Vec::new(), |_, _| {}).await;
+            let r = deliver(
+                &api,
+                "ses_01ABC",
+                "Also add a test",
+                Vec::new(),
+                None,
+                |_, _| {},
+            )
+            .await;
             let tries = got(&sent).len();
             r.err()
                 .map(|n| (n.error.api().map(|e| e.code), n.maybe_kept, tries))
@@ -1658,6 +1734,54 @@ mod tests {
             not_sent(vec![Some(Unavailable); 4]).await,
             Some((Some(Unavailable), true, 4))
         );
+    }
+
+    #[test]
+    fn only_a_refusal_keeps_nothing() {
+        use fctl_client::Error;
+        let api = |code| Error::Api(fctl_proto::ApiError::new(code, "No"));
+        let status = |status| Error::Status {
+            status,
+            body: String::new(),
+        };
+        assert!(refused(&api(fctl_proto::ErrorCode::Conflict)));
+        assert!(refused(&status(404)));
+        // It may have done its work before it failed, or answered in a way
+        // that couldn't be read.
+        assert!(!refused(&api(fctl_proto::ErrorCode::Internal)));
+        assert!(!refused(&status(502)));
+        assert!(!refused(&status(429)));
+        assert!(!refused(&Error::Decode("expected a value".into())));
+        assert!(!refused(&Error::Other("fctl-agent hung up".into())));
+        assert!(!refused(&Error::Timeout(Duration::from_secs(30))));
+    }
+
+    #[test]
+    fn a_send_that_gave_up_says_whether_it_went() {
+        let n = |maybe_kept| NotSent {
+            error: fctl_client::Error::Other("lost".into()),
+            maybe_kept,
+            key: "cli_01ABC".into(),
+        };
+        assert_eq!(
+            not_sent(&n(false), "shop#12"),
+            "The message wasn't sent to shop#12."
+        );
+        assert_eq!(
+            not_sent(&n(true), "shop#12"),
+            "The message may have reached shop#12 all the same. Run the same command again with --key cli_01ABC, and it goes only if it didn't; or read the transcript first (`fctl logs shop#12`)."
+        );
+    }
+
+    #[test]
+    fn checks_a_send_key() {
+        assert_eq!(send_key(" deploy-ok ").ok().as_deref(), Some("deploy-ok"));
+        assert!(send_key("cli_01M7J3ZVE7S7N9XVFJK5KSYJS7").is_ok());
+        assert!(send_key(&"k".repeat(SEND_KEY_CHARS)).is_ok());
+        assert!(send_key(&"k".repeat(SEND_KEY_CHARS + 1)).is_err());
+        assert!(send_key("  ").is_err());
+        assert!(send_key("two words").is_err());
+        assert!(send_key("tab\there").is_err());
     }
 
     #[tokio::test(start_paused = true)]

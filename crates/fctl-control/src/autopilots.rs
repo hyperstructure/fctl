@@ -2415,6 +2415,22 @@ async fn crew_working(db: &D1Database, project_id: &str) -> AppResult<i64> {
     Ok(c.map_or(0, |c| c.n))
 }
 
+/// The message fctl holds already for `session_id` under `key`, with how
+/// many go before it: a retry of the same request, which finds it rather
+/// than hold it twice. The sender chooses the key (`fctl send --key`), so
+/// the same key to another session is a message of its own.
+fn held_already<'a>(
+    queue: &'a [HeldRow],
+    session_id: &str,
+    key: Option<&str>,
+) -> Option<(usize, &'a HeldRow)> {
+    let key = key?;
+    queue
+        .iter()
+        .enumerate()
+        .find(|(_, h)| h.session_id == session_id && h.client_key.as_deref() == Some(key))
+}
+
 /// An autopilot's message to session `session_id` of its own (`fctl
 /// send`), checked, with its files claimed: `None` when it goes now as any
 /// message does. Otherwise fctl holds it for room under the autopilot's
@@ -2431,12 +2447,7 @@ pub async fn hold(
 ) -> AppResult<Option<SendMessageResponse>> {
     let db = &ctx.db;
     let queue = held(db, &caller.project_id).await?;
-    if let Some(key) = client_key
-        && let Some((ahead, h)) = queue
-            .iter()
-            .enumerate()
-            .find(|(_, h)| h.client_key.as_deref() == Some(key))
-    {
+    if let Some((ahead, h)) = held_already(&queue, session_id, client_key) {
         return Ok(Some(SendMessageResponse {
             delivery_id: DeliveryId(h.delivery_id.clone()),
             held: Some(h.view(ahead)),
@@ -3895,6 +3906,37 @@ mod tests {
             .map(|h| h.id)
             .collect();
         assert_eq!(left, ["aph_1", "aph_3", "aph_4"]);
+        Ok(())
+    }
+
+    /// A message sent again with its key finds the one held, for the same
+    /// session only.
+    #[wasm_bindgen_test]
+    async fn a_message_sent_again_finds_the_one_held() -> AppResult<()> {
+        let db = testing::database();
+        autopilot(&db).await?;
+        let idle = crew(&db, 3, "idle", NOW - HOUR).await?;
+        let other = crew(&db, 4, "idle", NOW - HOUR).await?;
+        held_for(&db, "aph_1", &idle, NOW - 2).await?;
+        held_for(&db, "aph_2", &idle, NOW - 1).await?;
+        q(
+            &db,
+            "UPDATE autopilot_held SET client_key = 'usr_ada:deploy-1' WHERE id = 'aph_2'",
+            &[],
+        )?
+        .run()
+        .await?;
+        let queue = held(&db, "prj_web").await?;
+        let found = |session: &str, key| {
+            held_already(&queue, session, key).map(|(ahead, h)| (ahead, h.id.clone()))
+        };
+        assert_eq!(
+            found(&idle, Some("usr_ada:deploy-1")),
+            Some((1, "aph_2".to_owned()))
+        );
+        assert_eq!(found(&other, Some("usr_ada:deploy-1")), None);
+        assert_eq!(found(&idle, Some("usr_ada:deploy-2")), None);
+        assert_eq!(found(&idle, None), None);
         Ok(())
     }
 

@@ -148,9 +148,13 @@ times, after 1, 3 and 9 seconds, but none that would start more than a
 minute after the first try. Over HTTP a request times out after 30
 seconds, so a control plane that doesn't answer gets one more try. Each
 message carries a `client_id` of its own, so a try whose answer was lost
-doesn't deliver it twice. When `fctl send` gives up after such a failure,
-the message may still have reached the session, which its error then
-says: read the transcript (`fctl logs`) before you send it again.
+doesn't deliver it twice. When `fctl send` gives up, its error says
+whether the message wasn't sent (fctl refused it) or may have reached the
+session all the same, with the key its tries went with: run the same
+command again with `--key <that key>`, and the session gets the message
+only if it didn't yet. A script that may send the same message twice can
+give its own key from the start (`fctl send my-app#12 --key deploy-1234
+"…"`): for a day, the same key sends a message to a session at most once.
 
 `fctl search` looks in the titles and descriptions of the sessions you can
 see, in every workspace unless `-w` or `-p` says which, and in what people

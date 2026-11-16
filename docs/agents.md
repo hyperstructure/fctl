@@ -272,8 +272,11 @@ what followed (it reads the transcript from its end), and
   for files (up to 10, of 20 MB each); a stopped session resumes for it, on
   the Claude subscription it ran on. It tries again on its own when the
   control plane fails in a way that may pass, without delivering the
-  message twice; but each call is a new message: through the API, a
-  `client_id` makes a retried message arrive once.
+  message twice; but each call is a new message, unless calls share a key
+  (`--key deploy-1234`, or a `client_id` through the API): the same key
+  sends a message to a session at most once a day. When it gives up, its
+  error says whether the message wasn't sent or may have arrived, and in
+  that case the key to run it again with.
 - `fctl interrupt SESSION` stops the current turn; the session waits for a
   message.
 - `fctl stop SESSION` ends the session and keeps its sandbox; `fctl resume
