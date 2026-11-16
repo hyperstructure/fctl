@@ -86,6 +86,7 @@ import {
   Sheet,
   Skeleton,
   StatusPill,
+  statusLabel,
   toast,
 } from "@/components/ui";
 import { WorkspaceAvatar } from "@/components/workspace/avatar";
@@ -116,7 +117,7 @@ import { claudeAppLink, remoteControlUrl, remoteControlUser } from "@/lib/remote
 import { parts } from "@/lib/runs";
 import { ariaShortcut, useShortcut, withShortcut } from "@/lib/shortcuts";
 import { type DiskShort, diskOf, diskText, type Stall, stallText, useStall } from "@/lib/stall";
-import { type StatusNote, statusNotes, waitsForYou } from "@/lib/status";
+import { besidePill, type StatusNote, statusNotes, waitsForYou } from "@/lib/status";
 import { useStickToBottom } from "@/lib/stick-to-bottom";
 import { takeOverOf } from "@/lib/subscription";
 import type { Item } from "@/lib/transcript";
@@ -374,8 +375,12 @@ export function SessionPage() {
   // Once it can no longer be taken over (it runs again), an open dialog goes for good, rather
   // than open by itself the next time it pauses.
   if (moving && !takeOver) setMoving(false);
+  // Beside the pill, which says its first word already: "Stopped · after being idle".
   const notes = session
-    ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall, disk })
+    ? statusNotes(session, { reconnecting: s.connection === "reconnecting", stall, disk }).map((n) => ({
+        ...n,
+        text: besidePill(n.text, reviewLabel(session) ?? statusLabel(session.status)),
+      }))
     : [];
   const now = nowOf({
     status,
