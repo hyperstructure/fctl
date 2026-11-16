@@ -196,7 +196,7 @@ describe("an audit log entry in words", () => {
   it("says why GitHub refused, in words", () => {
     const refused = entry("workspace.github_refused", "wsp_1", { reason: "no_installation" }, "Noor");
     expect(said(describeAudit(refused))).toBe(
-      "couldn't connect a GitHub account: fctl's GitHub App isn't installed there",
+      "couldn't connect a GitHub account: GitHub showed them no installation of fctl's app there",
     );
   });
 

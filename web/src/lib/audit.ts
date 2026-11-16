@@ -68,8 +68,9 @@ const byHost = (e: G.AuditEntry) =>
 
 /** Why GitHub refused to connect an account (`fctl_domain::github::Refusal`), after a colon. */
 const REFUSALS: Record<string, string> = {
-  no_installation: ": fctl's GitHub App isn't installed there",
-  no_repos: ": the app reaches none of its repositories they can see",
+  // Not installed, or reaching no repository they can see: GitHub doesn't tell the two apart for us.
+  no_installation: ": GitHub showed them no installation of fctl's app there",
+  no_repos: ": the app reaches no repository there that they can see",
   no_admin: ": they aren't an admin of any repository the app reaches there",
   not_admin: ": they aren't an admin of some of the repositories they named",
   unreachable: ": the app doesn't reach some of the repositories they named",
