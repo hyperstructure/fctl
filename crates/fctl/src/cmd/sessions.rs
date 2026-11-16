@@ -249,6 +249,16 @@ pub enum UploadTo<'a> {
 
 /// Uploads files to send with a message; returns their ids.
 pub async fn upload(api: &Api, to: UploadTo<'_>, paths: &[PathBuf]) -> Result<Vec<AttachmentId>> {
+    upload_seen(api, to, paths, |_, _| {}).await
+}
+
+/// [`upload`], showing `seen` each file's name and bytes as it goes.
+async fn upload_seen(
+    api: &Api,
+    to: UploadTo<'_>,
+    paths: &[PathBuf],
+    mut seen: impl FnMut(&str, &[u8]),
+) -> Result<Vec<AttachmentId>> {
     if paths.len() > files::MAX_FILES_PER_MESSAGE {
         bail!(
             "Attach at most {} files to one message",
@@ -273,6 +283,7 @@ pub async fn upload(api: &Api, to: UploadTo<'_>, paths: &[PathBuf]) -> Result<Ve
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
+        seen(&name, &bytes);
         let media_type = Some(files::guess_media_type(&name));
         let att = match to {
             UploadTo::Project(p) => api.upload_attachment(p, &name, media_type, bytes).await,
@@ -1120,8 +1131,10 @@ pub async fn send(
     reference: &str,
     message: &str,
     attach: &[PathBuf],
+    key: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    let given = key.map(send_key).transpose()?;
     let api = config::api(server)?;
     let s = resolve(&api, reference).await?;
     let text = if message.trim().is_empty() && !std::io::stdin().is_terminal() {
@@ -1131,19 +1144,25 @@ pub async fn send(
     } else {
         message.to_owned()
     };
-    let attachments = upload(&api, UploadTo::Session(&s.id.0), attach).await?;
-    let r = deliver(&api, &s.id.0, &text, attachments, |e, wait| {
+    let mut fingerprint = Fingerprint::new(&text);
+    let attachments = upload_seen(&api, UploadTo::Session(&s.id.0), attach, |name, bytes| {
+        fingerprint.file(name, bytes)
+    })
+    .await?;
+    let key = given
+        .clone()
+        .unwrap_or_else(|| fctl_domain::ids::new_id("cli", style::now_ms()));
+    let client_id = fingerprint.key(&key);
+    let r = deliver(&api, &s.id.0, &text, attachments, client_id, |e, wait| {
         trying_again("Sending", e, wait)
     })
     .await
     .map_err(|n| {
-        if !n.maybe_kept {
-            return anyhow::Error::from(n.error);
-        }
         let session = format!("{}#{}", s.project_slug, s.number);
         anyhow::anyhow!(
-            "{}\n  The message may have reached {session} all the same: read its transcript (`fctl logs {session}`) before you send it again.",
-            style::terminal_safe(&why(&n.error))
+            "{}\n  {}",
+            style::terminal_safe(&why(&n.error)),
+            not_sent(&n, &session, &key, given.is_some())
         )
     })?;
     if json {
@@ -1204,22 +1223,109 @@ struct NotSent {
     /// answer was lost, or that failed after SessionDO kept the message,
     /// as its resume failed. A later try may then be refused for another
     /// reason (the session failed meanwhile) though the agent gets it.
+    /// Only a refusal of the first try, from the control plane, is sure
+    /// to have kept nothing ([`refused`]).
     maybe_kept: bool,
 }
 
+/// What a send that gave up says, after why: that the message wasn't
+/// sent, or that it may have been, and how to send it again with its
+/// `key` so that it goes at most once. A refusal keeps nothing of this
+/// run's, but one with a key `given` may follow a run that sent it: the
+/// control plane refuses a message to a session that failed before it
+/// looks the key up.
+fn not_sent(n: &NotSent, session: &str, key: &str, given: bool) -> String {
+    match (n.maybe_kept, given) {
+        (false, false) => format!("The message wasn't sent to {session}."),
+        (false, true) => format!(
+            "This try sent nothing to {session}, but an earlier one with --key {key} may have: read the transcript to see (`fctl logs {session}`)."
+        ),
+        (true, _) => format!(
+            "The message may have reached {session} all the same. Run the same command again with --key {key}, and it goes only if it didn't; or read the transcript first (`fctl logs {session}`)."
+        ),
+    }
+}
+
+/// What a message says, its text and its files (each one's name and
+/// bytes), for its `client_id` ([`Fingerprint::key`]).
+struct Fingerprint(sha2::Sha256);
+
+impl Fingerprint {
+    fn new(text: &str) -> Self {
+        use sha2::Digest;
+        let mut f = Self(sha2::Sha256::new());
+        f.part(text.as_bytes());
+        f
+    }
+
+    fn file(&mut self, name: &str, bytes: &[u8]) {
+        self.part(name.as_bytes());
+        self.part(bytes);
+    }
+
+    /// Each part with its length first, so that no two messages run
+    /// together into the same bytes.
+    fn part(&mut self, bytes: &[u8]) {
+        use sha2::Digest;
+        self.0.update((bytes.len() as u64).to_le_bytes());
+        self.0.update(bytes);
+    }
+
+    /// The `client_id` of the message sent with `key` (`fctl send --key`,
+    /// or one of its own): the key with the fingerprint. The same command
+    /// run again goes with the same one while its files are the same, so
+    /// the session gets the message at most once; another message with the
+    /// same key, or a changed file, is a message of its own, rather than
+    /// one the session takes for the first and drops.
+    fn key(self, key: &str) -> String {
+        use sha2::Digest;
+        format!("{key}:{}", hex::encode(&self.0.finalize()[..8]))
+    }
+}
+
+/// Whether the control plane refused a request, which then changed
+/// nothing: it answered with an error that doesn't pass by trying again
+/// (`fctl_client::Error::is_transient`). Any other error may have come
+/// after the request did its work: a lost answer, a relay that broke off,
+/// an answer that couldn't be read.
+fn refused(e: &fctl_client::Error) -> bool {
+    match e {
+        fctl_client::Error::Api(_) => !e.is_transient(),
+        fctl_client::Error::Status { status, .. } => *status < 500 && *status != 429,
+        _ => false,
+    }
+}
+
+/// The key `fctl send --key` was given, as the message's `client_id`: what
+/// a person or script can type, and short enough to keep.
+fn send_key(key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.is_empty() || key.chars().count() > SEND_KEY_CHARS {
+        anyhow::bail!("Give --key from 1 to {SEND_KEY_CHARS} characters");
+    }
+    if key.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        anyhow::bail!("Give --key without spaces or control characters");
+    }
+    Ok(key.to_owned())
+}
+
+/// The longest `fctl send --key`.
+const SEND_KEY_CHARS: usize = 100;
+
 /// Sends a message, trying again while the error may pass
-/// (`fctl_client::http::retrying`): with a `client_id` of its own, which
-/// the session's SessionDO answers again with the first delivery, so that
-/// a try whose answer was lost, or that failed after the message was kept,
-/// doesn't deliver it twice. `retried` hears of each error tried again.
+/// (`fctl_client::http::retrying`): with its `client_id` ([`message_key`]),
+/// which the session's SessionDO (or the autopilot's held messages)
+/// answers again with the first delivery for a day, so that a try whose
+/// answer was lost, or that failed after the message was kept, doesn't
+/// deliver it twice. `retried` hears of each error tried again.
 async fn deliver(
     api: &Api,
     session: &str,
     text: &str,
     attachments: Vec<AttachmentId>,
+    client_id: String,
     mut retried: impl FnMut(&fctl_client::Error, Duration),
 ) -> std::result::Result<fctl_proto::api::SendMessageResponse, NotSent> {
-    let client_id = fctl_domain::ids::new_id("cli", style::now_ms());
     let mut maybe_kept = false;
     fctl_client::http::retrying(
         || api.send_message(session, text, Some(client_id.clone()), attachments.clone()),
@@ -1230,7 +1336,7 @@ async fn deliver(
     )
     .await
     .map_err(|error| NotSent {
-        maybe_kept: maybe_kept || error.is_transient(),
+        maybe_kept: maybe_kept || !refused(&error),
         error,
     })
 }
@@ -1603,6 +1709,7 @@ mod tests {
             "ses_01ABC",
             "Also add a test",
             Vec::new(),
+            "cli_01ABC:5e1f".into(),
             |e, wait| {
                 retried.push((e.api().map(|e| e.code), wait));
             },
@@ -1615,21 +1722,41 @@ mod tests {
         );
         let first = got(&sent);
         assert_eq!(first.len(), 3);
-        let id = first[0].2["client_id"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        assert!(id.starts_with("cli_"), "{id}");
         assert!(first.iter().all(|(method, path, b)| method == "POST"
             && path == "/api/v1/sessions/ses_01ABC/messages"
-            && b["client_id"] == id.as_str()
+            && b["client_id"] == "cli_01ABC:5e1f"
             && b["text"] == "Also add a test"));
-        // Another message gets another.
-        let again = deliver(&api, "ses_01ABC", "And docs", Vec::new(), |_, _| {}).await;
-        assert!(again.is_ok());
-        let all = got(&sent);
-        assert_eq!(all.len(), 4);
-        assert_ne!(all[3].2["client_id"], id.as_str());
+    }
+
+    #[test]
+    fn a_message_key_is_its_key_and_what_it_says() {
+        let key = |key: &str, text: &str, files: &[(&str, &str)]| {
+            let mut f = Fingerprint::new(text);
+            for (name, bytes) in files {
+                f.file(name, bytes.as_bytes());
+            }
+            f.key(key)
+        };
+        let log = [("ci.log", "failed")];
+        let first = key("deploy-1", "It's live", &log);
+        assert!(first.starts_with("deploy-1:"), "{first}");
+        assert_eq!(first.len(), "deploy-1:".len() + 16);
+        // The same command again, with the same file: the same.
+        assert_eq!(first, key("deploy-1", "It's live", &log));
+        // Another message, another file, the file changed, or another key:
+        // its own.
+        assert_ne!(first, key("deploy-1", "It's live!", &log));
+        assert_ne!(first, key("deploy-1", "It's live", &[]));
+        assert_ne!(first, key("deploy-1", "It's live", &[("ci.log", "passed")]));
+        assert_ne!(first, key("deploy-1", "It's live", &[("cd.log", "failed")]));
+        assert_ne!(
+            first,
+            key("deploy-1", "It's live", &[("ci.log", "failed"), ("b", "")])
+        );
+        assert_ne!(first, key("deploy-2", "It's live", &log));
+        // Parts don't run together: text that holds what a file would.
+        assert_ne!(key("k", "x", &[("y", "")]), key("k", "x\0y", &[]));
+        assert_ne!(key("k", "x", &[("y", "z")]), key("k", "x", &[("yz", "")]));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1637,7 +1764,15 @@ mod tests {
         use fctl_proto::ErrorCode::{Conflict, Internal, Unavailable};
         let not_sent = |answers| async move {
             let (api, sent) = relayed(answers);
-            let r = deliver(&api, "ses_01ABC", "Also add a test", Vec::new(), |_, _| {}).await;
+            let r = deliver(
+                &api,
+                "ses_01ABC",
+                "Also add a test",
+                Vec::new(),
+                "cli_01ABC:5e1f".into(),
+                |_, _| {},
+            )
+            .await;
             let tries = got(&sent).len();
             r.err()
                 .map(|n| (n.error.api().map(|e| e.code), n.maybe_kept, tries))
@@ -1658,6 +1793,58 @@ mod tests {
             not_sent(vec![Some(Unavailable); 4]).await,
             Some((Some(Unavailable), true, 4))
         );
+    }
+
+    #[test]
+    fn only_a_refusal_keeps_nothing() {
+        use fctl_client::Error;
+        let api = |code| Error::Api(fctl_proto::ApiError::new(code, "No"));
+        let status = |status| Error::Status {
+            status,
+            body: String::new(),
+        };
+        assert!(refused(&api(fctl_proto::ErrorCode::Conflict)));
+        assert!(refused(&status(404)));
+        // It may have done its work before it failed, or answered in a way
+        // that couldn't be read.
+        assert!(!refused(&api(fctl_proto::ErrorCode::Internal)));
+        assert!(!refused(&status(502)));
+        assert!(!refused(&status(429)));
+        assert!(!refused(&Error::Decode("expected a value".into())));
+        assert!(!refused(&Error::Other("fctl-agent hung up".into())));
+        assert!(!refused(&Error::Timeout(Duration::from_secs(30))));
+    }
+
+    #[test]
+    fn a_send_that_gave_up_says_whether_it_went() {
+        let n = |maybe_kept| NotSent {
+            error: fctl_client::Error::Other("lost".into()),
+            maybe_kept,
+        };
+        assert_eq!(
+            not_sent(&n(false), "shop#12", "cli_01ABC", false),
+            "The message wasn't sent to shop#12."
+        );
+        let again = "The message may have reached shop#12 all the same. Run the same command again with --key cli_01ABC, and it goes only if it didn't; or read the transcript first (`fctl logs shop#12`).";
+        assert_eq!(not_sent(&n(true), "shop#12", "cli_01ABC", false), again);
+        assert_eq!(not_sent(&n(true), "shop#12", "cli_01ABC", true), again);
+        // With a key given, an earlier run may have sent it: a session that
+        // failed since refuses the run that comes again.
+        assert_eq!(
+            not_sent(&n(false), "shop#12", "deploy-1", true),
+            "This try sent nothing to shop#12, but an earlier one with --key deploy-1 may have: read the transcript to see (`fctl logs shop#12`)."
+        );
+    }
+
+    #[test]
+    fn checks_a_send_key() {
+        assert_eq!(send_key(" deploy-ok ").ok().as_deref(), Some("deploy-ok"));
+        assert!(send_key("cli_01M7J3ZVE7S7N9XVFJK5KSYJS7").is_ok());
+        assert!(send_key(&"k".repeat(SEND_KEY_CHARS)).is_ok());
+        assert!(send_key(&"k".repeat(SEND_KEY_CHARS + 1)).is_err());
+        assert!(send_key("  ").is_err());
+        assert!(send_key("two words").is_err());
+        assert!(send_key("tab\there").is_err());
     }
 
     #[tokio::test(start_paused = true)]

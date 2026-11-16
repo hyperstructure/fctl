@@ -260,6 +260,12 @@ Examples:
         /// Send a file with it (repeat for more, up to 10).
         #[arg(short, long = "attach", value_name = "FILE")]
         attach: Vec<std::path::PathBuf>,
+        /// Send it at most once: run the same command again with the same
+        /// key, within a day, and the session gets the message only if it
+        /// didn't yet; another message with the key is one of its own. A
+        /// failed send names the key it used.
+        #[arg(long, value_name = "KEY")]
+        key: Option<String>,
     },
     /// The files sent in a session, with its messages or as it started:
     /// list them, and download them.
@@ -541,7 +547,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             session,
             message,
             attach,
-        } => cmd::sessions::send(server, &session, &message.join(" "), &attach, json).await,
+            key,
+        } => {
+            cmd::sessions::send(
+                server,
+                &session,
+                &message.join(" "),
+                &attach,
+                key.as_deref(),
+                json,
+            )
+            .await
+        }
         Command::Interrupt { session } => cmd::sessions::interrupt(server, &session).await,
         Command::Stop { session } => cmd::sessions::stop(server, &session, json).await,
         Command::Resume {
