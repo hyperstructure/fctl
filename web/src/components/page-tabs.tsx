@@ -12,13 +12,16 @@ export function overflowing(el: Pick<HTMLElement, "scrollLeft" | "scrollWidth" |
   return { left: el.scrollLeft > 1, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1 };
 }
 
+/** How far a faded edge reaches in: the 24 px the strip runs out to the screen's edge with, and 16 more. */
+export const FADE = 40;
+
 /**
- * A strip's mask that fades its edges with more past them, over the 24 px the strip runs out to the
- * screen's edge with: the tabs cut off there said nothing of the ones beyond.
+ * A strip's mask that fades its edges with more past them, over their last FADE px: the tabs cut off
+ * there said nothing of the ones beyond.
  */
 export function edgeFade({ left, right }: { left: boolean; right: boolean }): CSSProperties | undefined {
   if (!left && !right) return undefined;
-  const mask = `linear-gradient(to right, ${left ? "transparent, #000 40px" : "#000 0"}, ${right ? "#000 calc(100% - 40px), transparent" : "#000 100%"})`;
+  const mask = `linear-gradient(to right, ${left ? `transparent, #000 ${FADE}px` : "#000 0"}, ${right ? `#000 calc(100% - ${FADE}px), transparent` : "#000 100%"})`;
   return { maskImage: mask, WebkitMaskImage: mask };
 }
 
@@ -78,7 +81,9 @@ export function PageTabs<T extends string>({
     if (!nav || !here || nav.scrollWidth <= nav.clientWidth) return;
     const a = here.getBoundingClientRect();
     const v = nav.getBoundingClientRect();
-    if (a.left >= v.left && a.right <= v.right) return;
+    // In view, and clear of the edges that fade: one under a fade would show half drawn.
+    const fades = overflowing(nav);
+    if (a.left >= v.left + (fades.left ? FADE : 0) && a.right <= v.right - (fades.right ? FADE : 0)) return;
     // Sideways only: the page stays where it is.
     nav.scrollLeft += a.left + a.width / 2 - (v.left + v.width / 2);
   }, [open, shown]);
