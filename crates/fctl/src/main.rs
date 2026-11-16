@@ -260,9 +260,10 @@ Examples:
         /// Send a file with it (repeat for more, up to 10).
         #[arg(short, long = "attach", value_name = "FILE")]
         attach: Vec<std::path::PathBuf>,
-        /// Send it at most once: run the command again with the same key,
-        /// within a day, and the session gets the message only if it
-        /// didn't yet. A failed send names the key it used.
+        /// Send it at most once: run the same command again with the same
+        /// key, within a day, and the session gets the message only if it
+        /// didn't yet; another message with the key is one of its own. A
+        /// failed send names the key it used.
         #[arg(long, value_name = "KEY")]
         key: Option<String>,
     },

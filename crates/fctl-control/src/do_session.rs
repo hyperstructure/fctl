@@ -56,6 +56,9 @@ const SNAPSHOT_BYTES: usize = 3_000_000;
 /// hosts ping every 20 seconds, so this one's host is frozen or cut off (a
 /// laptop that went to sleep), and its socket may stay open for a long time.
 const QUIET_MS: i64 = 60_000;
+/// How long a message's idempotency key (`client_keys`) makes a message
+/// sent again with it go once: a day.
+const KEY_KEPT_MS: i64 = 24 * 3600 * 1000;
 /// How often an uplink's socket notes when it was last heard from.
 const HEARD_EVERY_MS: i64 = 5_000;
 /// The longest reason a host gives for not reaching its agent that is kept.
@@ -953,7 +956,7 @@ impl SessionObject {
             ));
         }
         if let Some(key) = b.client_key.as_deref() {
-            if let Some(delivery_id) = self.keyed(key) {
+            if let Some(delivery_id) = self.keyed_since(key, now - KEY_KEPT_MS) {
                 // Sent again after an error: it may not have resumed the session.
                 if message {
                     self.wake(now).await?;
@@ -1085,15 +1088,36 @@ impl SessionObject {
             .map(|k| k.delivery_id)
     }
 
-    /// Keeps an idempotency key for a day, with what it went with.
+    /// The delivery an idempotency key went with, when it came at `since`
+    /// or later: a message's key lasts a day ([`KEY_KEPT_MS`]), though its
+    /// row may stay until the next key is kept.
+    fn keyed_since(&self, key: &str, since: i64) -> Option<String> {
+        #[derive(Deserialize)]
+        struct K {
+            delivery_id: String,
+        }
+        self.sql
+            .exec(
+                "SELECT delivery_id FROM client_keys WHERE key = ? AND ts >= ?",
+                Some(vec![sv(key), iv(since)]),
+            )
+            .and_then(|c| c.to_array::<K>())
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+            .map(|k| k.delivery_id)
+    }
+
+    /// Keeps an idempotency key for a day, with what it went with, after
+    /// those older, so that a key used again after a day is kept anew.
     fn key(&self, key: &str, delivery_id: &str, now: i64) {
+        let _ = self.sql.exec(
+            "DELETE FROM client_keys WHERE ts < ?",
+            Some(vec![iv(now - KEY_KEPT_MS)]),
+        );
         let _ = self.sql.exec(
             "INSERT INTO client_keys (key, delivery_id, ts) VALUES (?, ?, ?)",
             Some(vec![sv(key), sv(delivery_id), iv(now)]),
-        );
-        let _ = self.sql.exec(
-            "DELETE FROM client_keys WHERE ts < ?",
-            Some(vec![iv(now - 24 * 3600 * 1000)]),
         );
     }
 
