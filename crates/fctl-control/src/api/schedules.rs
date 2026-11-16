@@ -507,7 +507,9 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             credential: &credential,
             github_access,
             prompt: text,
-            author: (!token).then(|| user.to_ref()),
+            // An autopilot's first message is its owner's, as its `fctl
+            // run`'s is, and the apps say it sent it.
+            author: (!token || autopilot.is_some()).then(|| user.to_ref()),
             source: crate::api::sessions::source_of(ctx),
             // Sessions a limited token starts notify nobody unless someone
             // follows them, as `api::sessions::create`'s.

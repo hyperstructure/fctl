@@ -25,7 +25,7 @@ import { ProjectMark } from "@/components/project/project-icon";
 import { AutopilotIcon, StatusDot, statusLabel } from "@/components/ui";
 import type * as G from "@/gen";
 import { api } from "@/lib/api";
-import { splitBriefing, splitCrewNote, wakeLead } from "@/lib/autopilot";
+import { splitBriefing, splitTask, wakeLead } from "@/lib/autopilot";
 import { cn } from "@/lib/cn";
 import { stamp, when } from "@/lib/format";
 import { prState, pullRequests } from "@/lib/pulls";
@@ -171,7 +171,7 @@ export function AutopilotAuthorLine({
 
 /** What an autopilot asked one of its sessions to do, without fctl's note, which follows apart. */
 export function crewTask(text: string): { task: string; note?: string } {
-  return splitCrewNote(text);
+  return splitTask(text, true);
 }
 
 const ACTION_ICONS: Partial<Record<G.AutopilotEntryKind, ReactNode>> = {

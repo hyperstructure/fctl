@@ -721,7 +721,6 @@ fn print_schedule(s: &Schedule) {
     }
 }
 
-/// A run: what came of it, its session, who started it and when.
 /// Who started a run: "on time", "by Ada", "by spaghetti's autopilot, for
 /// Ada", "by a tool with Ada's token".
 fn run_by(r: &ScheduleRun) -> String {
@@ -734,6 +733,7 @@ fn run_by(r: &ScheduleRun) -> String {
     }
 }
 
+/// A run: what came of it, its session, who started it and when.
 fn print_run(r: &ScheduleRun, lead: &str) {
     let what = match (r.outcome, &r.session) {
         (ScheduleRunOutcome::Started, Some(session)) => format!(
