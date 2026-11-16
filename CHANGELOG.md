@@ -2,6 +2,13 @@
 
 What changed in each fctl release, from its Conventional Commits (`cargo xtask release` writes this file).
 
+## 0.35.2 (2026-11-16)
+
+### Features
+
+- **autopilot:** Pass on an autopilot's fourth round of lessons ([#571](https://github.com/hyperstructure/fctl/pull/571))
+- **cli:** Send a message at most once with fctl send --key ([#574](https://github.com/hyperstructure/fctl/pull/574))
+
 ## 0.35.1 (2026-11-16)
 
 ### Features
