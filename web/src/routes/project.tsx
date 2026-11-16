@@ -288,6 +288,24 @@ export function Sessions({ project }: { project: G.Project }) {
       : [active.data?.sessions],
     Date.now(),
   );
+  // The list ended at the newest hundred, with no word that a project's earlier sessions were
+  // there to find.
+  const more = history && (
+    <>
+      {ended.hasNextPage && (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="mt-3 -ml-2.5"
+          loading={ended.isFetchingNextPage}
+          onClick={() => void ended.fetchNextPage()}
+        >
+          Show older sessions
+        </Button>
+      )}
+      {ended.isFetchNextPageError && <p className="mt-2 text-[12.5px] text-danger">{ended.error?.message}</p>}
+    </>
+  );
   const canStart = project.role !== "viewer";
   const { data: me } = useMe();
   return (
@@ -339,27 +357,15 @@ export function Sessions({ project }: { project: G.Project }) {
             {history && recent.length > 0 && (
               <SessionSection title="Recently">
                 <SessionList sessions={recent} />
+                {/* Under whichever section ends the list: the pages go by when sessions started,
+                    and a busy project's first hundred can all have moved in the last day. */}
+                {!older.length && more}
               </SessionSection>
             )}
             {history && older.length > 0 && (
               <SessionSection title="Older">
                 <SessionList sessions={older} />
-                {/* The list ended at the newest hundred, with no word that a project's earlier
-                    sessions were there to find. */}
-                {ended.hasNextPage && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="mt-3 -ml-2.5"
-                    loading={ended.isFetchingNextPage}
-                    onClick={() => void ended.fetchNextPage()}
-                  >
-                    Show older sessions
-                  </Button>
-                )}
-                {ended.isFetchNextPageError && (
-                  <p className="mt-2 text-[12.5px] text-danger">{ended.error?.message}</p>
-                )}
+                {more}
               </SessionSection>
             )}
           </div>

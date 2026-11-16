@@ -93,6 +93,24 @@ describe("a project's sessions", () => {
     expect(more(c)).toBeUndefined();
   });
 
+  it("offers older ones under Recently when every session on the first page moved in the last day", async () => {
+    // A busy project: its newest sessions all ended within the day, so none lists under "Older".
+    const today = (n: number) => ({ ...ended(n), created_at: NOW - 3_600_000 + n * 60_000 });
+    sessions.mockImplementation(async (q: { status?: string; before?: number }) => {
+      if (q.status === "active") return { sessions: [] };
+      if (q.before === undefined) return { sessions: [today(3), today(2)], next_before: today(2).created_at };
+      return { sessions: [ended(1)] };
+    });
+    const c = await render();
+    await settle();
+    expect(c.textContent).toContain("Recently");
+    expect(c.textContent).not.toContain("Older");
+    await act(async () => more(c)?.click());
+    await settle();
+    expect(c.textContent).toContain("Session 1");
+    expect(more(c)).toBeUndefined();
+  });
+
   it("offers no older ones when the first page holds them all", async () => {
     sessions.mockImplementation(async (q: { status?: string }) =>
       q.status === "active" ? { sessions: [] } : { sessions: [ended(1)] },
