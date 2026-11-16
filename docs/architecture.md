@@ -2151,7 +2151,9 @@ sessions to do it, and sets up what the work needs, as far as they let it
    direction, and how it works, then why it takes over from the last one
    and from what (`takes_over_from`: its plan, its log, its files,
    `fctl autopilot brief`, and to check what the last one promised people against what is
-   live, telling them of what shipped), then the wake's news. Where it hands off is its
+   live, telling them of what shipped, to start again the background
+   scripts its plan names, and to check with `--help` what its plan says
+   fctl can't do), then the wake's news. Where it hands off is its
    **handoff** (`autopilots.handoff_at`, *A fresh session takes over* in
    its settings, `fctl autopilot set --handoff-at 250k`): a context size,
    100K to 1M tokens, that D1 reads from the session's stats
@@ -2170,13 +2172,18 @@ sessions to do it, and sets up what the work needs, as far as they let it
    other open pull requests change and, where its sessions merge, what
    may merge without its look (a session that doesn't know ends its turn
    to ask, which costs a wake); sessions that change the same screen at
-   once, which get one shared layout and go one after the other; a spike
+   once, which get one shared layout and go one after the other; a merge
+   order for several pull requests, written in its plan, by the files
+   each changes, with what each session should expect from those before
+   it (files numbered in sequence, shared docs); a spike
    with real numbers before big, uncertain work; putting what every
    session should know in the project's memory or instructions, fixing
    the cause of a mistake sessions repeat, and having a session tidy the
-   memory once it grows long; reading a session's last turn (`fctl logs
+   memory once it grows long; putting a decision people repeat where it
+   lasts; reading a session's last turn (`fctl logs
    --last-turn`) before taking its word that it's done, as sessions stop
-   short; pushing back with one concrete thing on a pass that finds
+   short; a reviewer that hasn't seen a session's reasoning, as "ready"
+   isn't a review; pushing back with one concrete thing on a pass that finds
    nothing to fix; one round of changes; reviewing screenshots with a subagent,
    asking for shots of the case that matters rather than the default, and
    asking people to check right after a ship what no sandbox can; a person
@@ -2184,8 +2191,13 @@ sessions to do it, and sets up what the work needs, as far as they let it
    bind the project; people's own messages to its sessions; background
    scripts that wait on what doesn't wake it, one for each thing that
    exits once it happened, within Bash's background time limit, on plain
-   HTTP APIs, and follow the base branch's newest run when a newer merge
-   cancels one;
+   HTTP APIs, named in its plan as they stop with its sandbox (none for
+   the base branch's checks after its merges, which wake it); work
+   that runs on its own (a scheduled job, a worker), checked by what its
+   first real run produced and made to record why a run did nothing, and
+   the schedules that may do first what it plans for a set time; reading
+   what a change to anything live would touch before making it, and
+   logging it;
    looking at what people send before publishing it or passing it on, as
    it may show more of them than they meant to share; and holding ships,
    and what it tells people, while they are away, for one summary as they
