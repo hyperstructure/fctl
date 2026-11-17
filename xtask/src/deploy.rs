@@ -206,6 +206,7 @@ bindings = [
   {{ name = "NOTIFY", class_name = "NotifyObject" }},
   {{ name = "SCHEDULES", class_name = "ScheduleObject" }},
   {{ name = "SEARCH", class_name = "SearchObject" }},
+  {{ name = "HOOKS", class_name = "HooksObject" }},
 ]
 
 [[migrations]]
@@ -227,6 +228,10 @@ new_sqlite_classes = ["ScheduleObject"]
 [[migrations]]
 tag = "v5"
 new_sqlite_classes = ["SearchObject"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["HooksObject"]
 
 [[ratelimits]]
 name = "AUTH_LIMITER"
@@ -517,6 +522,14 @@ client_id = "lin_client"
         assert_eq!(
             doc["migrations"][4]["new_sqlite_classes"][0].as_str(),
             Some("SearchObject")
+        );
+        assert_eq!(
+            doc["durable_objects"]["bindings"][6]["class_name"].as_str(),
+            Some("HooksObject")
+        );
+        assert_eq!(
+            doc["migrations"][5]["new_sqlite_classes"][0].as_str(),
+            Some("HooksObject")
         );
         assert!(doc["vars"].get("GOOGLE_CLIENT_ID").is_none());
         assert!(doc["vars"].get("GITHUB_REVIEW_APP_ID").is_none());

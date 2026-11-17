@@ -562,6 +562,91 @@ pub struct Indexed {
     pub done: bool,
 }
 
+// ───────────────────────────── HooksObject ─────────────────────────────
+
+/// Something that happened in a workspace, for its webhooks that want it
+/// (`/emit`): `fctl_domain::hooks::Event` with its id, where it happened.
+#[derive(Serialize, Deserialize)]
+pub struct HookEmit {
+    pub workspace_id: String,
+    pub event_id: String,
+    pub kind: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub origin: Option<fctl_proto::hooks::WebhookOrigin>,
+    pub gist: String,
+    pub data: serde_json::Value,
+    pub at: Millis,
+}
+
+/// A workspace's webhooks changed in D1 (`/changed`), or one of them went
+/// (`/forget`, with `webhook_id`): its HooksObject reads them again.
+#[derive(Serialize, Deserialize)]
+pub struct HooksChanged {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub webhook_id: Option<String>,
+}
+
+/// How some of a workspace's webhooks' deliveries went lately (`/health`).
+#[derive(Serialize, Deserialize)]
+pub struct HooksHealth {
+    pub workspace_id: String,
+    pub webhooks: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct HooksHealthAnswer {
+    pub health: std::collections::BTreeMap<String, fctl_proto::hooks::WebhookHealth>,
+}
+
+/// A webhook's deliveries, newest first (`/deliveries`): those in
+/// `state`, of event `kind`, before the cursor `before`.
+#[derive(Serialize, Deserialize)]
+pub struct HookDeliveries {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub before: Option<String>,
+    pub limit: u32,
+}
+
+/// One delivery of a webhook (`/delivery`), or resending it now
+/// (`/resend`, by `by`).
+#[derive(Serialize, Deserialize)]
+pub struct HookDelivery {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    pub delivery_id: String,
+    #[serde(default)]
+    pub by: Option<UserRef>,
+}
+
+/// A sample of event `kind` to a webhook, now (`/test`).
+#[derive(Serialize, Deserialize)]
+pub struct HookTest {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    pub kind: String,
+    pub by: UserRef,
+}
+
+/// A webhook's deliveries that failed since `since` wait for an attempt
+/// again (`/resend-failed`).
+#[derive(Serialize, Deserialize)]
+pub struct HookResendFailed {
+    pub workspace_id: String,
+    pub webhook_id: String,
+    pub since: Millis,
+}
+
 // ───────────────────────────── calling ─────────────────────────────
 
 pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
@@ -575,6 +660,14 @@ pub fn session_stub(env: &Env, session_id: &str) -> AppResult<Stub> {
 pub fn search_stub(env: &Env, workspace_id: &str) -> AppResult<Stub> {
     Ok(env
         .durable_object("SEARCH")?
+        .id_from_name(workspace_id)?
+        .get_stub()?)
+}
+
+/// The HooksObject of a workspace: its webhooks' deliveries.
+pub fn hooks_stub(env: &Env, workspace_id: &str) -> AppResult<Stub> {
+    Ok(env
+        .durable_object("HOOKS")?
         .id_from_name(workspace_id)?
         .get_stub()?)
 }

@@ -12,6 +12,7 @@ mod db;
 mod delegations;
 mod do_files;
 mod do_fleet;
+mod do_hooks;
 mod do_notify;
 mod do_schedule;
 mod do_search;
@@ -20,6 +21,7 @@ mod email;
 mod error;
 mod follow_ups;
 mod github;
+mod hooks;
 mod housekeeping;
 mod http;
 mod instance;
@@ -45,6 +47,7 @@ mod workspaces;
 use ctx::Ctx;
 pub use do_files::FilesObject;
 pub use do_fleet::FleetObject;
+pub use do_hooks::HooksObject;
 pub use do_notify::NotifyObject;
 pub use do_schedule::ScheduleObject;
 pub use do_search::SearchObject;
@@ -478,6 +481,28 @@ async fn dispatch(
         (Delete, ["schedules", id]) => api::schedules::delete(ctx, id).await,
         (Get, ["schedules", id, "runs"]) => api::schedules::runs(ctx, req, id).await,
         (Post, ["schedules", id, "runs"]) => api::schedules::run(ctx, req, id).await,
+        // Webhooks
+        (Get, ["webhook-events"]) => api::hooks::events(ctx).await,
+        (Get, ["workspaces", id, "webhooks"]) => api::hooks::workspace_list(ctx, id).await,
+        (Post, ["workspaces", id, "webhooks"]) => api::hooks::workspace_create(ctx, req, id).await,
+        (Get, ["projects", id, "webhooks"]) => api::hooks::project_list(ctx, id).await,
+        (Post, ["projects", id, "webhooks"]) => api::hooks::project_create(ctx, req, id).await,
+        (Get, ["webhooks", id]) => api::hooks::get(ctx, id).await,
+        (Patch, ["webhooks", id]) => api::hooks::update(ctx, req, id).await,
+        (Delete, ["webhooks", id]) => api::hooks::delete(ctx, id).await,
+        (Get, ["webhooks", id, "secret"]) => api::hooks::secret(ctx, id).await,
+        (Post, ["webhooks", id, "secret"]) => api::hooks::rotate(ctx, id).await,
+        (Post, ["webhooks", id, "test"]) => api::hooks::test(ctx, req, id).await,
+        (Get, ["webhooks", id, "deliveries"]) => api::hooks::deliveries(ctx, req, id).await,
+        (Post, ["webhooks", id, "deliveries", "resend-failed"]) => {
+            api::hooks::resend_failed(ctx, req, id).await
+        }
+        (Get, ["webhooks", id, "deliveries", delivery]) => {
+            api::hooks::delivery(ctx, id, delivery).await
+        }
+        (Post, ["webhooks", id, "deliveries", delivery, "resend"]) => {
+            api::hooks::resend(ctx, id, delivery).await
+        }
         (Post, ["projects", id, "attachments"]) => api::attachments::upload(ctx, req, id).await,
         (Get, ["github"]) => api::projects::github_info(ctx).await,
         (Get, ["github", "repos"]) => api::projects::github_repos(ctx, req).await,
