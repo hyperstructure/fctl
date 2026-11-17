@@ -8,12 +8,13 @@
 //! nothing twice: the run is claimed in D1 by its key before anything
 //! starts (`schedule_runs_event_key`). A run starts none, and says why,
 //! where a time's would (its owner can't run it, which pauses the
-//! schedule, or their plan is at its limit), after [`tg::RUNS_PER_HOUR`]
-//! in an hour, and while the schedule's run on the same issue, pull
-//! request, release or branch still works on it.
+//! schedule, or their plan is at its limit), once its events started as
+//! many sessions as it lets them in an hour or a day ([`tg::caps`]), and
+//! while the schedule's run on the same issue, pull request, release or
+//! branch still works on it.
 
 use crate::ctx::Ctx;
-use crate::db::{Count, int, n, os, q, s};
+use crate::db::{int, n, os, q, s};
 use crate::error::AppResult;
 use crate::model::ProjectRow;
 use crate::schedules::{self, Outcome, SCHEDULE_SELECT, ScheduleRow, Start};
@@ -40,6 +41,9 @@ const PASSED_OVER: usize = 20;
 /// How long the control plane goes by what it last heard of the webhook
 /// events the GitHub App is subscribed to.
 const SUBSCRIBED_MS: i64 = 10 * 60_000;
+/// How long a run claimed and still undecided counts toward its
+/// schedule's caps (`started_lately`): a delivery's answer comes in seconds.
+const IN_FLIGHT_MS: i64 = 10 * fctl_domain::cron::MINUTE_MS;
 /// What a claimed run says until it is decided: what it says for good if
 /// the Worker stops before then.
 const UNDECIDED: &str = "fctl stopped before it started the session.";
@@ -521,18 +525,13 @@ async fn decide(
             sch::limit_reason(&owner.user.name, limit, &*zone, false)
         ));
     }
-    let lately: Option<Count> = q(
-        db,
-        "SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = ? AND trigger = 'event' AND outcome = 'started' AND at > ?",
-        &[s(&row.id), n(now - fctl_domain::cron::HOUR_MS)],
-    )?
-    .first()
-    .await?;
-    if lately.is_some_and(|c| c.n >= tg::RUNS_PER_HOUR) {
-        return skip(format!(
-            "It started {} sessions on events in the last hour, the most it starts in an hour.",
-            tg::RUNS_PER_HOUR
-        ));
+    let caps = row.event().map(|e| tg::caps(&e)).unwrap_or(tg::Caps {
+        hour: tg::DEFAULT_PER_HOUR,
+        day: tg::DEFAULT_PER_DAY,
+    });
+    let started = started_lately(db, &row.id, caps, now, Some(run_id)).await?;
+    if let Some(c) = tg::capped(caps, &started, now) {
+        return skip(tg::capped_reason(&c, &*zone));
     }
     if let Some(number) = still_at_it(db, &row.id, &tg::subject(h), run_id).await? {
         return skip(format!(
@@ -601,6 +600,45 @@ async fn decide(
     )
     .await;
     Ok(Outcome::Started(session))
+}
+
+/// When `schedule`'s events started its sessions of the last day, newest
+/// first, as many as its caps count at most. For the run `claimed`, those
+/// that other deliveries claimed before it and still decide count too, so
+/// that a burst of events, whose deliveries GitHub sends at once, starts no
+/// more than the caps allow.
+pub(crate) async fn started_lately(
+    db: &D1Database,
+    schedule: &str,
+    caps: tg::Caps,
+    now: i64,
+    claimed: Option<&str>,
+) -> AppResult<Vec<i64>> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(deserialize_with = "int")]
+        at: i64,
+    }
+    let rows: Vec<Row> = q(
+        db,
+        "SELECT at FROM schedule_runs WHERE schedule_id = ?1 AND trigger = 'event' AND at > ?2 \
+         AND (outcome = 'started' OR (outcome = 'failed' AND reason = ?3 AND id < ?4 AND at > ?6)) \
+         ORDER BY at DESC LIMIT ?5",
+        &[
+            s(schedule),
+            n(now - fctl_domain::cron::DAY_MS),
+            s(UNDECIDED),
+            // No run's id is before the empty one: none in flight counts.
+            s(claimed.unwrap_or_default()),
+            n(i64::from(caps.day.max(caps.hour))),
+            // One that never got decided, as its Worker stopped, counts no
+            // longer than a delivery takes.
+            n(now - IN_FLIGHT_MS),
+        ],
+    )?
+    .all()
+    .await?;
+    Ok(rows.into_iter().map(|r| r.at).collect())
 }
 
 /// The session of `schedule`'s latest run on `subject` (but `run_id`), by
@@ -807,6 +845,129 @@ mod tests {
             })
             .collect();
         assert_eq!(said, [("skipped".to_owned(), Some("event".to_owned()))]);
+        Ok(())
+    }
+
+    /// The caps count the sessions events started in the last day, and the
+    /// runs other deliveries claimed just before and still decide.
+    #[wasm_bindgen_test]
+    async fn the_caps_count_the_days_sessions_and_those_starting() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        let now = 10 * fctl_domain::cron::DAY_MS;
+        let hour = fctl_domain::cron::HOUR_MS;
+        let minute = fctl_domain::cron::MINUTE_MS;
+        let mut runs = vec![
+            // Started by events: an hour ago, 23 hours ago, and two days ago.
+            ("shr_a", "sch_triage", now - hour, "started", "event", None),
+            (
+                "shr_b",
+                "sch_triage",
+                now - 23 * hour,
+                "started",
+                "event",
+                None,
+            ),
+            (
+                "shr_c",
+                "sch_triage",
+                now - 2 * fctl_domain::cron::DAY_MS,
+                "started",
+                "event",
+                None,
+            ),
+            // Skipped, failed, run by a person, or another schedule's.
+            (
+                "shr_d",
+                "sch_triage",
+                now - minute,
+                "skipped",
+                "event",
+                Some("Busy."),
+            ),
+            (
+                "shr_e",
+                "sch_triage",
+                now - minute,
+                "failed",
+                "event",
+                Some("No runner."),
+            ),
+            (
+                "shr_f",
+                "sch_triage",
+                now - minute,
+                "started",
+                "person",
+                None,
+            ),
+            (
+                "shr_g",
+                "sch_merged",
+                now - minute,
+                "started",
+                "event",
+                None,
+            ),
+            // Other deliveries' claims, still undecided: one before the
+            // run that asks, one after it, and one whose Worker stopped.
+            (
+                "shr_h1",
+                "sch_triage",
+                now - 1_000,
+                "failed",
+                "event",
+                Some(UNDECIDED),
+            ),
+            (
+                "shr_h3",
+                "sch_triage",
+                now - 500,
+                "failed",
+                "event",
+                Some(UNDECIDED),
+            ),
+            (
+                "shr_h0",
+                "sch_triage",
+                now - hour,
+                "failed",
+                "event",
+                Some(UNDECIDED),
+            ),
+        ];
+        for (id, schedule, at, outcome, trigger, reason) in runs.drain(..) {
+            q(
+                &db,
+                "INSERT INTO schedule_runs (id, schedule_id, due_at, at, outcome, trigger, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                &[s(id), s(schedule), n(at), n(at), s(outcome), s(trigger), os(reason)],
+            )?
+            .run()
+            .await?;
+        }
+        let caps = tg::Caps { hour: 3, day: 10 };
+        // Listed, the schedule counts what started.
+        assert_eq!(
+            started_lately(&db, "sch_triage", caps, now, None).await?,
+            [now - hour, now - 23 * hour]
+        );
+        // Deciding shr_h2, the claim made before it counts too.
+        assert_eq!(
+            started_lately(&db, "sch_triage", caps, now, Some("shr_h2")).await?,
+            [now - 1_000, now - hour, now - 23 * hour]
+        );
+        // As many as the caps count at most, newest first.
+        assert_eq!(
+            started_lately(
+                &db,
+                "sch_triage",
+                tg::Caps { hour: 1, day: 1 },
+                now,
+                Some("shr_h2")
+            )
+            .await?,
+            [now - 1_000]
+        );
         Ok(())
     }
 

@@ -11,12 +11,13 @@
 //! request on a public repository, so what they wrote reaches the agent as
 //! information, never as instructions (`crate::schedules::prompt`).
 
+use crate::cron::{self, Zone};
 use crate::follow_ups::{is_person, may_write};
 use crate::reviews::by_app;
 use crate::webhooks::Commit;
-use fctl_proto::ApiError;
 use fctl_proto::api::{ScheduleEvent, ScheduleEventBy, ScheduleEventKind, ScheduleRunEvent};
 use fctl_proto::session::RepoRef;
+use fctl_proto::{ApiError, Millis};
 use serde_json::Value;
 
 /// Repositories, labels and branches a schedule's event names at most.
@@ -25,10 +26,15 @@ pub const MAX_LABELS: usize = 10;
 pub const MAX_BRANCHES: usize = 10;
 /// GitHub's labels have at most 50 characters.
 pub const MAX_LABEL_CHARS: usize = 50;
-/// Runs that events start for one schedule within an hour, at most: anyone
-/// can open issues on a public repository, and each run is a session on
-/// its owner's plan.
-pub const RUNS_PER_HOUR: i64 = 20;
+/// Sessions a schedule's events start in an hour (the last 60 minutes),
+/// and in a day (the last 24 hours), unless it says otherwise
+/// ([`caps`]): anyone can open issues on a public repository, and each run
+/// is a session on its owner's plan.
+pub const DEFAULT_PER_HOUR: u32 = 3;
+pub const DEFAULT_PER_DAY: u32 = 10;
+/// The most a schedule may let its events start in an hour, and in a day.
+pub const MOST_PER_HOUR: u32 = 100;
+pub const MOST_PER_DAY: u32 = 1_000;
 /// The most of an issue's, pull request's or release's text a run's agent
 /// gets with the task; it reads the rest on GitHub.
 pub const MAX_BODY_CHARS: usize = 8_000;
@@ -218,13 +224,150 @@ pub fn check(e: &ScheduleEvent, repos: &[ProjectRepo]) -> Result<ScheduleEvent, 
         }
         by => by,
     };
+    let cap = |field: &str, given: Option<u32>, most: u32, per: &str| match given {
+        Some(0) => Err(ApiError::validation(
+            field,
+            format!("Let it start at least 1 session {per}: pause it to start none"),
+        )),
+        Some(n) if n > most => Err(ApiError::validation(
+            field,
+            format!("It starts at most {} sessions {per}", thousands(most)),
+        )),
+        _ => Ok(()),
+    };
+    cap(
+        "event.max_per_hour",
+        e.max_per_hour,
+        MOST_PER_HOUR,
+        "an hour",
+    )?;
+    cap("event.max_per_day", e.max_per_day, MOST_PER_DAY, "a day")?;
+    let caps = caps(e);
     Ok(ScheduleEvent {
         kind: e.kind,
         repos: chosen,
         labels,
         branches,
         by,
+        max_per_hour: Some(caps.hour),
+        max_per_day: Some(caps.day),
     })
+}
+
+/// How many sessions a schedule's events start at most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    /// In an hour: the last 60 minutes.
+    pub hour: u32,
+    /// In a day: the last 24 hours.
+    pub day: u32,
+}
+
+/// What `e` starts at most: its own caps, else [`DEFAULT_PER_HOUR`] and
+/// [`DEFAULT_PER_DAY`], each within what may be chosen, and an hour no more
+/// than a day.
+pub fn caps(e: &ScheduleEvent) -> Caps {
+    let day = e
+        .max_per_day
+        .unwrap_or(DEFAULT_PER_DAY)
+        .clamp(1, MOST_PER_DAY);
+    let hour = e
+        .max_per_hour
+        .unwrap_or(DEFAULT_PER_HOUR)
+        .clamp(1, MOST_PER_HOUR)
+        .min(day);
+    Caps { hour, day }
+}
+
+/// "3 sessions an hour and 10 a day", "1 session an hour and 1 a day".
+pub fn describe_caps(c: Caps) -> String {
+    format!(
+        "{} {} an hour and {} a day",
+        thousands(c.hour),
+        if c.hour == 1 { "session" } else { "sessions" },
+        thousands(c.day)
+    )
+}
+
+/// "1,000".
+fn thousands(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, d) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(d);
+    }
+    out
+}
+
+/// A schedule whose events started as many sessions as it may for now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capped {
+    /// The cap it reached: an hour's (`false`) or a day's (`true`).
+    pub day: bool,
+    pub cap: u32,
+    /// When it has room again, to the minute after: its oldest session
+    /// that counts goes out of the hour, or of the day.
+    pub until: Millis,
+}
+
+/// Whether a schedule that may start `caps`, whose events started sessions
+/// at `started` (those of the last day, in any order), is at its cap at
+/// `now`, and until when; when it's at both, the one that lasts longer.
+pub fn capped(caps: Caps, started: &[Millis], now: Millis) -> Option<Capped> {
+    let mut newest: Vec<Millis> = started
+        .iter()
+        .copied()
+        .filter(|at| *at > now - cron::DAY_MS)
+        .collect();
+    newest.sort_unstable_by(|a, b| b.cmp(a));
+    // Room comes once the cap-th newest leaves the window.
+    let full = |cap: u32, window: Millis| {
+        let cap_th = newest.get(usize::try_from(cap).ok()?.checked_sub(1)?)?;
+        (*cap_th > now - window).then(|| up_to_minute(cap_th + window))
+    };
+    let hour = full(caps.hour, cron::HOUR_MS).map(|until| Capped {
+        day: false,
+        cap: caps.hour,
+        until,
+    });
+    let day = full(caps.day, cron::DAY_MS).map(|until| Capped {
+        day: true,
+        cap: caps.day,
+        until,
+    });
+    match (hour, day) {
+        (Some(h), Some(d)) => Some(if d.until > h.until { d } else { h }),
+        (h, d) => h.or(d),
+    }
+}
+
+fn up_to_minute(at: Millis) -> Millis {
+    at.div_euclid(cron::MINUTE_MS) * cron::MINUTE_MS
+        + if at.rem_euclid(cron::MINUTE_MS) == 0 {
+            0
+        } else {
+            cron::MINUTE_MS
+        }
+}
+
+/// Why `c` keeps events from starting runs, in `zone`: "It started 3
+/// sessions on events in the last hour, the most it starts in an hour, so
+/// events until Tuesday 17 November 2026 at 14:32 start none."
+pub fn capped_reason(c: &Capped, zone: &dyn Zone) -> String {
+    let (last, per) = if c.day {
+        ("the last 24 hours", "a day")
+    } else {
+        ("the last hour", "an hour")
+    };
+    format!(
+        "It started {} {} on events in {last}, the most it starts in {per}, so events until {} start none.",
+        thousands(c.cap),
+        if c.cap == 1 { "session" } else { "sessions" },
+        crate::schedules::stamp(zone, c.until)
+    )
 }
 
 /// Trimmed, without empty ones, each once (in any case), each passed
@@ -940,6 +1083,8 @@ mod tests {
             labels: Vec::new(),
             branches: Vec::new(),
             by: None,
+            max_per_hour: None,
+            max_per_day: None,
         }
     }
 
@@ -1187,6 +1332,116 @@ mod tests {
         by.by = Some(ScheduleEventBy::Agents);
         assert_eq!(field(&by, &project()), "event.by");
         assert_eq!(field(&event(Kind::Other), &project()), "event");
+        // At least one session an hour and a day, and at most what may be chosen.
+        let mut none = event(Kind::IssueOpened);
+        none.max_per_hour = Some(0);
+        assert_eq!(field(&none, &project()), "event.max_per_hour");
+        let mut many = event(Kind::IssueOpened);
+        many.max_per_day = Some(MOST_PER_DAY + 1);
+        assert_eq!(field(&many, &project()), "event.max_per_day");
+        assert_eq!(
+            check(&many, &project()).err().map(|e| e.message),
+            Some("It starts at most 1,000 sessions a day".to_owned())
+        );
+    }
+
+    #[test]
+    fn caps_the_sessions_events_start() {
+        let caps_of = |hour: Option<u32>, day: Option<u32>| {
+            let mut e = event(Kind::IssueOpened);
+            e.max_per_hour = hour;
+            e.max_per_day = day;
+            check(&e, &project())
+                .ok()
+                .map(|c| (c.max_per_hour, c.max_per_day))
+        };
+        // Unless it says otherwise, 3 an hour and 10 a day, which it then keeps.
+        assert_eq!(caps_of(None, None), Some((Some(3), Some(10))));
+        assert_eq!(caps_of(Some(20), Some(200)), Some((Some(20), Some(200))));
+        assert_eq!(
+            caps_of(Some(MOST_PER_HOUR), Some(MOST_PER_DAY)),
+            Some((Some(100), Some(1_000)))
+        );
+        // An hour starts no more than a day.
+        assert_eq!(caps_of(None, Some(2)), Some((Some(2), Some(2))));
+        assert_eq!(caps_of(Some(50), Some(20)), Some((Some(20), Some(20))));
+        // A schedule from before them, or one out of bounds, as it may be.
+        assert_eq!(caps(&event(Kind::IssueOpened)), Caps { hour: 3, day: 10 });
+        let mut odd = event(Kind::IssueOpened);
+        odd.max_per_hour = Some(0);
+        odd.max_per_day = Some(5_000);
+        assert_eq!(
+            caps(&odd),
+            Caps {
+                hour: 1,
+                day: 1_000
+            }
+        );
+        assert_eq!(
+            describe_caps(Caps { hour: 3, day: 10 }),
+            "3 sessions an hour and 10 a day"
+        );
+        assert_eq!(
+            describe_caps(Caps {
+                hour: 1,
+                day: 1_000
+            }),
+            "1 session an hour and 1,000 a day"
+        );
+    }
+
+    #[test]
+    fn says_when_a_schedule_has_room_again() {
+        use crate::cron::tests::{Stockholm, utc};
+        let now = utc(2026, 11, 17, 13, 0);
+        let caps = Caps { hour: 3, day: 10 };
+        let min = cron::MINUTE_MS;
+        // Two in the last hour: room for a third.
+        let two = [now - 5 * min, now - 50 * min];
+        assert_eq!(capped(caps, &two, now), None);
+        // Three: the hour is full until the oldest of them is an hour old,
+        // to the minute after.
+        let three = [now - 50 * min, now - 5 * min, now - 20 * min - 30_000];
+        assert_eq!(
+            capped(caps, &three, now),
+            Some(Capped {
+                day: false,
+                cap: 3,
+                until: now + 10 * min,
+            })
+        );
+        // Older ones count for the day alone.
+        let mut day: Vec<Millis> = (1..=9).map(|h| now - h * cron::HOUR_MS).collect();
+        assert_eq!(capped(caps, &day, now), None);
+        day.push(now - 2 * min);
+        let full = capped(caps, &day, now);
+        assert_eq!(
+            full,
+            Some(Capped {
+                day: true,
+                cap: 10,
+                until: now + 15 * cron::HOUR_MS,
+            })
+        );
+        // At both caps, the one that lasts longer.
+        day.extend([now - min, now - 3 * min]);
+        assert_eq!(capped(caps, &day, now).map(|c| c.day), Some(true));
+        // Runs from more than a day ago count for nothing.
+        let old = [
+            now - cron::DAY_MS,
+            now - cron::DAY_MS - 1,
+            now - 2 * cron::DAY_MS,
+        ];
+        assert_eq!(capped(Caps { hour: 1, day: 1 }, &old, now), None);
+        assert_eq!(
+            full.map(|c| capped_reason(&c, &Stockholm)),
+            Some("It started 10 sessions on events in the last 24 hours, the most it starts in a day, so events until Wednesday 18 November 2026 at 05:00 start none.".to_owned())
+        );
+        let one = capped(Caps { hour: 1, day: 5 }, &[now - min], now);
+        assert_eq!(
+            one.map(|c| capped_reason(&c, &Stockholm)),
+            Some("It started 1 session on events in the last hour, the most it starts in an hour, so events until Tuesday 17 November 2026 at 14:59 start none.".to_owned())
+        );
     }
 
     #[test]
