@@ -1,9 +1,11 @@
 //! Schedules (`fctl_domain::schedules`): tasks a project's agents start on
-//! their own, once at a set time or again and again, each run a session on
-//! the Claude subscription of the person the schedule runs for, its owner.
-//! D1 keeps them (`schedules`) and their runs (`schedule_runs`);
-//! ScheduleObject's alarm takes up the ones that are due (`run_due`), and
-//! people and other tools run them when they choose (`api::schedules`).
+//! their own, once at a set time, again and again, or each time something
+//! happens on GitHub, each run a session on the Claude subscription of the
+//! person the schedule runs for, its owner. D1 keeps them (`schedules`) and
+//! their runs (`schedule_runs`); ScheduleObject's alarm takes up the ones
+//! that are due (`run_due`), GitHub's webhook those that wait for events
+//! (`crate::triggers`), and people and other tools run them when they
+//! choose (`api::schedules`).
 //!
 //! A run that is due starts a session as its owner, unless they can no
 //! longer start one in the project (fctl pauses the schedule, saying why),
@@ -19,7 +21,10 @@ use crate::model::{
 };
 use fctl_domain::cron::{self, Zone};
 use fctl_domain::schedules::{self as sch, RunNote, StartedBy, When};
-use fctl_proto::api::{PlanLimit, Schedule, ScheduleRun, ScheduleRunOutcome, ScheduleTrigger};
+use fctl_proto::api::{
+    PlanLimit, Schedule, ScheduleEvent, ScheduleEventBy, ScheduleEventKind, ScheduleRun,
+    ScheduleRunEvent, ScheduleRunOutcome, ScheduleTrigger,
+};
 use fctl_proto::autopilot::AutopilotAuthor;
 use fctl_proto::event::MessageSource;
 use fctl_proto::session::{GithubAccess, SessionRef, SessionStatus, UserRef};
@@ -142,6 +147,12 @@ pub struct ScheduleRow {
     pub cron: Option<String>,
     #[serde(deserialize_with = "opt_int", default)]
     pub at: Option<i64>,
+    /// What it waits for on GitHub: the kind, and the rest as JSON
+    /// ([`EventFilter`]).
+    #[serde(default)]
+    pub event_kind: Option<String>,
+    #[serde(default)]
+    pub event_filter: Option<String>,
     pub timezone: String,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -170,7 +181,7 @@ pub struct ScheduleRow {
 }
 
 /// SELECT for [`ScheduleRow`]; `WHERE` and `ORDER BY` follow.
-pub const SCHEDULE_SELECT: &str = "SELECT sc.id, sc.project_id, sc.name, sc.prompt, sc.cron, sc.at, sc.timezone, \
+pub const SCHEDULE_SELECT: &str = "SELECT sc.id, sc.project_id, sc.name, sc.prompt, sc.cron, sc.at, sc.event_kind, sc.event_filter, sc.timezone, \
     sc.model, sc.effort, sc.base_branch, sc.github_access, sc.hide_sessions, sc.owner_id, ou.name AS owner_name, \
     ou.avatar_url AS owner_avatar, sc.enabled, sc.paused_reason, sc.next_run_at, \
     sc.created_by, cu.name AS creator_name, cu.avatar_url AS creator_avatar, sc.created_at, \
@@ -190,14 +201,81 @@ fn user_ref(
     })
 }
 
+/// What D1 keeps of a schedule's event besides its kind
+/// (`schedules.event_filter`).
+#[derive(Clone, Debug, Default, serde::Serialize, Deserialize)]
+pub struct EventFilter {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+impl EventFilter {
+    /// What D1 keeps of `e`: its kind, and the rest as JSON.
+    pub fn columns(e: &ScheduleEvent) -> (String, String) {
+        let filter = EventFilter {
+            repos: e.repos.clone(),
+            labels: e.labels.clone(),
+            branches: e.branches.clone(),
+            by: e.by.map(|b| b.as_str().to_owned()),
+        };
+        (
+            e.kind.as_str().to_owned(),
+            serde_json::to_string(&filter).unwrap_or_else(|_| "{}".into()),
+        )
+    }
+}
+
 impl ScheduleRow {
     /// When it runs; `None` for what this version can't read.
     pub fn when(&self) -> Option<When> {
+        if self.event_kind.is_some() {
+            return self.event().map(When::Event);
+        }
         match (&self.cron, self.at) {
             (Some(c), _) => cron::Cron::parse(c).ok().map(When::Cron),
             (None, Some(at)) => Some(When::At(at)),
             (None, None) => Some(When::Asked),
         }
+    }
+
+    /// What it waits for on GitHub: `None` for a schedule that doesn't,
+    /// and for a kind this version doesn't know.
+    pub fn event(&self) -> Option<ScheduleEvent> {
+        let kind = ScheduleEventKind::parse(self.event_kind.as_deref()?)?;
+        let filter: EventFilter = self
+            .event_filter
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
+            .unwrap_or_default();
+        Some(ScheduleEvent {
+            kind,
+            repos: filter.repos,
+            labels: filter.labels,
+            branches: filter.branches,
+            by: filter
+                .by
+                .as_deref()
+                .map(|b| ScheduleEventBy::parse(b).unwrap_or(ScheduleEventBy::Other)),
+        })
+    }
+
+    /// The event as the API shows it: a kind this version doesn't know
+    /// reads as one.
+    fn event_api(&self) -> Option<ScheduleEvent> {
+        self.event_kind.as_ref()?;
+        Some(self.event().unwrap_or(ScheduleEvent {
+            kind: ScheduleEventKind::Other,
+            repos: Vec::new(),
+            labels: Vec::new(),
+            branches: Vec::new(),
+            by: None,
+        }))
     }
 
     /// Whether it runs at a time of its own, rather than when asked.
@@ -227,6 +305,7 @@ impl ScheduleRow {
             prompt: self.prompt.clone(),
             cron: self.cron.clone(),
             at: self.at,
+            event: self.event_api(),
             timezone: self.timezone.clone(),
             model: self.model.clone(),
             effort: self.effort.clone(),
@@ -271,10 +350,13 @@ pub struct RunRow {
     /// The autopilot whose session the run started, when it ran it.
     pub autopilot_id: Option<String>,
     pub autopilot_slug: Option<String>,
+    /// What happened on GitHub that started it (JSON: `ScheduleRunEvent`).
+    #[serde(default)]
+    pub event: Option<String>,
 }
 
 /// SELECT for [`RunRow`]; `WHERE` and `ORDER BY` follow.
-const RUN_SELECT: &str = "SELECT r.id, r.schedule_id, r.due_at, r.at, r.outcome, r.reason, r.trigger, r.user_id, \
+const RUN_SELECT: &str = "SELECT r.id, r.schedule_id, r.due_at, r.at, r.outcome, r.reason, r.trigger, r.user_id, r.event, \
     u.name AS user_name, u.avatar_url AS user_avatar, r.session_id, s.number AS session_number, \
     s.title AS session_title, s.status AS session_status, \
     CASE WHEN s.autopilot_role = 'crew' THEN s.autopilot_id END AS autopilot_id, \
@@ -309,6 +391,10 @@ impl RunRow {
                 project_id: ProjectId(id.clone()),
                 project_slug: self.autopilot_slug.clone().unwrap_or_default(),
             }),
+            event: self
+                .event
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<ScheduleRunEvent>(j).ok()),
         }
     }
 }
@@ -505,24 +591,20 @@ pub async fn usage_of(db: &D1Database, credential_id: &str) -> AppResult<Vec<Pla
 #[derive(Default)]
 pub struct Problems {
     owners: HashMap<String, Result<(String, Vec<PlanLimit>), String>>,
+    /// The kinds of events that wouldn't start the project's runs, and why
+    /// (`crate::triggers::unheard`).
+    pub unheard: Vec<fctl_proto::api::UnheardEvent>,
 }
 
 impl Problems {
-    pub async fn of(
+    /// The person `row` runs for and their plan's limits, or why it can't
+    /// run on their subscription: each looked up once.
+    async fn owner_of(
         &mut self,
         db: &D1Database,
         project: &ProjectRow,
         row: &ScheduleRow,
-        now: i64,
-    ) -> AppResult<Option<String>> {
-        let Some(next) = row.next_run_at.filter(|_| row.enabled) else {
-            return Ok(None);
-        };
-        if project.archived_at.is_some() {
-            return Ok(Some(
-                "Its project is archived, so its next run pauses it.".into(),
-            ));
-        }
+    ) -> AppResult<&Result<(String, Vec<PlanLimit>), String>> {
         let key = row.owner_id.clone().unwrap_or_default();
         if !self.owners.contains_key(&key) {
             let found = match owner(db, project, row).await? {
@@ -531,10 +613,34 @@ impl Problems {
             };
             self.owners.insert(key.clone(), found);
         }
+        self.owners
+            .get(&key)
+            .ok_or_else(|| crate::error::internal("an owner vanished"))
+    }
+
+    pub async fn of(
+        &mut self,
+        db: &D1Database,
+        project: &ProjectRow,
+        row: &ScheduleRow,
+        now: i64,
+    ) -> AppResult<Option<String>> {
+        if row.event_kind.is_some() {
+            return self.of_event(db, project, row, now).await;
+        }
+        let Some(next) = row.next_run_at.filter(|_| row.enabled) else {
+            return Ok(None);
+        };
+        if project.archived_at.is_some() {
+            return Ok(Some(
+                "Its project is archived, so its next run pauses it.".into(),
+            ));
+        }
         let zone = zone(&row.timezone);
-        Ok(match self.owners.get(&key) {
-            Some(Err(why)) => Some(format!("{why} Its next run pauses it.")),
-            Some(Ok((name, limits))) => match (sch::at_limit(limits, next.max(now)), row.when()) {
+        let when = row.when();
+        Ok(match self.owner_of(db, project, row).await? {
+            Err(why) => Some(format!("{why} Its next run pauses it.")),
+            Ok((name, limits)) => match (sch::at_limit(limits, next.max(now)), when) {
                 (Some(limit), Some(When::At(_))) => Some(format!(
                     "{} It starts once the limit resets.",
                     sch::limit_reason(name, limit, &*zone, true)
@@ -550,7 +656,44 @@ impl Problems {
                 )),
                 (None, _) => None,
             },
-            None => None,
+        })
+    }
+
+    /// Why a schedule that waits for events, while it is on, wouldn't start
+    /// a run if one came now: fctl wouldn't hear of it, its owner can't run
+    /// it, or their plan is at its limit.
+    async fn of_event(
+        &mut self,
+        db: &D1Database,
+        project: &ProjectRow,
+        row: &ScheduleRow,
+        now: i64,
+    ) -> AppResult<Option<String>> {
+        if !row.enabled {
+            return Ok(None);
+        }
+        if project.archived_at.is_some() {
+            return Ok(Some(
+                "Its project is archived, so the next event pauses it.".into(),
+            ));
+        }
+        let Some(event) = row.event() else {
+            return Ok(Some(
+                "fctl doesn't know what it waits for: set it again.".into(),
+            ));
+        };
+        if let Some(u) = self.unheard.iter().find(|u| u.kind == event.kind) {
+            return Ok(Some(u.reason.clone()));
+        }
+        let zone = zone(&row.timezone);
+        Ok(match self.owner_of(db, project, row).await? {
+            Err(why) => Some(format!("{why} The next event pauses it.")),
+            Ok((name, limits)) => sch::at_limit(limits, now).map(|limit| {
+                format!(
+                    "{} The events until then start no run.",
+                    sch::limit_reason(name, limit, &*zone, true)
+                )
+            }),
         })
     }
 }
@@ -740,8 +883,9 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
                     return Ok(None);
                 }
                 // Again and again: the runs until it resets are skipped.
-                // (One that runs when asked has no time to come to this.)
-                When::Cron(_) | When::Asked => {
+                // (One that runs on events or when asked has no time to
+                // come to this.)
+                When::Cron(_) | When::Event(_) | When::Asked => {
                     if let (When::Cron(c), Some(resets)) = (when, resets) {
                         q(
                             db,
@@ -801,6 +945,7 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
                 source: MessageSource::System,
                 follow: true,
                 autopilot: None,
+                about: None,
                 now,
             },
         )
@@ -871,21 +1016,26 @@ impl Outcome {
         )?
         .run()
         .await?;
-        // Only the newest are kept.
-        q(
-            db,
-            "DELETE FROM schedule_runs WHERE schedule_id = ?1 AND id NOT IN \
-             (SELECT id FROM schedule_runs WHERE schedule_id = ?1 ORDER BY at DESC, id DESC LIMIT ?2)",
-            &[s(&schedule.id), n(sch::RUNS_KEPT)],
-        )?
-        .run()
-        .await?;
+        trim_runs(db, &schedule.id).await?;
         Ok(id)
     }
 }
 
+/// Keeps only a schedule's newest runs.
+pub async fn trim_runs(db: &D1Database, schedule_id: &str) -> AppResult<()> {
+    q(
+        db,
+        "DELETE FROM schedule_runs WHERE schedule_id = ?1 AND id NOT IN \
+         (SELECT id FROM schedule_runs WHERE schedule_id = ?1 ORDER BY at DESC, id DESC LIMIT ?2)",
+        &[s(schedule_id), n(sch::RUNS_KEPT)],
+    )?
+    .run()
+    .await?;
+    Ok(())
+}
+
 /// Pauses a schedule that fctl can't run, saying why.
-async fn pause(db: &D1Database, id: &str, why: &str, now: i64) -> AppResult<()> {
+pub(crate) async fn pause(db: &D1Database, id: &str, why: &str, now: i64) -> AppResult<()> {
     q(
         db,
         "UPDATE schedules SET enabled = 0, paused_reason = ?, next_run_at = NULL, updated_at = ? WHERE id = ?",
@@ -898,7 +1048,7 @@ async fn pause(db: &D1Database, id: &str, why: &str, now: i64) -> AppResult<()> 
 
 /// An entry in the workspace's audit log for what the alarm did, which no
 /// one asked for then.
-async fn audit(
+pub(crate) async fn audit(
     db: &D1Database,
     workspace_id: &str,
     action: &str,
@@ -948,6 +1098,9 @@ pub struct Start<'a> {
     pub follow: bool,
     /// The autopilot that ran it, whose session it is (`crew`).
     pub autopilot: Option<crate::starts::AutopilotStart<'a>>,
+    /// What it works on besides the schedule's task, which its title
+    /// names after the schedule's: `web#41` for an event's run.
+    pub about: Option<String>,
     pub now: i64,
 }
 
@@ -960,6 +1113,10 @@ pub async fn start_session(
 ) -> AppResult<(SessionId, u32)> {
     let title = fctl_domain::validate::session_title(&st.schedule.name)
         .unwrap_or_else(|_| fctl_domain::naming::title_from_prompt(&st.schedule.prompt));
+    let title = match st.about.as_deref() {
+        Some(about) => fctl_domain::triggers::titled(&title, about),
+        None => title,
+    };
     let base_branch = st
         .schedule
         .base_branch

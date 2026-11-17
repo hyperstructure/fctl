@@ -1,5 +1,6 @@
 //! `/api/v1/projects/{id}/schedules` and `/api/v1/schedules/*`: a project's
-//! schedules (`crate::schedules`). Everyone who sees the project sees them
+//! schedules (`crate::schedules`), those that wait for events on GitHub
+//! among them (`crate::triggers`). Everyone who sees the project sees them
 //! and their runs; people who start sessions there set them up, on their
 //! own Claude subscription, and run them now, on theirs; a schedule's owner
 //! and the project's maintainers and owners change, pause and delete it.
@@ -8,12 +9,12 @@ use crate::ctx::Ctx;
 use crate::db::{Count, b, n, on, os, q, s};
 use crate::error::{AppError, AppResult, conflict, forbidden, internal, validation};
 use crate::http;
-use crate::schedules::{self, Outcome, Problems, Start};
+use crate::schedules::{self, EventFilter, Outcome, Problems, Start};
 use fctl_domain::schedules::{self as sch, RunNote, StartedBy, When};
-use fctl_domain::validate;
+use fctl_domain::{triggers, validate};
 use fctl_proto::api::{
-    CreateScheduleRequest, RunScheduleRequest, ScheduleList, ScheduleRunList, ScheduleTrigger,
-    TokenKind, UpdateScheduleRequest,
+    CreateScheduleRequest, RunScheduleRequest, ScheduleEvent, ScheduleList, ScheduleRunList,
+    ScheduleTrigger, TokenKind, UpdateScheduleRequest,
 };
 use fctl_proto::autopilot::{AutopilotPower, AutopilotRole};
 use fctl_proto::session::GithubAccess;
@@ -21,18 +22,24 @@ use fctl_proto::{ApiError, ErrorCode, ScheduleId};
 use serde_json::json;
 use worker::{Request, Response};
 
-/// `GET /api/v1/projects/{id}/schedules`.
+/// `GET /api/v1/projects/{id}/schedules`: with the kinds of events that
+/// wouldn't start runs here, for the form to say before anyone picks one.
 pub async fn list(ctx: &Ctx, project_id: &str) -> AppResult<Response> {
     let p = crate::access::project(ctx, project_id).await?;
     let rows = schedules::of_project(&ctx.db, &p.row.id).await?;
     let mut last = schedules::last_runs(&ctx.db, &p.row.id).await?;
+    let repos = crate::triggers::project_repos(&ctx.db, &p.row).await?;
     let mut problems = Problems::default();
+    problems.unheard = crate::triggers::unheard(ctx, &repos).await;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let problem = problems.of(&ctx.db, &p.row, &row, ctx.now).await?;
         out.push(row.to_api(last.remove(&row.id), problem));
     }
-    http::ok(&ScheduleList { schedules: out })
+    http::ok(&ScheduleList {
+        schedules: out,
+        unheard: problems.unheard,
+    })
 }
 
 /// A schedule as the API shows it now: with its latest run and what keeps
@@ -46,10 +53,36 @@ async fn shown(ctx: &Ctx, id: &str, project: &crate::model::ProjectRow) -> AppRe
         .into_iter()
         .next()
         .map(|r| r.to_api());
-    let problem = Problems::default()
-        .of(&ctx.db, project, &row, ctx.now)
-        .await?;
+    let mut problems = Problems::default();
+    if row.event_kind.is_some() {
+        let repos = crate::triggers::project_repos(&ctx.db, project).await?;
+        problems.unheard = crate::triggers::unheard(ctx, &repos).await;
+    }
+    let problem = problems.of(&ctx.db, project, &row, ctx.now).await?;
     http::ok(&row.to_api(last, problem))
+}
+
+/// When a schedule runs, as asked: at a cron expression's times, once at a
+/// time, on an event among the project's repositories, or when asked; not
+/// at a time and on an event both.
+async fn when_of(
+    ctx: &Ctx,
+    project: &crate::model::ProjectRow,
+    cron: Option<&str>,
+    at: Option<i64>,
+    event: Option<&ScheduleEvent>,
+) -> AppResult<When> {
+    let Some(event) = event else {
+        return Ok(When::parse(cron, at, ctx.now)?);
+    };
+    if cron.is_some_and(|c| !c.trim().is_empty()) || at.is_some() {
+        return Err(validation(
+            "event",
+            "Give a time or an event, not both: it runs at its time, or each time the event happens",
+        ));
+    }
+    let repos = crate::triggers::project_repos(&ctx.db, project).await?;
+    Ok(When::Event(triggers::check(event, &repos)?))
 }
 
 /// `GET /api/v1/schedules/{id}`.
@@ -111,7 +144,14 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     let name = sch::name(body.name.as_deref(), &prompt)?;
     let timezone = sch::timezone(body.timezone.as_deref())?;
     let zone = schedules::known_zone(&timezone)?;
-    let when = When::parse(body.cron.as_deref(), body.at, ctx.now)?;
+    let when = when_of(
+        ctx,
+        &p.row,
+        body.cron.as_deref(),
+        body.at,
+        body.event.as_ref(),
+    )
+    .await?;
     let model = optional(body.model.as_deref(), validate::model)?;
     let effort = optional(body.effort.as_deref(), validate::effort)?;
     let base_branch = optional(body.base_branch.as_deref(), |v| {
@@ -140,11 +180,12 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
         None
     };
     let id = ScheduleId(fctl_domain::ids::new_id(ScheduleId::PREFIX, ctx.now));
+    let (event_kind, event_filter) = when.event().map(EventFilter::columns).unzip();
     q(
         &ctx.db,
         "INSERT INTO schedules (id, project_id, name, prompt, cron, at, timezone, model, effort, base_branch, github_access, \
-         owner_id, enabled, next_run_at, created_by, created_at, updated_by, updated_at, hide_sessions) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?12, ?15, ?12, ?15, ?16)",
+         owner_id, enabled, next_run_at, created_by, created_at, updated_by, updated_at, hide_sessions, event_kind, event_filter) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?12, ?15, ?12, ?15, ?16, ?17, ?18)",
         &[
             s(id.as_str()),
             s(&p.row.id),
@@ -162,6 +203,8 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             on(next),
             n(ctx.now),
             b(body.hide_sessions.unwrap_or(false)),
+            os(event_kind.as_deref()),
+            os(event_filter.as_deref()),
         ],
     )?
     .run()
@@ -176,6 +219,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             "name": name,
             "cron": when.cron(),
             "at": when.at(),
+            "event": when.event().map(|e| e.kind.as_str()),
             "timezone": timezone,
         })),
     );
@@ -192,7 +236,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     let user = ctx.user()?.clone();
     let mine = row.owner_id.as_deref() == Some(user.id.as_str());
     let rights = sch::rights(p.role, mine);
-    let timing = body.cron.is_some() || body.at.is_some() || body.timezone.is_some();
+    let timing =
+        body.cron.is_some() || body.at.is_some() || body.event.is_some() || body.timezone.is_some();
     let changes = timing
         || body.name.is_some()
         || body.prompt.is_some()
@@ -244,12 +289,20 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
     } else {
         schedules::zone(&timezone)
     };
-    let when = if body.cron.is_some() || body.at.is_some() {
-        When::parse(body.cron.as_deref(), body.at, ctx.now)?
+    let when = if body.cron.is_some() || body.at.is_some() || body.event.is_some() {
+        when_of(
+            ctx,
+            &p.row,
+            body.cron.as_deref(),
+            body.at,
+            body.event.as_ref(),
+        )
+        .await?
     } else {
         row.when()
             .ok_or_else(|| validation("cron", "Say again when it runs"))?
     };
+    let (event_kind, event_filter) = when.event().map(EventFilter::columns).unzip();
     let keep = |v: &Option<String>| v.clone();
     let model = match body.model.as_deref() {
         Some(v) => optional(Some(v), validate::model)?,
@@ -314,7 +367,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
          enabled = CASE WHEN ?11 THEN ?12 ELSE enabled END, \
          paused_reason = CASE WHEN ?11 THEN NULL ELSE paused_reason END, \
          next_run_at = CASE WHEN ?13 THEN ?14 ELSE next_run_at END, \
-         updated_by = ?15, updated_at = ?16, hide_sessions = ?18 WHERE id = ?17",
+         updated_by = ?15, updated_at = ?16, hide_sessions = ?18, event_kind = ?19, event_filter = ?20 WHERE id = ?17",
         &[
             s(&name),
             s(&prompt),
@@ -334,6 +387,8 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             n(ctx.now),
             s(&row.id),
             b(hide_sessions),
+            os(event_kind.as_deref()),
+            os(event_filter.as_deref()),
         ],
     )?
     .run()
@@ -355,6 +410,7 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
             "name": name,
             "cron": when.cron(),
             "at": when.at(),
+            "event": when.event().map(|e| e.kind.as_str()),
             "timezone": timezone,
             "taken_over_from": becomes_mine.then_some(row.owner_id.as_deref()).flatten(),
         })),
@@ -520,6 +576,7 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 wake: None,
                 author: Some(a.author()),
             }),
+            about: None,
             now: ctx.now,
         },
     )

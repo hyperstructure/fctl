@@ -1,8 +1,9 @@
 //! `fctl schedules`: a project's schedules, tasks fctl starts a session
-//! for on its own, once at a set time or again and again, on the Claude
-//! subscription of the person each runs for. People set them up, change,
-//! pause and delete them, and run one now; other tools run one with an
-//! access token (`fctl schedules run`, with what they know of why).
+//! for on its own, once at a set time, again and again, or each time
+//! something happens on GitHub, on the Claude subscription of the person
+//! each runs for. People set them up, change, pause and delete them, and
+//! run one now; other tools run one with an access token (`fctl schedules
+//! run`, with what they know of why).
 
 use crate::config;
 use crate::style;
@@ -11,8 +12,9 @@ use clap::{Args, Subcommand};
 use fctl_client::Api;
 use fctl_domain::cron::Cron;
 use fctl_proto::api::{
-    CreateScheduleRequest, RunScheduleRequest, Schedule, ScheduleRun, ScheduleRunOutcome,
-    ScheduleState, ScheduleTrigger, UpdateScheduleRequest,
+    CreateScheduleRequest, RunScheduleRequest, Schedule, ScheduleEvent, ScheduleEventBy,
+    ScheduleEventKind, ScheduleRun, ScheduleRunEvent, ScheduleRunOutcome, ScheduleState,
+    ScheduleTrigger, UpdateScheduleRequest,
 };
 use fctl_proto::session::GithubAccess;
 use std::io::{IsTerminal, Read};
@@ -27,19 +29,44 @@ pub struct SchedulesArgs {
     pub cmd: Option<SchedulesCmd>,
 }
 
-/// When a schedule runs: a cron expression, a time to run once, or only
-/// when asked.
+/// When a schedule runs: a cron expression, a time to run once, an event
+/// on GitHub, or only when asked.
 #[derive(Args, Default)]
 pub struct WhenArgs {
     /// Run again and again: a cron expression (minute, hour, day of the
     /// month, month, day of the week), like "0 9 * * 1-5", or @daily,
     /// @weekly…
-    #[arg(long, conflicts_with_all = ["at", "when_asked"])]
+    #[arg(long, conflicts_with_all = ["at", "when_asked", "on"])]
     pub cron: Option<String>,
     /// Run once: in 2h, 30m, 1d, or a time with its UTC offset, like
     /// 2026-10-30T14:00+01:00.
-    #[arg(long, conflicts_with = "when_asked")]
+    #[arg(long, conflicts_with_all = ["when_asked", "on"])]
     pub at: Option<String>,
+    /// Run each time this happens on GitHub in the project's repositories:
+    /// issue-opened, issue-labeled (with --label), pr-opened, pr-merged,
+    /// release (published) or checks-failed (on the default branch, or
+    /// --branch).
+    #[arg(long, value_name = "EVENT", conflicts_with = "when_asked")]
+    pub on: Option<String>,
+    /// With --on: only in this repository of the project's (owner/name;
+    /// again, or comma-separated, for several). Default: those its agents
+    /// write to.
+    #[arg(long = "repo", value_name = "OWNER/NAME", value_delimiter = ',')]
+    pub repos: Vec<String>,
+    /// With --on: the label an issue gets (issue-labeled), or one an issue
+    /// or pull request has (again, or comma-separated, for any of several).
+    #[arg(long = "label", value_name = "LABEL", value_delimiter = ',')]
+    pub labels: Vec<String>,
+    /// With --on: the branch pull requests go into (pr-opened, pr-merged),
+    /// or whose checks it watches (checks-failed; default: the default
+    /// branch).
+    #[arg(long = "branch", value_name = "BRANCH", value_delimiter = ',')]
+    pub branches: Vec<String>,
+    /// With --on: whose issues or pull requests start runs: anyone,
+    /// writers (people who may write to the repository, and fctl's agents)
+    /// or agents (fctl's). Default: anyone, but writers for pr-opened.
+    #[arg(long, value_name = "WHO")]
+    pub by: Option<String>,
     /// Run only when someone runs it, or another tool does with an access
     /// token (fctl schedules run).
     #[arg(long)]
@@ -48,6 +75,72 @@ pub struct WhenArgs {
     /// Europe/Stockholm). Default: this machine's, else UTC.
     #[arg(long, visible_alias = "timezone")]
     pub tz: Option<String>,
+}
+
+impl WhenArgs {
+    /// Whether it narrows down an event: --repo, --label, --branch or --by.
+    fn narrows(&self) -> bool {
+        !self.repos.is_empty()
+            || !self.labels.is_empty()
+            || !self.branches.is_empty()
+            || self.by.is_some()
+    }
+
+    /// The event it asks for: `--on` with what narrows it down, or what
+    /// narrows down `current`'s anew, which keeps the rest.
+    fn event(&self, current: Option<&ScheduleEvent>) -> Result<Option<ScheduleEvent>> {
+        let base = match (&self.on, current) {
+            (Some(on), _) => ScheduleEvent {
+                kind: event_kind(on)?,
+                repos: Vec::new(),
+                labels: Vec::new(),
+                branches: Vec::new(),
+                by: None,
+            },
+            (None, Some(e)) if self.narrows() => e.clone(),
+            (None, _) if self.narrows() => bail!(
+                "--repo, --label, --branch and --by narrow down an event: pass --on too (fctl schedules add --help)."
+            ),
+            (None, _) => return Ok(None),
+        };
+        let given = |v: &[String], kept: Vec<String>| {
+            if v.is_empty() { kept } else { v.to_vec() }
+        };
+        Ok(Some(ScheduleEvent {
+            repos: given(&self.repos, base.repos),
+            labels: given(&self.labels, base.labels),
+            branches: given(&self.branches, base.branches),
+            by: match &self.by {
+                Some(b) => Some(event_by(b)?),
+                None => base.by,
+            },
+            kind: base.kind,
+        }))
+    }
+}
+
+/// An event's kind, as `--on` names it, or as the API does.
+fn event_kind(s: &str) -> Result<ScheduleEventKind> {
+    let wanted = s.trim().to_ascii_lowercase().replace('-', "_");
+    let kind = match wanted.as_str() {
+        "issue" | "issue_opened" | "issues" => ScheduleEventKind::IssueOpened,
+        "label" | "labeled" | "issue_labeled" | "issue_labelled" => ScheduleEventKind::IssueLabeled,
+        "pr_opened" | "pull_request_opened" => ScheduleEventKind::PullRequestOpened,
+        "pr_merged" | "merged" | "merge" | "pull_request_merged" => {
+            ScheduleEventKind::PullRequestMerged
+        }
+        "release" | "release_published" => ScheduleEventKind::ReleasePublished,
+        "checks_failed" | "checks" | "ci_failed" => ScheduleEventKind::ChecksFailed,
+        _ => bail!(
+            "{s:?} isn't an event fctl waits for: use issue-opened, issue-labeled, pr-opened, pr-merged, release or checks-failed."
+        ),
+    };
+    Ok(kind)
+}
+
+fn event_by(s: &str) -> Result<ScheduleEventBy> {
+    ScheduleEventBy::parse(s.trim().to_ascii_lowercase().as_str())
+        .context("Use anyone, writers or agents for --by")
 }
 
 /// What a schedule's sessions start with.
@@ -82,8 +175,13 @@ pub enum SchedulesCmd {
   fctl schedules add --cron \"0 8 * * 1-5\" --task-file triage.md
   fctl schedules add \"Release notes\" --at 2026-10-30T16:00+01:00 -m \"Draft the release notes for v1.0.\"
   fctl schedules add --at 2h -m \"Check whether the deploy went out, and tell me.\"
-  fctl schedules add \"Triage new issues\" --cron \"0 8 * * 1-5\" --github triage \\
-    -m \"Label the issues opened since the last run, and ask for what is missing to act on them.\"
+  fctl schedules add \"Triage new issues\" --on issue-opened --github triage \\
+    -m \"Triage the issue: label it, and ask for what is missing to act on it.\"
+  fctl schedules add \"Work on labeled issues\" --on issue-labeled --label fctl \\
+    -m \"Do what the issue asks, and open a pull request that fixes it.\"
+  fctl schedules add \"Learn from merges\" --on pr-merged --branch main --hide-sessions \\
+    -m \"Read what people said in the pull request's review, and propose changes to AGENTS.md.\"
+  fctl schedules add \"Fix main\" --on checks-failed -m \"Find what broke main, and open a fix.\"
   fctl schedules add \"Triage an issue\" --when-asked --github triage -m \"Triage the issue below.\"")]
     Add {
         /// Its name; default: the task's first line.
@@ -115,6 +213,8 @@ pub enum SchedulesCmd {
     /// maintainers or owners) runs it on your Claude subscription.
     #[command(after_help = "Examples:
   fctl schedules edit \"Weekly dependencies\" --cron \"0 7 * * 1\"
+  fctl schedules edit \"Triage new issues\" --on issue-opened --label bug   # bug reports alone
+  fctl schedules edit \"Learn from merges\" --by agents     # pull requests fctl's agents opened
   fctl schedules edit sch_01JC… --task-file triage.md --effort high
   fctl schedules edit sch_01JC… --mine        # run it on your subscription")]
     Edit {
@@ -236,9 +336,10 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                 }
             };
             let (cron, at) = timing(&when)?;
-            if cron.is_none() && at.is_none() && !when.when_asked {
+            let event = when.event(None)?;
+            if cron.is_none() && at.is_none() && event.is_none() && !when.when_asked {
                 bail!(
-                    "When does it run? Pass --cron \"0 9 * * 1\" to run again and again, --at 2h to run once, or --when-asked."
+                    "When does it run? Pass --cron \"0 9 * * 1\" to run again and again, --at 2h to run once, --on issue-opened (or another event on GitHub) to run each time it happens, or --when-asked."
                 );
             }
             let req = CreateScheduleRequest {
@@ -246,6 +347,7 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                 prompt,
                 cron,
                 at,
+                event,
                 timezone: Some(when.tz.clone().unwrap_or_else(local_zone)),
                 model: chosen(session.model),
                 effort: chosen(session.effort),
@@ -267,11 +369,14 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                 style::bold(&style::terminal_safe(&s.name))
             );
             println!("  {}", style::dim(&when_line(&s)));
-            let on = if s.cron.is_none() && s.at.is_none() {
+            let on = if s.cron.is_none() && s.at.is_none() && s.event.is_none() {
                 "Each run starts on the Claude subscription of whoever runs it"
             } else {
                 "Its runs start on your Claude subscription"
             };
+            if let Some(problem) = &s.problem {
+                println!("  {}", style::amber(&style::terminal_safe(problem)));
+            }
             println!(
                 "  {}",
                 style::dim(&format!("{on}. Run it now: fctl schedules run {}", s.id))
@@ -349,6 +454,7 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                 (None, None) => None,
             };
             let (cron, at) = timing(&when)?;
+            let event = when.event(s.event.as_ref())?;
             let req = UpdateScheduleRequest {
                 name,
                 prompt,
@@ -359,6 +465,7 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                     cron
                 },
                 at,
+                event,
                 timezone: when.tz,
                 model: blank(session.model),
                 effort: blank(session.effort),
@@ -378,7 +485,7 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
             };
             if req == UpdateScheduleRequest::default() {
                 bail!(
-                    "Nothing to change: pass what changes, like --cron or --task (fctl schedules edit --help)."
+                    "Nothing to change: pass what changes, like --cron, --on or --task (fctl schedules edit --help)."
                 );
             }
             let s = api.update_schedule(s.id.as_str(), &req).await?;
@@ -644,6 +751,13 @@ fn read(path: &Path) -> Result<String> {
 /// in 2d 21h`.
 fn when_line(s: &Schedule) -> String {
     let when = match (&s.cron, s.at) {
+        _ if s.event.is_some() => format!(
+            "Runs {}",
+            s.event
+                .as_ref()
+                .map(fctl_domain::triggers::describe)
+                .unwrap_or_default()
+        ),
         (Some(c), _) => {
             let words = Cron::parse(c)
                 .map(|c| c.describe())
@@ -703,7 +817,7 @@ fn print_schedule(s: &Schedule) {
     }
     match &s.owner {
         // Each run is on the subscription of whoever runs it.
-        Some(owner) if s.cron.is_none() && s.at.is_none() => {
+        Some(owner) if s.cron.is_none() && s.at.is_none() && s.event.is_none() => {
             facts.push(format!("set up by {}", owner.name))
         }
         Some(owner) => facts.push(format!("on {}'s Claude subscription", owner.name)),
@@ -722,14 +836,57 @@ fn print_schedule(s: &Schedule) {
 }
 
 /// Who started a run: "on time", "by Ada", "by spaghetti's autopilot, for
-/// Ada", "by a tool with Ada's token".
+/// Ada", "by a tool with Ada's token", "as @octocat opened issue
+/// acme/web#41".
 fn run_by(r: &ScheduleRun) -> String {
     match (r.trigger, &r.by, &r.autopilot) {
         (ScheduleTrigger::Time, _, _) => "on time".to_owned(),
+        (ScheduleTrigger::Event, _, _) => r
+            .event
+            .as_ref()
+            .map(|e| format!("as {}", event_line(e)))
+            .unwrap_or_else(|| "on an event".to_owned()),
         (_, Some(u), Some(a)) => format!("by {}'s autopilot, for {}", a.project_slug, u.name),
         (ScheduleTrigger::Person, Some(u), None) => format!("by {}", u.name),
         (ScheduleTrigger::Token, Some(u), None) => format!("by a tool with {}'s token", u.name),
+        (ScheduleTrigger::Other, Some(u), None) => format!("for {}", u.name),
         (_, None, _) => "by someone".to_owned(),
+    }
+}
+
+/// What happened on GitHub that started a run: "@octocat opened issue
+/// acme/web#41", "@grace merged acme/web#12 into main", "checks failed on
+/// main of acme/web".
+fn event_line(e: &ScheduleRunEvent) -> String {
+    let repo = e.repo.full_name();
+    let n = e.number.unwrap_or_default();
+    let who = e
+        .actor
+        .as_deref()
+        .map_or_else(|| "someone".to_owned(), |a| format!("@{a}"));
+    match e.kind {
+        ScheduleEventKind::IssueOpened => format!("{who} opened issue {repo}#{n}"),
+        ScheduleEventKind::IssueLabeled => format!(
+            "{who} labeled issue {repo}#{n} {}",
+            e.label.as_deref().unwrap_or_default()
+        ),
+        ScheduleEventKind::PullRequestOpened => format!("{who} opened pull request {repo}#{n}"),
+        ScheduleEventKind::PullRequestMerged => format!(
+            "{who} merged pull request {repo}#{n}{}",
+            e.branch
+                .as_deref()
+                .map(|b| format!(" into {b}"))
+                .unwrap_or_default()
+        ),
+        ScheduleEventKind::ReleasePublished => format!(
+            "{who} published release {} of {repo}",
+            e.tag.as_deref().unwrap_or_default()
+        ),
+        ScheduleEventKind::ChecksFailed => format!(
+            "checks failed on {} of {repo}",
+            e.branch.as_deref().unwrap_or_default()
+        ),
+        ScheduleEventKind::Other => format!("something happened in {repo}"),
     }
 }
 
@@ -792,6 +949,67 @@ mod tests {
             run_by(&run("token", true)?),
             "by spaghetti's autopilot, for Carl Oscar Aaro"
         );
+        let mut on_event = run("event", false)?;
+        on_event.event = Some(serde_json::from_value(serde_json::json!({
+            "kind": "issue_opened", "repo": { "owner": "acme", "name": "web" }, "number": 41,
+            "url": "https://github.com/acme/web/issues/41", "actor": "octocat"
+        }))?);
+        assert_eq!(run_by(&on_event), "as @octocat opened issue acme/web#41");
+        // A trigger a newer control plane knows reads.
+        let newer = run("webhook", false)?;
+        assert_eq!(newer.trigger, ScheduleTrigger::Other);
+        Ok(())
+    }
+
+    #[test]
+    fn reads_the_events_it_waits_for() -> anyhow::Result<()> {
+        assert_eq!(event_kind("issue-opened")?, ScheduleEventKind::IssueOpened);
+        assert_eq!(
+            event_kind("PR-merged")?,
+            ScheduleEventKind::PullRequestMerged
+        );
+        assert_eq!(
+            event_kind("pull_request_opened")?,
+            ScheduleEventKind::PullRequestOpened
+        );
+        assert_eq!(
+            event_kind("checks-failed")?,
+            ScheduleEventKind::ChecksFailed
+        );
+        assert!(event_kind("push").is_err());
+        let when = WhenArgs {
+            on: Some("issue-labeled".into()),
+            labels: vec!["agent".into()],
+            ..Default::default()
+        };
+        let e = when.event(None)?;
+        assert_eq!(
+            e.as_ref().map(|e| (e.kind, e.labels.clone())),
+            Some((ScheduleEventKind::IssueLabeled, vec!["agent".to_owned()]))
+        );
+        // Narrowing down what a schedule waits for keeps the rest.
+        let narrower = WhenArgs {
+            branches: vec!["main".into()],
+            ..Default::default()
+        };
+        let current = ScheduleEvent {
+            kind: ScheduleEventKind::PullRequestMerged,
+            repos: vec!["acme/web".into()],
+            labels: Vec::new(),
+            branches: Vec::new(),
+            by: Some(ScheduleEventBy::Agents),
+        };
+        let changed = narrower.event(Some(&current))?;
+        assert_eq!(
+            changed.map(|e| (e.repos, e.branches, e.by)),
+            Some((
+                vec!["acme/web".to_owned()],
+                vec!["main".to_owned()],
+                Some(ScheduleEventBy::Agents)
+            ))
+        );
+        assert!(narrower.event(None).is_err());
+        assert_eq!(WhenArgs::default().event(Some(&current))?, None);
         Ok(())
     }
 

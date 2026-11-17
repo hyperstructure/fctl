@@ -390,6 +390,21 @@ impl<'a> Github<'a> {
         }
     }
 
+    /// The webhook events the app is subscribed to (`GET /app`'s
+    /// `events`): `None` when GitHub doesn't say.
+    pub async fn subscribed(&self) -> AppResult<Option<Vec<String>>> {
+        let (status, v) = self.app_call(Method::Get, "/app", None).await?;
+        if status != 200 {
+            return Ok(None);
+        }
+        Ok(v.get("events").and_then(Value::as_array).map(|events| {
+            events
+                .iter()
+                .filter_map(|e| e.as_str().map(str::to_owned))
+                .collect()
+        }))
+    }
+
     /// The installation that reaches `repo`, when the app is installed on
     /// its account with it among the repositories it reaches.
     pub async fn installation_of(&self, repo: &RepoRef) -> AppResult<Option<InstallationInfo>> {

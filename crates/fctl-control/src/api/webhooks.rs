@@ -4,11 +4,14 @@
 //! starts a review where a project's review agents are on
 //! (`crate::reviews`); and what people write on pull requests fctl's
 //! agents opened, their failed checks and their merges bring those agents
-//! back where their projects say so (`crate::follow_ups`); and the checks
+//! back where their projects say so (`crate::follow_ups`); the checks
 //! on a base branch after a merge of an autopilot's session wake that
-//! autopilot as they end (`crate::merge_checks`). GitHub signs
-//! each delivery with the webhook's secret (`GITHUB_WEBHOOK_SECRET`);
-//! without the secret the instance takes none.
+//! autopilot as they end (`crate::merge_checks`); and issues opened or
+//! labeled, pull requests opened or merged, releases published and checks
+//! that fail on a branch start the runs of the schedules that wait for
+//! them (`crate::triggers`). GitHub signs each delivery with the webhook's
+//! secret (`GITHUB_WEBHOOK_SECRET`); without the secret the instance takes
+//! none.
 
 use crate::ctx::Ctx;
 use crate::error::{AppError, AppResult, not_configured};
@@ -53,6 +56,21 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let Some(payload) = payload(&body) else {
         return Err(AppError(ApiError::bad_request("The delivery is not JSON")));
     };
+    // What happened may start the runs of schedules that wait for it; a
+    // failure there keeps nothing else from hearing of it.
+    let runs = match crate::triggers::on_delivery(ctx, &event, &delivery, &payload).await {
+        Ok(n) => n,
+        Err(e) => {
+            worker::console_error!(
+                "webhook {delivery}: starting schedules' runs: {}",
+                e.0.message
+            );
+            0
+        }
+    };
+    if runs > 0 {
+        worker::console_log!("webhook {delivery} ({event}): started {runs} schedules' runs");
+    }
     // A new pull request or commit starts reviews where review agents are
     // on; a failure there doesn't keep the sessions that list it from
     // hearing of it.
@@ -80,7 +98,7 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
                 0
             }
         };
-        return http::ok(&json!({ "ok": true, "follow_ups": passed }));
+        return http::ok(&json!({ "ok": true, "follow_ups": passed, "schedules": runs }));
     }
     let told = match webhooks::delivery(&event, &payload) {
         Delivery::Ping => return http::ok(&json!({ "ok": true })),
@@ -117,7 +135,7 @@ pub async fn receive(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
             told
         }
     };
-    http::ok(&json!({ "ok": true, "sessions": told, "reviews": reviews }))
+    http::ok(&json!({ "ok": true, "sessions": told, "reviews": reviews, "schedules": runs }))
 }
 
 /// The delivery's JSON: its body, or the `payload` of a form, as GitHub
