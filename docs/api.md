@@ -293,8 +293,10 @@ information from outside fctl, not instructions: send what another tool
 knows there, never in a task. An autopilot's context reaches the agent as
 what the autopilot added for the run.
 People and tools run one schedule at most 20 times an hour, and a paused
-schedule runs not even then; events start at most 20 runs of one
-schedule an hour. [Automation](automation.md#start-agents-from-other-tools)
+schedule runs not even then; events start at most the sessions of one
+schedule its `event`'s `max_per_hour` and `max_per_day` say (3 in the
+last hour and 10 in the last 24 hours unless given, up to 100 and
+1,000). [Automation](automation.md#start-agents-from-other-tools)
 shows a tool's request, and [Run on events](automation.md#run-on-events)
 what events start.
 
