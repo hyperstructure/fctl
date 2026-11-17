@@ -436,17 +436,25 @@ task.
 fctl schedules add "Weekly dependencies" -p my-app --cron "0 9 * * 1" --tz Europe/Stockholm \
   -m "Update the dependencies that have new patch or minor releases, run the tests and open a pull request."
 fctl schedules add "Release notes" -p my-app --at 2026-10-30T16:00+01:00 -m "Draft the release notes."
-fctl schedules -p my-app --json          # each with .next_run_at and .last_run
+fctl schedules add "Triage new issues" -p my-app --on issue-opened --github triage \
+  -m "Triage the issue: label it, and ask for what is missing to act on it."
+fctl schedules -p my-app --json          # each with .next_run_at and .last_run, or .event
 fctl schedules runs "Weekly dependencies" -p my-app
 ```
 
 - `--cron` takes five fields or `@hourly`, `@daily`, `@weekly`, `@monthly`
   and `@yearly`, at most every 15 minutes; `--tz` is the machine's time
   zone unless given, UTC in most CI. `--at` takes `2h`, `30m`, `1d` or a
-  time with its UTC offset. `--paused` sets it up without running it.
+  time with its UTC offset. `--on` runs it each time something happens
+  on GitHub in the project's repositories (`issue-opened`,
+  `issue-labeled` with `--label`, `pr-opened`, `pr-merged`, `release`,
+  `checks-failed`), and `--repo`, `--label`, `--branch` and `--by`
+  narrow that down; its agent gets what GitHub said of it as
+  information. `--paused` sets it up without running it.
 - Runs go on the subscription of the schedule's owner, who set it up; a
   change by someone else moves it to theirs. A run is skipped while the
-  last one still works, or while the owner's plan is at its limit.
+  last one still works (on events, the last on the same issue, pull
+  request or branch), or while the owner's plan is at its limit.
 - Setting up or changing a schedule from a token takes `--access full`,
   since its sessions start after the token is gone; a `run` token runs
   existing ones.

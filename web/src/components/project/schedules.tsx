@@ -200,7 +200,7 @@ const IDEAS: Idea[] = [
     key: "merged",
     name: "Learn from merged pull requests",
     line: "What people said in the review of each agent's pull request, kept in AGENTS.md or a skill.",
-    icon: <PullRequestIcon state="merged" />,
+    icon: <EventIcon kind="pull_request_merged" />,
     prompt:
       "Read the review of the pull request that just merged: what people wrote on it and on its lines, the changes they asked for, and the commits that answered them. Where it shows something agents working here should know or do differently (a convention, a command, a trap), and AGENTS.md or the skills don't say it yet, open a pull request that adds it where it belongs, in the voice the file already has. When people said nothing worth keeping, change nothing and say so in a sentence.",
     event: { kind: "pull_request_merged", by: "agents" },
