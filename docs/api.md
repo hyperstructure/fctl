@@ -269,7 +269,8 @@ An `event` is what a schedule waits for on GitHub, in the project's
 repositories: `{"kind": "issue_opened" | "issue_labeled" |
 "pull_request_opened" | "pull_request_merged" | "release_published" |
 "checks_failed", "repos": ["acme/web"], "labels": ["bug"], "branches":
-["main"], "by": "anyone" | "writers" | "agents"}`. Only `kind` is needed:
+["main"], "by": "anyone" | "writers" | "agents", "max_per_hour": 3,
+"max_per_day": 10}`. Only `kind` is needed:
 `repos` (empty: those the project's agents write to) narrow it to some of
 the project's repositories; `labels` to issues and pull requests with one
 of them (for `issue_labeled`, which needs one, the label the issue gets);
@@ -277,7 +278,13 @@ of them (for `issue_labeled`, which needs one, the label the issue gets);
 branches it watches (empty: each repository's default branch); `by` to
 issues and pull requests opened by anyone, by people who may write to the
 repository and fctl's agents, or by fctl's agents (empty: anyone, but
-`writers` for `pull_request_opened`).
+`writers` for `pull_request_opened`). `max_per_hour` and `max_per_day`
+are the most sessions its events start in the last 60 minutes and the
+last 24 hours (absent: 3 and 10; at most 100 and 1,000, and an hour no
+more than a day): past either they start none, the run says why and
+until when, and so does the schedule's `problem` until then. A schedule
+always shows both. A `PATCH` with an `event` replaces what it waits for,
+and keeps the caps it doesn't give.
 
 A run is `{"id": "srn_…", "outcome": "started" | "skipped" | "failed",
 "reason", "trigger": "time" | "person" | "token" | "event", "by",
