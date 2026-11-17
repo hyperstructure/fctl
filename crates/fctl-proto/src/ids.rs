@@ -171,6 +171,23 @@ id_type!(
     EnrollmentTokenId,
     "enr"
 );
+id_type!(
+    /// A webhook: an address fctl posts a workspace's or a project's
+    /// events to.
+    WebhookId,
+    "whk"
+);
+id_type!(
+    /// Something that happened, as webhooks post it: every webhook that
+    /// wants it gets the same id (`webhook-id`), in each attempt.
+    WebhookEventId,
+    "evt"
+);
+id_type!(
+    /// One event on its way to one webhook, with its attempts.
+    WebhookDeliveryId,
+    "whd"
+);
 
 #[cfg(test)]
 mod tests {

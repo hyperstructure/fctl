@@ -10,6 +10,7 @@
 //! | [`api`] | REST clients ⇄ control plane |
 //! | [`autopilot`] | autopilots (experimental), through the REST API |
 //! | [`event`] | the session event model used everywhere |
+//! | [`hooks`] | webhooks: the REST API's, and what fctl posts to them |
 //! | [`viewer`] | SessionDO ⇄ browsers and the CLI |
 //! | [`runner`] | FleetDO ⇄ hosts (control connection) |
 //! | [`uplink`] | SessionDO ⇄ hosts (one connection per session) |
@@ -22,6 +23,7 @@ pub mod api;
 pub mod autopilot;
 pub mod error;
 pub mod event;
+pub mod hooks;
 pub mod ids;
 pub mod runner;
 pub mod session;
