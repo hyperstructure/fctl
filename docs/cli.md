@@ -669,10 +669,12 @@ fctl review submit review.json         # post the review, once: --help shows the
 ### Schedules
 
 A schedule starts a session for a task on its own: once at a set time,
-or again and again on a cron expression in a time zone. Each run is a
+again and again on a cron expression in a time zone, or each time
+something happens on GitHub in the project's repositories. Each run is a
 session of its own, on the Claude subscription of the person the schedule
 runs for, who follows it as they follow the sessions they start. A run is
-skipped while the schedule's last session still works on its task, and
+skipped while the schedule's last session still works on its task (for
+one on events, the last on the same issue, pull request or branch), and
 while that person's plan is at its limit; one that runs once waits for the
 limit to reset instead. People who start sessions in the project set up
 schedules, on their own subscription, and run any of them now, on theirs;
@@ -686,6 +688,12 @@ fctl schedules add "Weekly dependencies" -p my-app --cron "0 9 * * 1" --tz Europ
 fctl schedules add -p my-app --cron "0 8 * * 1-5" --task-file triage.md --github triage   # labels and comments, nothing else
 fctl schedules add -p my-app --at 2h -m "Check whether the deploy went out, and say so."
 fctl schedules add -p my-app --at 2026-10-30T16:00+01:00 -m "Draft the release notes."
+fctl schedules add "Triage new issues" -p my-app --on issue-opened --github triage \
+  -m "Triage the issue: label it, and ask for what is missing to act on it."
+fctl schedules add "Work on labeled issues" -p my-app --on issue-labeled --label fctl -m "Do what the issue asks, and open a pull request."
+fctl schedules add "Learn from merges" -p my-app --on pr-merged --by agents --hide-sessions --task-file learn.md
+fctl schedules add "Fix main" -p my-app --on checks-failed -m "Find what broke the default branch, and open a fix."
+fctl schedules add "Try the release" -p my-app --on release --repo acme/cli -m "Install the release and try what changed."
 fctl schedules add "Triage an issue" -p my-app --when-asked -m "Triage the issue that comes with this."
 fctl schedules add "Release notes" -p my-app --at 1d --paused -m "…"   # set up paused: it runs once resumed
 fctl schedules show "Weekly dependencies" -p my-app   # by name or id: its task, settings and latest runs
@@ -693,6 +701,7 @@ fctl schedules edit "Weekly dependencies" -p my-app --cron "0 7 * * 1" --effort 
 fctl schedules edit sch_01JC… --mine           # run it on your subscription from now on
 fctl schedules edit sch_01JC… --name "Monday dependencies"
 fctl schedules edit "Triage new issues" -p my-app --hide-sessions   # its sessions stay off session lists (--show-sessions)
+fctl schedules edit "Triage new issues" -p my-app --label bug       # bug reports alone: the rest of what it waits for stays
 fctl schedules pause sch_01JC…                 # it starts nothing until it's resumed
 fctl schedules resume sch_01JC…
 fctl schedules run sch_01JC…                   # its task now, in a session on your subscription
@@ -705,7 +714,23 @@ fctl schedules rm sch_01JC…                    # the sessions it started stay
 the month and the day of the week, like `0 9 * * 1-5`) or `@hourly`,
 `@daily`, `@weekly`, `@monthly` and `@yearly`, and runs at most every 15
 minutes; `--tz` defaults to this machine's time zone. `--at` takes how far
-ahead (`2h`, `30m`, `1d`) or a time with its UTC offset. `--when-asked`
+ahead (`2h`, `30m`, `1d`) or a time with its UTC offset. `--on` sets up
+one that runs each time something happens on GitHub: `issue-opened`,
+`issue-labeled` (with `--label`), `pr-opened` (a draft once it's ready
+for review), `pr-merged`, `release` (published) or `checks-failed` (all
+the checks of a branch's newest commit ended, one or more failed). Its
+agent gets what GitHub said of it after the task, as information, not
+instructions. `--repo` keeps it to some of the project's repositories
+(default: those its agents write to), `--label` to issues and pull
+requests with one of the labels, `--branch` to pull requests into one of
+the branches, or the branches whose checks it watches (default: the
+default branch), and `--by` to what `anyone`, `writers` (people who may
+write to the repository, and fctl's agents) or `agents` (fctl's) opened
+(default: anyone, but writers for `pr-opened`); with `fctl schedules
+edit`, they change what it waits for and keep the rest. Events start at
+most 20 runs of one schedule an hour, and need the instance's GitHub App
+subscribed to the event ([Self-hosting](self-hosting.md#1-create-the-app)):
+`fctl schedules` says when it isn't. `--when-asked`
 sets up one without a time, which runs only when someone runs it, or
 another tool does, each run on the subscription of whoever runs it; a
 paused schedule starts nothing, not even then. `--model`,

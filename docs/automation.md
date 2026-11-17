@@ -1,10 +1,12 @@
 # Automation
 
-Agents start when you ask, at the times you set, when someone delegates
-a ticket to fctl in Linear, and when your CI, a bot or another tool asks:
-schedules start sessions on their own, and an access token lets a
-workflow start them, limited to what it is for. This page shows how to
-set up schedules, how to delegate Linear tickets, how to start agents from
+Agents start when you ask, at the times you set, when something happens
+on GitHub (an issue opened, a pull request merged, checks failing on
+main), when someone delegates a ticket to fctl in Linear, and when your
+CI, a bot or another tool asks: schedules start sessions on their own,
+and an access token lets a workflow start them, limited to what it is
+for. This page shows how to set up schedules, those that run on events
+among them, how to delegate Linear tickets, how to start agents from
 other tools, such as another issue tracker, how to make a token, how to
 run review agents on your pull requests from GitHub Actions, and other
 uses: triaging issues, nightly maintenance, planning, dashboards.
@@ -13,11 +15,14 @@ uses: triaging issues, nightly maintenance, planning, dashboards.
 
 A schedule is a task that fctl starts a session for on its own: once at a
 set time, or again and again, every hour, day, weekday, week or month, or
-on any cron expression, in a time zone you choose; or only when asked, by
-you or another tool ([below](#start-agents-from-other-tools)). Set one up
+on any cron expression, in a time zone you choose; each time something
+happens on GitHub ([below](#run-on-events)); or only when asked, by you
+or another tool ([below](#start-agents-from-other-tools)). Set one up
 under the project's **Schedules** tab, which offers ideas to start from
-(dependency updates, triaging new issues, tidying the project's memory,
-learning from the week's reviews), or with `fctl schedules add`;
+(triaging each new issue, working on issues you label, learning from
+merged pull requests, fixing failing checks on main, trying each release,
+dependency updates, tidying the project's memory, learning from the
+week's reviews), or with `fctl schedules add`;
 **Schedule**, beside Start in the project's task box, and in the Agent
 Floor's in a wide window, turns what you wrote there into one.
 
@@ -42,9 +47,11 @@ Floor's in a wide window, turns what you wrote there into one.
   subscription. Running one now, from the tab or with `fctl schedules
   run`, starts a session on your own.
 - **Runs don't pile up.** A run is skipped while the schedule's last
-  session still works on its task, and while its owner's plan is at its
-  limit, until the limit resets; a schedule that runs once waits for the
-  reset instead. The schedule says so, and why, in its runs.
+  session still works on its task (for one that runs on events, the last
+  on the same issue, pull request or branch), and while its owner's plan
+  is at its limit, until the limit resets; a schedule that runs once
+  waits for the reset instead. The schedule says so, and why, in its
+  runs.
 - **When its owner can't run it.** Once they can no longer start sessions
   in the project, their account is gone or disabled, or they have no
   Claude connection, fctl pauses the schedule at its next run and says
@@ -59,6 +66,63 @@ fctl schedules add "Weekly dependencies" -p web --cron "0 9 * * 1" \
   -m "Update the dependencies that have new patch or minor releases, run the tests and open a pull request."
 fctl schedules -p web                       # when each runs next, and what its last run did
 fctl schedules run "Weekly dependencies" -p web
+```
+
+## Run on events
+
+A schedule can wait for something to happen on GitHub in the project's
+repositories, rather than for a time: choose **On an event** in its form,
+or `fctl schedules add --on`. Each time it happens, fctl starts a run of
+its own, whose agent gets the task, then what GitHub said of it:
+
+| Event | `--on` | What the agent gets | For |
+|---|---|---|---|
+| **An issue is opened** | `issue-opened` | the issue: title, text, labels, who opened it | triaging each issue as it comes in |
+| **An issue gets a label** | `issue-labeled` | the issue, and who added the label | handing an issue to an agent: label it `fctl` |
+| **A pull request is opened** | `pr-opened` | the pull request, its branches; a draft once it's marked ready | checks a review agent doesn't make |
+| **A pull request merges** | `pr-merged` | the pull request, who merged it and as which commit | learning from what people said in its review |
+| **A release is published** | `release` | the release: tag, name, notes | trying or announcing each release |
+| **Checks fail on a branch** | `checks-failed` | the commit, and the checks that failed once all ended | fixing the default branch when it breaks |
+
+- **Narrow it down.** In the project's repositories its agents write to,
+  or the ones you choose (`--repo`, a read-only one too: a dependency's
+  releases, say); with one of some labels (`--label`: a bug report's
+  template label, say); into some branches (`--branch`), or for failing
+  checks the branches it watches (the default branch unless you choose);
+  opened by anyone, by people who may write to the repository and fctl's
+  agents, or by fctl's agents alone (`--by anyone|writers|agents`).
+  Pull requests opened start runs only for people who may write to the
+  repository unless you choose anyone, as review agents do: an outsider's
+  pull request starts nothing on your subscription by itself.
+- **What GitHub says is information.** Anyone can open an issue on a
+  public repository, so the agent gets what they wrote after fctl's note,
+  marked as information for the task and never as instructions. Give such
+  schedules the least they need on GitHub: an idea that triages runs at
+  **Triage only**, which labels and comments and does nothing else.
+- **One run for each event.** GitHub sends a delivery again when it got
+  no answer in time, and people redeliver one; fctl starts a run for each
+  issue opened, pull request opened or merged, release and failed commit
+  once. A label put back on after it was taken off runs it again. While a
+  run still works on an issue, a pull request or a branch's checks, events
+  about the same one start none, so an issue that gets two of its labels
+  at once, or a branch whose next commit fails too, starts one run.
+- **At most 20 an hour.** Events start at most 20 runs of one schedule in
+  an hour, on its owner's plan: a flood of new issues is skipped past
+  that, and the schedule's runs say so. Turn on **Keep its sessions off
+  session lists** for one that runs often.
+- **The GitHub App hears of it.** Events come through the instance's
+  GitHub App and its webhook, subscribed to **Issues** for issues,
+  **Pull request**, **Release** and **Check suite**
+  ([Self-hosting](self-hosting.md#1-create-the-app)). The form and `fctl
+  schedules` say which events fctl wouldn't hear of, and why, before you
+  choose one.
+
+```sh
+fctl schedules add "Triage new issues" -p web --on issue-opened --github triage --hide-sessions \
+  -m "Triage the issue: label it, ask for what is missing to act on it, and point at the code it concerns."
+fctl schedules add "Learn from merges" -p web --on pr-merged --by agents --hide-sessions \
+  -m "Read what people said in the pull request's review, and propose what agents should know in AGENTS.md."
+fctl schedules runs "Triage new issues" -p web    # each run, with the issue that started it
 ```
 
 ## Delegate tickets in Linear
@@ -311,11 +375,13 @@ What to keep in mind:
 ## Other uses
 
 - **Triage new issues.** Start from the Schedules tab's **Triage new
-  issues** idea, which goes through the issues opened since its last run
-  each weekday, or on `issues: types: [opened]`, start a session that
-  triages: `fctl run -p web --github triage --detach "Triage issue
-  #$ISSUE: label it, say what is missing to act on it, and point at the
-  code it concerns."` Either way its agent only labels and comments.
+  issues** idea, which runs on each issue as it's opened
+  ([Run on events](#run-on-events)); for a tracker other than GitHub's,
+  it goes through the issues opened since its last run each weekday. From
+  a workflow on `issues: types: [opened]`, start a session that triages:
+  `fctl run -p web --github triage --detach "Triage issue #$ISSUE: label
+  it, say what is missing to act on it, and point at the code it
+  concerns."` Either way its agent only labels and comments.
 - **Nightly maintenance.** A schedule does it without a workflow
   ([Schedules](#schedules)): `fctl schedules add "Nightly dependencies"
   -p web --cron "0 3 * * *" -m "Update the dependencies that have patch

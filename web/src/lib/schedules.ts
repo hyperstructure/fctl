@@ -1,7 +1,8 @@
-// Schedules (G.Schedule): tasks fctl starts a session for on its own, once at a set time or again and
-// again, on the Claude subscription of the person each runs for. The control plane decides when they
-// run (fctl_domain::cron and ::schedules); this reads cron expressions as it does, so that the form can
-// say in words when one runs and show its next runs as you choose, in any time zone the browser knows.
+// Schedules (G.Schedule): tasks fctl starts a session for on its own, once at a set time, again and
+// again, or each time something happens on GitHub, on the Claude subscription of the person each runs
+// for. The control plane decides when they run (fctl_domain::cron, ::schedules and ::triggers); this
+// reads cron expressions as it does, so that the form can say in words when one runs and show its next
+// runs as you choose, in any time zone the browser knows, and says what an event schedule waits for.
 //
 // A time the clock skips as it moves to summer time runs as far past the change as it was meant to be
 // (02:30 runs at 03:30), and one the clock goes through twice runs once, the first time, as there.
@@ -481,9 +482,13 @@ export function cronProblem(text: string): string | undefined {
 
 /**
  * When a schedule runs, at the start of a sentence: "Every Monday at 09:00", "Once, on Fri 30 Oct, 14:00",
- * "When asked" for one that runs when someone, or another tool, runs it.
+ * "When an issue is opened", "When asked" for one that runs when someone, or another tool, runs it.
  */
-export function scheduleWhen(s: Pick<G.Schedule, "cron" | "at" | "timezone">, clock = clockOf): string {
+export function scheduleWhen(
+  s: Pick<G.Schedule, "cron" | "at" | "timezone" | "event">,
+  clock = clockOf,
+): string {
+  if (s.event) return sentence(describeEvent(s.event));
   if (s.cron) {
     const parsed = parseCron(s.cron);
     return sentence("error" in parsed ? `on the cron schedule ${s.cron}` : describeCron(parsed.cron, clock));
@@ -540,10 +545,11 @@ export function runOutcome(r: G.ScheduleRun): string {
 
 /**
  * Who started a run: "On time", "Ada Lovelace", "spaghetti's autopilot, for Ada", "A tool, with
- * Ada's token".
+ * Ada's token", or what happened on GitHub: "@octocat opened web#41".
  */
 export function runTrigger(r: G.ScheduleRun): string {
   if (r.trigger === "time") return "On time";
+  if (r.trigger === "event") return r.event ? sentence(eventSaid(r.event)) : "On an event";
   const name = r.by?.name ?? "Someone";
   if (r.autopilot) return `${r.autopilot.project_slug}'s autopilot, for ${name}`;
   return r.trigger === "token" ? `A tool, with ${name}'s token` : name;
@@ -581,4 +587,208 @@ export function nameFromTask(task: string): string {
   const space = cut.search(/\s\S*$/);
   const kept = space > 36 ? cut.slice(0, space) : cut;
   return `${kept.replace(/[\s\p{P}]+$/u, "")}…`;
+}
+
+// ───────────────────────────── events ─────────────────────────────
+
+/** The kinds of events a schedule can wait for, in the order the form offers them. */
+export const EVENT_KINDS: readonly Exclude<G.ScheduleEventKind, "other">[] = [
+  "issue_opened",
+  "issue_labeled",
+  "pull_request_opened",
+  "pull_request_merged",
+  "release_published",
+  "checks_failed",
+];
+
+/** What each kind is called where it is chosen: "An issue is opened". */
+export const EVENT_NAMES: Record<G.ScheduleEventKind, string> = {
+  issue_opened: "An issue is opened",
+  issue_labeled: "An issue gets a label",
+  pull_request_opened: "A pull request is opened",
+  pull_request_merged: "A pull request merges",
+  release_published: "A release is published",
+  checks_failed: "Checks fail on a branch",
+  other: "Something happens on GitHub",
+};
+
+/** Whether events of `kind` have labels a schedule can choose by (fctl_domain::triggers). */
+export const takesLabels = (kind: G.ScheduleEventKind) =>
+  kind === "issue_opened" ||
+  kind === "issue_labeled" ||
+  kind === "pull_request_opened" ||
+  kind === "pull_request_merged";
+
+/** Whether events of `kind` happen on a branch a schedule can choose: pull requests' base, or checks'. */
+export const takesBranches = (kind: G.ScheduleEventKind) =>
+  kind === "pull_request_opened" || kind === "pull_request_merged" || kind === "checks_failed";
+
+/** Whether events of `kind` have an author a schedule can choose by. */
+export const takesBy = (kind: G.ScheduleEventKind) =>
+  kind === "issue_opened" || kind === "pull_request_opened" || kind === "pull_request_merged";
+
+/**
+ * Whose issues or pull requests a schedule takes: its own choice, else anyone's, but writers' for pull
+ * requests opened, so that an outsider's pull request starts nothing (fctl_domain::triggers::by_of).
+ */
+export function eventBy(e: Pick<G.ScheduleEvent, "kind" | "by">): G.ScheduleEventBy {
+  if (e.by && e.by !== "other") return e.by;
+  return e.kind === "pull_request_opened" ? "writers" : "anyone";
+}
+
+/** "a", "a or b", "a, b or c". */
+export function orList(items: readonly string[]): string {
+  if (items.length < 2) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
+}
+
+/**
+ * When a schedule that waits for `e` runs, after "runs", as the control plane says it
+ * (fctl_domain::triggers::describe): "when an issue is opened", "when a pull request merges into main
+ * in acme/web, by fctl's agents", "when checks fail on the default branch".
+ */
+export function describeEvent(e: G.ScheduleEvent): string {
+  const labels = e.labels ?? [];
+  const branches = orList(e.branches ?? []);
+  let s: string;
+  switch (e.kind) {
+    case "issue_opened":
+      s = "when an issue is opened";
+      break;
+    case "issue_labeled":
+      s = `when an issue gets the label ${orList(labels)}`;
+      break;
+    case "pull_request_opened":
+      s = branches ? `when a pull request into ${branches} is opened` : "when a pull request is opened";
+      break;
+    case "pull_request_merged":
+      s = branches ? `when a pull request merges into ${branches}` : "when a pull request merges";
+      break;
+    case "release_published":
+      s = "when a release is published";
+      break;
+    case "checks_failed":
+      s = `when checks fail on ${branches || "the default branch"}`;
+      break;
+    default:
+      s = "when something happens on GitHub";
+  }
+  if (e.repos?.length) s += ` in ${orList(e.repos)}`;
+  if (e.kind !== "issue_labeled" && labels.length) s += `, with the label ${orList(labels)}`;
+  if (takesBy(e.kind)) {
+    const by = eventBy(e);
+    if (by === "writers") s += ", by people who can write to the repository";
+    if (by === "agents") s += ", by fctl's agents";
+  }
+  return s;
+}
+
+/**
+ * What happened on GitHub that started a run, in words: "@octocat opened web#41", "@ada added the label
+ * agent to web#41", "@grace merged web#12 into main", "@ada published v1.2.0 of web", "checks failed on
+ * main of web". A repository goes by its name, as session titles name it: all of a project's
+ * repositories are on one account.
+ */
+export function eventSaid(e: G.ScheduleRunEvent): string {
+  const repo = e.repo.name;
+  const ref = `${repo}#${e.number ?? ""}`;
+  const who = e.actor ? `@${e.actor}` : "someone";
+  switch (e.kind) {
+    case "issue_opened":
+    case "pull_request_opened":
+      return `${who} opened ${ref}`;
+    case "issue_labeled":
+      return e.label ? `${who} added the label ${e.label} to ${ref}` : `${who} labeled ${ref}`;
+    case "pull_request_merged":
+      return `${who} merged ${ref}${e.branch ? ` into ${e.branch}` : ""}`;
+    case "release_published":
+      return `${who} published ${e.tag ?? "a release"} of ${repo}`;
+    case "checks_failed":
+      return `checks failed on ${e.branch ?? "a branch"} of ${repo}`;
+    default:
+      return `something happened in ${repo}`;
+  }
+}
+
+// ───────────────────────────── running one on something ─────────────────────────────
+
+/** What a person names to run a schedule that waits for events on, by hand. */
+export interface RunOn {
+  /** `owner/name`. */
+  repo: string;
+  /** An issue's or pull request's number. */
+  number?: number;
+  /** A release's tag. */
+  tag?: string;
+  /** The branch whose checks to look into. */
+  branch?: string;
+}
+
+/**
+ * Reads what a person names to run a schedule that waits for `kind` on: "#41", "41", "acme/web#41" or
+ * an issue's or pull request's link; a release's tag or its link; a branch. `repo` is the repository a
+ * bare number or tag is in. `undefined` for what it can't read.
+ */
+export function readRunOn(kind: G.ScheduleEventKind, input: string, repo: string): RunOn | undefined {
+  const text = input.trim();
+  const link =
+    /^(?:https?:\/\/)?github\.com\/([\w.-]+\/[\w.-]+)\/(issues|pull|releases\/tag)\/([^/?#\s]+)(?:[/?#].*)?$/i.exec(
+      text,
+    );
+  switch (kind) {
+    case "issue_opened":
+    case "issue_labeled":
+    case "pull_request_opened":
+    case "pull_request_merged": {
+      if (link?.[1] && link[3] && link[2] !== "releases/tag" && /^\d+$/.test(link[3]))
+        return { repo: link[1], number: Number(link[3]) };
+      const ref = /^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/.exec(text);
+      if (!ref?.[2]) return undefined;
+      return { repo: ref[1] ?? repo, number: Number(ref[2]) };
+    }
+    case "release_published":
+      if (link?.[1] && link[3] && link[2]?.toLowerCase() === "releases/tag")
+        return { repo: link[1], tag: decoded(link[3]) };
+      return /^[^\s/][^\s]*$/.test(text) ? { repo, tag: text } : undefined;
+    case "checks_failed":
+      return /^[^\s~^:?*[\\]+$/.test(text) && !text.startsWith("-") ? { repo, branch: text } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** A link's part as it reads, or as it is where it's no valid escape (`v1%`), which `decodeURIComponent` throws on. */
+function decoded(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+}
+
+/**
+ * What the agent of a run someone starts by hand gets about what to run on, after the task: what a
+ * delivery would have said happened, and where to read it, since nothing happened this time.
+ */
+export function runOnContext(kind: G.ScheduleEventKind, on: RunOn, label?: string): string {
+  const { repo } = on;
+  const n = on.number ?? 0;
+  switch (kind) {
+    case "issue_opened":
+    case "issue_labeled":
+      return `Run it on issue ${repo}#${n} (https://github.com/${repo}/issues/${n}), as if it had just ${
+        kind === "issue_opened" ? "been opened" : `got the label ${label ?? "it waits for"}`
+      }: \`gh issue view ${n} -R ${repo}\` shows it.`;
+    case "pull_request_opened":
+    case "pull_request_merged":
+      return `Run it on pull request ${repo}#${n} (https://github.com/${repo}/pull/${n}), as if it had just ${
+        kind === "pull_request_opened" ? "been opened" : "merged"
+      }: \`gh pr view ${n} -R ${repo}\` shows it.`;
+    case "release_published":
+      return `Run it on release ${on.tag} of ${repo} (https://github.com/${repo}/releases/tag/${encodeURIComponent(on.tag ?? "")}), as if it had just been published: \`gh release view ${on.tag} -R ${repo}\` shows it.`;
+    case "checks_failed":
+      return `Run it on the checks of the newest commit on ${on.branch} of ${repo}, as if they had just failed: \`gh run list -R ${repo} --branch ${on.branch}\` lists its workflows' runs.`;
+    default:
+      return "";
+  }
 }

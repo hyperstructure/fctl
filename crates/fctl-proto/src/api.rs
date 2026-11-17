@@ -3418,11 +3418,11 @@ pub struct PostedReview {
 // ───────────────────────────── schedules ─────────────────────────────
 
 /// A project's schedule (`GET /api/v1/projects/{id}/schedules`): a task
-/// fctl starts a session for on its own, once at a set time or again and
-/// again, on the Claude subscription of the person it runs for, its owner.
-/// People run it when they choose too, and so do other tools with an
-/// access token (`POST /api/v1/schedules/{id}/runs`), on their own
-/// subscription.
+/// fctl starts a session for on its own, once at a set time, again and
+/// again, or each time something happens on GitHub (`event`), on the
+/// Claude subscription of the person it runs for, its owner. People run it
+/// when they choose too, and so do other tools with an access token
+/// (`POST /api/v1/schedules/{id}/runs`), on their own subscription.
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
@@ -3436,10 +3436,15 @@ pub struct Schedule {
     /// of the month, month and day of the week) in `timezone`. Absent for a
     /// schedule that runs once, or when asked.
     pub cron: Option<String>,
-    /// When it runs once. Absent for one that runs again and again, or when
-    /// asked. Without either, it runs only when someone runs it, or another
-    /// tool does with an access token.
+    /// When it runs once. Absent for one that runs again and again, on an
+    /// event, or when asked. Without either, or an `event`, it runs only
+    /// when someone runs it, or another tool does with an access token.
     pub at: Option<Millis>,
+    /// What it waits for, when it runs each time something happens on
+    /// GitHub, such as an issue opened or a pull request merged: each one
+    /// starts a run of its own. Absent for other schedules, and from
+    /// control planes before events.
+    pub event: Option<ScheduleEvent>,
     /// The IANA time zone its times are in, such as `Europe/Stockholm`.
     pub timezone: String,
     /// What its sessions start with; absent: the project's.
@@ -3466,7 +3471,8 @@ pub struct Schedule {
     /// plan is at its limit, or they can't start sessions here any more.
     pub problem: Option<String>,
     /// When it starts its next session; absent while it is paused, for one
-    /// that runs when asked, and once one that runs once has run.
+    /// that runs on events or when asked, and once one that runs once has
+    /// run.
     pub next_run_at: Option<Millis>,
     /// Its latest run.
     pub last_run: Option<ScheduleRun>,
@@ -3477,6 +3483,137 @@ pub struct Schedule {
     pub created_at: Millis,
     pub updated_by: Option<UserRef>,
     pub updated_at: Millis,
+}
+
+/// What a schedule that runs on events waits for (`Schedule::event`): a
+/// kind of thing that happens on GitHub in the project's repositories, and
+/// what narrows it down. Each one starts a run of its own, whose agent gets
+/// what GitHub said of it after the task, as information rather than
+/// instructions.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ScheduleEvent {
+    pub kind: ScheduleEventKind,
+    /// The repositories it waits on, as `owner/name`, among the project's;
+    /// empty: those the project's agents may write to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub repos: Vec<String>,
+    /// Labels, any of which it takes: the label an issue gets, for
+    /// `issue_labeled`, which needs one; else one the issue or pull request
+    /// has (empty: any).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub labels: Vec<String>,
+    /// Branches: those pull requests go into, for `pull_request_opened` and
+    /// `pull_request_merged` (empty: any); those whose checks it watches,
+    /// for `checks_failed` (empty: each repository's default branch).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<String>>", optional))]
+    pub branches: Vec<String>,
+    /// Whose issues or pull requests it takes, for `issue_opened`,
+    /// `pull_request_opened` and `pull_request_merged`. Absent: anyone's,
+    /// but `writers` for `pull_request_opened`, so that nobody who can't
+    /// write to the repository starts a run by opening one.
+    pub by: Option<ScheduleEventBy>,
+}
+
+/// What happens on GitHub that a schedule can wait for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleEventKind {
+    /// An issue is opened.
+    IssueOpened,
+    /// An issue gets one of the schedule's labels.
+    IssueLabeled,
+    /// A pull request is opened, or a draft is marked ready for review.
+    PullRequestOpened,
+    /// A pull request merges.
+    PullRequestMerged,
+    /// A release is published.
+    ReleasePublished,
+    /// All the checks of a branch's newest commit end, one or more of them
+    /// failed.
+    ChecksFailed,
+    /// A kind a newer control plane knows, which this version doesn't.
+    #[serde(other)]
+    Other,
+}
+
+impl ScheduleEventKind {
+    /// The kinds there are, in the order people see them.
+    pub const ALL: [Self; 6] = [
+        Self::IssueOpened,
+        Self::IssueLabeled,
+        Self::PullRequestOpened,
+        Self::PullRequestMerged,
+        Self::ReleasePublished,
+        Self::ChecksFailed,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IssueOpened => "issue_opened",
+            Self::IssueLabeled => "issue_labeled",
+            Self::PullRequestOpened => "pull_request_opened",
+            Self::PullRequestMerged => "pull_request_merged",
+            Self::ReleasePublished => "release_published",
+            Self::ChecksFailed => "checks_failed",
+            Self::Other => "other",
+        }
+    }
+
+    /// What D1 keeps; `None` for a kind this version doesn't know.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
+/// Whose issues or pull requests start a schedule's runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleEventBy {
+    /// Anyone's, apps' too.
+    Anyone,
+    /// Those of people who may write to the repository, and of fctl's own
+    /// agents.
+    Writers,
+    /// Those fctl's own agents opened (its GitHub App).
+    Agents,
+    /// A choice a newer control plane knows, which this version doesn't.
+    #[serde(other)]
+    Other,
+}
+
+impl ScheduleEventBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anyone => "anyone",
+            Self::Writers => "writers",
+            Self::Agents => "agents",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Anyone, Self::Writers, Self::Agents]
+            .into_iter()
+            .find(|b| b.as_str() == s)
+    }
+}
+
+/// A kind of event that wouldn't start a project's runs as things stand,
+/// and why (`ScheduleList::unheard`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct UnheardEvent {
+    pub kind: ScheduleEventKind,
+    /// Why: the instance takes no GitHub webhook, its GitHub App isn't
+    /// subscribed to the event, or the project has no repository on GitHub.
+    pub reason: String,
 }
 
 /// Where a schedule stands.
@@ -3519,6 +3656,37 @@ pub struct ScheduleRun {
     /// owner, as whom it acts: the session is one of its own. Absent for
     /// other runs, and from control planes before it.
     pub autopilot: Option<crate::autopilot::AutopilotAuthor>,
+    /// What happened on GitHub that started it, for a run on an event.
+    /// Absent for other runs, and from control planes before events.
+    pub event: Option<ScheduleRunEvent>,
+}
+
+/// What happened on GitHub that started a schedule's run.
+#[skip_serializing_none]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
+pub struct ScheduleRunEvent {
+    pub kind: ScheduleEventKind,
+    pub repo: RepoRef,
+    /// The issue's or pull request's number.
+    pub number: Option<u64>,
+    /// The issue's or pull request's title, the release's name, or the
+    /// first line of the commit whose checks failed.
+    pub title: Option<String>,
+    /// Where it is on GitHub: the issue, the pull request, the release, or
+    /// the commit's checks.
+    pub url: String,
+    /// The GitHub login of whoever did it: opened the issue or the pull
+    /// request, added the label, merged it, published the release.
+    pub actor: Option<String>,
+    /// The label the issue got.
+    pub label: Option<String>,
+    /// The branch the pull request went into, or whose checks failed.
+    pub branch: Option<String>,
+    /// The release's tag.
+    pub tag: Option<String>,
+    /// The commit whose checks failed.
+    pub sha: Option<String>,
 }
 
 /// What came of a schedule's run.
@@ -3565,6 +3733,12 @@ pub enum ScheduleTrigger {
     Person,
     /// Another tool ran it, with an access token.
     Token,
+    /// What it waits for happened on GitHub (`ScheduleRun::event`). CLIs
+    /// from before events fail to read such a run.
+    Event,
+    /// A trigger a newer control plane knows, which this version doesn't.
+    #[serde(other)]
+    Other,
 }
 
 impl ScheduleTrigger {
@@ -3573,6 +3747,8 @@ impl ScheduleTrigger {
             Self::Time => "time",
             Self::Person => "person",
             Self::Token => "token",
+            Self::Event => "event",
+            Self::Other => "other",
         }
     }
 
@@ -3581,6 +3757,7 @@ impl ScheduleTrigger {
         match s {
             "person" => Self::Person,
             "token" => Self::Token,
+            "event" => Self::Event,
             _ => Self::Time,
         }
     }
@@ -3592,6 +3769,13 @@ impl ScheduleTrigger {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ScheduleList {
     pub schedules: Vec<Schedule>,
+    /// The kinds of events that wouldn't start runs in the project as
+    /// things stand, and why, for the form to say before anyone chooses
+    /// one. Absent when every kind would, and from control planes before
+    /// events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<Vec<UnheardEvent>>", optional))]
+    pub unheard: Vec<UnheardEvent>,
 }
 
 /// `GET /api/v1/schedules/{id}/runs`: newest first, before `?before=` for
@@ -3614,11 +3798,13 @@ pub struct CreateScheduleRequest {
     /// Absent: the task's first line.
     pub name: Option<String>,
     pub prompt: String,
-    /// When it runs again and again: give this or `at`, or neither for a
-    /// schedule that runs only when asked.
+    /// When it runs again and again: give this, `at` or `event`, or none
+    /// of them for a schedule that runs only when asked.
     pub cron: Option<String>,
     /// When it runs once.
     pub at: Option<Millis>,
+    /// What it waits for on GitHub: it runs each time that happens.
+    pub event: Option<ScheduleEvent>,
     /// Absent: UTC.
     pub timezone: Option<String>,
     pub model: Option<String>,
@@ -3643,10 +3829,13 @@ pub struct UpdateScheduleRequest {
     pub name: Option<String>,
     pub prompt: Option<String>,
     /// A cron expression: it runs again and again from now on; `""`, and no
-    /// `at`, for only when asked.
+    /// `at`, for only when asked. Either ends what it waited for on GitHub.
     pub cron: Option<String>,
     /// A time: it runs once, then.
     pub at: Option<Millis>,
+    /// What it waits for on GitHub: it runs each time that happens, rather
+    /// than at its time, from now on.
+    pub event: Option<ScheduleEvent>,
     pub timezone: Option<String>,
     /// `""` for the project's.
     pub model: Option<String>,

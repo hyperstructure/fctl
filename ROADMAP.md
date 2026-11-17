@@ -99,6 +99,12 @@ this file is the overview. Order within a section is priority.
 - [x] Scheduled and recurring sessions (nightly dependency updates, triage):
       schedules start sessions once or again and again, on their owner's
       subscription, and other tools run them when asked (#9)
+- [x] Schedules that run on events on GitHub: each issue opened or labeled,
+      pull request opened or merged, release published, or failing checks on
+      a branch starts a run, with what GitHub said of it
+- [ ] More events for schedules: Linear's issues (#370), comments that ask
+      for fctl on an issue, deployments, and fctl's own (a session that
+      failed, a review's findings)
 - [x] Ticket trackers: each project chooses GitHub Issues, a Linear team or
       none, which its agents use with `fctl ticket`
 - [x] Linear: people delegate tickets to fctl or mention it there, and the

@@ -413,7 +413,7 @@ impl SessionStatus {
 }
 
 /// A GitHub repository.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct RepoRef {
     pub owner: String,

@@ -407,18 +407,27 @@ Events, which GitHub offers once the permissions above are chosen:
 
 | Event | What fctl does with it |
 |---|---|
-| **Pull request** | keeps sessions' pull requests current (opened, merged, closed), starts reviews, and brings agents back when their pull requests merge or close |
-| **Check run**, **Check suite** | shows checks as they change, and brings agents back when one fails |
+| **Pull request** | keeps sessions' pull requests current (opened, merged, closed), starts reviews, brings agents back when their pull requests merge or close, and starts the runs of schedules that wait for pull requests to open or merge |
+| **Check run**, **Check suite** | shows checks as they change, brings agents back when one fails, and starts the runs of schedules that wait for a branch's checks to fail |
 | **Status** | the same for CI that reports commit statuses rather than checks |
 | **Issue comment**, **Pull request review**, **Pull request review comment** | brings agents back when people mention them ([Follow-ups](#follow-ups)) |
+| **Issues** | starts the runs of schedules that wait for issues to be opened or labeled ([Automation](automation.md#run-on-events)) |
+| **Release** | starts the runs of schedules that wait for releases to be published |
 
 fctl uses no other permission or event. An app that has more works the
 same: the tokens fctl gives sessions carry only the permissions under
 [What sessions get](#what-sessions-get), whatever the app has, and it
 answers deliveries of other events without acting on them. (app.fctl.sh's
 own app, `fctl-sh`, has more, for work beyond fctl's.) Among its events,
-**Release**, **Workflow run** and **Merge queue entry** aren't in use
-yet, but a future version of fctl may use them.
+**Workflow run** and **Merge queue entry** aren't in use yet, but a
+future version of fctl may use them.
+
+For an app made before schedules ran on events, subscribe it to
+**Issues** and **Release** under **Permissions & events**: installations
+accept nothing new, since the app reads issues and contents already.
+Until it is, the project's Schedules tab and `fctl schedules` say that
+fctl doesn't hear of those events, and schedules that wait for them
+start no runs.
 
 ### 2. Install it
 
