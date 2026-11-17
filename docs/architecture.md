@@ -2117,7 +2117,8 @@ another tool, runs one
    not archived that list the repository, whose workspace connected its
    account through the installation that sent it, within the
    repositories the workspace may use (`triggers::waiting`, as
-   `pull_requests::in_reach` holds sessions to), each project read once;
+   `pull_requests::in_reach` holds sessions to), all of them, each
+   project read once;
    one delivery starts at most ten sessions, so that GitHub gets its
    answer in time, and the next twenty schedules that take it record in a
    statement each why they started none (any more only log it). Each run

@@ -36,9 +36,6 @@ const PER_DELIVERY: usize = 10;
 /// Schedules past those that take it too, which record why they started
 /// none (`pass_over`), a query each; any more only log it.
 const PASSED_OVER: usize = 20;
-/// Schedules one delivery looks at, at most, before what narrows each one
-/// down (labels, branches, people): a project keeps at most 50.
-const MAX_WAITING: i64 = 100;
 /// How long the control plane goes by what it last heard of the webhook
 /// events the GitHub App is subscribed to.
 const SUBSCRIBED_MS: i64 = 10 * 60_000;
@@ -222,7 +219,9 @@ struct Sent<'a> {
 /// that aren't archived, that have the repository, and whose workspace
 /// connected its account through the installation that sent the delivery,
 /// with the repository among those it may use (as
-/// `crate::pull_requests::in_reach` holds sessions to).
+/// `crate::pull_requests::in_reach` holds sessions to). All of them, oldest
+/// first: what narrows each down decides, in memory, before any cap, and
+/// there are at most 50 for each project that has the repository.
 async fn waiting(
     db: &D1Database,
     repo: &RepoRef,
@@ -242,14 +241,13 @@ async fn waiting(
                  WHERE lower(gr.value) = substr(?1, instr(?1, '/') + 1)))) \
              AND (lower(p.repo_owner || '/' || p.repo_name) = ?1 OR EXISTS (SELECT 1 FROM project_repos pr \
                WHERE pr.project_id = p.id AND lower(pr.owner || '/' || pr.name) = ?1)) \
-             ORDER BY sc.created_at, sc.id LIMIT ?5"
+             ORDER BY sc.created_at, sc.id"
         ),
         &[
             s(&key),
             s(kind.as_str()),
             n(i64::try_from(sent.installation).unwrap_or(i64::MAX)),
             n(i64::try_from(sent.account).unwrap_or(i64::MAX)),
-            n(MAX_WAITING),
         ],
     )?
     .all()
