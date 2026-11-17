@@ -2119,10 +2119,10 @@ another tool, runs one
    repositories the workspace may use (`triggers::waiting`, as
    `pull_requests::in_reach` holds sessions to), all of them, each
    project read once;
-   one delivery starts at most ten sessions, so that GitHub gets its
-   answer in time, and the next twenty schedules that take it record in a
-   statement each why they started none (any more only log it). Each run
-   is
+   one delivery decides the runs of at most ten schedules, started or
+   skipped, so that GitHub gets its answer in time, and the next twenty
+   that take it record in a statement each why they started none (any
+   more only log it). Each run is
    claimed in D1 before anything starts, by a key that keeps a delivery
    GitHub sends again from starting a second (`schedule_runs.event_key`,
    unique for the schedule, `triggers::key`): an issue's opening, a pull

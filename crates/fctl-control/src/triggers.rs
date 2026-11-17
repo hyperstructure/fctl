@@ -30,8 +30,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use worker::D1Database;
 
-/// Sessions one delivery starts at most, so that its answer comes in the
-/// ten seconds GitHub waits, within a Worker's queries.
+/// Schedules whose runs one delivery decides at most, started or not, a
+/// dozen queries or so each, so that its answer comes in the ten seconds
+/// GitHub waits, within a Worker's queries.
 const PER_DELIVERY: usize = 10;
 /// Schedules past those that take it too, which record why they started
 /// none (`pass_over`), a query each; any more only log it.
@@ -254,11 +255,14 @@ async fn waiting(
     .await
 }
 
-/// Starts a run of each of `rows` that takes what happened, up to
-/// [`PER_DELIVERY`] sessions; the next [`PASSED_OVER`] that take it record
-/// at once why they started none, and the rest only a log line, so that a
-/// delivery's queries stay few whatever waits for it. Each project is read
-/// once, and one that can't be read leaves the others to go on.
+/// Starts a run of each of `rows` that takes what happened, or records why
+/// it starts none, for [`PER_DELIVERY`] of them at most; the next
+/// [`PASSED_OVER`] that take it record at once that they came too late,
+/// and the rest only a log line, so that a delivery's queries stay few
+/// whatever waits for it. A run claimed already, by a delivery GitHub sent
+/// before, costs a query and counts for nothing. Each project is read once,
+/// and one that can't be read leaves the others to go on. Returns how many
+/// sessions started.
 async fn start_all(
     ctx: &Ctx,
     h: &Happened,
@@ -270,7 +274,7 @@ async fn start_all(
     let mut writes: Option<bool> = None;
     // Each project with the repositories its agents write to, read once.
     let mut projects: HashMap<String, Option<(ProjectRow, Vec<RepoRef>)>> = HashMap::new();
-    let (mut started, mut passed_over, mut left) = (0, 0, 0);
+    let (mut started, mut decided, mut passed_over, mut left) = (0, 0, 0, 0);
     for row in rows {
         let Some(event) = row.event() else {
             continue;
@@ -305,7 +309,7 @@ async fn start_all(
                 }
             }
         }
-        if started >= PER_DELIVERY {
+        if decided >= PER_DELIVERY {
             if passed_over >= PASSED_OVER {
                 left += 1;
                 continue;
@@ -322,16 +326,20 @@ async fn start_all(
             continue;
         }
         match run(ctx, &row, project, h, sent.delivery).await {
-            Ok(true) => started += 1,
-            Ok(false) => {}
+            Ok(None) => {}
+            Ok(Some(session)) => {
+                decided += 1;
+                started += usize::from(session);
+            }
             Err(e) => {
+                decided += 1;
                 worker::console_error!("schedule {} on {}: {}", row.id, tg::subject(h), e.0.message)
             }
         }
     }
     if left > 0 {
         worker::console_error!(
-            "{left} more schedules wait for {} and start nothing: one delivery starts at most {PER_DELIVERY} sessions",
+            "{left} more schedules wait for {} and start nothing: one delivery decides the runs of at most {PER_DELIVERY}",
             tg::subject(h)
         );
     }
@@ -376,7 +384,7 @@ async fn pass_over(
             n(now),
             n(now),
             s(&format!(
-                "{PER_DELIVERY} other schedules started runs for it first, the most one event starts."
+                "{PER_DELIVERY} other schedules took it first: one event goes to at most {PER_DELIVERY}."
             )),
             os(row.owner_id.as_deref()),
             s(&serde_json::to_string(&tg::run_event(h)).unwrap_or_default()),
@@ -421,15 +429,15 @@ async fn author_writes(ctx: &Ctx, h: &Happened, installation: u64) -> bool {
 // ───────────────────────────── a run ─────────────────────────────
 
 /// Claims `row`'s run for what happened, then starts its session, or
-/// records why it starts none. `false` when the run was claimed already,
-/// by an earlier delivery of the same, and when it started no session.
+/// records why it starts none: whether a session started, or `None` when
+/// the run was claimed already, by an earlier delivery of the same.
 async fn run(
     ctx: &Ctx,
     row: &ScheduleRow,
     project: &ProjectRow,
     h: &Happened,
     delivery: &str,
-) -> AppResult<bool> {
+) -> AppResult<Option<bool>> {
     let db = &ctx.db;
     let now = ctx.now;
     let id = fctl_domain::ids::new_id(ScheduleRunId::PREFIX, now);
@@ -453,7 +461,7 @@ async fn run(
     .run()
     .await?;
     if claimed == 0 {
-        return Ok(false);
+        return Ok(None);
     }
     let outcome = match decide(ctx, row, project, h, &id).await {
         Ok(o) => o,
@@ -478,7 +486,7 @@ async fn run(
     .run()
     .await?;
     schedules::trim_runs(db, &row.id, ctx.now).await?;
-    Ok(matches!(outcome, Outcome::Started(_)))
+    Ok(Some(matches!(outcome, Outcome::Started(_))))
 }
 
 /// Whether the claimed run `run_id` starts a session, and the session it
