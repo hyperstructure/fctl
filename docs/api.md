@@ -259,24 +259,44 @@ closes it with 4403 once the caller may no longer see the session.
 
 | Request | What it does |
 |---|---|
-| `GET /api/v1/projects/{project}/schedules` | `{"schedules": […]}`: each with `id`, `name`, `prompt`, `cron` or `at` (or neither: runs when asked), `timezone`, `model`, `effort`, `base_branch`, `github_access`, `hide_sessions` (its sessions stay off session lists), `enabled`, `state` (`active`, `paused`, `done`), `paused_reason`, `problem`, `next_run_at`, `last_run`, `owner` |
-| `POST /api/v1/projects/{project}/schedules` | `{"name", "prompt", "cron" or "at", "timezone", "model", "effort", "base_branch", "github_access", "hide_sessions": true, "enabled": false}`: set one up, on the caller's subscription (people who start sessions in the project; tokens with `full` access) |
-| `GET`, `PATCH`, `DELETE /api/v1/schedules/{id}` | read, change (absent fields stay; `""` for the project's defaults; `"enabled": false` pauses it; `"run_as_me": true` takes it over, as a change or a resume by anyone but its owner does), delete |
+| `GET /api/v1/projects/{project}/schedules` | `{"schedules": […], "unheard": […]}`: each with `id`, `name`, `prompt`, `cron` or `at` or `event` (or none: runs when asked), `timezone`, `model`, `effort`, `base_branch`, `github_access`, `hide_sessions` (its sessions stay off session lists), `enabled`, `state` (`active`, `paused`, `done`), `paused_reason`, `problem`, `next_run_at`, `last_run`, `owner`; `unheard` lists the kinds of events that wouldn't start runs here, each with its `reason` (the GitHub App isn't subscribed to the event, say) |
+| `POST /api/v1/projects/{project}/schedules` | `{"name", "prompt", "cron" or "at" or "event", "timezone", "model", "effort", "base_branch", "github_access", "hide_sessions": true, "enabled": false}`: set one up, on the caller's subscription (people who start sessions in the project; tokens with `full` access) |
+| `GET`, `PATCH`, `DELETE /api/v1/schedules/{id}` | read, change (absent fields stay; `""` for the project's defaults; a `cron` or an `at` ends what it waited for, and an `event` its time; `"enabled": false` pauses it; `"run_as_me": true` takes it over, as a change or a resume by anyone but its owner does), delete |
 | `GET /api/v1/schedules/{id}/runs` | `{"runs": […], "next_before": …}`, newest first |
 | `POST /api/v1/schedules/{id}/runs` | `{"context": "…"}` (at most 20,000 characters): run it now, on the caller's subscription |
 
+An `event` is what a schedule waits for on GitHub, in the project's
+repositories: `{"kind": "issue_opened" | "issue_labeled" |
+"pull_request_opened" | "pull_request_merged" | "release_published" |
+"checks_failed", "repos": ["acme/web"], "labels": ["bug"], "branches":
+["main"], "by": "anyone" | "writers" | "agents"}`. Only `kind` is needed:
+`repos` (empty: those the project's agents write to) narrow it to some of
+the project's repositories; `labels` to issues and pull requests with one
+of them (for `issue_labeled`, which needs one, the label the issue gets);
+`branches` to pull requests into one of them, or for `checks_failed` the
+branches it watches (empty: each repository's default branch); `by` to
+issues and pull requests opened by anyone, by people who may write to the
+repository and fctl's agents, or by fctl's agents (empty: anyone, but
+`writers` for `pull_request_opened`).
+
 A run is `{"id": "srn_…", "outcome": "started" | "skipped" | "failed",
-"reason", "trigger": "time" | "person" | "token", "by", "session": {"id",
-"number", "title"}, "status", "autopilot": {"project_id",
-"project_slug"}}`, with `autopilot` only for a run an autopilot asked for
-with its owner's token (`by`), whose session is one of its own. Runs that
+"reason", "trigger": "time" | "person" | "token" | "event", "by",
+"session": {"id", "number", "title"}, "status", "autopilot":
+{"project_id", "project_slug"}, "event": {"kind", "repo", "number",
+"title", "url", "actor", "label", "branch", "tag", "sha"}}`, with
+`autopilot` only for a run an autopilot asked for with its owner's token
+(`by`), whose session is one of its own, and `event` only for a run that
+what happened on GitHub started (`actor` is the GitHub login of whoever
+did it). Runs that
 a token asks for give the agent the context after the task, marked as
 information from outside fctl, not instructions: send what another tool
 knows there, never in a task. An autopilot's context reaches the agent as
 what the autopilot added for the run.
 People and tools run one schedule at most 20 times an hour, and a paused
-schedule runs not even then. [Automation](automation.md#start-agents-from-other-tools)
-shows a tool's request.
+schedule runs not even then; events start at most 20 runs of one
+schedule an hour. [Automation](automation.md#start-agents-from-other-tools)
+shows a tool's request, and [Run on events](automation.md#run-on-events)
+what events start.
 
 ## Autopilots
 

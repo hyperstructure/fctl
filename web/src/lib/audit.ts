@@ -121,7 +121,7 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
       return [
         "started ",
         session(),
-        str(d.schedule) ? " on a schedule" : "",
+        str(d.schedule) ? (str(d.event) ? ` ${happened(String(d.event), str(d.on))}` : " on a schedule") : "",
         str(d.autopilot) ? " for the autopilot" : "",
       ];
     case "session.stopped":
@@ -444,4 +444,27 @@ export function describeAudit(e: G.AuditEntry, names: AuditNames = {}): AuditPar
   }
   // An action this app doesn't know yet: its key and its target, as the log showed every entry.
   return [{ text: e.action, code: true }, t ? " " : "", t ? { text: t, code: true } : ""];
+}
+
+/**
+ * What happened on GitHub that started a schedule's run, after the session it started: "when
+ * acme/web#41 was opened", "when acme/web#12 merged", "when checks failed on acme/web:main".
+ */
+function happened(kind: string, on: string | undefined): string {
+  const what = on ?? "something";
+  switch (kind) {
+    case "issue_opened":
+    case "pull_request_opened":
+      return `when ${what} was opened`;
+    case "issue_labeled":
+      return `when ${what} was labeled`;
+    case "pull_request_merged":
+      return `when ${what} merged`;
+    case "release_published":
+      return `when ${what} was published`;
+    case "checks_failed":
+      return `when checks failed on ${what}`;
+    default:
+      return "on a schedule";
+  }
 }

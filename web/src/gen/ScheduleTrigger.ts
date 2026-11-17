@@ -3,4 +3,4 @@
 /**
  * What started a schedule's run.
  */
-export type ScheduleTrigger = "time" | "person" | "token";
+export type ScheduleTrigger = "time" | "person" | "token" | "event" | "other";

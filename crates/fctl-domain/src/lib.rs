@@ -59,6 +59,7 @@ pub mod throttle;
 pub mod tickets;
 pub mod tokens;
 pub mod totp;
+pub mod triggers;
 pub mod two_factor;
 pub mod updates;
 pub mod usage;

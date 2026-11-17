@@ -1397,7 +1397,7 @@ fn powers_line(powers: &[AutopilotPower], scope: AutopilotScope) -> String {
                 "add and remove {projects} repositories (`fctl projects repos add`)"
             ),
             AutopilotPower::Schedules => format!(
-                "set up {projects} schedules for work that recurs (`fctl schedules add`; a run you start with `fctl schedules run` is one of your sessions)"
+                "set up {projects} schedules for work that recurs, or that starts each time something happens on GitHub, such as an issue opened or a pull request merged (`fctl schedules add`; a run you start with `fctl schedules run` is one of your sessions)"
             ),
             AutopilotPower::Projects => {
                 "create projects in the workspace (`fctl projects create`)".to_owned()
