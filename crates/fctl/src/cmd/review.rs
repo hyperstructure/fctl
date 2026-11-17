@@ -1180,4 +1180,27 @@ mod tests {
         assert_eq!(set(&[]), Ok(None));
         assert_eq!(set(&["--drafts", "later"]), Err(()));
     }
+
+    #[test]
+    fn rounds_are_one_to_ten() {
+        let set = |args: &[&str]| {
+            let argv = ["fctl", "settings"].iter().chain(args).copied();
+            match Fctl::try_parse_from(argv).map(|f| f.review.cmd) {
+                Ok(Some(ReviewCmd::Settings { rounds, .. })) => Ok(rounds),
+                _ => Err(()),
+            }
+        };
+        assert_eq!(set(&["--rounds", "3"]), Ok(Some(3)));
+        assert_eq!(set(&["--rounds=1"]), Ok(Some(1)));
+        assert_eq!(set(&["--rounds", "10"]), Ok(Some(10)));
+        assert_eq!(set(&[]), Ok(None));
+        for wrong in ["0", "11", "five", "-2"] {
+            assert_eq!(set(&["--rounds", wrong]), Err(()), "{wrong}");
+        }
+        assert_eq!(
+            rounds_line(5),
+            "the findings of 5 reviews in a row go to the agent that opened the pull request while nobody messages it; the next wait for a person"
+        );
+        assert!(rounds_line(1).starts_with("the findings of 1 review go to the agent"));
+    }
 }
