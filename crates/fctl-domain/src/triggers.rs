@@ -254,6 +254,17 @@ pub fn check(e: &ScheduleEvent, repos: &[ProjectRepo]) -> Result<ScheduleEvent, 
     })
 }
 
+/// What a change asks a schedule to wait for, with the caps of what it
+/// waited for (`current`) where the change leaves them out: changing what
+/// it waits for doesn't set them back to the defaults.
+pub fn keep_caps(mut asked: ScheduleEvent, current: Option<&ScheduleEvent>) -> ScheduleEvent {
+    if let Some(c) = current {
+        asked.max_per_hour = asked.max_per_hour.or(c.max_per_hour);
+        asked.max_per_day = asked.max_per_day.or(c.max_per_day);
+    }
+    asked
+}
+
 /// How many sessions a schedule's events start at most.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caps {
@@ -1387,6 +1398,36 @@ mod tests {
                 day: 1_000
             }),
             "1 session an hour and 1,000 a day"
+        );
+    }
+
+    #[test]
+    fn a_change_keeps_the_caps_it_leaves_out() {
+        let mut current = event(Kind::IssueOpened);
+        current.max_per_hour = Some(5);
+        current.max_per_day = Some(40);
+        let mut labeled = event(Kind::IssueLabeled);
+        labeled.labels = vec!["bug".into()];
+        let kept = keep_caps(labeled.clone(), Some(&current));
+        assert_eq!(
+            (kept.kind, kept.labels, kept.max_per_hour, kept.max_per_day),
+            (
+                Kind::IssueLabeled,
+                vec!["bug".to_owned()],
+                Some(5),
+                Some(40)
+            )
+        );
+        // Those it gives win, one at a time.
+        let mut fewer = labeled.clone();
+        fewer.max_per_day = Some(8);
+        let kept = keep_caps(fewer, Some(&current));
+        assert_eq!((kept.max_per_hour, kept.max_per_day), (Some(5), Some(8)));
+        // A schedule that waited for nothing, or had no caps, has none to keep.
+        assert_eq!(keep_caps(labeled.clone(), None), labeled);
+        assert_eq!(
+            keep_caps(labeled.clone(), Some(&event(Kind::IssueOpened))),
+            labeled
         );
     }
 

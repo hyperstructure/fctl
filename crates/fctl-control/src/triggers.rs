@@ -606,7 +606,11 @@ async fn decide(
 /// first, as many as its caps count at most. For the run `claimed`, those
 /// that other deliveries claimed before it and still decide count too, so
 /// that a burst of events, whose deliveries GitHub sends at once, starts no
-/// more than the caps allow.
+/// more than the caps allow. "Before" goes by the order D1 inserted the
+/// claims (their rowid), not by their ids: an id has the time its request
+/// came, and a random part within the millisecond, so a delivery that came
+/// later can claim first. Of two claims at once, the one inserted second
+/// always sees the first, which counts it.
 pub(crate) async fn started_lately(
     db: &D1Database,
     schedule: &str,
@@ -621,14 +625,15 @@ pub(crate) async fn started_lately(
     }
     let rows: Vec<Row> = q(
         db,
-        "SELECT at FROM schedule_runs WHERE schedule_id = ?1 AND trigger = 'event' AND at > ?2 \
-         AND (outcome = 'started' OR (outcome = 'failed' AND reason = ?3 AND id < ?4 AND at > ?6)) \
-         ORDER BY at DESC LIMIT ?5",
+        "SELECT r.at FROM schedule_runs r WHERE r.schedule_id = ?1 AND r.trigger = 'event' AND r.at > ?2 \
+         AND (r.outcome = 'started' OR (r.outcome = 'failed' AND r.reason = ?3 AND r.at > ?6 \
+           AND r.rowid < (SELECT c.rowid FROM schedule_runs c WHERE c.id = ?4))) \
+         ORDER BY r.at DESC LIMIT ?5",
         &[
             s(schedule),
             n(now - fctl_domain::cron::DAY_MS),
             s(UNDECIDED),
-            // No run's id is before the empty one: none in flight counts.
+            // No run has the empty id, so none in flight counts.
             s(claimed.unwrap_or_default()),
             n(i64::from(caps.day.max(caps.hour))),
             // One that never got decided, as its Worker stopped, counts no
@@ -849,7 +854,8 @@ mod tests {
     }
 
     /// The caps count the sessions events started in the last day, and the
-    /// runs other deliveries claimed just before and still decide.
+    /// runs other deliveries claimed just before and still decide, in the
+    /// order D1 inserted them, whatever their ids.
     #[wasm_bindgen_test]
     async fn the_caps_count_the_days_sessions_and_those_starting() -> AppResult<()> {
         let db = testing::database();
@@ -857,7 +863,8 @@ mod tests {
         let now = 10 * fctl_domain::cron::DAY_MS;
         let hour = fctl_domain::cron::HOUR_MS;
         let minute = fctl_domain::cron::MINUTE_MS;
-        let mut runs = vec![
+        // In the order they are inserted.
+        let runs = [
             // Started by events: an hour ago, 23 hours ago, and two days ago.
             ("shr_a", "sch_triage", now - hour, "started", "event", None),
             (
@@ -909,24 +916,9 @@ mod tests {
                 "event",
                 None,
             ),
-            // Other deliveries' claims, still undecided: one before the
-            // run that asks, one after it, and one whose Worker stopped.
-            (
-                "shr_h1",
-                "sch_triage",
-                now - 1_000,
-                "failed",
-                "event",
-                Some(UNDECIDED),
-            ),
-            (
-                "shr_h3",
-                "sch_triage",
-                now - 500,
-                "failed",
-                "event",
-                Some(UNDECIDED),
-            ),
+            // Claims still undecided: one whose Worker stopped an hour ago,
+            // then three of a burst, the first with the largest id, as a
+            // delivery that came later can claim first.
             (
                 "shr_h0",
                 "sch_triage",
@@ -935,8 +927,32 @@ mod tests {
                 "event",
                 Some(UNDECIDED),
             ),
+            (
+                "shr_z9",
+                "sch_triage",
+                now - 1_000,
+                "failed",
+                "event",
+                Some(UNDECIDED),
+            ),
+            (
+                "shr_x1",
+                "sch_triage",
+                now - 1_000,
+                "failed",
+                "event",
+                Some(UNDECIDED),
+            ),
+            (
+                "shr_x2",
+                "sch_triage",
+                now - 1_000,
+                "failed",
+                "event",
+                Some(UNDECIDED),
+            ),
         ];
-        for (id, schedule, at, outcome, trigger, reason) in runs.drain(..) {
+        for (id, schedule, at, outcome, trigger, reason) in runs {
             q(
                 &db,
                 "INSERT INTO schedule_runs (id, schedule_id, due_at, at, outcome, trigger, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -946,15 +962,25 @@ mod tests {
             .await?;
         }
         let caps = tg::Caps { hour: 3, day: 10 };
+        let started = [now - hour, now - 23 * hour];
         // Listed, the schedule counts what started.
         assert_eq!(
             started_lately(&db, "sch_triage", caps, now, None).await?,
-            [now - hour, now - 23 * hour]
+            started
         );
-        // Deciding shr_h2, the claim made before it counts too.
+        // The burst's first claim counts none of the others; each later one
+        // counts those claimed before it.
         assert_eq!(
-            started_lately(&db, "sch_triage", caps, now, Some("shr_h2")).await?,
+            started_lately(&db, "sch_triage", caps, now, Some("shr_z9")).await?,
+            started
+        );
+        assert_eq!(
+            started_lately(&db, "sch_triage", caps, now, Some("shr_x1")).await?,
             [now - 1_000, now - hour, now - 23 * hour]
+        );
+        assert_eq!(
+            started_lately(&db, "sch_triage", caps, now, Some("shr_x2")).await?,
+            [now - 1_000, now - 1_000, now - hour, now - 23 * hour]
         );
         // As many as the caps count at most, newest first.
         assert_eq!(
@@ -963,7 +989,7 @@ mod tests {
                 "sch_triage",
                 tg::Caps { hour: 1, day: 1 },
                 now,
-                Some("shr_h2")
+                Some("shr_x2")
             )
             .await?,
             [now - 1_000]

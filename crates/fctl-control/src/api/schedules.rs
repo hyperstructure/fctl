@@ -290,13 +290,10 @@ pub async fn update(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Res
         schedules::zone(&timezone)
     };
     // What it waits for anew keeps the caps it doesn't give.
-    let event = body.event.clone().map(|mut e| {
-        let current = row.event();
-        let kept = |f: fn(&ScheduleEvent) -> Option<u32>| current.as_ref().and_then(f);
-        e.max_per_hour = e.max_per_hour.or_else(|| kept(|c| c.max_per_hour));
-        e.max_per_day = e.max_per_day.or_else(|| kept(|c| c.max_per_day));
-        e
-    });
+    let event = body
+        .event
+        .clone()
+        .map(|e| triggers::keep_caps(e, row.event().as_ref()));
     let when = if body.cron.is_some() || body.at.is_some() || event.is_some() {
         when_of(ctx, &p.row, body.cron.as_deref(), body.at, event.as_ref()).await?
     } else {
