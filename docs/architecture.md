@@ -1994,14 +1994,17 @@ comment** ([Self-hosting](self-hosting.md#follow-ups)).
 ### Schedules
 
 A project's schedules start sessions on their own: once at a set time,
-again and again on a cron expression in a time zone, or only when
-someone, or another tool, runs one
-([ADR 0044](adr/0044-schedules-start-sessions-on-their-owners-subscription.md)):
+again and again on a cron expression in a time zone, each time something
+happens on GitHub in the project's repositories, or only when someone, or
+another tool, runs one
+([ADR 0044](adr/0044-schedules-start-sessions-on-their-owners-subscription.md),
+[ADR 0082](adr/0082-schedules-run-on-events-on-github-through-its-webhook.md)):
 
 1. **What a schedule is** (`schedules`, the project's **Schedules** tab,
    `fctl schedules`, `GET`/`POST /api/v1/projects/{id}/schedules`,
    `GET`/`PATCH`/`DELETE /api/v1/schedules/{id}`): a name, the task its
-   runs' agents get, when it runs, and the model, effort level, base
+   runs' agents get, when it runs (a time, an event or neither), and the
+   model, effort level, base
    branch and GitHub access its sessions start with, else the project's,
    and never more on GitHub than the project allows now
    (`limits::effective`). People who start sessions in the project set
@@ -2085,13 +2088,74 @@ someone, or another tool, runs one
    autopilot's, and its turns' ends, its pull requests and its checks wake
    the autopilot. Its trigger is its owner's token, and the run names the
    autopilot (`ScheduleRun.autopilot`, from the session).
+6. **A run on an event** (`crate::triggers`, `fctl_domain::triggers`,
+   [ADR 0082](adr/0082-schedules-run-on-events-on-github-through-its-webhook.md)).
+   A schedule may wait for something to happen on GitHub instead of a
+   time (`Schedule.event`, `schedules.event_kind` and `event_filter`):
+   an issue opened or labeled (`issues` deliveries), a pull request
+   opened, or a draft marked ready for review, or merged
+   (`pull_request`), a release published (`release`), or all the checks
+   of a branch's newest commit ended with one or more failed
+   (`check_suite` completed, or a commit status that no longer waits at a
+   branch's head; the control plane then looks the commit up, as for the
+   checks after merges, and only a commit still at its branch's head, on
+   it rather than a fork's branch of the same name, whose checks all
+   ended, counts: `triggers::checks_failed`). It narrows it down to some
+   of the project's repositories, named ones only (an owner-wide grant
+   names none), else those its agents write to; to issues and pull
+   requests with one of some labels, the label an issue gets for
+   `issue_labeled`; to pull requests into some branches, or the branches
+   whose checks it watches, else the default branch; and to what anyone,
+   people who may write to the repository (their association says they
+   may, and GitHub, asked, says they do, as for follow-ups) and fctl's
+   agents, or fctl's agents alone opened (`by`; `writers` for pull
+   requests opened unless it says, so that an outsider's pull request
+   starts nothing on its owner's subscription by itself, as with review
+   agents). Each delivery reaches the schedules that are on, of projects
+   not archived that list the repository, whose workspace connected its
+   account through the installation that sent it, within the
+   repositories the workspace may use (`triggers::waiting`, as
+   `pull_requests::in_reach` holds sessions to), ten at most. Each run is
+   claimed in D1 before anything starts, by a key that keeps a delivery
+   GitHub sends again from starting a second (`schedule_runs.event_key`,
+   unique for the schedule, `triggers::key`): an issue's opening, a pull
+   request's opening and merge, a release and a commit's failed checks
+   start one run each, and a label one each time it goes on. Then it
+   starts its session, as a run at its time does, or none, saying why: its
+   owner can't run it (which pauses the schedule), their plan is at its
+   limit, it started 20 sessions on events in the last hour
+   (`triggers::RUNS_PER_HOUR`), or its run on the same issue, pull
+   request, release or branch still works on it (`schedule_runs.subject`).
+   The session is named after the schedule and what it works on (`Triage
+   new issues: web#41`), and its first message is the task, fctl's note
+   that says what happened (`StartedBy::Event`), and what GitHub said of
+   it inside `<context>`, marked as information and not instructions
+   (`triggers::context`: the issue's or pull request's title, author and
+   their association, labels, branches and text, cut at 8,000
+   characters; the release's tag and notes; the commit and the checks
+   that failed). The run keeps what happened (`ScheduleRun.event`), which
+   the tab and `fctl schedules runs` show and link, and its trigger is
+   `event`. The delivery's answer counts the runs it started
+   (`"schedules"`). Since each kind needs its webhook event, the API says
+   which kinds wouldn't start runs (`ScheduleList.unheard`, and the
+   schedule's `problem`): without the GitHub App or the webhook's secret,
+   for a project with no repository, and where the app isn't subscribed
+   to the event, as `GET /app` says, asked at most every ten minutes.
 
 The Schedules tab lists a project's schedules with when each runs next,
-what its last run did and, when that is less than pushing, what its
-agents may do on GitHub, and offers ideas to start from: **Triage new
-issues**, where the project's agents reach a tracker, runs at `triage`. Its form says
-when one runs in words and shows its next runs as you choose, found as
-the control plane finds them (`web/src/lib/schedules.ts`), and the task
+or what it waits for, what its last run did and, when that is less than
+pushing, what its agents may do on GitHub, and offers ideas to start
+from, in two groups: those that wait for something on GitHub (**Triage
+new issues** at `triage`, **Work on labeled issues**, both where the
+project's tracker is GitHub's issues; **Learn from merged pull
+requests**, from those fctl's agents opened; **Fix failing checks on
+main**; **Try each release**), where its agents work on GitHub, and those
+at set times (a daily **Triage new issues** where the tracker is
+Linear's). Its form says when one runs in words and shows its next runs
+as you choose, found as the control plane finds them
+(`web/src/lib/schedules.ts`), or, on an event, the kinds to wait for,
+what narrows the chosen one down, what each run gets, and why fctl
+wouldn't hear of it here (`unheard`), before anyone saves; and the task
 boxes hand it the task you wrote (**Schedule**: the Sessions tab's, and
 the Agent Floor's from `xl`, where its row has room for it). Each schedule's
 details show the request another tool sends to run it. Other tools start

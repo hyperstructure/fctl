@@ -6,15 +6,22 @@ import type * as G from "@/gen";
 import { keys, queryClient } from "@/lib/queries";
 import { ScheduleButton, SchedulesTab } from "./schedules";
 
-const { createSchedule, navigate, toast } = vi.hoisted(() => ({
+const { createSchedule, runSchedule, navigate, toast } = vi.hoisted(() => ({
   createSchedule: vi.fn(),
+  runSchedule: vi.fn(),
   navigate: vi.fn(),
   toast: vi.fn(),
 }));
-// Only setting one up is answered; other requests wait, and the tab shows what the cache holds.
+// Only setting one up and running one are answered; other requests wait, and the tab shows what the
+// cache holds.
 vi.mock("@/lib/api", () => ({
   api: new Proxy({} as Record<string, unknown>, {
-    get: (_, k) => (k === "createSchedule" ? createSchedule : () => new Promise(() => {})),
+    get: (_, k) =>
+      k === "createSchedule"
+        ? createSchedule
+        : k === "runSchedule"
+          ? runSchedule
+          : () => new Promise(() => {}),
   }),
   ApiFailure: class extends Error {},
 }));
@@ -379,6 +386,58 @@ describe("Schedules that run on events", () => {
       "When a pull request merges into main, by fctl's agents",
     );
     const link = tab.querySelector<HTMLAnchorElement>("a[href='https://github.com/acme/app/pull/12']");
-    expect(link?.textContent).toBe("@grace merged acme/app#12 into main: Fix the login page");
+    expect(link?.textContent).toBe("@grace merged app#12 into main: Fix the login page");
+  });
+});
+
+describe("Run now, on a schedule that waits for events", () => {
+  const onGithub = { ...project, repo: { owner: "acme", name: "app" } };
+  const schedule: G.Schedule = {
+    id: "sch_1",
+    project_id: onGithub.id,
+    name: "Triage new issues",
+    prompt: "Triage the issue.",
+    event: { kind: "issue_opened" },
+    timezone: "UTC",
+    hide_sessions: false,
+    enabled: true,
+    state: "active",
+    created_at: 0,
+    updated_at: 0,
+  };
+  const type = (input: HTMLInputElement | null | undefined, text: string) =>
+    act(() => {
+      if (!input) return;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+  it("asks what to run it on, and gives its agent that", async () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [schedule] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(
+      tab.querySelector<HTMLButtonElement>(
+        "[aria-label='Run Triage new issues now, on your Claude subscription']",
+      ),
+    );
+    // It asks first, rather than run the task on nothing.
+    expect(runSchedule).not.toHaveBeenCalled();
+    const dialog = [...document.querySelectorAll("dialog")].find((d) =>
+      d.textContent?.includes("On the issue"),
+    );
+    expect(dialog?.textContent).toContain("On the issue");
+    const input = dialog?.querySelector<HTMLInputElement>("input");
+    type(input, "the login bug");
+    runSchedule.mockReturnValue(new Promise(() => {}));
+    press(named(dialog as HTMLElement, "Run now"));
+    expect(dialog?.textContent).toContain("Write the issue's number, like #41, or paste its link");
+    expect(runSchedule).not.toHaveBeenCalled();
+    type(input, "#41");
+    press(named(dialog as HTMLElement, "Run now"));
+    await settle();
+    expect(runSchedule).toHaveBeenCalledWith("sch_1", {
+      context:
+        "Run it on issue acme/app#41 (https://github.com/acme/app/issues/41), as if it had just been opened: `gh issue view 41 -R acme/app` shows it.",
+    });
   });
 });

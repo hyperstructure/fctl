@@ -867,7 +867,7 @@ fn event_line(e: &ScheduleRunEvent) -> String {
     match e.kind {
         ScheduleEventKind::IssueOpened => format!("{who} opened issue {repo}#{n}"),
         ScheduleEventKind::IssueLabeled => format!(
-            "{who} labeled issue {repo}#{n} {}",
+            "{who} added the label {} to issue {repo}#{n}",
             e.label.as_deref().unwrap_or_default()
         ),
         ScheduleEventKind::PullRequestOpened => format!("{who} opened pull request {repo}#{n}"),

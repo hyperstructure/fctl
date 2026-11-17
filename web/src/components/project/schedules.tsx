@@ -90,7 +90,9 @@ import {
   orList,
   parseCron,
   type Repeat as RepeatChoice,
+  readRunOn,
   repeatCron,
+  runOnContext,
   runOutcome,
   runTrigger,
   scheduleRights,
@@ -791,7 +793,7 @@ function Item({
   const mine = !!me && s.owner?.id === me.user.id;
   const rights = scheduleRights(project.role, mine);
   const [editing, setEditing] = useState(false);
-  const [dialog, setDialog] = useState<"delete" | "resume" | "take">();
+  const [dialog, setDialog] = useState<"delete" | "resume" | "take" | "run">();
   const ref = useRef<HTMLLIElement>(null);
   const panel = `schedule-${s.id}`;
   const run = useRunNow(s);
@@ -877,7 +879,8 @@ function Item({
               variant="ghost"
               icon={<Play className="size-3.5" />}
               loading={run.isPending}
-              onClick={() => run.mutate()}
+              // One that waits for events runs on the issue, pull request or branch you name.
+              onClick={() => (s.event ? setDialog("run") : run.mutate(undefined))}
               aria-label={`Run ${s.name} now, on your Claude subscription`}
               title="Run now, on your Claude subscription"
               className="max-sm:px-2 sm:min-w-24 [&>span]:max-sm:sr-only"
@@ -1026,15 +1029,24 @@ function Item({
         open={dialog === "delete"}
         onClose={() => setDialog(undefined)}
       />
+      {s.event && (
+        <RunOnDialog
+          project={project}
+          schedule={s}
+          event={s.event}
+          open={dialog === "run"}
+          onClose={() => setDialog(undefined)}
+        />
+      )}
     </li>
   );
 }
 
-/** Runs a schedule now, in a session on your subscription, and opens it. */
+/** Runs a schedule now, in a session on your subscription, with what you add for it, and opens it. */
 function useRunNow(s: G.Schedule) {
   const navigate = useNavigate();
   return useMutation({
-    mutationFn: () => api.runSchedule(s.id),
+    mutationFn: (context?: string) => api.runSchedule(s.id, context ? { context } : {}),
     onSuccess: (r) => {
       void queryClient.invalidateQueries({ queryKey: keys.schedules(s.project_id) });
       void queryClient.invalidateQueries({ queryKey: keys.scheduleRuns(s.id) });
@@ -1368,15 +1380,139 @@ function RunEvent({ event: e }: { event: G.ScheduleRunEvent }) {
       target="_blank"
       rel="noreferrer"
       title="Open it on GitHub"
-      className="relative mt-0.5 flex max-w-full items-center gap-1.5 text-[12px] text-ink-4 transition-colors hover:text-ink-2"
+      className="relative mt-0.5 flex max-w-full items-start gap-1.5 text-[12px] leading-[1.45] text-ink-4 transition-colors hover:text-ink-2"
     >
-      <EventIcon kind={e.kind} className="size-3 shrink-0" />
-      <span className="min-w-0 truncate">
+      <EventIcon kind={e.kind} className="mt-[2px] size-3 shrink-0" />
+      {/* Two lines at most: on a phone, what it's about comes after who did what. */}
+      <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]">
         {sentence(eventSaid(e))}
         {e.title && <span className="text-ink-3">: {e.title}</span>}
       </span>
-      <ArrowUpRight className="size-3 shrink-0" />
+      <ArrowUpRight className="mt-[2px] size-3 shrink-0" />
     </a>
+  );
+}
+
+/** What Run now asks of a schedule that waits for events: what to run it on, by kind. */
+const RUN_ON: Partial<Record<G.ScheduleEventKind, { label: string; placeholder: string; problem: string }>> =
+  {
+    issue_opened: {
+      label: "On the issue",
+      placeholder: "#41, or its link",
+      problem: "Write the issue's number, like #41, or paste its link",
+    },
+    issue_labeled: {
+      label: "On the issue",
+      placeholder: "#41, or its link",
+      problem: "Write the issue's number, like #41, or paste its link",
+    },
+    pull_request_opened: {
+      label: "On the pull request",
+      placeholder: "#128, or its link",
+      problem: "Write the pull request's number, like #128, or paste its link",
+    },
+    pull_request_merged: {
+      label: "On the pull request",
+      placeholder: "#128, or its link",
+      problem: "Write the pull request's number, like #128, or paste its link",
+    },
+    release_published: {
+      label: "On the release",
+      placeholder: "v1.2.0, or its link",
+      problem: "Write the release's tag, like v1.2.0, or paste its link",
+    },
+    checks_failed: {
+      label: "On the branch",
+      placeholder: "main",
+      problem: "Write a branch's name, like main",
+    },
+  };
+
+/**
+ * Run now, for a schedule that waits for events: on the issue, pull request, release or branch you name,
+ * which its agent gets after the task, as it would have got what happened, or on nothing, with the task
+ * alone. It runs on your subscription, as any Run now does.
+ */
+function RunOnDialog({
+  project,
+  schedule: s,
+  event,
+  open,
+  onClose,
+}: {
+  project: G.Project;
+  schedule: G.Schedule;
+  event: G.ScheduleEvent;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [on, setOn] = useState("");
+  const [tried, setTried] = useState(false);
+  const run = useRunNow(s);
+  const ask = RUN_ON[event.kind];
+  // A bare number is in the first repository it waits on, else the project's own.
+  const repo = event.repos?.[0] ?? (project.repo ? `${project.repo.owner}/${project.repo.name}` : "");
+  const read = on.trim() ? readRunOn(event.kind, on, repo) : undefined;
+  const problem = on.trim() && !read ? ask?.problem : undefined;
+  const go = () => {
+    setTried(true);
+    if (problem) return;
+    run.mutate(read ? runOnContext(event.kind, read, event.labels?.[0]) : undefined, { onSuccess: onClose });
+  };
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Run ${s.name} now?`}
+      description="It starts a session on your Claude subscription. Its agent gets the task with what you name here, as it would get what happened on GitHub."
+    >
+      <form
+        className="flex flex-col gap-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          go();
+        }}
+      >
+        {ask && (
+          <Field
+            label={ask.label}
+            hint={
+              event.kind === "checks_failed"
+                ? "Its agent looks into the checks of the branch's newest commit."
+                : "Empty: the task alone, on nothing in particular."
+            }
+            error={tried ? problem : undefined}
+          >
+            {(id) => (
+              <Input
+                id={id}
+                value={on}
+                onChange={(e) => setOn(e.target.value)}
+                placeholder={event.kind === "checks_failed" ? project.default_branch : ask.placeholder}
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                // The dialog asks for this one thing.
+                autoFocus
+              />
+            )}
+          </Field>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            icon={<Play className="size-3.5" />}
+            loading={run.isPending}
+          >
+            Run now
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
@@ -2227,6 +2363,8 @@ const eventProblem = (f: EventForm) =>
   f.kind === "issue_labeled" && items(f.labels).length === 0 ? "Name the label that starts a run" : undefined;
 
 const fullName = (r: Pick<G.ProjectRepo, "owner" | "name">) => `${r.owner}/${r.name ?? "*"}`;
+/** The repository list's choice of those the project's agents write to: no repository's name. */
+const ALL_REPOS = "*";
 const writes = (r: G.ProjectRepo) => r.primary || r.access === "write";
 
 /**
@@ -2258,9 +2396,10 @@ function EventFields({
   const set = (v: Partial<EventForm>) => onChange({ ...value, ...v });
   const error = (field: string) => (failure?.field === field ? failure.message : undefined);
   const by = eventBy({ kind, by: value.by });
+  // An empty value is a Select's placeholder: those its agents write to are a choice of their own.
   const repoOptions: SelectOption[] = [
     {
-      value: "",
+      value: ALL_REPOS,
       label: "Its repositories",
       description: `Those its agents write to${repos.some(writes) ? `: ${orList(repos.filter(writes).map(fullName))}` : ""}`,
     },
@@ -2329,9 +2468,9 @@ function EventFields({
               {(id) => (
                 <Select
                   id={id}
-                  value={value.repos.join(",")}
+                  value={value.repos.length ? value.repos.join(",") : ALL_REPOS}
                   options={repoOptions}
-                  onChange={(v) => set({ repos: v ? v.split(",") : [] })}
+                  onChange={(v) => set({ repos: v === ALL_REPOS ? [] : v.split(",") })}
                 />
               )}
             </Field>
@@ -2401,7 +2540,13 @@ function EventFields({
 
       <div className="flex flex-col gap-2 rounded-xl bg-sunken/60 px-3.5 py-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
         <span className="text-[12px] text-ink-4">Each time</span>
-        <p className="text-[13px] leading-relaxed text-ink-2">{eachRun(value, where)}</p>
+        <p className="text-[13px] leading-relaxed text-ink-2">
+          {eachRun(value, where)}
+          {takesBy(kind) &&
+            by === "writers" &&
+            " Only those of people who can write to the repository, and of fctl's agents."}
+          {takesBy(kind) && by === "agents" && " Only those fctl's agents opened."}
+        </p>
         <p className="text-[12px] leading-relaxed text-ink-4">
           Whoever opens an issue or a pull request may be someone who can't instruct your agents, so they take
           what GitHub says as information, not instructions. At most 20 runs start in an hour.

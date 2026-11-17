@@ -18,7 +18,9 @@ import {
   orList,
   parseCron,
   type Repeat,
+  readRunOn,
   repeatCron,
+  runOnContext,
   runOutcome,
   runTrigger,
   scheduleRights,
@@ -272,7 +274,7 @@ describe("schedules", () => {
       url: "https://github.com/acme/web/issues/41",
       actor: "octocat",
     };
-    expect(runTrigger(run({ trigger: "event", by: ada, event }))).toBe("@octocat opened acme/web#41");
+    expect(runTrigger(run({ trigger: "event", by: ada, event }))).toBe("@octocat opened web#41");
     expect(runTrigger(run({ trigger: "event" }))).toBe("On an event");
   });
 });
@@ -318,16 +320,16 @@ describe("events", () => {
     const repo = { owner: "acme", name: "web" };
     const url = "https://github.com/acme/web/issues/41";
     expect(eventSaid({ kind: "issue_labeled", repo, url, number: 41, actor: "ada", label: "agent" })).toBe(
-      "@ada labeled acme/web#41 agent",
+      "@ada added the label agent to web#41",
     );
     expect(eventSaid({ kind: "pull_request_merged", repo, url, number: 12, branch: "main" })).toBe(
-      "someone merged acme/web#12 into main",
+      "someone merged web#12 into main",
     );
     expect(eventSaid({ kind: "release_published", repo, url, actor: "ada", tag: "v1.2.0" })).toBe(
-      "@ada published v1.2.0 of acme/web",
+      "@ada published v1.2.0 of web",
     );
     expect(eventSaid({ kind: "checks_failed", repo, url, branch: "main", sha: "abc" })).toBe(
-      "checks failed on main of acme/web",
+      "checks failed on main of web",
     );
     expect(orList(["a", "b", "c"])).toBe("a, b or c");
     expect(orList([])).toBe("");
@@ -370,5 +372,46 @@ describe("a schedule's name", () => {
       ),
     ).toBe("Look through yesterday's failed CI runs on main and file an issue for…");
     expect(nameFromTask("")).toBe("");
+  });
+});
+
+describe("running one that waits for events by hand", () => {
+  it("reads what to run it on", () => {
+    const repo = "acme/web";
+    expect(readRunOn("issue_opened", "#41", repo)).toEqual({ repo, number: 41 });
+    expect(readRunOn("issue_opened", " 41 ", repo)).toEqual({ repo, number: 41 });
+    expect(readRunOn("issue_labeled", "acme/docs#7", repo)).toEqual({ repo: "acme/docs", number: 7 });
+    expect(readRunOn("pull_request_merged", "https://github.com/acme/api/pull/128/files", repo)).toEqual({
+      repo: "acme/api",
+      number: 128,
+    });
+    expect(readRunOn("pull_request_merged", "https://github.com/acme/api/pull/128", repo)).toEqual({
+      repo: "acme/api",
+      number: 128,
+    });
+    expect(readRunOn("issue_opened", "github.com/acme/web/issues/41#issuecomment-1", repo)).toEqual({
+      repo,
+      number: 41,
+    });
+    expect(readRunOn("issue_opened", "the login bug", repo)).toBeUndefined();
+    expect(readRunOn("release_published", "v1.2.0", repo)).toEqual({ repo, tag: "v1.2.0" });
+    expect(readRunOn("release_published", "https://github.com/acme/cli/releases/tag/v2.0.0", repo)).toEqual({
+      repo: "acme/cli",
+      tag: "v2.0.0",
+    });
+    expect(readRunOn("checks_failed", "main", repo)).toEqual({ repo, branch: "main" });
+    expect(readRunOn("checks_failed", "no spaces", repo)).toBeUndefined();
+  });
+
+  it("tells the agent what it runs on, and where to read it", () => {
+    expect(runOnContext("issue_labeled", { repo: "acme/web", number: 41 }, "fctl")).toBe(
+      "Run it on issue acme/web#41 (https://github.com/acme/web/issues/41), as if it had just got the label fctl: `gh issue view 41 -R acme/web` shows it.",
+    );
+    expect(runOnContext("pull_request_merged", { repo: "acme/web", number: 12 })).toContain(
+      "as if it had just merged: `gh pr view 12 -R acme/web` shows it.",
+    );
+    expect(runOnContext("checks_failed", { repo: "acme/web", branch: "main" })).toContain(
+      "`gh run list -R acme/web --branch main`",
+    );
   });
 });

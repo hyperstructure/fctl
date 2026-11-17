@@ -53,6 +53,15 @@ describe("an audit log entry in words", () => {
     const scheduled = entry("session.created", "ses_1", { project: "infra", number: 38, schedule: "sch_1" });
     expect(auditActor(scheduled)).toBe("fctl");
     expect(said(describeAudit(scheduled))).toBe("started [infra#38](session) on a schedule");
+    const evented = entry("session.created", "ses_3", {
+      project: "web",
+      number: 42,
+      schedule: "sch_2",
+      event: "pull_request_merged",
+      on: "acme/web#12",
+    });
+    expect(auditActor(evented)).toBe("fctl");
+    expect(said(describeAudit(evented))).toBe("started [web#42](session) when acme/web#12 merged");
     const crew = entry(
       "session.created",
       "ses_2",

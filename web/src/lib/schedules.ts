@@ -545,7 +545,7 @@ export function runOutcome(r: G.ScheduleRun): string {
 
 /**
  * Who started a run: "On time", "Ada Lovelace", "spaghetti's autopilot, for Ada", "A tool, with
- * Ada's token", or what happened on GitHub: "@octocat opened acme/web#41".
+ * Ada's token", or what happened on GitHub: "@octocat opened web#41".
  */
 export function runTrigger(r: G.ScheduleRun): string {
   if (r.trigger === "time") return "On time";
@@ -684,12 +684,13 @@ export function describeEvent(e: G.ScheduleEvent): string {
 }
 
 /**
- * What happened on GitHub that started a run, in words: "@octocat opened acme/web#41", "@ada labeled
- * acme/web#41 agent", "@grace merged acme/web#12 into main", "@ada published v1.2.0 of acme/web",
- * "checks failed on main of acme/web".
+ * What happened on GitHub that started a run, in words: "@octocat opened web#41", "@ada added the label
+ * agent to web#41", "@grace merged web#12 into main", "@ada published v1.2.0 of web", "checks failed on
+ * main of web". A repository goes by its name, as session titles name it: all of a project's
+ * repositories are on one account.
  */
 export function eventSaid(e: G.ScheduleRunEvent): string {
-  const repo = `${e.repo.owner}/${e.repo.name}`;
+  const repo = e.repo.name;
   const ref = `${repo}#${e.number ?? ""}`;
   const who = e.actor ? `@${e.actor}` : "someone";
   switch (e.kind) {
@@ -697,7 +698,7 @@ export function eventSaid(e: G.ScheduleRunEvent): string {
     case "pull_request_opened":
       return `${who} opened ${ref}`;
     case "issue_labeled":
-      return `${who} labeled ${ref} ${e.label ?? ""}`.trimEnd();
+      return e.label ? `${who} added the label ${e.label} to ${ref}` : `${who} labeled ${ref}`;
     case "pull_request_merged":
       return `${who} merged ${ref}${e.branch ? ` into ${e.branch}` : ""}`;
     case "release_published":
@@ -706,5 +707,79 @@ export function eventSaid(e: G.ScheduleRunEvent): string {
       return `checks failed on ${e.branch ?? "a branch"} of ${repo}`;
     default:
       return `something happened in ${repo}`;
+  }
+}
+
+// ───────────────────────────── running one on something ─────────────────────────────
+
+/** What a person names to run a schedule that waits for events on, by hand. */
+export interface RunOn {
+  /** `owner/name`. */
+  repo: string;
+  /** An issue's or pull request's number. */
+  number?: number;
+  /** A release's tag. */
+  tag?: string;
+  /** The branch whose checks to look into. */
+  branch?: string;
+}
+
+/**
+ * Reads what a person names to run a schedule that waits for `kind` on: "#41", "41", "acme/web#41" or
+ * an issue's or pull request's link; a release's tag or its link; a branch. `repo` is the repository a
+ * bare number or tag is in. `undefined` for what it can't read.
+ */
+export function readRunOn(kind: G.ScheduleEventKind, input: string, repo: string): RunOn | undefined {
+  const text = input.trim();
+  const link =
+    /^(?:https?:\/\/)?github\.com\/([\w.-]+\/[\w.-]+)\/(issues|pull|releases\/tag)\/([^/?#\s]+)(?:[/?#].*)?$/i.exec(
+      text,
+    );
+  switch (kind) {
+    case "issue_opened":
+    case "issue_labeled":
+    case "pull_request_opened":
+    case "pull_request_merged": {
+      if (link?.[1] && link[3] && link[2] !== "releases/tag" && /^\d+$/.test(link[3]))
+        return { repo: link[1], number: Number(link[3]) };
+      const ref = /^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/.exec(text);
+      if (!ref?.[2]) return undefined;
+      return { repo: ref[1] ?? repo, number: Number(ref[2]) };
+    }
+    case "release_published":
+      if (link?.[1] && link[3] && link[2]?.toLowerCase() === "releases/tag")
+        return { repo: link[1], tag: decodeURIComponent(link[3]) };
+      return /^[^\s/][^\s]*$/.test(text) ? { repo, tag: text } : undefined;
+    case "checks_failed":
+      return /^[^\s~^:?*[\\]+$/.test(text) && !text.startsWith("-") ? { repo, branch: text } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * What the agent of a run someone starts by hand gets about what to run on, after the task: what a
+ * delivery would have said happened, and where to read it, since nothing happened this time.
+ */
+export function runOnContext(kind: G.ScheduleEventKind, on: RunOn, label?: string): string {
+  const { repo } = on;
+  const n = on.number ?? 0;
+  switch (kind) {
+    case "issue_opened":
+    case "issue_labeled":
+      return `Run it on issue ${repo}#${n} (https://github.com/${repo}/issues/${n}), as if it had just ${
+        kind === "issue_opened" ? "been opened" : `got the label ${label ?? "it waits for"}`
+      }: \`gh issue view ${n} -R ${repo}\` shows it.`;
+    case "pull_request_opened":
+    case "pull_request_merged":
+      return `Run it on pull request ${repo}#${n} (https://github.com/${repo}/pull/${n}), as if it had just ${
+        kind === "pull_request_opened" ? "been opened" : "merged"
+      }: \`gh pr view ${n} -R ${repo}\` shows it.`;
+    case "release_published":
+      return `Run it on release ${on.tag} of ${repo} (https://github.com/${repo}/releases/tag/${encodeURIComponent(on.tag ?? "")}), as if it had just been published: \`gh release view ${on.tag} -R ${repo}\` shows it.`;
+    case "checks_failed":
+      return `Run it on the checks of the newest commit on ${on.branch} of ${repo}, as if they had just failed: \`gh run list -R ${repo} --branch ${on.branch}\` lists its workflows' runs.`;
+    default:
+      return "";
   }
 }
