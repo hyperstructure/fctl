@@ -399,6 +399,11 @@ describe("running one that waits for events by hand", () => {
       repo: "acme/cli",
       tag: "v2.0.0",
     });
+    // A link whose escape isn't one reads as it is, rather than throw as the dialog renders.
+    expect(readRunOn("release_published", "github.com/acme/cli/releases/tag/v1%", repo)).toEqual({
+      repo: "acme/cli",
+      tag: "v1%",
+    });
     expect(readRunOn("checks_failed", "main", repo)).toEqual({ repo, branch: "main" });
     expect(readRunOn("checks_failed", "no spaces", repo)).toBeUndefined();
   });

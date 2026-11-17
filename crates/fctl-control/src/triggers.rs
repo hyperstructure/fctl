@@ -29,8 +29,13 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use worker::D1Database;
 
-/// Schedules one delivery starts runs for, at most.
-const PER_DELIVERY: i64 = 10;
+/// Sessions one delivery starts at most, so that its answer comes in the
+/// ten seconds GitHub waits: the schedules past that that take it record
+/// why they started none.
+const PER_DELIVERY: usize = 10;
+/// Schedules one delivery looks at, at most, before what narrows each one
+/// down (labels, branches, people): a project keeps at most 50.
+const MAX_WAITING: i64 = 200;
 /// How long the control plane goes by what it last heard of the webhook
 /// events the GitHub App is subscribed to.
 const SUBSCRIBED_MS: i64 = 10 * 60_000;
@@ -241,14 +246,15 @@ async fn waiting(
             s(kind.as_str()),
             n(i64::try_from(sent.installation).unwrap_or(i64::MAX)),
             n(i64::try_from(sent.account).unwrap_or(i64::MAX)),
-            n(PER_DELIVERY),
+            n(MAX_WAITING),
         ],
     )?
     .all()
     .await
 }
 
-/// Starts a run of each of `rows` that takes what happened.
+/// Starts a run of each of `rows` that takes what happened, up to
+/// [`PER_DELIVERY`] sessions.
 async fn start_all(
     ctx: &Ctx,
     h: &Happened,
@@ -289,7 +295,8 @@ async fn start_all(
                 }
             }
         }
-        match run(ctx, &row, &project, h, sent.delivery).await {
+        let over = started >= PER_DELIVERY;
+        match run(ctx, &row, &project, h, sent.delivery, over).await {
             Ok(true) => started += 1,
             Ok(false) => {}
             Err(e) => {
@@ -333,14 +340,16 @@ async fn author_writes(ctx: &Ctx, h: &Happened, installation: u64) -> bool {
 // ───────────────────────────── a run ─────────────────────────────
 
 /// Claims `row`'s run for what happened, then starts its session, or
-/// records why it starts none. `false` when the run was claimed already,
-/// by an earlier delivery of the same, and when it started no session.
+/// records why it starts none: `over`, when the delivery started as many
+/// sessions as one may. `false` when the run was claimed already, by an
+/// earlier delivery of the same, and when it started no session.
 async fn run(
     ctx: &Ctx,
     row: &ScheduleRow,
     project: &ProjectRow,
     h: &Happened,
     delivery: &str,
+    over: bool,
 ) -> AppResult<bool> {
     let db = &ctx.db;
     let now = ctx.now;
@@ -367,9 +376,15 @@ async fn run(
     if claimed == 0 {
         return Ok(false);
     }
-    let outcome = match decide(ctx, row, project, h, &id).await {
-        Ok(o) => o,
-        Err(e) => Outcome::Failed(e.0.message),
+    let outcome = if over {
+        Outcome::Skipped(format!(
+            "{PER_DELIVERY} other schedules started runs for it first, the most one event starts."
+        ))
+    } else {
+        match decide(ctx, row, project, h, &id).await {
+            Ok(o) => o,
+            Err(e) => Outcome::Failed(e.0.message),
+        }
     };
     let (status, reason, session) = match &outcome {
         Outcome::Started(session) => (ScheduleRunOutcome::Started, None, Some(session.as_str())),
@@ -389,7 +404,7 @@ async fn run(
     )?
     .run()
     .await?;
-    schedules::trim_runs(db, &row.id).await?;
+    schedules::trim_runs(db, &row.id, ctx.now).await?;
     Ok(matches!(outcome, Outcome::Started(_)))
 }
 
@@ -605,6 +620,25 @@ mod tests {
         assert_eq!(
             found.first().and_then(ScheduleRow::event).map(|e| e.kind),
             Some(ScheduleEventKind::IssueOpened)
+        );
+        // More than a delivery starts sessions for: each is looked at, so
+        // that what narrows them down decides, not how old they are.
+        for i in 0..12 {
+            run_sql(
+                &db,
+                &format!(
+                    "INSERT INTO schedules (id, project_id, name, prompt, owner_id, created_at, updated_at, event_kind, event_filter) \
+                     VALUES ('sch_bug{i}', 'prj_web', 'Bugs', 'Fix it.', 'usr_ada', {}, 0, 'issue_opened', '{{\"labels\":[\"bug\"]}}')",
+                    10 + i
+                ),
+            )
+            .await?;
+        }
+        let all = waiting(&db, &web, ScheduleEventKind::IssueOpened, &sent(7, 70)).await?;
+        assert_eq!(all.len(), 13);
+        assert_eq!(
+            all.last().and_then(ScheduleRow::event).map(|e| e.labels),
+            Some(vec!["bug".to_owned()])
         );
         // Another installation on the account speaks for no workspace here.
         assert!(

@@ -2054,7 +2054,9 @@ another tool, runs one
    for answers and says plainly what only a person can decide. The
    transcript shows the note apart from the task. The owner follows the
    session, as starting one does. A run starts none, and says why
-   (`schedule_runs`, the newest 100 of each schedule):
+   (`schedule_runs`, the newest 100 of each schedule, and all of the
+   last day's, which the hourly caps count and whose keys stop
+   redeliveries):
    - while the schedule's last session still works on its task (queued,
      starting, running, or paused on a usage limit): runs don't pile up;
    - while the owner's plan is at its limit (`claude_usage`,
@@ -2115,7 +2117,10 @@ another tool, runs one
    not archived that list the repository, whose workspace connected its
    account through the installation that sent it, within the
    repositories the workspace may use (`triggers::waiting`, as
-   `pull_requests::in_reach` holds sessions to), ten at most. Each run is
+   `pull_requests::in_reach` holds sessions to); one delivery starts at
+   most ten sessions, so that GitHub gets its answer in time, and the
+   schedules past those that take it record why they started none. Each
+   run is
    claimed in D1 before anything starts, by a key that keeps a delivery
    GitHub sends again from starting a second (`schedule_runs.event_key`,
    unique for the schedule, `triggers::key`): an issue's opening, a pull

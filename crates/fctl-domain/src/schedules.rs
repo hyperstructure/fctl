@@ -33,6 +33,12 @@ pub const LATE_MS: i64 = 10 * cron::MINUTE_MS;
 pub const MAX_CONTEXT_CHARS: usize = 20_000;
 /// Runs the control plane keeps of each schedule: the newest.
 pub const RUNS_KEPT: i64 = 100;
+/// Runs of the last day stay too, whatever their number: the hourly caps
+/// count them, and an event's run keeps a delivery GitHub sends again, or
+/// another about the same thing, from starting a second
+/// (`crate::triggers::key`, `subject`), which a flood of events past the
+/// newest [`RUNS_KEPT`] would otherwise trim away.
+pub const RUNS_KEPT_FOR_MS: i64 = cron::DAY_MS;
 /// Sessions people and tools may start from one schedule within an hour,
 /// besides its own runs.
 pub const RUNS_PER_HOUR: i64 = 20;

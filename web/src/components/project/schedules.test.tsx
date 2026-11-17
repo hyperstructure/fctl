@@ -3,6 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as G from "@/gen";
+import { ApiFailure } from "@/lib/api";
 import { keys, queryClient } from "@/lib/queries";
 import { ScheduleButton, SchedulesTab } from "./schedules";
 
@@ -342,6 +343,54 @@ describe("Schedules that run on events", () => {
       ),
     );
     expect(tab.querySelector("[role='status']")).toBeNull();
+  });
+
+  it("keep saying which events fctl wouldn't hear of once one is saved", async () => {
+    const unheard = [
+      { kind: "issue_opened" as const, reason: "fctl's GitHub App isn't subscribed to Issues events." },
+    ];
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [], unheard });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(
+      [...tab.querySelectorAll("button")].find((b) => b.textContent?.includes("Fix failing checks on main")),
+    );
+    createSchedule.mockResolvedValue({
+      id: "sch_9",
+      project_id: onGithub.id,
+      name: "Fix failing checks on main",
+      prompt: "…",
+      event: { kind: "checks_failed" },
+      timezone: "UTC",
+      hide_sessions: false,
+      enabled: true,
+      state: "active",
+      created_at: 0,
+      updated_at: 0,
+    } satisfies G.Schedule);
+    press(named(tab, "Set up schedule"));
+    await settle();
+    const list = queryClient.getQueryData<G.ScheduleList>(keys.schedules(onGithub.id));
+    expect(list?.schedules.map((s) => s.id)).toEqual(["sch_9"]);
+    expect(list?.unheard).toEqual(unheard);
+  });
+
+  it("say what's wrong with the repositories where the form lists none", async () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(
+      [...tab.querySelectorAll("button")].find((b) => b.textContent?.includes("Fix failing checks on main")),
+    );
+    // The mock's ApiFailure is a plain Error: what the real one reads from the answer goes on as is.
+    const answer = {
+      message: "The project's agents write to none of its repositories",
+      field: "event.repos",
+    };
+    createSchedule.mockRejectedValue(Object.assign(new ApiFailure(422, answer), answer));
+    press(named(tab, "Set up schedule"));
+    await settle();
+    expect(tab.querySelector("[role='alert']")?.textContent).toBe(
+      "The project's agents write to none of its repositories",
+    );
   });
 
   it("say in their row what they wait for, and their runs what happened", () => {

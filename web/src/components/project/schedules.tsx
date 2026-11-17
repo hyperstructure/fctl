@@ -352,13 +352,14 @@ const fromIdea = (i: Idea): Draft => ({
 function saved(project: G.Project, s: G.Schedule, removed = false) {
   queryClient.setQueryData<G.ScheduleList>(keys.schedules(project.id), (list) => {
     if (!list) return list;
+    // The rest of the list (which events fctl wouldn't hear of) stays as it was.
     const others = list.schedules.filter((x) => x.id !== s.id);
-    if (removed) return { schedules: others };
+    if (removed) return { ...list, schedules: others };
     const at = list.schedules.findIndex((x) => x.id === s.id);
     const schedules = [...list.schedules];
     if (at >= 0) schedules[at] = s;
     else schedules.push(s);
-    return { schedules };
+    return { ...list, schedules };
   });
   void queryClient.invalidateQueries({ queryKey: keys.scheduleRuns(s.id) });
 }
@@ -2411,6 +2412,9 @@ function EventFields({
     })),
     ...(value.repos.length > 1 ? [{ value: value.repos.join(","), label: orList(value.repos) }] : []),
   ];
+  // The list shows where there is a choice, and where the one repository is read-only, which it takes
+  // only when named; elsewhere the control plane's word on it shows under the fields.
+  const listsRepos = repos.length > 1 || (repos.length === 1 && !repos.some(writes));
   const where = value.repos.length
     ? orList(value.repos)
     : repos.some(writes)
@@ -2464,9 +2468,9 @@ function EventFields({
         })}
       </fieldset>
 
-      {(repos.length > 1 || takesLabels(kind) || takesBranches(kind) || takesBy(kind)) && (
+      {(listsRepos || takesLabels(kind) || takesBranches(kind) || takesBy(kind)) && (
         <div className="grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">
-          {repos.length > 1 && (
+          {listsRepos && (
             <Field label="In" error={error("event.repos")}>
               {(id) => (
                 <Select
@@ -2539,6 +2543,12 @@ function EventFields({
             </Field>
           )}
         </div>
+      )}
+
+      {!listsRepos && error("event.repos") && (
+        <p className="animate-rise text-[12.5px] text-danger [overflow-wrap:anywhere]" role="alert">
+          {error("event.repos")}
+        </p>
       )}
 
       <div className="flex flex-col gap-2 rounded-xl bg-sunken/60 px-3.5 py-3 shadow-[inset_0_0_0_1px_var(--c-line)]">

@@ -481,7 +481,8 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     let context = sch::context(body.context.as_deref())?;
     let asked: Option<Count> = q(
         &ctx.db,
-        "SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = ? AND trigger != 'time' AND at > ?",
+        // People's and tools' runs: events have a cap of their own.
+        "SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = ? AND trigger IN ('person', 'token') AND at > ?",
         &[s(&row.id), n(ctx.now - fctl_domain::cron::HOUR_MS)],
     )?
     .first()

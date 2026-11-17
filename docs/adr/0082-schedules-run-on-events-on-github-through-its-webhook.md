@@ -48,7 +48,9 @@ with what they received, through the same path.
   on the same thing: while a run works on an issue, a pull request, a
   release or a branch's checks, events about it start none. A schedule's
   events start at most 20 runs an hour, past which they are skipped and
-  its runs say why.
+  its runs say why; a schedule keeps all of the last day's runs, so that
+  a flood can't trim away what the cap counts. One delivery starts at
+  most ten sessions, so that GitHub gets its answer in time.
 - **What GitHub says is information.** The run's agent gets the task,
   fctl's note on what happened, then what GitHub said of it (title,
   author, labels, branches, text cut at 8,000 characters) inside

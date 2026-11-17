@@ -1016,18 +1016,23 @@ impl Outcome {
         )?
         .run()
         .await?;
-        trim_runs(db, &schedule.id).await?;
+        trim_runs(db, &schedule.id, now).await?;
         Ok(id)
     }
 }
 
-/// Keeps only a schedule's newest runs.
-pub async fn trim_runs(db: &D1Database, schedule_id: &str) -> AppResult<()> {
+/// Keeps only a schedule's newest runs, and all of the last day's
+/// (`sch::RUNS_KEPT_FOR_MS`).
+pub async fn trim_runs(db: &D1Database, schedule_id: &str, now: i64) -> AppResult<()> {
     q(
         db,
-        "DELETE FROM schedule_runs WHERE schedule_id = ?1 AND id NOT IN \
+        "DELETE FROM schedule_runs WHERE schedule_id = ?1 AND at < ?3 AND id NOT IN \
          (SELECT id FROM schedule_runs WHERE schedule_id = ?1 ORDER BY at DESC, id DESC LIMIT ?2)",
-        &[s(schedule_id), n(sch::RUNS_KEPT)],
+        &[
+            s(schedule_id),
+            n(sch::RUNS_KEPT),
+            n(now - sch::RUNS_KEPT_FOR_MS),
+        ],
     )?
     .run()
     .await?;
@@ -1205,6 +1210,60 @@ mod tests {
                 ("shr_1".to_owned(), None)
             ]
         );
+        Ok(())
+    }
+
+    /// A flood of events keeps its day's runs, which the hourly caps count
+    /// and whose keys keep GitHub's redeliveries from running again; older
+    /// ones go past the newest 100.
+    #[wasm_bindgen_test]
+    async fn trimming_keeps_the_newest_and_the_last_days_runs() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at) \
+             VALUES ('prj_web', 'web', 'Web', 'usr_ada', 0, 0)",
+            "INSERT INTO schedules (id, project_id, name, prompt, owner_id, created_at, updated_at) \
+             VALUES ('sch_triage', 'prj_web', 'Triage', 'Triage it.', 'usr_ada', 0, 0)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        let now = 10 * cron::DAY_MS;
+        let mut statements = Vec::new();
+        // 30 runs two days ago, then 150 within the last hour.
+        for i in 0..180 {
+            let at = if i < 30 {
+                now - 2 * cron::DAY_MS + i
+            } else {
+                now - cron::HOUR_MS + i
+            };
+            statements.push(q(
+                &db,
+                "INSERT INTO schedule_runs (id, schedule_id, due_at, at, outcome, trigger, event_key) \
+                 VALUES (?, 'sch_triage', ?, ?, 'skipped', 'event', ?)",
+                &[s(&format!("shr_{i:03}")), n(at), n(at), s(&format!("k{i}"))],
+            )?);
+        }
+        crate::db::batch_changes(&db, statements).await?;
+        trim_runs(&db, "sch_triage", now).await?;
+        let kept: Option<crate::db::Count> = q(
+            &db,
+            "SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = 'sch_triage'",
+            &[],
+        )?
+        .first()
+        .await?;
+        assert_eq!(kept.map(|c| c.n), Some(150));
+        // A day later, only the newest 100 stay.
+        trim_runs(&db, "sch_triage", now + 2 * cron::DAY_MS).await?;
+        let kept: Option<crate::db::Count> = q(
+            &db,
+            "SELECT COUNT(*) AS n FROM schedule_runs WHERE schedule_id = 'sch_triage'",
+            &[],
+        )?
+        .first()
+        .await?;
+        assert_eq!(kept.map(|c| c.n), Some(sch::RUNS_KEPT));
         Ok(())
     }
 }

@@ -748,12 +748,21 @@ export function readRunOn(kind: G.ScheduleEventKind, input: string, repo: string
     }
     case "release_published":
       if (link?.[1] && link[3] && link[2]?.toLowerCase() === "releases/tag")
-        return { repo: link[1], tag: decodeURIComponent(link[3]) };
+        return { repo: link[1], tag: decoded(link[3]) };
       return /^[^\s/][^\s]*$/.test(text) ? { repo, tag: text } : undefined;
     case "checks_failed":
       return /^[^\s~^:?*[\\]+$/.test(text) && !text.startsWith("-") ? { repo, branch: text } : undefined;
     default:
       return undefined;
+  }
+}
+
+/** A link's part as it reads, or as it is where it's no valid escape (`v1%`), which `decodeURIComponent` throws on. */
+function decoded(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
   }
 }
 
