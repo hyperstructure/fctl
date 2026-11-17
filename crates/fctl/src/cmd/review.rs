@@ -657,13 +657,9 @@ fn agents_line(a: &ReviewAgents) -> String {
 /// What `fctl review settings` says of the rounds of review in a row whose
 /// findings go to the agent that opened the pull request.
 fn rounds_line(n: u32) -> String {
-    let reviews = if n == 1 {
-        "1 review".to_owned()
-    } else {
-        format!("{n} reviews in a row")
-    };
     format!(
-        "the findings of {reviews} go to the agent that opened the pull request while nobody messages it; the next wait for a person"
+        "the findings of {} go to the agent that opened the pull request while nobody messages it; the next wait for a person",
+        fctl_domain::reviews::reviews_in_a_row(n)
     )
 }
 

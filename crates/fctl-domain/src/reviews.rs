@@ -2814,12 +2814,13 @@ pub fn stored_rounds(n: Option<i64>) -> u32 {
     })
 }
 
-/// "1 review", "5 reviews".
-fn reviews_count(n: u32) -> String {
+/// "5 reviews in a row", and "1 review", which is no row: how many reviews'
+/// findings an agent got while nobody messaged it.
+pub fn reviews_in_a_row(n: u32) -> String {
     if n == 1 {
         "1 review".to_owned()
     } else {
-        format!("{n} reviews")
+        format!("{n} reviews in a row")
     }
 }
 
@@ -3094,8 +3095,8 @@ pub fn held_back(f: &Found<'_>, rounds: u32) -> String {
         "an earlier review's findings, with no message from a person since".to_owned()
     } else {
         format!(
-            "the findings of {} in a row, with no message from a person in between",
-            reviews_count(rounds)
+            "the findings of {}, with no message from a person in between",
+            reviews_in_a_row(rounds)
         )
     };
     format!(
@@ -5452,6 +5453,9 @@ mod tests {
         assert_eq!(stored_rounds(Some(0)), 1);
         assert_eq!(stored_rounds(Some(-4)), 1);
         assert_eq!(stored_rounds(Some(99)), 10);
+        // One is no row.
+        assert_eq!(reviews_in_a_row(1), "1 review");
+        assert_eq!(reviews_in_a_row(5), "5 reviews in a row");
     }
 
     #[test]

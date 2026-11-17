@@ -1154,7 +1154,8 @@ impl SessionObject {
         let held = |n: u32| internal::FindingsTold {
             held: true,
             ..not_sent(format!(
-                "its agent got the findings of {n} reviews in a row, and nobody has messaged it since"
+                "its agent got the findings of {}, and nobody has messaged it since",
+                fctl_domain::reviews::reviews_in_a_row(n)
             ))
         };
         let key = format!("review:{}", b.review);
