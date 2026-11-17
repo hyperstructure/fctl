@@ -27,15 +27,18 @@ use fctl_proto::session::{RepoAccess, RepoRef, SessionStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use worker::D1Database;
 
 /// Sessions one delivery starts at most, so that its answer comes in the
-/// ten seconds GitHub waits: the schedules past that that take it record
-/// why they started none.
+/// ten seconds GitHub waits, within a Worker's queries.
 const PER_DELIVERY: usize = 10;
+/// Schedules past those that take it too, which record why they started
+/// none (`pass_over`), a query each; any more only log it.
+const PASSED_OVER: usize = 20;
 /// Schedules one delivery looks at, at most, before what narrows each one
 /// down (labels, branches, people): a project keeps at most 50.
-const MAX_WAITING: i64 = 200;
+const MAX_WAITING: i64 = 100;
 /// How long the control plane goes by what it last heard of the webhook
 /// events the GitHub App is subscribed to.
 const SUBSCRIBED_MS: i64 = 10 * 60_000;
@@ -254,7 +257,10 @@ async fn waiting(
 }
 
 /// Starts a run of each of `rows` that takes what happened, up to
-/// [`PER_DELIVERY`] sessions.
+/// [`PER_DELIVERY`] sessions; the next [`PASSED_OVER`] that take it record
+/// at once why they started none, and the rest only a log line, so that a
+/// delivery's queries stay few whatever waits for it. Each project is read
+/// once, and one that can't be read leaves the others to go on.
 async fn start_all(
     ctx: &Ctx,
     h: &Happened,
@@ -264,21 +270,27 @@ async fn start_all(
     let app = ctx.cfg.github.as_ref().map(|g| format!("{}[bot]", g.slug));
     // Whether the author may write to the repository, asked once.
     let mut writes: Option<bool> = None;
-    let mut started = 0;
+    // Each project with the repositories its agents write to, read once.
+    let mut projects: HashMap<String, Option<(ProjectRow, Vec<RepoRef>)>> = HashMap::new();
+    let (mut started, mut passed_over, mut left) = (0, 0, 0);
     for row in rows {
         let Some(event) = row.event() else {
             continue;
         };
-        let Some(project) = crate::spec::project_row(&ctx.db, &row.project_id).await? else {
+        if !projects.contains_key(&row.project_id) {
+            let read = match read_project(&ctx.db, &row.project_id).await {
+                Ok(read) => read,
+                Err(e) => {
+                    worker::console_error!("project {}: {}", row.project_id, e.0.message);
+                    None
+                }
+            };
+            projects.insert(row.project_id.clone(), read);
+        }
+        let Some(Some((project, writable))) = projects.get(&row.project_id) else {
             continue;
         };
-        let writable: Vec<RepoRef> = project_repos(&ctx.db, &project)
-            .await?
-            .into_iter()
-            .filter(|r| r.writes)
-            .map(|r| r.repo)
-            .collect();
-        match tg::takes(&event, h, &writable, app.as_deref()) {
+        match tg::takes(&event, h, writable, app.as_deref()) {
             Takes::No => continue,
             Takes::Yes => {}
             Takes::IfAuthorWrites => {
@@ -295,8 +307,23 @@ async fn start_all(
                 }
             }
         }
-        let over = started >= PER_DELIVERY;
-        match run(ctx, &row, &project, h, sent.delivery, over).await {
+        if started >= PER_DELIVERY {
+            if passed_over >= PASSED_OVER {
+                left += 1;
+                continue;
+            }
+            passed_over += 1;
+            if let Err(e) = pass_over(&ctx.db, &row, h, sent.delivery, ctx.now).await {
+                worker::console_error!(
+                    "schedule {} on {}: {}",
+                    row.id,
+                    tg::subject(h),
+                    e.0.message
+                );
+            }
+            continue;
+        }
+        match run(ctx, &row, project, h, sent.delivery).await {
             Ok(true) => started += 1,
             Ok(false) => {}
             Err(e) => {
@@ -304,7 +331,63 @@ async fn start_all(
             }
         }
     }
+    if left > 0 {
+        worker::console_error!(
+            "{left} more schedules wait for {} and start nothing: one delivery starts at most {PER_DELIVERY} sessions",
+            tg::subject(h)
+        );
+    }
     Ok(started)
+}
+
+/// A project, and the repositories its agents write to.
+async fn read_project(
+    db: &D1Database,
+    project_id: &str,
+) -> AppResult<Option<(ProjectRow, Vec<RepoRef>)>> {
+    let Some(project) = crate::spec::project_row(db, project_id).await? else {
+        return Ok(None);
+    };
+    let writable = project_repos(db, &project)
+        .await?
+        .into_iter()
+        .filter(|r| r.writes)
+        .map(|r| r.repo)
+        .collect();
+    Ok(Some((project, writable)))
+}
+
+/// Records, in one statement, that `row`'s run for what happened starts
+/// no session: the delivery started as many as one may. A delivery GitHub
+/// sends again finds it taken, as it finds a run that started. Returns how
+/// many it recorded: none when it was taken.
+async fn pass_over(
+    db: &D1Database,
+    row: &ScheduleRow,
+    h: &Happened,
+    delivery: &str,
+    now: i64,
+) -> AppResult<usize> {
+    q(
+        db,
+        "INSERT OR IGNORE INTO schedule_runs (id, schedule_id, due_at, at, outcome, reason, trigger, user_id, \
+         event, event_key, subject) VALUES (?, ?, ?, ?, 'skipped', ?, 'event', ?, ?, ?, ?)",
+        &[
+            s(&fctl_domain::ids::new_id(ScheduleRunId::PREFIX, now)),
+            s(&row.id),
+            n(now),
+            n(now),
+            s(&format!(
+                "{PER_DELIVERY} other schedules started runs for it first, the most one event starts."
+            )),
+            os(row.owner_id.as_deref()),
+            s(&serde_json::to_string(&tg::run_event(h)).unwrap_or_default()),
+            s(&tg::key(h, delivery)),
+            s(&tg::subject(h)),
+        ],
+    )?
+    .run()
+    .await
 }
 
 /// Whether GitHub says the author of the issue or pull request may write
@@ -340,16 +423,14 @@ async fn author_writes(ctx: &Ctx, h: &Happened, installation: u64) -> bool {
 // ───────────────────────────── a run ─────────────────────────────
 
 /// Claims `row`'s run for what happened, then starts its session, or
-/// records why it starts none: `over`, when the delivery started as many
-/// sessions as one may. `false` when the run was claimed already, by an
-/// earlier delivery of the same, and when it started no session.
+/// records why it starts none. `false` when the run was claimed already,
+/// by an earlier delivery of the same, and when it started no session.
 async fn run(
     ctx: &Ctx,
     row: &ScheduleRow,
     project: &ProjectRow,
     h: &Happened,
     delivery: &str,
-    over: bool,
 ) -> AppResult<bool> {
     let db = &ctx.db;
     let now = ctx.now;
@@ -376,15 +457,9 @@ async fn run(
     if claimed == 0 {
         return Ok(false);
     }
-    let outcome = if over {
-        Outcome::Skipped(format!(
-            "{PER_DELIVERY} other schedules started runs for it first, the most one event starts."
-        ))
-    } else {
-        match decide(ctx, row, project, h, &id).await {
-            Ok(o) => o,
-            Err(e) => Outcome::Failed(e.0.message),
-        }
+    let outcome = match decide(ctx, row, project, h, &id).await {
+        Ok(o) => o,
+        Err(e) => Outcome::Failed(e.0.message),
     };
     let (status, reason, session) = match &outcome {
         Outcome::Started(session) => (ScheduleRunOutcome::Started, None, Some(session.as_str())),
@@ -689,6 +764,43 @@ mod tests {
             .run()
             .await?;
         }
+        Ok(())
+    }
+
+    /// A schedule past those one delivery starts sessions for records why,
+    /// once, in one statement.
+    #[wasm_bindgen_test]
+    async fn one_past_the_cap_says_so_once() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        let web = RepoRef {
+            owner: "acme".into(),
+            name: "web".into(),
+        };
+        let rows = waiting(&db, &web, ScheduleEventKind::IssueOpened, &sent(7, 70)).await?;
+        let Some(row) = rows.first() else {
+            return Err(crate::error::internal("no schedule waits"));
+        };
+        let h = Happened {
+            kind: Some(ScheduleEventKind::IssueOpened),
+            repo: web.clone(),
+            number: Some(41),
+            url: "https://github.com/acme/web/issues/41".into(),
+            ..Default::default()
+        };
+        assert_eq!(pass_over(&db, row, &h, "d1", 5).await?, 1);
+        assert_eq!(pass_over(&db, row, &h, "d2", 6).await?, 0);
+        let runs = schedules::runs(&db, &row.id, None, 10).await?;
+        let said: Vec<(String, Option<String>)> = runs
+            .iter()
+            .map(|r| {
+                (
+                    r.outcome.clone(),
+                    r.event.clone().map(|_| "event".to_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(said, [("skipped".to_owned(), Some("event".to_owned()))]);
         Ok(())
     }
 
