@@ -8,14 +8,15 @@ import { PullRequestChecksIcon, PullRequestReviewLine, PullRequestReviewMark } f
 
 // The projects of the person who looks, and the reviews they ask for.
 const state = vi.hoisted(() => ({ projects: [] as G.Project[] }));
-const { startReview, passOnReview, toast } = vi.hoisted(() => ({
+const { startReview, passOnReview, reviewAgents, toast } = vi.hoisted(() => ({
   startReview: vi.fn(),
   passOnReview: vi.fn(),
+  reviewAgents: vi.fn(),
   toast: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({
   ApiFailure: class extends Error {},
-  api: { projects: async () => ({ projects: state.projects }), startReview, passOnReview },
+  api: { projects: async () => ({ projects: state.projects }), startReview, passOnReview, reviewAgents },
 }));
 vi.mock("@/components/ui", async (actual) => ({
   ...(await actual<typeof import("@/components/ui")>()),
@@ -257,6 +258,22 @@ describe("findings fctl held back", () => {
     const c1 = render(<PullRequestReviewLine pr={pr(one)} review={one} passOnTo="ses_mine" />);
     expect(strip(c1)?.textContent).toContain("Paused after 1 review round");
     expect(button(c1)?.textContent).toBe("Continue for 1 more round");
+  });
+
+  it("continues for as many rounds as the review's project passes on now", async () => {
+    reviewAgents.mockResolvedValue({ rounds: 3 } as G.ReviewAgents);
+    const mine = { ...held, project_id: "prj_web" as G.ProjectId };
+    const c = render(<PullRequestReviewLine pr={pr(mine)} review={mine} passOnTo="ses_mine" />);
+    await settle();
+    expect(reviewAgents).toHaveBeenCalledWith("prj_web");
+    // What it got stays as it was; what it gets next is the project's choice now.
+    expect(strip(c)?.textContent).toContain("Paused after 5 review rounds");
+    expect(button(c)?.textContent).toBe("Continue for 3 more rounds");
+    // Nobody asks for those who can't pass them on.
+    reviewAgents.mockClear();
+    render(<PullRequestReviewLine pr={pr(mine)} review={mine} />);
+    await settle();
+    expect(reviewAgents).not.toHaveBeenCalled();
   });
 });
 

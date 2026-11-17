@@ -122,9 +122,8 @@ pub struct DiskNews {
 
 /// fctl's review agent posted findings on a pull request the session's
 /// agent opened (`/review-findings`, from `crate::reviews`): its agent gets
-/// them in a message from fctl, unless it got those of
-/// `fctl_domain::reviews::MAX_PASSED_ON` reviews in a row while nobody
-/// messaged it, when the transcript says so instead.
+/// them in a message from fctl, unless it got those of `rounds` reviews in
+/// a row while nobody messaged it, when the transcript says so instead.
 #[derive(Serialize, Deserialize)]
 pub struct ReviewFindings {
     /// The review's session: a review's findings reach a session once.
@@ -136,6 +135,17 @@ pub struct ReviewFindings {
     /// What the transcript shows of the message.
     #[serde(default)]
     pub shown: Option<fctl_proto::event::PassedOnReview>,
+    /// The reviews in a row whose findings the agent gets while nobody
+    /// messages it, as the review's project's review agents pass them on
+    /// (`fctl_domain::reviews::ROUNDS`).
+    #[serde(default = "default_rounds")]
+    pub rounds: u32,
+}
+
+/// [`ReviewFindings::rounds`] and [`PassOn::rounds`] from a Worker before
+/// them.
+fn default_rounds() -> u32 {
+    fctl_domain::reviews::DEFAULT_ROUNDS
 }
 
 /// Someone passes on the findings of a review that fctl held back from the
@@ -149,6 +159,11 @@ pub struct PassOn {
     pub review: SessionId,
     /// Who passes them on, whom the transcript names.
     pub by: UserRef,
+    /// The reviews in a row whose findings the agent gets from now on,
+    /// these included, as the review's project's review agents pass them
+    /// on, which the transcript says.
+    #[serde(default = "default_rounds")]
+    pub rounds: u32,
     /// The findings, where they went to no session
     /// (`crate::reviews::pass_on_unsent`); `None`: those the session held
     /// back.
@@ -166,7 +181,7 @@ pub struct FindingsTold {
     #[serde(default)]
     pub not_sent: Option<String>,
     /// The session keeps them back from its agent for a person to pass on,
-    /// after the findings of `MAX_PASSED_ON` reviews in a row.
+    /// after the findings of [`ReviewFindings::rounds`] reviews in a row.
     #[serde(default)]
     pub held: bool,
 }

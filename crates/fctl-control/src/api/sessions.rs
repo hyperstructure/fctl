@@ -750,10 +750,10 @@ pub async fn interrupt(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 /// fctl held back from it (`ReviewCheck::held_after`), or which went to no
 /// session (`ReviewCheck::unsent`) where this one lists the review's pull
 /// request: the agent gets the message from fctl it would have got, which
-/// resumes a stopped session on the subscription it ran on, and those of up
-/// to `fctl_domain::reviews::MAX_PASSED_ON` reviews in a row, these
-/// included, before fctl holds them back again. For those who may message
-/// the agent.
+/// resumes a stopped session on the subscription it ran on, and those of as
+/// many reviews in a row as the review's project's review agents pass on,
+/// these included, before fctl holds them back again. For those who may
+/// message the agent.
 pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Response> {
     let a = access::session(ctx, id).await?;
     a.require_editor()?;
@@ -778,6 +778,7 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
             held: None,
         });
     }
+    let rounds = crate::reviews::rounds_of(&ctx.db, review.as_str()).await?;
     let stub = internal::session_stub(&ctx.env, id)?;
     let out: Delivered = internal::post(
         &stub,
@@ -785,6 +786,7 @@ pub async fn pass_on(ctx: &mut Ctx, id: &str, review: &str) -> AppResult<Respons
         &internal::PassOn {
             review: review.clone(),
             by,
+            rounds,
             unsent: None,
         },
     )

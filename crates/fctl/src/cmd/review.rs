@@ -18,6 +18,7 @@ use fctl_proto::api::{
 use fctl_proto::session::SessionStatus;
 use fctl_proto::{DeliveryId, SessionId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -53,10 +54,11 @@ pub enum ReviewCmd {
         pull_request: String,
     },
     /// Pass on to a session's agent the findings fctl held back from it,
-    /// once it got those of five reviews in a row with no message from a
+    /// once it got those of as many reviews in a row as the project's
+    /// review agents pass on (five by default) with no message from a
     /// person, and those of reviews of its pull requests that went to no
-    /// session: it gets them now, and those of the reviews after them, up
-    /// to five in a row with these, before fctl holds them back again
+    /// session: it gets them now, and those of the reviews after them, as
+    /// many in a row again with these, before fctl holds them back again
     /// (people who may message the agent).
     #[command(
         after_help = "A message to the agent ends the reviews in a row too, without passing the held findings on. A review's findings go to no session when one of fctl's agents opened its pull request but no session listed it yet as the review posted; fctl passes them on by itself as the session that opened it lists it.\n\nExamples:\n  fctl review pass-on my-app#12\n  fctl show my-app#12        # says which findings fctl holds back, or sent to no session"
@@ -69,7 +71,7 @@ pub enum ReviewCmd {
     /// how they review (the project's owners; the person they run for may
     /// turn them off).
     #[command(
-        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine, or by changing how they review. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names. With --drafts off, drafts wait until they're marked ready for review, which starts a review of their newest commit; fctl review start reviews one sooner.\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --drafts off\n  fctl review settings --description-summary on\n  fctl review settings --mine\n  fctl review settings --off"
+        after_help = "Turning them on runs them on your Claude subscription; another owner takes them over with --mine, or by changing how they review. They review the repositories the project's agents may write to, those linked later too, but the ones --skip-repos names. With --drafts off, drafts wait until they're marked ready for review, which starts a review of their newest commit; fctl review start reviews one sooner. Where one of fctl's agents opened the pull request, its session gets the findings of --rounds reviews in a row while nobody messages its agent; then fctl holds them back until someone does, or passes them on (fctl review pass-on).\n\nExamples:\n  fctl review settings\n  fctl review settings --on --model opus --effort high\n  fctl review settings --instructions-file review.md\n  fctl review settings --bots dependabot,renovate\n  fctl review settings --skip-repos acme/shared-lib\n  fctl review settings --skip-repos none\n  fctl review settings --drafts off\n  fctl review settings --description-summary on\n  fctl review settings --rounds 3\n  fctl review settings --mine\n  fctl review settings --off"
     )]
     Settings {
         /// Turn them on, on your Claude subscription.
@@ -119,6 +121,12 @@ pub enum ReviewCmd {
         /// of the description stays as it is (off by default).
         #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
         description_summary: Option<bool>,
+        /// How many reviews in a row pass their findings on to the agent
+        /// that opened the pull request while nobody messages it, 1 to 10
+        /// (5 by default); fctl holds back those of the next review until
+        /// someone does.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=10))]
+        rounds: Option<u32>,
     },
     /// The apps that opened the newest pull requests in the project's
     /// repositories, and which of them start reviews by themselves; with a
@@ -199,6 +207,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
             skip_repos,
             drafts,
             description_summary,
+            rounds,
         } => {
             let api = config::api(server)?;
             let project = super::sessions::project_or_default(args.project)?;
@@ -231,6 +240,7 @@ pub async fn run(server: Option<&str>, args: ReviewArgs, json: bool) -> Result<(
                 skipped_repos: skip_repos.map(|r| r.0),
                 drafts,
                 description_summary,
+                rounds,
             };
             let changes = req != UpdateReviewAgentsRequest::default();
             let agents = if changes {
@@ -329,19 +339,15 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
             let review = checks.review.as_ref()?;
             // Findings that went to no session go on only while their
             // pull request is open.
-            let after = match review.held_after {
-                Some(after) => after,
-                None if review.unsent && !fctl_domain::pulls::done(pr) => {
-                    fctl_domain::reviews::MAX_PASSED_ON
-                }
-                None => return None,
-            };
+            if review.held_after.is_none() && !(review.unsent && !fctl_domain::pulls::done(pr)) {
+                return None;
+            }
             let unsent = review.held_after.is_none();
             Some((
                 pr,
                 checks.sha.as_deref(),
                 review.session_id.clone()?,
-                after,
+                review.project_id.clone(),
                 unsent,
             ))
         })
@@ -355,9 +361,27 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
     // review came meanwhile, say) keeps none of the others back.
     let mut passed = Vec::new();
     let mut refused = Vec::new();
-    for (pr, sha, review, after, unsent) in held {
+    // As many reviews in a row as the review agents of each review's
+    // project pass on, which the agent gets from now on.
+    let mut rounds: BTreeMap<String, u32> = BTreeMap::new();
+    for (pr, sha, review, project, unsent) in held {
         match api.pass_on_review(s.id.as_str(), review.as_str()).await {
-            Ok(sent) => passed.push((pr, sha, after, unsent, review, sent.delivery_id)),
+            Ok(sent) => {
+                let n = match project {
+                    Some(p) => match rounds.get(p.as_str()) {
+                        Some(n) => Some(*n),
+                        None => {
+                            let n = api.review_agents(p.as_str()).await.ok().map(|a| a.rounds);
+                            if let Some(n) = n {
+                                rounds.insert(p.as_str().to_owned(), n);
+                            }
+                            n
+                        }
+                    },
+                    None => None,
+                };
+                passed.push((pr, sha, n, unsent, review, sent.delivery_id));
+            }
             Err(e) => refused.push((pr, e)),
         }
     }
@@ -374,7 +398,7 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
         })?;
         return refusals(&refused);
     }
-    for (pr, sha, after, unsent, _, _) in passed {
+    for (pr, sha, rounds, unsent, _, _) in passed {
         let what = pull_request_name(pr);
         let at = sha.map(|s| format!(" at {}", short(s))).unwrap_or_default();
         let nowhere = if unsent {
@@ -387,12 +411,19 @@ async fn pass_on(server: Option<&str>, reference: &str, json: bool) -> Result<()
             style::accent("✓"),
             style::terminal_safe(&what)
         );
-        println!(
-            "  {}",
-            style::dim(&format!(
-                "It gets those of up to {after} reviews in a row, these included, before fctl holds them back again."
-            ))
-        );
+        let upto = match rounds {
+            Some(1) => {
+                "It gets these, and fctl holds back those of the next review again.".to_owned()
+            }
+            Some(n) => format!(
+                "It gets those of up to {n} reviews in a row, these included, before fctl holds them back again."
+            ),
+            None => {
+                "It gets those of the reviews after them too, until fctl holds them back again."
+                    .to_owned()
+            }
+        };
+        println!("  {}", style::dim(&upto));
     }
     refusals(&refused)
 }
@@ -623,6 +654,19 @@ fn agents_line(a: &ReviewAgents) -> String {
     parts.join(" · ")
 }
 
+/// What `fctl review settings` says of the rounds of review in a row whose
+/// findings go to the agent that opened the pull request.
+fn rounds_line(n: u32) -> String {
+    let reviews = if n == 1 {
+        "1 review".to_owned()
+    } else {
+        format!("{n} reviews in a row")
+    };
+    format!(
+        "the findings of {reviews} go to the agent that opened the pull request while nobody messages it; the next wait for a person"
+    )
+}
+
 fn print_settings(project: &str, a: &ReviewAgents) {
     println!(
         "Review agents in {project}: {}",
@@ -699,6 +743,7 @@ fn print_settings(project: &str, a: &ReviewAgents) {
             "off: descriptions stay as people wrote them".into()
         },
     );
+    row("Rounds", rounds_line(a.rounds));
     match a.instructions.as_deref() {
         Some(text) => {
             println!("  {}", style::dim("Instructions"));

@@ -49,4 +49,10 @@ drafts?: boolean,
  * Whether they sum each pull request up at the end of its
  * description before they review it in depth.
  */
-description_summary?: boolean, };
+description_summary?: boolean, 
+/**
+ * The reviews in a row whose findings go to the session that opened
+ * the pull request while nobody messages its agent, 1 to 10
+ * ([`ReviewAgents::rounds`]).
+ */
+rounds?: number, };

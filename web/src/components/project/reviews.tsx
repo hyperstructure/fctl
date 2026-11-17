@@ -20,6 +20,7 @@ import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "re
 import { BotMark, ReviewBots } from "@/components/project/review-bots";
 import { ReviewDrafts } from "@/components/project/review-drafts";
 import { ReviewRepos } from "@/components/project/review-repos";
+import { ReviewRounds } from "@/components/project/review-rounds";
 import { ReviewStateIcon, RISK_TONE, SummaryAlert, UNSENT } from "@/components/review";
 import {
   Avatar,
@@ -63,6 +64,7 @@ import {
   canAskForReview,
   canManageReviews,
   commitUrl,
+  DEFAULT_ROUNDS,
   earlierFindings,
   pullRef,
   RISKS,
@@ -71,6 +73,7 @@ import {
   reviewLook,
   reviewOutcome,
   reviewRepos,
+  rounds,
   sameRepos,
   shortSha,
 } from "@/lib/reviews";
@@ -426,6 +429,8 @@ function Status({
                   {!agents.drafts && "Drafts wait until they're marked ready for review. "}
                   {agents.description_summary &&
                     "Before each review, they sum the pull request up at the end of its description. "}
+                  {agents.rounds !== DEFAULT_ROUNDS &&
+                    `Their findings reach the agent that opened the pull request for up to ${rounds(agents.rounds)} before fctl pauses for a person. `}
                   <Waiting bots={agents.bots} />
                 </>
               )}
@@ -627,7 +632,8 @@ const FIELDS = ["model", "effort", "instructions", "bots", "skipped_repos"];
 
 /**
  * Whose subscription they run on, the repositories they review and whether drafts get reviews, their
- * model, effort level and instructions, and the apps that start reviews: for the project's owners.
+ * model, effort level and instructions, the rounds of review in a row whose findings reach the agent that
+ * opened the pull request, and the apps that start reviews: for the project's owners.
  * Saving another owner's runs them on yours.
  */
 function SettingsForm({
@@ -650,6 +656,7 @@ function SettingsForm({
   const [bots, setBots] = useState<string[]>(agents.bots);
   const [summary, setSummary] = useState(agents.description_summary);
   const [drafts, setDrafts] = useState(agents.drafts);
+  const [roundsInARow, setRoundsInARow] = useState(agents.rounds);
   const repos = reviewRepos(agents, project.repo);
   const [skipped, setSkipped] = useState<string[]>(agents.skipped_repos.map(repoName));
   // Those the project's agents may still write to, should a repository leave meanwhile.
@@ -674,6 +681,7 @@ function SettingsForm({
     !sameBots(bots, agents.bots) ||
     summary !== agents.description_summary ||
     drafts !== agents.drafts ||
+    roundsInARow !== agents.rounds ||
     skipsChanged;
   return (
     <form
@@ -690,6 +698,7 @@ function SettingsForm({
           bots,
           drafts,
           description_summary: summary,
+          rounds: roundsInARow,
           ...(skipsChanged && { skipped_repos: skips }),
         });
       }}
@@ -783,6 +792,7 @@ function SettingsForm({
         )}
       </Field>
       <DescriptionSummary on={summary} onChange={setSummary} />
+      <ReviewRounds value={roundsInARow} onChange={setRoundsInARow} />
       <ReviewBots project={project} value={bots} saved={agents.bots} onChange={setBots} error={err("bots")} />
       {save.error && !FIELDS.includes((save.error as { field?: string }).field ?? "") && (
         <OnError error={save.error} className="" />

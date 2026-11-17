@@ -64,6 +64,15 @@ drafts: boolean,
  */
 description_summary: boolean, 
 /**
+ * Where one of fctl's agents opened the pull request, its session
+ * gets the findings of this many reviews in a row while nobody
+ * messages its agent; fctl holds back those of the next, until a
+ * person messages it or passes them on, so that the two agents don't
+ * go back and forth for good. 1 to 10; 5 by default, and from control
+ * planes before it.
+ */
+rounds: number, 
+/**
  * Why no review starts now (they are on), or would start once they
  * are on: no GitHub webhook, their person's Claude connection is gone…
  */

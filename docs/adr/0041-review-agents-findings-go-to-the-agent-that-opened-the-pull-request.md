@@ -40,7 +40,9 @@ what it decided in each finding's thread.
   something new, which the agent fixes in turn. A session gets the
   findings of at most five reviews in a row while nobody messages its
   agent; the next ones only say in its transcript what they found, until
-  someone does.
+  someone does. Since 2026-11-17 the project's owners choose the number,
+  from one to ten, in their review agents' settings; five stays the
+  default.
 
 ## Consequences
 

@@ -224,7 +224,7 @@ fn event_json(seq: i64, ts: i64, kind: &str, data: &str) -> String {
 /// Why a review agent's session takes no message or interrupt.
 const REVIEWS_TAKE_NO_MESSAGES: &str = "Review agents take no messages: this one reviews its pull request's commit, posts what it found on GitHub, and ends. A new commit starts a new review.";
 /// The meta key that counts the reviews whose findings the agent got in a
-/// row, which a person's message ends (`fctl_domain::reviews::MAX_PASSED_ON`).
+/// row, which a person's message ends (`fctl_domain::reviews::ROUNDS`).
 const REVIEWS_PASSED_ON: &str = "reviews_passed_on";
 /// The meta key that keeps the reviews whose findings fctl held back from
 /// the agent, one for each pull request, until a person passes them on or
@@ -1124,8 +1124,8 @@ impl SessionObject {
     /// fctl's review agent posted findings on a pull request this
     /// session's agent opened (`crate::reviews`): a message from fctl hands
     /// them to the agent, and resumes the session when it stopped, as a
-    /// person's message would. After the findings of
-    /// [`fctl_domain::reviews::MAX_PASSED_ON`] reviews in a row while
+    /// person's message would. After the findings of as many reviews in a
+    /// row as the project's review agents pass on (`b.rounds`) while
     /// nobody messaged the agent, the transcript says what was found
     /// instead, so that the agent and the review agent don't go back and
     /// forth for good. A review's findings come once; archived and failed
@@ -1174,7 +1174,7 @@ impl SessionObject {
             None => {}
         }
         let now = now_ms();
-        if in_a_row >= fctl_domain::reviews::MAX_PASSED_ON {
+        if in_a_row >= b.rounds.max(1) {
             self.key(&key, "", now);
             let notice = fctl_proto::event::Notice {
                 ticket: None,
@@ -1312,9 +1312,9 @@ impl SessionObject {
                 level: fctl_proto::event::NoticeLevel::Info,
                 code: "review_passed_on".into(),
                 message: if unsent {
-                    fctl_domain::reviews::unsent_passed_on_by(&b.by.name)
+                    fctl_domain::reviews::unsent_passed_on_by(&b.by.name, b.rounds)
                 } else {
-                    fctl_domain::reviews::passed_on_by(&b.by.name)
+                    fctl_domain::reviews::passed_on_by(&b.by.name, b.rounds)
                 },
                 until: None,
                 published: None,

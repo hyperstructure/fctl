@@ -1,7 +1,7 @@
 // A pull request as sessions show it: its state as GitHub's octicon for it, in GitHub's color, a
 // mark for its checks, and how fctl's review of it stands.
 
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, CirclePause, Inbox, Play, RotateCw, Send } from "lucide-react";
 import type { ReactNode } from "react";
@@ -22,7 +22,7 @@ import {
   reviewIssues,
 } from "@/lib/pulls";
 import { keys, queryClient, useProjects } from "@/lib/queries";
-import { pullRef, shortSha } from "@/lib/reviews";
+import { pullRef, rounds, shortSha } from "@/lib/reviews";
 
 const STATE_COLORS: Record<PrState, string> = {
   open: "text-pr-open",
@@ -138,15 +138,12 @@ export function PullRequestReviewLine({
   );
 }
 
-/** "5 review rounds", "1 more round". */
-const rounds = (n: number, more = false) =>
-  `${n} ${more ? "more " : "review "}${n === 1 ? "round" : "rounds"}`;
-
 /**
  * What fctl held back of the review: its findings, which the agent didn't get, since it got those
  * of `after` reviews in a row with no message from a person. Those who may message the agent pass
- * them on, and it gets those of as many reviews in a row again; a message to it ends the pause
- * too, and leaves the findings to what it says.
+ * them on, and it gets those of as many reviews in a row as the review's project's review agents
+ * pass on now, these included; a message to it ends the pause too, and leaves the findings to what
+ * it says.
  */
 function HeldReview({
   review,
@@ -157,6 +154,14 @@ function HeldReview({
   after: number;
   passOnTo?: string;
 }) {
+  // Its project's owners may have chosen another number since: as many as `after` until it says.
+  const project = review.project_id;
+  const agents = useQuery({
+    queryKey: keys.reviewAgents(project ?? ""),
+    queryFn: () => api.reviewAgents(project ?? ""),
+    enabled: !!project && !!passOnTo,
+  });
+  const next = agents.data?.rounds ?? after;
   return (
     <PassOnStrip
       review={review}
@@ -165,7 +170,7 @@ function HeldReview({
       title={`Paused after ${rounds(after)}`}
       text="fctl held these findings back, as nobody wrote to the agent in that time."
       action={{
-        label: `Continue for ${rounds(after, true)}`,
+        label: `Continue for ${rounds(next, true)}`,
         icon: <Play aria-hidden="true" className="size-3" />,
       }}
     />
