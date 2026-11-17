@@ -67,6 +67,14 @@ pub struct WhenArgs {
     /// or agents (fctl's). Default: anyone, but writers for pr-opened.
     #[arg(long, value_name = "WHO")]
     pub by: Option<String>,
+    /// With --on: the most sessions its events start in an hour (the last
+    /// 60 minutes), from 1 to 100; past it they start none. Default: 3.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub max_per_hour: Option<u32>,
+    /// With --on: the most sessions its events start in a day (the last 24
+    /// hours), from 1 to 1000. Default: 10.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=1000))]
+    pub max_per_day: Option<u32>,
     /// Run only when someone runs it, or another tool does with an access
     /// token (fctl schedules run).
     #[arg(long)]
@@ -78,16 +86,20 @@ pub struct WhenArgs {
 }
 
 impl WhenArgs {
-    /// Whether it narrows down an event: --repo, --label, --branch or --by.
+    /// Whether it narrows down an event, or caps its sessions: --repo,
+    /// --label, --branch, --by, --max-per-hour or --max-per-day.
     fn narrows(&self) -> bool {
         !self.repos.is_empty()
             || !self.labels.is_empty()
             || !self.branches.is_empty()
             || self.by.is_some()
+            || self.max_per_hour.is_some()
+            || self.max_per_day.is_some()
     }
 
     /// The event it asks for: `--on` with what narrows it down, or what
-    /// narrows down `current`'s anew, which keeps the rest.
+    /// narrows down `current`'s anew, which keeps the rest. Another kind
+    /// keeps `current`'s caps unless they are given too.
     fn event(&self, current: Option<&ScheduleEvent>) -> Result<Option<ScheduleEvent>> {
         let base = match (&self.on, current) {
             (Some(on), _) => ScheduleEvent {
@@ -96,10 +108,12 @@ impl WhenArgs {
                 labels: Vec::new(),
                 branches: Vec::new(),
                 by: None,
+                max_per_hour: current.and_then(|e| e.max_per_hour),
+                max_per_day: current.and_then(|e| e.max_per_day),
             },
             (None, Some(e)) if self.narrows() => e.clone(),
             (None, _) if self.narrows() => bail!(
-                "--repo, --label, --branch and --by narrow down an event: pass --on too (fctl schedules add --help)."
+                "--repo, --label, --branch, --by, --max-per-hour and --max-per-day go with an event: pass --on too (fctl schedules add --help)."
             ),
             (None, _) => return Ok(None),
         };
@@ -115,6 +129,8 @@ impl WhenArgs {
                 None => base.by,
             },
             kind: base.kind,
+            max_per_hour: self.max_per_hour.or(base.max_per_hour),
+            max_per_day: self.max_per_day.or(base.max_per_day),
         }))
     }
 }
@@ -176,6 +192,7 @@ pub enum SchedulesCmd {
   fctl schedules add \"Release notes\" --at 2026-10-30T16:00+01:00 -m \"Draft the release notes for v1.0.\"
   fctl schedules add --at 2h -m \"Check whether the deploy went out, and tell me.\"
   fctl schedules add \"Triage new issues\" --on issue-opened --github triage \\
+    --max-per-hour 10 --max-per-day 50 \\
     -m \"Triage the issue: label it, and ask for what is missing to act on it.\"
   fctl schedules add \"Work on labeled issues\" --on issue-labeled --label fctl \\
     -m \"Do what the issue asks, and open a pull request that fixes it.\"
@@ -215,6 +232,7 @@ pub enum SchedulesCmd {
   fctl schedules edit \"Weekly dependencies\" --cron \"0 7 * * 1\"
   fctl schedules edit \"Triage new issues\" --on issue-opened --label bug   # bug reports alone
   fctl schedules edit \"Learn from merges\" --by agents     # pull requests fctl's agents opened
+  fctl schedules edit \"Work on labeled issues\" --max-per-day 5   # 5 sessions a day at most
   fctl schedules edit sch_01JC… --task-file triage.md --effort high
   fctl schedules edit sch_01JC… --mine        # run it on your subscription")]
     Edit {
@@ -413,6 +431,12 @@ pub async fn run(server: Option<&str>, args: SchedulesArgs, json: bool) -> Resul
                     .map(|g| g.as_str().to_owned())
                     .unwrap_or_else(|| "as much as the project allows".into()),
             );
+            if let Some(e) = &s.event {
+                row(
+                    "At most",
+                    fctl_domain::triggers::describe_caps(fctl_domain::triggers::caps(e)),
+                );
+            }
             row(
                 "Sessions",
                 if s.hide_sessions {
@@ -998,18 +1022,47 @@ mod tests {
             labels: Vec::new(),
             branches: Vec::new(),
             by: Some(ScheduleEventBy::Agents),
+            max_per_hour: Some(5),
+            max_per_day: Some(20),
         };
         let changed = narrower.event(Some(&current))?;
         assert_eq!(
-            changed.map(|e| (e.repos, e.branches, e.by)),
+            changed.map(|e| (e.repos, e.branches, e.by, e.max_per_day)),
             Some((
                 vec!["acme/web".to_owned()],
                 vec!["main".to_owned()],
-                Some(ScheduleEventBy::Agents)
+                Some(ScheduleEventBy::Agents),
+                Some(20)
             ))
         );
         assert!(narrower.event(None).is_err());
         assert_eq!(WhenArgs::default().event(Some(&current))?, None);
+        // Caps change on their own, and stay as the kind changes.
+        let capped = WhenArgs {
+            max_per_day: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(
+            capped
+                .event(Some(&current))?
+                .map(|e| (e.kind, e.max_per_hour, e.max_per_day)),
+            Some((ScheduleEventKind::PullRequestMerged, Some(5), Some(5)))
+        );
+        assert!(capped.event(None).is_err());
+        let other = WhenArgs {
+            on: Some("issue-opened".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            other
+                .event(Some(&current))?
+                .map(|e| (e.kind, e.by, e.max_per_hour, e.max_per_day)),
+            Some((ScheduleEventKind::IssueOpened, None, Some(5), Some(20)))
+        );
+        assert_eq!(
+            other.event(None)?.map(|e| (e.max_per_hour, e.max_per_day)),
+            Some((None, None))
+        );
         Ok(())
     }
 
