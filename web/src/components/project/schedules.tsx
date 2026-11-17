@@ -2427,7 +2427,9 @@ function EventFields({
               key={k}
               type="button"
               aria-pressed={on}
-              onClick={() => set({ kind: k })}
+              // Whose it takes starts at the kind's own default: anyone's pull requests opened is a risk
+              // to choose, not to carry over.
+              onClick={() => set({ kind: k, by: k === kind ? value.by : undefined })}
               className={cn(
                 "flex items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow] duration-150",
                 on
