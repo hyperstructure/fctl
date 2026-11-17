@@ -885,7 +885,8 @@ function Item({
               title="Run now, on your Claude subscription"
               className="max-sm:px-2 sm:min-w-24 [&>span]:max-sm:sr-only"
             >
-              <span>Run now</span>
+              {/* One that waits for events asks what to run it on first. */}
+              <span>{s.event ? "Run now…" : "Run now"}</span>
             </Button>
           )}
           {/* Paused, it starts nothing: what it needs is to be resumed. */}
