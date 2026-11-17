@@ -1,8 +1,9 @@
-// A project's schedules: tasks fctl starts a session for on its own, once at a set time or again and
-// again, on the Claude subscription of the person each runs for. Everyone who sees the project sees
-// them and what each run started; people who start sessions set them up and run one now, on their own
-// subscription; a schedule's owner, and the project's maintainers and owners, change, pause and delete
-// it (changing someone else's makes it theirs).
+// A project's schedules: tasks fctl starts a session for on its own, once at a set time, again and
+// again, or each time something happens on GitHub (an issue opened, a pull request merged…), on the
+// Claude subscription of the person each runs for. Everyone who sees the project sees them and what
+// each run started; people who start sessions set them up and run one now, on their own subscription;
+// a schedule's owner, and the project's maintainers and owners, change, pause and delete it (changing
+// someone else's makes it theirs).
 
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -13,21 +14,25 @@ import {
   CalendarClock,
   ChevronDown,
   CircleCheck,
+  CircleDot,
   CircleX,
   Ellipsis,
   GraduationCap,
-  Inbox,
   Package,
   Pause,
   Pencil,
   Play,
   Plus,
   Repeat,
+  Rocket,
+  Siren,
   SkipForward,
+  Tag,
   Trash2,
   TriangleAlert,
   UserRoundCheck,
   Webhook,
+  Zap,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
@@ -38,12 +43,14 @@ import {
   Button,
   CopyButton,
   Dialog,
+  Field,
   IconButton,
   Input,
   Menu,
   MenuItem,
   MenuSeparator,
   Meta,
+  PullRequestIcon,
   Select,
   type SelectOption,
   Skeleton,
@@ -60,7 +67,7 @@ import { ago, agoShort, stamp } from "@/lib/format";
 import { githubLevel, lowerAccess, onGithub, tracksTickets } from "@/lib/github-access";
 import { siteUrl } from "@/lib/install";
 import { asked, type Choice, effortLabel, modelLabel, projectChoice } from "@/lib/models";
-import { keys, queryClient, useMe } from "@/lib/queries";
+import { keys, queryClient, useMe, useProjectRepos } from "@/lib/queries";
 import {
   browserZone,
   canSchedule,
@@ -69,12 +76,18 @@ import {
   cronRepeat,
   DEFAULT_REPEAT,
   describeCron,
+  describeEvent,
+  EVENT_KINDS,
+  EVENT_NAMES,
   type Every,
+  eventBy,
+  eventSaid,
   fromWall,
   moment,
   nameFromTask,
   nextRuns,
   ordinal,
+  orList,
   parseCron,
   type Repeat as RepeatChoice,
   repeatCron,
@@ -83,6 +96,9 @@ import {
   scheduleRights,
   scheduleWhen,
   sentence,
+  takesBranches,
+  takesBy,
+  takesLabels,
   WEEKDAY_NAMES,
   wallParts,
   zoneCity,
@@ -93,7 +109,7 @@ import {
 
 // ───────────────────────────── ideas ─────────────────────────────
 
-/** A schedule to start from: what it asks of its agents, and when. */
+/** A schedule to start from: what it asks of its agents, and when: at times, or on an event. */
 interface Idea {
   key: string;
   name: string;
@@ -101,15 +117,38 @@ interface Idea {
   line: string;
   icon: ReactNode;
   prompt: string;
-  repeat: RepeatChoice;
+  repeat?: RepeatChoice;
+  /** What it waits for on GitHub, for one that runs on an event rather than at times. */
+  event?: G.ScheduleEvent;
   /** What its agents may do on GitHub, when less than the project allows does. */
   github?: G.GithubAccess;
-  /** It works on the project's tickets: only for projects whose agents reach a tracker. */
-  tickets?: boolean;
+  /**
+   * It works on the project's tickets: only where its agents reach a tracker (`any`), or that tracker
+   * (GitHub's issues start events; Linear's issues come to a schedule only at its times).
+   */
+  tickets?: "any" | "github" | "linear";
+  /** It runs often enough that its sessions are best kept off session lists. */
+  hide?: boolean;
 }
 
-/** The ideas for `project`: those about tickets only where its agents reach a tracker. */
-const ideasFor = (project: G.Project) => IDEAS.filter((i) => !i.tickets || tracksTickets(project));
+/**
+ * The ideas for `project`: those about tickets only where its agents reach the tracker they need, and
+ * those that wait for events only where they work on GitHub.
+ */
+function ideasFor(project: G.Project): Idea[] {
+  const tracker = project.settings.tickets?.tracker ?? "github";
+  return IDEAS.filter(
+    (i) =>
+      (!i.tickets || (i.tickets === "any" ? tracksTickets(project) : tracker === i.tickets)) &&
+      (!i.event || onGithub(project)),
+  );
+}
+
+/** When an idea runs, in words: "Every Monday at 09:00", "When an issue is opened". */
+const ideaWhen = (i: Idea) =>
+  i.event
+    ? sentence(describeEvent(i.event))
+    : sentence(describeCronText(repeatCron(i.repeat ?? DEFAULT_REPEAT)));
 
 const at = (every: Every, hour: number, weekdays: number[] = [1]): RepeatChoice => ({
   ...DEFAULT_REPEAT,
@@ -121,6 +160,69 @@ const at = (every: Every, hour: number, weekdays: number[] = [1]): RepeatChoice 
 
 const IDEAS: Idea[] = [
   {
+    key: "triage",
+    name: "Triage new issues",
+    line: "Labels, questions and links for each issue as it's opened.",
+    icon: <CircleDot />,
+    prompt:
+      "Triage the issue that was just opened. Add the labels that fit, from those the tracker has. Where something is missing to act on it, ask for it in a comment; say there which issues it duplicates and which code it concerns. Leave it alone when someone on the team already answered it.",
+    event: { kind: "issue_opened" },
+    // Labels and comments, and nothing else: an issue that asks for more can't get it.
+    github: "triage",
+    tickets: "github",
+    hide: true,
+  },
+  {
+    // Linear's issues come to schedules only at their times.
+    key: "triage-daily",
+    name: "Triage new issues",
+    line: "Labels, questions and links for each issue opened since the last run.",
+    icon: <CircleDot />,
+    prompt:
+      "Triage the issues opened since the previous run. For each, add the labels that fit, from those the tracker has. Where something is missing to act on it, ask for it in a comment, and say there which issues it duplicates and which code it concerns.",
+    repeat: at("weekday", 8),
+    github: "triage",
+    tickets: "linear",
+  },
+  {
+    key: "labeled",
+    name: "Work on labeled issues",
+    line: "Label an issue fctl to hand it to an agent, which opens a pull request.",
+    icon: <Tag />,
+    prompt:
+      "Work on the issue that was just labeled: read it and its comments, find the code it concerns, make the change it asks for, test it, and open a pull request that says Fixes and the issue's number. Where it's unclear what it asks, or it takes a decision only a person can make, ask in a comment on the issue instead, and stop.",
+    event: { kind: "issue_labeled", labels: ["fctl"] },
+    tickets: "github",
+  },
+  {
+    key: "merged",
+    name: "Learn from merged pull requests",
+    line: "What people said in the review of each agent's pull request, kept in AGENTS.md or a skill.",
+    icon: <PullRequestIcon state="merged" />,
+    prompt:
+      "Read the review of the pull request that just merged: what people wrote on it and on its lines, the changes they asked for, and the commits that answered them. Where it shows something agents working here should know or do differently (a convention, a command, a trap), and AGENTS.md or the skills don't say it yet, open a pull request that adds it where it belongs, in the voice the file already has. When people said nothing worth keeping, change nothing and say so in a sentence.",
+    event: { kind: "pull_request_merged", by: "agents" },
+    hide: true,
+  },
+  {
+    key: "checks",
+    name: "Fix failing checks on main",
+    line: "When the default branch's checks fail, an agent finds why and opens a fix.",
+    icon: <Siren />,
+    prompt:
+      "The checks of the newest commit on the default branch failed. Find out why: read the failed runs' logs (gh run view --log-failed) and the commits since the checks last passed. When a pull request already fixes it, or a run again passes (a flaky test), say so and stop. Otherwise fix the cause rather than the test, and open a pull request that says what broke and why.",
+    event: { kind: "checks_failed" },
+  },
+  {
+    key: "release",
+    name: "Try each release",
+    line: "Each release installed and tried as people would, and what doesn't work filed.",
+    icon: <Rocket />,
+    prompt:
+      "Try the release that was just published as people would: install it the way its README or install guide says, and try what its notes say changed. File an issue for each problem you find, with how to reproduce it. When all is well, say so in a sentence.",
+    event: { kind: "release_published" },
+  },
+  {
     key: "dependencies",
     name: "Update dependencies",
     line: "A pull request with the week's patch and minor releases, tested.",
@@ -128,18 +230,6 @@ const IDEAS: Idea[] = [
     prompt:
       "Update the dependencies that have new patch or minor releases. Run the tests and the linters, fix what the updates break, and open one pull request that lists each update. Leave major versions out: list them in the pull request's description, with what upgrading would take.",
     repeat: at("week", 9, [1]),
-  },
-  {
-    key: "triage",
-    name: "Triage new issues",
-    line: "Labels, questions and links for each issue opened since the last run.",
-    icon: <Inbox />,
-    prompt:
-      "Triage the issues opened since the previous run. For each, add the labels that fit, from those the tracker has. Where something is missing to act on it, ask for it in a comment, and say there which issues it duplicates and which code it concerns.",
-    repeat: at("weekday", 8),
-    // Labels and comments, and nothing else: an issue that asks for more can't get it.
-    github: "triage",
-    tickets: true,
   },
   {
     key: "memory",
@@ -167,6 +257,10 @@ export interface Draft {
   name?: string;
   prompt?: string;
   repeat?: RepeatChoice;
+  /** What it waits for on GitHub, for an idea that runs on an event. */
+  event?: G.ScheduleEvent;
+  /** Its sessions stay off session lists. */
+  hide?: boolean;
   model?: string;
   effort?: string;
   github?: G.GithubAccess;
@@ -215,8 +309,8 @@ export function ScheduleButton({
         files
           ? "Schedules take no files: start it now, or remove them to schedule it"
           : bare
-            ? "Schedule: run this task later, or again and again"
-            : "Run this task later, or again and again"
+            ? "Schedule: run this task later, again and again, or on an event"
+            : "Run this task later, again and again, or each time something happens on GitHub"
       }
       disabled={!prompt.trim() || files > 0 || disabled}
       onClick={() => {
@@ -241,7 +335,14 @@ export function ScheduleButton({
   );
 }
 
-const fromIdea = (i: Idea): Draft => ({ name: i.name, prompt: i.prompt, repeat: i.repeat, github: i.github });
+const fromIdea = (i: Idea): Draft => ({
+  name: i.name,
+  prompt: i.prompt,
+  repeat: i.repeat,
+  event: i.event,
+  hide: i.hide,
+  github: i.github,
+});
 
 // ───────────────────────────── the tab ─────────────────────────────
 
@@ -373,9 +474,14 @@ const POINTS = [
     text: "Every hour, day, weekday, week or month in your time zone, once at a set time, on any cron schedule, or only when asked.",
   },
   {
+    key: "events",
+    icon: <Zap />,
+    text: "Each time something happens on GitHub: an issue is opened or labeled, a pull request opens or merges, a release is published, checks fail on main.",
+  },
+  {
     key: "skips",
     icon: <SkipForward />,
-    text: "Runs don't pile up: one is skipped while the last is still at work, or while the plan it runs on is at its limit.",
+    text: "Runs don't pile up: one is skipped while the last is still at the same work, or while the plan it runs on is at its limit.",
   },
   {
     key: "run",
@@ -393,6 +499,12 @@ const POINTS = [
 /** What schedules do, for a project that has none, with ideas to start from. */
 function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) => void }) {
   const can = canSchedule(project.role);
+  const ideas = ideasFor(project);
+  // Those that wait for something first: they are what the project's agents can't do from a timetable.
+  const groups = [
+    { key: "events", label: "When something happens on GitHub", ideas: ideas.filter((i) => i.event) },
+    { key: "times", label: "At set times", ideas: ideas.filter((i) => !i.event) },
+  ].filter((g) => g.ideas.length > 0);
   return (
     <div className="flex animate-rise flex-col gap-12 py-2">
       <div className="grid items-center gap-x-12 gap-y-10 md:grid-cols-[minmax(0,1fr)_300px]">
@@ -401,8 +513,9 @@ function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) =
             Sessions that start on their own
           </h2>
           <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-ink-3">
-            Give an agent a task and a time: once, or again and again. Each run is a session of its own, on
-            your Claude subscription, that you follow like any other.
+            Give an agent a task, and a time or something to wait for: once, again and again, or each time it
+            happens. Each run is a session of its own, on your Claude subscription, that you follow like any
+            other.
           </p>
           <ul className="mt-6 flex max-w-xl flex-col gap-3">
             {POINTS.map((p) => (
@@ -431,40 +544,47 @@ function Intro({ project, onStart }: { project: G.Project; onStart: (d: Draft) =
               Start from scratch
             </Button>
           </div>
-          <ul className="border-t border-line">
-            {ideasFor(project).map((i) => (
-              <li key={i.key}>
-                <button
-                  type="button"
-                  onClick={() => onStart(fromIdea(i))}
-                  className="group flex w-full items-center gap-3.5 border-b border-line px-3 py-3 text-left transition-colors hover:bg-hover/40 focus-visible:bg-hover/40 focus-visible:outline-none"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line)] [&_svg]:size-4"
-                  >
-                    {i.icon}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="text-[14px] text-ink">{i.name}</span>
-                      {i.github && onGithub(project) && (
-                        <IdeaAccess access={lowerAccess(i.github, projectChoice(project).github)} />
-                      )}
-                    </span>
-                    <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">{i.line}</span>
-                    <span className="mt-1 block text-[12px] text-ink-4 sm:hidden">
-                      {sentence(describeCronText(repeatCron(i.repeat)))}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-[12.5px] text-ink-4 max-sm:hidden">
-                    {sentence(describeCronText(repeatCron(i.repeat)))}
-                  </span>
-                  <ArrowRight className="size-3.5 shrink-0 text-ink-4 transition-transform duration-200 group-hover:translate-x-0.5" />
-                </button>
-              </li>
+          <div className="flex flex-col gap-6">
+            {groups.map((g) => (
+              <div key={g.key}>
+                <h4 id={`ideas-${g.key}`} className="mb-1.5 text-[12.5px] text-ink-4">
+                  {g.label}
+                </h4>
+                <ul aria-labelledby={`ideas-${g.key}`} className="border-t border-line">
+                  {g.ideas.map((i) => (
+                    <li key={i.key}>
+                      <button
+                        type="button"
+                        onClick={() => onStart(fromIdea(i))}
+                        className="group flex w-full items-center gap-3.5 border-b border-line px-3 py-3 text-left transition-colors hover:bg-hover/40 focus-visible:bg-hover/40 focus-visible:outline-none"
+                      >
+                        <span
+                          aria-hidden="true"
+                          className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-raised text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line)] [&_svg]:size-4"
+                        >
+                          {i.icon}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-[14px] text-ink">{i.name}</span>
+                            {i.github && onGithub(project) && (
+                              <IdeaAccess access={lowerAccess(i.github, projectChoice(project).github)} />
+                            )}
+                          </span>
+                          <span className="mt-0.5 block text-[12.5px] leading-snug text-ink-3">{i.line}</span>
+                          <span className="mt-1 block text-[12px] text-ink-4 sm:hidden">{ideaWhen(i)}</span>
+                        </span>
+                        <span className="max-w-[40%] shrink-0 text-right text-[12.5px] text-ink-4 max-sm:hidden">
+                          {ideaWhen(i)}
+                        </span>
+                        <ArrowRight className="size-3.5 shrink-0 text-ink-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
         </section>
       ) : (
         <p className="text-[13px] text-ink-4">People who start sessions in this project set up schedules.</p>
@@ -491,21 +611,28 @@ function describeCronText(text: string): string {
   return "error" in parsed ? text : describeCron(parsed.cron, clockOf);
 }
 
-/** What a schedule is: when it runs, through the week, and the sessions it started. */
+/**
+ * What a schedule is: one that runs at its times, through the week, and one that runs on an event, with
+ * the issues that started its sessions.
+ */
 function Preview() {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const card = "overflow-hidden rounded-xl border border-line bg-surface";
+  const head = (icon: ReactNode, name: string, when: string) => (
+    <div className="flex items-center gap-2.5 border-b border-line px-3.5 py-3">
+      <span className="flex size-7 items-center justify-center rounded-lg bg-raised text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line)] [&_svg]:size-3.5">
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <p className="text-[13px] font-medium text-ink">{name}</p>
+        <p className="text-[11.5px] text-ink-3">{when}</p>
+      </div>
+    </div>
+  );
   return (
     <div aria-hidden="true" className="relative select-none max-md:max-w-sm">
-      <div className="overflow-hidden rounded-xl border border-line bg-surface shadow-[0_18px_50px_-24px_rgb(0_0_0/0.35)]">
-        <div className="flex items-center gap-2.5 border-b border-line px-3.5 py-3">
-          <span className="flex size-7 items-center justify-center rounded-lg bg-raised text-ink-2 shadow-[inset_0_0_0_1px_var(--c-line)]">
-            <Repeat className="size-3.5" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-[13px] font-medium text-ink">Update dependencies</p>
-            <p className="text-[11.5px] text-ink-3">Every Monday at {clockOf(9, 0)}</p>
-          </div>
-        </div>
+      <div className={cn(card, "shadow-[0_18px_50px_-24px_rgb(0_0_0/0.35)]")}>
+        {head(<Repeat />, "Update dependencies", `Every Monday at ${clockOf(9, 0)}`)}
         <div className="grid grid-cols-7 gap-1 px-3.5 pt-3 pb-3.5">
           {days.map((d, i) => (
             <div key={d} className="flex flex-col items-center gap-1.5">
@@ -523,18 +650,23 @@ function Preview() {
         </div>
         <div className="border-t border-line px-3.5 py-2.5 font-mono text-[11px] text-ink-4">0 9 * * 1</div>
       </div>
-      <div className="mt-3 flex flex-col gap-1.5 rounded-xl border border-line bg-surface px-3.5 py-2.5 text-[12px] shadow-[0_18px_50px_-30px_rgb(0_0_0/0.35)]">
-        {[
-          ["#41", "Update 12 dependencies", "idle", "6d"],
-          ["#37", "Update 3 dependencies", "stopped", "13d"],
-        ].map(([n, title, status, when]) => (
-          <div key={n} className="flex items-center gap-2">
-            <StatusDot status={status as G.SessionStatus} />
-            <span className="font-mono text-ink-4">{n}</span>
-            <span className="min-w-0 flex-1 truncate text-ink-2">{title}</span>
-            <span className="text-ink-4">{when}</span>
-          </div>
-        ))}
+      <div className={cn(card, "mt-3 shadow-[0_18px_50px_-30px_rgb(0_0_0/0.35)]")}>
+        {head(<CircleDot />, "Triage new issues", "When an issue is opened")}
+        <div className="flex flex-col gap-1.5 px-3.5 py-2.5 text-[12px]">
+          {[
+            ["#58", "Export fails on Safari", "running", "#212"],
+            ["#57", "Add a dark mode", "idle", "#209"],
+          ].map(([issue, title, status, session]) => (
+            <div key={issue} className="flex items-center gap-2">
+              <CircleDot className="size-3 shrink-0 text-pr-open" />
+              <span className="font-mono text-ink-4">{issue}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-2">{title}</span>
+              <ArrowRight className="size-3 shrink-0 text-ink-4" />
+              <StatusDot status={status as G.SessionStatus} />
+              <span className="font-mono text-ink-4">{session}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -550,6 +682,8 @@ function Glyph({ schedule }: { schedule: G.Schedule }) {
       <CircleCheck />
     ) : trouble ? (
       <TriangleAlert />
+    ) : schedule.event ? (
+      <EventIcon kind={schedule.event.kind} />
     ) : schedule.cron ? (
       <Repeat />
     ) : schedule.at !== undefined ? (
@@ -729,7 +863,7 @@ function Item({
             <span
               className="flex max-sm:hidden"
               title={
-                s.cron || s.at !== undefined
+                s.cron || s.at !== undefined || s.event
                   ? `Runs on ${s.owner.name}'s Claude subscription`
                   : `Set up by ${s.owner.name}`
               }
@@ -982,7 +1116,7 @@ function Details({
               <span className="font-mono">{s.base_branch}</span>
             </Fact>
           )}
-          {!s.cron && s.at === undefined ? (
+          {!s.cron && s.at === undefined && !s.event ? (
             <Fact k="Runs on">The subscription of whoever runs it</Fact>
           ) : (
             s.owner && (
@@ -1042,7 +1176,7 @@ function Details({
  * which is what it's for.
  */
 function ToolsDisclosure({ schedule: s }: { schedule: G.Schedule }) {
-  const timed = !!s.cron || s.at !== undefined;
+  const timed = !!s.cron || s.at !== undefined || !!s.event;
   const [open, setOpen] = useState(!timed);
   const id = `tools-${s.id}`;
   return (
@@ -1154,7 +1288,9 @@ function Runs({ schedule: s }: { schedule: G.Schedule }) {
         <p className="text-[13px] text-ink-4">
           {s.state === "active" && s.next_run_at
             ? `None yet. The first starts ${soon(s.next_run_at, s.timezone)}.`
-            : "None yet."}
+            : s.state === "active" && s.event
+              ? `None yet. The first starts ${describeEvent(s.event)}.`
+              : "None yet."}
         </p>
       ) : (
         <ul className="divide-y divide-line rounded-lg border border-line">
@@ -1205,7 +1341,11 @@ function RunRow({ run: r }: { run: G.ScheduleRun }) {
         ) : (
           <span className={r.outcome === "failed" ? "text-danger" : "text-ink-2"}>{runOutcome(r)}</span>
         )}
-        <span className="mt-0.5 block text-[12px] text-ink-4">{runTrigger(r)}</span>
+        {r.event ? (
+          <RunEvent event={r.event} />
+        ) : (
+          <span className="mt-0.5 block text-[12px] text-ink-4">{runTrigger(r)}</span>
+        )}
         {r.reason && (
           <span className="mt-0.5 block text-[12.5px] leading-relaxed text-ink-3 [overflow-wrap:anywhere]">
             {r.reason}
@@ -1214,6 +1354,29 @@ function RunRow({ run: r }: { run: G.ScheduleRun }) {
       </div>
       {when}
     </li>
+  );
+}
+
+/**
+ * What happened on GitHub that started a run, a link to it: "@octocat opened acme/web#41: The login
+ * page hangs". Over the row's link to the session, which covers the row.
+ */
+function RunEvent({ event: e }: { event: G.ScheduleRunEvent }) {
+  return (
+    <a
+      href={e.url}
+      target="_blank"
+      rel="noreferrer"
+      title="Open it on GitHub"
+      className="relative mt-0.5 flex max-w-full items-center gap-1.5 text-[12px] text-ink-4 transition-colors hover:text-ink-2"
+    >
+      <EventIcon kind={e.kind} className="size-3 shrink-0" />
+      <span className="min-w-0 truncate">
+        {sentence(eventSaid(e))}
+        {e.title && <span className="text-ink-3">: {e.title}</span>}
+      </span>
+      <ArrowUpRight className="size-3 shrink-0" />
+    </a>
   );
 }
 
@@ -1269,13 +1432,15 @@ function DeleteSchedule({
 
 // ───────────────────────────── the form ─────────────────────────────
 
-type Mode = "repeat" | "once" | "cron" | "asked";
+type Mode = "repeat" | "once" | "cron" | "event" | "asked";
 
-const MODES: { value: Mode; label: string }[] = [
-  { value: "repeat", label: "Repeats" },
-  { value: "once", label: "Once" },
-  { value: "cron", label: "Cron" },
-  { value: "asked", label: "When asked" },
+/** The ways a schedule runs, as the form offers them: a segmented control, and a list on a phone. */
+const MODES: SelectOption<Mode>[] = [
+  { value: "repeat", label: "Repeats", description: "Every hour, day, weekday, week or month" },
+  { value: "once", label: "Once", description: "On a day, at a time" },
+  { value: "cron", label: "Cron", description: "At a cron expression's times" },
+  { value: "event", label: "On an event", description: "Each time something happens on GitHub" },
+  { value: "asked", label: "When asked", description: "When someone, or another tool, runs it" },
 ];
 
 const EVERY: SelectOption<Every>[] = [
@@ -1353,15 +1518,17 @@ function Editor({
     effort: schedule?.effort ?? draft?.effort ?? own.effort,
     github: lowerAccess(schedule?.github_access ?? draft?.github ?? own.github, own.github),
   }));
-  const [hidden, setHidden] = useState(schedule?.hide_sessions ?? false);
+  const [hidden, setHidden] = useState(schedule?.hide_sessions ?? draft?.hide ?? false);
   const [zone, setZone] = useState(schedule?.timezone ?? here);
   const [pickZone, setPickZone] = useState(false);
   const initialRepeat = (schedule?.cron && cronRepeat(schedule.cron)) || draft?.repeat || DEFAULT_REPEAT;
   const [mode, setMode] = useState<Mode>(() => {
-    if (!schedule) return "repeat";
+    if (!schedule) return draft?.event ? "event" : "repeat";
+    if (schedule.event) return "event";
     if (schedule.cron) return cronRepeat(schedule.cron) ? "repeat" : "cron";
     return schedule.at !== undefined ? "once" : "asked";
   });
+  const [event, setEvent] = useState<EventForm>(() => eventForm(schedule?.event ?? draft?.event));
   const [repeat, setRepeat] = useState<RepeatChoice>(initialRepeat);
   const [cron, setCron] = useState(schedule?.cron ?? repeatCron(initialRepeat));
   const [once, setOnce] = useState(() => {
@@ -1383,15 +1550,17 @@ function Editor({
   const whenProblem =
     mode === "asked"
       ? undefined
-      : mode === "once"
-        ? Number.isNaN(atTime)
-          ? "Choose a day and a time"
-          : atTime < Date.now() - 60_000
-            ? "That time has passed: choose one ahead"
-            : undefined
-        : cronProblem(expression);
+      : mode === "event"
+        ? eventProblem(event)
+        : mode === "once"
+          ? Number.isNaN(atTime)
+            ? "Choose a day and a time"
+            : atTime < Date.now() - 60_000
+              ? "That time has passed: choose one ahead"
+              : undefined
+          : cronProblem(expression);
   const upcoming = useMemo(() => {
-    if (whenProblem || mode === "asked") return [];
+    if (whenProblem || mode === "asked" || mode === "event") return [];
     if (mode === "once") return [atTime];
     const parsed = parseCron(expression);
     return "error" in parsed ? [] : nextRuns(parsed.cron, zone, Date.now(), 3);
@@ -1400,15 +1569,18 @@ function Editor({
   const save = useMutation({
     mutationFn: async () => {
       const asks = asked(project, choice);
-      // Without a time, it runs when asked: a new one gets neither, a change clears the cron.
+      // Without a time, it runs when asked: a new one gets neither, a change clears the cron. A time
+      // ends what it waited for on GitHub, and an event its time.
       const timing =
         mode === "once"
           ? { at: atTime }
-          : mode === "asked"
-            ? schedule
-              ? { cron: "" }
-              : {}
-            : { cron: expression };
+          : mode === "event"
+            ? { event: toEvent(event) }
+            : mode === "asked"
+              ? schedule
+                ? { cron: "" }
+                : {}
+              : { cron: expression };
       if (!schedule) {
         const body: G.CreateScheduleRequest = {
           name: name.trim() || undefined,
@@ -1444,7 +1616,9 @@ function Editor({
           ? "Saved: its next run goes by it"
           : s.next_run_at
             ? `Set up: it runs ${soon(s.next_run_at, s.timezone)}`
-            : "Set up: it runs when asked",
+            : s.event
+              ? `Set up: it runs ${describeEvent(s.event)}`
+              : "Set up: it runs when asked",
       );
       onDone(s);
     },
@@ -1456,6 +1630,15 @@ function Editor({
   const zoneList = useMemo(() => (pickZone ? zoneOptions(here, zone) : []), [pickZone, here, zone]);
   const ready = !!prompt.trim() && !whenProblem;
   const takesOver = !!schedule && !mine;
+  /** Moves to another way of running, with what carries over: a repeat's times, as cron and back. */
+  const pickMode = (m: Mode) => {
+    if (m === "cron" && mode === "repeat") setCron(repeatCron(repeat));
+    if (m === "repeat" && mode === "cron") {
+      const r = cronRepeat(cron);
+      if (r) setRepeat(r);
+    }
+    setMode(m);
+  };
 
   return (
     <form
@@ -1480,9 +1663,16 @@ function Editor({
               onClick={() => {
                 setName(i.name);
                 setPrompt(i.prompt);
-                setMode("repeat");
-                setRepeat(i.repeat);
-                setCron(repeatCron(i.repeat));
+                if (i.event) {
+                  setMode("event");
+                  setEvent(eventForm(i.event));
+                } else {
+                  const r = i.repeat ?? DEFAULT_REPEAT;
+                  setMode("repeat");
+                  setRepeat(r);
+                  setCron(repeatCron(r));
+                }
+                setHidden(!!i.hide);
                 setChoice((c) => ({ ...c, github: lowerAccess(i.github ?? own.github, own.github) }));
               }}
               className={cn(
@@ -1554,20 +1744,18 @@ function Editor({
           <span className="text-[12.5px] font-medium text-ink-2" aria-hidden="true">
             When
           </span>
-          <div className="inline-flex rounded-full bg-sunken/70 p-0.5 shadow-[inset_0_0_0_1px_var(--c-line)]">
+          {/* Five don't fit a phone's row: there they are a list, each with what it means. */}
+          <div className="w-full sm:hidden">
+            <Select aria-label="When it runs" value={mode} onChange={pickMode} options={MODES} />
+          </div>
+          <div className="inline-flex rounded-full bg-sunken/70 p-0.5 shadow-[inset_0_0_0_1px_var(--c-line)] max-sm:hidden">
             {MODES.map((m) => (
               <button
                 key={m.value}
                 type="button"
                 aria-pressed={mode === m.value}
-                onClick={() => {
-                  if (m.value === "cron" && mode === "repeat") setCron(repeatCron(repeat));
-                  if (m.value === "repeat" && mode === "cron") {
-                    const r = cronRepeat(cron);
-                    if (r) setRepeat(r);
-                  }
-                  setMode(m.value);
-                }}
+                title={m.description as string}
+                onClick={() => pickMode(m.value)}
                 className={cn(
                   "h-7 rounded-full px-3.5 text-[12.5px] transition-[background-color,color,box-shadow] duration-150",
                   mode === m.value
@@ -1584,6 +1772,15 @@ function Editor({
         {mode === "repeat" && <RepeatFields repeat={repeat} onChange={setRepeat} />}
         {mode === "once" && <OnceFields zone={zone} value={once} onChange={setOnce} />}
         {mode === "cron" && <CronField value={cron} onChange={setCron} />}
+        {mode === "event" && (
+          <EventFields
+            project={project}
+            value={event}
+            onChange={setEvent}
+            problem={whenProblem}
+            failure={failure?.field?.startsWith("event") ? failure : undefined}
+          />
+        )}
         {mode === "asked" && (
           <div className="flex flex-col gap-3">
             <p className="max-w-xl text-[13.5px] leading-relaxed text-ink-3">
@@ -1603,7 +1800,7 @@ function Editor({
           className={cn(
             "flex flex-wrap items-center gap-x-2 gap-y-2 text-[12.5px] text-ink-3",
             // Its times are only in the note its runs' agents get.
-            mode === "asked" && "hidden",
+            (mode === "asked" || mode === "event") && "hidden",
           )}
         >
           {pickZone ? (
@@ -1638,13 +1835,15 @@ function Editor({
           {fieldError("timezone") && <span className="w-full text-danger">{fieldError("timezone")}</span>}
         </div>
 
-        <Upcoming
-          times={upcoming}
-          zone={zone}
-          here={here}
-          problem={fieldError("cron", "at") ?? whenProblem}
-          once={mode === "once"}
-        />
+        {mode !== "event" && (
+          <Upcoming
+            times={upcoming}
+            zone={zone}
+            here={here}
+            problem={fieldError("cron", "at") ?? whenProblem}
+            once={mode === "once"}
+          />
+        )}
       </fieldset>
 
       <div className="flex items-start justify-between gap-4">
@@ -1653,13 +1852,14 @@ function Editor({
           <p className="mt-1 max-w-xl text-[12.5px] leading-relaxed text-ink-3">
             {hidden
               ? "Its sessions stay out of Working now, the sidebar and the project's sessions. They're listed under its runs, and search finds them."
-              : "Its sessions show in session lists like any other. Turn it on for a schedule that runs often, such as an hourly triage."}
+              : "Its sessions show in session lists like any other. Turn it on for a schedule that runs often, such as an hourly triage or one for each new issue."}
           </p>
         </div>
         <Switch checked={hidden} onChange={setHidden} label="Keep its sessions off session lists" />
       </div>
 
       {save.error && !failure?.field && <Banner tone="error">{save.error.message}</Banner>}
+      {failure?.field === "event" && <Banner tone="error">{failure.message}</Banner>}
       {failure?.field === "claude" && (
         <Banner tone="error">
           {failure.message}{" "}
@@ -1935,4 +2135,306 @@ function Upcoming({
       </ol>
     </div>
   );
+}
+
+// ───────────────────────────── events ─────────────────────────────
+
+/** An event's kind, as GitHub draws what it happens to: an issue, a label, a pull request, a release. */
+function EventIcon({ kind, className }: { kind: G.ScheduleEventKind; className?: string }) {
+  switch (kind) {
+    case "issue_opened":
+      return <CircleDot className={className} />;
+    case "issue_labeled":
+      return <Tag className={className} />;
+    case "pull_request_opened":
+      return <PullRequestIcon state="open" className={className} />;
+    case "pull_request_merged":
+      return <PullRequestIcon state="merged" className={className} />;
+    case "release_published":
+      return <Rocket className={className} />;
+    case "checks_failed":
+      return <Siren className={className} />;
+    default:
+      return <Zap className={className} />;
+  }
+}
+
+/** What each kind is for, under its name. */
+const EVENT_LINES: Record<G.ScheduleEventKind, string> = {
+  issue_opened: "Triage each issue as it comes in",
+  issue_labeled: "Hand an issue to an agent with a label",
+  pull_request_opened: "Each new one, and a draft once it's ready",
+  pull_request_merged: "Learn from each merge and its review",
+  release_published: "Try or announce each release",
+  checks_failed: "Find and fix what broke, on main by default",
+  other: "",
+};
+
+/** Whose issues or pull requests start runs, as the form offers it. */
+const BY: SelectOption<G.ScheduleEventBy>[] = [
+  { value: "anyone", label: "Anyone", description: "People outside the project and apps too" },
+  {
+    value: "writers",
+    label: "People who can write to it",
+    description: "Those GitHub says may write to the repository, and fctl's agents",
+  },
+  { value: "agents", label: "fctl's agents", description: "Only what the project's agents opened" },
+];
+
+/** What the form keeps of an event as you choose: its labels and branches as typed. */
+interface EventForm {
+  kind: G.ScheduleEventKind;
+  /** The repositories it waits on: none for those the project's agents write to. */
+  repos: string[];
+  labels: string;
+  branches: string;
+  /** Absent: the kind's own default (`eventBy`). */
+  by?: G.ScheduleEventBy;
+}
+
+function eventForm(e?: G.ScheduleEvent): EventForm {
+  return {
+    kind: e?.kind ?? "issue_opened",
+    repos: e?.repos ?? [],
+    labels: (e?.labels ?? []).join(", "),
+    branches: (e?.branches ?? []).join(", "),
+    by: e?.by,
+  };
+}
+
+/** "bug, crash" as ["bug", "crash"]. */
+const items = (text: string) =>
+  text
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+/** What the API takes: only what the kind has. */
+function toEvent(f: EventForm): G.ScheduleEvent {
+  const labels = takesLabels(f.kind) ? items(f.labels) : [];
+  const branches = takesBranches(f.kind) ? items(f.branches) : [];
+  return {
+    kind: f.kind,
+    repos: f.repos.length ? f.repos : undefined,
+    labels: labels.length ? labels : undefined,
+    branches: branches.length ? branches : undefined,
+    by: takesBy(f.kind) && f.by ? f.by : undefined,
+  };
+}
+
+/** What keeps the form from saving an event: an issue's label that names none. */
+const eventProblem = (f: EventForm) =>
+  f.kind === "issue_labeled" && items(f.labels).length === 0 ? "Name the label that starts a run" : undefined;
+
+const fullName = (r: Pick<G.ProjectRepo, "owner" | "name">) => `${r.owner}/${r.name ?? "*"}`;
+const writes = (r: G.ProjectRepo) => r.primary || r.access === "write";
+
+/**
+ * What a schedule waits for on GitHub: the kinds to choose from, each with what it is for, what narrows
+ * the chosen one down (its repository, label, branch and people), and what each run gets, with why runs
+ * wouldn't start here when they wouldn't (the GitHub App isn't subscribed to the event, say).
+ */
+function EventFields({
+  project,
+  value,
+  onChange,
+  problem,
+  failure,
+}: {
+  project: G.Project;
+  value: EventForm;
+  onChange: (v: EventForm) => void;
+  /** What keeps it from saving (`eventProblem`), said under the field it concerns. */
+  problem?: string;
+  /** The control plane's word on a field of the event. */
+  failure?: ApiFailure;
+}) {
+  // The list the tab shows says which kinds fctl wouldn't hear of here.
+  const list = useQuery({ queryKey: keys.schedules(project.id), queryFn: () => api.schedules(project.id) });
+  const unheard = list.data?.unheard ?? [];
+  // Owner-wide grants name no repository to wait on.
+  const repos = (useProjectRepos(project.id).data?.repos ?? []).filter((r) => r.name);
+  const { kind } = value;
+  const set = (v: Partial<EventForm>) => onChange({ ...value, ...v });
+  const error = (field: string) => (failure?.field === field ? failure.message : undefined);
+  const by = eventBy({ kind, by: value.by });
+  const repoOptions: SelectOption[] = [
+    {
+      value: "",
+      label: "Its repositories",
+      description: `Those its agents write to${repos.some(writes) ? `: ${orList(repos.filter(writes).map(fullName))}` : ""}`,
+    },
+    ...repos.map((r) => ({
+      value: fullName(r),
+      label: fullName(r),
+      description: writes(r) ? undefined : "Read only: its agents can't write to it",
+    })),
+    ...(value.repos.length > 1 ? [{ value: value.repos.join(","), label: orList(value.repos) }] : []),
+  ];
+  const where = value.repos.length
+    ? orList(value.repos)
+    : repos.some(writes)
+      ? orList(repos.filter(writes).map(fullName))
+      : "the repositories its agents write to";
+  return (
+    <div className="flex flex-col gap-4">
+      <fieldset className="grid gap-2 sm:grid-cols-2">
+        <legend className="sr-only">What it waits for</legend>
+        {EVENT_KINDS.map((k) => {
+          const on = k === kind;
+          const away = unheard.find((u) => u.kind === k);
+          return (
+            <button
+              key={k}
+              type="button"
+              aria-pressed={on}
+              onClick={() => set({ kind: k })}
+              className={cn(
+                "flex items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow] duration-150",
+                on
+                  ? "border-line-strong bg-raised shadow-[inset_0_0_0_1px_var(--c-line-strong)]"
+                  : "border-line hover:bg-hover",
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "mt-px flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 [&_svg]:size-3.5",
+                  on ? "bg-highlight text-highlight-ink" : "bg-sunken/70 text-ink-3",
+                )}
+              >
+                <EventIcon kind={k} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-[13.5px] text-ink">
+                  {EVENT_NAMES[k]}
+                  {away && (
+                    <TriangleAlert
+                      className="size-3 shrink-0 text-amber"
+                      aria-label="fctl doesn't hear of it here"
+                    />
+                  )}
+                </span>
+                <span className="mt-0.5 block text-[12px] leading-snug text-ink-3">{EVENT_LINES[k]}</span>
+              </span>
+            </button>
+          );
+        })}
+      </fieldset>
+
+      {(repos.length > 1 || takesLabels(kind) || takesBranches(kind) || takesBy(kind)) && (
+        <div className="grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">
+          {repos.length > 1 && (
+            <Field label="In" error={error("event.repos")}>
+              {(id) => (
+                <Select
+                  id={id}
+                  value={value.repos.join(",")}
+                  options={repoOptions}
+                  onChange={(v) => set({ repos: v ? v.split(",") : [] })}
+                />
+              )}
+            </Field>
+          )}
+          {takesLabels(kind) && (
+            <Field
+              label={kind === "issue_labeled" ? "Label" : "With the label"}
+              hint={
+                kind === "issue_labeled"
+                  ? "The label that starts a run. Several, comma-separated: any of them."
+                  : "Empty: any. Several, comma-separated: any of them."
+              }
+              error={error("event.labels") ?? problem}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={value.labels}
+                  onChange={(e) => set({ labels: e.target.value })}
+                  placeholder={kind === "issue_labeled" ? "fctl" : "Any label"}
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+          )}
+          {takesBranches(kind) && (
+            <Field
+              label={kind === "checks_failed" ? "On the branch" : "Into the branch"}
+              hint={
+                kind === "checks_failed"
+                  ? "Empty: each repository's default branch."
+                  : "Empty: any. Several, comma-separated: any of them."
+              }
+              error={error("event.branches")}
+            >
+              {(id) => (
+                <Input
+                  id={id}
+                  value={value.branches}
+                  onChange={(e) => set({ branches: e.target.value })}
+                  placeholder={kind === "checks_failed" ? project.default_branch : "Any branch"}
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  className="font-mono"
+                />
+              )}
+            </Field>
+          )}
+          {takesBy(kind) && (
+            <Field
+              label="Opened by"
+              hint={
+                kind === "pull_request_opened" && by === "anyone"
+                  ? "An outsider's pull request starts a run too: write the task so that its agent doesn't run their code."
+                  : undefined
+              }
+              error={error("event.by")}
+            >
+              {(id) => <Select id={id} value={by} options={BY} onChange={(b) => set({ by: b })} />}
+            </Field>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 rounded-xl bg-sunken/60 px-3.5 py-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
+        <span className="text-[12px] text-ink-4">Each time</span>
+        <p className="text-[13px] leading-relaxed text-ink-2">{eachRun(value, where)}</p>
+        <p className="text-[12px] leading-relaxed text-ink-4">
+          Whoever opens an issue or a pull request may be someone who can't instruct your agents, so they take
+          what GitHub says as information, not instructions. At most 20 runs start in an hour.
+        </p>
+        {unheard.find((u) => u.kind === kind) && (
+          <p className="flex gap-1.5 text-[12.5px] leading-relaxed text-amber" role="status">
+            <TriangleAlert className="mt-[3px] size-3.5 shrink-0" aria-hidden="true" />
+            {unheard.find((u) => u.kind === kind)?.reason}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** What starts a run, and what its agent gets, for the form's event in `where`. */
+function eachRun(f: EventForm, where: string): string {
+  const labels = orList(items(f.labels));
+  const branches = orList(items(f.branches));
+  switch (f.kind) {
+    case "issue_opened":
+      return `An issue opened in ${where}${labels ? ` with the label ${labels}` : ""} starts a session of its own, whose agent gets the issue's title, text and labels after the task.`;
+    case "issue_labeled":
+      return `An issue in ${where} that gets the label ${labels || "you name"} starts a session of its own, whose agent gets the issue after the task. Taking the label off and putting it back on runs it again.`;
+    case "pull_request_opened":
+      return `A pull request opened in ${where}${branches ? ` into ${branches}` : ""}, or a draft marked ready for review, starts a session of its own, whose agent gets its title, text and branches after the task.`;
+    case "pull_request_merged":
+      return `A pull request that merges in ${where}${branches ? ` into ${branches}` : ""} starts a session of its own, whose agent gets its title, text and who merged it after the task, and reads its review on GitHub.`;
+    case "release_published":
+      return `A release published in ${where} starts a session of its own, whose agent gets its tag, name and notes after the task.`;
+    case "checks_failed":
+      return `Once all the checks of the newest commit on ${branches || "the default branch"} in ${where} end with one or more failed, a session starts, whose agent gets the commit and the checks that failed. While it works, the branch's next failures start none.`;
+    default:
+      return "fctl doesn't know this kind of event: choose another.";
+  }
 }

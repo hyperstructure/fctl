@@ -118,7 +118,7 @@ describe("Schedule, beside a task box's Start", () => {
 
   it("says what it is in its tooltip where it shows only its symbol", () => {
     const bare = render(<ScheduleButton project={project} prompt={task} choice={choice} files={0} bare />);
-    expect(button(bare)?.title).toBe("Schedule: run this task later, or again and again");
+    expect(button(bare)?.title).toBe("Schedule: run this task later, again and again, or on an event");
     expect(button(bare)?.querySelector(".sr-only")?.textContent).toBe("Schedule");
   });
 
@@ -179,17 +179,41 @@ describe("Triage new issues", () => {
   const idea = (c: HTMLElement) =>
     [...c.querySelectorAll("button")].find((b) => b.textContent?.includes("Triage new issues"));
 
-  it("is an idea whose agents only label and comment, for projects with a tracker", () => {
+  it("is an idea whose agents only label and comment, for each issue as it's opened", () => {
     queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
     const tab = render(<SchedulesTab project={onGithub} />);
     expect(idea(tab)?.textContent).toContain("Triage only");
-    // Starting from it sets up a schedule whose agents triage.
+    expect(idea(tab)?.textContent).toContain("When an issue is opened");
+    // Starting from it sets up a schedule whose agents triage each new issue, off session lists.
+    press(idea(tab));
+    expect(tab.querySelector("textarea")?.value).toContain("Triage the issue that was just opened.");
+    expect(tab.querySelector("[aria-label='On GitHub']")?.getAttribute("title")).toBe(
+      "On GitHub: Triage only",
+    );
+    expect(named(tab, "On an event")?.getAttribute("aria-pressed")).toBe("true");
+    const kind = [...tab.querySelectorAll<HTMLButtonElement>("fieldset button")].find((b) =>
+      b.textContent?.includes("An issue is opened"),
+    );
+    expect(kind?.getAttribute("aria-pressed")).toBe("true");
+    expect(
+      tab
+        .querySelector("[role='switch'][aria-label='Keep its sessions off session lists']")
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("is a daily one where the project's issues are in Linear, which starts no event", () => {
+    const linear = {
+      ...onGithub,
+      id: "prj_3",
+      settings: { ...onGithub.settings, tickets: { tracker: "linear" } as G.Tickets },
+    };
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(linear.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={linear} />);
+    expect(idea(tab)?.textContent).toContain("Every weekday at");
     press(idea(tab));
     expect(tab.querySelector("textarea")?.value).toContain(
       "Triage the issues opened since the previous run.",
-    );
-    expect(tab.querySelector("[aria-label='On GitHub']")?.getAttribute("title")).toBe(
-      "On GitHub: Triage only",
     );
   });
 
@@ -227,5 +251,134 @@ describe("Triage new issues", () => {
     const rows = [...tab.querySelectorAll("li")];
     expect(rows[0]?.textContent).toContain("Triage only");
     expect(rows[1]?.textContent).not.toContain("only");
+  });
+});
+
+describe("Schedules that run on events", () => {
+  const onGithub = { ...project, repo: { owner: "acme", name: "app" } };
+
+  it("are offered as ideas only where the project's agents work on GitHub", () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(project.id), { schedules: [] });
+    const without = render(<SchedulesTab project={project} />);
+    expect(without.textContent).not.toContain("When something happens on GitHub");
+    expect(without.textContent).not.toContain("Learn from merged pull requests");
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    expect(tab.textContent).toContain("When something happens on GitHub");
+    for (const name of [
+      "Work on labeled issues",
+      "Learn from merged pull requests",
+      "Fix failing checks on main",
+    ])
+      expect(tab.textContent).toContain(name);
+  });
+
+  it("set up what they wait for, narrowed down", async () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(named(tab, "Start from scratch"));
+    const textarea = tab.querySelector("textarea");
+    act(() => {
+      if (!textarea) return;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        "Do what the issue asks.",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    press(named(tab, "On an event"));
+    press(
+      [...tab.querySelectorAll<HTMLButtonElement>("fieldset button")].find((b) =>
+        b.textContent?.includes("gets a label"),
+      ),
+    );
+    // It needs the label that starts a run.
+    expect(tab.textContent).toContain("Name the label that starts a run");
+    expect(named(tab, "Set up schedule")?.disabled).toBe(true);
+    const label = [...tab.querySelectorAll("input")].find((i) => i.placeholder === "fctl");
+    act(() => {
+      if (!label) return;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(label, " agent, fctl ");
+      label.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(tab.textContent).toContain("gets the label agent or fctl starts a session of its own");
+    createSchedule.mockReturnValue(new Promise(() => {}));
+    press(named(tab, "Set up schedule"));
+    await settle();
+    expect(createSchedule).toHaveBeenCalledWith(
+      onGithub.id,
+      expect.objectContaining({ event: { kind: "issue_labeled", labels: ["agent", "fctl"] } }),
+    );
+    expect(createSchedule.mock.calls[0]?.[1]).not.toHaveProperty("cron");
+  });
+
+  it("say before anyone picks one when fctl wouldn't hear of it", () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), {
+      schedules: [],
+      unheard: [
+        {
+          kind: "issue_opened",
+          reason:
+            "fctl's GitHub App isn't subscribed to Issues events, so GitHub doesn't tell fctl when an issue is opened or labeled.",
+        },
+      ],
+    });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(named(tab, "Start from scratch"));
+    press(named(tab, "On an event"));
+    expect(tab.querySelector('[aria-label="fctl doesn\'t hear of it here"]')).not.toBeNull();
+    expect(tab.querySelector("[role='status']")?.textContent).toContain("isn't subscribed to Issues events");
+    // Another kind it hears of says nothing.
+    press(
+      [...tab.querySelectorAll<HTMLButtonElement>("fieldset button")].find((b) =>
+        b.textContent?.includes("merges"),
+      ),
+    );
+    expect(tab.querySelector("[role='status']")).toBeNull();
+  });
+
+  it("say in their row what they wait for, and their runs what happened", () => {
+    const schedule: G.Schedule = {
+      id: "sch_1",
+      project_id: onGithub.id,
+      name: "Learn from merged pull requests",
+      prompt: "…",
+      event: { kind: "pull_request_merged", branches: ["main"], by: "agents" },
+      timezone: "UTC",
+      hide_sessions: true,
+      enabled: true,
+      state: "active",
+      created_at: 0,
+      updated_at: 0,
+      last_run: {
+        id: "srn_1" as G.ScheduleRunId,
+        schedule_id: "sch_1" as G.ScheduleId,
+        due_at: Date.now() - 3_600_000,
+        at: Date.now() - 3_600_000,
+        outcome: "started",
+        trigger: "event",
+        session: { id: "ses_1" as G.SessionId, number: 42, title: "Learn from merged pull requests: app#12" },
+        event: {
+          kind: "pull_request_merged",
+          repo: { owner: "acme", name: "app" },
+          number: 12,
+          title: "Fix the login page",
+          url: "https://github.com/acme/app/pull/12",
+          actor: "grace",
+          branch: "main",
+        },
+      },
+    };
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [schedule] });
+    queryClient.setQueryData(keys.scheduleRuns(schedule.id), {
+      pages: [{ runs: schedule.last_run ? [schedule.last_run] : [] }],
+      pageParams: [undefined],
+    });
+    const tab = render(<SchedulesTab project={onGithub} open={schedule.id} />);
+    expect(tab.querySelector("li")?.textContent).toContain(
+      "When a pull request merges into main, by fctl's agents",
+    );
+    const link = tab.querySelector<HTMLAnchorElement>("a[href='https://github.com/acme/app/pull/12']");
+    expect(link?.textContent).toBe("@grace merged acme/app#12 into main: Fix the login page");
   });
 });

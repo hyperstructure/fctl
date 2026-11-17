@@ -6,12 +6,16 @@ import {
   cronRepeat,
   DEFAULT_REPEAT,
   describeCron,
+  describeEvent,
+  eventBy,
+  eventSaid,
   fromWall,
   instant,
   nameFromTask,
   nextAfter,
   nextRuns,
   offsetMs,
+  orList,
   parseCron,
   type Repeat,
   repeatCron,
@@ -218,7 +222,7 @@ describe("the form's choices", () => {
 });
 
 describe("schedules", () => {
-  const schedule = (s: Partial<G.Schedule>): Pick<G.Schedule, "cron" | "at" | "timezone"> => ({
+  const schedule = (s: Partial<G.Schedule>): Pick<G.Schedule, "cron" | "at" | "timezone" | "event"> => ({
     timezone: "UTC",
     ...s,
   });
@@ -229,6 +233,7 @@ describe("schedules", () => {
     expect(scheduleWhen(schedule({ at: utc(2026, 10, 30, 13, 0), timezone: STOCKHOLM }))).toMatch(
       /^Once, on /,
     );
+    expect(scheduleWhen(schedule({ event: { kind: "issue_opened" } }))).toBe("When an issue is opened");
   });
 
   it("let people do what their role allows", () => {
@@ -260,6 +265,72 @@ describe("schedules", () => {
     expect(runTrigger(run({ trigger: "token", by: ada }))).toBe("A tool, with Ada's token");
     const autopilot = { project_id: "prj_1" as G.ProjectId, project_slug: "spaghetti" };
     expect(runTrigger(run({ trigger: "token", by: ada, autopilot }))).toBe("spaghetti's autopilot, for Ada");
+    const event: G.ScheduleRunEvent = {
+      kind: "issue_opened",
+      repo: { owner: "acme", name: "web" },
+      number: 41,
+      url: "https://github.com/acme/web/issues/41",
+      actor: "octocat",
+    };
+    expect(runTrigger(run({ trigger: "event", by: ada, event }))).toBe("@octocat opened acme/web#41");
+    expect(runTrigger(run({ trigger: "event" }))).toBe("On an event");
+  });
+});
+
+describe("events", () => {
+  const event = (e: Partial<G.ScheduleEvent>): G.ScheduleEvent => ({ kind: "issue_opened", ...e });
+
+  it("say what a schedule waits for as the control plane does", () => {
+    // fctl_domain::triggers::tests::describes_what_a_schedule_waits_for
+    expect(describeEvent(event({}))).toBe("when an issue is opened");
+    expect(describeEvent(event({ kind: "issue_labeled", labels: ["agent", "fctl"] }))).toBe(
+      "when an issue gets the label agent or fctl",
+    );
+    expect(describeEvent(event({ kind: "pull_request_opened" }))).toBe(
+      "when a pull request is opened, by people who can write to the repository",
+    );
+    expect(
+      describeEvent(
+        event({
+          kind: "pull_request_merged",
+          branches: ["main"],
+          repos: ["acme/web", "acme/docs"],
+          labels: ["docs"],
+          by: "agents",
+        }),
+      ),
+    ).toBe(
+      "when a pull request merges into main in acme/web or acme/docs, with the label docs, by fctl's agents",
+    );
+    expect(describeEvent(event({ kind: "checks_failed" }))).toBe("when checks fail on the default branch");
+    expect(describeEvent(event({ kind: "release_published" }))).toBe("when a release is published");
+    expect(describeEvent(event({ kind: "other" }))).toBe("when something happens on GitHub");
+  });
+
+  it("take pull requests from people who may write by default", () => {
+    expect(eventBy(event({ kind: "pull_request_opened" }))).toBe("writers");
+    expect(eventBy(event({ kind: "pull_request_merged" }))).toBe("anyone");
+    expect(eventBy(event({ kind: "pull_request_opened", by: "anyone" }))).toBe("anyone");
+    expect(eventBy(event({ by: "other" }))).toBe("anyone");
+  });
+
+  it("say what happened", () => {
+    const repo = { owner: "acme", name: "web" };
+    const url = "https://github.com/acme/web/issues/41";
+    expect(eventSaid({ kind: "issue_labeled", repo, url, number: 41, actor: "ada", label: "agent" })).toBe(
+      "@ada labeled acme/web#41 agent",
+    );
+    expect(eventSaid({ kind: "pull_request_merged", repo, url, number: 12, branch: "main" })).toBe(
+      "someone merged acme/web#12 into main",
+    );
+    expect(eventSaid({ kind: "release_published", repo, url, actor: "ada", tag: "v1.2.0" })).toBe(
+      "@ada published v1.2.0 of acme/web",
+    );
+    expect(eventSaid({ kind: "checks_failed", repo, url, branch: "main", sha: "abc" })).toBe(
+      "checks failed on main of acme/web",
+    );
+    expect(orList(["a", "b", "c"])).toBe("a, b or c");
+    expect(orList([])).toBe("");
   });
 });
 
@@ -274,6 +345,13 @@ describe("a run's first message", () => {
     const tool =
       "Another tool started this session on Monday 26 October 2026 at 09:00 (UTC) from the project's schedule \"Triage\", which runs once, with an access token of Ada's.\n\n<context>\nx\n</context>";
     expect(splitRunNote(`Triage.\n\n---\n${tool}`).note).toBe(tool);
+    // fctl_domain::schedules::tests::a_run_on_an_event_says_what_happened
+    const event =
+      'fctl started this session on Monday 26 October 2026 at 09:00 (Europe/Stockholm) on the project\'s schedule "Triage new issues", which runs when an issue is opened, for Ada Lovelace: @octocat opened issue acme/web#41. Nobody watches it start.\n\n<context>\nIssue acme/web#41\n</context>';
+    expect(splitRunNote(`Triage the issue.\n\n---\n${event}`)).toEqual({
+      task: "Triage the issue.",
+      note: event,
+    });
     expect(splitRunNote("Just a task\n\n---\nwith a rule")).toEqual({
       task: "Just a task\n\n---\nwith a rule",
     });
