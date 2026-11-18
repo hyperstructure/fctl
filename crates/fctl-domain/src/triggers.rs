@@ -482,6 +482,9 @@ pub struct Happened {
     /// Who did what started it when that isn't the author: added the
     /// label, merged the pull request. Their GitHub login.
     pub actor: Option<String>,
+    /// Who added the label the issue got: a person, or an app (fctl's own
+    /// agents among them).
+    pub labeled_by: Option<Who>,
     /// The issue's or pull request's labels.
     pub labels: Vec<String>,
     /// The label the issue got.
@@ -550,12 +553,13 @@ pub fn happened(event: &str, payload: &Value) -> Option<Happened> {
             if issue.get("pull_request").is_some_and(|p| !p.is_null()) {
                 return None;
             }
-            let (kind, label, actor) = match action.as_str() {
-                "opened" => (Kind::IssueOpened, None, None),
+            let (kind, label, actor, labeled_by) = match action.as_str() {
+                "opened" => (Kind::IssueOpened, None, None, None),
                 "labeled" => (
                     Kind::IssueLabeled,
                     Some(text(payload, "/label/name")?),
                     text(payload, "/sender/login"),
+                    who(payload.get("sender"), None),
                 ),
                 _ => return None,
             };
@@ -567,6 +571,7 @@ pub fn happened(event: &str, payload: &Value) -> Option<Happened> {
                 body: text(issue, "/body"),
                 author: who(issue.get("user"), text(issue, "/author_association")),
                 actor,
+                labeled_by,
                 labels: labels(issue.get("labels")),
                 label,
                 ..base
@@ -734,6 +739,10 @@ pub enum Takes {
     /// may write to the repository: a member of its organization may only
     /// read it.
     IfAuthorWrites,
+    /// Once GitHub says that the person who added the label may triage the
+    /// repository, as adding a label takes: not the outsider whose issue
+    /// its template labeled as they opened it.
+    IfLabelerTriages,
     No,
 }
 
@@ -785,8 +794,24 @@ pub fn takes(
     if !on_branch {
         return Takes::No;
     }
+    // A label hands an issue over to an agent that may do more than the
+    // issue's author: only a person who may triage the repository does
+    // that. An app's label starts nothing, fctl's own agents' too, as they
+    // triage what anyone writes; nor does the label an issue's template
+    // gives it as an outsider opens it ([`Takes::IfLabelerTriages`]).
+    if kind == Kind::IssueLabeled {
+        return match &h.labeled_by {
+            Some(by) if by.person => Takes::IfLabelerTriages,
+            _ => Takes::No,
+        };
+    }
     if !takes_by(kind) {
         return Takes::Yes;
+    }
+    // Whose they are, as a later version chose and this one can't read:
+    // none, rather than anyone's.
+    if e.by == Some(ScheduleEventBy::Other) {
+        return Takes::No;
     }
     let author = h.author.as_ref();
     let by_agents = by_app(author.map(|a| a.login.as_str()), app_login);
@@ -1172,6 +1197,9 @@ mod tests {
         assert_eq!(labeled.kind(), Kind::IssueLabeled);
         assert_eq!(labeled.label.as_deref(), Some("agent"));
         assert_eq!(labeled.actor.as_deref(), Some("ada"));
+        let by = labeled.labeled_by.clone().unwrap_or_default();
+        assert_eq!((by.login.as_str(), by.person), ("ada", true));
+        assert!(h.labeled_by.is_none());
         // Other actions, and pull requests' issue events, start nothing.
         assert!(happened("issues", &issue_delivery("closed", "NONE")).is_none());
         let mut pr = issue_delivery("opened", "NONE");
@@ -1561,13 +1589,31 @@ mod tests {
             takes(&writers, &member, &writable, app),
             Takes::IfAuthorWrites
         );
-        // The label it got.
+        // The label it got, from a person whom GitHub then says may
+        // triage the repository.
         let labeled = happened("issues", &issue_delivery("labeled", "NONE")).unwrap_or_default();
         let mut agent = event(Kind::IssueLabeled);
         agent.labels = vec!["agent".into()];
-        assert_eq!(takes(&agent, &labeled, &writable, app), Takes::Yes);
+        assert_eq!(
+            takes(&agent, &labeled, &writable, app),
+            Takes::IfLabelerTriages
+        );
         agent.labels = vec!["bug".into()];
         assert_eq!(takes(&agent, &labeled, &writable, app), Takes::No);
+        // An app's label starts nothing: fctl's agents', which triage what
+        // anyone writes, an Action's, or whoever sent no sender.
+        agent.labels = vec!["agent".into()];
+        for sender in [
+            json!({ "login": "fctl[bot]", "type": "Bot" }),
+            json!({ "login": "github-actions[bot]", "type": "Bot" }),
+            json!({ "login": "renovate", "type": "Bot" }),
+            Value::Null,
+        ] {
+            let mut by = issue_delivery("labeled", "NONE");
+            by["sender"] = sender.clone();
+            let by = happened("issues", &by).unwrap_or_default();
+            assert_eq!(takes(&agent, &by, &writable, app), Takes::No, "{sender}");
+        }
         // Pull requests: fctl's agents' count as writers', on their branch.
         let merged =
             happened("pull_request", &pull_delivery("closed", false, true)).unwrap_or_default();
@@ -1595,6 +1641,12 @@ mod tests {
         let mut anyone = event(Kind::PullRequestOpened);
         anyone.by = Some(ScheduleEventBy::Anyone);
         assert_eq!(takes(&anyone, &outsider, &writable, app), Takes::Yes);
+        // Whose, as a later version chose: nobody's here, not anyone's.
+        let mut later = event(Kind::IssueOpened);
+        later.by = Some(ScheduleEventBy::Other);
+        assert_eq!(takes(&later, &opened, &writable, app), Takes::No);
+        later.kind = Kind::PullRequestOpened;
+        assert_eq!(takes(&later, &opened_pr, &writable, app), Takes::No);
     }
 
     #[test]

@@ -447,6 +447,25 @@ pub fn can_write(answer: &Value) -> bool {
         == Some(true)
 }
 
+/// Whether GitHub's answer about a person's permission on a repository
+/// lets them triage it, as adding and removing labels takes: triage,
+/// write, maintain or admin. Its `permission` says `read` for triage, so
+/// its `role_name` and the person's `permissions` tell (a custom role's
+/// too).
+pub fn can_triage(answer: &Value) -> bool {
+    can_write(answer)
+        || matches!(
+            answer.get("role_name").and_then(Value::as_str),
+            Some("admin" | "maintain" | "write" | "triage")
+        )
+        || ["admin", "maintain", "push", "triage"].iter().any(|p| {
+            answer
+                .pointer(&format!("/user/permissions/{p}"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        })
+}
+
 /// Why fctl doesn't pass a comment on, as far as its delivery tells,
 /// before anyone is asked: the pull request isn't one fctl's agents opened
 /// (its author isn't the GitHub App, `app_login`), an app wrote it, its
@@ -1714,6 +1733,32 @@ mod tests {
         ));
         assert!(!can_write(&json!({ "permission": "none" })));
         assert!(!can_write(&json!({ "message": "Not Found" })));
+    }
+
+    #[test]
+    fn triage_access_is_triage_or_more() {
+        // Triage, which `permission` calls read.
+        assert!(can_triage(
+            &json!({ "permission": "read", "role_name": "triage",
+            "user": { "permissions": { "pull": true, "triage": true, "push": false } } })
+        ));
+        // A custom role on top of triage.
+        assert!(can_triage(
+            &json!({ "permission": "read", "role_name": "issue-wrangler",
+            "user": { "permissions": { "pull": true, "triage": true } } })
+        ));
+        assert!(can_triage(&json!({ "permission": "write" })));
+        assert!(can_triage(
+            &json!({ "permission": "write", "role_name": "maintain" })
+        ));
+        assert!(can_triage(&json!({ "permission": "admin" })));
+        // Reading, which anyone does on a public repository, isn't.
+        assert!(!can_triage(
+            &json!({ "permission": "read", "role_name": "read",
+            "user": { "permissions": { "pull": true, "triage": false, "push": false } } })
+        ));
+        assert!(!can_triage(&json!({ "permission": "none" })));
+        assert!(!can_triage(&json!({ "message": "Not Found" })));
     }
 
     fn line_comment() -> Value {

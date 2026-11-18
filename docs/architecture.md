@@ -540,9 +540,10 @@ elsewhere only the tokens left from when it did, to revoke.
   takes an admin token (`admin_tokens::only_tokens`), and `PATCH` takes
   names, addresses and commit emails only from one; a token changes no
   roles. No token changes the primary instance owner's account, the
-  instance's account of last resort, and only the primary owner's change
-  admins', as only they rename, disable and delete admins
-  (`admin_tokens::check_target`). What takes confirming doesn't ask a
+  instance's account of last resort, nor makes its password reset link,
+  which an instance without email hands back to whoever asks, and only
+  the primary owner's change admins' and make their links, as only they
+  rename, disable and delete admins (`admin_tokens::check_target`). What takes confirming doesn't ask a
   token: making it did (`Ctx::verified`). Every entry the audit log records
   for one says which (`admin_token` in its data), with its maker as the
   actor.
@@ -582,7 +583,10 @@ script) has it call fctl with a workspace's service account
   the workspace, not to its maker, but works only while the admin who made
   its secret, its keeper (`keeper_id`), is an active admin of the
   workspace: one who leaves, is demoted or disabled can't keep acting for
-  people with a secret they kept, as with enrollment tokens. Another admin
+  people with a secret they kept, as with enrollment tokens. It acts with
+  their authority, so it also waits, as their own tokens do, while the
+  instance or the workspace holds them to setting up two-factor sign-in
+  first (`service_accounts::authenticate`). Another admin
   makes it a new secret (`POST /api/v1/service-accounts/{id}/secret`), which
   stops the old one at once and makes them its keeper; until then the
   tab and its page say why it stopped, and its requests are refused.
@@ -619,7 +623,9 @@ script) has it call fctl with a workspace's service account
   again while they stay open (`service_accounts::allows`): its sessions'
   events come from `GET /api/v1/sessions/{id}/events`, and webhooks post
   what happens. `GET /api/v1/service-account` says what it is, and whom a
-  request acts for; `GET /api/v1/service-accounts/{id}/people` lists the
+  request acts for, and `GET /api/v1/auth/me` acting for someone shows
+  them by the address they're a member of the workspace as, never their
+  own primary address; `GET /api/v1/service-accounts/{id}/people` lists the
   workspace's people with their answers and whether it may act for each,
   for it and for its workspace's admins.
 - **People choose.** Where the instance asks people first
@@ -2281,7 +2287,13 @@ another tool, runs one
    of the project's repositories, named ones only (an owner-wide grant
    names none), else those its agents write to; to issues and pull
    requests with one of some labels, the label an issue gets for
-   `issue_labeled`; to pull requests into some branches, or the branches
+   `issue_labeled`, which a person must add whom GitHub, asked, says may
+   triage the repository (`Takes::IfLabelerTriages`,
+   `follow_ups::can_triage`): a label an app adds starts nothing, fctl's
+   own agents' too, as they triage what anyone writes, nor does one an
+   issue's template gives it as an outsider opens it, which would hand
+   their text to an agent that may do more than a triage agent; to pull
+   requests into some branches, or the branches
    whose checks it watches, else the default branch; and to what anyone,
    people who may write to the repository (their association says they
    may, and GitHub, asked, says they do, as for follow-ups) and fctl's
@@ -3844,9 +3856,16 @@ what happens to as it happens, signed with each one's secret
    /api/v1/webhook-events` says what the instance takes to those signed
    in, for the form's hint; the public `/api/v1/instance` doesn't. The
    HooksDO checks each address again before it posts, so that settings
-   narrowed since stop it. A self-hosted control plane can't check where
-   a name resolves, so a name that resolves to its own network reaches it
-   there. Before an address is saved, as a webhook is added there or
+   narrowed since stop it. Where a name resolves is checked as the
+   request connects: the standalone server gives the Worker a network of
+   its own for webhooks (the `FCTL_WEBHOOK_NETWORK` binding,
+   `do_hooks::network`), which workerd connects only to public addresses
+   and the IP ranges `FCTL_WEBHOOK_PRIVATE_HOSTS` lists, whatever a name
+   resolves to, so that a name someone points at the server's own
+   network reaches nothing there, challenges and tests included
+   ([ADR 0087](adr/0087-webhooks-post-only-while-their-keeper-manages-them.md));
+   the host names it lists go through the Worker's own fetch, to where
+   they resolve. On Cloudflare, Workers reach no private address. Before an address is saved, as a webhook is added there or
    pointed there, the workspace's HooksDO posts it a challenge
    (`/challenge`, `hooks::challenge`): a `url_verification` request,
    signed with the new webhook's secret (sealed in the request) or the
@@ -3855,7 +3874,18 @@ what happens to as it happens, signed with each one's secret
    (`CHALLENGES_PER_HOUR`, counted in `sends`). Adding one, pointing
    one elsewhere, and reading or rotating its secret are sensitive actions
    (`Sensitive::AddWebhook`); limited access tokens and autopilots reach
-   none of it but the list of events. A project's page lists the
+   none of it but the list of events. A webhook posts only while its
+   keeper manages it (`keeper_id`: whoever chose where it posts, by
+   adding it, pointing it elsewhere or turning it on again): an active
+   account that is an admin of its workspace, or, for a project's, an
+   owner or maintainer of the project (`crate::hooks::KEPT`, read with
+   the webhooks). The HooksDO turns off one whose keeper left, was
+   demoted or disabled, or deleted their account, as an event or a
+   delivery for it comes (`HookRow::unkept`, `hooks::unkept_reason`),
+   failing its waiting deliveries, so that an address someone chose stops
+   getting the workspace's events once they may no longer manage it, as
+   a service account stops with its keeper; whoever turns it on again
+   keeps it. A project's page lists the
    workspace's webhooks that send its events to its owners and
    maintainers, with their addresses shortened to scheme and host
    (`hooks::shortened`) for those who don't manage them, since a path can

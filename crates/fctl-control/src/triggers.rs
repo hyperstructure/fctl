@@ -275,8 +275,10 @@ async fn start_all(
     rows: Vec<ScheduleRow>,
 ) -> AppResult<usize> {
     let app = ctx.cfg.github.as_ref().map(|g| format!("{}[bot]", g.slug));
-    // Whether the author may write to the repository, asked once.
+    // Whether the author may write to the repository, and whether whoever
+    // added the label may triage it, each asked once.
     let mut writes: Option<bool> = None;
+    let mut triages: Option<bool> = None;
     // Each project with the repositories its agents write to, read once.
     let mut projects: HashMap<String, Option<(ProjectRow, Vec<RepoRef>)>> = HashMap::new();
     let (mut started, mut decided, mut passed_over, mut left) = (0, 0, 0, 0);
@@ -304,12 +306,27 @@ async fn start_all(
                 let w = match writes {
                     Some(w) => w,
                     None => {
-                        let w = author_writes(ctx, h, sent.installation).await;
+                        let author = h.author.as_ref().map(|a| a.login.as_str());
+                        let w = may(ctx, h, sent.installation, author, Access::Write).await;
                         writes = Some(w);
                         w
                     }
                 };
                 if !w {
+                    continue;
+                }
+            }
+            Takes::IfLabelerTriages => {
+                let t = match triages {
+                    Some(t) => t,
+                    None => {
+                        let by = h.labeled_by.as_ref().map(|b| b.login.as_str());
+                        let t = may(ctx, h, sent.installation, by, Access::Triage).await;
+                        triages = Some(t);
+                        t
+                    }
+                };
+                if !t {
                     continue;
                 }
             }
@@ -401,28 +418,49 @@ async fn pass_over(
     .await
 }
 
-/// Whether GitHub says the author of the issue or pull request may write
-/// to its repository.
-async fn author_writes(ctx: &Ctx, h: &Happened, installation: u64) -> bool {
-    let Some(login) = h.author.as_ref().map(|a| a.login.as_str()) else {
+/// What someone may do to a repository, as a schedule asks GitHub.
+#[derive(Clone, Copy)]
+enum Access {
+    /// Write to it: the author of an issue or pull request, for those of
+    /// people who may write.
+    Write,
+    /// Triage it, as adding a label takes: whoever added the label.
+    Triage,
+}
+
+/// Whether GitHub says the person `login` (the author of the issue or pull
+/// request, or whoever added the label) may do `access` to its repository.
+/// No when GitHub doesn't say.
+async fn may(
+    ctx: &Ctx,
+    h: &Happened,
+    installation: u64,
+    login: Option<&str>,
+    access: Access,
+) -> bool {
+    let Some(login) = login else {
         return false;
+    };
+    let (allows, verb): (fn(&Value) -> bool, &str) = match access {
+        Access::Write => (fctl_domain::follow_ups::can_write, "write to"),
+        Access::Triage => (fctl_domain::follow_ups::can_triage, "triage"),
     };
     let gh = match crate::github::from_config(&ctx.cfg, ctx.now) {
         Ok(gh) => gh,
         Err(_) => return false,
     };
     match gh.permission(installation, &h.repo, login).await {
-        Ok(Ok(answer)) => fctl_domain::follow_ups::can_write(&answer),
+        Ok(Ok(answer)) => allows(&answer),
         Ok(Err(why)) => {
             worker::console_log!(
-                "GitHub didn't say whether @{login} may write to {}: {why}",
+                "GitHub didn't say whether @{login} may {verb} {}: {why}",
                 h.repo.full_name()
             );
             false
         }
         Err(e) => {
             worker::console_error!(
-                "asking whether @{login} may write to {}: {}",
+                "asking whether @{login} may {verb} {}: {}",
                 h.repo.full_name(),
                 e.0.message
             );

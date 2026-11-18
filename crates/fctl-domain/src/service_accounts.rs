@@ -201,6 +201,16 @@ pub fn stopped(keeper_admin: bool, keeper: Option<&str>, workspace: &str) -> Opt
     })
 }
 
+/// Why a service account works for nobody now whose keeper (`keeper`, by
+/// name) has to set up two-factor sign-in, which the instance or its
+/// workspace requires, before they do anything else: it acts with their
+/// authority, as their own tokens do, which wait too.
+pub fn keeper_needs_two_factor(keeper: &str) -> String {
+    format!(
+        "{keeper}, who made its secret, has to set up two-factor sign-in first, which this instance or its workspace requires. It starts again once they have."
+    )
+}
+
 /// What decides whether a service account may act for someone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Person {
@@ -427,6 +437,10 @@ mod tests {
         let why = stopped(false, Some("Ada"), "Acme").unwrap_or_default();
         assert!(why.starts_with("Ada, who made its secret"), "{why}");
         assert!(stopped(false, None, "Acme").is_some());
+        assert_eq!(
+            keeper_needs_two_factor("Ada"),
+            "Ada, who made its secret, has to set up two-factor sign-in first, which this instance or its workspace requires. It starts again once they have."
+        );
     }
 
     #[test]

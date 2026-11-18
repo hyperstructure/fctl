@@ -212,13 +212,17 @@ FCTL_WEBHOOK_HTTP=1
 List the receivers' ranges, not whole networks: anyone who manages a
 webhook can have the server post to whatever you list. Leave out the
 server's own address, cloud metadata (`169.254.169.254`) and networks
-with admin interfaces. A host name is checked as written, not where it
-resolves ([Security](security.md)). The address field and `fctl webhooks
-events` show what the instance takes. The server checks each address
-again before it posts, so after a restart with narrower settings a
-webhook that points past them fails, with the reason in its log, and
-turns itself off after three days. On Cloudflare, a Worker reaches only
-the public internet, and app.fctl.sh sets neither.
+with admin interfaces. The server posts webhooks through a network of
+their own, which connects only to public addresses and the IP ranges you
+list, checking where a host name resolves as it connects: a public name
+that resolves into your network reaches nothing there, unless you list
+its range. A host name you list goes wherever it resolves, so list
+names only you control ([Security](security.md)). The address field and
+`fctl webhooks events` show what the instance takes. The server checks
+each address again before it posts, so after a restart with narrower
+settings a webhook that points past them fails, with the reason in its
+log, and turns itself off after three days. On Cloudflare, a Worker
+reaches only the public internet, and app.fctl.sh sets neither.
 
 ### Operating it
 

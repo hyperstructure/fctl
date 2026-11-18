@@ -154,8 +154,9 @@ owner and purpose), so a value copied between rows does not decrypt.
   and disables and deletes them, but changes no roles, nor the allowlist,
   invitations, the instance's settings, or anything inside projects, and
   makes no other token. No token changes the primary instance owner's
-  account, so that a leaked one can't point their address elsewhere and
-  take the instance over, and only the primary owner's change admins'.
+  account or makes its password reset link, so that a leaked one can't
+  point their address elsewhere, or reset their password, and take the
+  instance over, and only the primary owner's change admins'.
   Whoever holds one can still take over any member's account (changing
   their address, then resetting their password), so keep it where you
   keep your identity provider's secrets, make it expire, and revoke it
@@ -166,18 +167,24 @@ owner and purpose), so a value copied between rows does not decrypt.
   that start sessions for its people. A request names the person, and acts
   as them, held to what an access token that runs sessions does in that
   workspace alone, by the same kind of rule in the router: it never reaches
-  the account, people, settings, secrets, other tokens or live
-  connections. Where the instance asks people first, as it does unless its
+  the account, settings, the project's secrets through the API, other
+  tokens or live connections, and of people it sees the workspace's
+  members as their admins do (names, the addresses they're members as,
+  roles and answers). Its sessions' agents, as any session's, have the
+  project's secrets in their sandbox, and their events show what the
+  agents print. Where the instance asks people first, as it does unless its
   admins turn that off (which takes confirming it's them), it acts only
   for members who allowed it, each service account on its own; allowing
-  one takes confirming it's you, and emails you. Making one or a new
-  secret for one takes confirming it's you too. One works only while the
-  admin who made its secret is an active admin of the workspace, so that
-  someone who left can't use a secret they kept; another admin makes it a
-  new secret, which stops the old one at once. Whoever holds one runs work
-  as the people who allowed it, on their subscriptions: keep it where your
-  program keeps its secrets, and give it a new one when it may have
-  leaked. The audit log marks what each did, for whom.
+  one emails you, and takes confirming it's you where the instance asks
+  for that. Making one or a new secret for one does too. One works only
+  while the admin who made its secret is an active admin of the
+  workspace, so that someone who left can't use a secret they kept, and
+  waits, as their own tokens do, while they have to set up two-factor
+  sign-in first; another admin makes it a new secret, which stops the
+  old one at once. Whoever holds one runs work as the people who allowed
+  it, on their subscriptions, and steers the sessions they may steer:
+  keep it where your program keeps its secrets, and give it a new one
+  when it may have leaked. The audit log marks what each did, for whom.
 - Sign-in, signup and reset endpoints are rate limited per address and per
   account; unknown emails take as long to fail as known ones. Signing up
   without an invitation, asking for a password reset or for early access,
@@ -795,21 +802,27 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   for them, or to someone else's server. They go out from the server's
   own network. fctl refuses
   addresses that name a private, loopback or link-local IP address or a
-  local name, but can't see where a public-looking name resolves: one
-  that resolves to an address in the server's network reaches it there.
-  Where the control plane's network holds services that trust whatever
-  comes from it, keep who may add webhooks (a workspace's admins, a
-  project's owners and maintainers) to people you trust with that, or
-  keep the server's egress to the internet. `FCTL_WEBHOOK_PRIVATE_HOSTS`
+  local name, and the standalone server posts them through a network of
+  their own, which connects only to public addresses and the IP ranges
+  `FCTL_WEBHOOK_PRIVATE_HOSTS` lists, checking where a host name resolves
+  as it connects: a public-looking name someone points at an address in
+  the server's network reaches nothing there, and its answer, which a
+  test shows, never comes from there. `FCTL_WEBHOOK_PRIVATE_HOSTS`
   lets webhooks reach the IP ranges and host names it lists, and
   `FCTL_WEBHOOK_HTTP` lets them post over plain `http://`
   ([Self-hosting](self-hosting.md#webhooks-to-your-own-network)): anyone
   who manages a webhook can then have the server post to any of those,
-  so list only receivers' ranges, never the server's own address, cloud
-  metadata (`169.254.169.254`) or networks with admin interfaces. The
-  server checks a webhook's address against them again before each post,
-  so narrowing them stops webhooks that pointed past them. app.fctl.sh
-  sets neither.
+  and a host name it lists goes wherever it resolves, so list only
+  receivers, never the server's own address, cloud metadata
+  (`169.254.169.254`) or networks with admin interfaces. The server checks
+  a webhook's address against them again before each post, so narrowing
+  them stops webhooks that pointed past them. app.fctl.sh sets neither,
+  and Cloudflare's Workers reach no private address. A webhook posts
+  only while the person who chose its address (who added it, or last
+  pointed it elsewhere or turned it on) still manages it: once they leave
+  the workspace, lose the role or their account is disabled, fctl turns
+  it off and says why, so that the workspace's events stop going where
+  they chose.
 - Errors the Worker throws come back as plain 500s, without the stack
   traces Miniflare shows in development.
 - Request bodies are read as they come and refused once they pass their

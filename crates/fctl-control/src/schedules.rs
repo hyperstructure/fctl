@@ -255,14 +255,14 @@ impl ScheduleRow {
     }
 
     /// What it waits for on GitHub: `None` for a schedule that doesn't,
-    /// and for a kind this version doesn't know.
+    /// and for a kind or what narrows it down that this version can't
+    /// read, which would otherwise take every event of its kind.
     pub fn event(&self) -> Option<ScheduleEvent> {
         let kind = ScheduleEventKind::parse(self.event_kind.as_deref()?)?;
-        let filter: EventFilter = self
-            .event_filter
-            .as_deref()
-            .and_then(|j| serde_json::from_str(j).ok())
-            .unwrap_or_default();
+        let filter: EventFilter = match self.event_filter.as_deref() {
+            Some(j) => serde_json::from_str(j).ok()?,
+            None => EventFilter::default(),
+        };
         Some(ScheduleEvent {
             kind,
             repos: filter.repos,

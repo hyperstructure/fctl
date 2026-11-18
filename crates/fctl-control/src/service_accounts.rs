@@ -29,7 +29,7 @@ pub const SELECT: &str = "SELECT sa.id, sa.workspace_id, sa.name, sa.description
     EXISTS (SELECT 1 FROM workspace_members km WHERE km.workspace_id = sa.workspace_id \
       AND km.user_id = sa.keeper_id AND km.role IN ('owner', 'admin') AND ku.status = 'active') AS keeper_admin, \
     w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \
-    w.avatar_updated_at AS workspace_avatar_at, \
+    w.avatar_updated_at AS workspace_avatar_at, w.require_two_factor AS workspace_two_factor, \
     (SELECT COUNT(*) FROM workspace_members x WHERE x.workspace_id = sa.workspace_id) AS members, \
     (SELECT COUNT(*) FROM service_account_answers a JOIN workspace_members am \
       ON am.workspace_id = sa.workspace_id AND am.user_id = a.user_id \
@@ -72,6 +72,9 @@ pub struct Row {
     pub workspace_color: Option<String>,
     #[serde(deserialize_with = "opt_int", default)]
     pub workspace_avatar_at: Option<i64>,
+    /// Its workspace requires two-factor sign-in.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub workspace_two_factor: bool,
     #[serde(deserialize_with = "int", default)]
     pub members: i64,
     #[serde(deserialize_with = "int", default)]
@@ -249,6 +252,21 @@ pub async fn authenticate(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             "This service account works for nobody now: an admin of its workspace makes it a new secret to start it again.",
         )));
     };
+    let settings = crate::instance::settings(&ctx.db).await?;
+    // It acts with its keeper's authority: while the instance, or its
+    // workspace, holds them to setting up two-factor sign-in first, it
+    // waits with their own tokens.
+    if fctl_domain::two_factor::setup_required(&settings, keeper.has_password(), keeper.factors())
+        || keeper.blocked_by(&settings, found.workspace_two_factor)
+    {
+        return Err(AppError(ApiError::new(
+            fctl_proto::ErrorCode::AccessDenied,
+            format!(
+                "This service account works for nobody now: {}",
+                policy::keeper_needs_two_factor(&keeper.name)
+            ),
+        )));
+    }
     if found
         .last_used_at
         .is_none_or(|t| ctx.now - t > 10 * 60 * 1000)
@@ -266,7 +284,6 @@ pub async fn authenticate(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
             Ok(())
         });
     }
-    let settings = crate::instance::settings(&ctx.db).await?;
     ctx.auth = Some(crate::ctx::Authed {
         user: keeper,
         token_id: found.id.clone(),

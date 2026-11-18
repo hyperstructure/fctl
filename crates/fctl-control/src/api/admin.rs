@@ -328,6 +328,14 @@ pub async fn delete_user(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
 pub async fn reset_link(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     let actor = ctx.admin()?.clone();
     let target = user(ctx, id).await?;
+    // Where the link comes back, whoever holds an admin token would sign
+    // in as its person: never as the primary instance owner, whose own
+    // token it may be, and as an admin with the primary owner's alone
+    // (`admin_tokens::check_target`).
+    if ctx.admin_token().is_some() {
+        fctl_domain::admin_tokens::check_target(actor.role(), target.role())
+            .map_err(crate::error::AppError)?;
+    }
     if target.role() != InstanceRole::Member && actor.role() != InstanceRole::Owner {
         return Err(forbidden(
             "Only the primary instance owner can reset an admin's password",

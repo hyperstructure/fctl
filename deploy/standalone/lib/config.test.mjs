@@ -14,6 +14,7 @@ import {
   readConfig,
   secureContext,
   value,
+  webhookNetwork,
 } from "./config.mjs";
 
 const dir = () => mkdtempSync(join(tmpdir(), "fctl-config-"));
@@ -80,6 +81,33 @@ test("webhooks reach the private hosts the settings list, which the server reads
   }
   assert.throws(() => readConfig({ FCTL_WEBHOOK_HTTP: "yes" }), ConfigError);
   assert.equal(readConfig({}).vars.FCTL_WEBHOOK_PRIVATE_HOSTS, undefined);
+});
+
+test("webhooks post through a network of public addresses and the IP ranges the settings list", () => {
+  const cfg = readConfig({
+    FCTL_WEBHOOK_PRIVATE_HOSTS:
+      "10.20.0.0/16, 192.168.1.20 [fd00::]/8,hooks.lan *.corp.internal jenkins. fd00::7 [fd00::8]",
+  });
+  // Names resolve where the Worker's own fetch takes them: they aren't here.
+  assert.deepEqual(cfg.webhookNetwork.network.allow, [
+    "public",
+    "10.20.0.0/16",
+    "192.168.1.20/32",
+    "fd00::/8",
+    "fd00::7/128",
+    "fd00::8/128",
+  ]);
+  assert.deepEqual(cfg.webhookNetwork.network.deny, []);
+  assert.equal(cfg.webhookNetwork.network.tlsOptions.trustBrowserCas, true);
+  // Public addresses alone, without settings.
+  assert.deepEqual(readConfig({}).webhookNetwork.network.allow, ["public"]);
+  // The certificates NODE_EXTRA_CA_CERTS names are trusted too, as for the Worker's own requests.
+  const d = dir();
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----";
+  writeFileSync(join(d, "ca.pem"), `${pem}\n${pem}\n`);
+  const trusted = webhookNetwork({}, join(d, "ca.pem")).network.tlsOptions.trustedCertificates;
+  assert.equal(trusted.filter((c) => c === pem).length, 2);
+  assert.ok(webhookNetwork({}, join(d, "missing.pem")).network.tlsOptions.trustedCertificates);
 });
 
 test("admin tokens are on where FCTL_ADMIN_TOKENS turns them on, and a value it can't read stops the server", () => {

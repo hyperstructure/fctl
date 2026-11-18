@@ -1223,6 +1223,19 @@ pub fn off_reason(last: &str) -> String {
     )
 }
 
+/// Why fctl turned a webhook off whose keeper (`keeper`, by name, absent
+/// once their account is gone), who chose where it posts, no longer
+/// manages it: whoever turns it on again keeps it from then on.
+pub fn unkept_reason(keeper: Option<&str>) -> String {
+    let who = match keeper.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(name) => format!("{name} chose where it posts and"),
+        None => "The person who chose where it posts".to_owned(),
+    };
+    format!(
+        "{who} no longer manages it. Check its address, then turn it on again: you keep it from then on."
+    )
+}
+
 /// Which webhook gets its next attempt first when several are due: the
 /// one whose oldest due delivery waited longest (`due`, its time), so that
 /// a busy one doesn't hold the others back. Ties go by id.
@@ -2842,6 +2855,14 @@ mod tests {
         assert_eq!(
             off_reason("HTTP 502"),
             "Every delivery failed for 3 days, the last with HTTP 502. Turn it on again once its address answers."
+        );
+        assert_eq!(
+            unkept_reason(Some("Ada")),
+            "Ada chose where it posts and no longer manages it. Check its address, then turn it on again: you keep it from then on."
+        );
+        assert_eq!(
+            unkept_reason(None),
+            "The person who chose where it posts no longer manages it. Check its address, then turn it on again: you keep it from then on."
         );
         assert_eq!(room(0), PER_MINUTE);
         assert_eq!(room(PER_MINUTE + 3), 0);

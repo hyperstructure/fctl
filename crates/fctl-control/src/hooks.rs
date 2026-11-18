@@ -22,12 +22,40 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use worker::{D1Database, Env};
 
-/// SELECT for [`HookRow`]; `WHERE` and `ORDER BY` follow.
-pub const SELECT: &str = "SELECT h.id, h.workspace_id, h.project_id, p.slug AS project_slug, \
+/// Whether webhook `h`'s keeper manages it now, as the API holds people
+/// who manage webhooks to (`api::hooks::managed`): an active account, an
+/// admin of its workspace, or for a project's webhook an owner or
+/// maintainer of the project, by their own role or the workspace's base
+/// role. Someone who left, was demoted or disabled, or deleted their
+/// account (`keeper_id` NULL) keeps none: the address they chose gets
+/// nothing more.
+macro_rules! kept_sql {
+    () => {
+        "EXISTS (SELECT 1 FROM users kk JOIN workspace_members km \
+          ON km.user_id = kk.id AND km.workspace_id = h.workspace_id \
+          WHERE kk.id = h.keeper_id AND kk.status = 'active' \
+          AND (km.role IN ('owner', 'admin') OR (h.project_id IS NOT NULL AND ( \
+            EXISTS (SELECT 1 FROM workspaces kw WHERE kw.id = h.workspace_id AND kw.base_role = 'maintainer') \
+            OR EXISTS (SELECT 1 FROM project_members kp WHERE kp.project_id = h.project_id \
+              AND kp.user_id = kk.id AND kp.role IN ('owner', 'maintainer'))))))"
+    };
+}
+
+/// [`kept_sql`]'s condition, for statements of their own on `webhooks h`.
+pub const KEPT: &str = kept_sql!();
+
+/// SELECT for [`HookRow`]; `WHERE` and `ORDER BY` follow. `kept`: its
+/// keeper, who chose where it posts, still manages it ([`KEPT`]).
+pub const SELECT: &str = concat!(
+    "SELECT h.id, h.workspace_id, h.project_id, p.slug AS project_slug, \
     p.name AS project_name, h.name, h.url, h.events, h.projects, h.started_by, h.secret, \
     h.previous_secret, h.previous_until, h.enabled, h.disabled_reason, h.disabled_at, h.created_by, \
-    u.name AS creator_name, u.avatar_url AS creator_avatar, h.created_at, h.updated_at \
-    FROM webhooks h LEFT JOIN projects p ON p.id = h.project_id LEFT JOIN users u ON u.id = h.created_by";
+    u.name AS creator_name, u.avatar_url AS creator_avatar, h.created_at, h.updated_at, \
+    h.keeper_id, ku.name AS keeper_name, ",
+    kept_sql!(),
+    " AS kept FROM webhooks h LEFT JOIN projects p ON p.id = h.project_id LEFT JOIN users u ON u.id = h.created_by \
+    LEFT JOIN users ku ON ku.id = h.keeper_id"
+);
 
 /// A webhook's row, with its project's and its maker's names.
 #[derive(Clone, Debug, Deserialize)]
@@ -62,6 +90,15 @@ pub struct HookRow {
     pub created_at: i64,
     #[serde(deserialize_with = "int")]
     pub updated_at: i64,
+    /// Who chose where it posts: who added it, or last pointed it
+    /// elsewhere or turned it on again.
+    #[serde(default)]
+    pub keeper_id: Option<String>,
+    #[serde(default)]
+    pub keeper_name: Option<String>,
+    /// Its keeper still manages it; it posts nothing otherwise.
+    #[serde(deserialize_with = "int_bool", default)]
+    pub kept: bool,
 }
 
 fn list<T: serde::de::DeserializeOwned>(json: &str) -> Vec<T> {
@@ -130,6 +167,15 @@ impl HookRow {
             health,
             can_manage,
         }
+    }
+
+    /// Why it posts nothing more, when its keeper no longer manages it.
+    pub fn unkept(&self) -> Option<String> {
+        (!self.kept).then(|| {
+            fctl_domain::hooks::unkept_reason(
+                self.keeper_id.as_ref().and(self.keeper_name.as_deref()),
+            )
+        })
     }
 
     /// Its secret, opened.
@@ -345,6 +391,28 @@ pub async fn emit(env: &Env, workspace_id: Option<&str>, event: Event) -> AppRes
     Ok(())
 }
 
+/// What turns webhook `id` off, saying `why`, while it's on: every attempt
+/// failed for days, or its keeper no longer manages it (`unkept`), which
+/// only while that's still so, as someone who turned it on again since
+/// keeps it.
+pub fn turn_off(
+    db: &D1Database,
+    id: &str,
+    why: &str,
+    now: i64,
+    unkept: bool,
+) -> AppResult<crate::db::Query> {
+    q(
+        db,
+        &format!(
+            "UPDATE webhooks SET enabled = 0, disabled_reason = ?1, disabled_at = ?2, updated_at = ?2 \
+             WHERE id = ?3 AND enabled = 1 \
+             AND (?4 = 0 OR NOT EXISTS (SELECT 1 FROM webhooks h WHERE h.id = ?3 AND {KEPT}))"
+        ),
+        &[s(why), crate::db::n(now), s(id), crate::db::b(unkept)],
+    )
+}
+
 /// Tells a workspace's HooksObject that its webhooks changed (`forget`:
 /// webhook `webhook_id` went, with its deliveries), and this isolate's
 /// cache too.
@@ -538,6 +606,139 @@ mod tests {
         run_sql(&db, "DELETE FROM webhooks WHERE id = 'whk_web'").await?;
         forget_cached("wsp_1");
         assert_eq!(wanted(&db, "wsp_1", 1_000 + CACHED_MS + 1).await?.len(), 2);
+        Ok(())
+    }
+
+    /// Whether each of the workspace's webhooks is kept, by id.
+    async fn kept(db: &D1Database) -> AppResult<Vec<(String, bool)>> {
+        Ok(of_workspace(db, "wsp_1")
+            .await?
+            .into_iter()
+            .map(|h| (h.id, h.kept))
+            .collect())
+    }
+
+    fn is_kept(all: &[(String, bool)], id: &str) -> bool {
+        all.iter().any(|(h, k)| h == id && *k)
+    }
+
+    /// A webhook posts while whoever chose where it posts manages it: an
+    /// admin of the workspace, or a project's owner or maintainer, with an
+    /// active account.
+    #[wasm_bindgen_test]
+    async fn a_webhook_is_kept_while_its_keeper_manages_it() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES \
+             ('usr_bob', 'bob@example.com', 'Bob', 0, 0), ('usr_cy', 'cy@example.com', 'Cy', 0, 0), \
+             ('usr_dan', 'dan@example.com', 'Dan', 0, 0)",
+            "INSERT INTO workspace_members (workspace_id, user_id, email, role, created_at) VALUES \
+             ('wsp_1', 'usr_ada', 'ada@example.com', 'owner', 0), ('wsp_1', 'usr_bob', 'bob@example.com', 'admin', 0), \
+             ('wsp_1', 'usr_cy', 'cy@example.com', 'member', 0), ('wsp_1', 'usr_dan', 'dan@example.com', 'member', 0)",
+            "INSERT INTO project_members (project_id, user_id, role, created_at) VALUES \
+             ('prj_web', 'usr_cy', 'maintainer', 0), ('prj_web', 'usr_dan', 'viewer', 0)",
+            "INSERT INTO webhooks (id, workspace_id, project_id, url, secret, created_by, keeper_id, created_at, updated_at) VALUES \
+             ('whk_bob', 'wsp_1', NULL, 'https://example.com/bob', 'sealed', 'usr_bob', 'usr_bob', 10, 10), \
+             ('whk_cy_all', 'wsp_1', NULL, 'https://example.com/cy', 'sealed', 'usr_cy', 'usr_cy', 11, 11), \
+             ('whk_cy_web', 'wsp_1', 'prj_web', 'https://example.com/cy-web', 'sealed', 'usr_cy', 'usr_cy', 12, 12), \
+             ('whk_dan_web', 'wsp_1', 'prj_web', 'https://example.com/dan-web', 'sealed', 'usr_dan', 'usr_dan', 13, 13), \
+             ('whk_ada_api', 'wsp_1', 'prj_api', 'https://example.com/ada-api', 'sealed', 'usr_ada', 'usr_ada', 14, 14), \
+             ('whk_nobody', 'wsp_1', NULL, 'https://example.com/nobody', 'sealed', NULL, NULL, 15, 15)",
+        ] {
+            run_sql(&db, sql).await?;
+        }
+        let all = kept(&db).await?;
+        // The workspace's admins keep any of its webhooks; a project's
+        // maintainer keeps the project's own, not the workspace's; a viewer
+        // keeps none, nor does an account that's gone.
+        assert!(is_kept(&all, "whk_bob"));
+        assert!(!is_kept(&all, "whk_cy_all"));
+        assert!(is_kept(&all, "whk_cy_web"));
+        assert!(!is_kept(&all, "whk_dan_web"));
+        assert!(is_kept(&all, "whk_ada_api"));
+        assert!(!is_kept(&all, "whk_nobody"));
+        // So it reads as why it stopped, with who chose its address.
+        let rows = of_workspace(&db, "wsp_1").await?;
+        let dan = rows.iter().find(|h| h.id == "whk_dan_web");
+        assert_eq!(
+            dan.and_then(HookRow::unkept).as_deref(),
+            Some(fctl_domain::hooks::unkept_reason(Some("Dan")).as_str())
+        );
+        assert!(
+            rows.iter()
+                .find(|h| h.id == "whk_bob")
+                .and_then(HookRow::unkept)
+                .is_none()
+        );
+        // A workspace whose members maintain every project: Dan keeps his.
+        run_sql(
+            &db,
+            "UPDATE workspaces SET base_role = 'maintainer' WHERE id = 'wsp_1'",
+        )
+        .await?;
+        assert!(is_kept(&kept(&db).await?, "whk_dan_web"));
+        run_sql(
+            &db,
+            "UPDATE workspaces SET base_role = 'none' WHERE id = 'wsp_1'",
+        )
+        .await?;
+        // Demoted, disabled, gone from the workspace or the project: no
+        // more.
+        run_sql(
+            &db,
+            "UPDATE workspace_members SET role = 'member' WHERE user_id = 'usr_bob'",
+        )
+        .await?;
+        run_sql(
+            &db,
+            "UPDATE users SET status = 'disabled' WHERE id = 'usr_ada'",
+        )
+        .await?;
+        run_sql(&db, "DELETE FROM project_members WHERE user_id = 'usr_cy'").await?;
+        let all = kept(&db).await?;
+        assert!(!is_kept(&all, "whk_bob"));
+        assert!(!is_kept(&all, "whk_ada_api"));
+        assert!(!is_kept(&all, "whk_cy_web"));
+        // Made an admin, Cy keeps the workspace's too; once out of the
+        // workspace, none.
+        run_sql(
+            &db,
+            "UPDATE workspace_members SET role = 'admin' WHERE user_id = 'usr_cy'",
+        )
+        .await?;
+        let all = kept(&db).await?;
+        assert!(is_kept(&all, "whk_cy_all") && is_kept(&all, "whk_cy_web"));
+        run_sql(
+            &db,
+            "DELETE FROM workspace_members WHERE user_id = 'usr_cy'",
+        )
+        .await?;
+        let all = kept(&db).await?;
+        assert!(!is_kept(&all, "whk_cy_all") && !is_kept(&all, "whk_cy_web"));
+        // fctl turns one off whose keeper no longer manages it, unless
+        // someone who does turned it on again in the meantime.
+        run_sql(
+            &db,
+            "UPDATE webhooks SET keeper_id = 'usr_ada' WHERE id = 'whk_cy_web'",
+        )
+        .await?;
+        run_sql(
+            &db,
+            "UPDATE users SET status = 'active' WHERE id = 'usr_ada'",
+        )
+        .await?;
+        let off = |id: &str, unkept: bool| turn_off(&db, id, "Gone.", 99, unkept);
+        assert_eq!(off("whk_cy_web", true)?.run().await?, 0);
+        assert_eq!(off("whk_cy_all", true)?.run().await?, 1);
+        let gone = row(&db, "whk_cy_all").await?;
+        assert_eq!(
+            gone.map(|h| (h.enabled, h.disabled_reason)),
+            Some((false, Some("Gone.".to_owned())))
+        );
+        // Failing for days turns off one that's kept too, once.
+        assert_eq!(off("whk_cy_web", false)?.run().await?, 1);
+        assert_eq!(off("whk_cy_web", false)?.run().await?, 0);
         Ok(())
     }
 

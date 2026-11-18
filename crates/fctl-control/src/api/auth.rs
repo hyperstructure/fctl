@@ -376,7 +376,26 @@ pub async fn get_me(ctx: &Ctx) -> AppResult<Response> {
     let user = ctx.user()?;
     let token = crate::api::tokens::current(ctx).await?;
     if ctx.limits().is_some() {
-        return http::ok(&crate::api::tokens::limited_me(user, token));
+        let mut me = crate::api::tokens::limited_me(user, token);
+        // A service account sees the person it acts for as their workspace
+        // knows them: by the address they're a member of it as, not their
+        // own primary address, which may be one they keep from the
+        // workspace's admins, who hold its secret.
+        if let Some(sa) = ctx.service_account() {
+            #[derive(serde::Deserialize)]
+            struct Member {
+                email: String,
+            }
+            let member: Option<Member> = q(
+                &ctx.db,
+                "SELECT email FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+                &[s(&sa.workspace_id), s(&user.id)],
+            )?
+            .first()
+            .await?;
+            me.user.email = member.map(|m| m.email).unwrap_or_default();
+        }
+        return http::ok(&me);
     }
     // Their Gravatar, once a day, after the answer: the app shows a new one
     // the next time it asks.

@@ -35,6 +35,7 @@ use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use wasm_bindgen::JsCast;
 use worker::{
     DurableObject, Env, Fetch, Method, Request, RequestInit, RequestRedirect, Response, Result,
     SqlStorage, SqlStorageValue, State, durable_object,
@@ -547,10 +548,17 @@ impl HooksObject {
             return Ok(serde_json::json!({ "deliveries": 0 }));
         };
         let hooks = self.hooks(&e.workspace_id).await.map_err(|x| x.0)?;
-        let wanted: Vec<&HookRow> = hooks
+        let (wanted, unkept): (Vec<&HookRow>, Vec<&HookRow>) = hooks
             .iter()
             .filter(|h| rules::wants(&h.hook(), kind, e.project_id.as_deref(), e.origin))
-            .collect();
+            .partition(|h| h.kept);
+        // A webhook whose keeper no longer manages it gets nothing at the
+        // address they chose: fctl turns it off, and says why.
+        for h in unkept {
+            if let Some(why) = h.unkept() {
+                self.turn_off(h, &why, now_ms()).await;
+            }
+        }
         if wanted.is_empty() {
             return Ok(serde_json::json!({ "deliveries": 0 }));
         }
@@ -679,6 +687,7 @@ impl HooksObject {
             .unwrap_or_default();
         let mut by_hook: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut oldest: Vec<(String, i64)> = Vec::new();
+        let mut unkept: Vec<&HookRow> = Vec::new();
         for d in due {
             let Some(hook) = hooks.iter().find(|h| h.id == d.webhook_id) else {
                 self.give_up(&d.id, "Its webhook was deleted.", now);
@@ -688,11 +697,24 @@ impl HooksObject {
                 self.give_up(&d.id, "Its webhook is off.", now);
                 continue;
             }
+            // Its keeper no longer manages it: turned off below, with the
+            // deliveries that wait.
+            if !hook.kept {
+                if !unkept.iter().any(|h| h.id == hook.id) {
+                    unkept.push(hook);
+                }
+                continue;
+            }
             let ids = by_hook.entry(d.webhook_id.clone()).or_insert_with(|| {
                 oldest.push((d.webhook_id.clone(), int(d.next_at)));
                 Vec::new()
             });
             ids.push(d.id);
+        }
+        for hook in unkept {
+            if let Some(why) = hook.unkept() {
+                self.turn_off(hook, &why, now).await;
+            }
         }
         rules::order_due(&mut oldest);
         let mut jobs = Vec::new();
@@ -824,7 +846,11 @@ impl HooksObject {
                     test,
                 }
                 .to_vec();
-                (post(&hook.url, &headers, &body).await, headers)
+                let via = network(&self.env, &cfg.webhook_reach, &hook.url);
+                (
+                    post(via.as_ref(), &hook.url, &headers, &body).await,
+                    headers,
+                )
             }
             _ => (
                 failed("fctl couldn't open the webhook's secret to sign it.".into()),
@@ -933,23 +959,15 @@ impl HooksObject {
         self.delivery_row(id)
     }
 
-    /// Turns `hook` off: every attempt failed for three days. Its waiting
-    /// deliveries go nowhere, and the workspace's audit log says why.
+    /// Turns `hook` off: every attempt failed for three days, or its
+    /// keeper no longer manages it. Its waiting deliveries go nowhere, and
+    /// the workspace's audit log says why.
     async fn turn_off(&self, hook: &HookRow, why: &str, now: i64) {
         let turned: AppResult<usize> = async {
             let db = self.env.d1("DB")?;
-            let changed = crate::db::q(
-                &db,
-                "UPDATE webhooks SET enabled = 0, disabled_reason = ?, disabled_at = ?, updated_at = ? WHERE id = ? AND enabled = 1",
-                &[
-                    crate::db::s(why),
-                    crate::db::n(now),
-                    crate::db::n(now),
-                    crate::db::s(&hook.id),
-                ],
-            )?
-            .run()
-            .await?;
+            let changed = hook_rows::turn_off(&db, &hook.id, why, now, !hook.kept)?
+                .run()
+                .await?;
             if changed > 0 {
                 crate::db::q(
                     &db,
@@ -1122,7 +1140,8 @@ impl HooksObject {
             test: false,
         }
         .to_vec();
-        let posted = post(&url, &headers, &body).await;
+        let via = network(&self.env, &cfg.webhook_reach, &url);
+        let posted = post(via.as_ref(), &url, &headers, &body).await;
         Ok(HookChallenged {
             refused: rules::challenge_refused(
                 &challenge,
@@ -1437,9 +1456,39 @@ impl HooksObject {
     }
 }
 
-/// Posts `body` to `url` with `headers`: at most `TIMEOUT_MS` for the
+/// The binding a deployment gives the Worker for webhooks' requests: a
+/// network that connects only to public addresses and the IP ranges
+/// `FCTL_WEBHOOK_PRIVATE_HOSTS` lists, whatever a host name resolves to,
+/// as it connects (the standalone server's, `deploy/standalone`).
+const NETWORK: &str = "FCTL_WEBHOOK_NETWORK";
+
+/// What a webhook's request to `url` goes out through: the deployment's
+/// network for webhooks ([`NETWORK`]), so that a host name that resolves
+/// into the server's own network reaches nothing there; or, where there is
+/// none, the Worker's own fetch, which on Cloudflare reaches no private
+/// address. A host name the instance's settings list (`reach`) goes
+/// through the Worker's own fetch, to where it resolves: its operator
+/// trusts it.
+fn network(env: &Env, reach: &rules::Reach, url: &str) -> Option<worker::Fetcher> {
+    let listed = url::Url::parse(url).ok().is_some_and(|u| match u.host() {
+        Some(url::Host::Domain(name)) => reach.takes_name(name),
+        _ => false,
+    });
+    if listed {
+        return None;
+    }
+    env.service(NETWORK).ok()
+}
+
+/// Posts `body` to `url` with `headers`, through `via` where it's given
+/// ([`network`]), else the Worker's own fetch: at most `TIMEOUT_MS` for the
 /// answer and the start of its body, without following a redirect.
-async fn post(url: &str, headers: &[(String, String)], body: &str) -> Posted {
+async fn post(
+    via: Option<&worker::Fetcher>,
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+) -> Posted {
     let started = now_ms();
     let done = |status: Option<u16>,
                 error: Option<String>,
@@ -1484,7 +1533,19 @@ async fn post(url: &str, headers: &[(String, String)], body: &str) -> Posted {
         u32::try_from(rules::TIMEOUT_MS).unwrap_or(10_000),
     ));
     let exchange = async {
-        let mut res = Fetch::Request(req).send_with_signal(&signal).await?;
+        let mut res = match via {
+            Some(network) => {
+                let init = web_sys::RequestInit::new();
+                init.set_signal(Some(&signal));
+                let fetcher: worker::worker_sys::Fetcher = network.clone().into_rpc();
+                let answer = wasm_bindgen_futures::JsFuture::from(
+                    fetcher.fetch_with_init(req.inner(), &init)?,
+                )
+                .await?;
+                worker::Response::from(answer.dyn_into::<web_sys::Response>()?)
+            }
+            None => Fetch::Request(req).send_with_signal(&signal).await?,
+        };
         let status = res.status_code();
         let headers: Vec<WebhookHeader> = res
             .headers()

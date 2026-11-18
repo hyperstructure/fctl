@@ -235,7 +235,7 @@ async fn create(
     q(
         &ctx.db,
         "INSERT INTO webhooks (id, workspace_id, project_id, name, url, events, projects, started_by, secret, \
-         enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         enabled, created_by, keeper_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(&id),
             s(workspace_id),
@@ -247,6 +247,8 @@ async fn create(
             s(&json!(c.started_by).to_string()),
             s(&sealed),
             b(enabled),
+            s(&user),
+            // It posts while they manage it (`crate::hooks::KEPT`).
             s(&user),
             n(ctx.now),
             n(ctx.now),
@@ -386,11 +388,19 @@ pub async fn update(ctx: &Ctx, req: &mut Request, id: &str) -> AppResult<Respons
     }
     let enabled = body.enabled.unwrap_or(row.enabled);
     let turned_on = enabled && !row.enabled;
+    // Whoever points it elsewhere, or turns it on again, chooses where it
+    // posts: it posts while they manage it (`crate::hooks::KEPT`).
+    let keeper = if moved || turned_on {
+        Some(ctx.user()?.id.clone())
+    } else {
+        None
+    };
     q(
         &ctx.db,
         "UPDATE webhooks SET url = ?, name = ?, events = ?, projects = ?, started_by = ?, enabled = ?, \
          disabled_reason = CASE WHEN ? THEN NULL ELSE disabled_reason END, \
-         disabled_at = CASE WHEN ? THEN NULL ELSE disabled_at END, updated_at = ? WHERE id = ?",
+         disabled_at = CASE WHEN ? THEN NULL ELSE disabled_at END, updated_at = ?, \
+         keeper_id = COALESCE(?, keeper_id) WHERE id = ?",
         &[
             s(url.as_deref().unwrap_or(&row.url)),
             match &name {
@@ -406,6 +416,7 @@ pub async fn update(ctx: &Ctx, req: &mut Request, id: &str) -> AppResult<Respons
             b(enabled),
             b(enabled),
             n(ctx.now),
+            os(keeper.as_deref()),
             s(&row.id),
         ],
     )?
