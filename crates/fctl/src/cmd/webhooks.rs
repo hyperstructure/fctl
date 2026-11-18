@@ -196,6 +196,11 @@ pub enum WebhooksCmd {
         /// The webhook-signature header.
         #[arg(long)]
         signature: String,
+        /// Check the signature of a request saved earlier, whatever its age.
+        /// Without it, one more than 5 minutes from this machine's clock is
+        /// refused, as a receiver refuses a possible replay.
+        #[arg(long)]
+        any_age: bool,
         /// The body, as it came.
         body: PathBuf,
     },
@@ -207,10 +212,24 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
         id,
         timestamp,
         signature,
+        any_age,
         body,
     }) = &args.cmd
     {
-        return verify(secret, id, timestamp, signature, body);
+        let mut bytes = Vec::new();
+        if body.as_os_str() == "-" {
+            std::io::stdin().read_to_end(&mut bytes)?;
+        } else {
+            bytes = std::fs::read(body).with_context(|| format!("reading {}", body.display()))?;
+        }
+        let now = style::now_ms() / 1000;
+        return match verdict(secret, id, timestamp, &bytes, signature, now, *any_age) {
+            Ok(said) => {
+                println!("{said}");
+                Ok(())
+            }
+            Err(said) => bail!(said),
+        };
     }
     let api = config::api(server)?;
     let id = args
@@ -415,7 +434,11 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
                 )
                 .await?;
             if json {
-                return style::print_json(&d);
+                style::print_json(&d)?;
+                if d.state != WebhookDeliveryState::Delivered {
+                    std::process::exit(1);
+                }
+                return Ok(());
             }
             let to = d
                 .request
@@ -791,8 +814,9 @@ fn print_webhook(w: &Webhook, names: &std::collections::HashMap<String, String>)
         println!(
             "  {}",
             style::amber(&format!(
-                "{} dropped: 1,000 deliveries waited for it already.",
-                style::count(h.dropped, "event was", "events were")
+                "{} dropped since it last took one: 1,000 deliveries waited for it already, so {} won't be sent.",
+                style::count(h.dropped, "event was", "events were"),
+                if h.dropped == 1 { "it" } else { "they" }
             ))
         );
     }
@@ -926,29 +950,53 @@ fn duration(s: &str) -> Result<i64> {
     Ok(ms.min(rules::KEPT_MS))
 }
 
-fn verify(secret: &str, id: &str, timestamp: &str, signature: &str, body: &PathBuf) -> Result<()> {
-    let mut bytes = Vec::new();
-    if body.as_os_str() == "-" {
-        std::io::stdin().read_to_end(&mut bytes)?;
-    } else {
-        bytes = std::fs::read(body).with_context(|| format!("reading {}", body.display()))?;
-    }
-    let now = style::now_ms() / 1000;
-    match rules::verify(secret, id, timestamp, &bytes, signature, now) {
-        Ok(()) => {
-            println!("The signature is fctl's, made with this secret.");
-            Ok(())
-        }
+/// What `fctl webhooks verify` says of a request: whether the secret
+/// signed it, checked first so that a saved request's answer says so
+/// whatever its age, then, unless `any_age`, whether its timestamp is
+/// within 5 minutes of `now_s`, as a receiver checks it (`rules::verify`).
+fn verdict(
+    secret: &str,
+    id: &str,
+    timestamp: &str,
+    body: &[u8],
+    signature: &str,
+    now_s: i64,
+    any_age: bool,
+) -> std::result::Result<String, String> {
+    let signed_at: i64 = match timestamp.trim().parse() {
+        Ok(t) => t,
+        Err(_) => return Err("webhook-timestamp isn't a number of seconds.".into()),
+    };
+    match rules::verify(secret, id, timestamp, body, signature, signed_at) {
+        Ok(()) | Err(rules::Unverified::TooOld) => {}
         Err(rules::Unverified::Secret) => {
-            bail!("That isn't a webhook secret: it starts with whsec_.")
+            return Err("That isn't a webhook secret: it starts with whsec_.".into());
         }
-        Err(rules::Unverified::Timestamp) => bail!("webhook-timestamp isn't a number of seconds."),
-        Err(rules::Unverified::TooOld) => bail!(
-            "The timestamp is more than 5 minutes from this machine's clock: refuse it, it may be a replay."
-        ),
-        Err(rules::Unverified::Signature) => bail!(
-            "No signature matches: check the secret, and that the body is byte for byte as it came."
-        ),
+        Err(rules::Unverified::Timestamp) => {
+            return Err("webhook-timestamp isn't a number of seconds.".into());
+        }
+        Err(rules::Unverified::Signature) => {
+            return Err(
+                "No signature matches: check the secret, and that the body is byte for byte as it came."
+                    .into(),
+            );
+        }
+    }
+    const SIGNED: &str = "The signature is fctl's, made with this secret";
+    if now_s.abs_diff(signed_at) <= rules::TOLERANCE_S.unsigned_abs() {
+        return Ok(format!("{SIGNED}."));
+    }
+    let when = if signed_at < now_s {
+        format!("signed {}", style::ago_from(signed_at * 1000, now_s * 1000))
+    } else {
+        "dated ahead of this machine's clock".to_owned()
+    };
+    if any_age {
+        Ok(format!("{SIGNED}, {when}."))
+    } else {
+        Err(format!(
+            "{SIGNED}, but {when}: more than 5 minutes from this machine's clock, so a receiver refuses it as a possible replay. --any-age checks a saved request's signature alone."
+        ))
     }
 }
 
@@ -972,6 +1020,56 @@ impl WebhooksCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_says_whether_the_secret_signed_it_and_whether_a_receiver_takes_it() {
+        let secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+        let key = rules::key(secret).unwrap_or_default();
+        let body = br#"{"type":"session.started"}"#;
+        let at = 1_763_400_000;
+        let sig = rules::signatures(&[key], "evt_1", at, body);
+        let say = |now: i64, any_age: bool| {
+            verdict(secret, "evt_1", &at.to_string(), body, &sig, now, any_age)
+        };
+        assert_eq!(
+            say(at + 60, false),
+            Ok("The signature is fctl's, made with this secret.".into())
+        );
+        // A saved one: signed with this secret, which it says, but too old
+        // for a receiver unless --any-age.
+        let old = say(at + 2 * 86_400, false).err().unwrap_or_default();
+        assert!(
+            old.starts_with("The signature is fctl's, made with this secret, but signed 2d ago")
+        );
+        assert!(old.contains("--any-age"));
+        assert_eq!(
+            say(at + 2 * 86_400, true),
+            Ok("The signature is fctl's, made with this secret, signed 2d ago.".into())
+        );
+        assert!(
+            say(at - 3_600, false)
+                .err()
+                .unwrap_or_default()
+                .contains("dated ahead")
+        );
+        // Another secret's is refused, however old.
+        let other = verdict(
+            "whsec_b3RoZXI=",
+            "evt_1",
+            &at.to_string(),
+            body,
+            &sig,
+            at + 86_400,
+            true,
+        );
+        assert!(
+            other
+                .err()
+                .unwrap_or_default()
+                .starts_with("No signature matches")
+        );
+        assert!(verdict(secret, "evt_1", "soon", body, &sig, at, true).is_err());
+    }
 
     #[test]
     fn a_command_given_a_webhook_names_it() {

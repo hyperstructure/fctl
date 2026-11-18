@@ -323,7 +323,8 @@ Check the body byte for byte as it came, refuse a timestamp more than
 five minutes from your clock (it may be a replay), and check the
 workspace and project it names. The webhook's page shows the whole check
 with its ids, in Node.js and Python, and `fctl webhooks verify` checks a
-request you saved. **Rotate secret** makes a new one, with which fctl
+request as a receiver does, or one you saved earlier by its signature
+alone (`--any-age`). **Rotate secret** makes a new one, with which fctl
 signs from then on; the old one signs beside it for a day, so that your
 receiver switches without missing a request.
 

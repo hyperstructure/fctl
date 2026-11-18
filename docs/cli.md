@@ -865,6 +865,7 @@ fctl webhooks secret "Deploy bot" -p web --rotate   # a new one; the old one sig
 fctl webhooks rm "Deploy bot" -p web
 fctl webhooks events                           # every event, with what it means
 fctl webhooks verify --secret whsec_… --id evt_01KC… --timestamp 1763400000 --signature "v1,…" body.json
+fctl webhooks verify --any-age --secret whsec_… --id evt_01KC… --timestamp 1763400000 --signature "v1,…" saved.json
 ```
 
 `--events` takes events by name (`session.finished`), groups
@@ -874,9 +875,12 @@ default); `--projects`, a workspace's projects by slug or id, or `all`;
 `autopilot`, `tickets`), or `all`. Addresses are `https://` on the public
 internet. Adding a webhook, pointing one elsewhere, and reading or
 rotating its secret are sensitive actions, which take confirming it's you where the instance
-asks for that. `fctl webhooks verify` checks a request you saved as a
-receiver does, with the secret in `--secret` or `FCTL_WEBHOOK_SECRET`. A
-workspace has at most 20 webhooks.
+asks for that. `fctl webhooks verify` checks a request as a receiver
+does, with the secret in `--secret` or `FCTL_WEBHOOK_SECRET`: whether the
+secret signed it, and whether its timestamp is within 5 minutes of the
+machine's clock; it exits 1 when either fails, and says whether the
+secret signed one that's too old. `--any-age` checks a request saved
+earlier by its signature alone. A workspace has at most 20 webhooks.
 
 ## Notifications
 
