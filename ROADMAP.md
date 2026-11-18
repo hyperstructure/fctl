@@ -105,6 +105,13 @@ this file is the overview. Order within a section is priority.
 - [ ] More events for schedules: Linear's issues (#370), comments that ask
       for fctl on an issue, deployments, and fctl's own (a session that
       failed, a review's findings)
+- [x] Webhooks: a workspace's or a project's events (sessions starting,
+      finishing turns, asking, ready for review, failing; agents' pull
+      requests; reviews; schedules' skipped runs) posted to people's own
+      addresses, signed as Standard Webhooks sign them, with retries, a
+      30-day log of what went out, tests and resends
+- [ ] Webhooks in chat apps' own shapes (Slack, Discord, Teams), without a
+      relay, and email for a webhook that fctl turned off
 - [x] Ticket trackers: each project chooses GitHub Issues, a Linear team or
       none, which its agents use with `fctl ticket`
 - [x] Linear: people delegate tickets to fctl or mention it there, and the
