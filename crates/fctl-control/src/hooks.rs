@@ -375,3 +375,110 @@ pub async fn purge(env: &Env, workspace_id: &str) -> AppResult<()> {
     let _: serde_json::Value = internal::post(&stub, "/purge", &serde_json::json!({})).await?;
     Ok(())
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use fctl_domain::hooks::Kind;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    async fn run_sql(db: &D1Database, sql: &str) -> AppResult<()> {
+        q(db, sql, &[])?.run().await?;
+        Ok(())
+    }
+
+    /// Acme, with Web and Api, a webhook of its own for Web's and Api's
+    /// questions, one of Web's own, and one that is off.
+    async fn world(db: &D1Database) -> AppResult<()> {
+        for sql in [
+            "INSERT INTO users (id, email, name, created_at, updated_at) VALUES ('usr_ada', 'ada@example.com', 'Ada', 0, 0)",
+            "INSERT INTO workspaces (id, slug, name, created_by, created_at, updated_at) \
+             VALUES ('wsp_1', 'acme', 'Acme', 'usr_ada', 0, 0)",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_web', 'web', 'Web', 'usr_ada', 0, 0, 'wsp_1')",
+            "INSERT INTO projects (id, slug, name, created_by, created_at, updated_at, workspace_id) \
+             VALUES ('prj_api', 'api', 'Api', 'usr_ada', 0, 0, 'wsp_1')",
+            "INSERT INTO webhooks (id, workspace_id, project_id, name, url, events, projects, started_by, secret, \
+             created_by, created_at, updated_at) VALUES ('whk_slack', 'wsp_1', NULL, 'Slack', \
+             'https://hooks.slack.com/x', '[\"session.question\"]', '[\"prj_web\",\"prj_api\"]', '[\"person\"]', \
+             'sealed', 'usr_ada', 1, 1)",
+            "INSERT INTO webhooks (id, workspace_id, project_id, url, secret, created_by, created_at, updated_at) \
+             VALUES ('whk_web', 'wsp_1', 'prj_web', 'https://example.com/web', 'sealed', 'usr_ada', 2, 2)",
+            "INSERT INTO webhooks (id, workspace_id, url, secret, enabled, disabled_reason, disabled_at, created_at, updated_at) \
+             VALUES ('whk_off', 'wsp_1', 'https://example.com/off', 'sealed', 0, 'Every delivery failed.', 9, 3, 3)",
+        ] {
+            run_sql(db, sql).await?;
+        }
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_workspace_s_webhooks_read_as_the_api_shows_them() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        let rows = of_workspace(&db, "wsp_1").await?;
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["whk_slack", "whk_web", "whk_off"]);
+        assert_eq!(count(&db, "wsp_1").await?, 3);
+        let slack = rows[0].to_webhook(None, true);
+        assert_eq!(slack.name.as_deref(), Some("Slack"));
+        assert_eq!(slack.events, ["session.question"]);
+        assert_eq!(slack.projects.len(), 2);
+        assert_eq!(slack.started_by, [WebhookOrigin::Person]);
+        assert_eq!(slack.created_by.map(|u| u.name), Some("Ada".to_owned()));
+        assert!(slack.project.is_none());
+        let web = rows[1].to_webhook(None, false);
+        assert_eq!(web.project.map(|p| p.slug), Some("web".to_owned()));
+        assert!(web.events.is_empty() && !web.can_manage);
+        let off = rows[2].to_webhook(None, true);
+        assert!(!off.enabled);
+        assert_eq!(off.disabled_reason.as_deref(), Some("Every delivery failed."));
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn events_go_by_the_webhooks_an_isolate_read_lately() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        forget_cached("wsp_1");
+        let hooks = wanted(&db, "wsp_1", 1_000).await?;
+        // The one that is off isn't read.
+        assert_eq!(hooks.len(), 2);
+        assert!(hooks.iter().any(|h| wants(
+            h,
+            Kind::SessionQuestion,
+            Some("prj_api"),
+            Some(WebhookOrigin::Person)
+        )));
+        assert!(!hooks.iter().any(|h| wants(
+            h,
+            Kind::SessionQuestion,
+            Some("prj_api"),
+            Some(WebhookOrigin::Schedule)
+        )));
+        run_sql(&db, "UPDATE webhooks SET enabled = 1 WHERE id = 'whk_off'").await?;
+        // Within the half minute, the isolate goes by what it read.
+        assert_eq!(wanted(&db, "wsp_1", 1_000 + CACHED_MS - 1).await?.len(), 2);
+        // After it, or once told of a change here, it reads them again.
+        assert_eq!(wanted(&db, "wsp_1", 1_000 + CACHED_MS).await?.len(), 3);
+        run_sql(&db, "DELETE FROM webhooks WHERE id = 'whk_web'").await?;
+        forget_cached("wsp_1");
+        assert_eq!(wanted(&db, "wsp_1", 1_000 + CACHED_MS + 1).await?.len(), 2);
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_project_s_webhooks_go_with_it_and_its_workspace_is_found() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        assert_eq!(workspace_of(&db, "prj_api").await?.as_deref(), Some("wsp_1"));
+        assert_eq!(workspace_of(&db, "prj_gone").await?, None);
+        run_sql(&db, "DELETE FROM projects WHERE id = 'prj_web'").await?;
+        assert!(row(&db, "whk_web").await?.is_none());
+        assert!(row(&db, "whk_slack").await?.is_some());
+        run_sql(&db, "DELETE FROM workspaces WHERE id = 'wsp_1'").await?;
+        assert_eq!(count(&db, "wsp_1").await?, 0);
+        Ok(())
+    }
+}
