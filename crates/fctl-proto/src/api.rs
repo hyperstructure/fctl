@@ -1624,14 +1624,24 @@ pub struct InstanceSettings {
     /// takes confirming it's you.
     pub service_account_consent: bool,
     /// Everyone who signs in creates workspaces of their own, as their
-    /// primary admin, as many as the workspace limit lets them be in. Off,
-    /// only instance admins and the primary instance owner create them, and
-    /// everyone else joins the ones they are invited or added to, as an
-    /// organization that provisions its people into its own workspaces may
-    /// want. On by default; app.fctl.sh keeps it on. Workspaces that exist
-    /// stay as they are.
+    /// primary admin, as many as the workspace limit lets them be in
+    /// ([`Self::max_workspaces`]). Off, only instance admins and the
+    /// primary instance owner create them, and everyone else joins the ones
+    /// they are invited or added to, as an organization that provisions its
+    /// people into its own workspaces may want. On by default; app.fctl.sh
+    /// keeps it on. Workspaces that exist stay as they are.
     pub members_create_workspaces: bool,
+    /// The most workspaces one person can be a member of, created or
+    /// joined: [`DEFAULT_MAX_WORKSPACES`] (five) by default; 0 for any
+    /// number. The primary instance owner can be in any number whatever it
+    /// says. Lowering it takes nobody out of a workspace: those in more
+    /// join and create no more until they are in fewer.
+    pub max_workspaces: u32,
 }
+
+/// How many workspaces one person can be a member of until an instance's
+/// admins choose another number ([`InstanceSettings::max_workspaces`]).
+pub const DEFAULT_MAX_WORKSPACES: u32 = 5;
 
 impl Default for InstanceSettings {
     fn default() -> Self {
@@ -1644,6 +1654,7 @@ impl Default for InstanceSettings {
             export_interval_hours: 168,
             service_account_consent: true,
             members_create_workspaces: true,
+            max_workspaces: DEFAULT_MAX_WORKSPACES,
         }
     }
 }
@@ -1663,6 +1674,8 @@ pub struct UpdateInstanceSettingsRequest {
     pub export_interval_hours: Option<u32>,
     pub service_account_consent: Option<bool>,
     pub members_create_workspaces: Option<bool>,
+    /// 0: any number.
+    pub max_workspaces: Option<u32>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -1825,10 +1838,12 @@ pub struct WorkspaceList {
     pub workspaces: Vec<Workspace>,
     pub invitations: Vec<WorkspaceInvitation>,
     /// The most workspaces one person can be a member of, but the primary
-    /// instance owner.
+    /// instance owner: the instance's [`InstanceSettings::max_workspaces`],
+    /// 0 when it lets everyone be in any number (`unlimited` is then true).
     pub limit: u32,
-    /// You can be in any number of workspaces, more than `limit`: you are
-    /// the primary instance owner.
+    /// You can be in any number of workspaces: you are the primary instance
+    /// owner (with a `limit` above 0, which holds everyone else), or the
+    /// instance holds nobody to a number (`limit` 0).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub unlimited: bool,

@@ -316,8 +316,10 @@ admits (they join when they sign up); any other address needs an instance
 invitation first (`fctl admin invite`).
 Everyone in a workspace works in its projects as their project role or its
 base role says; its admins own every project. One person can be in at most
-five workspaces, and the primary instance owner in any number (`fctl
-workspaces --json` says `"unlimited": true` to them). While the instance
+five workspaces, or as many as the instance's admins choose (`fctl admin
+set --max-workspaces`), and the primary instance owner in any number
+(`fctl workspaces --json` says the instance's `"limit"`, 0 for any number,
+and `"unlimited": true` to whoever it doesn't hold). While the instance
 requires two-factor sign-in (`fctl admin set --require-two-factor on`),
 every workspace does, and `fctl workspaces set --require-two-factor off`
 fails.
@@ -1436,6 +1438,7 @@ fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the
 fctl admin set --export-interval 1d        # people export their data once a day (once a week by default; off: at any time)
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (on by default)
 fctl admin set --members-create-workspaces off # only instance admins create workspaces (on by default: everyone)
+fctl admin set --max-workspaces 50         # each person can be in 50 workspaces (5 by default; any: any number)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them

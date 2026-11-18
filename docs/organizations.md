@@ -62,6 +62,7 @@ fctl admin set --verify-sensitive-actions on   # making tokens, deleting project
 fctl admin set --gravatar off                  # nobody's picture comes from gravatar.com
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (below)
 fctl admin set --members-create-workspaces off # only instance admins create workspaces: people work in the ones you put them in
+fctl admin set --max-workspaces any            # each person can be in any number of workspaces (five by default)
 fctl workspaces set --base-role editor -w acme # every member of acme starts sessions in every one of its projects
 ```
 
@@ -124,9 +125,10 @@ them.
   them, and never changes the primary instance owner's account; only the
   primary owner's tokens change other admins'. It stops when it expires,
   someone revokes it, or its admin stops being an active admin.
-- **Limits.** A person is in at most five workspaces, the primary instance
-  owner in any number. A workspace that requires two-factor sign-in stays
-  closed to someone until they set it up.
+- **Limits.** A person is in at most five workspaces, or as many as the
+  instance's admins choose (`fctl admin set --max-workspaces`), the primary
+  instance owner in any number. A workspace that requires two-factor
+  sign-in stays closed to someone until they set it up.
 - **Workspaces of their own.** People create workspaces of their own
   unless you keep that to your admins (`fctl admin set
   --members-create-workspaces off`, or **Admin → Settings → Workspaces**):

@@ -92,3 +92,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0084](0084-webhooks-post-what-happens-in-a-workspace-to-addresses-its-people-choose.md) | Webhooks post what happens in a workspace to addresses its people choose |
 | [0085](0085-admin-tokens-provision-people-on-self-hosted-instances.md) | Admin tokens provision people on self-hosted instances |
 | [0086](0086-service-accounts-start-sessions-for-the-people-who-allow-them.md) | Service accounts start sessions for the people who allow them |
+| [0087](0087-instance-admins-choose-how-many-workspaces-each-person-can-be-in.md) | Instance admins choose how many workspaces each person can be in |

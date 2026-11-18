@@ -556,7 +556,7 @@ elsewhere only the tokens left from when it did, to revoke.
   joined as the old one know them by it; the old one stops signing in, goes
   from the allowlist with its invitations, and the reset links that may
   have gone to it stop working. Someone is placed in a workspace as their
-  primary address, within the five workspaces a person may be in, and a
+  primary address, within the number of workspaces a person may be in, and a
   project's member must be its workspace's.
 - **Claude.** A token sets one Claude token per person
   (`claude_credentials.provisioned`): the next replaces it in place, so
@@ -663,21 +663,26 @@ with the brand color nearest it as `color`, for clients before colors of
 their own; `workspaces.color` keeps either. The web app draws a color of its
 own as it was chosen in both themes, as an image would be, with the initials
 in blackish or whiteish, whichever reads better on it. Someone can
-be in at most five (`fctl_domain::workspace::MAX_WORKSPACES`), and the
-primary instance owner in any number (`workspace_limit`,
+be in at most five, or as many as the instance's admins choose, any number
+included (`InstanceSettings::max_workspaces`, 0 for any; Admin → Settings →
+Workspaces, `fctl admin set --max-workspaces`,
+[ADR 0087](adr/0087-instance-admins-choose-how-many-workspaces-each-person-can-be-in.md)),
+and the primary instance owner in any number (`workspace_limit`,
 [ADR 0058](adr/0058-the-primary-instance-owner-can-be-in-any-number-of-workspaces.md)):
-admins are held to five as members are, and an owner who hands the role
-over keeps every workspace they are in but joins no more while they are in
-five or more. Anyone on the instance creates one, as its primary admin,
-unless its admins keep that to themselves: with
-`InstanceSettings::members_create_workspaces` off (Admin → Settings →
-Workspaces, `fctl admin set --members-create-workspaces off`; on by
-default, and on app.fctl.sh), only instance admins and the primary instance
-owner create workspaces (`fctl_domain::workspace::check_create`), for an
-organization that puts its people in workspaces of its own. Everyone else
-joins the ones they are invited or added to, and `GET /api/v1/workspaces`
-tells them they can't create one (`can_create`), so the app offers them
-none to create. The workspaces that exist stay as they are.
+admins are held to the limit as members are, and an owner who hands the
+role over, like anyone in more once the admins lower it, keeps every
+workspace they are in but joins and creates no more until they are in
+fewer. `WorkspaceList.limit` is the instance's number, 0 for any, and
+`unlimited` is true for whoever it doesn't hold. Anyone on the instance
+creates one, as its primary admin, unless its admins keep that to
+themselves: with `InstanceSettings::members_create_workspaces` off (Admin →
+Settings → Workspaces, `fctl admin set --members-create-workspaces off`; on
+by default, and on app.fctl.sh), only instance admins and the primary
+instance owner create workspaces (`fctl_domain::workspace::check_create`),
+for an organization that puts its people in workspaces of its own. Everyone
+else joins the ones they are invited or added to, and `GET
+/api/v1/workspaces` tells them they can't create one (`can_create`), so the
+app offers them none to create. The workspaces that exist stay as they are.
 
 - **Who sees what.** Every project belongs to one workspace, and only its
   members see it (`fctl_domain::workspace::project_role`): its admins own
