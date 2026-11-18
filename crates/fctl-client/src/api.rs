@@ -695,7 +695,7 @@ impl Api {
         status: Option<&str>,
         limit: u32,
     ) -> Result<SessionList> {
-        self.sessions_in(None, project, status, None, false, false, limit)
+        self.sessions_in(None, project, status, None, false, false, false, limit)
             .await
     }
 
@@ -703,7 +703,8 @@ impl Api {
     /// ended before `active_since` (ms) when it is given, with the archived
     /// ones among them when `archived` says so, and the sessions of
     /// schedules that hide theirs (`Schedule::hide_sessions`) when `hidden`
-    /// does.
+    /// does. `mine`: those the caller started; a service account's, acting
+    /// for nobody, those it started.
     #[allow(clippy::too_many_arguments)]
     pub async fn sessions_in(
         &self,
@@ -713,6 +714,7 @@ impl Api {
         active_since: Option<i64>,
         archived: bool,
         hidden: bool,
+        mine: bool,
         limit: u32,
     ) -> Result<SessionList> {
         let mut q = format!("/sessions?limit={limit}");
@@ -733,6 +735,9 @@ impl Api {
         }
         if hidden {
             q.push_str("&hidden=1");
+        }
+        if mine {
+            q.push_str("&mine=1");
         }
         self.get(&q).await
     }

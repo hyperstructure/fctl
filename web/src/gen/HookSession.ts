@@ -5,6 +5,7 @@ import type { HookQuestion } from "./HookQuestion";
 import type { HookSchedule } from "./HookSchedule";
 import type { HookTicket } from "./HookTicket";
 import type { SessionId } from "./SessionId";
+import type { SessionServiceAccount } from "./SessionServiceAccount";
 import type { SessionStatus } from "./SessionStatus";
 import type { WebhookOrigin } from "./WebhookOrigin";
 
@@ -42,7 +43,12 @@ schedule?: HookSchedule,
  * The autopilot it belongs to: `pilot` for an autopilot's own
  * session, `crew` for one it started.
  */
-autopilot?: string, ticket?: HookTicket, branch?: string, base_branch?: string, 
+autopilot?: string, 
+/**
+ * The workspace's service account that started it for `created_by`
+ * (its name absent once it's deleted).
+ */
+service_account?: SessionServiceAccount, ticket?: HookTicket, branch?: string, base_branch?: string, 
 /**
  * Its agent's pull requests, in the order it opened them.
  */

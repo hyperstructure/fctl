@@ -1446,6 +1446,7 @@ pub fn session(s: &Session, base: &str) -> HookSession {
             }
             .to_owned()
         }),
+        service_account: s.service_account.clone(),
         ticket: s.ticket.as_ref().map(|t| HookTicket {
             tracker: match t.tracker {
                 Tracker::Linear => "linear",
@@ -3014,6 +3015,40 @@ mod tests {
         let a = with(&|s| s.pull_requests[0].checks = Some(checks(0, 0, "aaa", None)));
         let b = with(&|s| s.pull_requests[0].checks = Some(checks(0, 0, "bbb", None)));
         assert!(a.is_some() && b.is_some() && a != b);
+    }
+
+    #[test]
+    fn a_service_accounts_session_says_which_and_webhooks_narrow_to_them() {
+        let mut s = sess(Kind::SessionStarted);
+        s.service_account =
+            serde_json::from_value(json!({ "id": "sva_1", "name": "Acme portal" })).ok();
+        assert_eq!(origin(&s), Some(WebhookOrigin::ServiceAccount));
+        let h = session(&s, BASE);
+        assert_eq!(h.started_by, WebhookOrigin::ServiceAccount);
+        assert_eq!(
+            h.service_account.and_then(|sa| sa.name),
+            Some("Acme portal".into())
+        );
+        let narrowed = Hook {
+            started_by: vec![WebhookOrigin::ServiceAccount],
+            enabled: true,
+            ..Hook::default()
+        };
+        assert!(wants(
+            &narrowed,
+            Kind::SessionStarted,
+            Some("prj_1"),
+            origin(&s)
+        ));
+        assert!(!wants(
+            &narrowed,
+            Kind::SessionStarted,
+            Some("prj_1"),
+            Some(WebhookOrigin::Person)
+        ));
+        // A schedule's run stays a schedule's, whoever ran it.
+        s.schedule = serde_json::from_value(json!({ "id": "sch_1", "name": "Nightly" })).ok();
+        assert_eq!(origin(&s), Some(WebhookOrigin::Schedule));
     }
 
     #[test]

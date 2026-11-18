@@ -572,6 +572,9 @@ pub struct HookSession {
     /// The autopilot it belongs to: `pilot` for an autopilot's own
     /// session, `crew` for one it started.
     pub autopilot: Option<String>,
+    /// The workspace's service account that started it for `created_by`
+    /// (its name absent once it's deleted).
+    pub service_account: Option<crate::session::SessionServiceAccount>,
     pub ticket: Option<HookTicket>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,

@@ -313,12 +313,12 @@ async fn find(api: &Api, workspace: &str, which: &str) -> Result<ServiceAccount>
 /// What to do with a service account just made.
 fn after_made(s: &ServiceAccount, workspace: &str) -> String {
     let asks = if s.consent {
-        " It starts sessions only for the people who allow it: fctl asks each of them."
+        " It starts sessions only for the people who allow it, and fctl asks each of them."
     } else {
         ""
     };
     format!(
-        "Use it as FCTL_TOKEN, or as the bearer token, naming the person each request acts for:{asks}\n  FCTL_TOKEN=… fctl run -p <project> --on-behalf-of ada@example.com \"…\"\n  curl -H \"Authorization: Bearer …\" -H \"Fctl-On-Behalf-Of: ada@example.com\" …/api/v1/projects/<project>/sessions\nWho has allowed it: fctl service-accounts people \"{}\" -w {workspace}",
+        "Use it as FCTL_TOKEN, or as the bearer token, and name the person each request acts for.{asks}\n  FCTL_TOKEN=… fctl run -p <project> --on-behalf-of ada@example.com \"…\"\n  curl -H \"Authorization: Bearer …\" -H \"Fctl-On-Behalf-Of: ada@example.com\" …/api/v1/projects/<project>/sessions\nWho has allowed it: fctl service-accounts people \"{}\" -w {workspace}",
         s.name
     )
 }
@@ -332,6 +332,31 @@ fn answer_words(s: &ServiceAccount) -> String {
         Some(ServiceAccountAnswer::Declined) => "you didn't allow it".to_owned(),
         _ => "asks to start sessions for you: fctl service-accounts allow, or deny".to_owned(),
     }
+}
+
+/// How its people answered: "4 of 12 allowed it, 1 didn't, 7 haven't
+/// answered", as the app says it.
+fn tally(p: &fctl_proto::service_accounts::ServiceAccountTally, consent: bool) -> String {
+    let all = p.allowed + p.declined + p.unanswered;
+    if !consent {
+        return format!("it acts for all {}", style::count(all, "person", "people"));
+    }
+    let mut parts = vec![format!("{} of {all} allowed it", p.allowed)];
+    if p.declined > 0 {
+        parts.push(format!("{} didn't", p.declined));
+    }
+    if p.unanswered > 0 {
+        parts.push(format!(
+            "{} {} answered",
+            p.unanswered,
+            if p.unanswered == 1 {
+                "hasn't"
+            } else {
+                "haven't"
+            }
+        ));
+    }
+    parts.join(", ")
 }
 
 fn print_account(s: &ServiceAccount) {
@@ -352,12 +377,9 @@ fn print_account(s: &ServiceAccount) {
     }
     let mut facts = vec![answer_words(s)];
     if let Some(p) = &s.people {
-        facts.push(format!(
-            "{} allowed, {} didn't, {} haven't answered",
-            p.allowed, p.declined, p.unanswered
-        ));
+        facts.push(tally(p, s.consent));
     }
-    if let Some(n) = s.sessions {
+    if let Some(n) = s.sessions.filter(|n| *n > 0) {
         facts.push(style::count(n, "session started", "sessions started"));
     }
     if let Some(at) = s.last_used_at {
@@ -470,4 +492,29 @@ pub async fn whoami(api: &Api, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fctl_proto::service_accounts::ServiceAccountTally;
+
+    #[test]
+    fn tallies_read_as_the_app_reads_them() {
+        let t = |allowed, declined, unanswered| ServiceAccountTally {
+            allowed,
+            declined,
+            unanswered,
+        };
+        assert_eq!(
+            tally(&t(4, 1, 7), true),
+            "4 of 12 allowed it, 1 didn't, 7 haven't answered"
+        );
+        assert_eq!(
+            tally(&t(1, 0, 1), true),
+            "1 of 2 allowed it, 1 hasn't answered"
+        );
+        assert_eq!(tally(&t(3, 0, 0), true), "3 of 3 allowed it");
+        assert_eq!(tally(&t(0, 0, 1), false), "it acts for all 1 person");
+    }
 }

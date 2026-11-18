@@ -137,6 +137,10 @@ pub struct ListArgs {
     /// (fctl schedules edit --hide-sessions).
     #[arg(long)]
     pub hidden: bool,
+    /// Only those you started; with a service account's token, those it
+    /// started, for whomever (or for the person --on-behalf-of names).
+    #[arg(long)]
+    pub mine: bool,
     /// How many to show.
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
@@ -411,6 +415,7 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             since,
             args.archived,
             args.hidden,
+            args.mine,
             args.limit,
         )
         .await?;

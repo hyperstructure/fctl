@@ -162,6 +162,22 @@ owner and purpose), so a value copied between rows does not decrypt.
   under Admin → Settings → Admin tokens, or with `fctl admin tokens
   revoke`, when it may have leaked; the audit log marks everything one
   did, and with which.
+- **Service accounts** (`fctl_svc_…`) are a workspace's, for programs
+  that start sessions for its people. A request names the person, and acts
+  as them, held to what an access token that runs sessions does in that
+  workspace alone, by the same kind of rule in the router: it never reaches
+  the account, people, settings, secrets, other tokens or live
+  connections. Where the instance asks people first, as it does unless its
+  admins turn that off (which takes confirming it's them), it acts only
+  for members who allowed it, each service account on its own; allowing
+  one takes confirming it's you, and emails you. Making one or a new
+  secret for one takes confirming it's you too. One works only while the
+  admin who made its secret is an active admin of the workspace, so that
+  someone who left can't use a secret they kept; another admin makes it a
+  new secret, which stops the old one at once. Whoever holds one runs work
+  as the people who allowed it, on their subscriptions: keep it where your
+  program keeps its secrets, and give it a new one when it may have
+  leaked. The audit log marks what each did, for whom.
 - Sign-in, signup and reset endpoints are rate limited per address and per
   account; unknown emails take as long to fail as known ones. Signing up
   without an invitation, asking for a password reset or for early access,
@@ -821,7 +837,8 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   it is gone. A person's notifications wait in their Durable Object for at
   most a minute and are deleted once sent.
 - Deleting a workspace deletes its projects, as deleting each would, its
-  audit log, its enrollment tokens and the runners that enrolled with them;
+  audit log, its enrollment tokens and the runners that enrolled with them,
+  its service accounts and people's answers to them;
   the instance's audit log records who deleted it.
 - Webhooks' delivery logs (what was posted to each webhook: the event's
   payload, with session titles, the start of agents' replies and their

@@ -37,6 +37,17 @@ pub async fn follow_after(
     mut after: Option<u64>,
     mut r: Renderer,
 ) -> Result<()> {
+    // A service account opens no live connection, which would check its
+    // token again while it stays open: the control plane refuses it, and
+    // reconnecting would wait for good.
+    if api
+        .token()
+        .is_some_and(|t| t.starts_with(fctl_domain::tokens::SecretKind::Service.prefix()))
+    {
+        anyhow::bail!(
+            "A service account doesn't follow sessions live: read what its agent did with `fctl logs {session_id}` (or GET /api/v1/sessions/{session_id}/events), and hear of what happens with a webhook."
+        );
+    }
     let interactive = !read_only && std::io::stdin().is_terminal();
     if interactive {
         eprintln!(
