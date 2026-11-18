@@ -722,7 +722,7 @@ pub async fn set_workspace(
     match ws::member(&ctx.db, &w.id, &user.id).await? {
         None => {
             active(&user)?;
-            let limit = wpolicy::workspace_limit(user.role());
+            let limit = wpolicy::workspace_limit(user.role(), &ctx.settings());
             let count = ws::membership_count(&ctx.db, &user.id).await?;
             wpolicy::check_their_limit(count, limit).map_err(AppError)?;
             batch(

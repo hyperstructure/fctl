@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
   claudeOptions,
+  createsAnother,
   createsProjects,
   limitReached,
+  mayCreate,
   roomForAnother,
   runnersOf,
   workspaceCount,
@@ -113,7 +115,11 @@ describe("createsProjects", () => {
 });
 
 describe("the workspace limit", () => {
-  const list = (n: number, unlimited?: boolean) => ({ workspaces: Array(n).fill({}), limit: 5, unlimited });
+  const list = (n: number, unlimited?: boolean, limit = 5) => ({
+    workspaces: Array(n).fill({}),
+    limit,
+    unlimited,
+  });
 
   it("leaves room for another below it", () => {
     expect(roomForAnother(list(4))).toBe(true);
@@ -145,5 +151,54 @@ describe("the workspace limit", () => {
     expect(workspaceCount(list(12, true))).toBe(
       "You are in 12 workspaces. As the primary instance owner, you can be in any number.",
     );
+  });
+
+  it("holds people to the number the instance's admins chose", () => {
+    expect(roomForAnother(list(49, false, 50))).toBe(true);
+    expect(workspaceCount(list(12, false, 50))).toBe("You are in 12 of the 50 workspaces you can be in.");
+    expect(limitReached(list(50, false, 50))).toBe(
+      "You are in 50 workspaces, the most you can be. Leave one first (Settings → Workspaces).",
+    );
+    // One workspace each.
+    expect(workspaceCount(list(0, false, 1))).toBe("You can be in 1 workspace.");
+    expect(workspaceCount(list(1, false, 1))).toBe("You are in the 1 workspace you can be in.");
+    expect(limitReached(list(1, false, 1))).toBe(
+      "You are in 1 workspace, the most you can be. Leave it first (Settings → Workspaces).",
+    );
+    // Lowered below what they are in.
+    expect(workspaceCount(list(3, false, 1))).toBe("You are in 3 workspaces, and you can be in 1 at most.");
+    expect(limitReached(list(3, false, 1))).toBe(
+      "You are in 3 workspaces, and you can be in 1 at most. Leave 3 first (Settings → Workspaces).",
+    );
+  });
+
+  it("holds nobody where the admins let people be in any number", () => {
+    for (const n of [0, 5, 120]) {
+      expect(roomForAnother(list(n, true, 0))).toBe(true);
+      expect(limitReached(list(n, true, 0))).toBeUndefined();
+    }
+    expect(workspaceCount(list(1, true, 0))).toBe("You are in 1 workspace, and you can be in any number.");
+    expect(workspaceCount(list(120, true, 0))).toBe(
+      "You are in 120 workspaces, and you can be in any number.",
+    );
+  });
+});
+
+describe("who creates workspaces", () => {
+  const list = (n: number, can_create?: boolean) => ({ workspaces: Array(n).fill({}), limit: 5, can_create });
+
+  it("is everyone, unless the instance lets only its admins", () => {
+    expect(mayCreate(list(0, true))).toBe(true);
+    expect(createsAnother(list(0, true))).toBe(true);
+    expect(mayCreate(list(0, false))).toBe(false);
+    expect(createsAnother(list(0, false))).toBe(false);
+    // A list from a control plane before the setting doesn't say: everyone could.
+    expect(mayCreate(list(0))).toBe(true);
+    expect(createsAnother(list(2))).toBe(true);
+  });
+
+  it("holds those who may to the limit all the same", () => {
+    expect(createsAnother(list(5, true))).toBe(false);
+    expect(createsAnother({ ...list(5, true), unlimited: true })).toBe(true);
   });
 });

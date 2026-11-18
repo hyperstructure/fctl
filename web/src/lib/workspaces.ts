@@ -17,27 +17,52 @@ export function createsProjects(w: Pick<G.Workspace, "role" | "blocked">): boole
 /** Your workspaces, against how many you can be in. */
 type Counted = Pick<G.WorkspaceList, "limit" | "unlimited"> & { workspaces: readonly unknown[] };
 
-/** Whether you can create or join another workspace: the primary instance owner always can. */
-export const roomForAnother = (l: Counted): boolean => !!l.unlimited || l.workspaces.length < l.limit;
+/**
+ * Whether you can create or join another workspace: the primary instance owner always can, and so can
+ * everyone where the instance's admins let people be in any number (`limit` 0).
+ */
+export const roomForAnother = (l: Counted): boolean =>
+  !!l.unlimited || l.limit === 0 || l.workspaces.length < l.limit;
+
+const nWorkspaces = (n: number) => (n === 1 ? "1 workspace" : `${n} workspaces`);
+
+/**
+ * Whether the instance lets you create workspaces: everyone, unless its admins let only themselves
+ * (InstanceSettings.members_create_workspaces). Lists from before it don't say: everyone could.
+ */
+export const mayCreate = (l: Pick<G.WorkspaceList, "can_create">): boolean => l.can_create !== false;
+
+/** Whether you can create another workspace now: the instance lets you, and you have room for it. */
+export const createsAnother = (l: Counted & Pick<G.WorkspaceList, "can_create">): boolean =>
+  mayCreate(l) && roomForAnother(l);
 
 /** Why you can't create or join another workspace, if you can't (fctl_domain::workspace::check_limit). */
 export function limitReached(l: Counted): string | undefined {
   if (roomForAnother(l)) return undefined;
   const n = l.workspaces.length;
   return n === l.limit
-    ? `You are in ${n} workspaces, the most you can be. Leave one first (Settings → Workspaces).`
+    ? `You are in ${nWorkspaces(n)}, the most you can be. Leave ${n === 1 ? "it" : "one"} first (Settings → Workspaces).`
     : `You are in ${n} workspaces, and you can be in ${l.limit} at most. Leave ${n + 1 - l.limit} first (Settings → Workspaces).`;
 }
 
 /** How many workspaces you are in, of how many you can be in. */
 export function workspaceCount(l: Counted): string {
   const n = l.workspaces.length;
+  if (l.limit === 0) return `You are in ${nWorkspaces(n)}, and you can be in any number.`;
   if (l.unlimited)
-    return `You are in ${n === 1 ? "1 workspace" : `${n} workspaces`}. As the primary instance owner, you can be in any number.`;
-  return n > l.limit
-    ? `You are in ${n} workspaces, and you can be in ${l.limit} at most.`
-    : `You are in ${n} of the ${l.limit} workspaces you can be in.`;
+    return `You are in ${nWorkspaces(n)}. As the primary instance owner, you can be in any number.`;
+  if (n > l.limit) return `You are in ${n} workspaces, and you can be in ${l.limit} at most.`;
+  if (l.limit === 1)
+    return n === 0 ? "You can be in 1 workspace." : "You are in the 1 workspace you can be in.";
+  return `You are in ${n} of the ${l.limit} workspaces you can be in.`;
 }
+
+/**
+ * How many workspaces each person can be in, for the instance's settings: "5 workspaces", "1 workspace", "any
+ * number of workspaces" (0). The same words as fctl_domain::workspace::max_workspaces_words.
+ */
+export const maxWorkspacesWords = (max: number): string =>
+  max === 0 ? "any number of workspaces" : nWorkspaces(max);
 
 /** Your workspaces by id, with the reference something carries as a fallback. */
 export function useWorkspaceIndex() {

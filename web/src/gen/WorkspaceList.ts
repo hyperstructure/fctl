@@ -8,11 +8,21 @@ import type { WorkspaceInvitation } from "./WorkspaceInvitation";
 export type WorkspaceList = { workspaces: Array<Workspace>, invitations: Array<WorkspaceInvitation>, 
 /**
  * The most workspaces one person can be a member of, but the primary
- * instance owner.
+ * instance owner: the instance's [`InstanceSettings::max_workspaces`],
+ * 0 when it lets everyone be in any number (`unlimited` is then true).
  */
 limit: number, 
 /**
- * You can be in any number of workspaces, more than `limit`: you are
- * the primary instance owner.
+ * You can be in any number of workspaces: you are the primary instance
+ * owner (with a `limit` above 0, which holds everyone else), or the
+ * instance holds nobody to a number (`limit` 0).
  */
-unlimited?: boolean, };
+unlimited?: boolean, 
+/**
+ * You may create workspaces (`POST /api/v1/workspaces`), within
+ * `limit`: everyone may, unless the instance lets only its admins
+ * ([`InstanceSettings::members_create_workspaces`]). False for a token
+ * limited to some projects, which creates none. True from control
+ * planes before it.
+ */
+can_create?: boolean, };

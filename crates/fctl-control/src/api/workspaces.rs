@@ -57,6 +57,7 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
     };
     let settings = ctx.settings();
     let limited = ctx.limits().is_some();
+    let can_create = !limited && policy::creates_workspaces(user.role(), &settings);
     http::ok(&WorkspaceList {
         workspaces: rows
             .iter()
@@ -82,8 +83,9 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
             .iter()
             .map(|i| i.to_invitation(ws::blocked_for(ctx, user, i.require_two_factor)))
             .collect(),
-        limit: policy::MAX_WORKSPACES as u32,
-        unlimited: policy::workspace_limit(user.role()).is_none(),
+        limit: settings.max_workspaces,
+        unlimited: policy::workspace_limit(user.role(), &settings).is_none(),
+        can_create,
     })
 }
 
@@ -109,11 +111,14 @@ async fn own_address(ctx: &Ctx, user: &UserRow, requested: Option<&str>) -> AppR
     Ok(email)
 }
 
-/// `POST /api/v1/workspaces`: the caller is its primary admin.
+/// `POST /api/v1/workspaces`: the caller is its primary admin. Only
+/// instance admins create one where the instance's settings say so
+/// (`fctl_domain::workspace::check_create`).
 pub async fn create(ctx: &mut Ctx, req: &mut Request) -> AppResult<Response> {
     let body: CreateWorkspaceRequest = http::body(req).await?;
     let user = ctx.user()?.clone();
-    let limit = policy::workspace_limit(user.role());
+    policy::check_create(user.role(), &ctx.settings())?;
+    let limit = policy::workspace_limit(user.role(), &ctx.settings());
     policy::check_limit(ws::membership_count(&ctx.db, &user.id).await?, limit)?;
     let name = policy::name(&body.name)?;
     let slug = match body.slug.as_deref().filter(|s| !s.trim().is_empty()) {

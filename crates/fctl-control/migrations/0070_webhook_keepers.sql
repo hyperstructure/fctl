@@ -1,4 +1,4 @@
--- A webhook's keeper (docs/architecture.md#webhooks, ADR 0087): whoever
+-- A webhook's keeper (docs/architecture.md#webhooks, ADR 0088): whoever
 -- chose where it posts, by adding it, pointing it elsewhere or turning it
 -- on again. It posts only while they manage it (an admin of its workspace,
 -- or, for a project's, an owner or maintainer of the project, with an

@@ -60,11 +60,11 @@ import { type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/l
 import { foldKeys } from "@/lib/sidebar-layout";
 import { type Sortable, useSortable } from "@/lib/sortable";
 import {
+  createsAnother,
   createsProjects,
   groupProjects,
   reorderProjects,
   reorderWorkspaces,
-  roomForAnother,
   useFolded,
 } from "@/lib/workspaces";
 import { FloorLink } from "./floor-link";
@@ -405,7 +405,7 @@ function Tree({
           <p id={ORDER_HELP} hidden>
             Drag to move it, or press Alt or Option with the up or down arrow.
           </p>
-          {data.workspaces && roomForAnother(data.workspaces) && (
+          {data.workspaces && createsAnother(data.workspaces) && (
             <Link
               to="/w/new"
               onClick={onNavigate}

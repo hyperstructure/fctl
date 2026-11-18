@@ -316,8 +316,10 @@ admits (they join when they sign up); any other address needs an instance
 invitation first (`fctl admin invite`).
 Everyone in a workspace works in its projects as their project role or its
 base role says; its admins own every project. One person can be in at most
-five workspaces, and the primary instance owner in any number (`fctl
-workspaces --json` says `"unlimited": true` to them). While the instance
+five workspaces, or as many as the instance's admins choose (`fctl admin
+set --max-workspaces`), and the primary instance owner in any number
+(`fctl workspaces --json` says the instance's `"limit"`, 0 for any number,
+and `"unlimited": true` to whoever it doesn't hold). While the instance
 requires two-factor sign-in (`fctl admin set --require-two-factor on`),
 every workspace does, and `fctl workspaces set --require-two-factor off`
 fails.
@@ -1020,7 +1022,7 @@ fctl host install --no-service   # write the config only (run it yourself)
 fctl host install --auto-update off   # update fctl yourself (new hosts update themselves)
 fctl host install --agent-as-root off # run fctl-agent as the sandbox's user, not root
 fctl host run                    # run in the foreground (what the service runs)
-fctl host status                 # with the runner's id and sessions, and whether it drains
+fctl host status                 # with the runner's id and sessions, whether it drains, and the autopilots that wake here
 fctl host doctor                 # check the configuration, tokens, connection, driver, images, disk and service
 fctl host logs -n 200            # the last 200 lines of its log (on Linux, from the journal)
 fctl host image pull             # pull the sandbox image again now (the host does every 6 hours)
@@ -1046,6 +1048,17 @@ runner, where its sandbox has Claude's conversation. So the runner is empty
 whenever no turn runs, and `--wait` returns then. Admins can drain a runner
 too, from the runners list or with `fctl admin drain`; whoever drained it,
 either can stop the drain.
+
+An autopilot's own session wakes again by itself, so it comes back to the
+runner that has its sandbox, even while that drains. `fctl host status`,
+and `fctl host drain --wait` as it returns, list the autopilots whose next
+wake resumes their session here, with when each wakes. Shutting the machine
+down cuts off one at work, which fctl stops ten minutes later; while the
+machine is away, the next wake of each resumes its session on another
+runner, in a new sandbox without its conversation, where it starts again
+from its briefing, plan and log. An autopilot whose next wake starts a
+fresh session anyway (its shift is over, or its context is full) isn't
+listed.
 
 `fctl host uninstall` stops the service, so it never leaves sessions to
 agents nobody sees: when sessions run on the machine, it lists them and asks
@@ -1424,6 +1437,8 @@ fctl admin set --verify-sensitive-actions on   # sensitive actions take a passke
 fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the copies and looks nothing up
 fctl admin set --export-interval 1d        # people export their data once a day (once a week by default; off: at any time)
 fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (on by default)
+fctl admin set --members-create-workspaces off # only instance admins create workspaces (on by default: everyone)
+fctl admin set --max-workspaces 50         # each person can be in 50 workspaces (5 by default; any: any number)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them

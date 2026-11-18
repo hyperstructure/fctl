@@ -1,4 +1,4 @@
-# 0087: Webhooks post only while their keeper manages them, and only where they may
+# 0088: Webhooks post only while their keeper manages them, and only where they may
 
 2026-11-18 · accepted
 

@@ -412,6 +412,23 @@ on that member's Claude subscription, also for those who said no; each
 member still sees which act for them, and what they answered counts again
 once you turn it back on.
 
+Anyone who signs in creates workspaces of their own, as their primary
+admin. An organization that puts its people in its own workspaces, under
+**Admin → People** or with [admin
+tokens](#provision-people-with-admin-tokens), can keep that to its admins:
+turn off **Admin → Settings → Workspaces → Everyone creates workspaces**
+(or `fctl admin set --members-create-workspaces off`). Only instance
+admins and the primary instance owner then create workspaces; everyone
+else joins the ones they are invited or added to, and the app offers them
+none to create. The workspaces that exist stay as they are.
+
+Each person can be a member of five workspaces, those they create and
+those they join, and you, as the primary instance owner, of any number. To
+let people be in more, or fewer, choose under **Admin → Settings →
+Workspaces** (or `fctl admin set --max-workspaces 50`; `any` lets everyone
+be in any number). Lowering it takes nobody out of a workspace: those in
+more create and join no more until they have left some.
+
 ## Provision people with admin tokens
 
 To create people's accounts from your identity provider, your HR system or
@@ -457,8 +474,9 @@ create`, `show`, `set`, `add` and `remove`
   who is in them, and makes no other token. No token changes the primary
   instance owner's account, and only the primary instance owner's tokens
   change admins'. A workspace's primary admin stays its primary admin.
-- **Limits.** Someone is in at most five workspaces (the primary instance
-  owner in any number). A workspace that requires two-factor sign-in stays
+- **Limits.** Someone is in at most five workspaces, or as many as the
+  instance's admins chose (the primary instance owner in any number). A
+  workspace that requires two-factor sign-in stays
   closed to someone until they set it up, and an instance that requires it
   holds the admin's tokens to it too.
 - **Confirming.** Where sensitive actions ask people to confirm it's them
