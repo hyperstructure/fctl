@@ -853,7 +853,7 @@ fctl webhooks add https://example.com/reviews -w acme --events "review.*" --proj
 fctl webhooks add https://example.com/nightly -w acme --events session.started,session.stopped --started-by schedules
 fctl webhooks show "Deploy bot" -p web         # by name, host or id: what it posts, how it stands, its newest deliveries
 fctl webhooks edit "Deploy bot" -p web --events all
-fctl webhooks edit whk_01KC… --url https://hooks.example.com/v2
+fctl webhooks edit whk_01KC… --url https://hooks.example.com/v2   # an id needs no -w or -p
 fctl webhooks edit "Deploy bot" -p web --off   # it gets nothing until --on, which also turns on one fctl turned off
 fctl webhooks test "Deploy bot" -p web --event session.ready_for_review   # a made-up event, now; exits 1 when it fails
 fctl webhooks deliveries "Deploy bot" -p web --failed --limit 50

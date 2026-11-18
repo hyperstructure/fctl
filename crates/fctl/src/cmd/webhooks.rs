@@ -213,7 +213,18 @@ pub async fn run(server: Option<&str>, args: WebhooksArgs, json: bool) -> Result
         return verify(secret, id, timestamp, signature, body);
     }
     let api = config::api(server)?;
-    let place = Place::of(&api, &args).await?;
+    let id = args
+        .cmd
+        .as_ref()
+        .and_then(WebhooksCmd::webhook)
+        .filter(|w| fctl_proto::WebhookId::is_valid(w));
+    let place = match id {
+        // Its id says where it is, unless a workspace or project is given.
+        Some(id) if args.workspace.is_none() && args.project.is_none() => {
+            Place::of_webhook(&api, id).await?
+        }
+        _ => Place::of(&api, &args).await?,
+    };
     match args.cmd.unwrap_or(WebhooksCmd::List) {
         WebhooksCmd::List => {
             let list = place.list(&api).await?;
@@ -561,6 +572,24 @@ impl Place {
             workspace: w.id.0.clone(),
             project: None,
             name: w.name,
+        })
+    }
+
+    /// Where webhook `id` is: its project, or its workspace.
+    async fn of_webhook(api: &Api, id: &str) -> Result<Self> {
+        let w = api.get_webhook(id).await?;
+        if let Some(p) = w.project {
+            return Ok(Self {
+                workspace: w.workspace_id.0,
+                project: Some(p.id),
+                name: p.name,
+            });
+        }
+        let ws = api.workspace(&w.workspace_id.0).await?;
+        Ok(Self {
+            workspace: ws.id.0,
+            project: None,
+            name: ws.name,
         })
     }
 
@@ -923,9 +952,59 @@ fn verify(secret: &str, id: &str, timestamp: &str, signature: &str, body: &PathB
     }
 }
 
+impl WebhooksCmd {
+    /// The webhook it's about, where it's about one.
+    fn webhook(&self) -> Option<&str> {
+        match self {
+            Self::Show { webhook, .. }
+            | Self::Edit { webhook, .. }
+            | Self::Secret { webhook, .. }
+            | Self::Test { webhook, .. }
+            | Self::Deliveries { webhook, .. }
+            | Self::Delivery { webhook, .. }
+            | Self::Resend { webhook, .. }
+            | Self::Rm { webhook, .. } => Some(webhook),
+            Self::List | Self::Add { .. } | Self::Events | Self::Verify { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_given_a_webhook_names_it() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: WebhooksArgs,
+        }
+        let cmd = |argv: &[&str]| {
+            Cli::try_parse_from(argv)
+                .ok()
+                .and_then(|c| c.args.cmd)
+                .and_then(|c| c.webhook().map(str::to_owned))
+        };
+        assert_eq!(
+            cmd(&[
+                "fctl",
+                "edit",
+                "whk_01KCTEST",
+                "--url",
+                "https://example.com/v2"
+            ])
+            .as_deref(),
+            Some("whk_01KCTEST")
+        );
+        assert_eq!(
+            cmd(&["fctl", "resend", "Slack", "--failed", "--since", "1h"]).as_deref(),
+            Some("Slack")
+        );
+        assert_eq!(cmd(&["fctl", "list"]), None);
+        assert_eq!(cmd(&["fctl", "events"]), None);
+    }
 
     #[test]
     fn events_take_names_groups_and_all() {
