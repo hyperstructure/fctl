@@ -24,7 +24,8 @@ use fctl_proto::event::{FollowUp, FollowUpEvent, PassedOnReview};
 use fctl_proto::hooks::{
     HookChecks, HookEnvelope, HookPerson, HookPlace, HookPullRequest, HookQuestion, HookReview,
     HookRun, HookSchedule, HookScheduleData, HookSession, HookSessionData, HookTicket,
-    WebhookEventGroup, WebhookEventInfo, WebhookEvents, WebhookOrigin,
+    WebhookAttempt, WebhookDeliveryState, WebhookEventGroup, WebhookEventInfo, WebhookEvents,
+    WebhookOrigin,
 };
 use fctl_proto::session::{PullRequestRef, Session, SessionStatus, Tracker};
 use fctl_proto::{ApiError, ScheduleId, SessionId, WebhookEventId};
@@ -794,6 +795,98 @@ pub fn retry_at(attempts: u32, now: i64, retry_after_ms: Option<i64>) -> Option<
         asked.clamp(wait, RETRY_AFTER_MAX_MS.max(wait))
     });
     Some(now.saturating_add(wait))
+}
+
+/// Who makes an attempt at a delivery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum By {
+    /// fctl, when it's due: its first attempt and the retries.
+    Fctl,
+    /// A person resending it.
+    Resend,
+    /// A person's test, a delivery of its own.
+    Test,
+}
+
+/// Whether an attempt by `by` posts a delivery that stands as `state`, due
+/// at `next_at`, at `now`: a person's always; fctl's only while it waits
+/// and is due, as a person's resend may have delivered it, or turning its
+/// webhook off failed it, since the alarm picked it.
+pub fn posts(by: By, state: WebhookDeliveryState, next_at: Option<i64>, now: i64) -> bool {
+    by != By::Fctl
+        || (state == WebhookDeliveryState::Pending && next_at.is_some_and(|at| at <= now))
+}
+
+/// fctl's own attempts in a delivery's history: those no person made. Its
+/// retries go by them, so that people's resends take none.
+pub fn own_attempts(history: &[WebhookAttempt]) -> u32 {
+    u32::try_from(history.iter().filter(|a| a.by.is_none()).count()).unwrap_or(u32::MAX)
+}
+
+/// What a delivery becomes after an attempt.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Settled {
+    pub state: WebhookDeliveryState,
+    pub next_at: Option<i64>,
+    /// When it was done; `None` keeps the time it has (none while it waits).
+    pub done_at: Option<i64>,
+    /// Another settled it while the attempt waited for its answer: it keeps
+    /// why, as it keeps its state.
+    pub kept: bool,
+}
+
+/// What a delivery becomes after an attempt by `by` that went through
+/// (`ok`) or not at `now`, standing as `was` with `next_at` as the attempt
+/// ends (another may have changed it meanwhile), after `own` attempts of
+/// fctl's ([`own_attempts`], this one included when it's fctl's). fctl's
+/// own attempt at one that waits goes again on the retries' times
+/// ([`retry_at`]); one that a resend delivered, or turning its webhook off
+/// failed, meanwhile stays as it was left; a person's resend of one that
+/// waits leaves its retries as they were, and of one that was done, or a
+/// test, leaves it failed.
+pub fn settle(
+    by: By,
+    was: WebhookDeliveryState,
+    next_at: Option<i64>,
+    ok: bool,
+    own: u32,
+    now: i64,
+    retry_after_ms: Option<i64>,
+) -> Settled {
+    use WebhookDeliveryState::{Delivered, Failed, Pending};
+    let done = |state| Settled {
+        state,
+        next_at: None,
+        done_at: Some(now),
+        kept: false,
+    };
+    if ok {
+        return done(Delivered);
+    }
+    match (by, was) {
+        (By::Fctl, Pending) => match retry_at(own, now, retry_after_ms) {
+            Some(at) => Settled {
+                state: Pending,
+                next_at: Some(at),
+                done_at: None,
+                kept: false,
+            },
+            None => done(Failed),
+        },
+        (By::Fctl, settled) => Settled {
+            state: settled,
+            next_at,
+            done_at: None,
+            kept: true,
+        },
+        (By::Resend, Pending) => Settled {
+            state: Pending,
+            next_at,
+            done_at: None,
+            kept: false,
+        },
+        (By::Resend | By::Test, _) => done(Failed),
+    }
 }
 
 /// A `Retry-After` header's wait, in milliseconds: its seconds. (Its other
@@ -2227,6 +2320,91 @@ mod tests {
         assert!(status_error(302).contains("redirect"));
         assert_eq!(status_error(502), "HTTP 502");
         assert!(timeout_error().contains("10 seconds"));
+    }
+
+    #[test]
+    fn an_attempt_settles_a_delivery_by_what_stands_as_it_ends() {
+        use WebhookDeliveryState::{Delivered, Failed, Pending};
+        let now = 1_000_000;
+        // fctl posts only one that waits and is due; a person, any.
+        assert!(posts(By::Fctl, Pending, Some(now), now));
+        assert!(!posts(By::Fctl, Pending, Some(now + 1), now));
+        assert!(!posts(By::Fctl, Delivered, None, now));
+        assert!(!posts(By::Fctl, Failed, None, now));
+        assert!(posts(By::Resend, Delivered, None, now));
+        assert!(posts(By::Test, Pending, None, now));
+
+        // Five resends of one that waits take none of fctl's retries: its
+        // second own attempt goes again in a minute, not as its seventh.
+        let by = |person: bool| WebhookAttempt {
+            at: 0,
+            ms: 1,
+            status: Some(500),
+            error: None,
+            by: person.then(|| fctl_proto::session::UserRef {
+                id: fctl_proto::UserId("usr_ada".into()),
+                name: "Ada".into(),
+                avatar_url: None,
+            }),
+            response: None,
+        };
+        let history = [
+            by(false),
+            by(true),
+            by(true),
+            by(true),
+            by(true),
+            by(true),
+            by(false),
+        ];
+        assert_eq!(own_attempts(&history), 2);
+        let again = settle(By::Fctl, Pending, Some(now), false, 2, now, None);
+        assert_eq!((again.state, again.next_at), (Pending, Some(now + MINUTE)));
+        assert_eq!(again.done_at, None);
+        assert_eq!(
+            settle(By::Fctl, Pending, Some(now), false, 8, now, None),
+            Settled {
+                state: Failed,
+                next_at: None,
+                done_at: Some(now),
+                kept: false,
+            }
+        );
+
+        // One a resend delivered, or turning its webhook off failed, while
+        // fctl's attempt waited stays as it was left, and keeps why.
+        for was in [Delivered, Failed] {
+            assert_eq!(
+                settle(By::Fctl, was, None, false, 3, now, None),
+                Settled {
+                    state: was,
+                    next_at: None,
+                    done_at: None,
+                    kept: true,
+                }
+            );
+        }
+        // An attempt that went through delivers it, whoever made it.
+        assert_eq!(
+            settle(By::Fctl, Failed, None, true, 3, now, None).state,
+            Delivered
+        );
+
+        // A person's resend of one that waits leaves its retries as they
+        // were; of one that was done, it fails; so does a test.
+        let resent = settle(By::Resend, Pending, Some(now + HOUR), false, 2, now, None);
+        assert_eq!(
+            (resent.state, resent.next_at, resent.done_at),
+            (Pending, Some(now + HOUR), None)
+        );
+        assert_eq!(
+            settle(By::Resend, Delivered, None, false, 1, now, None).state,
+            Failed
+        );
+        assert_eq!(
+            settle(By::Test, Pending, None, false, 0, now, None).done_at,
+            Some(now)
+        );
     }
 
     #[test]

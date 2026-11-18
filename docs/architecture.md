@@ -3748,7 +3748,12 @@ what happens to as it happens, signed with each one's secret
    (`disabled_reason`), its waiting deliveries fail, and the workspace's
    audit log records it. A person's test or resend that fails starts no
    failing, one that goes through ends it, and a webhook turned on again
-   or pointed elsewhere fails afresh from then. Tests and resends count
+   or pointed elsewhere fails afresh from then. The retries go by fctl's
+   own attempts (`own_attempts`), so that resends take none of them, and
+   an attempt reads its delivery again before it writes how it went
+   (`settle`): one that a resend delivered, or turning the webhook off
+   failed, while it waited for its answer stays so, and the alarm posts
+   only those that still wait and are due (`posts`). Tests and resends count
    against their limits as they're asked for, before they post, so that
    many asked for at once can't pass them.
 5. **What went out** stays in the HooksDO, not D1: each delivery's

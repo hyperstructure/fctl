@@ -20,7 +20,7 @@ use crate::internal::{
     self, HookDeliveries, HookDelivery, HookEmit, HookResendFailed, HookTest, HooksChanged,
     HooksHealth, HooksHealthAnswer,
 };
-use fctl_domain::hooks::{self as rules, Headers, Kind};
+use fctl_domain::hooks::{self as rules, By, Headers, Kind};
 use fctl_proto::hooks::{
     HookPlace, ResentFailed, WebhookAttempt, WebhookDelivery, WebhookDeliveryList,
     WebhookDeliveryState, WebhookHeader, WebhookHealth, WebhookRequest, WebhookResponse,
@@ -278,15 +278,6 @@ struct Posted {
     response: Option<WebhookResponse>,
     ms: u32,
     retry_after: Option<i64>,
-}
-
-/// Who asked for an attempt: fctl's alarm, a person resending a delivery,
-/// or a person's test.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum By {
-    Fctl,
-    Resend,
-    Test,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ApiError {
@@ -779,8 +770,12 @@ impl HooksObject {
         by: By,
     ) -> Option<DeliveryRow> {
         let d = self.delivery_row(id)?;
-        let body = self.body(&d.event_id)?;
         let now = now_ms();
+        // fctl's own attempt posts only one that still waits and is due.
+        if !rules::posts(by, d.state(), d.next_at.map(int), now) {
+            return None;
+        }
+        let body = self.body(&d.event_id)?;
         let number = count(d.attempts) + 1;
         let test = d.test > 0.0;
         let keys = crate::crypto::keys(&Config::from_env(&self.env))
@@ -825,6 +820,12 @@ impl HooksObject {
             by: person,
             response: posted.response,
         };
+        // Read again: while this attempt waited for its answer, a resend may
+        // have made another, turning the webhook off may have failed it, and
+        // deleting the webhook may have forgotten it, which leaves nothing
+        // to write.
+        let d = self.delivery_row(id)?;
+        let number = count(d.attempts) + 1;
         let mut history = d.history();
         history.insert(
             0,
@@ -834,40 +835,32 @@ impl HooksObject {
             },
         );
         history.truncate(rules::HISTORY_KEPT);
-        let (state, next_at) = if ok {
-            (WebhookDeliveryState::Delivered, None)
-        } else {
-            match by {
-                // fctl's own attempt goes again on the retries' times.
-                By::Fctl => match rules::retry_at(number, now, posted.retry_after) {
-                    Some(at) => (WebhookDeliveryState::Pending, Some(at)),
-                    None => (WebhookDeliveryState::Failed, None),
-                },
-                // A person's resend of one that waits leaves its retries as
-                // they were; of one that failed, it stays failed.
-                By::Resend if d.state() == WebhookDeliveryState::Pending => {
-                    (WebhookDeliveryState::Pending, d.next_at.map(int))
-                }
-                By::Resend | By::Test => (WebhookDeliveryState::Failed, None),
-            }
-        };
-        let done_at = (state != WebhookDeliveryState::Pending).then_some(now);
+        let settled = rules::settle(
+            by,
+            d.state(),
+            d.next_at.map(int),
+            ok,
+            rules::own_attempts(&history),
+            now,
+            posted.retry_after,
+        );
         let headers: Vec<WebhookHeader> = headers
             .into_iter()
             .map(|(name, value)| WebhookHeader { name, value })
             .collect();
         self.exec(
-            "UPDATE deliveries SET state = ?, attempts = ?, next_at = ?, done_at = ?, last = ?, history = ?, \
-             headers = ?, url = ?, reason = NULL WHERE id = ?",
+            "UPDATE deliveries SET state = ?, attempts = ?, next_at = ?, done_at = COALESCE(?, done_at), last = ?, \
+             history = ?, headers = ?, url = ?, reason = CASE WHEN ? THEN reason END WHERE id = ?",
             vec![
-                sv(state.as_str()),
+                sv(settled.state.as_str()),
                 iv(i64::from(number)),
-                onv(next_at),
-                onv(done_at),
+                onv(settled.next_at),
+                onv(settled.done_at),
                 sv(&serde_json::to_string(&attempt).unwrap_or_default()),
                 sv(&serde_json::to_string(&history).unwrap_or_default()),
                 sv(&serde_json::to_string(&headers).unwrap_or_default()),
                 sv(&hook.url),
+                iv(i64::from(settled.kept)),
                 sv(id),
             ],
         );
