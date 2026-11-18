@@ -113,7 +113,8 @@ pub struct Webhook {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(optional_fields))]
 pub struct WebhookHealth {
     /// Its newest attempt of fctl's own, or a person's test or resend that
-    /// went through.
+    /// went through: when, how long and its status, without the answer or
+    /// who made it.
     pub last: Option<WebhookAttempt>,
     /// Deliveries in the last 24 hours that it took.
     pub delivered: u32,

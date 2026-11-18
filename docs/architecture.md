@@ -3761,7 +3761,12 @@ what happens to as it happens, signed with each one's secret
    event in the world the app's previews share, marked `test`), at most
    30 tests and resends an hour per webhook (`MANUAL_PER_HOUR`); a
    resend's or test's answer comes back with the request. Its `/health`
-   says how each webhook did in the last day, which lists show.
+   says how each webhook did in the last day and how its newest attempt
+   went, which lists show; that stays as long as the webhook, so it keeps
+   neither the answer nor who made the attempt. A deleted webhook goes
+   from it whole (`/forget`); a deleted project's events go from every
+   log, and its own webhooks whole (`/forget-project`, with their ids
+   read before their rows cascade).
 
 ## Claude credentials
 

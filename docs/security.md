@@ -791,10 +791,12 @@ Cloudflare does around the Worker, its server (`deploy/standalone`) does:
   the instance's audit log records who deleted it.
 - Webhooks' delivery logs (what was posted to each webhook: the event's
   payload, with session titles, the start of agents' replies and their
-  questions, and the start of each answer) are kept for 30 days, and at
-  most each webhook's newest 1,000. Deleting a webhook deletes its log;
-  deleting a project deletes what its events said in every log; deleting
-  a workspace deletes them all. Webhooks' secrets are sealed with the
+  questions, each attempt with who resent it or sent a test, and the start
+  of the newest answer) are kept for 30 days, and at most each webhook's
+  newest 1,000. A webhook itself keeps how its newest attempt went, with
+  neither the answer nor who made it. Deleting a webhook deletes its log;
+  deleting a project deletes what its events said in every log, and its
+  own webhooks with theirs; deleting a workspace deletes them all. Webhooks' secrets are sealed with the
   master key, and reading one takes confirming it's you where the
   instance asks for that.
 - A runner that enrolled keeps the address it enrolled from, and what its

@@ -593,6 +593,10 @@ pub struct HooksChanged {
     /// `/forget-project`: a deleted project, whose events go from the log.
     #[serde(default)]
     pub project_id: Option<String>,
+    /// `/forget-project`: the project's own webhooks, which went with it
+    /// and are forgotten whole, as `/forget` forgets one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub webhooks: Vec<String>,
     /// A webhook that was turned on again: since when it fails starts
     /// afresh, so that the three days it gets before fctl turns it off
     /// again start now.

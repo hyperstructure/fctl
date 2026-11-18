@@ -651,6 +651,9 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
     }
     ctx.verified(fctl_domain::verify::Sensitive::DeleteProject)?;
     crate::reviews::cancel_project(ctx, &p.row.id).await;
+    // Its own webhooks cascade too: their workspace's HooksObject forgets
+    // them, with what it kept of them, once they're gone.
+    let webhooks = crate::hooks::of_project(&ctx.db, &p.row.id).await?;
     // The rows cascade; the sessions' event logs and the project's files
     // live in Durable Objects, so they are queued for purging in the same batch.
     batch(
@@ -682,7 +685,9 @@ pub async fn delete(ctx: &mut Ctx, id: &str) -> AppResult<Response> {
         p.workspace_id().to_owned(),
         p.row.id.clone(),
     );
-    ctx.defer(async move { crate::hooks::forget_project(&env, &workspace, &project).await });
+    ctx.defer(
+        async move { crate::hooks::forget_project(&env, &workspace, &project, webhooks).await },
+    );
     ctx.audit_in(
         Some(p.workspace_id()),
         "project.deleted",

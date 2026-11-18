@@ -8,7 +8,8 @@ import type { WebhookAttempt } from "./WebhookAttempt";
 export type WebhookHealth = { 
 /**
  * Its newest attempt of fctl's own, or a person's test or resend that
- * went through.
+ * went through: when, how long and its status, without the answer or
+ * who made it.
  */
 last?: WebhookAttempt, 
 /**

@@ -94,7 +94,8 @@ fn create_schema(sql: &SqlStorage) {
         "CREATE TABLE IF NOT EXISTS sends (webhook_id TEXT NOT NULL, at INTEGER NOT NULL, manual INTEGER NOT NULL DEFAULT 0)",
         "CREATE INDEX IF NOT EXISTS sends_webhook ON sends (webhook_id, at)",
         // How each webhook stands: since when its attempts fail, the events
-        // dropped for a full queue, and its newest attempt.
+        // dropped for a full queue, and how its newest attempt went (not its
+        // answer, nor who made it).
         "CREATE TABLE IF NOT EXISTS health (webhook_id TEXT PRIMARY KEY, failing_since INTEGER, \
          dropped INTEGER NOT NULL DEFAULT 0, last TEXT)",
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -344,6 +345,9 @@ impl DurableObject for HooksObject {
             "/forget-project" => {
                 let b = body!(HooksChanged);
                 self.changed(&b.workspace_id);
+                for id in &b.webhooks {
+                    self.forget(id);
+                }
                 if let Some(project) = b.project_id {
                     self.forget_project(&project);
                 }
@@ -875,8 +879,12 @@ impl HooksObject {
                 vec![sv(&hook.id), iv(now)],
             );
         }
+        // The webhook keeps how its newest attempt went for as long as it
+        // lasts, so without the answer or who made it: the log has those,
+        // for 30 days at most.
         let last = serde_json::to_string(&WebhookAttempt {
             response: None,
+            by: None,
             ..attempt
         })
         .unwrap_or_default();
@@ -1279,8 +1287,8 @@ impl HooksObject {
         );
     }
 
-    /// Forgets a deleted project's events and their deliveries, and the
-    /// deliveries of its own webhooks, which went with it.
+    /// Forgets a deleted project's events and their deliveries in every
+    /// webhook's log (its own webhooks are forgotten whole, `forget`).
     fn forget_project(&self, project_id: &str) {
         self.exec(
             "DELETE FROM deliveries WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",

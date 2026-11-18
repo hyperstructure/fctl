@@ -181,6 +181,22 @@ pub async fn row(db: &D1Database, id: &str) -> AppResult<Option<HookRow>> {
         .await
 }
 
+/// The ids of a project's own webhooks, which go with it.
+pub async fn of_project(db: &D1Database, project_id: &str) -> AppResult<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Id {
+        id: String,
+    }
+    let rows: Vec<Id> = q(
+        db,
+        "SELECT id FROM webhooks WHERE project_id = ? ORDER BY created_at, id",
+        &[s(project_id)],
+    )?
+    .all()
+    .await?;
+    Ok(rows.into_iter().map(|r| r.id).collect())
+}
+
 /// How many webhooks a workspace has, its projects' included.
 pub async fn count(db: &D1Database, workspace_id: &str) -> AppResult<u32> {
     let c: Option<Count> = q(
@@ -343,6 +359,7 @@ pub async fn changed(env: &Env, workspace_id: &str, webhook_id: Option<&str>, fo
                 workspace_id: workspace_id.to_owned(),
                 webhook_id: webhook_id.map(str::to_owned),
                 project_id: None,
+                webhooks: Vec::new(),
                 fresh: None,
             },
         )
@@ -358,8 +375,14 @@ pub async fn changed(env: &Env, workspace_id: &str, webhook_id: Option<&str>, fo
 }
 
 /// Forgets a deleted project in its workspace's delivery logs: what its
-/// events said, and its own webhooks' deliveries (the rows cascaded).
-pub async fn forget_project(env: &Env, workspace_id: &str, project_id: &str) -> AppResult<()> {
+/// events said, and its own webhooks (`webhooks`, read with `of_project`
+/// before their rows cascaded) with all the log kept of them.
+pub async fn forget_project(
+    env: &Env,
+    workspace_id: &str,
+    project_id: &str,
+    webhooks: Vec<String>,
+) -> AppResult<()> {
     forget_cached(workspace_id);
     let stub = internal::hooks_stub(env, workspace_id)?;
     let _: serde_json::Value = internal::post(
@@ -369,6 +392,7 @@ pub async fn forget_project(env: &Env, workspace_id: &str, project_id: &str) -> 
             workspace_id: workspace_id.to_owned(),
             webhook_id: None,
             project_id: Some(project_id.to_owned()),
+            webhooks,
             fresh: None,
         },
     )
@@ -493,7 +517,12 @@ mod tests {
             Some("wsp_1")
         );
         assert_eq!(workspace_of(&db, "prj_gone").await?, None);
+        // Read before the project goes, for its HooksObject to forget them:
+        // its own, not the workspace's that send its events.
+        assert_eq!(of_project(&db, "prj_web").await?, ["whk_web"]);
+        assert!(of_project(&db, "prj_api").await?.is_empty());
         run_sql(&db, "DELETE FROM projects WHERE id = 'prj_web'").await?;
+        assert!(of_project(&db, "prj_web").await?.is_empty());
         assert!(row(&db, "whk_web").await?.is_none());
         assert!(row(&db, "whk_slack").await?.is_some());
         run_sql(&db, "DELETE FROM workspaces WHERE id = 'wsp_1'").await?;
@@ -516,6 +545,7 @@ pub async fn afresh(env: &Env, workspace_id: &str, webhook_id: &str) {
                 workspace_id: workspace_id.to_owned(),
                 webhook_id: None,
                 project_id: None,
+                webhooks: Vec::new(),
                 fresh: Some(webhook_id.to_owned()),
             },
         )
