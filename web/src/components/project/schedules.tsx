@@ -34,7 +34,7 @@ import {
   Webhook,
   Zap,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { GithubAccessIcon } from "@/components/github-access";
 import { StartChoices } from "@/components/session/start";
 import {
@@ -71,18 +71,22 @@ import { keys, queryClient, useMe, useProjectRepos } from "@/lib/queries";
 import {
   browserZone,
   canSchedule,
+  capProblem,
   clockOf,
   cronProblem,
   cronRepeat,
   DEFAULT_REPEAT,
+  describeCaps,
   describeCron,
   describeEvent,
   EVENT_KINDS,
   EVENT_NAMES,
   type Every,
   eventBy,
+  eventCaps,
   eventSaid,
   fromWall,
+  MOST_CAPS,
   moment,
   nameFromTask,
   nextRuns,
@@ -1096,6 +1100,7 @@ function Details({
         </div>
         <dl className="grid grid-cols-[88px_minmax(0,1fr)] content-start gap-x-3 gap-y-2 text-[12.5px] max-md:row-start-1">
           <Fact k="Runs">{scheduleWhen(s)}</Fact>
+          {s.event && <Fact k="At most">{describeCaps(eventCaps(s.event))}</Fact>}
           {(s.cron || s.at !== undefined) && (
             <Fact k="Time zone">
               {zoneCity(s.timezone)}
@@ -1689,7 +1694,7 @@ function Editor({
     mode === "asked"
       ? undefined
       : mode === "event"
-        ? eventProblem(event)
+        ? eventProblem(event)?.message
         : mode === "once"
           ? Number.isNaN(atTime)
             ? "Choose a day and a time"
@@ -1915,7 +1920,7 @@ function Editor({
             project={project}
             value={event}
             onChange={setEvent}
-            problem={whenProblem}
+            problem={eventProblem(event)}
             failure={failure?.field?.startsWith("event") ? failure : undefined}
           />
         )}
@@ -2328,15 +2333,21 @@ interface EventForm {
   branches: string;
   /** Absent: the kind's own default (`eventBy`). */
   by?: G.ScheduleEventBy;
+  /** The most sessions its events start in an hour and in a day, as typed. */
+  perHour: string;
+  perDay: string;
 }
 
 function eventForm(e?: G.ScheduleEvent): EventForm {
+  const caps = eventCaps(e ?? {});
   return {
     kind: e?.kind ?? "issue_opened",
     repos: e?.repos ?? [],
     labels: (e?.labels ?? []).join(", "),
     branches: (e?.branches ?? []).join(", "),
     by: e?.by,
+    perHour: String(caps.hour),
+    perDay: String(caps.day),
   };
 }
 
@@ -2357,12 +2368,27 @@ function toEvent(f: EventForm): G.ScheduleEvent {
     labels: labels.length ? labels : undefined,
     branches: branches.length ? branches : undefined,
     by: takesBy(f.kind) && f.by ? f.by : undefined,
+    max_per_hour: Number(f.perHour.trim()),
+    max_per_day: Number(f.perDay.trim()),
   };
 }
 
-/** What keeps the form from saving an event: an issue's label that names none. */
-const eventProblem = (f: EventForm) =>
-  f.kind === "issue_labeled" && items(f.labels).length === 0 ? "Name the label that starts a run" : undefined;
+/** What keeps the form from saving an event, and the field it concerns. */
+interface EventProblem {
+  field: "event.labels" | "event.max_per_hour" | "event.max_per_day";
+  message: string;
+}
+
+/** An issue's label that names none, or a cap on its sessions that won't do. */
+function eventProblem(f: EventForm): EventProblem | undefined {
+  if (f.kind === "issue_labeled" && items(f.labels).length === 0)
+    return { field: "event.labels", message: "Name the label that starts a run" };
+  const hour = capProblem(f.perHour, "hour");
+  if (hour) return { field: "event.max_per_hour", message: hour };
+  const day = capProblem(f.perDay, "day");
+  if (day) return { field: "event.max_per_day", message: day };
+  return undefined;
+}
 
 const fullName = (r: Pick<G.ProjectRepo, "owner" | "name">) => `${r.owner}/${r.name ?? "*"}`;
 /** The repository list's choice of those the project's agents write to: no repository's name. */
@@ -2385,7 +2411,7 @@ function EventFields({
   value: EventForm;
   onChange: (v: EventForm) => void;
   /** What keeps it from saving (`eventProblem`), said under the field it concerns. */
-  problem?: string;
+  problem?: EventProblem;
   /** The control plane's word on a field of the event. */
   failure?: ApiFailure;
 }) {
@@ -2396,7 +2422,8 @@ function EventFields({
   const repos = (useProjectRepos(project.id).data?.repos ?? []).filter((r) => r.name);
   const { kind } = value;
   const set = (v: Partial<EventForm>) => onChange({ ...value, ...v });
-  const error = (field: string) => (failure?.field === field ? failure.message : undefined);
+  const error = (field: string) =>
+    failure?.field === field ? failure.message : problem?.field === field ? problem.message : undefined;
   const by = eventBy({ kind, by: value.by });
   // An empty value is a Select's placeholder: those its agents write to are a choice of their own.
   const repoOptions: SelectOption[] = [
@@ -2490,7 +2517,7 @@ function EventFields({
                   ? "The label that starts a run. Several, comma-separated: any of them."
                   : "Empty: any. Several, comma-separated: any of them."
               }
-              error={error("event.labels") ?? problem}
+              error={error("event.labels")}
             >
               {(id) => (
                 <Input
@@ -2551,6 +2578,12 @@ function EventFields({
         </p>
       )}
 
+      <CapFields
+        value={value}
+        onChange={set}
+        error={error("event.max_per_hour") ?? error("event.max_per_day")}
+      />
+
       <div className="flex flex-col gap-2 rounded-xl bg-sunken/60 px-3.5 py-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
         <span className="text-[12px] text-ink-4">Each time</span>
         <p className="text-[13px] leading-relaxed text-ink-2">
@@ -2562,7 +2595,7 @@ function EventFields({
         </p>
         <p className="text-[12px] leading-relaxed text-ink-4">
           Whoever opens an issue or a pull request may be someone who can't instruct your agents, so they take
-          what GitHub says as information, not instructions. At most 20 runs start in an hour.
+          what GitHub says as information, not instructions.
         </p>
         {unheard.find((u) => u.kind === kind) && (
           <p className="flex gap-1.5 text-[12.5px] leading-relaxed text-amber" role="status">
@@ -2571,6 +2604,64 @@ function EventFields({
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * How many sessions its events start at most, as a sentence of fields: "At most [3] sessions an hour and
+ * [10] a day", with what happens past them, or the problem with either.
+ */
+function CapFields({
+  value,
+  onChange,
+  error,
+}: {
+  value: EventForm;
+  onChange: (v: Partial<EventForm>) => void;
+  error?: string;
+}) {
+  const hint = useId();
+  const box = (per: "hour" | "day") => (
+    <span className="w-20">
+      <Input
+        type="number"
+        inputMode="numeric"
+        min={1}
+        max={MOST_CAPS[per]}
+        aria-label={per === "hour" ? "Sessions an hour, at most" : "Sessions a day, at most"}
+        aria-describedby={hint}
+        aria-invalid={!!capProblem(per === "hour" ? value.perHour : value.perDay, per) || undefined}
+        value={per === "hour" ? value.perHour : value.perDay}
+        onChange={(e) => onChange(per === "hour" ? { perHour: e.target.value } : { perDay: e.target.value })}
+        className="tabular-nums"
+      />
+    </span>
+  );
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2 text-[14px] text-ink-2">
+        {/* Each word stays with its field where the sentence wraps. */}
+        <span className="inline-flex items-center gap-2">
+          At most
+          {box("hour")}
+          sessions an hour
+        </span>
+        <span className="inline-flex items-center gap-2">
+          and
+          {box("day")}a day
+        </span>
+      </div>
+      {error ? (
+        <p id={hint} className="animate-rise text-[12.5px] text-danger [overflow-wrap:anywhere]" role="alert">
+          {error}
+        </p>
+      ) : (
+        <p id={hint} className="text-[12.5px] text-ink-3">
+          Each is a session on your Claude plan. Past either, events start none until there's room again, and
+          its runs say why.
+        </p>
+      )}
     </div>
   );
 }

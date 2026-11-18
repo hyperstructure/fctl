@@ -2055,8 +2055,8 @@ another tool, runs one
    transcript shows the note apart from the task. The owner follows the
    session, as starting one does. A run starts none, and says why
    (`schedule_runs`, the newest 100 of each schedule, and all of the
-   last day's, which the hourly caps count and whose keys stop
-   redeliveries):
+   last day's, which the caps on an hour's and a day's sessions count and
+   whose keys stop redeliveries):
    - while the schedule's last session still works on its task (queued,
      starting, running, or paused on a usage limit): runs don't pile up;
    - while the owner's plan is at its limit (`claude_usage`,
@@ -2130,8 +2130,14 @@ another tool, runs one
    start one run each, and a label one each time it goes on. Then it
    starts its session, as a run at its time does, or none, saying why: its
    owner can't run it (which pauses the schedule), their plan is at its
-   limit, it started 20 sessions on events in the last hour
-   (`triggers::RUNS_PER_HOUR`), or its run on the same issue, pull
+   limit, its events started as many sessions as it lets them in the
+   last hour or the last 24 hours (`ScheduleEvent::max_per_hour` and
+   `max_per_day`, kept in `schedules.event_filter`: 3 and 10 unless it
+   says otherwise, `triggers::caps`,
+   [ADR 0083](adr/0083-schedules-cap-the-sessions-their-events-start.md);
+   the runs other deliveries claimed
+   and still decide count too, so that a burst of issues starts no more,
+   `crate::triggers::started_lately`), or its run on the same issue, pull
    request, release or branch still works on it (`schedule_runs.subject`).
    The session is named after the schedule and what it works on (`Triage
    new issues: web#41`), and its first message is the task, fctl's note
@@ -2147,7 +2153,9 @@ another tool, runs one
    which kinds wouldn't start runs (`ScheduleList.unheard`, and the
    schedule's `problem`): without the GitHub App or the webhook's secret,
    for a project with no repository, and where the app isn't subscribed
-   to the event, as `GET /app` says, asked at most every ten minutes.
+   to the event, as `GET /app` says, asked at most every ten minutes. A
+   schedule at its cap says so as its `problem` too, with when its events
+   start sessions again (`triggers::capped`).
 
 The Schedules tab lists a project's schedules with when each runs next,
 or what it waits for, what its last run did and, when that is less than

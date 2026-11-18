@@ -315,9 +315,53 @@ describe("Schedules that run on events", () => {
     await settle();
     expect(createSchedule).toHaveBeenCalledWith(
       onGithub.id,
-      expect.objectContaining({ event: { kind: "issue_labeled", labels: ["agent", "fctl"] } }),
+      expect.objectContaining({
+        event: { kind: "issue_labeled", labels: ["agent", "fctl"], max_per_hour: 3, max_per_day: 10 },
+      }),
     );
     expect(createSchedule.mock.calls[0]?.[1]).not.toHaveProperty("cron");
+  });
+
+  it("cap the sessions their events start, 3 an hour and 10 a day unless changed", async () => {
+    queryClient.setQueryData<G.ScheduleList>(keys.schedules(onGithub.id), { schedules: [] });
+    const tab = render(<SchedulesTab project={onGithub} />);
+    press(named(tab, "Start from scratch"));
+    const textarea = tab.querySelector("textarea");
+    act(() => {
+      if (!textarea) return;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        "Triage the issue.",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    press(named(tab, "On an event"));
+    const hour = tab.querySelector<HTMLInputElement>("[aria-label='Sessions an hour, at most']");
+    const day = tab.querySelector<HTMLInputElement>("[aria-label='Sessions a day, at most']");
+    expect([hour?.value, day?.value]).toEqual(["3", "10"]);
+    expect(tab.textContent).toContain("Past either, events start none until there's room again");
+    const type = (input: HTMLInputElement | null, text: string) =>
+      act(() => {
+        if (!input) return;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    // None an hour is a pause, which has its own button.
+    type(hour, "0");
+    expect(tab.textContent).toContain("Let it start at least 1 session an hour: pause it to start none");
+    expect(hour?.getAttribute("aria-invalid")).toBe("true");
+    expect(named(tab, "Set up schedule")?.disabled).toBe(true);
+    type(hour, "10");
+    type(day, "1001");
+    expect(tab.textContent).toContain("It starts at most 1,000 sessions a day");
+    type(day, "50");
+    createSchedule.mockReturnValue(new Promise(() => {}));
+    press(named(tab, "Set up schedule"));
+    await settle();
+    expect(createSchedule).toHaveBeenCalledWith(
+      onGithub.id,
+      expect.objectContaining({ event: { kind: "issue_opened", max_per_hour: 10, max_per_day: 50 } }),
+    );
   });
 
   it("say before anyone picks one when fctl wouldn't hear of it", () => {
@@ -436,6 +480,8 @@ describe("Schedules that run on events", () => {
     );
     const link = tab.querySelector<HTMLAnchorElement>("a[href='https://github.com/acme/app/pull/12']");
     expect(link?.textContent).toBe("@grace merged app#12 into main: Fix the login page");
+    // Open, it says how many sessions its events start at most: from before the caps, the defaults.
+    expect(tab.textContent).toContain("At most3 sessions an hour and 10 a day");
   });
 });
 

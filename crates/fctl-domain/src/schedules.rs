@@ -33,8 +33,8 @@ pub const LATE_MS: i64 = 10 * cron::MINUTE_MS;
 pub const MAX_CONTEXT_CHARS: usize = 20_000;
 /// Runs the control plane keeps of each schedule: the newest.
 pub const RUNS_KEPT: i64 = 100;
-/// Runs of the last day stay too, whatever their number: the hourly caps
-/// count them, and an event's run keeps a delivery GitHub sends again, or
+/// Runs of the last day stay too, whatever their number: the caps on an
+/// hour's and a day's runs count them, and an event's run keeps a delivery GitHub sends again, or
 /// another about the same thing, from starting a second
 /// (`crate::triggers::key`, `subject`), which a flood of events past the
 /// newest [`RUNS_KEPT`] would otherwise trim away.
@@ -846,6 +846,8 @@ mod tests {
             labels: Vec::new(),
             branches: Vec::new(),
             by: None,
+            max_per_hour: None,
+            max_per_day: None,
         };
         let w = When::Event(e.clone());
         assert_eq!(w.rhythm(), "when an issue is opened");

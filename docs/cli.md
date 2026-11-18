@@ -699,6 +699,7 @@ fctl schedules edit sch_01JC… --mine           # run it on your subscription f
 fctl schedules edit sch_01JC… --name "Monday dependencies"
 fctl schedules edit "Triage new issues" -p my-app --hide-sessions   # its sessions stay off session lists (--show-sessions)
 fctl schedules edit "Triage new issues" -p my-app --label bug       # bug reports alone: the rest of what it waits for stays
+fctl schedules edit "Triage new issues" -p my-app --max-per-day 20  # its events start at most 20 sessions a day
 fctl schedules pause sch_01JC…                 # it starts nothing until it's resumed
 fctl schedules resume sch_01JC…
 fctl schedules run sch_01JC…                   # its task now, in a session on your subscription
@@ -724,8 +725,11 @@ the branches, or the branches whose checks it watches (default: the
 default branch), and `--by` to what `anyone`, `writers` (people who may
 write to the repository, and fctl's agents) or `agents` (fctl's) opened
 (default: anyone, but writers for `pr-opened`); with `fctl schedules
-edit`, they change what it waits for and keep the rest. Events start at
-most 20 runs of one schedule an hour, and need the instance's GitHub App
+edit`, they change what it waits for and keep the rest. A schedule's
+events start at most 3 sessions an hour (the last 60 minutes) and 10 a
+day (the last 24 hours) unless `--max-per-hour` (up to 100) and
+`--max-per-day` (up to 1,000) say otherwise; past either they start none,
+and its runs say why. Events need the instance's GitHub App
 subscribed to the event ([Self-hosting](self-hosting.md#1-create-the-app)):
 `fctl schedules` says when it isn't. `--when-asked`
 sets up one without a time, which runs only when someone runs it, or

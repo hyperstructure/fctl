@@ -3499,6 +3499,14 @@ pub struct ScheduleEvent {
     /// but `writers` for `pull_request_opened`, so that nobody who can't
     /// write to the repository starts a run by opening one.
     pub by: Option<ScheduleEventBy>,
+    /// The most sessions its events start in an hour (the last 60
+    /// minutes), from 1 to 100; past it, or past `max_per_day`, they start
+    /// none and its runs say why. Absent: 3. Control planes before it
+    /// start at most 20 an hour.
+    pub max_per_hour: Option<u32>,
+    /// The most sessions its events start in a day (the last 24 hours),
+    /// from 1 to 1,000. Absent: 10.
+    pub max_per_day: Option<u32>,
 }
 
 /// What happens on GitHub that a schedule can wait for.
