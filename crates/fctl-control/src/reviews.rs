@@ -69,6 +69,10 @@ pub struct SettingsRow {
     /// before they review it in depth.
     #[serde(deserialize_with = "int_bool", default)]
     pub description_summary: bool,
+    /// The reviews in a row whose findings go to the session that opened
+    /// the pull request while nobody messages its agent ([`rounds`]).
+    #[serde(deserialize_with = "opt_int", default)]
+    pub rounds: Option<i64>,
     pub updated_by: Option<String>,
     pub updater_name: Option<String>,
     pub updater_avatar: Option<String>,
@@ -104,6 +108,13 @@ pub fn drafts(conf: Option<&SettingsRow>) -> bool {
     conf.is_none_or(|c| c.drafts)
 }
 
+/// The reviews in a row whose findings go to the session that opened the
+/// pull request while nobody messages its agent, in a project with these
+/// settings (`None`: none yet).
+pub fn rounds(conf: Option<&SettingsRow>) -> u32 {
+    rv::stored_rounds(conf.and_then(|c| c.rounds))
+}
+
 /// The apps whose pull requests start reviews by themselves in a project
 /// with these settings (`None`: none yet), as their bots are named.
 pub fn bots(conf: Option<&SettingsRow>) -> Vec<String> {
@@ -118,7 +129,7 @@ pub async fn settings(db: &D1Database, project_id: &str) -> AppResult<Option<Set
     q(
         db,
         "SELECT r.enabled, r.operator_id, ou.name AS operator_name, ou.avatar_url AS operator_avatar, \
-         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.drafts, r.description_summary, r.updated_by, \
+         r.model, r.effort, r.instructions, r.bots, r.skipped_repos, r.drafts, r.description_summary, r.rounds, r.updated_by, \
          uu.name AS updater_name, \
          uu.avatar_url AS updater_avatar, r.updated_at FROM project_reviews r \
          LEFT JOIN users ou ON ou.id = r.operator_id LEFT JOIN users uu ON uu.id = r.updated_by \
@@ -283,6 +294,17 @@ pub async fn of_session(db: &D1Database, session_id: &str) -> AppResult<Option<R
     )?
     .first()
     .await
+}
+
+/// The reviews in a row whose findings go to the session that opened the
+/// pull request while nobody messages its agent, as the review agents of
+/// the project that review `review` (its session) is of pass them on now:
+/// the default where fctl kept no record of it.
+pub async fn rounds_of(db: &D1Database, review: &str) -> AppResult<u32> {
+    let Some(row) = of_session(db, review).await? else {
+        return Ok(rv::DEFAULT_ROUNDS);
+    };
+    Ok(rounds(settings(db, &row.project_id).await?.as_ref()))
 }
 
 /// What D1 keeps of the reviews of sessions `ids`, by session: the
@@ -2321,13 +2343,15 @@ async fn pass_on(
         findings: &sub.findings,
         spots: &posting.spots,
     };
+    // As many reviews in a row as the project's review agents pass on now.
+    let rounds = rounds(settings(&ctx.db, &row.project_id).await?.as_ref());
     // Kept before fctl looks for the session, so that one that lists the
     // pull request meanwhile finds them.
     q(
         &ctx.db,
         "UPDATE reviews SET unsent_findings = ? WHERE session_id = ?",
         &[
-            s(&serde_json::to_string(&rv::Unsent::of(&found))?),
+            s(&serde_json::to_string(&rv::Unsent::of(&found, rounds))?),
             s(&row.session_id),
         ],
     )?
@@ -2345,8 +2369,8 @@ enum Sent {
     /// once the session resumes.
     To(SessionId),
     /// To the session, which holds them back from its agent, after the
-    /// findings of `rv::MAX_PASSED_ON` reviews in a row, for a person to
-    /// pass on.
+    /// findings of as many reviews in a row as the project's review agents
+    /// pass on (`rv::Unsent::rounds`), for a person to pass on.
     Held,
     /// To no session: none that lists the pull request takes them, or
     /// another call sent them already.
@@ -2409,6 +2433,7 @@ async fn send(env: &Env, db: &D1Database, row: &ReviewRow, repo: &RepoRef) -> Ap
                 text: unsent.text.clone(),
                 held: unsent.held.clone(),
                 shown: unsent.shown.clone(),
+                rounds: unsent.rounds(),
             },
         )
         .await
@@ -2749,6 +2774,9 @@ pub async fn pass_on_unsent(
     if owed.as_deref() != Some(review.as_str()) {
         return Ok(None);
     }
+    // The agent gets the findings of as many reviews in a row as the
+    // project's review agents pass on now, these included.
+    let rounds = rounds(settings(&ctx.db, &row.project_id).await?.as_ref());
     let Some(unsent) = claim(&ctx.db, review.as_str()).await? else {
         return Ok(None);
     };
@@ -2760,6 +2788,7 @@ pub async fn pass_on_unsent(
             &internal::PassOn {
                 review: review.clone(),
                 by: by.clone(),
+                rounds,
                 unsent: Some(unsent.clone()),
             },
         )
@@ -3356,6 +3385,40 @@ mod tests {
         let second = put(&db, NOW, &project, &pr, 1, None, true).await;
         assert_eq!(outcomes([first, second])?, (1, 1));
         one_review(&db).await
+    }
+
+    /// A review's findings go to the agent that opened its pull request for
+    /// as many reviews in a row as its project's owners chose: five until
+    /// they choose, which the migration gives projects that had review
+    /// agents before.
+    #[wasm_bindgen_test]
+    async fn reviews_pass_on_as_many_rounds_as_their_project_s_owners_chose() -> AppResult<()> {
+        let db = testing::database();
+        let (project, _) = project(&db).await?;
+        assert_eq!(rounds(None), rv::DEFAULT_ROUNDS);
+        assert_eq!(
+            rounds(settings(&db, &project.id).await?.as_ref()),
+            rv::DEFAULT_ROUNDS
+        );
+        let Ok(review) = put(&db, NOW, &project, &pull_request(), 1, None, true).await? else {
+            return Err(internal("the delivery's review wasn't put in"));
+        };
+        assert_eq!(
+            rounds_of(&db, review.id.as_str()).await?,
+            rv::DEFAULT_ROUNDS
+        );
+        q(
+            &db,
+            "UPDATE project_reviews SET rounds = 3 WHERE project_id = ?",
+            &[s(&project.id)],
+        )?
+        .run()
+        .await?;
+        assert_eq!(rounds(settings(&db, &project.id).await?.as_ref()), 3);
+        assert_eq!(rounds_of(&db, review.id.as_str()).await?, 3);
+        // A review fctl kept no record of: as many as by default.
+        assert_eq!(rounds_of(&db, "ses_unknown").await?, rv::DEFAULT_ROUNDS);
+        Ok(())
     }
 }
 

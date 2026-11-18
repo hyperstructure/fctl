@@ -619,10 +619,12 @@ by themselves, from an agent that installs and runs nothing of them.
 When an fctl agent opened the pull request, its session gets the findings
 in a message from fctl, decides what to do about them and answers in
 their threads: those of up to five reviews in a row while nobody messages
-the agent. fctl holds the next ones back, and the session's page says so
-under the pull request, with a button that continues for five more
-rounds: the agent gets the held findings, then those of up to four more
-reviews in a row. A message to the agent ends the pause too. Findings
+the agent, or as many as the project's owners chose, from one to ten
+(`--rounds`). fctl holds the next ones back, and the session's page says
+so under the pull request, with a button that continues for as many
+rounds again: the agent gets the held findings, then those of the reviews
+after them, up to that many in a row with these. A message to the agent
+ends the pause too. Findings
 that went to no session, since none listed the pull request yet when the
 review posted, wait for one: the session that opened it gets them once it
 lists it, and `fctl review` says so meanwhile. Where the
@@ -642,6 +644,7 @@ fctl review settings -p my-app --bots dependabot,renovate      # the apps whose 
 fctl review settings -p my-app --skip-repos acme/shared-lib    # repositories whose pull requests get no review here (or none)
 fctl review settings -p my-app --drafts off                    # drafts wait until they're marked ready for review
 fctl review settings -p my-app --description-summary on        # sum each pull request up in its description first
+fctl review settings -p my-app --rounds 3                      # findings of 3 reviews in a row reach the agent, then fctl pauses (1 to 10, 5 by default)
 fctl review bots -p my-app                     # the apps that opened the newest pull requests, and which start reviews
 fctl review bots -p my-app my-app-bot          # an app as GitHub shows it: its name and who makes it
 fctl review settings -p my-app --mine          # run them on your subscription from now on
@@ -699,6 +702,7 @@ fctl schedules edit sch_01JC… --mine           # run it on your subscription f
 fctl schedules edit sch_01JC… --name "Monday dependencies"
 fctl schedules edit "Triage new issues" -p my-app --hide-sessions   # its sessions stay off session lists (--show-sessions)
 fctl schedules edit "Triage new issues" -p my-app --label bug       # bug reports alone: the rest of what it waits for stays
+fctl schedules edit "Triage new issues" -p my-app --max-per-day 20  # its events start at most 20 sessions a day
 fctl schedules pause sch_01JC…                 # it starts nothing until it's resumed
 fctl schedules resume sch_01JC…
 fctl schedules run sch_01JC…                   # its task now, in a session on your subscription
@@ -724,8 +728,11 @@ the branches, or the branches whose checks it watches (default: the
 default branch), and `--by` to what `anyone`, `writers` (people who may
 write to the repository, and fctl's agents) or `agents` (fctl's) opened
 (default: anyone, but writers for `pr-opened`); with `fctl schedules
-edit`, they change what it waits for and keep the rest. Events start at
-most 20 runs of one schedule an hour, and need the instance's GitHub App
+edit`, they change what it waits for and keep the rest. A schedule's
+events start at most 3 sessions an hour (the last 60 minutes) and 10 a
+day (the last 24 hours) unless `--max-per-hour` (up to 100) and
+`--max-per-day` (up to 1,000) say otherwise; past either they start none,
+and its runs say why. Events need the instance's GitHub App
 subscribed to the event ([Self-hosting](self-hosting.md#1-create-the-app)):
 `fctl schedules` says when it isn't. `--when-asked`
 sets up one without a time, which runs only when someone runs it, or

@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import type * as G from "@/gen";
 import {
   type Cron,
+  capProblem,
   cronProblem,
   cronRepeat,
   DEFAULT_REPEAT,
+  describeCaps,
   describeCron,
   describeEvent,
   eventBy,
+  eventCaps,
   eventSaid,
   fromWall,
   instant,
@@ -307,6 +310,23 @@ describe("events", () => {
     expect(describeEvent(event({ kind: "checks_failed" }))).toBe("when checks fail on the default branch");
     expect(describeEvent(event({ kind: "release_published" }))).toBe("when a release is published");
     expect(describeEvent(event({ kind: "other" }))).toBe("when something happens on GitHub");
+  });
+
+  it("cap the sessions they start as the control plane does", () => {
+    // fctl_domain::triggers::tests::caps_the_sessions_events_start
+    expect(eventCaps(event({}))).toEqual({ hour: 3, day: 10 });
+    expect(eventCaps(event({ max_per_hour: 20, max_per_day: 200 }))).toEqual({ hour: 20, day: 200 });
+    expect(eventCaps(event({ max_per_day: 2 }))).toEqual({ hour: 2, day: 2 });
+    expect(eventCaps(event({ max_per_hour: 0, max_per_day: 5000 }))).toEqual({ hour: 1, day: 1000 });
+    expect(describeCaps({ hour: 3, day: 10 })).toBe("3 sessions an hour and 10 a day");
+    expect(describeCaps({ hour: 1, day: 1000 })).toBe("1 session an hour and 1,000 a day");
+    expect(capProblem("3", "hour")).toBeUndefined();
+    expect(capProblem(" 1000 ", "day")).toBeUndefined();
+    expect(capProblem("", "hour")).toBe("Give a whole number of sessions an hour");
+    expect(capProblem("2.5", "day")).toBe("Give a whole number of sessions a day");
+    expect(capProblem("0", "hour")).toBe("Let it start at least 1 session an hour: pause it to start none");
+    expect(capProblem("1001", "day")).toBe("It starts at most 1,000 sessions a day");
+    expect(capProblem("101", "hour")).toBe("It starts at most 100 sessions an hour");
   });
 
   it("take pull requests from people who may write by default", () => {

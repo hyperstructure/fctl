@@ -52,6 +52,7 @@ vi.mock("@/lib/api", () => {
           ...(b.instructions !== undefined && { instructions: b.instructions || undefined }),
           ...(b.description_summary !== undefined && { description_summary: b.description_summary }),
           ...(b.drafts !== undefined && { drafts: b.drafts }),
+          ...(b.rounds !== undefined && { rounds: b.rounds }),
           ...(skipped && {
             repos: all.filter((r) => !skipped.includes(`${r.owner}/${r.name}`.toLowerCase())),
             skipped_repos: all.filter((r) => skipped.includes(`${r.owner}/${r.name}`.toLowerCase())),
@@ -87,6 +88,7 @@ beforeEach(() => {
     skipped_repos: [repo("shared-lib")],
     drafts: true,
     description_summary: false,
+    rounds: 5,
   };
 });
 afterEach(() => {
@@ -455,6 +457,64 @@ describe("drafts", () => {
     expect(c.textContent).toContain(
       "The next commit pushed to a pull request in acme/web and acme/api that isn't a draft starts one, as does marking a draft ready for review.",
     );
+  });
+});
+
+describe("the rounds of review whose findings reach the agent that opened the pull request", () => {
+  const rounds = (c: HTMLElement) =>
+    c.querySelector<HTMLElement>('[aria-label="Review rounds before a pause"]') as HTMLElement;
+  const choose = async (c: HTMLElement, text: string) => {
+    await act(async () => rounds(c).click());
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+      o.textContent?.startsWith(text),
+    );
+    expect(option, text).toBeTruthy();
+    await act(async () => option?.click());
+    await settle();
+  };
+
+  it("are five until the owners choose, from one to ten", async () => {
+    const c = await render();
+    expect(c.textContent).not.toContain("before fctl pauses for a person");
+    await openSettings(c);
+    expect(rounds(c).textContent).toContain("5 rounds");
+    expect(c.textContent).toContain("it gets the findings of 5 reviews in a row while nobody writes to it.");
+    await act(async () => rounds(c).click());
+    const options = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.map((o) => o.textContent)).toEqual([
+      "1 round",
+      "2 rounds",
+      "3 rounds",
+      "4 rounds",
+      "5 roundsfctl's default",
+      "6 rounds",
+      "7 rounds",
+      "8 rounds",
+      "9 rounds",
+      "10 rounds",
+    ]);
+    await act(async () => options[2]?.click());
+    await settle();
+    expect(c.textContent).toContain("it gets the findings of 3 reviews in a row while nobody writes to it.");
+    await save(c);
+    expect(state.sent.at(-1)?.rounds).toBe(3);
+    expect(c.textContent).toContain(
+      "Their findings reach the agent that opened the pull request for up to 3 review rounds before fctl pauses for a person.",
+    );
+  });
+
+  it("say one review where the owners chose one", async () => {
+    state.agents = { ...state.agents, rounds: 2 };
+    const c = await render();
+    expect(c.textContent).toContain("for up to 2 review rounds before fctl pauses for a person.");
+    await openSettings(c);
+    expect(button(c, "Save").disabled).toBe(true);
+    await choose(c, "1 round");
+    expect(c.textContent).toContain("it gets the findings of one review while nobody writes to it.");
+    expect(button(c, "Save").disabled).toBe(false);
+    await save(c);
+    expect(state.sent.at(-1)?.rounds).toBe(1);
+    expect(c.textContent).toContain("for up to 1 review round before fctl pauses for a person.");
   });
 });
 

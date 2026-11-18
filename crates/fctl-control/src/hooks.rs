@@ -1,4 +1,4 @@
-//! Webhooks (docs/architecture.md#webhooks, ADR 0083): the `webhooks` rows
+//! Webhooks (docs/architecture.md#webhooks, ADR 0084): the `webhooks` rows
 //! in D1, their secrets, and handing what happens in a workspace to its
 //! HooksObject when one of its webhooks wants it. The HooksObject
 //! (`do_hooks`) posts them; `api::hooks` is how people manage them.

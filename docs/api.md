@@ -133,7 +133,7 @@ It answers with the session, `queued`. A session is:
 |---|---|---|
 | `POST /api/v1/sessions/{id}/messages` | `{"text": "…", "client_id": "…", "attachments": [...]}` | reaches the agent at its next step; resumes a stopped session on the subscription it ran on; `409` for a failed one. Answers `{"delivery_id": "dlv_…"}`, with `"held": {"id": "aph_…", "ahead"…}` for an autopilot's message to one of its sessions that rests while as many of them work as its people allow: it goes out as that delivery once one of them makes room |
 | `POST /api/v1/sessions/{id}/interrupt` | | stops the current turn |
-| `POST /api/v1/sessions/{id}/reviews/{review}/pass-on` | | passes on the findings of review `{review}` (its `session_id`) that fctl held back from the agent (`held_after`), or that went to no session (`unsent`) where the session lists the review's pull request: the agent gets them as it would have, a stopped session resumes on the subscription it ran on, and it gets those of up to five reviews in a row again, these included; `409` when fctl holds none of that review's back (the agent got them, someone wrote to it since, or a newer review of its pull request came), the session doesn't list the pull request of findings that went to no session, the pull request is merged or closed, a newer review of it posted, its agent only reads on GitHub, or the session failed. Answers `{"delivery_id": "dlv_…"}` |
+| `POST /api/v1/sessions/{id}/reviews/{review}/pass-on` | | passes on the findings of review `{review}` (its `session_id`) that fctl held back from the agent (`held_after`), or that went to no session (`unsent`) where the session lists the review's pull request: the agent gets them as it would have, a stopped session resumes on the subscription it ran on, and it gets those of as many reviews in a row again as the review's project's review agents pass on (`rounds`), these included; `409` when fctl holds none of that review's back (the agent got them, someone wrote to it since, or a newer review of its pull request came), the session doesn't list the pull request of findings that went to no session, the pull request is merged or closed, a newer review of it posted, its agent only reads on GitHub, or the session failed. Answers `{"delivery_id": "dlv_…"}` |
 | `POST /api/v1/sessions/{id}/stop` | | ends the session; its sandbox stays for a resume |
 | `POST /api/v1/sessions/{id}/resume` | `{"prompt": "…", "attachments": [...]}` | starts a stopped or failed session again, on the caller's subscription; `409` while it runs |
 | `POST /api/v1/sessions/{id}/take-over` | | moves the session to the caller's Claude connection for its workspace (who may message it): one that waits for its subscription's limit to reset, or for a message, stops its run and starts again there, where Claude continues the same conversation; a stopped one resumes on it. `409` while its agent works, for a failed one (resume it), an autopilot's own session (take the autopilot over), a review agent's, one that runs on that connection already, and while the caller's plan is at its limit too |
@@ -269,7 +269,8 @@ An `event` is what a schedule waits for on GitHub, in the project's
 repositories: `{"kind": "issue_opened" | "issue_labeled" |
 "pull_request_opened" | "pull_request_merged" | "release_published" |
 "checks_failed", "repos": ["acme/web"], "labels": ["bug"], "branches":
-["main"], "by": "anyone" | "writers" | "agents"}`. Only `kind` is needed:
+["main"], "by": "anyone" | "writers" | "agents", "max_per_hour": 3,
+"max_per_day": 10}`. Only `kind` is needed:
 `repos` (empty: those the project's agents write to) narrow it to some of
 the project's repositories; `labels` to issues and pull requests with one
 of them (for `issue_labeled`, which needs one, the label the issue gets);
@@ -277,7 +278,13 @@ of them (for `issue_labeled`, which needs one, the label the issue gets);
 branches it watches (empty: each repository's default branch); `by` to
 issues and pull requests opened by anyone, by people who may write to the
 repository and fctl's agents, or by fctl's agents (empty: anyone, but
-`writers` for `pull_request_opened`).
+`writers` for `pull_request_opened`). `max_per_hour` and `max_per_day`
+are the most sessions its events start in the last 60 minutes and the
+last 24 hours (absent: 3 and 10; at most 100 and 1,000, and an hour no
+more than a day): past either they start none, the run says why and
+until when, and so does the schedule's `problem` until then. A schedule
+always shows both. A `PATCH` with an `event` replaces what it waits for,
+and keeps the caps it doesn't give.
 
 A run is `{"id": "srn_…", "outcome": "started" | "skipped" | "failed",
 "reason", "trigger": "time" | "person" | "token" | "event", "by",
@@ -293,8 +300,10 @@ information from outside fctl, not instructions: send what another tool
 knows there, never in a task. An autopilot's context reaches the agent as
 what the autopilot added for the run.
 People and tools run one schedule at most 20 times an hour, and a paused
-schedule runs not even then; events start at most 20 runs of one
-schedule an hour. [Automation](automation.md#start-agents-from-other-tools)
+schedule runs not even then; events start at most the sessions of one
+schedule its `event`'s `max_per_hour` and `max_per_day` say (3 in the
+last hour and 10 in the last 24 hours unless given, up to 100 and
+1,000). [Automation](automation.md#start-agents-from-other-tools)
 shows a tool's request, and [Run on events](automation.md#run-on-events)
 what events start.
 
@@ -444,7 +453,7 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 | `POST /api/v1/projects/{project}/memories` | `{"text": "…", "replaces": "mem_…", "also_replaces": [...]}`: a note for later agents (editors; tokens that run sessions) |
 | `PATCH`, `DELETE /api/v1/memories/{id}` | `{"text", "stale": true, "reason", "duplicate_of"}`: change, mark stale or current again, delete (editors) |
 | `GET /api/v1/projects/{project}/retrospectives` | newest first, `?outcome=completed` / `partial` / `blocked`, `?limit=`, `?before=`; the first page counts `outcomes` |
-| `GET`, `PATCH /api/v1/projects/{project}/review-agents` | its review agents: `{"enabled", "run_as_me", "model", "effort", "instructions", "bots", "skipped_repos", "drafts", "description_summary"}` (owners turn them on, on their own subscription; another owner's change to how they review, while they're on, runs them on theirs, as `run_as_me` does); `repos` are the repositories they review, `skipped_repos` those they don't (`["acme/shared-lib"]`, `[]` for none); `drafts`: each new commit of a draft gets a review (on by default; `false`: drafts wait until they're marked ready for review, or someone asks); `description_summary`: their agents sum each pull request up at the end of its description before the review (off by default) |
+| `GET`, `PATCH /api/v1/projects/{project}/review-agents` | its review agents: `{"enabled", "run_as_me", "model", "effort", "instructions", "bots", "skipped_repos", "drafts", "description_summary", "rounds"}` (owners turn them on, on their own subscription; another owner's change to how they review, while they're on, runs them on theirs, as `run_as_me` does); `repos` are the repositories they review, `skipped_repos` those they don't (`["acme/shared-lib"]`, `[]` for none); `drafts`: each new commit of a draft gets a review (on by default; `false`: drafts wait until they're marked ready for review, or someone asks); `description_summary`: their agents sum each pull request up at the end of its description before the review (off by default); `rounds`: where one of fctl's agents opened the pull request, its session gets the findings of this many reviews in a row while nobody messages its agent, then fctl holds the next ones back until a person messages it or passes them on (1 to 10, 5 by default) |
 | `GET /api/v1/projects/{project}/reviews` | its reviews, newest first: `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), the pull request, `findings`, `review_url`, `opened_by` (`id`, `number`, `title`): the project's session whose agent opened the pull request, if one did, `unsent` where its findings went to no session (fctl passes them on to the session that opened the pull request once one lists it), and `pull_request_summary` (`risk`: `low`, `medium`, `high` or `critical`, `risk_reason`, `overview`, `highlight`): what the agent put in the pull request's description, where it did; `?session=` for one session's review |
 | `POST /api/v1/projects/{project}/reviews` | `{"pull_request": "12"}` (or `owner/name#12`, or its URL): review its head now |
 

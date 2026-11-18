@@ -2969,6 +2969,14 @@ pub struct ReviewAgents {
     /// control planes before it.
     #[serde(default)]
     pub description_summary: bool,
+    /// Where one of fctl's agents opened the pull request, its session
+    /// gets the findings of this many reviews in a row while nobody
+    /// messages its agent; fctl holds back those of the next, until a
+    /// person messages it or passes them on, so that the two agents don't
+    /// go back and forth for good. 1 to 10; 5 by default, and from control
+    /// planes before it.
+    #[serde(default = "review_rounds")]
+    pub rounds: u32,
     /// Why no review starts now (they are on), or would start once they
     /// are on: no GitHub webhook, their person's Claude connection is gone…
     pub problem: Option<String>,
@@ -3009,12 +3017,22 @@ pub struct UpdateReviewAgentsRequest {
     /// Whether they sum each pull request up at the end of its
     /// description before they review it in depth.
     pub description_summary: Option<bool>,
+    /// The reviews in a row whose findings go to the session that opened
+    /// the pull request while nobody messages its agent, 1 to 10
+    /// ([`ReviewAgents::rounds`]).
+    pub rounds: Option<u32>,
 }
 
 /// [`ReviewAgents::drafts`] from control planes before it, which reviewed
 /// drafts.
 fn reviews_drafts() -> bool {
     true
+}
+
+/// [`ReviewAgents::rounds`] from control planes before it, which passed on
+/// the findings of five reviews in a row.
+fn review_rounds() -> u32 {
+    5
 }
 
 /// A GitHub App that opens pull requests, as the project's owners see it
@@ -3499,6 +3517,14 @@ pub struct ScheduleEvent {
     /// but `writers` for `pull_request_opened`, so that nobody who can't
     /// write to the repository starts a run by opening one.
     pub by: Option<ScheduleEventBy>,
+    /// The most sessions its events start in an hour (the last 60
+    /// minutes), from 1 to 100; past it, or past `max_per_day`, they start
+    /// none and its runs say why. Absent: 3. Control planes before it
+    /// start at most 20 an hour.
+    pub max_per_hour: Option<u32>,
+    /// The most sessions its events start in a day (the last 24 hours),
+    /// from 1 to 1,000. Absent: 10.
+    pub max_per_day: Option<u32>,
 }
 
 /// What happens on GitHub that a schedule can wait for.

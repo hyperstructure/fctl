@@ -42,6 +42,7 @@ async fn agents(ctx: &Ctx, project: &crate::model::ProjectRow) -> AppResult<Revi
         skipped_repos: repos.skipped,
         drafts: reviews::drafts(conf.as_ref()),
         description_summary: conf.as_ref().is_some_and(|c| c.description_summary),
+        rounds: reviews::rounds(conf.as_ref()),
         problem,
         updated_by: conf.as_ref().and_then(reviews::SettingsRow::updater),
         updated_at: conf.as_ref().map(|c| c.updated_at),
@@ -69,7 +70,8 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
         && body.bots.is_none()
         && body.skipped_repos.is_none()
         && body.drafts.is_none()
-        && body.description_summary.is_none();
+        && body.description_summary.is_none()
+        && body.rounds.is_none();
     if !fctl_domain::perm::can_own_project(p.role) && !(mine && only_off) {
         return Err(forbidden(
             "Only the project's owners and its workspace's admins change its review agents. They run on your Claude subscription: you can turn them off.",
@@ -118,6 +120,10 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
     let description_summary = body
         .description_summary
         .unwrap_or_else(|| conf.as_ref().is_some_and(|c| c.description_summary));
+    let rounds = match body.rounds {
+        Some(n) => rv::rounds(n)?,
+        None => reviews::rounds(conf.as_ref()),
+    };
     // Whether this changes how they review, from what they review with now.
     let settings = conf.as_ref().is_none_or(|c| {
         model != c.model
@@ -127,6 +133,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             || !rv::same_names(&skipped, &rv::stored_skipped(c.skipped_repos.as_deref()))
             || drafts != reviews::drafts(Some(c))
             || description_summary != c.description_summary
+            || rounds != reviews::rounds(Some(c))
     });
     let was_on = conf.as_ref().is_some_and(|c| c.enabled);
     let enabled = body.enabled.unwrap_or(was_on);
@@ -173,12 +180,13 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
     q(
         &ctx.db,
         "INSERT INTO project_reviews (project_id, enabled, operator_id, model, effort, instructions, bots, skipped_repos, \
-         drafts, description_summary, updated_by, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+         drafts, description_summary, rounds, updated_by, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
          ON CONFLICT (project_id) DO UPDATE SET \
          enabled = excluded.enabled, operator_id = excluded.operator_id, model = excluded.model, effort = excluded.effort, \
          instructions = excluded.instructions, bots = excluded.bots, skipped_repos = excluded.skipped_repos, \
-         drafts = excluded.drafts, description_summary = excluded.description_summary, updated_by = excluded.updated_by, \
-         updated_at = excluded.updated_at",
+         drafts = excluded.drafts, description_summary = excluded.description_summary, rounds = excluded.rounds, \
+         updated_by = excluded.updated_by, updated_at = excluded.updated_at",
         &[
             s(&p.row.id),
             crate::db::b(enabled),
@@ -190,6 +198,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             s(&serde_json::to_string(&skipped)?),
             crate::db::b(drafts),
             crate::db::b(description_summary),
+            n(i64::from(rounds)),
             s(&me.id),
             n(ctx.now),
         ],
@@ -215,6 +224,7 @@ pub async fn update_settings(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppR
             "skipped_repos": skipped,
             "drafts": drafts,
             "description_summary": description_summary,
+            "rounds": rounds,
             "taken_over_from": (takes_over && !mine)
                 .then(|| conf.as_ref().and_then(|c| c.operator_id.as_deref()))
                 .flatten(),

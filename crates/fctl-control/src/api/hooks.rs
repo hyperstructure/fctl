@@ -1,4 +1,4 @@
-//! Webhooks (docs/architecture.md#webhooks, ADR 0083):
+//! Webhooks (docs/architecture.md#webhooks, ADR 0084):
 //! `/api/v1/workspaces/{id}/webhooks` (a workspace's admins: its webhooks
 //! and its projects'), `/api/v1/projects/{id}/webhooks` (a project's owners
 //! and maintainers: its own, and the workspace's that send its events),

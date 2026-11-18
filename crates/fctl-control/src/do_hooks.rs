@@ -1,5 +1,5 @@
 //! HooksObject: one Durable Object per workspace, which posts its webhooks'
-//! deliveries (docs/architecture.md#webhooks, ADR 0083).
+//! deliveries (docs/architecture.md#webhooks, ADR 0084).
 //!
 //! What happens in the workspace comes to it as events (`/emit`), only
 //! when one of its webhooks wants it (`crate::hooks::emit`). It keeps each

@@ -108,10 +108,15 @@ its own, whose agent gets the task, then what GitHub said of it:
   run still works on an issue, a pull request or a branch's checks, events
   about the same one start none, so an issue that gets two of its labels
   at once, or a branch whose next commit fails too, starts one run.
-- **At most 20 an hour.** Events start at most 20 runs of one schedule in
-  an hour, on its owner's plan: a flood of new issues is skipped past
-  that, and the schedule's runs say so. Turn on **Keep its sessions off
-  session lists** for one that runs often.
+- **At most 3 an hour and 10 a day, unless you say otherwise.** Each
+  run is a session on its owner's plan, and anyone can open issues on a
+  public repository, so a schedule's events start at most so many
+  sessions in the last hour and the last 24 hours: past either, they
+  start none until there's room again, and the schedule's runs say so,
+  with until when. Set how many in the form's **At most … sessions an
+  hour and … a day** (up to 100 an hour and 1,000 a day), or with `fctl
+  schedules add` and `edit`'s `--max-per-hour` and `--max-per-day`. Turn
+  on **Keep its sessions off session lists** for one that runs often.
 - **The GitHub App hears of it.** Events come through the instance's
   GitHub App and its webhook, subscribed to **Issues** for issues,
   **Pull request**, **Release** and **Check suite**
@@ -121,6 +126,7 @@ its own, whose agent gets the task, then what GitHub said of it:
 
 ```sh
 fctl schedules add "Triage new issues" -p web --on issue-opened --github triage --hide-sessions \
+  --max-per-hour 10 --max-per-day 40 \
   -m "Triage the issue: label it, ask for what is missing to act on it, and point at the code it concerns."
 fctl schedules add "Learn from merges" -p web --on pr-merged --by agents --hide-sessions \
   -m "Read what people said in the pull request's review, and propose what agents should know in AGENTS.md."

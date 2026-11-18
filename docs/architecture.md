@@ -1613,7 +1613,9 @@ posts what it found on GitHub
    instructions that follow fctl's own, whether their agents sum each
    pull request up in its description first (`description_summary`,
    `fctl review settings --description-summary`, off until they turn it
-   on; step 5), the GitHub Apps whose pull requests start reviews by
+   on; step 5), how many reviews in a row pass their findings on to the
+   agent that opened the pull request before fctl pauses for a person
+   (`rounds`, step 7), the GitHub Apps whose pull requests start reviews by
    themselves (`bots`, below), and the repositories they skip
    (`project_reviews.skipped_repos`, `ReviewAgents.skipped_repos`, `fctl
    review settings --skip-repos`),
@@ -1811,17 +1813,22 @@ posts what it found on GitHub
    sessions, and sessions whose agent only reads on GitHub get nothing.
    So that the agent and the review agent can't go back and forth for
    good, a session gets the findings of at most five reviews in a row
-   (`MAX_PASSED_ON`) while no person messages its agent; the next ones
-   only say in its transcript what they found (`review_held`), until
-   someone does. The session keeps each pull request's newest held
+   (`DEFAULT_ROUNDS`) while no person messages its agent, or as many as
+   the review's project's owners chose, from one to ten
+   (`project_reviews.rounds`, `ReviewAgents.rounds`, `fctl review settings
+   --rounds`; each review's findings carry the number as it was when the
+   review posted, `Unsent::rounds`, which SessionObject's
+   `/review-findings` compares its count with); the next ones only say in
+   its transcript what they found (`review_held`), until someone does. The session keeps each pull request's newest held
    review (`reviews::Held`, `hold`) and marks it on the pull request's
    review check (`ReviewCheck::held_after`, `mark_held`, again after each
    lookup on GitHub), so that its page says so under the pull request,
    with a button that passes the findings on
    (`POST /api/v1/sessions/{id}/reviews/{review}/pass-on`, SessionObject's
    `/pass-on`, `fctl review pass-on`): the agent gets the message it would
-   have got, the transcript says who passed it on (`review_passed_on`),
-   and the count starts again with it. Only a review its pull request
+   have got, the transcript says who passed it on (`review_passed_on`)
+   and for how many rounds, as the review's project passes them on now
+   (`crate::reviews::rounds_of`), and the count starts again with it. Only a review its pull request
    shows as held passes on (`shows_held`), not one a newer review of it
    took the place of. A person's message, here or on
    GitHub, ends the pause too, and drops what was held. The review's `PostedReview.sent_to` names the session,
@@ -2063,8 +2070,8 @@ another tool, runs one
    transcript shows the note apart from the task. The owner follows the
    session, as starting one does. A run starts none, and says why
    (`schedule_runs`, the newest 100 of each schedule, and all of the
-   last day's, which the hourly caps count and whose keys stop
-   redeliveries):
+   last day's, which the caps on an hour's and a day's sessions count and
+   whose keys stop redeliveries):
    - while the schedule's last session still works on its task (queued,
      starting, running, or paused on a usage limit): runs don't pile up;
    - while the owner's plan is at its limit (`claude_usage`,
@@ -2138,8 +2145,14 @@ another tool, runs one
    start one run each, and a label one each time it goes on. Then it
    starts its session, as a run at its time does, or none, saying why: its
    owner can't run it (which pauses the schedule), their plan is at its
-   limit, it started 20 sessions on events in the last hour
-   (`triggers::RUNS_PER_HOUR`), or its run on the same issue, pull
+   limit, its events started as many sessions as it lets them in the
+   last hour or the last 24 hours (`ScheduleEvent::max_per_hour` and
+   `max_per_day`, kept in `schedules.event_filter`: 3 and 10 unless it
+   says otherwise, `triggers::caps`,
+   [ADR 0083](adr/0083-schedules-cap-the-sessions-their-events-start.md);
+   the runs other deliveries claimed
+   and still decide count too, so that a burst of issues starts no more,
+   `crate::triggers::started_lately`), or its run on the same issue, pull
    request, release or branch still works on it (`schedule_runs.subject`).
    The session is named after the schedule and what it works on (`Triage
    new issues: web#41`), and its first message is the task, fctl's note
@@ -2155,7 +2168,9 @@ another tool, runs one
    which kinds wouldn't start runs (`ScheduleList.unheard`, and the
    schedule's `problem`): without the GitHub App or the webhook's secret,
    for a project with no repository, and where the app isn't subscribed
-   to the event, as `GET /app` says, asked at most every ten minutes.
+   to the event, as `GET /app` says, asked at most every ten minutes. A
+   schedule at its cap says so as its `problem` too, with when its events
+   start sessions again (`triggers::capped`).
 
 The Schedules tab lists a project's schedules with when each runs next,
 or what it waits for, what its last run did and, when that is less than
@@ -3641,7 +3656,7 @@ again with the new one.
 A workspace's admins add webhooks for all its projects, or some, and a
 project's owners and maintainers add its own: addresses that fctl posts
 what happens to as it happens, signed with each one's secret
-([ADR 0083](adr/0083-webhooks-post-what-happens-in-a-workspace-to-addresses-its-people-choose.md),
+([ADR 0084](adr/0084-webhooks-post-what-happens-in-a-workspace-to-addresses-its-people-choose.md),
 [Automation](automation.md#webhooks) for people's side).
 
 1. **What a webhook is** (`webhooks` in D1, `crate::hooks`; the
