@@ -168,6 +168,27 @@ pub fn check_create(role: InstanceRole, settings: &InstanceSettings) -> Result<(
     ))
 }
 
+/// What someone in no workspace hears when a project needs one: to create
+/// a workspace, where they may ([`creates_workspaces`]), or to join one.
+pub fn in_no_workspace(creates: bool) -> &'static str {
+    if creates {
+        "Create a workspace first, or ask to join one: projects belong to workspaces"
+    } else {
+        "Ask to join a workspace first: projects belong to workspaces, and this instance's admins create them"
+    }
+}
+
+/// What a member of workspaces they don't administer hears when they
+/// create a project: to ask an admin, or to create a workspace of their
+/// own, where they may ([`creates_workspaces`]).
+pub fn admin_of_none(creates: bool) -> &'static str {
+    if creates {
+        "Only a workspace's admins create its projects, and you are an admin of none of yours. Ask one of them to create it, or create a workspace of your own."
+    } else {
+        "Only a workspace's admins create its projects, and you are an admin of none of yours. Ask one of them to create it."
+    }
+}
+
 /// The most workspaces someone whose instance role is `role` can be a
 /// member of: [`MAX_WORKSPACES`], or any number (`None`) for the primary
 /// instance owner, whose instance it is. Admins are held to it as members
@@ -544,6 +565,19 @@ mod tests {
                 "On this instance, only its admins create workspaces. Ask one to create the workspace you need, or to add you to one."
             )
         );
+    }
+
+    #[test]
+    fn nobody_is_told_to_create_a_workspace_they_may_not() {
+        for creates in [true, false] {
+            for message in [in_no_workspace(creates), admin_of_none(creates)] {
+                assert_eq!(
+                    message.to_lowercase().contains("create a workspace"),
+                    creates,
+                    "{message}"
+                );
+            }
+        }
     }
 
     #[test]

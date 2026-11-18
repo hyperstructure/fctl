@@ -402,8 +402,7 @@ function WorkspaceFilter({
   );
 }
 
-/** Someone who is in no workspace yet: what to do first. */
-/** You aren't in a workspace: join one you are invited to, or create one where the instance lets you. */
+/** Someone who is in no workspace yet: join one they are invited to, or create one where the instance lets them. */
 function NoWorkspace({ invited, creates }: { invited: boolean; creates: boolean }) {
   return (
     <section className="flex animate-rise flex-col items-start gap-4 rounded-2xl border border-line bg-surface/70 p-6">
