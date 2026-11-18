@@ -333,13 +333,14 @@ function EventsField({
               </button>
             ))}
           </div>
-          <div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
+          {/* Two columns that each group flows into whole: Sessions beside the three smaller groups. */}
+          <div className="gap-x-6 md:columns-2">
             {groups.map((g) => {
               const of = catalog.filter((e) => e.group === g.id);
               const on = of.filter((e) => events.includes(e.type)).length;
               const id = `events-${g.id}`;
               return (
-                <fieldset key={g.id} aria-labelledby={id} className="min-w-0">
+                <fieldset key={g.id} aria-labelledby={id} className="mb-5 min-w-0 break-inside-avoid">
                   <button
                     type="button"
                     onClick={() =>
@@ -380,11 +381,13 @@ function EventsField({
                               <Tick on={checked} />
                             </span>
                             <span className="min-w-0">
-                              <span className="block text-[13.5px] text-ink">{e.label}</span>
+                              <span className="flex flex-wrap items-baseline gap-x-2">
+                                <span className="text-[13.5px] text-ink">{e.label}</span>
+                                <span className="font-mono text-[11px] text-ink-4">{e.type}</span>
+                              </span>
                               <span className="block text-[12px] leading-snug text-ink-3">
                                 {e.description}
                               </span>
-                              <span className="mt-0.5 block font-mono text-[11px] text-ink-4">{e.type}</span>
                             </span>
                           </button>
                         </li>

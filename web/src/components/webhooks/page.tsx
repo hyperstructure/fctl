@@ -60,11 +60,14 @@ export function WebhookPage({
   id,
   scope,
   projects,
+  startTest,
   onBack,
 }: {
   id: string;
   scope: HookScope;
   projects: G.Project[];
+  /** It opens on Send a test: a webhook just added. */
+  startTest?: boolean;
   onBack: () => void;
 }) {
   const hook = useQuery({
@@ -74,7 +77,7 @@ export function WebhookPage({
   });
   const catalog = useEventCatalog();
   const [editing, setEditing] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const [testing, setTesting] = useState(!!startTest);
   const [deleting, setDeleting] = useState(false);
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => api.updateWebhook(id, { enabled }),
@@ -133,9 +136,10 @@ export function WebhookPage({
             }}
           />
         ) : (
+          // On a phone its buttons go under it, rather than squeeze its name into a column.
           <header className="flex flex-wrap items-start gap-x-4 gap-y-3">
             <HookGlyph state={state} turnedOff={!!w.disabled_reason} />
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-3rem)]">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="min-w-0 font-display text-[22px] leading-tight font-medium tracking-[-0.015em] text-ink [overflow-wrap:anywhere]">
                   {webhookTitle(w)}
@@ -160,7 +164,7 @@ export function WebhookPage({
                 <span title={stamp(w.created_at)}>{agoShortWords(w.created_at)}</span>
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5 max-sm:w-full max-sm:pl-12">
               <Button size="sm" icon={<FlaskConical className="size-3.5" />} onClick={() => setTesting(true)}>
                 Send a test
               </Button>
@@ -731,8 +735,8 @@ function TestDialog({
           <div className="flex flex-col gap-2" aria-live="polite">
             <p className={cn("text-[13.5px]", delivered(r.last) ? "text-ink" : "text-danger")}>
               {delivered(r.last)
-                ? `It took it: ${r.last ? attemptWords(r.last) : ""}.`
-                : `It failed: ${r.last ? attemptWords(r.last) : "no answer"}.`}
+                ? `Delivered: ${r.last ? attemptWords(r.last) : ""}.`
+                : `Failed: ${r.last ? attemptWords(r.last) : "no answer"}.`}
             </p>
             {r.last?.response?.body && (
               <CodeBlock

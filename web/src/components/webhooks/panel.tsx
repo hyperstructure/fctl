@@ -58,9 +58,22 @@ export function WebhooksPanel({
   const projects = useWorkspaceProjects(workspaceId);
   const [adding, setAdding] = useState(false);
   const [created, setCreated] = useState<G.CreatedWebhook>();
+  // Its page opens on a test: "Send it a test", as a new webhook is added.
+  const [testFirst, setTestFirst] = useState<string>();
 
   if (open)
-    return <WebhookPage id={open} scope={scope} projects={projects} onBack={() => onOpen(undefined)} />;
+    return (
+      <WebhookPage
+        id={open}
+        scope={scope}
+        projects={projects}
+        startTest={testFirst === open}
+        onBack={() => {
+          setTestFirst(undefined);
+          onOpen(undefined);
+        }}
+      />
+    );
   if (list.isError) return <Banner tone="error">{list.error.message}</Banner>;
   if (catalog.isError) return <Banner tone="error">{catalog.error.message}</Banner>;
   if (!list.data || !catalog.data)
@@ -98,6 +111,7 @@ export function WebhooksPanel({
           scope={scope}
           onOpen={() => {
             setCreated(undefined);
+            setTestFirst(created.webhook.id);
             onOpen(created.webhook.id);
           }}
           onDone={() => setCreated(undefined)}
