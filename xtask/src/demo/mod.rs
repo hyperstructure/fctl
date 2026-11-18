@@ -395,6 +395,8 @@ fn wrangler(root: &Path, state: &Path, cast: &Cast, children: &mut Children) -> 
     let vars = [
         ("FCTL_INSTANCE_NAME", cast.instance.name.clone()),
         ("FCTL_EARLY_ACCESS", "0".to_owned()),
+        // As on app.fctl.sh, which the demo shows.
+        ("FCTL_ADMIN_TOKENS", "0".to_owned()),
         ("LINEAR_CLIENT_ID", "demo-linear-client".to_owned()),
         ("LINEAR_CLIENT_SECRET", "demo-linear-secret".to_owned()),
         (

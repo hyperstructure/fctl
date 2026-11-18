@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  adminTokens,
   ConfigError,
   githubKey,
   masterKey,
@@ -79,6 +80,15 @@ test("webhooks reach the private hosts the settings list, which the server reads
   }
   assert.throws(() => readConfig({ FCTL_WEBHOOK_HTTP: "yes" }), ConfigError);
   assert.equal(readConfig({}).vars.FCTL_WEBHOOK_PRIVATE_HOSTS, undefined);
+});
+
+test("admin tokens are on where FCTL_ADMIN_TOKENS turns them on, and a value it can't read stops the server", () => {
+  assert.equal(readConfig({ FCTL_ADMIN_TOKENS: "1" }).vars.FCTL_ADMIN_TOKENS, "1");
+  assert.equal(adminTokens({ FCTL_ADMIN_TOKENS: "true" }), true);
+  assert.equal(adminTokens({ FCTL_ADMIN_TOKENS: "0" }), false);
+  assert.equal(adminTokens({}), false);
+  assert.equal(readConfig({}).vars.FCTL_ADMIN_TOKENS, undefined);
+  assert.throws(() => readConfig({ FCTL_ADMIN_TOKENS: "yes" }), ConfigError);
 });
 
 test("GitHub's PKCS#1 keys become PKCS#8", () => {

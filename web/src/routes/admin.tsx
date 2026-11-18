@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { AdminTokens } from "@/components/admin-tokens";
 import { AuditLog } from "@/components/audit-log";
 import { GithubAvatar } from "@/components/github-avatar";
 import { PageTabs, TabCount } from "@/components/page-tabs";
@@ -1754,6 +1755,7 @@ function InstanceSettings() {
         </div>
       </Section>
       <ReservedSlugs />
+      <AdminTokens />
     </>
   );
 }
