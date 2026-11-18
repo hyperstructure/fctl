@@ -20,7 +20,7 @@ for the details.
 Whatever starts it, a session is a person's: it runs on their Claude
 subscription, never on API billing, within what they may do in its
 project, and it shows in their lists. A portal, a token or a schedule
-starts the work; it doesn't own it.
+only starts it.
 
 ## Your own instance
 
@@ -32,9 +32,9 @@ Some of what this page describes is only for an instance you run: admin
 tokens, webhooks that reach your own network, and deciding for your people
 whether service accounts act for them.
 
-An organization's instance behind a reverse proxy at
-`https://fctl.acme.dev`, with admin tokens on and webhooks allowed to
-reach a network of its own:
+An organization's instance, behind a reverse proxy on the same machine
+that serves `https://fctl.acme.dev`, with admin tokens on and webhooks
+allowed to reach a network of its own:
 
 ```sh
 docker run -d --name fctl --restart unless-stopped \
@@ -52,8 +52,8 @@ data directory don't hold the key that encrypts what's in them
 ([Settings](self-hosting.md#settings)).
 
 Once the first account exists, these are the settings an organization
-usually changes, under **Admin → Settings** and on each workspace's
-**Settings** tab, or with the CLI:
+usually changes, under **Admin → Access**, **Admin → Settings** and each
+workspace's **Settings** tab, or with the CLI:
 
 ```sh
 fctl admin allow '*@acme.dev'                  # everyone at acme.dev may sign up with Google and join the workspaces that invite them
@@ -199,8 +199,8 @@ the secret as `FCTL_TOKEN` and the person as `--on-behalf-of`: `fctl run
   webhook post what happens, narrowed to service accounts' sessions
   ([below](#your-tools-hear-what-agents-do)).
 - **Its secret's keeper.** A service account works while the admin who
-  made its secret is an admin of the workspace. When they leave, it stops
-  until another admin makes it a new secret (`fctl service-accounts
+  made its secret is an admin of the workspace. When they no longer are,
+  it stops until another admin makes it a new secret (`fctl service-accounts
   secret "Acme portal"`), which you give your program; people's answers
   stay.
 - **Where it shows.** Every session it starts says so, and for whom: on
@@ -209,8 +209,7 @@ the secret as `FCTL_TOKEN` and the person as `--on-behalf-of`: `fctl run
 
 ## Agents from CI and other tools
 
-When the work should be one person's rather than whoever a program
-serves, use a token of theirs:
+Which credential starts the work depends on whose session it should be:
 
 | The session is… | Use |
 |---|---|
@@ -225,8 +224,8 @@ fctl token "Release pipeline" --access run -p web --github comment --days 90
 A tool's text, such as an issue filed in another tracker, comes from
 people who can't instruct your agents: send it as a schedule's `context`,
 which the agent gets marked as information for the task and not as
-instructions. [Automation](automation.md) shows both, and review agents
-run from GitHub Actions.
+instructions. [Automation](automation.md) shows both, and how review
+agents run from GitHub Actions with such a token.
 
 ## Your tools hear what agents do
 
