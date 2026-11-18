@@ -1755,6 +1755,24 @@ function InstanceSettings() {
           />
         </div>
       </Section>
+      <Section title="Workspaces" description="Who creates new ones. Those that exist stay as they are.">
+        <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+          <span>
+            Everyone creates workspaces
+            <span className="block text-[12.5px] leading-relaxed text-ink-4">
+              {(s?.members_create_workspaces ?? true)
+                ? "Anyone who signs in creates workspaces of their own, as their primary admin."
+                : "Only instance admins create workspaces. Everyone else joins the ones they are invited or added to: for an organization that puts its people in workspaces of its own."}
+            </span>
+          </span>
+          <Switch
+            checked={s?.members_create_workspaces ?? true}
+            disabled={!s || save.isPending}
+            onChange={(v) => save.mutate({ members_create_workspaces: v })}
+            label="Everyone creates workspaces"
+          />
+        </div>
+      </Section>
       <ReservedSlugs />
       <AdminTokens />
     </>
@@ -1912,6 +1930,10 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
     return s.service_account_consent
       ? "Service accounts act only for the people who allowed them"
       : "Service accounts act for anyone in their workspace, without asking";
+  if (b.members_create_workspaces !== undefined)
+    return s.members_create_workspaces
+      ? "Everyone can create workspaces"
+      : "Only instance admins can create workspaces now";
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
@@ -2009,6 +2031,7 @@ function SignInSettings({
     gravatar: true,
     export_interval_hours: 168,
     service_account_consent: true,
+    members_create_workspaces: true,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

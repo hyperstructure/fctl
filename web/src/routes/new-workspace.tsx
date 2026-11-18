@@ -2,10 +2,10 @@
 // you join it as.
 
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { ArrowRight } from "lucide-react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { ArrowRight, Users } from "lucide-react";
 import { useCallback, useId, useRef, useState } from "react";
-import { Banner, Button, Field, Input, Select } from "@/components/ui";
+import { Banner, Button, Empty, Field, Input, Select } from "@/components/ui";
 import { ColorPopover } from "@/components/ui/color-popover";
 import { WORKSPACE_COLORS, WorkspaceAvatar } from "@/components/workspace/avatar";
 import { AvatarThemes, Wheel } from "@/components/workspace/color-field";
@@ -15,7 +15,7 @@ import { cn } from "@/lib/cn";
 import { colorName, showHex } from "@/lib/color";
 import { BRAND_HEX, FIRST_OWN } from "@/lib/project-icons";
 import { keys, queryClient, useMe, useWorkspaces } from "@/lib/queries";
-import { limitReached, workspaceCount } from "@/lib/workspaces";
+import { limitReached, mayCreate, workspaceCount } from "@/lib/workspaces";
 
 /** Addresses the app's own paths use (fctl_domain::validate::RESERVED_SLUGS). */
 const RESERVED = new Set([
@@ -108,6 +108,24 @@ export function NewWorkspace() {
     },
   });
   const field = (create.error as { field?: string } | null)?.field;
+  // Where the instance lets only its admins create workspaces, the form would only be refused.
+  if (list.data && !mayCreate(list.data))
+    return (
+      <div className="mx-auto max-w-[640px] px-6 py-14">
+        <Empty
+          icon={<Users className="size-6" />}
+          title="This instance's admins create its workspaces"
+          action={
+            <Link to="/">
+              <Button>Back home</Button>
+            </Link>
+          }
+        >
+          Ask one of them to create the workspace you need, or to add you to one. Invitations to workspaces
+          wait for you on the home page.
+        </Empty>
+      </div>
+    );
   return (
     <div className="mx-auto max-w-[640px] px-6 py-14">
       <h1 className="font-display text-[34px] leading-tight font-medium tracking-[-0.02em]">

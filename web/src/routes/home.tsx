@@ -33,7 +33,7 @@ import { asksOf } from "@/lib/service-accounts";
 import { ACTIVE } from "@/lib/sessions";
 import { waitsForYou } from "@/lib/status";
 import { isUltra } from "@/lib/usage";
-import { freshest, useWorkspaceIndex } from "@/lib/workspaces";
+import { freshest, mayCreate, useWorkspaceIndex } from "@/lib/workspaces";
 
 function greeting(user: G.User) {
   const h = new Date().getHours();
@@ -160,11 +160,14 @@ function GettingStarted({
   runners,
   projects,
   workspaces,
+  creates,
 }: {
   me: G.Me;
   runners: G.Runner[];
   projects: G.Project[];
   workspaces: G.Workspace[];
+  /** You create workspaces: everyone does, unless the instance lets only its admins. */
+  creates: boolean;
 }) {
   const workspace = workspaces.length > 0;
   const claude = me.claude.some((c) => c.status === "active");
@@ -180,17 +183,20 @@ function GettingStarted({
       <ol className="mt-3 divide-y divide-line border-y border-line">
         <Step
           done={workspace}
-          title="Join or create a workspace"
+          title={creates ? "Join or create a workspace" : "Join a workspace"}
           action={
-            <Link to="/w/new">
-              <Button size="sm" icon={<Plus className="size-3.5" />}>
-                Create
-              </Button>
-            </Link>
+            creates ? (
+              <Link to="/w/new">
+                <Button size="sm" icon={<Plus className="size-3.5" />}>
+                  Create
+                </Button>
+              </Link>
+            ) : undefined
           }
         >
-          The people you work with, your projects, the machines that run them and the GitHub accounts they
-          work in. Or join one you are invited to.
+          {creates
+            ? "The people you work with, your projects, the machines that run them and the GitHub accounts they work in. Or join one you are invited to."
+            : "The people you work with, your projects, the machines that run them and the GitHub accounts they work in. This instance's admins create them: join one you are invited to."}
         </Step>
         <Step
           done={claude}
@@ -397,7 +403,8 @@ function WorkspaceFilter({
 }
 
 /** Someone who is in no workspace yet: what to do first. */
-function NoWorkspace({ invited }: { invited: boolean }) {
+/** You aren't in a workspace: join one you are invited to, or create one where the instance lets you. */
+function NoWorkspace({ invited, creates }: { invited: boolean; creates: boolean }) {
   return (
     <section className="flex animate-rise flex-col items-start gap-4 rounded-2xl border border-line bg-surface/70 p-6">
       <span className="flex size-10 items-center justify-center rounded-xl bg-raised text-ink-3 shadow-[inset_0_0_0_1px_var(--c-line)]">
@@ -410,16 +417,22 @@ function NoWorkspace({ invited }: { invited: boolean }) {
         <p className="mt-1 max-w-xl text-[14px] leading-relaxed text-ink-3">
           Projects, the machines that run their agents and the GitHub accounts they work in all belong to
           workspaces.{" "}
-          {invited
-            ? "Join the one you are invited to above, or create your own."
-            : "Create one for your own projects, or ask someone to invite you to theirs."}
+          {creates
+            ? invited
+              ? "Join the one you are invited to above, or create your own."
+              : "Create one for your own projects, or ask someone to invite you to theirs."
+            : invited
+              ? "Join the one you are invited to above."
+              : "This instance's admins create them: ask one to add you to a workspace, or someone in one to invite you."}
         </p>
       </div>
-      <Link to="/w/new">
-        <Button variant="primary" icon={<Plus className="size-3.5" />}>
-          Create a workspace
-        </Button>
-      </Link>
+      {creates && (
+        <Link to="/w/new">
+          <Button variant="primary" icon={<Plus className="size-3.5" />}>
+            Create a workspace
+          </Button>
+        </Link>
+      )}
     </section>
   );
 }
@@ -569,7 +582,10 @@ export function Home() {
           <RunnerApprovals />
           {me && <RunnerUpdate user={me.user.id} />}
           {workspaces.data && mine.length === 0 && (
-            <NoWorkspace invited={workspaces.data.invitations.length > 0} />
+            <NoWorkspace
+              invited={workspaces.data.invitations.length > 0}
+              creates={mayCreate(workspaces.data)}
+            />
           )}
           {me && projects.data && runners.data && workspaces.data && mine.length > 0 && (
             <GettingStarted
@@ -577,6 +593,7 @@ export function Home() {
               runners={f.runners.length ? f.runners : runners.data.runners}
               projects={projects.data.projects}
               workspaces={mine}
+              creates={mayCreate(workspaces.data)}
             />
           )}
           {mine.length > 0 && (

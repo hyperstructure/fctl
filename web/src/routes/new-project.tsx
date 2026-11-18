@@ -15,7 +15,7 @@ import { cn } from "@/lib/cn";
 import { ago } from "@/lib/format";
 import { iconOf } from "@/lib/project-icons";
 import { keys, queryClient, useInstance, useWorkspaces } from "@/lib/queries";
-import { createsProjects } from "@/lib/workspaces";
+import { createsProjects, mayCreate } from "@/lib/workspaces";
 
 type Mode = "link" | "create" | "none";
 
@@ -118,6 +118,8 @@ export function NewProject() {
         : !!name.trim());
   const field = (create.error as { field?: string } | null)?.field;
   const member = (list.data?.workspaces.length ?? 0) > 0;
+  // Where the instance lets only its admins create workspaces, there's none of your own to offer.
+  const creates = !list.data || mayCreate(list.data);
   if (list.data && open.length === 0 && member)
     return (
       <div className="mx-auto max-w-[680px] px-6 py-14">
@@ -125,13 +127,16 @@ export function NewProject() {
           icon={<FolderGit2 className="size-6" />}
           title="Its admins create a workspace's projects"
           action={
-            <Link to="/w/new">
-              <Button icon={<Plus className="size-3.5" />}>Create a workspace</Button>
-            </Link>
+            creates ? (
+              <Link to="/w/new">
+                <Button icon={<Plus className="size-3.5" />}>Create a workspace</Button>
+              </Link>
+            ) : undefined
           }
         >
-          Ask an admin of your workspace to create the project and add you to it, or create a workspace of
-          your own.
+          {creates
+            ? "Ask an admin of your workspace to create the project and add you to it, or create a workspace of your own."
+            : "Ask an admin of your workspace to create the project and add you to it."}
         </Empty>
       </div>
     );
@@ -142,15 +147,18 @@ export function NewProject() {
           icon={<FolderGit2 className="size-6" />}
           title="Projects belong to workspaces"
           action={
-            <Link to="/w/new">
-              <Button variant="primary" icon={<Plus className="size-3.5" />}>
-                Create a workspace
-              </Button>
-            </Link>
+            creates ? (
+              <Link to="/w/new">
+                <Button variant="primary" icon={<Plus className="size-3.5" />}>
+                  Create a workspace
+                </Button>
+              </Link>
+            ) : undefined
           }
         >
-          Create a workspace for the people and GitHub accounts you work with, or join one you are invited to
-          on the home page.
+          {creates
+            ? "Create a workspace for the people and GitHub accounts you work with, or join one you are invited to on the home page."
+            : "On this instance, its admins create workspaces. Join one you are invited to on the home page, or ask an admin to add you to one."}
         </Empty>
       </div>
     );

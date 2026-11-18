@@ -33,8 +33,8 @@ export type SidebarProject = Pick<
 /** An invitation to a workspace, as the sidebar shows it. */
 export type SidebarInvitation = Pick<G.WorkspaceInvitation, "id" | "workspace">;
 
-/** Your workspaces, the invitations waiting for you, and how many workspaces you may be in. */
-export interface SidebarWorkspaces extends Pick<G.WorkspaceList, "limit" | "unlimited"> {
+/** Your workspaces, the invitations waiting for you, how many workspaces you may be in, and whether you create them. */
+export interface SidebarWorkspaces extends Pick<G.WorkspaceList, "limit" | "unlimited" | "can_create"> {
   workspaces: SidebarWorkspace[];
   invitations: SidebarInvitation[];
 }
@@ -73,6 +73,7 @@ export function keepSidebar(user: string, workspaces: G.WorkspaceList, projects:
       invitations: workspaces.invitations.map((i) => ({ id: i.id, workspace: ref(i.workspace) })),
       limit: workspaces.limit,
       unlimited: workspaces.unlimited,
+      can_create: workspaces.can_create,
     },
     projects: projects.projects.map((p) => ({
       id: p.id,
@@ -202,11 +203,13 @@ export function keptSidebar(user: string): Omit<SidebarLists, "kept"> | undefine
   const workspaces = readAll(d.workspaces.workspaces, readWorkspace);
   const invitations = readAll(d.workspaces.invitations, readInvitation);
   const projects = readAll(d.projects, readProject);
-  const { limit, unlimited } = d.workspaces;
+  const { limit, unlimited, can_create } = d.workspaces;
   if (!workspaces || !invitations || !projects || typeof limit !== "number") return;
-  // Absent from lists kept before the primary instance owner could be in any number.
+  // Absent from lists kept before the primary instance owner could be in any number, and before
+  // instances could let only their admins create workspaces.
   if (unlimited !== undefined && typeof unlimited !== "boolean") return;
-  return { workspaces: { workspaces, invitations, limit, unlimited }, projects };
+  if (can_create !== undefined && typeof can_create !== "boolean") return;
+  return { workspaces: { workspaces, invitations, limit, unlimited, can_create }, projects };
 }
 
 /**

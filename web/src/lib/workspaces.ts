@@ -20,6 +20,16 @@ type Counted = Pick<G.WorkspaceList, "limit" | "unlimited"> & { workspaces: read
 /** Whether you can create or join another workspace: the primary instance owner always can. */
 export const roomForAnother = (l: Counted): boolean => !!l.unlimited || l.workspaces.length < l.limit;
 
+/**
+ * Whether the instance lets you create workspaces: everyone, unless its admins let only themselves
+ * (InstanceSettings.members_create_workspaces). Lists from before it don't say: everyone could.
+ */
+export const mayCreate = (l: Pick<G.WorkspaceList, "can_create">): boolean => l.can_create !== false;
+
+/** Whether you can create another workspace now: the instance lets you, and you have room for it. */
+export const createsAnother = (l: Counted & Pick<G.WorkspaceList, "can_create">): boolean =>
+  mayCreate(l) && roomForAnother(l);
+
 /** Why you can't create or join another workspace, if you can't (fctl_domain::workspace::check_limit). */
 export function limitReached(l: Counted): string | undefined {
   if (roomForAnother(l)) return undefined;
