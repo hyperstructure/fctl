@@ -555,14 +555,24 @@ pub fn fresh(own: OwnSession, handoff_at: Option<u32>, asked: bool, now: Millis)
 /// Whether its next wake, at `wake_at`, goes to its own session as it is,
 /// which resumes it where its sandbox is, rather than to a fresh session
 /// that may start on any runner ([`fresh`]). `asked`: people asked for a
-/// fresh one.
+/// fresh one. One at work is judged as its turn's end finds it: a wake
+/// people asked for waits for that ([`holds`]), and the first wake after
+/// it hands off when its shift is over or its context full.
 pub fn wakes_in_own(
     own: OwnSession,
     handoff_at: Option<u32>,
     asked: bool,
     wake_at: Millis,
 ) -> bool {
-    fresh(own, handoff_at, asked, wake_at).is_none()
+    let between = OwnSession {
+        status: if at_work(own.status) {
+            SessionStatus::Idle
+        } else {
+            own.status
+        },
+        ..own
+    };
+    fresh(between, handoff_at, asked, wake_at).is_none()
         && (own.status.accepts_messages() || own.status.resumes_for_messages())
 }
 
@@ -2984,6 +2994,21 @@ mod tests {
             own(SessionStatus::Stopped, None),
             None,
             true,
+            soon
+        ));
+        // At work, as its turn's end finds it.
+        let at_work = SessionStatus::Running;
+        assert!(!wakes_in_own(own(at_work, None), None, true, soon));
+        assert!(!wakes_in_own(
+            own(at_work, None),
+            None,
+            false,
+            now + 3 * HOUR_MS
+        ));
+        assert!(!wakes_in_own(
+            own(at_work, Some(300_000)),
+            Some(250_000),
+            false,
             soon
         ));
         // Full, or failed.

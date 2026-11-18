@@ -614,21 +614,30 @@ async fn detail(ctx: &Ctx, id: &str) -> AppResult<RunnerDetail> {
     )?
     .all()
     .await?;
-    let homes: internal::HomeSessions = match internal::fleet_stub(&ctx.env) {
-        Ok(stub) => internal::post(
-            &stub,
-            "/homes",
-            &internal::Homes {
-                runner_id: id.to_owned(),
-            },
-        )
-        .await
-        .unwrap_or_default(),
-        Err(_) => internal::HomeSessions::default(),
+    // The autopilots that wake here: best effort, as the rest of the
+    // runner's detail matters more, but logged, since an empty list tells
+    // its host that none would.
+    let homes: AppResult<internal::HomeSessions> = match internal::fleet_stub(&ctx.env) {
+        Ok(stub) => {
+            internal::post(
+                &stub,
+                "/homes",
+                &internal::Homes {
+                    runner_id: id.to_owned(),
+                },
+            )
+            .await
+        }
+        Err(e) => Err(e),
     };
-    let autopilots = autopilots_here(&ctx.db, &homes.sessions, ctx.now)
-        .await
-        .unwrap_or_default();
+    let autopilots = match homes {
+        Ok(homes) => autopilots_here(&ctx.db, &homes.sessions, ctx.now).await,
+        Err(e) => Err(e),
+    }
+    .unwrap_or_else(|e| {
+        worker::console_error!("the autopilots that wake on runner {id}: {}", e.0.message);
+        Vec::new()
+    });
     Ok(RunnerDetail {
         runner,
         autopilots,
