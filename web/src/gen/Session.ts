@@ -11,6 +11,7 @@ import type { SessionQuestion } from "./SessionQuestion";
 import type { SessionReview } from "./SessionReview";
 import type { SessionRole } from "./SessionRole";
 import type { SessionSchedule } from "./SessionSchedule";
+import type { SessionServiceAccount } from "./SessionServiceAccount";
 import type { SessionStats } from "./SessionStats";
 import type { SessionStatus } from "./SessionStatus";
 import type { SessionTicket } from "./SessionTicket";
@@ -148,4 +149,11 @@ claude?: UserRef,
  * for others', from live updates, which go to everyone watching, and
  * from control planes before it.
  */
-claude_connection?: CredentialId, };
+claude_connection?: CredentialId, 
+/**
+ * The service account that started it for its person, from a program
+ * of its workspace's (`service_accounts::ServiceAccount`): the session
+ * is theirs, on their subscription. Absent for other sessions, and
+ * from control planes before service accounts.
+ */
+service_account?: SessionServiceAccount, };

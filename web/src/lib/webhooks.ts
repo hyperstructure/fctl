@@ -34,6 +34,7 @@ const WHO: Record<G.WebhookOrigin, string | undefined> = {
   schedule: "schedules",
   autopilot: "an autopilot",
   ticket: "tickets",
+  service_account: "service accounts",
   other: undefined,
 };
 

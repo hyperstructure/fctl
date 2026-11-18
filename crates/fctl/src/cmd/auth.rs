@@ -148,6 +148,14 @@ pub async fn account(api: &Api) -> Result<fctl_proto::api::Me> {
 
 pub async fn whoami(server: Option<&str>, json: bool) -> Result<()> {
     let api = config::api(server)?;
+    // A service account is no person: it says what it is, and whom it acts
+    // for.
+    if api
+        .token()
+        .is_some_and(|t| t.starts_with(fctl_domain::tokens::SecretKind::Service.prefix()))
+    {
+        return super::service_accounts::whoami(&api, json).await;
+    }
     let me = api.me().await?;
     if json {
         return style::print_json(&me);

@@ -27,9 +27,17 @@ pub async fn default_credential(
 ) -> AppResult<CredentialRow> {
     let chosen = credential_for(&ctx.db, user, workspace_id).await?;
     chosen.ok_or_else(|| {
+        // A service account's person connects theirs themselves.
+        let message = match ctx.service_account() {
+            Some(_) => format!(
+                "{} has no Claude subscription connected: sessions always run on their own, which they connect in fctl's Settings → Claude.",
+                user.name
+            ),
+            None => "Connect your Claude subscription first (Settings → Claude). Sessions always run on your own subscription.".into(),
+        };
         AppError(ApiError {
             code: ErrorCode::NotConfigured,
-            message: "Connect your Claude subscription first (Settings → Claude). Sessions always run on your own subscription.".into(),
+            message,
             field: Some("claude".into()),
             retry_after: None,
         })
@@ -74,6 +82,16 @@ struct Counter {
 pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppResult<Response> {
     let body: CreateSessionRequest = http::body(req).await?;
     let p = access::project(ctx, project_id).await?;
+    // A service account starts the sessions of the person it acts for,
+    // who may start them there.
+    let service_account = ctx.service_account().map(|sa| sa.id.clone());
+    if service_account.is_some() && !fctl_domain::perm::can_start_sessions(p.role) {
+        return Err(forbidden(&format!(
+            "{} can't start sessions in {}: they need the editor role there.",
+            ctx.user()?.name,
+            p.row.name
+        )));
+    }
     p.require_editor()?;
     if p.row.archived_at.is_some() {
         return Err(conflict("This project is archived"));
@@ -173,8 +191,9 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     q(
         &ctx.db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, prompt_attachments, status, created_by, credential_id, branch, base_branch, model, effort, \
-         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, github_issues, autopilot_id, autopilot_role) \
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)",
+         claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, github_issues, autopilot_id, autopilot_role, \
+         service_account_id) \
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&p.row.id),
@@ -196,6 +215,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             n(i64::from(github_issues)),
             os(autopilot.as_ref().map(|a| a.project_id.as_str())),
             os(autopilot.as_ref().map(|_| "crew")),
+            os(service_account.as_deref()),
         ],
     )?
     .run()
@@ -204,14 +224,17 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
     // Sessions a limited token starts, for CI or a bot, notify nobody unless
     // someone follows them: each review's end would. Nor do an autopilot's:
     // it hears of them itself, and asks people what only they can answer.
-    if ctx.limits().is_none()
+    // A service account's person follows theirs, as one they started: they
+    // asked for it, in a program of their workspace's.
+    if (ctx.limits().is_none() || service_account.is_some())
         && let Err(e) = crate::notify::follow_own(&ctx.db, id.as_str(), &user.id, ctx.now).await
     {
         worker::console_error!("following a new session failed: {}", e.0.message);
     }
-    // Nor is remembering what it asked for: not an autopilot's choice,
-    // which isn't its person's.
+    // Nor is remembering what it asked for: not an autopilot's choice, nor
+    // a service account's, which aren't their person's.
     if autopilot.is_none()
+        && service_account.is_none()
         && let Err(e) = remember_choice(
             ctx,
             &p.row.id,
@@ -275,7 +298,7 @@ pub async fn create(ctx: &mut Ctx, req: &mut Request, project_id: &str) -> AppRe
             "number": number,
             "github_access": github_access,
             "github_issues": github_issues.then_some(true),
-            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat && a.autopilot.is_none()).map(|a| &a.token_id),
+            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat && a.autopilot.is_none() && a.service_account.is_none()).map(|a| &a.token_id),
             "autopilot": autopilot.as_ref().map(|a| &a.project_id),
         })),
     );
@@ -393,7 +416,20 @@ pub async fn list(ctx: &Ctx, req: &Request) -> AppResult<Response> {
         ));
     }
     if http::query(req, "mine").is_some_and(|v| v == "1" || v == "true") {
-        sql.push_str(" AND s.created_by = ?1");
+        match ctx.service_account().filter(|sa| sa.acting_for.is_none()) {
+            // A service account's own, acting for nobody: those it started,
+            // for whomever.
+            Some(sa) => {
+                params.push(s(&sa.id));
+                sql.push_str(&format!(" AND s.service_account_id = ?{}", params.len()));
+            }
+            None => sql.push_str(" AND s.created_by = ?1"),
+        }
+    }
+    // Those a service account started (`?service_account=sva_…`).
+    if let Some(sa) = http::query(req, "service_account") {
+        params.push(s(&sa));
+        sql.push_str(&format!(" AND s.service_account_id = ?{}", params.len()));
     }
     // The sessions the caller started or follows (`session_followers`,
     // joined for the caller in SESSION_SELECT): what the web app's Needs

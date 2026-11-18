@@ -424,6 +424,8 @@ pub fn origin(s: &Session) -> Option<WebhookOrigin> {
         WebhookOrigin::Schedule
     } else if s.ticket.is_some() {
         WebhookOrigin::Ticket
+    } else if s.service_account.is_some() {
+        WebhookOrigin::ServiceAccount
     } else {
         WebhookOrigin::Person
     })
@@ -475,7 +477,7 @@ pub fn check_started_by(origins: &[WebhookOrigin]) -> Result<Vec<WebhookOrigin>>
     if origins.contains(&WebhookOrigin::Other) {
         return Err(ApiError::validation(
             "started_by",
-            "Sessions start from a person, a schedule, an autopilot or a ticket",
+            "Sessions start from a person, a schedule, an autopilot, a ticket or a service account",
         ));
     }
     Ok(WebhookOrigin::ALL
@@ -1837,6 +1839,7 @@ pub fn describe(
                 WebhookOrigin::Schedule => Some("schedules"),
                 WebhookOrigin::Autopilot => Some("an autopilot"),
                 WebhookOrigin::Ticket => Some("tickets"),
+                WebhookOrigin::ServiceAccount => Some("service accounts"),
                 WebhookOrigin::Other => None,
             })
             .collect();
@@ -2142,6 +2145,7 @@ fn sample_session(kind: Kind, project: &HookPlace, repo: &str, now: i64) -> Sess
         autopilot: None,
         claude: None,
         claude_connection: None,
+        service_account: None,
     })
 }
 

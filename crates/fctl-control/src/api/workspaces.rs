@@ -73,6 +73,7 @@ pub async fn list(ctx: &Ctx) -> AppResult<Response> {
                     w.primary = None;
                     w.github = Vec::new();
                     w.claude = None;
+                    w.service_accounts = Vec::new();
                 }
                 w
             })
@@ -751,6 +752,9 @@ pub async fn remove_from(ctx: &Ctx, workspace_id: &str, user_id: &str) -> AppRes
                 "DELETE FROM project_choices WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE workspace_id = ?)",
                 &[s(user_id), s(workspace_id)],
             )?,
+            // Their answers to its service accounts: joining again asks
+            // again.
+            crate::service_accounts::forget_answers(&ctx.db, workspace_id, user_id)?,
             q(
                 &ctx.db,
                 "DELETE FROM session_shares WHERE user_id = ? AND session_id IN \

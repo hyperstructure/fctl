@@ -132,6 +132,9 @@ type Connector = hyper_rustls::HttpsConnector<HttpConnector>;
 pub struct HttpClient {
     client: Client<Connector, Full<Bytes>>,
     timeout: Duration,
+    /// Headers every request it sends carries, before those a request
+    /// gives itself: whom a service account acts for, say.
+    headers: Vec<(String, String)>,
 }
 
 impl Default for HttpClient {
@@ -155,7 +158,27 @@ impl HttpClient {
         let client = Client::builder(TokioExecutor::new())
             .pool_idle_timeout(Duration::from_secs(60))
             .build(https);
-        Self { client, timeout }
+        Self {
+            client,
+            timeout,
+            headers: Vec::new(),
+        }
+    }
+
+    /// The same client, whose requests all carry the header `name`.
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// Its own headers, then `more`, which replace them.
+    fn headers<'a>(&'a self, more: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        self.headers
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .chain(more.iter().copied())
+            .collect()
     }
 
     /// Sends a request; returns status, headers and body.
@@ -167,7 +190,7 @@ impl HttpClient {
         body: Option<Vec<u8>>,
         content_type: Option<&str>,
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
-        let req = request(method, url, token, body, content_type, &[])?;
+        let req = request(method, url, token, body, content_type, &self.headers(&[]))?;
         self.finish(url, req).await
     }
 
@@ -179,7 +202,7 @@ impl HttpClient {
         token: Option<&str>,
         headers: &[(&str, &str)],
     ) -> Result<(StatusCode, http::HeaderMap, Bytes)> {
-        let req = request(Method::GET, url, token, None, None, headers)?;
+        let req = request(Method::GET, url, token, None, None, &self.headers(headers))?;
         self.finish(url, req).await
     }
 

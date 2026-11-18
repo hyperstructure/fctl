@@ -78,6 +78,16 @@ pub struct Features {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
     pub admin_tokens: bool,
+    /// Workspaces' service accounts start sessions only for the people who
+    /// allowed them to ([`InstanceSettings::service_account_consent`]).
+    /// True from control planes before service accounts, which have none.
+    #[serde(default = "yes")]
+    #[cfg_attr(feature = "ts", ts(as = "Option<bool>", optional))]
+    pub service_account_consent: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// `POST /api/v1/setup`: create the owner account with the setup token.
@@ -1605,6 +1615,14 @@ pub struct InstanceSettings {
     /// lets them export at any time. An export that fails on the control
     /// plane's side doesn't count.
     pub export_interval_hours: u32,
+    /// A workspace's service accounts start sessions only for the people
+    /// who allowed them to: fctl asks each of its members, and each one who
+    /// joins later, and they change their answer whenever they like. Off,
+    /// they start sessions for any member of their workspace, on that
+    /// member's Claude subscription, without asking, as an organization
+    /// that runs its own instance may want. On by default; turning it off
+    /// takes confirming it's you.
+    pub service_account_consent: bool,
 }
 
 impl Default for InstanceSettings {
@@ -1616,6 +1634,7 @@ impl Default for InstanceSettings {
             verify_sensitive_actions: false,
             gravatar: true,
             export_interval_hours: 168,
+            service_account_consent: true,
         }
     }
 }
@@ -1633,6 +1652,7 @@ pub struct UpdateInstanceSettingsRequest {
     pub gravatar: Option<bool>,
     /// 0 to 8760.
     pub export_interval_hours: Option<u32>,
+    pub service_account_consent: Option<bool>,
 }
 
 // ───────────────────────────── workspaces ─────────────────────────────
@@ -1747,6 +1767,16 @@ pub struct Workspace {
     /// Its own autopilot, which works in all its projects: the project it
     /// works from, and how it stands. Absent while it has none.
     pub autopilot: Option<WorkspaceAutopilot>,
+    /// Its service accounts, with your answer to each: the programs of its
+    /// own that start sessions for its people who allow them
+    /// ([`crate::service_accounts::ServiceAccount`]). Empty while it has
+    /// none, and from control planes before them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        feature = "ts",
+        ts(as = "Option<Vec<crate::service_accounts::ServiceAccount>>", optional)
+    )]
+    pub service_accounts: Vec<crate::service_accounts::ServiceAccount>,
     pub created_at: Millis,
 }
 
@@ -1879,6 +1909,18 @@ pub struct WorkspaceInvitation {
     pub needs_two_factor: bool,
     /// Whether it was emailed (when it was just made).
     pub emailed: Option<bool>,
+    /// The workspace's service accounts, which start sessions for its
+    /// people who allow them: what joining it means, said before they join.
+    /// Empty while it has none, and from control planes before them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        feature = "ts",
+        ts(
+            as = "Option<Vec<crate::service_accounts::ServiceAccountRef>>",
+            optional
+        )
+    )]
+    pub service_accounts: Vec<crate::service_accounts::ServiceAccountRef>,
 }
 
 /// `POST /api/v1/workspaces/{id}/invitations` (admins).

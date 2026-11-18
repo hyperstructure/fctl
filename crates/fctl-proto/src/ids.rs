@@ -178,6 +178,12 @@ id_type!(
     "adt"
 );
 id_type!(
+    /// A workspace's service account (`fctl_svc_…`), with which a program
+    /// of its own starts sessions for the people who allow it.
+    ServiceAccountId,
+    "sva"
+);
+id_type!(
     /// A webhook: an address fctl posts a workspace's or a project's
     /// events to.
     WebhookId,

@@ -787,6 +787,7 @@ async fn take_up(
             ticket: Some(serde_json::to_value(&column)?),
             autopilot: None,
             follow: true,
+            service_account: None,
             now,
         },
     )

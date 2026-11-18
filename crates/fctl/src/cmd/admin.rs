@@ -210,8 +210,8 @@ pub enum AdminCmd {
     Settings,
     /// Change the instance's settings.
     #[command(
-        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval"])),
-        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time"
+        group(ArgGroup::new("change").required(true).multiple(true).args(["publish_screenshots", "require_two_factor", "two_factor_google", "verify_sensitive_actions", "gravatar", "export_interval", "service_account_consent"])),
+        after_help = "Examples:\n  fctl admin set --publish-screenshots on\n  fctl admin set --require-two-factor on --two-factor-google on\n  fctl admin set --verify-sensitive-actions on\n  fctl admin set --gravatar off\n  fctl admin set --export-interval 1d\n  fctl admin set --export-interval off   # export at any time\n  fctl admin set --service-account-consent off   # an organization's own instance"
     )]
     Set {
         /// Let projects publish their agents' screenshots on this instance,
@@ -252,6 +252,14 @@ pub enum AdminCmd {
         /// export at any time.
         #[arg(long, value_name = "DURATION", value_parser = fctl_domain::account::parse_export_interval)]
         export_interval: Option<u32>,
+        /// Let workspaces' service accounts start sessions only for the
+        /// people who allowed them to: fctl asks each member, and each one
+        /// who joins later. On by default. Off, they start sessions for any
+        /// member of their workspace, on that member's Claude subscription,
+        /// without asking, as an organization that runs its own instance may
+        /// want; off takes confirming it's you.
+        #[arg(long, value_name = "ON|OFF", value_parser = BoolishValueParser::new(), hide_possible_values = true)]
+        service_account_consent: Option<bool>,
     },
 }
 
@@ -625,6 +633,22 @@ fn print_settings(s: &InstanceSettings) {
             "People can export their data as often as they like.".to_owned()
         } else {
             format!("Each person can export their data {every}: an export reads all of it.")
+        })
+    );
+    println!(
+        "Service accounts       {}",
+        if s.service_account_consent {
+            style::accent("ask people")
+        } else {
+            style::dim("don't ask")
+        }
+    );
+    println!(
+        "  {}",
+        style::dim(if s.service_account_consent {
+            "A workspace's service accounts start sessions only for the people who allowed them to."
+        } else {
+            "A workspace's service accounts start sessions for any of its people, without asking them."
         })
     );
 }
@@ -1155,6 +1179,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
             verify_sensitive_actions,
             gravatar,
             export_interval,
+            service_account_consent,
         } => {
             let settings = api
                 .update_instance_settings(&UpdateInstanceSettingsRequest {
@@ -1164,6 +1189,7 @@ pub async fn run(server: Option<&str>, cmd: AdminCmd, json: bool) -> Result<()> 
                     verify_sensitive_actions,
                     gravatar,
                     export_interval_hours: export_interval,
+                    service_account_consent,
                 })
                 .await?;
             if json {

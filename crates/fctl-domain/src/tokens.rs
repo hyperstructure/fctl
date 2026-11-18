@@ -2,9 +2,10 @@
 //!
 //! Every secret has a type prefix so leaks are easy to spot and route
 //! (`fctl_ws_…` web session, `fctl_cli_…`, `fctl_pat_…`, `fctl_rt_…` runner,
-//! `fctl_et_…` a workspace's enrollment token, `fctl_inv_…` invitation, `fctl_rst_…` password reset, `fctl_dc_…` device
-//! code, `fctl_2fa_…` a sign-in that waits for its second factor). Only the
-//! SHA-256 of a secret is stored.
+//! `fctl_et_…` a workspace's enrollment token, `fctl_svc_…` a workspace's
+//! service account, `fctl_inv_…` invitation, `fctl_rst_…` password reset,
+//! `fctl_dc_…` device code, `fctl_2fa_…` a sign-in that waits for its
+//! second factor). Only the SHA-256 of a secret is stored.
 
 use crate::random_bytes;
 use sha2::{Digest, Sha256};
@@ -33,6 +34,9 @@ pub enum SecretKind {
     /// An instance admin token, which provisions people
     /// (`crate::admin_tokens`).
     Admin,
+    /// A workspace's service account, which starts sessions for its people
+    /// who allow it (`crate::service_accounts`).
+    Service,
 }
 
 impl SecretKind {
@@ -50,6 +54,7 @@ impl SecretKind {
             Self::Nonce => "fctl_n_",
             Self::AccessRequest => "fctl_acr_",
             Self::Admin => "fctl_adm_",
+            Self::Service => "fctl_svc_",
         }
     }
 
@@ -67,6 +72,7 @@ impl SecretKind {
             Self::Nonce,
             Self::AccessRequest,
             Self::Admin,
+            Self::Service,
         ]
         .into_iter()
         .find(|k| secret.starts_with(k.prefix()))

@@ -43,6 +43,23 @@ pub struct Authed {
     /// acts as the admin who made it, `user`, on the admin API's people
     /// endpoints alone (`fctl_domain::admin_tokens`).
     pub admin_token: bool,
+    /// A workspace's service account (`fctl_svc_…`, `token_id` its id):
+    /// `user` is the person it acts for in this request, or, acting for
+    /// nobody, the admin who made its secret, whose view of the workspace
+    /// it reads, held to reading there (`crate::service_accounts`).
+    pub service_account: Option<ServiceCaller>,
+}
+
+/// The service account a request comes from.
+#[derive(Clone, Debug)]
+pub struct ServiceCaller {
+    pub id: String,
+    pub name: String,
+    pub workspace_id: String,
+    pub workspace_name: String,
+    /// The person it acts for in this request, by id, once
+    /// `crate::service_accounts::gate` named them.
+    pub acting_for: Option<String>,
 }
 
 /// The autopilot a request comes from.
@@ -90,6 +107,7 @@ impl Authed {
             limits: None,
             autopilot: None,
             admin_token: false,
+            service_account: None,
         }
     }
 }
@@ -193,6 +211,14 @@ impl Ctx {
         if a.admin_token {
             return Ok(());
         }
+        // Nor does a service account, which is no person.
+        if let Some(sa) = &a.service_account {
+            return Err(AppError(ApiError::forbidden(format!(
+                "{}, a service account, can't {}: people do that, signed in.",
+                sa.name,
+                action.doing()
+            ))));
+        }
         let factors = a.user.factors();
         if !verify::needed(&a.settings, factors, a.verified_at, self.now) {
             return Ok(());
@@ -229,6 +255,11 @@ impl Ctx {
             .map(|a| a.token_id.as_str())
     }
 
+    /// The service account the request comes from, when one makes it.
+    pub fn service_account(&self) -> Option<&ServiceCaller> {
+        self.auth.as_ref().and_then(|a| a.service_account.as_ref())
+    }
+
     /// The instance's settings, as read with the caller's token (defaults
     /// when signed out).
     pub fn settings(&self) -> InstanceSettings {
@@ -260,13 +291,19 @@ impl Ctx {
         let ip = self.ip.clone();
         let action = action.to_owned();
         let target = target.map(str::to_owned);
-        // What an admin token does says so, with which one.
-        let data = match (self.admin_token(), data) {
-            (Some(token), Some(serde_json::Value::Object(mut d))) => {
-                d.insert("admin_token".to_owned(), token.into());
+        // What an admin token or a service account does says so, with
+        // which one.
+        let by = match (self.admin_token(), self.service_account()) {
+            (Some(token), _) => Some(("admin_token", token.to_owned())),
+            (None, Some(sa)) => Some(("service_account", sa.id.clone())),
+            (None, None) => None,
+        };
+        let data = match (by, data) {
+            (Some((key, id)), Some(serde_json::Value::Object(mut d))) => {
+                d.insert(key.to_owned(), id.into());
                 Some(serde_json::Value::Object(d))
             }
-            (Some(token), None) => Some(serde_json::json!({ "admin_token": token })),
+            (Some((key, id)), None) => Some(serde_json::json!({ key: id })),
             (_, data) => data,
         };
         let data = data.map(|d| d.to_string());

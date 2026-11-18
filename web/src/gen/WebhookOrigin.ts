@@ -4,4 +4,4 @@
  * How the sessions a webhook hears of started: what `started_by` narrows
  * its sessions' events (and their pull requests') down to.
  */
-export type WebhookOrigin = "person" | "schedule" | "autopilot" | "ticket" | "other";
+export type WebhookOrigin = "person" | "schedule" | "autopilot" | "ticket" | "service_account" | "other";

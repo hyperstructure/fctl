@@ -57,7 +57,9 @@ pub const WORKSPACE_SELECT: &str = concat!(
     wap.name AS autopilot_project_name, wa.state AS autopilot_state, \
     CASE WHEN COALESCE(wm.role, '') IN ('owner', 'admin') \
       THEN (SELECT COUNT(*) FROM autopilot_asks k WHERE k.project_id = wa.project_id AND k.status = 'open') \
-      ELSE 0 END AS autopilot_asks \
+      ELSE 0 END AS autopilot_asks, ",
+    crate::service_account_briefs!(),
+    " AS service_accounts \
     FROM workspaces w \
     LEFT JOIN autopilots wa ON wa.workspace_id = w.id AND wa.scope = 'workspace' AND wa.state != 'off' \
     LEFT JOIN projects wap ON wap.id = wa.project_id \
@@ -114,6 +116,10 @@ pub struct WorkspaceRow {
     pub autopilot_state: Option<String>,
     #[serde(deserialize_with = "int", default)]
     pub autopilot_asks: i64,
+    /// Its service accounts, with the caller's answers (JSON,
+    /// `crate::service_accounts::briefs`).
+    #[serde(default)]
+    pub service_accounts: Option<String>,
 }
 
 /// A JSON array of strings from `json_group_array` (nulls left out).
@@ -201,6 +207,18 @@ impl WorkspaceRow {
             own_runners: self.own_runners,
             autopilots: self.autopilots,
             autopilot: self.autopilot(),
+            service_accounts: crate::service_accounts::briefs(
+                self.service_accounts.as_deref(),
+                &workspace_ref(
+                    &self.id,
+                    &self.slug,
+                    &self.name,
+                    self.color.as_deref(),
+                    self.avatar_updated_at,
+                ),
+                settings.service_account_consent,
+                self.role().is_some_and(|r| r.is_admin()),
+            ),
             created_at: self.created_at,
         }
     }
@@ -416,11 +434,15 @@ pub fn add_member(
 // ───────────────────────────── invitations ─────────────────────────────
 
 /// SELECT for invitations with their workspace and inviter.
-pub const INVITATION_SELECT: &str = "SELECT i.id, i.workspace_id, i.email, i.role, i.invited_by, \
+pub const INVITATION_SELECT: &str = concat!(
+    "SELECT i.id, i.workspace_id, i.email, i.role, i.invited_by, \
     iu.name AS inviter_name, iu.avatar_url AS inviter_avatar, i.created_at, i.expires_at, \
-    w.slug, w.name, w.color, w.avatar_updated_at, w.require_two_factor \
+    w.slug, w.name, w.color, w.avatar_updated_at, w.require_two_factor, ",
+    crate::service_account_refs!(),
+    " AS service_accounts \
     FROM workspace_invitations i JOIN workspaces w ON w.id = i.workspace_id \
-    LEFT JOIN users iu ON iu.id = i.invited_by";
+    LEFT JOIN users iu ON iu.id = i.invited_by"
+);
 
 /// An ` AND …` keeping invitations (`i`) to those that still count: whoever
 /// sent one is still an active admin of its workspace. Only admins invite,
@@ -451,6 +473,10 @@ pub struct InvitationRow {
     pub avatar_updated_at: Option<i64>,
     #[serde(deserialize_with = "int_bool")]
     pub require_two_factor: bool,
+    /// Its workspace's service accounts (JSON,
+    /// `crate::service_accounts::refs`).
+    #[serde(default)]
+    pub service_accounts: Option<String>,
 }
 
 impl InvitationRow {
@@ -487,6 +513,7 @@ impl InvitationRow {
             expires_at: self.expires_at,
             needs_two_factor,
             emailed: None,
+            service_accounts: crate::service_accounts::refs(self.service_accounts.as_deref()),
         }
     }
 }

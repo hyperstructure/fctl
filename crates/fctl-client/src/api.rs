@@ -5,6 +5,7 @@ use fctl_proto::api::*;
 use fctl_proto::autopilot::*;
 use fctl_proto::event::{Attachment, PublishedFile};
 use fctl_proto::hooks::*;
+use fctl_proto::service_accounts::*;
 use fctl_proto::session::{Memory, Project, Session};
 use fctl_proto::tickets::{
     ConnectLinearRequest, LinearLink, LinearTeamList, MyLinear, ProjectTickets, WorkspaceLinear,
@@ -60,6 +61,9 @@ pub struct Api {
     verifier: Option<Verifier>,
     relay: Option<Relay>,
     files_relay: Option<FilesRelay>,
+    /// The person a service account's requests act for
+    /// (`Fctl-On-Behalf-Of`).
+    on_behalf_of: Option<String>,
 }
 
 fn enc(s: &str) -> String {
@@ -88,6 +92,36 @@ impl Api {
             verifier: None,
             relay: None,
             files_relay: None,
+            on_behalf_of: None,
+        }
+    }
+
+    /// The same client, whose requests act for `person` (their id or one of
+    /// their addresses): a service account's, which then starts and steers
+    /// sessions as them (`Fctl-On-Behalf-Of`). The control plane refuses it
+    /// from any other token.
+    pub fn on_behalf_of(mut self, person: Option<&str>) -> Self {
+        if let Some(p) = person.map(str::trim).filter(|p| !p.is_empty()) {
+            self.http = self
+                .http
+                .with_header(fctl_proto::service_accounts::ON_BEHALF_OF, p);
+            self.on_behalf_of = Some(p.to_owned());
+        }
+        self
+    }
+
+    /// The person its requests act for, when a service account's do.
+    pub fn acting_for(&self) -> Option<&str> {
+        self.on_behalf_of.as_deref()
+    }
+
+    /// An HTTP client that waits up to `timeout`, with the headers every
+    /// request of this one carries.
+    fn client(&self, timeout: std::time::Duration) -> HttpClient {
+        let http = HttpClient::new(timeout);
+        match &self.on_behalf_of {
+            Some(p) => http.with_header(fctl_proto::service_accounts::ON_BEHALF_OF, p),
+            None => http,
         }
     }
 
@@ -333,7 +367,7 @@ impl Api {
     /// Your personal data, as the JSON document `GET /me/export` streams.
     pub async fn export(&self) -> Result<Vec<u8>> {
         // Transcripts can be large: allow far longer than a normal request.
-        let http = HttpClient::new(std::time::Duration::from_secs(600));
+        let http = self.client(std::time::Duration::from_secs(600));
         let url = self.url("/me/export");
         self.confirming(|| async {
             let (status, _, bytes) = http
@@ -1349,6 +1383,80 @@ impl Api {
             .await
     }
 
+    // ── service accounts ──
+
+    /// A workspace's service accounts: each with your answer, and all of
+    /// it for its admins.
+    pub async fn service_accounts(&self, workspace: &str) -> Result<ServiceAccountList> {
+        self.get(&format!("/workspaces/{}/service-accounts", enc(workspace)))
+            .await
+    }
+
+    /// Makes a service account (a workspace's admins): its secret comes
+    /// once, in the answer.
+    pub async fn create_service_account(
+        &self,
+        workspace: &str,
+        body: &CreateServiceAccountRequest,
+    ) -> Result<CreatedServiceAccount> {
+        self.post(
+            &format!("/workspaces/{}/service-accounts", enc(workspace)),
+            body,
+        )
+        .await
+    }
+
+    pub async fn service_account(&self, id: &str) -> Result<ServiceAccount> {
+        self.get(&format!("/service-accounts/{}", enc(id))).await
+    }
+
+    /// Renames a service account or says what it is (its workspace's
+    /// admins).
+    pub async fn update_service_account(
+        &self,
+        id: &str,
+        body: &UpdateServiceAccountRequest,
+    ) -> Result<ServiceAccount> {
+        self.patch(&format!("/service-accounts/{}", enc(id)), body)
+            .await
+    }
+
+    pub async fn delete_service_account(&self, id: &str) -> Result<Ok> {
+        self.delete(&format!("/service-accounts/{}", enc(id))).await
+    }
+
+    /// Makes a service account a new secret, in place of its old one, which
+    /// stops working at once (its workspace's admins).
+    pub async fn new_service_account_secret(&self, id: &str) -> Result<CreatedServiceAccount> {
+        self.post(
+            &format!("/service-accounts/{}/secret", enc(id)),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Whether a service account of one of your workspaces may start
+    /// sessions for you.
+    pub async fn answer_service_account(&self, id: &str, allow: bool) -> Result<ServiceAccount> {
+        self.put(
+            &format!("/service-accounts/{}/answer", enc(id)),
+            &AnswerServiceAccountRequest { allow },
+        )
+        .await
+    }
+
+    /// Its workspace's people, with their answers and whether it may act
+    /// for each (its admins, and the service account itself).
+    pub async fn service_account_people(&self, id: &str) -> Result<ServiceAccountPeople> {
+        self.get(&format!("/service-accounts/{}/people", enc(id)))
+            .await
+    }
+
+    /// What this client's service account is, and whom it acts for.
+    pub async fn service_account_self(&self) -> Result<ServiceAccountSelf> {
+        self.get("/service-account").await
+    }
+
     // ── webhooks ──
 
     /// Every event webhooks get, in their groups.
@@ -1557,7 +1665,7 @@ impl Api {
             }
             return Ok(bytes::Bytes::from(bytes));
         }
-        let http = HttpClient::new(std::time::Duration::from_secs(600));
+        let http = self.client(std::time::Duration::from_secs(600));
         let (status, _, bytes) = http
             .send(method, &self.url(path), self.token(), body, content_type)
             .await?;
