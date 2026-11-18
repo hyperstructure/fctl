@@ -499,12 +499,13 @@ pub async fn set_claude(ctx: &mut Ctx, req: &mut Request, who: &str) -> AppResul
     };
     let expires_at = ctx.now + 365 * auth::DAY_MS;
     // One per person: when another request gave them theirs a moment ago,
-    // this one replaces it.
+    // this one replaces it, and when another removed the one it was to
+    // replace, this one gives them a new one: it goes round again.
     let mut set = None;
-    for _ in 0..2 {
+    for _ in 0..3 {
         if let Some(before) = provisioned_claude(&ctx.db, &user.id).await? {
             let sealed = keys.seal_json(&CredentialRow::aad(&before, &user.id), &secret)?;
-            batch(
+            let changes = batch_changes(
                 &ctx.db,
                 replace_claude(
                     &ctx.db,
@@ -517,8 +518,11 @@ pub async fn set_claude(ctx: &mut Ctx, req: &mut Request, who: &str) -> AppResul
                 )?,
             )
             .await?;
-            set = Some(before);
-            break;
+            if changes.first() == Some(&1) {
+                set = Some(before);
+                break;
+            }
+            continue;
         }
         let id = fctl_domain::ids::credential_id(ctx.now);
         let sealed = keys.seal_json(&CredentialRow::aad(id.as_str(), &user.id), &secret)?;
@@ -1209,11 +1213,8 @@ mod tests {
             0
         );
         // His own isn't one to replace.
-        batch(
-            &db,
-            replace_claude(&db, "usr_bob", "crd_own", "four", None, NOW + 2, NOW + 2)?,
-        )
-        .await?;
+        let own = replace_claude(&db, "usr_bob", "crd_own", "four", None, NOW + 2, NOW + 2)?;
+        assert_eq!(batch_changes(&db, own).await?.first(), Some(&0));
         assert_eq!(
             text(
                 &db,
@@ -1222,6 +1223,20 @@ mod tests {
             .await?,
             Some("own".into())
         );
+        // Removed between the handler reading it and replacing it: nothing
+        // changes, and the handler goes round again to give him a new one.
+        q(
+            &db,
+            "DELETE FROM claude_credentials WHERE id = 'crd_1'",
+            &[],
+        )?
+        .run()
+        .await?;
+        let gone = replace_claude(&db, "usr_bob", "crd_1", "five", None, NOW + 3, NOW + 3)?;
+        assert_eq!(batch_changes(&db, gone).await?.first(), Some(&0));
+        assert_eq!(provisioned_claude(&db, "usr_bob").await?, None);
+        let again = first_claude(&db, "usr_bob", "crd_3", "five", None, NOW + 3, NOW + 3)?;
+        assert_eq!(batch_changes(&db, again).await?.first(), Some(&1));
         Ok(())
     }
 
