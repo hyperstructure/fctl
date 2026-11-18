@@ -248,9 +248,11 @@ when it finishes or asks something.
 
    Or with the CLI, which takes the token as `FCTL_TOKEN` too:
    `fctl run -p web --on-behalf-of ada@acme.dev -d "Fix the login
-   redirect"`. Someone who hasn't allowed it, or can't start sessions
-   there, gets a refusal whose `field` is `on_behalf_of` and whose
-   `message` says why, to show them.
+   redirect"`. Someone it can't act for (not a member, hasn't allowed
+   it, disabled, two-factor sign-in not set up) gets a refusal whose
+   `field` is `on_behalf_of`; someone without the role it needs there,
+   such as editor to start sessions, gets `forbidden`, and `not_found`
+   for a project they can't see. Its `message` says why, to show them.
 
 What else it does: it messages, interrupts and stops the sessions of the
 person it acts for (`fctl send … --on-behalf-of`), runs schedules

@@ -169,8 +169,10 @@ async function fctl(path, person, body) {
     body: body && JSON.stringify(body),
   });
   const answer = await res.json();
-  // A refusal for the person (they haven't allowed it, or may not start sessions
-  // there) has `field: "on_behalf_of"`, and a `message` to show them.
+  // A refusal's `message` says why, for the person: with `field: "on_behalf_of"` when
+  // it can't act for them at all (not a member, not allowed, disabled, no two-factor),
+  // as `forbidden` when they lack the role, such as editor to start sessions, and as
+  // `not_found` for a project they can't see.
   if (!res.ok) throw Object.assign(new Error(answer.message), answer);
   return answer;
 }
