@@ -88,3 +88,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0080](0080-autopilots-run-a-project-on-their-own-through-the-api-their-session-relays.md) | Autopilots run a project on their own, through the API their session relays (experimental) |
 | [0081](0081-an-autopilots-messages-wait-for-room-at-its-session-limit.md) | An autopilot's messages wait for room at its session limit (experimental) |
 | [0082](0082-schedules-run-on-events-on-github-through-its-webhook.md) | Schedules run on events on GitHub, through its webhook |
+| [0083](0083-webhooks-post-what-happens-in-a-workspace-to-addresses-its-people-choose.md) | Webhooks post what happens in a workspace to addresses its people choose |

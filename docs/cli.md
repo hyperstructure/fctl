@@ -834,6 +834,50 @@ fctl autopilot wake --in 45m                   # when to wake next, 5m to 1d
 fctl autopilot pause --reason "The direction is done: all four features shipped."
 ```
 
+## Webhooks
+
+A webhook posts what happens to an address of yours as it happens, signed
+with its secret: sessions starting, finishing a turn, asking something,
+with their pull requests ready for review, failing; agents' pull
+requests; reviews; schedules' runs that start nothing
+([Automation](automation.md#webhooks)). A workspace's admins add webhooks
+for all its projects, or some (`-w`, the default workspace without it);
+a project's owners and maintainers add its own (`-p`):
+
+```sh
+fctl webhooks -w acme                          # the workspace's webhooks and its projects', how each stands
+fctl webhooks -p web                           # web's own, and the workspace's that send its events
+fctl webhooks add https://hooks.example.com/fctl -p web --name "Deploy bot" \
+  --events session.question,session.ready_for_review,session.failed     # prints its secret, once
+fctl webhooks add https://example.com/reviews -w acme --events "review.*" --projects web,api
+fctl webhooks add https://example.com/nightly -w acme --events session.started,session.stopped --started-by schedules
+fctl webhooks show "Deploy bot" -p web         # by name, host or id: what it posts, how it stands, its newest deliveries
+fctl webhooks edit "Deploy bot" -p web --events all
+fctl webhooks edit whk_01KC… --url https://hooks.example.com/v2
+fctl webhooks edit "Deploy bot" -p web --off   # it gets nothing until --on, which also turns on one fctl turned off
+fctl webhooks test "Deploy bot" -p web --event session.ready_for_review   # a made-up event, now; exits 1 when it fails
+fctl webhooks deliveries "Deploy bot" -p web --failed --limit 50
+fctl webhooks delivery "Deploy bot" -p web whd_01KC…   # the request as fctl posted it, every attempt, the answer
+fctl webhooks resend "Deploy bot" -p web whd_01KC…     # again, now: five times at most
+fctl webhooks resend "Deploy bot" -p web --failed --since 6h   # all that failed since then, in their turn
+fctl webhooks secret "Deploy bot" -p web       # its secret, on stdout
+fctl webhooks secret "Deploy bot" -p web --rotate   # a new one; the old one signs too for a day
+fctl webhooks rm "Deploy bot" -p web
+fctl webhooks events                           # every event, with what it means
+fctl webhooks verify --secret whsec_… --id evt_01KC… --timestamp 1763400000 --signature "v1,…" body.json
+```
+
+`--events` takes events by name (`session.finished`), groups
+(`session.*`, `pull_request.*`, `review.*`, `schedule.*`) or `all` (the
+default); `--projects`, a workspace's projects by slug or id, or `all`;
+`--started-by`, whose sessions' events (`people`, `schedules`,
+`autopilot`, `tickets`), or `all`. Addresses are `https://` on the public
+internet. Adding a webhook, pointing one elsewhere and reading its secret
+are sensitive actions, which take confirming it's you where the instance
+asks for that. `fctl webhooks verify` checks a request you saved as a
+receiver does, with the secret in `--secret` or `FCTL_WEBHOOK_SECRET`. A
+workspace has at most 20 webhooks.
+
 ## Notifications
 
 A session you follow notifies you when it waits for your reply, pauses on a

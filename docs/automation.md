@@ -5,11 +5,13 @@ on GitHub (an issue opened, a pull request merged, checks failing on
 main), when someone delegates a ticket to fctl in Linear, and when your
 CI, a bot or another tool asks: schedules start sessions on their own,
 and an access token lets a workflow start them, limited to what it is
-for. This page shows how to set up schedules, those that run on events
-among them, how to delegate Linear tickets, how to start agents from
-other tools, such as another issue tracker, how to make a token, how to
-run review agents on your pull requests from GitHub Actions, and other
-uses: triaging issues, nightly maintenance, planning, dashboards.
+for. And fctl tells your other tools what agents do as it happens, with
+webhooks. This page shows how to set up schedules, those that run on
+events among them, how to delegate Linear tickets, how to start agents
+from other tools, such as another issue tracker, how to hear of what
+agents do with webhooks, how to make a token, how to run review agents
+on your pull requests from GitHub Actions, and other uses: triaging
+issues, nightly maintenance, planning, dashboards.
 
 ## Schedules
 
@@ -204,6 +206,169 @@ some issue trackers do, need a small relay (a serverless function, or a
 no-code tool such as Zapier, Make or n8n) that adds it and picks out the
 fields to send.
 
+## Webhooks
+
+A webhook posts what happens in a workspace to an address of yours as it
+happens, signed: a session started, finished a turn, asked something or
+has its pull requests ready for review; an agent's pull request opened or
+merged; a review agent's review posted; a schedule's run that started
+nothing. Slack hears when an agent needs someone, a deploy starts when a
+schedule's session finishes, a dashboard follows sessions and reviews.
+
+1. **Add one.** A workspace's admins add webhooks for all its projects,
+   or some, on its **Webhooks** tab; a project's owners and maintainers
+   add its own under its **Settings → Webhooks**. Or with the CLI:
+
+   ```sh
+   fctl webhooks add https://hooks.example.com/fctl -p web \
+     --events session.question,session.ready_for_review,session.failed
+   ```
+
+   It shows the webhook's signing secret (`whsec_…`) once: keep it where
+   your receiver reads it. Those who manage the webhook read it again on
+   its page (`fctl webhooks secret NAME`), which takes confirming it's
+   you where the instance asks for that.
+2. **Choose what it hears of**: every event or some ([Webhook
+   events](#webhook-events)), for a workspace's webhook its projects, and
+   for sessions' events whose sessions: those people and tools start,
+   schedules', an autopilot's, or those a Linear ticket started
+   (`--started-by schedules`).
+3. **Answer within 10 seconds** with a 2xx status, and do slow work after
+   answering; check that each request is fctl's before acting on it
+   (below).
+4. **Send a test** of any event (**Send a test** on its page, `fctl
+   webhooks test NAME --event session.ready_for_review`): a made-up event
+   marked `test`, whose answer shows at once.
+
+Addresses are `https://` on the public internet: fctl doesn't post to
+private networks, loopback or local names (a development instance also
+takes `http://` and local addresses, to try a receiver on the same
+machine). A change to a webhook reaches new events within half a minute.
+
+### What a request carries
+
+Each is a `POST` of JSON, in the shape Standard Webhooks gives: the
+event's id and type, when it happened, the workspace and the project it
+happened in, and its data, here a session's pull requests that wait for
+a person's review:
+
+```json
+{
+  "id": "evt_01KC9R3M…",
+  "type": "session.ready_for_review",
+  "timestamp": "2026-11-17T14:02:11.408Z",
+  "workspace": { "id": "wsp_01KB…", "slug": "acme", "name": "Acme" },
+  "project": { "id": "prj_01KB…", "slug": "web", "name": "Web" },
+  "data": {
+    "session": {
+      "id": "ses_01KC…",
+      "ref": "web#12",
+      "url": "https://app.fctl.sh/s/ses_01KC…",
+      "title": "Retry failed uploads in the sync worker",
+      "status": "idle",
+      "started_by": "person",
+      "created_by": { "id": "usr_01KA…", "name": "Ada" },
+      "pull_requests": [{ "repo": "acme/web", "number": 45, "state": "open", "…": "…" }]
+    },
+    "ready": [
+      {
+        "repo": "acme/web",
+        "number": 45,
+        "url": "https://github.com/acme/web/pull/45",
+        "title": "Retry failed uploads in the sync worker",
+        "state": "open",
+        "checks": { "passed": 7, "failed": 0, "pending": 0, "sha": "3f2a1c9…", "review": "passed" }
+      }
+    ]
+  }
+}
+```
+
+Sessions' events carry the session as `data.session` (its schedule,
+autopilot or ticket where it started from one); agents' pull requests'
+`data.session` and `data.pull_request`; reviews' `data.review` (its
+pull request, commit, state, and how many new findings it reported,
+earlier ones it found fixed and those still open); schedules'
+`data.schedule` with the run that started nothing, or why fctl paused it.
+The API's types are `HookEnvelope`, `HookSessionData`,
+`HookPullRequestData`, `HookReviewData` and `HookScheduleData`
+([crates/fctl-proto/src/hooks.rs](https://github.com/hyperstructure/fctl/blob/main/crates/fctl-proto/src/hooks.rs)).
+
+| Header | What it says |
+|---|---|
+| `webhook-id` | The event's id: the same in every attempt and resend, to skip one you had |
+| `webhook-timestamp` | When fctl posted it, in seconds |
+| `webhook-signature` | `v1,` and its signature; for a day after the secret was rotated, two, separated by a space |
+| `fctl-event` | Its type, as in `type` |
+| `fctl-workspace-id`, `fctl-project-id` | Where it happened |
+| `fctl-delivery`, `fctl-webhook`, `fctl-attempt` | The delivery, the webhook, and which attempt this is |
+| `fctl-test` | `1` on a test |
+
+### Check that it's fctl's
+
+fctl signs as [Standard Webhooks](https://www.standardwebhooks.com)
+does: `v1,` and the HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}`
+in base64, keyed with the secret's bytes (the base64 after `whsec_`). Its
+libraries check a request in one call:
+
+```js
+import { Webhook } from "standardwebhooks";
+
+// `body` is the request's body as it came, not parsed JSON.
+const event = new Webhook(process.env.FCTL_WEBHOOK_SECRET).verify(body, headers); // throws if it isn't fctl's
+if (event.workspace.id !== "wsp_01KB…" || event.project?.id !== "prj_01KB…") throw new Error("Not ours");
+```
+
+Check the body byte for byte as it came, refuse a timestamp more than
+five minutes from your clock (it may be a replay), and check the
+workspace and project it names. The webhook's page shows the whole check
+with its ids, in Node.js and Python, and `fctl webhooks verify` checks a
+request you saved. **Rotate secret** makes a new one, with which fctl
+signs from then on; the old one signs beside it for a day, so that your
+receiver switches without missing a request.
+
+### Webhook events
+
+| Event | When |
+|---|---|
+| `session.started` | Someone, a schedule, an autopilot or a ticket started a session; it waits for a runner. |
+| `session.finished` | Its agent's turn ended with no background work running, and it waits for a message: with the start of its reply (`data.message`). Sent once it has waited 5 seconds, as background work's own turn comes within them. |
+| `session.ready_for_review` | Its agent finished, and its open pull requests (not drafts) passed every check, with no review agent at work on them, for two minutes: they wait for a person (`data.ready`). Once for each set of commits. |
+| `session.question` | Its agent asked something with `fctl ask`, with the answers people can click. |
+| `session.follow_up` | fctl brought its agent back to its pull request: a comment that addresses it, failed checks, conflicts, a merge or a close (`data.follow_up.kind` is `github`, with GitHub's `events`), or a review's findings (`review`). |
+| `session.paused` | Its Claude plan reached a usage limit; it carries on once the limit resets. |
+| `session.stopped` | Its sandbox stopped: it waited long enough, its work ran out of time, or someone stopped it. A message resumes it. |
+| `session.failed` | It couldn't start or carry on (`data.session.status_reason` says why). |
+| `session.status_changed` | Any change of its status, with the one before (`data.previous_status`). The busiest event. |
+| `pull_request.opened` | A session's agent opened a pull request, or found the one of its branch. |
+| `pull_request.merged`, `pull_request.closed` | A pull request a session's agent opened merged, or closed without merging. |
+| `review.queued`, `review.started` | A review agent's review of a commit waits for a runner; a runner took it. |
+| `review.finished` | The review is on the pull request: `state` is `passed` (nothing to point out) or `commented`, with `findings`, `fixed` and `still_open`. |
+| `review.failed`, `review.cancelled` | It couldn't run or post; a newer commit took its place, or someone stopped it. |
+| `schedule.run_skipped` | A schedule's run started no session, and says why: its last run still at work, its owner's plan at its limit, its cap for the hour. |
+| `schedule.paused` | fctl paused a schedule: its owner can no longer run it, or its project was archived. |
+
+A review agent's own session sends no sessions' events: its review's say
+how it goes. `fctl webhooks events` and `GET /api/v1/webhook-events` list
+them with what they mean.
+
+### When a request fails
+
+A request counts when the receiver answers with a 2xx status within 10
+seconds; fctl doesn't follow redirects. Otherwise it goes again after 10
+seconds, then a minute, 5 minutes, 30, 2 hours, 6 and 12 (later where
+the answer's `Retry-After` asks), 8 attempts over about 21 hours. A
+webhook whose attempts all failed for three days turns itself off and
+says why; turn it on again once its address answers. Its page and `fctl
+webhooks deliveries NAME --failed` list what went out in the last 30 days
+(its newest 1,000), each with the request as fctl posted it, every
+attempt and the start of each answer. Resend one (five times each), or
+all that failed since a time once your receiver is back: `fctl webhooks
+resend NAME --failed --since 6h`. At most 120 requests a minute go to
+one webhook, and at most 1,000 wait for it: events past that are
+dropped, and its page counts them. Requests can come out of order: go by
+`timestamp`, and a session's `updated_at`.
+
 ## Access tokens
 
 Make one in **Settings → Access tokens**, or with the CLI:
@@ -391,6 +556,11 @@ What to keep in mind:
   and pull requests and answers in the session, writing nothing to
   GitHub. A project whose agents should only ever read, triage or
   comment says so in its settings.
+- **Tell a chat when agents need someone.** A webhook on
+  `session.question`, `session.ready_for_review` and `session.failed`
+  ([Webhooks](#webhooks)) posts to a small function that writes the
+  session's `ref`, `title` and `url` to Slack or Teams; `review.finished`
+  adds how each review went.
 - **Dashboards and reports.** A token that reads (`--access read`) lists
   sessions, transcripts, retrospectives and project memory, and starts
   nothing: `fctl sessions --active --json`, `fctl retro list -p web --json`,

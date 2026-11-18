@@ -31,9 +31,10 @@ address outside fctl.
   or some), and for sessions' events whom they're of: sessions people
   and tools start, schedules', an autopilot's or those a ticket started
   (`started_by`). A workspace has at most 20.
-- **Twenty events, named for what happened** (`fctl_domain::hooks::Kind`,
+- **Nineteen events, named for what happened** (`fctl_domain::hooks::Kind`,
   `GET /api/v1/webhook-events`): a session started, changed status,
-  finished a turn with no background work running, has its pull requests
+  finished a turn with no background work running (once that lasted five
+  seconds, as background work's own turn comes within them), has its pull requests
   ready for a person's review (open, not drafts, every check passed and
   no review agent at work, for two minutes), asked something (`fctl
   ask`), was brought back by a follow-up, paused, stopped or failed; an

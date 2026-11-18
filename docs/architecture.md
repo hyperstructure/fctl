@@ -19,6 +19,8 @@ boundary.
                 │        │   │  autopilots' alarm                     │
                 │        │   ├─ SearchDO (per workspace): the index   │
                 │        │   │  that searches sessions                │
+                │        │   ├─ HooksDO (per workspace): webhooks'    │
+                │        │   │  deliveries                            │
                 │        │   └─ SessionDO (one per session): events,  │
                 │        │      viewers, message delivery             │
                 │        └──────────────▲─────────────▲───────────────┘
@@ -973,7 +975,7 @@ credentials and project secrets, the latest plan usage of each Claude
 credential, the links of published screenshots, projects' memories and
 sessions' retrospectives, projects' schedules and their runs, projects'
 autopilots with the notes people steer them with, what they ask and their
-logs, the Linear
+logs, workspaces' and projects' webhooks (with their sealed secrets), the Linear
 workspaces fctl's app is installed in (with their sealed tokens), the
 fctl workspaces connected to each, people's Linear accounts, Linear's
 agent sessions and the fctl sessions they reach, what agents wrote in
@@ -1013,8 +1015,14 @@ session or wakes the autopilot (see [Schedules](#schedules) and
 its sessions: their titles and descriptions, people's messages and the
 agents' replies, with a full-text index of them (see [Search](#search)).
 
+**HooksDO** (one per workspace, SQLite storage) holds what its webhooks
+are sent: each event's body, each delivery's attempts and the start of
+each answer, for 30 days, and posts them from its alarm (see
+[Webhooks](#webhooks)).
+
 **Deletion.** Deleting a project deletes its rows (sessions, members, secrets,
-shares, its memory, its schedules and its sessions' retrospectives cascade) and, in the
+shares, its memory, its schedules, its webhooks and its sessions' retrospectives cascade),
+has its workspace's HooksDO forget its events and what went out of them, and, in the
 same batch, queues its sessions in
 `session_purges` and the project in `file_purges`; their Durable Object
 storage, the event logs with the images agents read and the attached files
@@ -1032,8 +1040,8 @@ them, and revoked or expired enrollment tokens 90 days on, once no runner
 they enrolled is left ([Enrollment tokens](#enrollment-tokens)). It also looks up pull requests that GitHub
 hasn't told about for a while
 ([Pull request state and checks](#pull-request-state-and-checks)).
-Deleting a workspace does the same for all its projects, and removes the
-runners that enrolled in it. Deleting an
+Deleting a workspace does the same for all its projects, removes the
+runners that enrolled in it, and empties its HooksDO. Deleting an
 account (`src/api/account.rs`) does it for the workspaces only that
 account is in, passes the primary admin role of its
 other workspaces to their longest-standing admin, or member, deletes its
@@ -3627,6 +3635,125 @@ gone. When the app starts in a browser whose subscription the server no
 longer has for that sign-in, it ends the subscription there too, so it never
 comes back by itself; when the instance's VAPID key changed, it subscribes
 again with the new one.
+
+## Webhooks
+
+A workspace's admins add webhooks for all its projects, or some, and a
+project's owners and maintainers add its own: addresses that fctl posts
+what happens to as it happens, signed with each one's secret
+([ADR 0083](adr/0083-webhooks-post-what-happens-in-a-workspace-to-addresses-its-people-choose.md),
+[Automation](automation.md#webhooks) for people's side).
+
+1. **What a webhook is** (`webhooks` in D1, `crate::hooks`; the
+   workspace's **Webhooks** tab, a project's **Settings → Webhooks**,
+   `fctl webhooks`, `/api/v1/…/webhooks` and `/api/v1/webhooks/{id}…`,
+   `api::hooks`): an address, a name, the events it wants (empty: all,
+   also those a later version adds), a workspace's webhook's projects
+   (empty: all, also later ones), whose sessions' events it wants
+   (`started_by`: people and tools, schedules, an autopilot, tickets;
+   empty: any), whether it's on, and a secret of 32 random bytes
+   (`whsec_` and their base64, as Standard Webhooks' libraries take it),
+   sealed with the master key (`webhook:<id>`). A workspace has at most
+   20 (`fctl_domain::hooks::MAX_WEBHOOKS`). Its address is checked
+   (`hooks::check_url`): `https://`, no user name or password, and no host
+   that is an IP address of a private network, loopback, link-local,
+   shared or otherwise unrouted range (IPv4 and IPv6, IPv4 inside IPv6
+   too), nor `localhost`, a name without a dot or one of local networks'
+   suffixes (`.local`, `.internal`…), unless the instance is a
+   development one (`FCTL_DEV`, `Features::local_webhooks`). A
+   self-hosted control plane can't check where a name resolves, so a name
+   that resolves to its own network reaches it there. Adding one, pointing
+   one elsewhere and reading its secret are sensitive actions
+   (`Sensitive::AddWebhook`); limited access tokens and autopilots reach
+   none of it but the list of events. Rotating the secret keeps the old
+   one in `previous_secret` for a day (`SECRET_OVERLAP_MS`), and every
+   request then carries both signatures. Changes are audited
+   (`webhook.created`, `updated`, `deleted`, `secret_read`,
+   `secret_rotated`, `resent`, `resent_failed`, and fctl's own
+   `turned_off`).
+2. **The events** (`fctl_domain::hooks::Kind`, `catalog`, `GET
+   /api/v1/webhook-events`), each a string so that more need no new shape,
+   with a builder of its data and its line in the log
+   (`session_event`, `pull_request_event`, `review_event`,
+   `schedule_event`):
+   - **Sessions'**, from SessionObject: `session.started` from `/init`;
+     the rest by comparing, on every save of the summary (`hooks_moved`),
+     how the session stands with what its webhooks last heard (meta
+     `hooks_stood`, `hooks_pulls`; `hooks::moved`, `pull_moves`), so that
+     each move sends its events once whatever path made it, and a session
+     from before webhooks starts from how it stands. A change of status
+     sends `session.status_changed` (and `paused`, `stopped` or `failed`);
+     waiting for a message with no background work
+     (`hooks::waits_for_message`) sends `session.finished` once it has
+     lasted `FINISHED_SETTLE_MS` (5 seconds, by the alarm, meta
+     `hooks_finished_at`), since as background work ends the session
+     waits for a message only until the turn that takes its result
+     starts; pull requests ready for a person's review (`ready_for_review`:
+     it waits for a message, asks nothing, and each of its open pull
+     requests, not drafts, has checks GitHub told of, none failed or to
+     finish, and no review agent's review waiting or running) send
+     `session.ready_for_review` once they stayed so for
+     `READY_SETTLE_MS` (2 minutes, so that a review's findings, posted as
+     its check ends, set the agent to work first), once for each set of
+     commits (meta `hooks_ready`). `fctl ask` sends `session.question`,
+     and a follow-up or a review's findings passed on send
+     `session.follow_up` (`hooks::follow_up`, `findings`). A review
+     agent's session sends none of them.
+   - **Agents' pull requests'**: a session's pull request that appears
+     (not merged or closed) sends `pull_request.opened`, one that merges or
+     closes `merged` or `closed`, from each session that lists it.
+   - **Reviews'**, from `crate::reviews` (`to_webhooks`): queued as
+     `start` puts one in, started as its session's runner takes it,
+     finished as it posts (with its findings, those it marked fixed and
+     those still open), failed or cancelled (stopped, or superseded) as it
+     ends otherwise.
+   - **Schedules'**, from `crate::schedules` and `crate::triggers`: a run at
+     its time or on an event that started no session
+     (`schedule.run_skipped`, from `Outcome::skipped`), and fctl pausing
+     one (`schedule.paused`, from `pause`).
+3. **Who gets one** (`hooks::wants`): the webhooks that are on, want its
+   kind, its project (a project's own: only its own; a workspace's: its
+   `projects` or every one) and, for sessions' and their pull requests'
+   events, how the session started (`hooks::origin`). Sources call
+   `crate::hooks::emit` after their answer (`wait_until`), which reads
+   the workspace's webhooks from D1 at most every 30 seconds per isolate
+   (`CACHED_MS`, `WANTED`; an isolate that changes them forgets them at
+   once), and asks the HooksDO nothing when none wants the event: a
+   workspace without webhooks costs a cached lookup. So a change reaches
+   events of sessions elsewhere within half a minute.
+4. **The HooksDO** (`do_hooks`, one per workspace) keeps each event's
+   body once (`HookEnvelope`: `id`, `type`, `timestamp`, `workspace`,
+   `project`, `data`) and a delivery of it for each webhook that wants it,
+   up to 1,000 waiting per webhook (`WAITING_MAX`; past that the event is
+   dropped for it, and counted). Its alarm posts the due deliveries, the
+   longest waiting webhook first, at most 40 in a run and 10 to one
+   webhook, each webhook's one after another and the webhooks at once,
+   and at most 120 a minute to a webhook (`PER_MINUTE`). Each request
+   carries `webhook-id` (the event's id), `webhook-timestamp` and
+   `webhook-signature` (`v1,` and the HMAC-SHA256 of `id.timestamp.body`,
+   `hooks::sign`), and `fctl-event`, `fctl-workspace-id`,
+   `fctl-project-id`, `fctl-delivery`, `fctl-webhook`, `fctl-attempt`
+   and, for a test, `fctl-test`. It waits 10 seconds for the answer and
+   the start of its body (`AbortSignal.timeout`: workerd's `setTimeout`
+   isn't what `worker::Delay` takes), follows no redirect, and keeps the
+   answer's status, headers and first 4 KB. A 2xx delivers it; anything
+   else tries again after 10 seconds, a minute, 5, 30, 2 hours, 6 and 12
+   (`RETRIES_MS`; later where `Retry-After` asks, up to 12 hours). A
+   webhook all of whose attempts failed for three days (`OFF_AFTER_MS`,
+   `health.failing_since`) turns itself off: D1 says why
+   (`disabled_reason`), its waiting deliveries fail, and the workspace's
+   audit log records it. Turned on again, it fails afresh from then.
+5. **What went out** stays in the HooksDO, not D1: each delivery's
+   request as last posted, its last 20 attempts and the last answer, for
+   30 days and the newest 1,000 of each webhook (`KEPT_MS`, `KEPT`,
+   trimmed hourly). Those who manage a webhook read it
+   (`/deliveries`, `/delivery`), resend one now (five times each,
+   `RESENDS`), resend those that failed since a time (once every ten
+   minutes), and send a test of any event (`hooks::sample`, a made-up
+   event in the world the app's previews share, marked `test`), at most
+   30 tests and resends an hour per webhook (`MANUAL_PER_HOUR`); a
+   resend's or test's answer comes back with the request. Its `/health`
+   says how each webhook did in the last day, which lists show.
 
 ## Claude credentials
 
