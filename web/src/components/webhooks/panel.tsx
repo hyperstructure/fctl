@@ -292,7 +292,7 @@ const POINTS: { key: string; icon: ReactNode; text: (where: string) => ReactNode
     key: "again",
     icon: <RotateCcw />,
     text: () =>
-      "A request that fails goes again 7 times over about 21 hours; what went out stays in its log for 30 days, to read and resend.",
+      "A request that fails goes again 7 times over about 21 hours, and its log keeps what went out, the newest 1,000 of the last 30 days, to read and resend.",
   },
   {
     key: "queue",
