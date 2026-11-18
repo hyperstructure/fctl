@@ -537,25 +537,35 @@ pub fn data_export(ctx: &Ctx, user: &UserRow) -> fctl_proto::api::DataExport {
 }
 
 /// Revokes every token of a user (password change or reset), except `keep`:
-/// their admin tokens too.
+/// their admin tokens too ([`sign_out_everywhere`]).
 pub async fn revoke_tokens(ctx: &Ctx, user_id: &str, keep: Option<&str>) -> AppResult<()> {
-    crate::db::batch(
-        &ctx.db,
-        vec![
-            q(
-                &ctx.db,
-                "DELETE FROM tokens WHERE user_id = ? AND id != ?",
-                &[s(user_id), s(keep.unwrap_or(""))],
-            )?,
-            q(
-                &ctx.db,
-                "DELETE FROM admin_tokens WHERE user_id = ? AND id != ?",
-                &[s(user_id), s(keep.unwrap_or(""))],
-            )?,
-            refuse_device_codes(&ctx.db, user_id)?,
-        ],
-    )
-    .await
+    crate::db::batch(&ctx.db, sign_out_everywhere(&ctx.db, user_id, keep)?).await
+}
+
+/// What revokes every token of `user_id` but `keep`: their browsers' and
+/// CLIs' sign-ins, their access tokens, their admin tokens, and the CLI
+/// sign-ins they approved that no CLI picked up yet. Whatever signs them
+/// out everywhere (a new password, a reset, a disabled account) runs all
+/// of it, so that nothing made while someone else held the account
+/// outlasts it.
+pub fn sign_out_everywhere(
+    db: &D1Database,
+    user_id: &str,
+    keep: Option<&str>,
+) -> AppResult<Vec<crate::db::Query>> {
+    Ok(vec![
+        q(
+            db,
+            "DELETE FROM tokens WHERE user_id = ? AND id != ?",
+            &[s(user_id), s(keep.unwrap_or(""))],
+        )?,
+        q(
+            db,
+            "DELETE FROM admin_tokens WHERE user_id = ? AND id != ?",
+            &[s(user_id), s(keep.unwrap_or(""))],
+        )?,
+        refuse_device_codes(db, user_id)?,
+    ])
 }
 
 /// Refuses the CLI sign-ins `user_id` approved that no CLI has picked up
@@ -567,4 +577,83 @@ pub fn refuse_device_codes(db: &D1Database, user_id: &str) -> AppResult<crate::d
         "UPDATE device_codes SET status = 'denied' WHERE user_id = ? AND status IN ('pending', 'approved')",
         &[s(user_id)],
     )
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod tests {
+    use super::*;
+    use crate::db::{Count, batch};
+    use crate::testing;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    async fn count(db: &D1Database, sql: &str) -> AppResult<i64> {
+        let c: Option<Count> = q(db, sql, &[])?.first().await?;
+        Ok(c.map_or(0, |c| c.n))
+    }
+
+    /// What a password reset, a new password or a disabled account signs
+    /// out: an admin token made while someone else held the account too.
+    #[wasm_bindgen_test]
+    async fn signing_out_everywhere_takes_admin_tokens_too() -> AppResult<()> {
+        let db = testing::database();
+        for sql in [
+            "INSERT INTO users (id, email, name, role, created_at, updated_at) VALUES \
+             ('usr_ada', 'ada@example.com', 'Ada', 'admin', 0, 0), ('usr_bob', 'bob@example.com', 'Bob', 'admin', 0, 0)",
+            "INSERT INTO tokens (id, hash, kind, user_id, created_at) VALUES \
+             ('tok_web', 'h1', 'web', 'usr_ada', 0), ('tok_pat', 'h2', 'pat', 'usr_ada', 0), ('tok_bob', 'h3', 'pat', 'usr_bob', 0)",
+            "INSERT INTO admin_tokens (id, hash, name, user_id, created_at) VALUES \
+             ('adt_ada', 'h4', 'Okta', 'usr_ada', 0), ('adt_bob', 'h5', 'HR sync', 'usr_bob', 0)",
+        ] {
+            q(&db, sql, &[])?.run().await?;
+        }
+        // The browser that changed the password stays signed in.
+        batch(&db, sign_out_everywhere(&db, "usr_ada", Some("tok_web"))?).await?;
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM tokens WHERE user_id = 'usr_ada'"
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) AS n FROM tokens WHERE id = 'tok_web'").await?,
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM admin_tokens WHERE user_id = 'usr_ada'"
+            )
+            .await?,
+            0
+        );
+        // A reset keeps nothing; Bob's are his.
+        batch(&db, sign_out_everywhere(&db, "usr_ada", None)?).await?;
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM tokens WHERE user_id = 'usr_ada'"
+            )
+            .await?,
+            0
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM tokens WHERE user_id = 'usr_bob'"
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM admin_tokens WHERE user_id = 'usr_bob'"
+            )
+            .await?,
+            1
+        );
+        Ok(())
+    }
 }

@@ -10,7 +10,7 @@
 use crate::api::avatars;
 use crate::auth;
 use crate::ctx::Ctx;
-use crate::db::{Query, batch, n, os, q, s};
+use crate::db::{Query, batch, batch_changes, n, os, q, s};
 use crate::error::{AppError, AppResult, conflict, not_found, validation};
 use crate::http;
 use crate::model::{CredentialRow, CredentialSecret, UserRow, workspace_ref};
@@ -497,80 +497,54 @@ pub async fn set_claude(ctx: &mut Ctx, req: &mut Request, who: &str) -> AppResul
         refresh_token: None,
         expires_at: None,
     };
-    #[derive(Deserialize)]
-    struct Id {
-        id: String,
-    }
-    let before: Option<Id> = q(
-        &ctx.db,
-        "SELECT id FROM claude_credentials WHERE user_id = ? AND provisioned = 1 LIMIT 1",
-        &[s(&user.id)],
-    )?
-    .first()
-    .await?;
     let expires_at = ctx.now + 365 * auth::DAY_MS;
-    let id = match before {
-        Some(before) => {
-            let sealed = keys.seal_json(&CredentialRow::aad(&before.id, &user.id), &secret)?;
-            // What Claude said of the token it replaces isn't this one's.
+    // One per person: when another request gave them theirs a moment ago,
+    // this one replaces it.
+    let mut set = None;
+    for _ in 0..2 {
+        if let Some(before) = provisioned_claude(&ctx.db, &user.id).await? {
+            let sealed = keys.seal_json(&CredentialRow::aad(&before, &user.id), &secret)?;
             batch(
                 &ctx.db,
-                vec![
-                    q(
-                        &ctx.db,
-                        "UPDATE claude_credentials SET secret_enc = ?, label = COALESCE(?, label), status = 'active', \
-                         account_email = NULL, subscription_type = NULL, account = NULL, rate_limit_tier = NULL, \
-                         expires_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
-                        &[
-                            s(&sealed),
-                            os(label.as_deref()),
-                            n(expires_at),
-                            n(ctx.now),
-                            s(&before.id),
-                            s(&user.id),
-                        ],
-                    )?,
-                    q(
-                        &ctx.db,
-                        "DELETE FROM claude_usage WHERE credential_id = ?",
-                        &[s(&before.id)],
-                    )?,
-                ],
+                replace_claude(
+                    &ctx.db,
+                    &user.id,
+                    &before,
+                    &sealed,
+                    label.as_deref(),
+                    expires_at,
+                    ctx.now,
+                )?,
             )
             .await?;
-            before.id
+            set = Some(before);
+            break;
         }
-        None => {
-            let id = fctl_domain::ids::credential_id(ctx.now);
-            let sealed = keys.seal_json(&CredentialRow::aad(id.as_str(), &user.id), &secret)?;
-            batch(
+        let id = fctl_domain::ids::credential_id(ctx.now);
+        let sealed = keys.seal_json(&CredentialRow::aad(id.as_str(), &user.id), &secret)?;
+        let changes = batch_changes(
+            &ctx.db,
+            first_claude(
                 &ctx.db,
-                vec![
-                    q(
-                        &ctx.db,
-                        "INSERT INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, status, expires_at, created_at, updated_at, provisioned) \
-                         VALUES (?, ?, 'setup_token', ?, ?, 'user:inference', 'active', ?, ?, ?, 1)",
-                        &[
-                            s(id.as_str()),
-                            s(&user.id),
-                            os(label.as_deref()),
-                            s(&sealed),
-                            n(expires_at),
-                            n(ctx.now),
-                            n(ctx.now),
-                        ],
-                    )?,
-                    q(
-                        &ctx.db,
-                        "UPDATE users SET default_credential_id = ? WHERE id = ?",
-                        &[s(id.as_str()), s(&user.id)],
-                    )?,
-                ],
-            )
-            .await?;
-            id.0
+                &user.id,
+                id.as_str(),
+                &sealed,
+                label.as_deref(),
+                expires_at,
+                ctx.now,
+            )?,
+        )
+        .await?;
+        if changes.first() == Some(&1) {
+            set = Some(id.0);
+            break;
         }
-    };
+    }
+    let id = set.ok_or_else(|| {
+        conflict(
+            "Their Claude token changed in the meantime. Read their account again, then try again.",
+        )
+    })?;
     ctx.audit(
         "claude.token_set",
         Some(&user.id),
@@ -580,31 +554,110 @@ pub async fn set_claude(ctx: &mut Ctx, req: &mut Request, who: &str) -> AppResul
     http::ok(&read(ctx, &user.id).await?)
 }
 
+/// The id of the Claude credential an admin token set for `user_id`, if
+/// one did.
+async fn provisioned_claude(db: &D1Database, user_id: &str) -> AppResult<Option<String>> {
+    #[derive(Deserialize)]
+    struct Id {
+        id: String,
+    }
+    let found: Option<Id> = q(
+        db,
+        "SELECT id FROM claude_credentials WHERE user_id = ? AND provisioned = 1",
+        &[s(user_id)],
+    )?
+    .first()
+    .await?;
+    Ok(found.map(|f| f.id))
+}
+
+/// What gives `user_id` the Claude credential `id` that an admin token
+/// sets, its token sealed as `sealed`, as their default: unless they have
+/// one already, which another request gave them a moment ago, when it
+/// changes nothing (one per person: `claude_credentials_provisioned`).
+pub fn first_claude(
+    db: &D1Database,
+    user_id: &str,
+    id: &str,
+    sealed: &str,
+    label: Option<&str>,
+    expires_at: i64,
+    now: i64,
+) -> AppResult<Vec<Query>> {
+    Ok(vec![
+        q(
+            db,
+            "INSERT INTO claude_credentials (id, user_id, kind, label, secret_enc, scopes, status, expires_at, created_at, updated_at, provisioned) \
+             VALUES (?, ?, 'setup_token', ?, ?, 'user:inference', 'active', ?, ?, ?, 1) ON CONFLICT DO NOTHING",
+            &[
+                s(id),
+                s(user_id),
+                os(label),
+                s(sealed),
+                n(expires_at),
+                n(now),
+                n(now),
+            ],
+        )?,
+        q(
+            db,
+            "UPDATE users SET default_credential_id = ?1 WHERE id = ?2 \
+             AND EXISTS (SELECT 1 FROM claude_credentials WHERE id = ?1 AND user_id = ?2)",
+            &[s(id), s(user_id)],
+        )?,
+    ])
+}
+
+/// What puts a new token, sealed as `sealed`, in `user_id`'s Claude
+/// credential `id` that an admin token set, in place: people's and
+/// workspaces' choices of it stay. What Claude said of the token it
+/// replaces isn't this one's, and goes.
+pub fn replace_claude(
+    db: &D1Database,
+    user_id: &str,
+    id: &str,
+    sealed: &str,
+    label: Option<&str>,
+    expires_at: i64,
+    now: i64,
+) -> AppResult<Vec<Query>> {
+    Ok(vec![
+        q(
+            db,
+            "UPDATE claude_credentials SET secret_enc = ?, label = COALESCE(?, label), status = 'active', \
+             account_email = NULL, subscription_type = NULL, account = NULL, rate_limit_tier = NULL, \
+             expires_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND provisioned = 1",
+            &[
+                s(sealed),
+                os(label),
+                n(expires_at),
+                n(now),
+                s(id),
+                s(user_id),
+            ],
+        )?,
+        q(
+            db,
+            "DELETE FROM claude_usage WHERE credential_id = ?",
+            &[s(id)],
+        )?,
+    ])
+}
+
 /// `DELETE /api/v1/admin/users/{user}/claude`: the Claude token an admin
 /// token set for them goes, as removing a connection of theirs would: the
 /// sessions that run on it stop.
 pub async fn remove_claude(ctx: &mut Ctx, who: &str) -> AppResult<Response> {
     let maker = maker(ctx)?;
     let user = target(ctx, &maker, who).await?;
-    #[derive(Deserialize)]
-    struct Id {
-        id: String,
-    }
-    let set: Option<Id> = q(
-        &ctx.db,
-        "SELECT id FROM claude_credentials WHERE user_id = ? AND provisioned = 1 LIMIT 1",
-        &[s(&user.id)],
-    )?
-    .first()
-    .await?;
-    let Some(set) = set else {
+    let Some(set) = provisioned_claude(&ctx.db, &user.id).await? else {
         return Err(not_found("Claude token"));
     };
-    crate::api::claude::remove_credential(ctx, &user.id, &set.id).await?;
+    crate::api::claude::remove_credential(ctx, &user.id, &set).await?;
     ctx.audit(
         "claude.token_removed",
         Some(&user.id),
-        Some(serde_json::json!({ "credential": set.id })),
+        Some(serde_json::json!({ "credential": set })),
     );
     crate::autopilots::owner_moved(&ctx.env, &ctx.db, &user.id, ctx.now).await;
     http::ok(&read(ctx, &user.id).await?)
@@ -891,7 +944,7 @@ pub async fn leave_project(ctx: &mut Ctx, who: &str, id_or_slug: &str) -> AppRes
 #[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
-    use crate::db::{Count, batch};
+    use crate::db::{Count, batch, batch_changes};
     use crate::testing;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -1082,6 +1135,92 @@ mod tests {
             )
             .await?,
             1
+        );
+        Ok(())
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_person_has_one_claude_token_from_admin_tokens() -> AppResult<()> {
+        let db = testing::database();
+        world(&db).await?;
+        // Two requests at once for Bob, who has none: the second gives him
+        // nothing more, and its handler replaces the first's instead.
+        let first = first_claude(&db, "usr_bob", "crd_1", "one", Some("Acme seat"), NOW, NOW)?;
+        let second = first_claude(&db, "usr_bob", "crd_2", "two", None, NOW, NOW)?;
+        assert_eq!(batch_changes(&db, first).await?.first(), Some(&1));
+        assert_eq!(batch_changes(&db, second).await?.first(), Some(&0));
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM claude_credentials WHERE user_id = 'usr_bob'"
+            )
+            .await?,
+            1
+        );
+        assert_eq!(
+            text(
+                &db,
+                "SELECT default_credential_id AS v FROM users WHERE id = 'usr_bob'"
+            )
+            .await?,
+            Some("crd_1".into())
+        );
+        assert_eq!(
+            provisioned_claude(&db, "usr_bob").await?,
+            Some("crd_1".into())
+        );
+        // A connection of his own is his, beside it.
+        q(
+            &db,
+            "INSERT INTO claude_credentials (id, user_id, kind, secret_enc, created_at, updated_at) \
+             VALUES ('crd_own', 'usr_bob', 'oauth', 'own', 0, 0)",
+            &[],
+        )?
+        .run()
+        .await?;
+        // A new token goes in place, under its label, and what Claude said
+        // of the one before goes.
+        q(
+            &db,
+            "INSERT INTO claude_usage (credential_id, window, utilization, observed_at) VALUES ('crd_1', 'five_hour', 0.5, 0)",
+            &[],
+        )?
+        .run()
+        .await?;
+        batch(
+            &db,
+            replace_claude(&db, "usr_bob", "crd_1", "three", None, NOW + 1, NOW + 1)?,
+        )
+        .await?;
+        assert_eq!(
+            text(
+                &db,
+                "SELECT secret_enc || ' ' || label AS v FROM claude_credentials WHERE id = 'crd_1'"
+            )
+            .await?,
+            Some("three Acme seat".into())
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT COUNT(*) AS n FROM claude_usage WHERE credential_id = 'crd_1'"
+            )
+            .await?,
+            0
+        );
+        // His own isn't one to replace.
+        batch(
+            &db,
+            replace_claude(&db, "usr_bob", "crd_own", "four", None, NOW + 2, NOW + 2)?,
+        )
+        .await?;
+        assert_eq!(
+            text(
+                &db,
+                "SELECT secret_enc AS v FROM claude_credentials WHERE id = 'crd_own'"
+            )
+            .await?,
+            Some("own".into())
         );
         Ok(())
     }

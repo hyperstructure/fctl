@@ -4,7 +4,7 @@
 //! (docs/architecture.md#admin-tokens).
 
 use crate::style;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Subcommand};
 use fctl_proto::api::{
     AddClaudeTokenRequest, AdminToken, AdminUser, CreateAdminTokenRequest, CreateUserRequest,
@@ -80,7 +80,9 @@ pub enum UsersCmd {
     },
     /// Change someone's account: their names, primary address, commit
     /// email, picture or the Claude token their sessions run on. Takes an
-    /// admin token.
+    /// admin token. It reads and checks the picture and the token before
+    /// it changes anything; each part is then a request of its own, so when
+    /// the instance refuses one, those before it stay made.
     #[command(
         group(ArgGroup::new("change").required(true).multiple(true).args(["email", "given_name", "family_name", "name", "preferred_name", "commit_email", "avatar", "claude_token"])),
         after_help = "Examples:\n  fctl admin users set ada@acme.dev --email ada.lovelace@acme.dev\n  fctl admin users set ada@acme.dev --family-name Byron --preferred-name Ada\n  fctl admin users set ada@acme.dev --avatar ada.png\n  fctl admin users set ada@acme.dev --commit-email 1234+ada@users.noreply.github.com\n  echo \"$SETUP_TOKEN\" | fctl admin users set ada@acme.dev --claude-token - --claude-label \"Acme seat\"\n  fctl admin users set ada@acme.dev --claude-token none"
@@ -123,7 +125,9 @@ pub enum UsersCmd {
     },
     /// Add someone to workspaces, as a member or an admin, and to
     /// projects, with a role; or change their role there. They join a
-    /// project's workspace first. Takes an admin token.
+    /// project's workspace first. Takes an admin token. Each place is a
+    /// request of its own, in order: when the instance refuses one, those
+    /// before it stay made.
     #[command(
         group(ArgGroup::new("where").required(true).multiple(true).args(["workspaces", "projects"])),
         after_help = "Examples:\n  fctl admin users add ada@acme.dev -w acme -p web:editor\n  fctl admin users add ada@acme.dev -w platform:admin -p api:maintainer -p docs:viewer"
@@ -448,6 +452,35 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
             claude_token,
             claude_label,
         } => {
+            // What it reads and checks comes first: a file it can't read or
+            // use, nothing on stdin or something that isn't a Claude token
+            // changes nothing.
+            let avatar = match avatar.as_deref() {
+                None => None,
+                Some(a) if a.eq_ignore_ascii_case("none") => Some(None),
+                Some(a) => {
+                    let bytes = std::fs::read(a).with_context(|| format!("reading {a}"))?;
+                    fctl_domain::avatar::check(&bytes)
+                        .map_err(|e| anyhow!("{a}: {}", e.message))?;
+                    Some(Some(bytes))
+                }
+            };
+            let claude = match claude_token.as_deref() {
+                None => None,
+                Some("none") => Some(None),
+                Some("-") => {
+                    let token = secret("Their Claude token (input hidden): ")?
+                        .trim()
+                        .to_owned();
+                    if let Some(problem) = fctl_domain::claude::setup_token_problem(&token) {
+                        bail!("{problem}");
+                    }
+                    Some(Some(token))
+                }
+                Some(_) => bail!(
+                    "--claude-token takes `-`, to read it from stdin, or `none`: a token on the command line would show in your shell's history"
+                ),
+            };
             let mut said = Vec::new();
             let mut last: Option<AdminUser> = None;
             let mut who = user;
@@ -473,39 +506,37 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
                     style::terminal_safe(&updated.name)
                 ));
             }
-            if let Some(a) = avatar {
-                last = Some(if a.eq_ignore_ascii_case("none") {
-                    said.push("Their initials show where people see their name".to_owned());
-                    api.remove_user_avatar(&who).await?
-                } else {
-                    let bytes = std::fs::read(&a).with_context(|| format!("reading {a}"))?;
-                    said.push("Their picture shows where people see their name".to_owned());
-                    api.set_user_avatar(&who, bytes).await?
+            if let Some(picture) = avatar {
+                last = Some(match picture {
+                    None => {
+                        said.push("Their initials show where people see their name".to_owned());
+                        api.remove_user_avatar(&who).await?
+                    }
+                    Some(bytes) => {
+                        said.push("Their picture shows where people see their name".to_owned());
+                        api.set_user_avatar(&who, bytes).await?
+                    }
                 });
             }
-            if let Some(t) = claude_token {
-                last = Some(match t.as_str() {
-                    "none" => {
+            if let Some(token) = claude {
+                last = Some(match token {
+                    None => {
                         said.push(
                             "The Claude token an admin token set for them is gone".to_owned(),
                         );
                         api.remove_user_claude(&who).await?
                     }
-                    "-" => {
-                        let token = secret("Their Claude token (input hidden): ")?;
+                    Some(token) => {
                         said.push("Their sessions run on the Claude token you set".to_owned());
                         api.set_user_claude(
                             &who,
                             &AddClaudeTokenRequest {
-                                token: token.trim().to_owned(),
+                                token,
                                 label: claude_label,
                             },
                         )
                         .await?
                     }
-                    _ => bail!(
-                        "--claude-token takes `-`, to read it from stdin, or `none`: a token on the command line would show in your shell's history"
-                    ),
                 });
             }
             if json {
@@ -524,10 +555,19 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
             workspaces,
             projects,
         } => {
+            // Every place is read before the first changes.
+            let workspaces = workspaces
+                .iter()
+                .map(|w| workspace_role(w))
+                .collect::<Result<Vec<_>>>()?;
+            let projects = projects
+                .iter()
+                .map(|p| project_role(p))
+                .collect::<Result<Vec<_>>>()?;
             let mut last = None;
-            for w in &workspaces {
-                let (slug, role) = workspace_role(w)?;
-                let a = api.set_user_workspace(&user, &slug, Some(role)).await?;
+            for (slug, role) in &workspaces {
+                let (slug, role) = (slug.as_str(), *role);
+                let a = api.set_user_workspace(&user, slug, Some(role)).await?;
                 if !json {
                     println!(
                         "{} {} is {} of {slug}",
@@ -542,9 +582,9 @@ pub async fn users(api: &fctl_client::Api, cmd: UsersCmd, json: bool) -> Result<
                 }
                 last = Some(a);
             }
-            for p in &projects {
-                let (slug, role) = project_role(p)?;
-                let a = api.set_user_project(&user, &slug, role).await?;
+            for (slug, role) in &projects {
+                let (slug, role) = (slug.as_str(), *role);
+                let a = api.set_user_project(&user, slug, role).await?;
                 if !json {
                     println!(
                         "{} {} is {} of {slug}",

@@ -18,6 +18,8 @@ CREATE INDEX IF NOT EXISTS admin_tokens_user ON admin_tokens (user_id);
 
 -- The Claude token an admin token set for someone (PUT
 -- /api/v1/admin/users/{id}/claude): one per person, which the next one
--- replaces in place and only admin tokens remove. Their own connections
--- stay theirs.
+-- replaces in place. They remove it as they remove their own connections,
+-- which admin tokens never touch.
 ALTER TABLE claude_credentials ADD COLUMN provisioned INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS claude_credentials_provisioned
+  ON claude_credentials (user_id) WHERE provisioned = 1;
