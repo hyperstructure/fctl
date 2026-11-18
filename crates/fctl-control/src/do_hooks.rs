@@ -49,6 +49,8 @@ const PER_RUN: usize = 40;
 const PER_RUN_EACH: usize = 10;
 /// How often the log is trimmed.
 const TRIM_EVERY_MS: i64 = 3_600_000;
+/// How long the alarm waits to try again when D1 couldn't be read.
+const D1_AGAIN_MS: i64 = 30_000;
 /// How long a webhook waits between two "resend the failed ones".
 const RESEND_FAILED_EVERY_MS: i64 = 10 * 60_000;
 /// The longest an event's body may be: what fctl's own events carry stays
@@ -389,8 +391,13 @@ impl DurableObject for HooksObject {
     async fn alarm(&self) -> Result<Response> {
         let now = now_ms();
         self.trim(now);
-        if let Some(workspace) = self.meta("workspace_id") {
-            self.post_due(&workspace, now).await;
+        if let Some(workspace) = self.meta("workspace_id")
+            && !self.post_due(&workspace, now).await
+        {
+            // D1 didn't say what the webhooks are: try again in a while,
+            // rather than every second while it can't.
+            let _ = self.state.storage().set_alarm(D1_AGAIN_MS).await;
+            return Response::ok("later");
         }
         self.rearm(now_ms()).await;
         Response::ok("ok")
@@ -651,13 +658,13 @@ impl HooksObject {
 
     /// Posts the deliveries that are due, those each webhook has room for
     /// this minute, the oldest first: each webhook's one after another, the
-    /// webhooks at once.
-    async fn post_due(&self, workspace_id: &str, now: i64) {
+    /// webhooks at once. False when D1 couldn't say what the webhooks are.
+    async fn post_due(&self, workspace_id: &str, now: i64) -> bool {
         let hooks = match self.hooks(workspace_id).await {
             Ok(h) => h,
             Err(e) => {
                 worker::console_error!("webhooks of {workspace_id}: {}", e.0.message);
-                return;
+                return false;
             }
         };
         let due: Vec<DueRow> = self
@@ -722,6 +729,7 @@ impl HooksObject {
             }
         }
         join_all(jobs).await;
+        true
     }
 
     /// A delivery that won't be posted: why, in its place in the log.
