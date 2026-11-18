@@ -23,6 +23,7 @@ import {
   Search,
   Settings,
   Shield,
+  UserRoundCog,
   X,
 } from "lucide-react";
 import { type ReactNode, useMemo, useRef, useState } from "react";
@@ -53,6 +54,7 @@ import {
   useWorkspaces,
   useYourSessions,
 } from "@/lib/queries";
+import { type Ask, asksOf } from "@/lib/service-accounts";
 import { useShortcut, withShortcut } from "@/lib/shortcuts";
 import { type SidebarProject, type SidebarWorkspace, useSidebarLists } from "@/lib/sidebar";
 import { foldKeys } from "@/lib/sidebar-layout";
@@ -97,7 +99,7 @@ export interface SidebarProps {
 
 export function Sidebar(props: SidebarProps) {
   const data = useSidebarData(props.path, props.scope);
-  useAttention(data.needs.length + data.autopilotAsks.length);
+  useAttention(data.needs.length + data.autopilotAsks.length + data.serviceAccountAsks.length);
   useNextNeed(data.needs, data.session);
   return props.folded ? <Rail {...props} data={data} /> : <Tree {...props} data={data} />;
 }
@@ -193,6 +195,9 @@ function useSidebarData(path: string, scope?: string) {
       enabled: !!me && anyAutopilot,
       refetchInterval: 30_000,
     }).data?.asks ?? NO_ASKS;
+  // What service accounts of your workspaces ask you: to start sessions for you. From the control
+  // plane's list alone, never a kept one, which would ask again what you answered elsewhere.
+  const serviceAccountAsks = useMemo(() => asksOf(workspaceList?.workspaces), [workspaceList]);
   // Each session at work lights a thread on the Agent Floor's row.
   const working = (projects ?? []).reduce((n, p) => n + p.active_sessions, 0);
   const session = path.startsWith("/s/") ? path.slice(3) : undefined;
@@ -226,6 +231,8 @@ function useSidebarData(path: string, scope?: string) {
     needs,
     /** What autopilots ask you, newest first. */
     autopilotAsks: anyAutopilot ? autopilotAsks : NO_ASKS,
+    /** What service accounts ask you: to start sessions for you. */
+    serviceAccountAsks,
     pulls,
     ready: pulls.filter((l) => pullNeed(l) === "ready"),
     /** Whether `pulls` are only those of sessions you started (Mine, on the pull requests page). */
@@ -326,6 +333,7 @@ function Tree({
           <NeedsYou
             needs={data.needs}
             asks={data.autopilotAsks}
+            accounts={data.serviceAccountAsks}
             open={needsOpen}
             onToggle={() => setNeedsOpen(!needsOpen)}
             session={data.session}
@@ -451,6 +459,7 @@ function useNeedsOpen(): [boolean, (open: boolean) => void] {
 function NeedsYou({
   needs,
   asks: autopilotAsks,
+  accounts,
   open,
   onToggle,
   session,
@@ -461,6 +470,8 @@ function NeedsYou({
   needs: Need[];
   /** What autopilots ask you, which come first: like a session's question, it's what people answer. */
   asks: G.OpenAutopilotAsk[];
+  /** What service accounts ask you, after them: your answer, which only you give. */
+  accounts: Ask[];
   open: boolean;
   onToggle: () => void;
   session?: string;
@@ -468,8 +479,8 @@ function NeedsYou({
   projects?: SidebarProject[];
   onNavigate: () => void;
 }) {
-  const n = needs.length + autopilotAsks.length;
-  const asks = needs.filter((x) => x.kind === "asking").length + autopilotAsks.length;
+  const n = needs.length + autopilotAsks.length + accounts.length;
+  const asks = needs.filter((x) => x.kind === "asking").length + autopilotAsks.length + accounts.length;
   return (
     <div>
       <button
@@ -523,6 +534,11 @@ function NeedsYou({
                     now={now}
                     onNavigate={onNavigate}
                   />
+                </li>
+              ))}
+              {accounts.map((x) => (
+                <li key={x.account.id}>
+                  <ServiceAccountAskLink ask={x} now={now} onNavigate={onNavigate} />
                 </li>
               ))}
               {needs.map((x) => (
@@ -655,6 +671,53 @@ function AutopilotAskLink({
         <span className="flex min-w-0 items-start gap-1 text-[11.5px] leading-4 text-blue">
           <span className="mt-0.5 shrink-0">
             {ask.ask.secret ? <KeyRound className="size-3" /> : <MessageCircleQuestion className="size-3" />}
+          </span>
+          <span className="line-clamp-2 break-words">{says}</span>
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+/**
+ * What a service account asks you, as Needs you lists it: its workspace, since when, and what it asks,
+ * which its workspace's Service accounts tab answers.
+ */
+function ServiceAccountAskLink({
+  ask: { workspace: w, account: a },
+  now,
+  onNavigate,
+}: {
+  ask: Ask;
+  now: number;
+  onNavigate: () => void;
+}) {
+  const says = "Asks to start agents for you";
+  return (
+    <Link
+      to="/w/$slug"
+      params={{ slug: w.slug }}
+      search={{ tab: "service-accounts" }}
+      onClick={onNavigate}
+      title={`${a.name}, a service account of ${w.name}'s\n${says}`}
+      className="group flex items-start gap-2.5 rounded-md px-2 py-1.5 transition-colors duration-150 hover:bg-hover"
+    >
+      <span className="relative mt-[5px] shrink-0">
+        <WorkspaceAvatar workspace={w} size={26} />
+        <span className="absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full bg-raised text-ink-2 shadow-[0_0_0_1.5px_var(--c-canvas)]">
+          <UserRoundCog className="size-2.5" />
+        </span>
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-5 text-ink-2 group-hover:text-ink">
+            {a.name}
+          </span>
+          <span className="shrink-0 text-[11px] text-ink-4 tabular-nums">{agoShort(a.created_at, now)}</span>
+        </span>
+        <span className="flex min-w-0 items-start gap-1 text-[11.5px] leading-4 text-blue">
+          <span className="mt-0.5 shrink-0">
+            <MessageCircleQuestion className="size-3" />
           </span>
           <span className="line-clamp-2 break-words">{says}</span>
         </span>
@@ -1030,7 +1093,7 @@ function SubLink({
 
 /** Folded: a rail of the workspaces' avatars and their projects' icons, each lit by its work. */
 function Rail({ onPalette, onShortcuts, onNavigate, onFold, path, data }: SidebarProps & { data: Data }) {
-  const needCount = data.needs.length + data.autopilotAsks.length;
+  const needCount = data.needs.length + data.autopilotAsks.length + data.serviceAccountAsks.length;
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex h-14 shrink-0 items-center">

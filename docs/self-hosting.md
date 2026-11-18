@@ -395,6 +395,19 @@ choose under **Admin → Settings → Data exports** (or `fctl admin set
 --export-interval 1d`; `off` lets them export at any time, and a year is
 the longest wait).
 
+An organization that runs fctl for its own people may want a portal or a
+bot of its own to start agents for them, with a workspace's [service
+accounts](automation.md#service-accounts). By default a service account
+starts sessions only for the people who allowed it, and fctl asks each of
+them. Where everyone on the instance works for the organization, its
+admins can decide for them: turn off **Admin → Settings → Service accounts
+→ People allow them first** (or `fctl admin set --service-account-consent
+off`), which takes confirming it's you where the instance asks for that.
+Service accounts then start sessions for any member of their workspace,
+on that member's Claude subscription, also for those who said no; each
+member still sees which act for them, and what they answered counts again
+once you turn it back on.
+
 ## Provision people with admin tokens
 
 To create people's accounts from your identity provider, your HR system or

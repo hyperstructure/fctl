@@ -976,6 +976,7 @@ async fn run(env: &Env, db: &D1Database, c: Claimed<'_>) -> AppResult<Option<Out
                 follow: true,
                 autopilot: None,
                 about: None,
+                service_account: None,
                 now,
             },
         )
@@ -1222,6 +1223,8 @@ pub struct Start<'a> {
     /// What it works on besides the schedule's task, which its title
     /// names after the schedule's: `web#41` for an event's run.
     pub about: Option<String>,
+    /// The service account that ran it, for its person.
+    pub service_account: Option<&'a str>,
     pub now: i64,
 }
 
@@ -1265,6 +1268,7 @@ pub async fn start_session(
             ticket: None,
             autopilot: st.autopilot,
             follow: st.follow,
+            service_account: st.service_account,
             now: st.now,
         },
     )

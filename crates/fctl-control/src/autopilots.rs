@@ -1424,6 +1424,7 @@ async fn start_pilot(
                 author: None,
             }),
             follow: true,
+            service_account: None,
             now,
         },
     )
@@ -3114,6 +3115,7 @@ async fn relayed(ctx: &Ctx, session_id: &str, method: &str, path: &str) -> AppRe
         }),
         autopilot: Some(caller),
         admin_token: false,
+        service_account: None,
     };
     let (route_path, _) = path.split_once('?').unwrap_or((path, ""));
     let segs = route_path

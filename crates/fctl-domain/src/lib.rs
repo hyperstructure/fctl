@@ -53,6 +53,7 @@ pub mod reviews;
 pub mod schedule;
 pub mod schedules;
 pub mod search;
+pub mod service_accounts;
 pub mod settings;
 pub mod size;
 pub mod slugs;

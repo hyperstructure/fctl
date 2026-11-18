@@ -34,6 +34,7 @@ mod pull_requests;
 mod push;
 mod reviews;
 mod schedules;
+mod service_accounts;
 mod slugs;
 mod spec;
 mod starts;
@@ -151,9 +152,17 @@ async fn route(ctx: &mut Ctx, req: &mut Request, path: &str) -> AppResult<Respon
     {
         return Err(api::two_factor::setup_required_error(ctx));
     }
-    // Limited access tokens reach projects and sessions only
-    // (`fctl_domain::limits`); their roles there are capped as well.
-    if let Some(limits) = ctx.limits() {
+    // A service account acts for the person a request names, or reads its
+    // workspace (`crate::service_accounts`); limited access tokens reach
+    // projects and sessions only (`fctl_domain::limits`), and their roles
+    // there are capped as well.
+    if ctx.service_account().is_some() {
+        service_accounts::gate(ctx, req, method.as_ref(), segs.as_slice()).await?;
+    } else if crate::http::header(req, fctl_proto::service_accounts::ON_BEHALF_OF).is_some() {
+        return Err(AppError(ApiError::bad_request(
+            "Only a service account acts for someone else (Fctl-On-Behalf-Of): send its token as the bearer token.",
+        )));
+    } else if let Some(limits) = ctx.limits() {
         fctl_domain::limits::allows(limits.access, method.as_ref(), segs.as_slice())
             .map_err(AppError)?;
     }
@@ -351,6 +360,10 @@ async fn dispatch(
         (Get, ["workspaces", id, "audit"]) => api::workspaces::audit(ctx, req, id).await,
         (Get, ["workspaces", id, "runners"]) => api::workspaces::runners(ctx, id).await,
         (Post, ["workspaces", id, "runners"]) => api::workspaces::create_runner(ctx, req, id).await,
+        (Get, ["workspaces", id, "service-accounts"]) => api::service_accounts::list(ctx, id).await,
+        (Post, ["workspaces", id, "service-accounts"]) => {
+            api::service_accounts::create(ctx, req, id).await
+        }
         (Get, ["workspaces", id, "enrollment-tokens"]) => api::enrollment::list(ctx, id).await,
         (Post, ["workspaces", id, "enrollment-tokens"]) => {
             api::enrollment::create(ctx, req, id).await
@@ -389,6 +402,18 @@ async fn dispatch(
         (Get, ["workspaces", id, "linear", organization, "teams"]) => {
             api::linear::teams(ctx, id, organization).await
         }
+        // Service accounts
+        (Get, ["service-account"]) => api::service_accounts::whoami(ctx).await,
+        (Get, ["service-accounts", id]) => api::service_accounts::get(ctx, id).await,
+        (Patch, ["service-accounts", id]) => api::service_accounts::update(ctx, req, id).await,
+        (Delete, ["service-accounts", id]) => api::service_accounts::delete(ctx, id).await,
+        (Post, ["service-accounts", id, "secret"]) => {
+            api::service_accounts::new_secret_for(ctx, id).await
+        }
+        (Put, ["service-accounts", id, "answer"]) => {
+            api::service_accounts::answer(ctx, req, id).await
+        }
+        (Get, ["service-accounts", id, "people"]) => api::service_accounts::people(ctx, id).await,
         (Post, ["invitations", id, "accept"]) => api::workspaces::accept(ctx, id).await,
         (Post, ["invitations", id, "decline"]) => api::workspaces::decline(ctx, id).await,
         (Get, ["github", "install"]) => api::github::install(ctx, req).await,

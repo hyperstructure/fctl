@@ -59,6 +59,15 @@ the settings that steer its projects' agents. Sessions it starts don't notify yo
 `fctl whoami` with a token says what it does. [Automation](automation.md)
 runs review agents from GitHub Actions with one.
 
+A program that starts sessions for a workspace's people, such as a portal
+of yours, uses one of its [service accounts](#service-accounts) as
+`FCTL_TOKEN`, and names the person each command acts for with
+`--on-behalf-of` (or `FCTL_ON_BEHALF_OF`), by their address or id:
+
+```sh
+FCTL_TOKEN=fctl_svc_… fctl run -p my-app --on-behalf-of ada@example.com -d "Fix the login redirect"
+```
+
 Configuration lives in `~/.config/fctl/` (`config.toml`, and
 `credentials.toml` with mode 0600). `FCTL_CONFIG_DIR` moves it.
 `FCTL_SERVER` and `FCTL_TOKEN` take the place of the instance and token
@@ -879,7 +888,7 @@ fctl webhooks verify --any-age --secret whsec_… --id evt_01KC… --timestamp 1
 (`session.*`, `pull_request.*`, `review.*`, `schedule.*`) or `all` (the
 default); `--projects`, a workspace's projects by slug or id, or `all`;
 `--started-by`, whose sessions' events (`people`, `schedules`,
-`autopilot`, `tickets`), or `all`. Addresses are `https://` on the public
+`autopilot`, `tickets`, `service-accounts`), or `all`. Addresses are `https://` on the public
 internet, unless a self-hosted instance lets webhooks reach its own network
 or post over `http://`, which `fctl webhooks events` says
 ([Self-hosting](self-hosting.md#webhooks-to-your-own-network)). Adding a webhook, pointing one elsewhere, and reading or
@@ -890,6 +899,42 @@ secret signed it, and whether its timestamp is within 5 minutes of the
 machine's clock; it exits 1 when either fails, and says whether the
 secret signed one that's too old. `--any-age` checks a request saved
 earlier by its signature alone. A workspace has at most 20 webhooks.
+
+## Service accounts
+
+A workspace's service accounts are credentials for programs of its own,
+such as a portal where its people start agents: each request names the
+person it acts for (`--on-behalf-of`), and the session it starts is
+theirs, on their Claude subscription
+([Automation](automation.md#service-accounts)). Its admins make and
+manage them; each member answers whether one may start sessions for
+them, which it needs where the instance asks people:
+
+```sh
+fctl service-accounts -w acme                  # its service accounts, with your answer to each
+fctl service-accounts create "Acme portal" --description "Our agent portal at portal.acme.dev"   # prints its secret, once
+fctl service-accounts show "Acme portal"       # who keeps its secret, how its people answered, what it did
+fctl service-accounts people "Acme portal"     # whom it may act for, and why not
+fctl service-accounts set "Acme portal" --name "Portal" --description ""
+fctl service-accounts secret "Acme portal"     # a new secret; the old one stops at once, and you keep the new one
+fctl service-accounts rm "Acme portal"         # its sessions stay their people's
+fctl service-accounts allow "Acme portal"      # let it start sessions for you
+fctl service-accounts deny "Acme portal"       # or not, or no longer
+```
+
+`fctl workspaces` and `fctl workspaces join` say which service accounts
+wait for your answer, and an invitation names the workspace's service
+accounts before you join.
+
+With a service account's token, `fctl whoami` says what it is and whom it
+acts for, `fctl service-accounts people` whom it may act for, and the
+other commands act for the person `--on-behalf-of` names (`fctl run`,
+`fctl send`, `fctl stop`, `fctl schedules run`), or read the workspace
+without one (`fctl sessions --mine`, the sessions it started; `fctl
+show`, `fctl logs`, `fctl projects`, `fctl schedules`). `fctl run` with
+one doesn't follow the session live, as service accounts open no live
+connections: `fctl logs` reads what its agent did. A schedule it runs
+without `--on-behalf-of` runs for the person the schedule runs for.
 
 ## Notifications
 
@@ -1378,6 +1423,7 @@ fctl admin set --two-factor-google on      # Google sign-ins ask for codes too
 fctl admin set --verify-sensitive-actions on   # sensitive actions take a passkey or a code (the primary instance owner)
 fctl admin set --gravatar off              # nobody's Gravatar: fctl removes the copies and looks nothing up
 fctl admin set --export-interval 1d        # people export their data once a day (once a week by default; off: at any time)
+fctl admin set --service-account-consent off   # service accounts act for anyone in their workspace, without asking (on by default)
 fctl admin reset-two-factor grace@example.com   # they lost their phone and recovery codes
 fctl admin reset-link grace@example.com    # a link that sets their password (emailed to them where the instance sends email)
 fctl admin tokens                          # admin tokens, where the instance takes them

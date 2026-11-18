@@ -137,6 +137,10 @@ pub struct ListArgs {
     /// (fctl schedules edit --hide-sessions).
     #[arg(long)]
     pub hidden: bool,
+    /// Only those you started; with a service account's token, those it
+    /// started, for whomever (or for the person --on-behalf-of names).
+    #[arg(long)]
+    pub mine: bool,
     /// How many to show.
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
@@ -373,8 +377,23 @@ pub async fn start(server: Option<&str>, args: RunArgs, json: bool) -> Result<()
         style::dim(&format!("{}/s/{}", api.base(), session.id))
     );
     // An autopilot doesn't follow its sessions live: fctl wakes it when
-    // they move on.
-    if args.detach || api.is_relayed() {
+    // they move on. Nor does a service account, which reads their events
+    // instead: its token opens no live connection.
+    let service_account = api
+        .token()
+        .is_some_and(|t| t.starts_with(fctl_domain::tokens::SecretKind::Service.prefix()));
+    if service_account && !args.detach {
+        eprintln!(
+            "{}",
+            style::dim(&format!(
+                "Started for {}. Read what its agent does with `fctl logs {}#{}`.",
+                style::plain(&session.created_by.name),
+                session.project_slug,
+                session.number
+            ))
+        );
+    }
+    if args.detach || api.is_relayed() || service_account {
         return Ok(());
     }
     crate::cmd::attach::follow(&api, &session.id.0, false).await
@@ -396,6 +415,7 @@ pub async fn list(server: Option<&str>, args: ListArgs, json: bool) -> Result<()
             since,
             args.archived,
             args.hidden,
+            args.mine,
             args.limit,
         )
         .await?;
@@ -686,7 +706,17 @@ fn started_lines(s: &Session) -> Vec<String> {
             "by:       fctl, as {}'s autopilot, for {name}",
             style::plain(&a.project_slug)
         ),
-        _ => format!("by:       {name}"),
+        _ => match &s.service_account {
+            // A program of the workspace's started it for them.
+            Some(sa) => format!(
+                "by:       {name}, through {}",
+                sa.name.as_deref().map_or_else(
+                    || "a service account deleted since".to_owned(),
+                    |n| { format!("the service account {}", style::plain(n)) }
+                )
+            ),
+            None => format!("by:       {name}"),
+        },
     };
     let mut lines = vec![by];
     if let Some(schedule) = &s.schedule {
@@ -1019,6 +1049,12 @@ pub async fn logs(
     json: bool,
 ) -> Result<()> {
     let api = config::api(server)?;
+    // A service account opens no live connection (`attach::follow_after`):
+    // with -f, it prints what there is and says so, rather than tell it to
+    // run what it just ran.
+    let service_account = api
+        .token()
+        .is_some_and(|t| t.starts_with(fctl_domain::tokens::SecretKind::Service.prefix()));
     let s = resolve(&api, reference).await?;
     let mut r = Renderer::default();
     r.json = json;
@@ -1044,6 +1080,11 @@ pub async fn logs(
         if api.is_relayed() {
             bail!(
                 "An autopilot doesn't follow sessions live: fctl wakes you when they move on, and fctl logs reads them then."
+            );
+        }
+        if service_account {
+            bail!(
+                "A service account doesn't follow sessions live: what its agent did so far is above. For what comes next, run `fctl logs` again, or have a webhook post it as it happens (`fctl webhooks add URL --started-by service-accounts`)."
             );
         }
         return crate::cmd::attach::follow_after(&api, &s.id.0, true, Some(after), r).await;
@@ -2238,6 +2279,18 @@ mod tests {
                 serde_json::json!({ "schedule": { "id": "sch_1" } })
             )?),
             ["by:       Carl Oscar Aaro", "schedule: one deleted since"]
+        );
+        assert_eq!(
+            started_lines(&session(serde_json::json!({
+                "service_account": { "id": "sva_1", "name": "Acme portal" }
+            }))?),
+            ["by:       Carl Oscar Aaro, through the service account Acme portal"]
+        );
+        assert_eq!(
+            started_lines(&session(
+                serde_json::json!({ "service_account": { "id": "sva_1" } })
+            )?),
+            ["by:       Carl Oscar Aaro, through a service account deleted since"]
         );
         Ok(())
     }

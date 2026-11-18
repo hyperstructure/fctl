@@ -11,7 +11,10 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
             $( <$t as TS>::export_all(&cfg)?; )*
         };
     }
-    use crate::{agent, api, autopilot, event, hooks, runner, session, tickets, uplink, viewer};
+    use crate::{
+        agent, api, autopilot, event, hooks, runner, service_accounts, session, tickets, uplink,
+        viewer,
+    };
     export!(
         crate::ApiError,
         autopilot::Autopilot,
@@ -243,6 +246,7 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         api::ReviewList,
         api::StartReviewRequest,
         session::SessionSchedule,
+        session::SessionServiceAccount,
         api::Schedule,
         api::ScheduleEvent,
         api::ScheduleEventKind,
@@ -314,6 +318,18 @@ pub fn export_typescript(dir: &Path) -> Result<(), ExportError> {
         tickets::ConnectLinearRequest,
         tickets::ProjectTickets,
         tickets::TicketRun,
+        service_accounts::ServiceAccountAnswer,
+        service_accounts::ServiceAccountTally,
+        service_accounts::ServiceAccount,
+        service_accounts::ServiceAccountRef,
+        service_accounts::ServiceAccountList,
+        service_accounts::CreateServiceAccountRequest,
+        service_accounts::CreatedServiceAccount,
+        service_accounts::UpdateServiceAccountRequest,
+        service_accounts::AnswerServiceAccountRequest,
+        service_accounts::ServiceAccountPerson,
+        service_accounts::ServiceAccountPeople,
+        service_accounts::ServiceAccountSelf,
         hooks::WebhookOrigin,
         hooks::Webhook,
         hooks::WebhookHealth,

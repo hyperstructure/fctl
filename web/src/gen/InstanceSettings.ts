@@ -53,4 +53,14 @@ gravatar: boolean,
  * lets them export at any time. An export that fails on the control
  * plane's side doesn't count.
  */
-export_interval_hours: number, };
+export_interval_hours: number, 
+/**
+ * A workspace's service accounts start sessions only for the people
+ * who allowed them to: fctl asks each of its members, and each one who
+ * joins later, and they change their answer whenever they like. Off,
+ * they start sessions for any member of their workspace, on that
+ * member's Claude subscription, without asking, as an organization
+ * that runs its own instance may want. On by default; turning it off
+ * takes confirming it's you.
+ */
+service_account_consent: boolean, };

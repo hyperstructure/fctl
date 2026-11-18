@@ -288,6 +288,13 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         }
         return admin_token(ctx, &secret).await;
     }
+    if kind == SecretKind::Service {
+        if via_cookie {
+            clear_session_cookie(ctx);
+            return Ok(());
+        }
+        return crate::service_accounts::authenticate(ctx, &secret).await;
+    }
     if !matches!(
         kind,
         SecretKind::WebSession | SecretKind::Cli | SecretKind::Pat
@@ -378,6 +385,7 @@ pub async fn authenticate(ctx: &mut Ctx, req: &Request) -> AppResult<()> {
         limits,
         autopilot: None,
         admin_token: false,
+        service_account: None,
     });
     Ok(())
 }
@@ -449,6 +457,7 @@ async fn admin_token(ctx: &mut Ctx, secret: &str) -> AppResult<()> {
         limits: None,
         autopilot: None,
         admin_token: true,
+        service_account: None,
     });
     Ok(())
 }

@@ -28,14 +28,23 @@ pub enum WebhookOrigin {
     Autopilot,
     /// A ticket delegated to fctl in the project's tracker (Linear's).
     Ticket,
+    /// One of the workspace's service accounts, for one of its people: a
+    /// program of the workspace's own, such as a portal where people start
+    /// agents (`service_accounts::ServiceAccount`).
+    ServiceAccount,
     /// One a newer control plane knows, which this version doesn't.
     #[serde(other)]
     Other,
 }
 
 impl WebhookOrigin {
-    pub const ALL: [WebhookOrigin; 4] =
-        [Self::Person, Self::Schedule, Self::Autopilot, Self::Ticket];
+    pub const ALL: [WebhookOrigin; 5] = [
+        Self::Person,
+        Self::Schedule,
+        Self::Autopilot,
+        Self::Ticket,
+        Self::ServiceAccount,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -43,6 +52,7 @@ impl WebhookOrigin {
             Self::Schedule => "schedule",
             Self::Autopilot => "autopilot",
             Self::Ticket => "ticket",
+            Self::ServiceAccount => "service_account",
             Self::Other => "other",
         }
     }
@@ -562,6 +572,9 @@ pub struct HookSession {
     /// The autopilot it belongs to: `pilot` for an autopilot's own
     /// session, `crew` for one it started.
     pub autopilot: Option<String>,
+    /// The workspace's service account that started it for `created_by`
+    /// (its name absent once it's deleted).
+    pub service_account: Option<crate::session::SessionServiceAccount>,
     pub ticket: Option<HookTicket>,
     pub branch: Option<String>,
     pub base_branch: Option<String>,

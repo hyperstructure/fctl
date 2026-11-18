@@ -76,6 +76,9 @@ describe("describeWebhook", () => {
     expect(describeWebhook(URL, [], ["Web"], ["ticket", "person"], CATALOG)).toBe(
       "Posts every event to hooks.slack.com, in Web, for sessions started by tickets or people.",
     );
+    expect(describeWebhook(URL, ["session.finished"], [], ["service_account"], CATALOG)).toBe(
+      "Posts to hooks.slack.com when an agent finishes a turn, for sessions started by service accounts.",
+    );
   });
 
   it("keeps fctl's name lowercase in a sentence", () => {

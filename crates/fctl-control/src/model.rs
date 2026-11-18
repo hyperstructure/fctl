@@ -809,6 +809,12 @@ pub struct SessionRow {
     pub schedule_id: Option<String>,
     #[serde(default)]
     pub schedule_name: Option<String>,
+    /// The service account that started it for its person, and its name,
+    /// absent once it's deleted.
+    #[serde(default)]
+    pub service_account_id: Option<String>,
+    #[serde(default)]
+    pub service_account_name: Option<String>,
     /// The ticket it started from (JSON: `crate::delegations::TicketColumn`).
     #[serde(default)]
     pub ticket: Option<String>,
@@ -991,6 +997,12 @@ impl SessionRow {
                 autopilot: self.autopilot(),
                 claude: self.claude_ref(),
                 claude_connection: self.my_credential_id.clone().map(fctl_proto::CredentialId),
+                service_account: self.service_account_id.as_ref().map(|id| {
+                    fctl_proto::session::SessionServiceAccount {
+                        id: fctl_proto::ServiceAccountId(id.clone()),
+                        name: self.service_account_name.clone(),
+                    }
+                }),
             };
         fctl_domain::pulls::backfill(&mut s);
         s
@@ -1011,6 +1023,7 @@ pub const SESSION_SELECT: &str = "SELECT s.id, s.project_id, p.slug AS project_s
     m.role AS member_role, sh.role AS share_role, f.user_id IS NOT NULL AS following, \
     rv.repo AS review_repo, rv.number AS review_number, rv.url AS review_pr_url, rv.title AS review_title, \
     rv.head_sha AS review_sha, s.schedule_id, sc.name AS schedule_name, s.ticket, s.question, \
+    s.service_account_id, (SELECT x.name FROM service_accounts x WHERE x.id = s.service_account_id) AS service_account_name, \
     s.autopilot_id, s.autopilot_role, (SELECT ap.slug FROM projects ap WHERE ap.id = s.autopilot_id) AS autopilot_slug, \
     CASE WHEN s.autopilot_role = 'pilot' THEN (SELECT a.scope FROM autopilots a WHERE a.project_id = s.autopilot_id) END AS autopilot_scope, \
     w.id AS workspace_id, w.slug AS workspace_slug, w.name AS workspace_name, w.color AS workspace_color, \

@@ -44,8 +44,9 @@ pub struct WantsArgs {
     #[arg(long, value_delimiter = ',', value_name = "PROJECTS")]
     pub projects: Vec<String>,
     /// Sessions' events, and their pull requests': only of sessions that
-    /// people, schedules, an autopilot or tickets started (comma-separated:
-    /// people, schedules, autopilot, tickets); `all` for any.
+    /// people, schedules, an autopilot, tickets or service accounts started
+    /// (comma-separated: people, schedules, autopilot, tickets,
+    /// service-accounts); `all` for any.
     #[arg(long, value_delimiter = ',', value_name = "WHO")]
     pub started_by: Vec<String>,
 }
@@ -700,8 +701,11 @@ fn started_by(given: &[String]) -> Result<Option<Vec<WebhookOrigin>>> {
             "schedule" | "schedules" => WebhookOrigin::Schedule,
             "autopilot" | "autopilots" => WebhookOrigin::Autopilot,
             "ticket" | "tickets" | "linear" => WebhookOrigin::Ticket,
+            "service-account" | "service-accounts" | "service_account" | "service_accounts" => {
+                WebhookOrigin::ServiceAccount
+            }
             _ => bail!(
-                "Sessions start from people, schedules, an autopilot or tickets: {g} isn't one."
+                "Sessions start from people, schedules, an autopilot, tickets or service accounts: {g} isn't one."
             ),
         };
         if !out.contains(&o) {
@@ -1175,6 +1179,13 @@ mod tests {
             Some(Some(vec![WebhookOrigin::Schedule, WebhookOrigin::Person]))
         );
         assert_eq!(started_by(&["all".into()]).ok(), Some(Some(vec![])));
+        assert_eq!(
+            started_by(&["service-accounts".into(), "people".into()]).ok(),
+            Some(Some(vec![
+                WebhookOrigin::ServiceAccount,
+                WebhookOrigin::Person
+            ]))
+        );
         assert!(started_by(&["robots".into()]).is_err());
     }
 

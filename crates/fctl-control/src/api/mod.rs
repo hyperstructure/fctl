@@ -28,6 +28,7 @@ pub mod reviews;
 pub mod runners;
 pub mod schedules;
 pub mod search;
+pub mod service_accounts;
 pub mod sessions;
 pub mod tickets;
 pub mod tokens;

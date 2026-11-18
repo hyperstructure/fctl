@@ -91,3 +91,4 @@ supersede an earlier one. Copy the newest record to start a new one.
 | [0083](0083-schedules-cap-the-sessions-their-events-start.md) | Schedules cap the sessions their events start, an hour and a day |
 | [0084](0084-webhooks-post-what-happens-in-a-workspace-to-addresses-its-people-choose.md) | Webhooks post what happens in a workspace to addresses its people choose |
 | [0085](0085-admin-tokens-provision-people-on-self-hosted-instances.md) | Admin tokens provision people on self-hosted instances |
+| [0086](0086-service-accounts-start-sessions-for-the-people-who-allow-them.md) | Service accounts start sessions for the people who allow them |

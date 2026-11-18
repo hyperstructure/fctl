@@ -25,13 +25,15 @@ curl -sS -H "Authorization: Bearer $FCTL_TOKEN" "$FCTL_SERVER/api/v1/sessions?st
 - **Base URL**: the instance's address followed by `/api/v1`.
 - **Authentication**: `Authorization: Bearer <token>`, with an access token
   (`fctl_pat_…`, [limited to what it is for](automation.md#access-tokens))
-  or the CLI's own, or an admin token (`fctl_adm_…`) for
+  or the CLI's own, a workspace's service account (`fctl_svc_…`), which
+  [acts for the person each request names](#for-people-with-a-service-account),
+  or an admin token (`fctl_adm_…`) for
   [people](#people-with-an-admin-token). The web app's cookie works only
   from the app itself.
 - **Bodies** are JSON (`Content-Type: application/json`), except file
   uploads, which are `application/octet-stream`.
 - **Ids** have a type prefix: `ses_` sessions, `prj_` projects, `wsp_`
-  workspaces, `sch_` schedules, `srn_` schedule runs, `mem_` memories,
+  workspaces, `sva_` service accounts, `sch_` schedules, `srn_` schedule runs, `mem_` memories,
   `rtr_` retrospectives, `att_` attachments, `img_` images agents read,
   `dlv_` messages, `usr_` people, `rnr_` runners. Paths take a project's or workspace's slug or id,
   and a session's id (`project#number` is the CLI's; it looks the number up
@@ -458,6 +460,52 @@ requests and issues: `null` for fctl's defaults, `""` for nothing),
 | `GET`, `PATCH /api/v1/projects/{project}/review-agents` | its review agents: `{"enabled", "run_as_me", "model", "effort", "instructions", "bots", "skipped_repos", "drafts", "description_summary", "rounds"}` (owners turn them on, on their own subscription; another owner's change to how they review, while they're on, runs them on theirs, as `run_as_me` does); `repos` are the repositories they review, `skipped_repos` those they don't (`["acme/shared-lib"]`, `[]` for none); `drafts`: each new commit of a draft gets a review (on by default; `false`: drafts wait until they're marked ready for review, or someone asks); `description_summary`: their agents sum each pull request up at the end of its description before the review (off by default); `rounds`: where one of fctl's agents opened the pull request, its session gets the findings of this many reviews in a row while nobody messages its agent, then fctl holds the next ones back until a person messages it or passes them on (1 to 10, 5 by default) |
 | `GET /api/v1/projects/{project}/reviews` | its reviews, newest first: `state` (`running`, `passed`, `commented`, `superseded`, `stopped`, `failed`), the pull request, `findings`, `review_url`, `opened_by` (`id`, `number`, `title`): the project's session whose agent opened the pull request, if one did, `unsent` where its findings went to no session (fctl passes them on to the session that opened the pull request once one lists it), and `pull_request_summary` (`risk`: `low`, `medium`, `high` or `critical`, `risk_reason`, `overview`, `highlight`): what the agent put in the pull request's description, where it did; `?session=` for one session's review |
 | `POST /api/v1/projects/{project}/reviews` | `{"pull_request": "12"}` (or `owner/name#12`, or its URL): review its head now |
+
+## For people, with a service account
+
+A workspace's admins make service accounts (`fctl_svc_…`) for programs of
+the workspace's own, such as a portal where its people start agents
+([Automation](automation.md#service-accounts)). A request names the person
+it acts for in the `Fctl-On-Behalf-Of` header, by their id or one of their
+addresses, and then does what an access token that runs sessions does, as
+them, in the workspace's projects: the session it starts is theirs, on
+their Claude subscription, within their roles there, and they follow it.
+It acts only for members who allowed it, unless the instance doesn't ask
+people; otherwise the answer is `access_denied` (or `not_found` for someone
+who isn't a member) with `"field": "on_behalf_of"` and why, so that a
+program tells the person what to do:
+
+```sh
+curl -sS -X POST "$FCTL_SERVER/api/v1/projects/web/sessions" \
+  -H "Authorization: Bearer $FCTL_TOKEN" \
+  -H "Fctl-On-Behalf-Of: ada@example.com" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Fix the login redirect"}'
+```
+
+Without the header, it reads the workspace's projects, sessions (with
+their events) and schedules (with their runs), and runs a
+schedule for the person it runs for. Live connections (`/ws`) take no
+service account: read events with `GET /api/v1/sessions/{id}/events`, or
+have [webhooks](#webhooks) post them, narrowed to `started_by:
+["service_account"]`.
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/v1/service-account` | what this service account is, and whom the request acts for |
+| `GET /api/v1/service-accounts/{id}/people` | the workspace's people: each one's `answer` (`allowed`, `declined`, absent while they haven't answered), whether it may act for them (`acts_for`), and why not (`why_not`, `blocked` where no answer would change it) |
+| `GET /api/v1/sessions?mine=1` | the sessions it started, for whomever; `?service_account=sva_…` does the same for its workspace's people |
+
+A workspace's admins make and manage them signed in (the workspace's
+Service accounts tab, `fctl service-accounts`), and each member answers
+for themselves:
+
+| Endpoint | What it does |
+|---|---|
+| `GET`, `POST /api/v1/workspaces/{workspace}/service-accounts` | its service accounts, each with your `answer` (its admins see the rest: its keeper, its secret's end, how its people answered, `stopped` with why); make one with `{"name", "description"}` (its admins): the answer has its `secret`, once |
+| `GET`, `PATCH`, `DELETE /api/v1/service-accounts/{id}` | one; `{"name", "description"}` (`""` removes the description); delete it, which forgets people's answers (its admins) |
+| `POST /api/v1/service-accounts/{id}/secret` | a new secret in place of the old one, which stops at once; the caller keeps it, and one that stopped as its keeper left works again (its admins) |
+| `PUT /api/v1/service-accounts/{id}/answer` | `{"allow": true}`: whether it may start sessions for you (allowing it takes confirming it's you where the instance asks for that) |
 
 ## People, with an admin token
 

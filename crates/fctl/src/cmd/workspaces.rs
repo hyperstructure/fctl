@@ -498,6 +498,28 @@ fn print_workspace(w: &Workspace) {
     println!("{:<24} {:<28} {}", style::bold(&w.slug), w.name, mark);
 }
 
+/// The service accounts of `w` that wait for your answer, with how to give
+/// it: they start sessions for you only once you allow them.
+fn print_asks(w: &Workspace) {
+    for a in w
+        .service_accounts
+        .iter()
+        .filter(|a| a.consent && a.answer.is_none())
+    {
+        println!(
+            "{} {} asks to start agents for you in {}, on your Claude subscription: {}",
+            style::blue("?"),
+            style::bold(&style::terminal_safe(&a.name)),
+            w.name,
+            style::dim(&format!(
+                "fctl service-accounts allow \"{}\" -w {} (or deny)",
+                style::terminal_safe(&a.name),
+                w.slug
+            ))
+        );
+    }
+}
+
 fn print_invitation(i: &WorkspaceInvitation) {
     let from = i
         .invited_by
@@ -517,6 +539,18 @@ fn print_invitation(i: &WorkspaceInvitation) {
         ));
     }
     println!("{line}");
+    // What joining means, said before: programs of its own that start
+    // sessions for its people who allow them.
+    if !i.service_accounts.is_empty() {
+        let names: Vec<&str> = i.service_accounts.iter().map(|s| s.name.as_str()).collect();
+        println!(
+            "  {}",
+            style::dim(&format!(
+                "Its service accounts ({}) start agents for its people who allow them, on their Claude subscription: fctl asks you once you join.",
+                style::terminal_safe(&names.join(", "))
+            ))
+        );
+    }
 }
 
 fn confirm_name(name: &str) -> Result<()> {
@@ -549,6 +583,9 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
             }
             for w in &list.workspaces {
                 print_workspace(w);
+            }
+            for w in &list.workspaces {
+                print_asks(w);
             }
             if !list.invitations.is_empty() {
                 println!();
@@ -894,6 +931,7 @@ pub async fn run(server: Option<&str>, cmd: WorkspacesCmd, json: bool) -> Result
                 style::bold(&w.name),
                 w.email
             );
+            print_asks(&w);
         }
         WorkspacesCmd::Decline { workspace } => {
             let inv = invitation(&api, &workspace).await?;

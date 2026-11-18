@@ -8,10 +8,11 @@ and an access token lets a workflow start them, limited to what it is
 for. And fctl tells your other tools what agents do as it happens, with
 webhooks. This page shows how to set up schedules, those that run on
 events among them, how to delegate Linear tickets, how to start agents
-from other tools, such as another issue tracker, how to hear of what
-agents do with webhooks, how to make a token, how to run review agents
-on your pull requests from GitHub Actions, and other uses: triaging
-issues, nightly maintenance, planning, dashboards.
+from other tools, such as another issue tracker, how to start them for
+your people from a portal of your own with a service account, how to
+hear of what agents do with webhooks, how to make a token, how to run
+review agents on your pull requests from GitHub Actions, and other uses:
+triaging issues, nightly maintenance, planning, dashboards.
 
 ## Schedules
 
@@ -212,6 +213,62 @@ some issue trackers do, need a small relay (a serverless function, or a
 no-code tool such as Zapier, Make or n8n) that adds it and picks out the
 fields to send.
 
+## Service accounts
+
+A portal of your own, where your people pick a project and describe a
+task, a chat bot, or a form behind a script starts agents for them with
+one of the workspace's service accounts. Each request names the person
+it's for, and the session is theirs: on their Claude subscription, within
+what they may do in the project, in their lists in fctl, and they hear
+when it finishes or asks something.
+
+1. **Make one** (the workspace's admins): the workspace's **Service
+   accounts** tab, or `fctl service-accounts create "Acme portal"
+   --description "Our agent portal at portal.acme.dev"`. Its secret
+   (`fctl_svc_…`) shows once: give it to your program, and nobody else.
+   What it says it is, people read as fctl asks them.
+2. **People allow it.** It starts sessions only for those who allowed it:
+   fctl asks each member on their Agent Floor, and each one who joins
+   later, and they change their answer in the workspace's Service
+   accounts tab or with `fctl service-accounts allow "Acme portal"` (or
+   `deny`). Where the instance's admins turned asking off, as an
+   organization that runs fctl for its own people may, it acts for anyone
+   in the workspace. `fctl service-accounts people "Acme portal"` lists
+   who allowed it.
+3. **Your program names the person** by their address (or fctl id) in
+   the `Fctl-On-Behalf-Of` header:
+
+   ```sh
+   curl -X POST https://app.fctl.sh/api/v1/projects/web/sessions \
+     -H "Authorization: Bearer $FCTL_TOKEN" \
+     -H "Fctl-On-Behalf-Of: ada@acme.dev" \
+     -H "Content-Type: application/json" \
+     -d '{"prompt": "Fix the login redirect"}'
+   ```
+
+   Or with the CLI, which takes the token as `FCTL_TOKEN` too:
+   `fctl run -p web --on-behalf-of ada@acme.dev -d "Fix the login
+   redirect"`. Someone who hasn't allowed it, or can't start sessions
+   there, gets a refusal whose `field` is `on_behalf_of` and whose
+   `message` says why, to show them.
+
+What else it does: it messages, interrupts and stops the sessions of the
+person it acts for (`fctl send … --on-behalf-of`), runs schedules
+(`fctl schedules run "Nightly triage" -p web`, for the person the schedule
+runs for, or the one it names), and reads the workspace's projects,
+sessions and schedules (`fctl sessions --mine` lists those it started,
+`fctl logs web#12` what an agent did). It changes nothing else: no
+settings, people, secrets or tokens. To hear when its sessions finish or
+ask something, add a webhook narrowed to them: `fctl webhooks add
+https://portal.acme.dev/fctl --events session.finished,session.question
+--started-by service-accounts`.
+
+Every session it starts says so, on its page, in `fctl show`, in the
+audit log and in what webhooks post. Its secret works while the admin who
+made it is an admin of the workspace: when they leave, it stops until
+another admin makes it a new one (`fctl service-accounts secret "Acme
+portal"`), which you give your program. People's answers stay.
+
 ## Webhooks
 
 A webhook posts what happens in a workspace to an address of yours as it
@@ -322,7 +379,8 @@ a person's review:
 ```
 
 Sessions' events carry the session as `data.session` (its schedule,
-autopilot or ticket where it started from one); agents' pull requests'
+autopilot, ticket or service account where it started from one, and
+`started_by`, how it started); agents' pull requests'
 `data.session` and `data.pull_request`; reviews' `data.review` (its
 pull request, commit, state, and how many new findings it reported,
 earlier ones it found fixed and those still open); schedules'
@@ -453,6 +511,9 @@ To create people's accounts and put them in workspaces and projects from
 your identity provider or a script, a self-hosted instance can let its
 admins make admin tokens instead
 ([Provision people with admin tokens](self-hosting.md#provision-people-with-admin-tokens)).
+To start sessions for the people of a workspace, rather than as yourself,
+from a portal or a bot of your own, use a [service
+account](#service-accounts).
 
 ## What agents may do on GitHub
 

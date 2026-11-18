@@ -1697,6 +1697,7 @@ function InstanceSettings() {
     <>
       <SignInSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <SensitiveActions settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
+      <ServiceAccountSettings settings={s} save={(b) => save.mutate(b)} saving={save.isPending} />
       <Section title="Agents" description="What projects may let their agents do on this instance.">
         <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
           <span>
@@ -1907,9 +1908,81 @@ function settingsSaved(s: G.InstanceSettings, b: G.UpdateInstanceSettingsRequest
     return s.gravatar
       ? "People without a picture of their own show their Gravatar"
       : "Gravatar is off: fctl removed the pictures it copied";
+  if (b.service_account_consent !== undefined)
+    return s.service_account_consent
+      ? "Service accounts act only for the people who allowed them"
+      : "Service accounts act for anyone in their workspace, without asking";
   return s.publish_screenshots
     ? "Projects can now publish screenshots"
     : "Published screenshots are off and offline";
+}
+
+/**
+ * Whether workspaces' service accounts ask people first. Off is the bigger step: it says so in a
+ * dialog before it saves, which takes confirming it's you where the instance asks for that.
+ */
+function ServiceAccountSettings({
+  settings: s,
+  save,
+  saving,
+}: {
+  settings?: G.InstanceSettings;
+  save: (b: G.UpdateInstanceSettingsRequest) => void;
+  saving: boolean;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const on = s?.service_account_consent ?? true;
+  return (
+    <Section
+      title="Service accounts"
+      description="Workspaces' credentials for programs of their own, such as a portal where people start agents, which start sessions for their people."
+    >
+      <div className="flex items-center justify-between gap-4 text-[13.5px] text-ink-2">
+        <span>
+          People allow them first
+          <span className="block text-[12.5px] leading-relaxed text-ink-4">
+            {on
+              ? "A service account starts sessions only for the people who allowed it to, on their Claude subscription. fctl asks each member of its workspace, and each one who joins later, and they change their answer whenever they like."
+              : "Service accounts start sessions for any member of their workspace, on that member's Claude subscription, without asking them: for an organization that runs this instance for its own people. Members see which service accounts act for them."}
+          </span>
+        </span>
+        <Switch
+          checked={on}
+          disabled={!s || saving}
+          onChange={(v) => (v ? save({ service_account_consent: true }) : setConfirm(true))}
+          label="People allow service accounts first"
+        />
+      </div>
+      <Dialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        title="Let service accounts act for anyone, without asking?"
+        description="Every workspace's service accounts then start sessions for any of its members, on their own Claude subscription, those who said no included. Turn it on again, and what each person answered counts again."
+      >
+        <div className="flex flex-col gap-5">
+          <Banner tone="warn">
+            Whoever holds a service account's secret then runs work as any member of its workspace. Keep it
+            for an instance whose people all work for the organization that runs it.
+          </Banner>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={saving}
+              onClick={() => {
+                save({ service_account_consent: false });
+                setConfirm(false);
+              }}
+            >
+              Stop asking people
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    </Section>
+  );
 }
 
 /** Two-factor sign-in for the whole instance: who needs it, and whether Google sign-ins ask for it. */
@@ -1935,6 +2008,7 @@ function SignInSettings({
     verify_sensitive_actions: false,
     gravatar: true,
     export_interval_hours: 168,
+    service_account_consent: true,
   };
   const active = users.data?.users.filter((u) => u.status === "active") ?? [];
   const using = active.filter(secured);

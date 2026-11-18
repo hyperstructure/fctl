@@ -363,6 +363,30 @@ export const api = {
     request<G.Autopilot>("POST", `/projects/${enc(project)}/autopilot/asks/${enc(ask)}/decline`, b),
   /** What autopilots ask that you may answer, across your workspaces. */
   autopilotAsks: () => request<G.AutopilotAsksList>("GET", "/autopilots/asks"),
+  /** A workspace's service accounts: each with your answer, and all of it for its admins. */
+  serviceAccounts: (workspace: string) =>
+    request<G.ServiceAccountList>("GET", `/workspaces/${enc(workspace)}/service-accounts`),
+  /** Makes a service account (its admins): the answer has its secret, once. */
+  createServiceAccount: (workspace: string, b: G.CreateServiceAccountRequest) =>
+    request<G.CreatedServiceAccount>("POST", `/workspaces/${enc(workspace)}/service-accounts`, b),
+  serviceAccount: (id: string) => request<G.ServiceAccount>("GET", `/service-accounts/${enc(id)}`),
+  updateServiceAccount: (id: string, b: G.UpdateServiceAccountRequest) =>
+    request<G.ServiceAccount>("PATCH", `/service-accounts/${enc(id)}`, b),
+  deleteServiceAccount: (id: string) => request<G.Ok>("DELETE", `/service-accounts/${enc(id)}`),
+  /** A new secret in place of its old one, which stops working at once: the caller keeps it. */
+  newServiceAccountSecret: (id: string) =>
+    request<G.CreatedServiceAccount>("POST", `/service-accounts/${enc(id)}/secret`, {}),
+  /** Whether it may start sessions for you. */
+  answerServiceAccount: (id: string, allow: boolean) =>
+    request<G.ServiceAccount>("PUT", `/service-accounts/${enc(id)}/answer`, {
+      allow,
+    } satisfies G.AnswerServiceAccountRequest),
+  /** Its workspace's people, with their answers and whether it may act for each (its admins). */
+  serviceAccountPeople: (id: string) =>
+    request<G.ServiceAccountPeople>("GET", `/service-accounts/${enc(id)}/people`),
+  /** The sessions a service account started, newest first. */
+  serviceAccountSessions: (id: string, limit = 8) =>
+    request<G.SessionList>("GET", `/sessions?service_account=${enc(id)}&limit=${limit}&hidden=1&archived=1`),
   /** Every event webhooks get, in their groups. */
   webhookEvents: () => request<G.WebhookEvents>("GET", "/webhook-events"),
   /** A workspace's webhooks and its projects' (its admins). */

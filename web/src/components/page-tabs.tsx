@@ -43,18 +43,24 @@ const iconClass = (here: boolean, tint?: string) =>
     tint ?? (here ? "text-accent" : "text-ink-4 group-hover:text-ink-3"),
   );
 
-/** A page's tabs, each an address: `link` says where each goes; the default one should have none. */
+/**
+ * A page's tabs, each an address: `link` says where each goes; the default one should have none.
+ * `dense` spaces them closer, for a page with as many as a workspace's admins see, which would
+ * otherwise run past a computer's column and leave its last tab under the fade.
+ */
 export function PageTabs<T extends string>({
   label,
   tabs,
   open,
   link,
+  dense,
 }: {
   /** What the tabs are of, for screen readers: "Project". */
   label: string;
   tabs: PageTab<T>[];
   open: T;
   link: (id: T) => LinkProps;
+  dense?: boolean;
 }) {
   const strip = useRef<HTMLElement>(null);
   const shown = tabs.map((t) => t.id).join();
@@ -95,7 +101,7 @@ export function PageTabs<T extends string>({
       style={edgeFade(more)}
       className="-mx-6 mt-8 overflow-x-auto px-6 [scrollbar-width:none]"
     >
-      <div className="flex w-max min-w-full gap-1 border-b border-line">
+      <div className={cn("flex w-max min-w-full border-b border-line", dense ? "gap-0" : "gap-1")}>
         {tabs.map((t) => {
           const here = open === t.id;
           return (
@@ -107,7 +113,8 @@ export function PageTabs<T extends string>({
               aria-current={here ? "page" : undefined}
               activeOptions={{ exact: true }}
               className={cn(
-                "group relative inline-flex shrink-0 items-center gap-1.5 px-2.5 py-2.5 text-[13.5px] transition-colors duration-150",
+                "group relative inline-flex shrink-0 items-center py-2.5 text-[13.5px] transition-colors duration-150",
+                dense ? "gap-1 px-2" : "gap-1.5 px-2.5",
                 here ? "text-ink" : "text-ink-3 hover:text-ink",
               )}
             >

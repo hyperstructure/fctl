@@ -511,10 +511,21 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
     };
     let credential = crate::api::sessions::default_credential(ctx, &user, p.workspace_id()).await?;
     let token = ctx.auth.as_ref().is_some_and(|a| a.kind == TokenKind::Pat);
+    // A service account runs it for the person it acts for: who the
+    // request names, or else the schedule's person
+    // (`crate::service_accounts::gate`), who follows the run as at its time.
+    let service_account = ctx.service_account().cloned();
     // An autopilot's request comes with its owner's access token, as runs
     // record it (`ScheduleRun::autopilot` names it).
-    let (trigger, by) = match (&autopilot, &autopilot_name) {
-        (Some(a), Some(name)) => (
+    let (trigger, by) = match (&service_account, &autopilot, &autopilot_name) {
+        (Some(sa), _, _) => (
+            ScheduleTrigger::Token,
+            StartedBy::ServiceAccount {
+                account: &sa.name,
+                who: &user.name,
+            },
+        ),
+        (None, Some(a), Some(name)) => (
             ScheduleTrigger::Token,
             StartedBy::Autopilot {
                 autopilot: name,
@@ -567,8 +578,9 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             author: (!token || autopilot.is_some()).then(|| user.to_ref()),
             source: crate::api::sessions::source_of(ctx),
             // Sessions a limited token starts notify nobody unless someone
-            // follows them, as `api::sessions::create`'s.
-            follow: ctx.limits().is_none(),
+            // follows them, as `api::sessions::create`'s, but for a service
+            // account's person.
+            follow: ctx.limits().is_none() || service_account.is_some(),
             autopilot: autopilot.as_ref().map(|a| crate::starts::AutopilotStart {
                 project_id: &a.project_id,
                 role: AutopilotRole::Crew,
@@ -576,6 +588,7 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
                 author: Some(a.author()),
             }),
             about: None,
+            service_account: service_account.as_ref().map(|sa| sa.id.as_str()),
             now: ctx.now,
         },
     )
@@ -592,7 +605,7 @@ pub async fn run(ctx: &mut Ctx, req: &mut Request, id: &str) -> AppResult<Respon
             "number": number,
             "github_access": github_access,
             "schedule": row.id,
-            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat && a.autopilot.is_none()).map(|a| &a.token_id),
+            "token": ctx.auth.as_ref().filter(|a| a.kind == TokenKind::Pat && a.autopilot.is_none() && a.service_account.is_none()).map(|a| &a.token_id),
             "autopilot": autopilot.as_ref().map(|a| &a.project_id),
         })),
     );

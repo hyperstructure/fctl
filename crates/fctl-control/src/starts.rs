@@ -52,6 +52,9 @@ pub struct NewSession<'a> {
     pub autopilot: Option<AutopilotStart<'a>>,
     /// Its person follows it, as starting a session does.
     pub follow: bool,
+    /// The service account that started it for its person
+    /// (`sessions.service_account_id`).
+    pub service_account: Option<&'a str>,
     pub now: i64,
 }
 
@@ -93,8 +96,8 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
         db,
         "INSERT INTO sessions (id, project_id, number, title, prompt, status, created_by, credential_id, branch, base_branch, \
          model, effort, claude_session_id, stats, created_at, updated_at, last_activity_at, github_access, schedule_id, ticket, \
-         autopilot_id, autopilot_role) \
-         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?)",
+         autopilot_id, autopilot_role, service_account_id) \
+         VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &[
             s(id.as_str()),
             s(&st.project.id),
@@ -116,6 +119,7 @@ pub async fn start(env: &Env, db: &D1Database, st: NewSession<'_>) -> AppResult<
             os(ticket.as_deref()),
             os(st.autopilot.as_ref().map(|a| a.project_id)),
             os(st.autopilot.as_ref().map(|a| a.role.as_str())),
+            os(st.service_account),
         ],
     )?
     .run()

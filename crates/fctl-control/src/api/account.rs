@@ -320,6 +320,7 @@ pub async fn erase(ctx: &mut Ctx, user: &UserRow, plan: &Plan) -> AppResult<()> 
         "passkey_challenges",
         "workspace_members",
         "linear_accounts",
+        "service_account_answers",
         "user_emails",
         "user_avatars",
     ] {
@@ -741,6 +742,19 @@ async fn start(ctx: &Ctx, user: &UserRow, slot: Slot) -> AppResult<Export> {
         rows(
             ctx,
             "SELECT organization_name, url_key, linear_user_id, name, email, avatar_url, linked_at FROM linear_accounts WHERE user_id = ? ORDER BY linked_at",
+            &me(),
+        )
+        .await?,
+    );
+    doc.insert(
+        "service_accounts".into(),
+        // Whether the service accounts of their workspaces may start
+        // sessions for them, as they answered.
+        rows(
+            ctx,
+            "SELECT sa.name, w.name AS workspace, CASE a.allowed WHEN 1 THEN 'allowed' ELSE 'declined' END AS answer, \
+             a.answered_at FROM service_account_answers a JOIN service_accounts sa ON sa.id = a.service_account_id \
+             JOIN workspaces w ON w.id = sa.workspace_id WHERE a.user_id = ? ORDER BY a.answered_at",
             &me(),
         )
         .await?,
