@@ -140,6 +140,22 @@ describe("a workspace's service accounts, for its admins", () => {
     expect(open).toHaveBeenCalledWith("sva_portal");
   });
 
+  it("lets an admin answer from the list, where the badge and Needs you lead them", async () => {
+    seed([admins(), admins({ id: "sva_bot", name: "Slack bot", answer: "allowed", acts_for_you: true })]);
+    answerServiceAccount.mockResolvedValue(admins({ answer: "allowed", acts_for_you: true }));
+    const open = vi.fn();
+    const c = render(<ServiceAccountsPanel workspace={workspace()} onOpen={open} />);
+    await settle();
+    // The one that asks says so, with its answers; the other holds the answer given.
+    expect(text(c)).toContain("Asks to start agents for you · 4 of 12 allowed it");
+    expect(c.querySelector('[role="switch"][aria-checked="true"]')).toBeTruthy();
+    await act(async () => button(c, "Allow").click());
+    await settle();
+    expect(answerServiceAccount).toHaveBeenCalledWith("sva_portal", true);
+    // Answering opens nothing: the row's name does.
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("makes one, shows its secret once with how a program uses it, and that fctl asks its people", async () => {
     seed([]);
     createServiceAccount.mockResolvedValue({

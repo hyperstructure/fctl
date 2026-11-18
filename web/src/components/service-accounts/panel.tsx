@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Avatar, Banner, Button, CodeBox, Field, Meta, Skeleton, Textarea } from "@/components/ui";
+import { ROW_ABOVE, ROW_COVER } from "@/components/ui/list-row";
 import type * as G from "@/gen";
 import { ApiFailure, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -153,41 +154,59 @@ function Header({
   );
 }
 
-/** A service account in a line, for its admins: how it stands, who allowed it, what it did lately. */
+/**
+ * A service account in a line, for its admins: how it stands, who allowed it, what it did lately, and
+ * their own answer, which they give or change here as members do: the badge, Needs you and Settings
+ * lead them to this list. Its name opens its page from anywhere on the row (`ROW_COVER`); the answer
+ * lies over it (`ROW_ABOVE`).
+ */
 function Row({ account: a, onOpen }: { account: G.ServiceAccount; onOpen: () => void }) {
   const state = accountState(a);
+  const asks = a.consent && !a.answer;
   const facts = [
     a.people && tallyWords(a.people, a.consent),
     a.sessions ? `${a.sessions} ${a.sessions === 1 ? "session" : "sessions"} started` : undefined,
     a.last_used_at ? `used ${agoShortWords(a.last_used_at)}` : "not used yet",
   ].filter(Boolean);
   return (
-    <li className="border-b border-line">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="group flex w-full items-start gap-3.5 px-3 py-3.5 text-left transition-colors hover:bg-hover/30 focus-visible:bg-hover/30 focus-visible:outline-none"
-      >
+    <li className="group relative isolate border-b border-line transition-colors hover:bg-hover/30 has-[[data-cover]:focus-visible]:bg-hover/30">
+      <div className="flex flex-wrap items-start gap-x-3.5 gap-y-3 px-3 py-3.5">
         <AccountGlyph state={state} />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span className="min-w-0 truncate text-[14.5px] text-ink">{a.name}</span>
+        <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-3rem)]">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-cover
+              onClick={onOpen}
+              className={cn(ROW_COVER, "min-w-0 truncate text-left text-[14.5px] text-ink")}
+            >
+              {a.name}
+            </button>
             <StatePill state={state} />
-          </span>
+          </div>
           {a.description && (
-            <span className="mt-0.5 block truncate text-[12.5px] leading-snug text-ink-2">
-              {a.description}
-            </span>
+            <p className="mt-0.5 truncate text-[12.5px] leading-snug text-ink-2">{a.description}</p>
           )}
-          <span className="mt-1 block text-[12px] text-ink-4">{facts.join(" · ")}</span>
+          <p className="mt-1 text-[12px] text-ink-4">
+            {asks && <span className="text-blue">Asks to start agents for you · </span>}
+            {facts.join(" · ")}
+          </p>
           {a.stopped && (
-            <span className="mt-1 block text-[12.5px] leading-relaxed text-amber [overflow-wrap:anywhere]">
+            <p className="mt-1 text-[12.5px] leading-relaxed text-amber [overflow-wrap:anywhere]">
               Stopped: {a.stopped}
-            </span>
+            </p>
           )}
-        </span>
-        <ArrowRight className="mt-2 size-3.5 shrink-0 text-ink-4 transition-transform duration-200 group-hover:translate-x-0.5" />
-      </button>
+        </div>
+        {a.consent && (
+          <div className={cn(ROW_ABOVE, "flex shrink-0 items-center max-sm:w-full max-sm:justify-end")}>
+            <AnswerControl account={a} />
+          </div>
+        )}
+        <ArrowRight
+          aria-hidden="true"
+          className="mt-2 size-3.5 shrink-0 text-ink-4 transition-transform duration-200 group-hover:translate-x-0.5 max-sm:hidden"
+        />
+      </div>
     </li>
   );
 }

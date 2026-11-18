@@ -1049,6 +1049,12 @@ pub async fn logs(
     json: bool,
 ) -> Result<()> {
     let api = config::api(server)?;
+    // A service account opens no live connection (`attach::follow_after`):
+    // with -f, it prints what there is and says so, rather than tell it to
+    // run what it just ran.
+    let service_account = api
+        .token()
+        .is_some_and(|t| t.starts_with(fctl_domain::tokens::SecretKind::Service.prefix()));
     let s = resolve(&api, reference).await?;
     let mut r = Renderer::default();
     r.json = json;
@@ -1074,6 +1080,11 @@ pub async fn logs(
         if api.is_relayed() {
             bail!(
                 "An autopilot doesn't follow sessions live: fctl wakes you when they move on, and fctl logs reads them then."
+            );
+        }
+        if service_account {
+            bail!(
+                "A service account doesn't follow sessions live: what its agent did so far is above. For what comes next, run `fctl logs` again, or have a webhook post it as it happens (`fctl webhooks add URL --started-by service-accounts`)."
             );
         }
         return crate::cmd::attach::follow_after(&api, &s.id.0, true, Some(after), r).await;
